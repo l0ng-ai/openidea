@@ -43,7 +43,9 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           if (typeof arg === "string") {
             if (!useTools.getState().loaded) await refreshTools();
-            if (toolByName(arg)?.canInstall) {
+            const tool = toolByName(arg);
+            // Unknown because the list failed to load: try anyway, so the failure is reported.
+            if (tool ? tool.canInstall : useTools.getState().error !== null) {
               await installTool(arg);
               return;
             }

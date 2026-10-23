@@ -73,7 +73,7 @@ export function ServerStatus() {
                   {s.root && s.root !== root ? ` · ${relativePath(root, s.root) || s.root}` : ""}
                 </div>
               )}
-              {s.message && !(s.status === "missing" && canInstall) && (
+              {s.message && (
                 <div className={clsx(styles.message, s.status === "missing" && styles.install)}>{s.message}</div>
               )}
             </div>

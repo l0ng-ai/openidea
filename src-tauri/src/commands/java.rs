@@ -43,8 +43,8 @@ pub async fn java_resolve_launch(
     let from_jdtls = info.java_home.as_deref().map(ide_sdk::java::java_executable).filter(|p| p.is_file());
     let java = from_jdtls.or_else(|| {
         let release = ide_sdk::java::project_java_version(&module);
-        ide_sdk::java::pick_jdk(ide_sdk::java::installed_jdks(), release)
-            .map(|j| ide_sdk::java::java_executable(&j.home))
+        let jdks = ide_sdk::java::installed_jdks();
+        ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
     });
     info.java_exec = Some(java.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "java".to_owned()));
     Ok(info)

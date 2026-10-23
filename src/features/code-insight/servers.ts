@@ -23,6 +23,10 @@ export const useServers = create<ServersState>(() => ({ servers: new Map() }));
 
 const notifiedMissing = new Set<string>();
 
+/** Event count at each server's latest event, so a snapshot taken earlier doesn't undo it. */
+let eventSeq = 0;
+const lastEvent = new Map<ServerId, number>();
+
 function notifyMissing(e: ServerEntry) {
   if (notifiedMissing.has(e.name)) return;
   notifiedMissing.add(e.name);
@@ -57,18 +61,22 @@ export async function refreshServers() {
   }
   if (!isTauri()) return;
   try {
+    const since = eventSeq;
     const list: ServerInfo[] = await call(commands.lspServers());
     const prev = useServers.getState().servers;
     const map = new Map<ServerId, ServerEntry>();
-    for (const s of list)
+    for (const s of list) {
+      const p = prev.get(s.id);
+      const newer = p && (lastEvent.get(s.id) ?? 0) > since;
       map.set(s.id, {
         id: s.id,
         name: s.name,
-        status: s.status,
+        status: newer ? p.status : s.status,
         languages: s.languages,
         root: s.root,
-        message: prev.get(s.id)?.message ?? null,
+        message: p?.message ?? null,
       });
+    }
     useServers.setState({ servers: map });
     for (const e of map.values()) if (e.status === "missing") notifyMissing(e);
   } catch {
@@ -92,6 +100,7 @@ export async function restartServer(id: ServerId) {
 export function installServerEvents(): () => void {
   const off = onIdeEvent("languageServer", (e) => {
     const known = useServers.getState().servers.has(e.server);
+    lastEvent.set(e.server, ++eventSeq);
     upsertServer({ id: e.server, name: e.name, status: e.status, message: e.message });
     if (!known) void refreshServers();
   });

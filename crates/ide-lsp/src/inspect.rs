@@ -60,9 +60,9 @@ pub enum FileInspection {
 }
 
 impl LspManager {
-    /// Whether an installed language server is configured for `path` (by file
-    /// name). Missing servers are not started, so a batch run doesn't prompt
-    /// to install every language it meets.
+    /// Whether an installed language server that can run here is configured
+    /// for `path` (by file name). Missing servers are not started, so a batch
+    /// run doesn't prompt to install every language it meets.
     pub fn serves_path(&self, path: &Path) -> bool {
         let lang = self.languages.detect(path, None);
         let Some(config) = self.languages.get(&lang) else { return false };
@@ -71,7 +71,7 @@ impl LspManager {
             if let Some(hook) = self.config_hook.read().clone() {
                 hook(&mut cfg, &self.project_root);
             }
-            self.launcher.available(&cfg, &self.project_root)
+            cfg.launch_error.is_none() && self.launcher.available(&cfg, &self.project_root)
         })
     }
 

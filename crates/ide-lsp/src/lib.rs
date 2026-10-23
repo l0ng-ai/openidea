@@ -329,13 +329,19 @@ impl LspManager {
     async fn run_instance(self: Arc<Self>, server: Arc<Server>, generation: u64) {
         server.set_status(&self.sink, ide_core::event::ServerStatus::Starting, None);
         let handler = Arc::new(handler::ClientHandler::new(self.me.clone(), server.clone(), generation));
-        let launcher = self.launcher.clone();
-        let cfg = self.configured(&server);
-        server.set_effective_config(cfg.clone());
-        let root = server.root.clone();
+        let me = self.clone();
         let tail = server.clone();
+        // The settings hook may touch the filesystem (e.g. scanning for JDKs).
         let launched = tokio::task::spawn_blocking(move || {
-            launcher.launch(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)))
+            let cfg = me.configured(&tail);
+            tail.set_effective_config(cfg.clone());
+            let root = tail.root.clone();
+            if let Some(message) = &cfg.launch_error {
+                // A missing binary still asks to be installed first.
+                let missing = !me.launcher.available(&cfg, &root);
+                return Err(if missing { LaunchError::Missing } else { LaunchError::Failed(message.clone()) });
+            }
+            me.launcher.launch(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)))
         })
         .await
         .unwrap_or_else(|e| Err(LaunchError::Failed(e.to_string())));

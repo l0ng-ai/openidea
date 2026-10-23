@@ -44,9 +44,6 @@ impl Launcher for ProcessLauncher {
     ) -> Result<Peer, LaunchError> {
         let search = server_search_path(config);
         let binary = which::which_in(&config.command, Some(&search), root).map_err(|_| LaunchError::Missing)?;
-        if let Some(message) = &config.launch_error {
-            return Err(LaunchError::Failed(message.clone()));
-        }
         let binary = resolve_rustup_proxy(&config.command, binary);
         let mut env: Vec<(String, String)> = vec![("PATH".into(), search.to_string_lossy().into_owned())];
         env.extend(config.env.iter().filter(|(k, _)| *k != "PATH").map(|(k, v)| (k.clone(), v.clone())));

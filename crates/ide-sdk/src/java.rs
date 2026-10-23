@@ -4,10 +4,10 @@ use crate::apply::merge_init_options;
 use crate::home_dir;
 use ide_language::LanguageServerConfig;
 use serde_json::json;
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// A JDK home and its feature version (8, 11, 17, 21…).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,8 +82,12 @@ fn scan() -> Vec<Jdk> {
             roots.extend(WINDOWS_VENDORS.iter().map(|v| base.join(v)));
         }
     }
-    for root in roots {
-        for dir in children(&root) {
+    for (i, root) in roots.iter().enumerate() {
+        // `ProgramFiles` and `ProgramW6432` are usually the same directory.
+        if roots[..i].contains(root) {
+            continue;
+        }
+        for dir in children(root) {
             homes.extend([dir.join("Contents/Home"), dir.join("libexec/openjdk.jdk/Contents/Home"), dir]);
         }
     }
@@ -98,17 +102,39 @@ fn scan() -> Vec<Jdk> {
     out
 }
 
-/// Installed JDKs (scanned once per process).
-pub fn installed_jdks() -> &'static [Jdk] {
-    static JDKS: OnceLock<Vec<Jdk>> = OnceLock::new();
-    JDKS.get_or_init(scan)
+/// How long a scan that found no JDK able to run jdtls is reused before
+/// [`jdtls_jdks`] scans again.
+const RESCAN_AFTER: Duration = Duration::from_secs(10);
+
+struct Scan {
+    at: Instant,
+    jdks: Arc<[Jdk]>,
 }
 
-/// Like [`installed_jdks`], but rescans while none can run jdtls, so a JDK
-/// installed after startup is picked up when the server is restarted.
-pub fn jdtls_jdks() -> Cow<'static, [Jdk]> {
-    let cached = installed_jdks();
-    if jdtls_runtime(cached).is_some() { Cow::Borrowed(cached) } else { Cow::Owned(scan()) }
+static JDKS: Mutex<Option<Scan>> = Mutex::new(None);
+
+fn rescan(slot: &mut Option<Scan>) -> Arc<[Jdk]> {
+    slot.insert(Scan { at: Instant::now(), jdks: scan().into() }).jdks.clone()
+}
+
+/// Installed JDKs (scanned on first use; [`jdtls_jdks`] may refresh them).
+pub fn installed_jdks() -> Arc<[Jdk]> {
+    let mut slot = JDKS.lock().unwrap_or_else(|e| e.into_inner());
+    match &*slot {
+        Some(s) => s.jdks.clone(),
+        None => rescan(&mut slot),
+    }
+}
+
+/// Like [`installed_jdks`], but while none can run jdtls the list is rescanned
+/// (at most every [`RESCAN_AFTER`]), so a JDK installed after startup is picked
+/// up when the server is restarted.
+pub fn jdtls_jdks() -> Arc<[Jdk]> {
+    let mut slot = JDKS.lock().unwrap_or_else(|e| e.into_inner());
+    match &*slot {
+        Some(s) if jdtls_runtime(&s.jdks).is_some() || s.at.elapsed() < RESCAN_AFTER => s.jdks.clone(),
+        _ => rescan(&mut slot),
+    }
 }
 
 /// Oldest Java version jdtls itself runs on (projects may target older ones).

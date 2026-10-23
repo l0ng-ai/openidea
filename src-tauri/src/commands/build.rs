@@ -16,7 +16,8 @@ fn join_err(e: tauri::Error) -> IdeError {
 
 /// `JAVA_HOME` of the installed JDK matching `release` (none when the project names no version).
 fn java_env(release: Option<u32>) -> BTreeMap<String, String> {
-    let jdk = release.and_then(|r| ide_sdk::java::pick_jdk(ide_sdk::java::installed_jdks(), Some(r)));
+    let jdks = ide_sdk::java::installed_jdks();
+    let jdk = release.and_then(|r| ide_sdk::java::pick_jdk(&jdks, Some(r)));
     jdk.map(|j| BTreeMap::from([("JAVA_HOME".to_owned(), j.home.to_string_lossy().into_owned())])).unwrap_or_default()
 }
 
