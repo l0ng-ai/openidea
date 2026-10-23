@@ -174,7 +174,7 @@ fn excluded_folders_become_anchored_globs() {
     s.project_structure.excluded = vec!["build/".into(), " ".into()];
     let globs = s.exclude_globs();
     assert!(globs.contains(&"/build".to_owned()));
-    assert_eq!(globs.len(), s.files.exclude.len() + 1);
+    assert_eq!(globs.len(), s.file_excludes().len() + 1);
 }
 
 /// Prints what this machine has installed.
