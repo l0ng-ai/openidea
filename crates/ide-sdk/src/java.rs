@@ -126,23 +126,101 @@ pub fn installed_jdks() -> Arc<[Jdk]> {
     }
 }
 
-/// Like [`installed_jdks`], but while none can run jdtls the list is rescanned
-/// (at most every [`RESCAN_AFTER`]), so a JDK installed after startup is picked
-/// up when the server is restarted.
-pub fn jdtls_jdks() -> Arc<[Jdk]> {
+/// Like [`installed_jdks`], but while none can run jdtls (on Java `min_java`)
+/// the list is rescanned (at most every [`RESCAN_AFTER`]), so a JDK installed
+/// after startup is picked up when the server is restarted.
+pub fn jdtls_jdks(min_java: u32) -> Arc<[Jdk]> {
     let mut slot = JDKS.lock().unwrap_or_else(|e| e.into_inner());
     match &*slot {
-        Some(s) if jdtls_runtime(&s.jdks).is_some() || s.at.elapsed() < RESCAN_AFTER => s.jdks.clone(),
+        Some(s) if jdtls_runtime(&s.jdks, min_java).is_some() || s.at.elapsed() < RESCAN_AFTER => s.jdks.clone(),
         _ => rescan(&mut slot),
     }
 }
 
-/// Oldest Java version jdtls itself runs on (projects may target older ones).
+/// Oldest Java version jdtls runs on when its install can't tell (its launcher's check).
 pub const JDTLS_MIN_JAVA: u32 = 21;
 
 /// The JDK to run jdtls with: the first found that is new enough (`JAVA_HOME` wins).
-pub fn jdtls_runtime(jdks: &[Jdk]) -> Option<&Jdk> {
-    jdks.iter().find(|j| j.major >= JDTLS_MIN_JAVA)
+pub fn jdtls_runtime(jdks: &[Jdk], min_java: u32) -> Option<&Jdk> {
+    jdks.iter().find(|j| j.major >= min_java)
+}
+
+/// The Java version the jdtls that `cfg` launches needs: the highest any of its
+/// bundles requires, never below [`JDTLS_MIN_JAVA`]. Its launcher only checks
+/// for 21, but the Eclipse platform it ships moves on (1.63 needs 25), and on
+/// an older JDK the server dies resolving its bundles.
+pub fn jdtls_min_java(cfg: &LanguageServerConfig) -> u32 {
+    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
+    let required = search
+        .and_then(|s| ide_run::which::find_executable(&cfg.command, &s))
+        .and_then(|exe| dunce::canonicalize(exe).ok())
+        .and_then(|exe| Some(exe.parent()?.parent()?.to_path_buf()))
+        .and_then(|home| bundles_min_java(&home));
+    required.map_or(JDTLS_MIN_JAVA, |v| v.max(JDTLS_MIN_JAVA))
+}
+
+/// Per install: (plugins directory mtime, its requirement).
+static BUNDLE_JAVA: Mutex<BTreeMap<PathBuf, (std::time::SystemTime, Option<u32>)>> = Mutex::new(BTreeMap::new());
+
+/// Highest Java version required by the bundles in `home`'s `plugins` (or Homebrew's
+/// `libexec/plugins`); `None` when there are none to read.
+fn bundles_min_java(home: &Path) -> Option<u32> {
+    let plugins = [home.join("plugins"), home.join("libexec").join("plugins")].into_iter().find(|p| p.is_dir())?;
+    let modified = std::fs::metadata(&plugins).and_then(|m| m.modified()).ok()?;
+    let mut cache = BUNDLE_JAVA.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, v)) = cache.get(&plugins)
+        && *at == modified
+    {
+        return *v;
+    }
+    let required = std::fs::read_dir(&plugins)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jar"))
+        .filter_map(|jar| jar_manifest(&jar))
+        .filter_map(|manifest| manifest_min_java(&manifest))
+        .max();
+    cache.insert(plugins, (modified, required));
+    required
+}
+
+fn jar_manifest(jar: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(jar).ok()?).ok()?;
+    let mut entry = zip.by_name("META-INF/MANIFEST.MF").ok()?;
+    let mut text = String::new();
+    entry.read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// The Java version an OSGi bundle manifest requires: its `osgi.ee` capability
+/// (`version=25`), else the oldest of its `Bundle-RequiredExecutionEnvironment`s.
+fn manifest_min_java(manifest: &str) -> Option<u32> {
+    // Long headers continue on lines starting with a space.
+    let mut headers: Vec<String> = Vec::new();
+    for line in manifest.lines() {
+        match (line.strip_prefix(' '), headers.last_mut()) {
+            (Some(rest), Some(last)) => last.push_str(rest),
+            _ => headers.push(line.to_owned()),
+        }
+    }
+    let header = |name: &str| headers.iter().find_map(|h| h.strip_prefix(name)?.strip_prefix(':')).map(str::trim);
+    if let Some(caps) = header("Require-Capability") {
+        let ee = caps.split(',').filter(|c| c.trim_start().starts_with("osgi.ee")).find_map(|c| {
+            let v = c.split("version=").nth(1)?;
+            let digits: String = v.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u32>().ok()
+        });
+        if ee.is_some() {
+            return ee;
+        }
+    }
+    header("Bundle-RequiredExecutionEnvironment")?
+        .split(',')
+        .filter_map(|ee| ee.trim().strip_prefix("JavaSE-"))
+        .filter_map(|v| if v == "1.8" { Some(8) } else { v.parse().ok() })
+        .min()
 }
 
 /// jdtls `java.configuration.runtimes`: one JDK per Java version (the first
@@ -178,14 +256,15 @@ const METADATA_PROPERTY: &str = "java.import.generatesMetadataFilesAtProjectRoot
 
 /// jdtls: its Eclipse workspace (`-data`) lives under the IDE's data
 /// directory, one per server root, and no Eclipse metadata is written into
-/// the project; it runs on a JDK 21+ (via `JAVA_HOME`, which its launcher
-/// reads), installed JDKs are registered as runtimes and `bundles` (e.g. the
-/// java-debug plugin jar) are loaded into the server.
+/// the project; it runs on a JDK `min_java`+ (via `JAVA_HOME`, which its
+/// launcher reads), installed JDKs are registered as runtimes and `bundles`
+/// (e.g. the java-debug plugin jar) are loaded into the server.
 pub fn configure_jdtls(
     cfg: &mut LanguageServerConfig,
     server_root: &Path,
     data_dir: &Path,
     jdks: &[Jdk],
+    min_java: u32,
     bundles: &[PathBuf],
 ) {
     if cfg.name != "jdtls" {
@@ -201,11 +280,11 @@ pub fn configure_jdtls(
         cfg.args.push(format!("--jvm-arg=-D{METADATA_PROPERTY}=false"));
     }
     if !cfg.env.contains_key("JAVA_HOME") {
-        match jdtls_runtime(jdks) {
+        match jdtls_runtime(jdks, min_java) {
             Some(jdk) => {
                 cfg.env.insert("JAVA_HOME".to_owned(), jdk.home.to_string_lossy().into_owned());
             }
-            None => cfg.launch_error = Some(missing_runtime_message(jdks)),
+            None => cfg.launch_error = Some(missing_runtime_message(jdks, min_java)),
         }
     }
     let runtimes = runtimes(jdks);
@@ -218,7 +297,7 @@ pub fn configure_jdtls(
     }
 }
 
-fn missing_runtime_message(jdks: &[Jdk]) -> String {
+fn missing_runtime_message(jdks: &[Jdk], min_java: u32) -> String {
     let mut found: Vec<u32> = jdks.iter().map(|j| j.major).collect();
     found.sort_unstable();
     found.dedup();
@@ -229,7 +308,7 @@ fn missing_runtime_message(jdks: &[Jdk]) -> String {
         format!("found JDK {}", list.join(", "))
     };
     format!(
-        "jdtls needs JDK {JDTLS_MIN_JAVA} or newer to run ({found}). Install one (or point JAVA_HOME at it) and \
+        "jdtls needs JDK {min_java} or newer to run ({found}). Install one (or point JAVA_HOME at it) and \
          restart the server; the project can still target an older Java version."
     )
 }
@@ -330,7 +409,7 @@ mod tests {
             Jdk { major: 8, home: PathBuf::from("/jdk8") },
         ];
         let bundles = [PathBuf::from("/tools/java-debug/bin/com.microsoft.java.debug.plugin.jar")];
-        configure_jdtls(&mut cfg, Path::new("/p/demo"), Path::new("/data"), &jdks, &bundles);
+        configure_jdtls(&mut cfg, Path::new("/p/demo"), Path::new("/data"), &jdks, JDTLS_MIN_JAVA, &bundles);
         assert_eq!(cfg.args[0], "-data");
         assert!(cfg.args[1].starts_with("/data/lsp/jdtls/"), "{}", cfg.args[1]);
         assert_eq!(cfg.args[2], "--jvm-arg=-Djava.import.generatesMetadataFilesAtProjectRoot=false");
@@ -345,36 +424,74 @@ mod tests {
 
         // Deterministic (reconfigure compares configs) and idempotent.
         let before = cfg.clone();
-        configure_jdtls(&mut cfg, Path::new("/p/demo"), Path::new("/data"), &jdks, &bundles);
+        configure_jdtls(&mut cfg, Path::new("/p/demo"), Path::new("/data"), &jdks, JDTLS_MIN_JAVA, &bundles);
         assert_eq!(cfg, before);
 
         let mut other: LanguageServerConfig = toml::from_str("name = \"pyright\"\ncommand = \"x\"").unwrap();
-        configure_jdtls(&mut other, Path::new("/p"), Path::new("/data"), &jdks, &bundles);
+        configure_jdtls(&mut other, Path::new("/p"), Path::new("/data"), &jdks, JDTLS_MIN_JAVA, &bundles);
         assert!(other.args.is_empty() && other.initialization_options.is_none());
     }
 
     #[test]
-    fn jdtls_needs_a_jdk_21_to_run() {
+    fn jdtls_needs_a_new_enough_jdk_to_run() {
         let jdtls = || -> LanguageServerConfig { toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap() };
         let old = [Jdk { major: 17, home: PathBuf::from("/jdk17") }, Jdk { major: 8, home: PathBuf::from("/jdk8") }];
         let mut cfg = jdtls();
-        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &old, &[]);
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &old, JDTLS_MIN_JAVA, &[]);
         assert!(!cfg.env.contains_key("JAVA_HOME"));
         let err = cfg.launch_error.unwrap();
         assert!(err.contains("JDK 21 or newer") && err.contains("found JDK 8, 17"), "{err}");
 
         let mut cfg = jdtls();
-        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], &[]);
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], JDTLS_MIN_JAVA, &[]);
         assert!(cfg.launch_error.unwrap().contains("no JDK was found"));
 
         // An explicit JAVA_HOME is the user's call.
         let mut cfg = jdtls();
         cfg.env.insert("JAVA_HOME".into(), "/custom".into());
-        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &old, &[]);
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &old, JDTLS_MIN_JAVA, &[]);
         assert_eq!((cfg.env["JAVA_HOME"].as_str(), cfg.launch_error), ("/custom", None));
 
         let mixed = [old[0].clone(), Jdk { major: 21, home: PathBuf::from("/jdk21") }];
-        assert_eq!(jdtls_runtime(&mixed).unwrap().major, 21);
+        assert_eq!(jdtls_runtime(&mixed, 21).unwrap().major, 21);
+
+        // A jdtls whose bundles need 25 doesn't start on 21, and says what it needs.
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &mixed, 25, &[]);
+        let err = cfg.launch_error.unwrap();
+        assert!(err.contains("JDK 25 or newer") && err.contains("found JDK 17, 21"), "{err}");
+    }
+
+    #[test]
+    fn bundle_manifests_give_the_java_jdtls_needs() {
+        let ee = |m: &str| manifest_min_java(m);
+        assert_eq!(ee("Bundle-RequiredExecutionEnvironment: JavaSE-25\n"), Some(25));
+        assert_eq!(ee("Bundle-RequiredExecutionEnvironment: JavaSE-17, JavaSE-1.8\n"), Some(8));
+        // The capability wins, also when folded over continuation lines.
+        let folded = "Require-Capability: osgi.service;filter:=\"(x=1)\",osgi.ee;filter:=\"(&(osgi.ee=Ja\r\n \
+                      vaSE)(version=21))\"\r\nBundle-RequiredExecutionEnvironment: JavaSE-17\r\n";
+        assert_eq!(ee(folded), Some(21));
+        assert_eq!(ee("Bundle-Name: x\n"), None);
+
+        let home = tempfile::tempdir().unwrap();
+        let plugins = home.path().join("plugins");
+        std::fs::create_dir(&plugins).unwrap();
+        let jar = |name: &str, manifest: &str| {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(plugins.join(name)).unwrap());
+            let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("META-INF/MANIFEST.MF", opts).unwrap();
+            std::io::Write::write_all(&mut zip, manifest.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        };
+        jar(
+            "org.eclipse.jdt.ls.core_1.63.0.jar",
+            "Require-Capability: osgi.ee;filter:=\"(&(osgi.ee=JavaSE)(version=21))\"\n",
+        );
+        jar("org.eclipse.core.filesystem_1.12.0.jar", "Bundle-RequiredExecutionEnvironment: JavaSE-25\n");
+        jar("plain.jar", "Manifest-Version: 1.0\n");
+        std::fs::write(plugins.join("notes.txt"), "not a jar").unwrap();
+        assert_eq!(bundles_min_java(home.path()), Some(25));
+        assert_eq!(bundles_min_java(&home.path().join("missing")), None);
     }
 
     #[test]

@@ -246,8 +246,9 @@ impl AppState {
                 if cfg.name == "jdtls" {
                     let bundles: Vec<PathBuf> =
                         ide_tools::managed_bundle(&data_dir, "java-debug").into_iter().collect();
-                    let jdks = ide_sdk::java::jdtls_jdks();
-                    ide_sdk::java::configure_jdtls(cfg, server_root, &data_dir, &jdks, &bundles);
+                    let min_java = ide_sdk::java::jdtls_min_java(cfg);
+                    let jdks = ide_sdk::java::jdtls_jdks(min_java);
+                    ide_sdk::java::configure_jdtls(cfg, server_root, &data_dir, &jdks, min_java, &bundles);
                 }
             }));
         }
