@@ -1,9 +1,9 @@
 /**
  * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
- * Languages & Frameworks › Go / Node.js / Rust / TypeScript. Pages live in
+ * Languages & Frameworks › Go / Java / Node.js / Rust / TypeScript. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
-import { GoPage, NodePage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
+import { GoPage, JavaPage, NodePage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
 import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
 import type { PageSpec } from "./spec";
@@ -46,6 +46,14 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 390,
     keywords: ["goroot", "gopath", "go sdk", "gopls"],
     component: GoPage,
+  },
+  {
+    id: "languages.java",
+    title: "Java",
+    group: LANGUAGES_GROUP,
+    order: 395,
+    keywords: ["jdtls", "jvm options", "vmargs", "lombok", "javaagent", "eclipse jdt"],
+    component: JavaPage,
   },
   {
     id: "languages.node",

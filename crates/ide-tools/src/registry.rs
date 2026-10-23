@@ -10,6 +10,8 @@ use specta::Type;
 pub enum ToolKind {
     LanguageServer,
     Debugger,
+    /// Loaded into another tool's process, e.g. a jdtls agent.
+    Plugin,
 }
 
 /// Where release archives come from.
@@ -23,6 +25,8 @@ pub enum ReleaseSource {
     EclipseJdtls,
     /// Latest version of a VS Code extension (`.vsix`) on open-vsx.org.
     OpenVsx { namespace: &'static str, extension: &'static str },
+    /// Latest release of a Maven Central artifact (the `.jar` itself).
+    MavenCentral { group: &'static str, artifact: &'static str },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -56,6 +60,7 @@ impl Method {
             Method::Release { source: ReleaseSource::HashiCorp { .. }, .. } => "HashiCorp release",
             Method::Release { source: ReleaseSource::EclipseJdtls, .. } => "Eclipse download",
             Method::Release { source: ReleaseSource::OpenVsx { .. }, .. } => "Open VSX",
+            Method::Release { source: ReleaseSource::MavenCentral { .. }, .. } => "Maven Central",
             Method::Release { .. } => "GitHub release",
         }
     }
@@ -86,7 +91,7 @@ impl ToolSpec {
 
 use Arch::{Arm64, X64};
 use Os::{Linux, Mac, Windows};
-use ToolKind::{Debugger, LanguageServer};
+use ToolKind::{Debugger, LanguageServer, Plugin};
 
 const V: Option<(&str, &[&str])> = None;
 const fn ver(cmd: &'static str) -> Option<(&'static str, &'static [&'static str])> {
@@ -454,6 +459,24 @@ pub static TOOLS: &[ToolSpec] = &[
         homepage: "https://github.com/microsoft/java-debug",
     },
     ToolSpec {
+        name: "lombok",
+        display: "Lombok (jdtls agent)",
+        kind: Plugin,
+        commands: &["lombok.jar"],
+        // Newer than the Lombok a project pins: old ones fail inside current ECJ.
+        method: Method::Release {
+            source: ReleaseSource::MavenCentral { group: "org.projectlombok", artifact: "lombok" },
+            assets: &[
+                any_arch(Mac, "lombok-*.jar"),
+                any_arch(Linux, "lombok-*.jar"),
+                any_arch(Windows, "lombok-*.jar"),
+            ],
+            locate: &["lombok.jar"],
+        },
+        version: V,
+        homepage: "https://projectlombok.org",
+    },
+    ToolSpec {
         name: "kotlin-lsp",
         display: "Kotlin LSP (JetBrains)",
         kind: LanguageServer,
@@ -477,6 +500,9 @@ pub static TOOLS: &[ToolSpec] = &[
         homepage: "https://github.com/Kotlin/kotlin-lsp",
     },
 ];
+
+/// Plugin tools and the tool that loads them.
+pub const PLUGIN_HOSTS: &[(&str, &str)] = &[("lombok", "jdtls")];
 
 pub fn find(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|t| t.name == name)
@@ -507,13 +533,21 @@ mod tests {
                 known.insert((d.adapter.clone(), d.command.clone()));
             }
         }
-        for t in TOOLS {
+        for t in TOOLS.iter().filter(|t| t.kind != Plugin) {
             assert!(
                 known.contains(&(t.name.to_string(), t.commands[0].to_string())),
                 "{} / {} is not referenced by languages/*.toml",
                 t.name,
                 t.commands[0]
             );
+        }
+    }
+
+    #[test]
+    fn plugins_have_a_known_host() {
+        for t in TOOLS.iter().filter(|t| t.kind == Plugin) {
+            let host = PLUGIN_HOSTS.iter().find(|(p, _)| *p == t.name).map(|(_, h)| *h);
+            assert!(host.and_then(find).is_some(), "{} has no known host", t.name);
         }
     }
 

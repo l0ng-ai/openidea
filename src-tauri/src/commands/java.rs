@@ -47,6 +47,10 @@ pub async fn java_resolve_launch(
         ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
     });
     info.java_exec = Some(java.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "java".to_owned()));
+    if info.error_count > 0 {
+        let lombok = ide_sdk::lombok::lombok_agent(&project.root, ide_tools::managed_bundle(&state.data_dir, "lombok"));
+        info.hints.extend(lombok.problem());
+    }
     Ok(info)
 }
 

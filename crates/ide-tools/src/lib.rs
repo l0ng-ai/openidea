@@ -216,6 +216,10 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
             add(&d.adapter, &d.command, ToolKind::Debugger, d.install_hint.as_ref(), &l.name);
         }
     }
+    for (plugin, host) in registry::PLUGIN_HOSTS {
+        let languages = map.get(*host).map(|u| u.languages.clone()).unwrap_or_default();
+        map.entry(plugin.to_string()).or_default().languages = languages;
+    }
     map
 }
 
@@ -733,6 +737,10 @@ impl Tools {
             ReleaseSource::OpenVsx { namespace, extension } => {
                 let json = http.get_text(&sources::openvsx_latest_url(namespace, extension), cancel)?;
                 sources::openvsx_pick(&json, assets, self.platform)
+            }
+            ReleaseSource::MavenCentral { group, artifact } => {
+                let xml = http.get_text(&sources::maven_metadata_url(group, artifact), cancel)?;
+                sources::maven_pick(group, artifact, &xml)
             }
         }
     }

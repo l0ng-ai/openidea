@@ -6,7 +6,13 @@
  */
 import { executeAction } from "@/platform/actions";
 import { call, commands, IpcError, type LaunchConfig, type RunConfig } from "@/platform/ipc";
-import { isJvmApplication, joinJavaArgs, parseJavaArgs, resolveJavaCommand } from "@/platform/javaLaunch";
+import {
+  formatCompileErrors,
+  isJvmApplication,
+  joinJavaArgs,
+  parseJavaArgs,
+  resolveJavaCommand,
+} from "@/platform/javaLaunch";
 import { notifications } from "@/workbench/contributions";
 
 export const JAVA_ADAPTER = "java-debug";
@@ -52,6 +58,14 @@ export async function javaLaunchConfig(rc: RunConfig, root: string): Promise<Lau
   const parsed = parseJavaArgs(rc.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${rc.name}'`);
   const info = await call(commands.javaResolveLaunch(module, parsed.classpath === "test", true));
+  if (info.errorCount > 0)
+    notifications().notify({
+      group: "run",
+      level: "warning",
+      key: "debug.java-compile-errors",
+      title: `'${rc.name}' has compile errors; debugging the last compiled classes`,
+      body: formatCompileErrors(info).trimEnd(),
+    });
   const resolved = resolveJavaCommand(rc, info);
   const port = await debugServer(module);
   const classPaths = parsed.explicitClasspath ? parsed.explicitClasspath.split(/[:;]/) : info.classPaths;

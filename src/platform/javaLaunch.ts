@@ -81,6 +81,15 @@ export function resolveJavaCommand(config: RunConfig, info: JavaLaunchInfo, path
   return { ...config, command, args };
 }
 
+/** Console report of a launch's compile errors (`path:line:col: error: …`) and their likely causes; "" when none. */
+export function formatCompileErrors(info: JavaLaunchInfo): string {
+  const lines = info.errors.map((e) => `${e.path}:${e.line}:${e.column}: error: ${e.message}`);
+  const more = info.errorCount - info.errors.length;
+  if (more > 0) lines.push(`… and ${more} more error${more === 1 ? "" : "s"} (see the Problems tool window)`);
+  lines.push(...info.hints);
+  return lines.length ? `${lines.join("\n")}\n` : "";
+}
+
 /** Joins arguments into one string for adapters that take `args` / `vmArgs` as text (java-debug). */
 export function joinJavaArgs(args: readonly string[]): string {
   return args.map((a) => (a === "" ? '""' : /[\s"]/.test(a) ? `"${a.replace(/(["\\])/g, "\\$1")}"` : a)).join(" ");

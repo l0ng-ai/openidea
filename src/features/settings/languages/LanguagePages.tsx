@@ -1,5 +1,5 @@
 /**
- * Settings › Languages & Frameworks › Go / Node.js / Rust / TypeScript: the
+ * Settings › Languages & Frameworks › Go / Java / Node.js / Rust / TypeScript: the
  * toolchain each language's server and run configurations use (applied by
  * `ide-sdk` when language servers start and when run configurations load).
  */
@@ -204,6 +204,34 @@ export function GoPage() {
           placeholder={defaultGopath ? tildify(defaultGopath) : "go env GOPATH"}
           title="Select GOPATH"
         />
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Java
+
+export function JavaPage() {
+  const [vmArgs, setVmArgs] = useProjectSetting<string>("languages.java.jdtlsVmArgs");
+  const id = useId();
+  return (
+    <div className={styles.page}>
+      <Section title="Language Server">
+        <Row
+          label="JVM options"
+          htmlFor={id}
+          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx2g. A Lombok agent is added automatically when the project uses Lombok."
+        >
+          <Input
+            id={id}
+            mono
+            className={styles.pathInput}
+            value={vmArgs}
+            placeholder="-Xmx2g"
+            onChange={(e) => setVmArgs(e.target.value)}
+          />
+        </Row>
       </Section>
     </div>
   );

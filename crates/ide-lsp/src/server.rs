@@ -330,6 +330,12 @@ impl Server {
         self.diagnostics.lock().get(path).cloned().unwrap_or_default()
     }
 
+    /// Every published diagnostic, by file.
+    pub fn diagnostics_snapshot(&self) -> Vec<(PathBuf, lsp::Diagnostic)> {
+        let d = self.diagnostics.lock();
+        d.iter().flat_map(|(p, items)| items.iter().map(move |i| (p.clone(), i.clone()))).collect()
+    }
+
     pub fn take_diagnostic_paths(&self) -> Vec<PathBuf> {
         self.published.lock().clear();
         self.diagnostics.lock().drain().map(|(p, _)| p).collect()

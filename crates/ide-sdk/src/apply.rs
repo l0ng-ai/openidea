@@ -166,6 +166,12 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         }
     }
 
+    if name == "jdtls" {
+        // The jdtls launcher forwards `--jvm-arg=` values to the JVM it starts.
+        let args = s.languages.java.jdtls_vm_args.split_whitespace().map(|a| format!("--jvm-arg={a}"));
+        cfg.args.extend(args);
+    }
+
     if let Some(lib) = tsdk(server_root, s).or_else(|| tsdk(root, s)) {
         let lib_s = lib.to_string_lossy().into_owned();
         match name {

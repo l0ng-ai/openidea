@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { JavaLaunchInfo, RunConfig } from "@/platform/ipc";
 import {
+  formatCompileErrors,
   joinJavaArgs,
   jdwpListeningPort,
   parseJavaArgs,
@@ -170,6 +171,31 @@ describe("application configurations", () => {
   });
 });
 
+describe("java compile errors", () => {
+  const base: Omit<JavaLaunchInfo, "errors" | "errorCount" | "hints"> = {
+    build: "withErrors",
+    projectRoot: "/p",
+    classPaths: [],
+    modulePaths: [],
+    javaHome: null,
+    javaExec: null,
+  };
+
+  it("lists the first errors, counts the rest and adds hints", () => {
+    const report = formatCompileErrors({
+      ...base,
+      errors: [{ path: "/p/src/A.java", line: 72, column: 5, message: "The method getUsername() is undefined" }],
+      errorCount: 3,
+      hints: ["Install Lombok"],
+    });
+    expect(report).toBe(
+      "/p/src/A.java:72:5: error: The method getUsername() is undefined\n" +
+        "… and 2 more errors (see the Problems tool window)\nInstall Lombok\n",
+    );
+    expect(formatCompileErrors({ ...base, errors: [], errorCount: 0, hints: [] })).toBe("");
+  });
+});
+
 describe("java command lines", () => {
   const info: JavaLaunchInfo = {
     build: "succeeded",
@@ -178,6 +204,9 @@ describe("java command lines", () => {
     modulePaths: [],
     javaHome: "/jdk21",
     javaExec: "/jdk21/bin/java",
+    errors: [],
+    errorCount: 0,
+    hints: [],
   };
 
   it("parses VM options, main class and program arguments", () => {

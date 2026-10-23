@@ -6,7 +6,7 @@
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type OutputChunk, type RunConfig, type RunId, type TestCaseReport } from "@/platform/ipc";
-import { isJvmApplication, parseJavaArgs, resolveJavaCommand } from "@/platform/javaLaunch";
+import { formatCompileErrors, isJvmApplication, parseJavaArgs, resolveJavaCommand } from "@/platform/javaLaunch";
 import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { maybeEditorService, notifications, toolWindowService } from "@/workbench/contributions";
@@ -449,6 +449,8 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     const info = await call(commands.javaResolveLaunch(config.cwd ?? "", parsed.classpath === "test", true));
     if (info.build === "withErrors") say("Build completed with errors; launching with the last compiled classes.\n", "stderr");
     if (info.build === "failed") say("Build failed; launching with the last compiled classes.\n", "stderr");
+    const compileReport = formatCompileErrors(info);
+    if (compileReport) say(compileReport, "stderr");
     if (!info.classPaths.length) {
       say("The classpath is empty: is the module imported by the Java language server?\n", "stderr");
       return null;

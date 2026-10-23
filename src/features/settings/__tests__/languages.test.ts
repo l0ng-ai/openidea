@@ -21,12 +21,14 @@ describe("languages settings", () => {
       node: { packageManager: "pip" },
       rust: { checkCommand: "clippy", checkOnSave: false },
       typescript: { version: "" },
+      java: { jdtlsVmArgs: " -Xmx2g " },
     });
     expect(v.python).toEqual({ interpreter: "/usr/bin/python3", activateVirtualenv: true });
     expect(v.node.packageManager).toBe("");
     expect(v.rust.checkCommand).toBe("clippy");
     expect(v.rust.checkOnSave).toBe(false);
     expect(v.typescript.version).toBe("bundled");
+    expect(v.java.jdtlsVmArgs).toBe("-Xmx2g");
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
   });
 
@@ -48,7 +50,7 @@ describe("language pages", () => {
     const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
     expect(tree.map((n) => n.title)).toEqual(["Project Structure", "Languages & Frameworks"]);
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
-    expect(langs.children.map((n) => n.title)).toEqual(["Go", "Node.js", "Python Interpreter", "Rust", "TypeScript"]);
+    expect(langs.children.map((n) => n.title)).toEqual(["Go", "Java", "Node.js", "Python Interpreter", "Rust", "TypeScript"]);
   });
 
   it("filters packages and shortens home paths", () => {

@@ -18,6 +18,9 @@ vi.mock("@/platform/ipc", async (orig) => {
           modulePaths: [],
           javaHome: "/jdk21",
           javaExec: "/jdk21/bin/java",
+          errors: [],
+          errorCount: 0,
+          hints: [],
         });
       },
       javaDebugServer: (...a: unknown[]) => {

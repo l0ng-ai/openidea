@@ -2301,6 +2301,14 @@ export type JavaBuildStatus = "failed" | "succeeded" |
 /**  Compiled, but some project has compile errors. */
 "withErrors" | "cancelled";
 
+/**  One error diagnostic; `line` / `column` are 1-based for display. */
+export type JavaCompileError = {
+	path: IpcPath,
+	line: number,
+	column: number,
+	message: string,
+};
+
 /**  Everything needed to launch a class of a module: build outcome, classpath and JDK. */
 export type JavaLaunchInfo = {
 	/**  `None` when no build was requested. */
@@ -2312,6 +2320,20 @@ export type JavaLaunchInfo = {
 	javaHome: IpcPath | null,
 	/**  The `java` launcher to use (filled in by the caller from the installed JDKs). */
 	javaExec: string | null,
+	/**  First compile errors of the workspace when the build had errors. */
+	errors: JavaCompileError[],
+	/**  All compile errors (`errors` is capped). */
+	errorCount: number,
+	/**  Likely causes of the errors worth telling the user (e.g. a missing Lombok agent). */
+	hints: string[],
+};
+
+export type JavaSettings = {
+	/**
+	 *  Extra JVM options for the Java language server (jdtls), space-separated
+	 *  (VS Code's `java.jdt.ls.vmargs`).
+	 */
+	jdtlsVmArgs?: string,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -2371,6 +2393,7 @@ export type LanguagesSettings = {
 	rust?: RustSettings,
 	go?: GoSettings,
 	typescript?: TypeScriptSettings,
+	java?: JavaSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -3778,7 +3801,9 @@ export type ToolInfo = {
 	homepage: string | null,
 };
 
-export type ToolKind = "languageServer" | "debugger";
+export type ToolKind = "languageServer" | "debugger" | 
+/**  Loaded into another tool's process, e.g. a jdtls agent. */
+"plugin";
 
 export type ToolStatus = 
 /**  Installed by the IDE (managed tools dir or a toolchain component it manages). */

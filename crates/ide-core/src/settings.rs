@@ -335,6 +335,7 @@ pub struct LanguagesSettings {
     pub rust: RustSettings,
     pub go: GoSettings,
     pub typescript: TypeScriptSettings,
+    pub java: JavaSettings,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -395,6 +396,14 @@ pub struct GoSettings {
     pub goroot: String,
     /// Empty = `go env GOPATH`.
     pub gopath: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct JavaSettings {
+    /// Extra JVM options for the Java language server (jdtls), space-separated
+    /// (VS Code's `java.jdt.ls.vmargs`).
+    pub jdtls_vm_args: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

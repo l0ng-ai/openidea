@@ -75,6 +75,16 @@ fn pyright_gets_python_path_and_venv_env() {
 }
 
 #[test]
+fn jdtls_vm_args() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.java.jdtls_vm_args = " -Xmx2g  -javaagent:/opt/lombok.jar ".into();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(cfg.args, ["--jvm-arg=-Xmx2g", "--jvm-arg=-javaagent:/opt/lombok.jar"]);
+}
+
+#[test]
 fn rust_analyzer_check_command_and_toolchain() {
     if cfg!(windows) {
         return; // Unix paths and shells

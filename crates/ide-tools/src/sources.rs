@@ -209,6 +209,39 @@ pub fn openvsx_pick(json: &str, rules: &[AssetRule], platform: Platform) -> IdeR
     })
 }
 
+const MAVEN_CENTRAL: &str = "https://repo1.maven.org/maven2";
+
+fn maven_dir(group: &str, artifact: &str) -> String {
+    format!("{MAVEN_CENTRAL}/{}/{artifact}", group.replace('.', "/"))
+}
+
+pub fn maven_metadata_url(group: &str, artifact: &str) -> String {
+    format!("{}/maven-metadata.xml", maven_dir(group, artifact))
+}
+
+/// The `<release>` jar of a `maven-metadata.xml`. Central publishes only SHA-1
+/// sums for most artifacts, so the download is not checksum-verified.
+pub fn maven_pick(group: &str, artifact: &str, metadata: &str) -> IdeResult<Download> {
+    let tag = |t: &str| {
+        let start = metadata.find(&format!("<{t}>"))? + t.len() + 2;
+        let end = start + metadata[start..].find(&format!("</{t}>"))?;
+        Some(metadata[start..end].trim())
+    };
+    let version = tag("release")
+        .or_else(|| tag("latest"))
+        .filter(|v| !v.is_empty() && !v.contains(['/', '\\']))
+        .ok_or_else(|| proto(format!("no release in the Maven metadata of {group}:{artifact}")))?;
+    let name = format!("{artifact}-{version}.jar");
+    Ok(Download {
+        version: version.to_string(),
+        url: format!("{}/{version}/{name}", maven_dir(group, artifact)),
+        name,
+        size: None,
+        sha256: None,
+        checksum_url: None,
+    })
+}
+
 /// Finds the hash for `file_name` in a checksum file: either a bare hex digest
 /// or `sha256sum` lines (`<hex>  <name>`).
 pub fn parse_checksum(text: &str, file_name: &str) -> Option<String> {
@@ -320,6 +353,23 @@ mod tests {
         assert!(d.checksum_url.unwrap().ends_with(".sha256"));
         let other = json.replace("vscjava.vscode-java-debug-0.60.0.vsix", "something-else.zip");
         assert!(openvsx_pick(&other, rules, LINUX).is_err());
+    }
+
+    #[test]
+    fn maven_central() {
+        let xml =
+            "<metadata><versioning><latest>1.18.49-SNAPSHOT</latest><release>1.18.48</release></versioning></metadata>";
+        assert_eq!(
+            maven_metadata_url("org.projectlombok", "lombok"),
+            "https://repo1.maven.org/maven2/org/projectlombok/lombok/maven-metadata.xml"
+        );
+        let d = maven_pick("org.projectlombok", "lombok", xml).unwrap();
+        assert_eq!(d.version, "1.18.48");
+        assert_eq!(d.name, "lombok-1.18.48.jar");
+        assert_eq!(d.url, "https://repo1.maven.org/maven2/org/projectlombok/lombok/1.18.48/lombok-1.18.48.jar");
+        assert!(select_asset(&[d.name.as_str()], find("lombok").unwrap().asset_rules(), LINUX).is_some());
+        assert!(maven_pick("g", "a", "<metadata/>").is_err());
+        assert!(maven_pick("g", "a", "<release>../x</release>").is_err());
     }
 
     #[test]

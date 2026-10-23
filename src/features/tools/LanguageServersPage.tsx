@@ -186,6 +186,7 @@ export function LanguageServersPage() {
                       <div className={styles.toolName}>
                         <span className={styles.display}>{t.displayName}</span>
                         {t.kind === "debugger" && <span className={styles.kindTag}>Debugger</span>}
+                        {t.kind === "plugin" && <span className={styles.kindTag}>Plugin</span>}
                       </div>
                       {(t.path ?? (t.command !== t.displayName ? t.command : null)) && (
                         <div className={styles.sub} title={t.path ?? undefined}>

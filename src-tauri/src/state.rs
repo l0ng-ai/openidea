@@ -248,7 +248,20 @@ impl AppState {
                         ide_tools::managed_bundle(&data_dir, "java-debug").into_iter().collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
                     let jdks = ide_sdk::java::jdtls_jdks(min_java);
-                    ide_sdk::java::configure_jdtls(cfg, server_root, &data_dir, &jdks, min_java, &bundles);
+                    let lombok =
+                        ide_sdk::lombok::lombok_agent(server_root, ide_tools::managed_bundle(&data_dir, "lombok"));
+                    if let Some(problem) = lombok.problem() {
+                        tracing::warn!("{problem}");
+                    }
+                    ide_sdk::java::configure_jdtls(
+                        cfg,
+                        server_root,
+                        &data_dir,
+                        &jdks,
+                        min_java,
+                        &bundles,
+                        lombok.jar(),
+                    );
                 }
             }));
         }

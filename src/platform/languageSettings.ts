@@ -11,6 +11,7 @@ export interface LanguagesValid {
   rust: { toolchain: string; stdlib: string; checkOnSave: boolean; checkCommand: "check" | "clippy"; rustfmtArgs: string };
   go: { goroot: string; gopath: string };
   typescript: { version: string };
+  java: { jdtlsVmArgs: string };
 }
 
 export interface ProjectStructureValid {
@@ -29,6 +30,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "" },
   typescript: { version: "bundled" },
+  java: { jdtlsVmArgs: "" },
 };
 
 export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
@@ -73,6 +75,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const rust = obj(l.rust);
   const go = obj(l.go);
   const ts = obj(l.typescript);
+  const java = obj(l.java);
   return {
     python: {
       interpreter: text(py.interpreter, d.python.interpreter),
@@ -91,6 +94,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     },
     go: { goroot: text(go.goroot, d.go.goroot), gopath: text(go.gopath, d.go.gopath) },
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
+    java: { jdtlsVmArgs: text(java.jdtlsVmArgs, d.java.jdtlsVmArgs) },
   };
 }
 

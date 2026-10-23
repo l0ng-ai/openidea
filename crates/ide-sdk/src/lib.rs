@@ -10,6 +10,7 @@ mod discover;
 mod exec;
 pub mod java;
 pub mod locate;
+pub mod lombok;
 pub mod python;
 
 use serde::{Deserialize, Serialize};

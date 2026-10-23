@@ -24,6 +24,10 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(300);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long to retry while the project is still being imported.
 const IMPORT_WAIT: Duration = Duration::from_secs(90);
+/// Compile errors listed with a launch; the rest are only counted.
+const MAX_LAUNCH_ERRORS: usize = 10;
+/// Build markers can be published just after `java/buildWorkspace` answers.
+const ERRORS_WAIT: Duration = Duration::from_secs(2);
 
 /// Result of `java/buildWorkspace` (jdtls `BuildWorkspaceStatus`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -70,6 +74,43 @@ pub struct JavaLaunchInfo {
     pub java_home: Option<ide_core::IpcPath>,
     /// The `java` launcher to use (filled in by the caller from the installed JDKs).
     pub java_exec: Option<String>,
+    /// First compile errors of the workspace when the build had errors.
+    pub errors: Vec<JavaCompileError>,
+    /// All compile errors (`errors` is capped).
+    pub error_count: u32,
+    /// Likely causes of the errors worth telling the user (e.g. a missing Lombok agent).
+    pub hints: Vec<String>,
+}
+
+/// One error diagnostic; `line` / `column` are 1-based for display.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JavaCompileError {
+    pub path: ide_core::IpcPath,
+    pub line: u32,
+    pub column: u32,
+    pub message: String,
+}
+
+/// Error diagnostics sorted by file and position, capped at `limit`, and their total.
+pub fn compile_errors(
+    diagnostics: Vec<(PathBuf, lsp_types::Diagnostic)>,
+    limit: usize,
+) -> (Vec<JavaCompileError>, u32) {
+    let mut errors: Vec<JavaCompileError> = diagnostics
+        .into_iter()
+        .filter(|(_, d)| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
+        .map(|(path, d)| JavaCompileError {
+            path: path.into(),
+            line: d.range.start.line + 1,
+            column: d.range.start.character + 1,
+            message: d.message.lines().next().unwrap_or_default().to_owned(),
+        })
+        .collect();
+    errors.sort_by(|a, b| (&a.path, a.line, a.column).cmp(&(&b.path, b.line, b.column)));
+    let count = u32::try_from(errors.len()).unwrap_or(u32::MAX);
+    errors.truncate(limit);
+    (errors, count)
 }
 
 /// `java.project.getClasspaths` result.
@@ -210,6 +251,10 @@ impl LspManager {
     /// Builds (when asked), then resolves the classpath and JDK of the module at `module`.
     pub async fn java_launch(&self, module: &Path, test: bool, build: bool) -> IdeResult<JavaLaunchInfo> {
         let build = if build { Some(self.java_build(module).await?) } else { None };
+        let (errors, error_count) = match build {
+            Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed) => self.java_compile_errors(module).await,
+            _ => (Vec::new(), 0),
+        };
         let cp = self.java_classpath(module, test).await?;
         let java_home = match self.java_vm_location(module).await {
             Ok(home) => home,
@@ -225,7 +270,22 @@ impl LspManager {
             module_paths: cp.module_paths,
             java_home: java_home.map(Into::into),
             java_exec: None,
+            errors,
+            error_count,
+            hints: Vec::new(),
         })
+    }
+
+    /// Compile errors jdtls reports for its workspace (all modules it imported).
+    async fn java_compile_errors(&self, module: &Path) -> (Vec<JavaCompileError>, u32) {
+        let Ok((server, _)) = self.jdtls(module).await else { return (Vec::new(), 0) };
+        let collect = || compile_errors(server.diagnostics_snapshot(), MAX_LAUNCH_ERRORS);
+        let found = collect();
+        if found.1 > 0 {
+            return found;
+        }
+        let _ = tokio::time::timeout(ERRORS_WAIT, server.published_notify.notified()).await;
+        collect()
     }
 
     /// Starts (or reuses) java-debug's DAP server inside jdtls and returns its port.
@@ -255,6 +315,28 @@ impl LspManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_errors_are_sorted_and_capped() {
+        let diag = |line: u32, severity, message: &str| lsp_types::Diagnostic {
+            range: lsp_types::Range::new(lsp_types::Position::new(line, 4), lsp_types::Position::new(line, 9)),
+            severity: Some(severity),
+            message: message.into(),
+            ..Default::default()
+        };
+        let (errors, count) = compile_errors(
+            vec![
+                (PathBuf::from("/p/B.java"), diag(1, lsp_types::DiagnosticSeverity::ERROR, "b")),
+                (PathBuf::from("/p/A.java"), diag(9, lsp_types::DiagnosticSeverity::ERROR, "a2\nmore")),
+                (PathBuf::from("/p/A.java"), diag(2, lsp_types::DiagnosticSeverity::WARNING, "warning")),
+                (PathBuf::from("/p/A.java"), diag(3, lsp_types::DiagnosticSeverity::ERROR, "a1")),
+            ],
+            2,
+        );
+        assert_eq!(count, 3);
+        let shown: Vec<(u32, u32, &str)> = errors.iter().map(|e| (e.line, e.column, e.message.as_str())).collect();
+        assert_eq!(shown, [(4, 5, "a1"), (10, 5, "a2")]);
+    }
 
     #[test]
     fn classpaths() {
