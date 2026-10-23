@@ -75,6 +75,10 @@ pub struct LanguageServerConfig {
     /// basedpyright): only used while none of those is installed.
     #[serde(default)]
     pub fallback: bool,
+    /// Set by the settings hook when the server can't run here (jdtls without
+    /// a JDK 21+); reported as the failure instead of launching it.
+    #[serde(skip)]
+    pub launch_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

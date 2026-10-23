@@ -193,6 +193,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         initialization_options: Some(toml::Value::Table(toml::toml! { flag = true nested = { deep = 1 } })),
         install_hint: Some(format!("install {name}")),
         fallback: false,
+        launch_error: None,
     }
 }
 

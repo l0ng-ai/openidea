@@ -8,7 +8,7 @@ import { lazyComponent } from "@/ui";
 import { executeAction, registerActions } from "@/platform/actions";
 import { registerSettingsPage } from "@/workbench/contributions";
 import { installMissingServerPrompts } from "./missing";
-import { installTool, SETTINGS_PAGE_ID } from "./store";
+import { installTool, refreshTools, SETTINGS_PAGE_ID, toolByName, useTools } from "./store";
 
 /** The Language Servers page (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
@@ -39,9 +39,16 @@ export function activate(): () => void {
         title: "Install Language Server / Debugger",
         category: "Tools",
         hidden: true,
+        // Tools the IDE can't install (no recipe, missing npm/curl) open the page with the manual hint.
         run: async ({ arg }) => {
-          if (typeof arg === "string") await installTool(arg);
-          else await executeAction("file.settings", SETTINGS_PAGE_ID);
+          if (typeof arg === "string") {
+            if (!useTools.getState().loaded) await refreshTools();
+            if (toolByName(arg)?.canInstall) {
+              await installTool(arg);
+              return;
+            }
+          }
+          await executeAction("file.settings", SETTINGS_PAGE_ID);
         },
       },
     ]),

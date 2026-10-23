@@ -72,6 +72,7 @@ async fn missing_binary_is_reported_with_install_hint() {
         initialization_options: None,
         install_hint: Some("npm i -g nope-ls".into()),
         fallback: false,
+        launch_error: None,
     };
     let (mgr, events) = manager(dir.path(), LanguageRegistry::from_configs(vec![lang("nope", "nope", server)]));
     let path = dir.path().join("a.nope");
@@ -198,6 +199,7 @@ async fn typescript_language_server_end_to_end() {
         initialization_options: None,
         install_hint: None,
         fallback: false,
+        launch_error: None,
     };
     let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![lang("typescript", "ts", server)]));
     let doc = DocId::next();

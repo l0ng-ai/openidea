@@ -243,8 +243,12 @@ impl AppState {
             let data_dir = self.data_dir.clone();
             lsp.set_config_hook(Box::new(move |cfg, server_root| {
                 ide_sdk::apply::configure_server(cfg, &root, server_root, &settings.effective());
-                let bundles: Vec<PathBuf> = ide_tools::managed_bundle(&data_dir, "java-debug").into_iter().collect();
-                ide_sdk::java::configure_jdtls(cfg, server_root, &data_dir, ide_sdk::java::installed_jdks(), &bundles);
+                if cfg.name == "jdtls" {
+                    let bundles: Vec<PathBuf> =
+                        ide_tools::managed_bundle(&data_dir, "java-debug").into_iter().collect();
+                    let jdks = ide_sdk::java::jdtls_jdks();
+                    ide_sdk::java::configure_jdtls(cfg, server_root, &data_dir, &jdks, &bundles);
+                }
             }));
         }
         {

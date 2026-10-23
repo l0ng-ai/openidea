@@ -167,3 +167,24 @@ describe("LanguageServersPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("boom");
   });
 });
+
+describe("tools.install action", () => {
+  it("installs installable tools and opens the page for the rest", async () => {
+    const { executeAction, registerAction } = await import("@/platform/actions");
+    const { activate } = await import("../index");
+    const opened: unknown[] = [];
+    const disposers = [
+      registerAction({ id: "file.settings", title: "Settings", run: ({ arg }) => void opened.push(arg) }),
+      activate(),
+    ];
+    try {
+      await executeAction("tools.install", "gopls");
+      expect(useTools.getState().tools.find((t) => t.name === "gopls")?.status).toBe("installed");
+      expect(opened).toEqual([]);
+      await executeAction("tools.install", "solargraph");
+      expect(opened).toEqual(["languages.servers"]);
+    } finally {
+      disposers.reverse().forEach((d) => d());
+    }
+  });
+});

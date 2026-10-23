@@ -1,7 +1,8 @@
 /** Status bar widget listing language servers, with a popup to restart them. */
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { BarButton, IconButton, Popup } from "@/ui";
+import { getAction, executeAction } from "@/platform/actions";
+import { BarButton, Button, IconButton, Popup } from "@/ui";
 import { relativePath, useProject } from "@/platform/project";
 import { STATUS_LABEL, restartServer, serversSummary, useServers } from "./servers";
 import styles from "./ServerStatus.module.css";
@@ -13,6 +14,8 @@ export function ServerStatus() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const summary = serversSummary(servers);
+  // features/tools owns installing; without it, fall back to the manual hint text.
+  const canInstall = !!getAction("tools.install");
   if (!summary) return null;
   return (
     <>
@@ -43,13 +46,26 @@ export function ServerStatus() {
                 <span className={styles.name}>{s.name}</span>
                 <span className={styles.status}>{STATUS_LABEL[s.status]}</span>
                 <span className={styles.spacer} />
-                <IconButton
-                  icon="refresh"
-                  size="small"
-                  title={`Restart ${s.name}`}
-                  disabled={s.status === "missing" || s.status === "starting"}
-                  onClick={() => void restartServer(s.id)}
-                />
+                {s.status === "missing" && canInstall ? (
+                  <Button
+                    size="small"
+                    aria-label={`Install ${s.name}`}
+                    onClick={() => {
+                      setOpen(false);
+                      void executeAction("tools.install", s.name);
+                    }}
+                  >
+                    Install
+                  </Button>
+                ) : (
+                  <IconButton
+                    icon="refresh"
+                    size="small"
+                    title={`Restart ${s.name}`}
+                    disabled={s.status === "missing" || s.status === "starting"}
+                    onClick={() => void restartServer(s.id)}
+                  />
+                )}
               </div>
               {(s.languages.length > 0 || s.root) && (
                 <div className={styles.meta}>
@@ -57,7 +73,7 @@ export function ServerStatus() {
                   {s.root && s.root !== root ? ` · ${relativePath(root, s.root) || s.root}` : ""}
                 </div>
               )}
-              {s.message && (
+              {s.message && !(s.status === "missing" && canInstall) && (
                 <div className={clsx(styles.message, s.status === "missing" && styles.install)}>{s.message}</div>
               )}
             </div>

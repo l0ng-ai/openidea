@@ -27,6 +27,7 @@ fn server(name: &str) -> LanguageServerConfig {
         initialization_options: None,
         install_hint: None,
         fallback: false,
+        launch_error: None,
     }
 }
 

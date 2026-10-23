@@ -4,6 +4,7 @@ use crate::apply::merge_init_options;
 use crate::home_dir;
 use ide_language::LanguageServerConfig;
 use serde_json::json;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -42,12 +43,25 @@ fn children(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Vendor directories JDK installers use on Windows, under `Program Files`
+/// and (per-user installs) `%LOCALAPPDATA%\Programs`.
+const WINDOWS_VENDORS: &[&str] =
+    &["Java", "Eclipse Adoptium", "Microsoft", "Zulu", "Amazon Corretto", "BellSoft", "Semeru", "OpenJDK"];
+
 /// JDK homes in the usual install locations (macOS `JavaVirtualMachines`,
-/// `/usr/lib/jvm`, SDKMAN, IDEA's `~/.jdks`, Homebrew), `JAVA_HOME` first.
+/// `/usr/lib/jvm`, SDKMAN, IDEA's `~/.jdks`, Homebrew, Windows vendor
+/// directories), `JAVA_HOME` first, then the `java` on `PATH`.
 fn scan() -> Vec<Jdk> {
     let mut homes: Vec<PathBuf> = Vec::new();
     if let Some(h) = std::env::var_os("JAVA_HOME") {
         homes.push(PathBuf::from(h));
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    if let Some(java) = std::env::split_paths(&path).map(|d| d.join(crate::exe("java"))).find(|j| j.is_file()) {
+        // Through symlinks (`/usr/bin/java`, Homebrew, SDKMAN `current`) to `<home>/bin/java`.
+        if let Some(home) = dunce::canonicalize(java).ok().and_then(|j| j.parent()?.parent().map(Path::to_path_buf)) {
+            homes.push(home);
+        }
     }
     let home = home_dir();
     let mut roots: Vec<PathBuf> = vec![
@@ -58,6 +72,15 @@ fn scan() -> Vec<Jdk> {
     ];
     if let Some(h) = &home {
         roots.extend([h.join("Library/Java/JavaVirtualMachines"), h.join(".jdks"), h.join(".sdkman/candidates/java")]);
+    }
+    if cfg!(windows) {
+        let bases = ["ProgramFiles", "ProgramW6432", "LOCALAPPDATA"].into_iter().filter_map(|v| {
+            let dir = PathBuf::from(std::env::var_os(v)?);
+            Some(if v == "LOCALAPPDATA" { dir.join("Programs") } else { dir })
+        });
+        for base in bases {
+            roots.extend(WINDOWS_VENDORS.iter().map(|v| base.join(v)));
+        }
     }
     for root in roots {
         for dir in children(&root) {
@@ -79,6 +102,21 @@ fn scan() -> Vec<Jdk> {
 pub fn installed_jdks() -> &'static [Jdk] {
     static JDKS: OnceLock<Vec<Jdk>> = OnceLock::new();
     JDKS.get_or_init(scan)
+}
+
+/// Like [`installed_jdks`], but rescans while none can run jdtls, so a JDK
+/// installed after startup is picked up when the server is restarted.
+pub fn jdtls_jdks() -> Cow<'static, [Jdk]> {
+    let cached = installed_jdks();
+    if jdtls_runtime(cached).is_some() { Cow::Borrowed(cached) } else { Cow::Owned(scan()) }
+}
+
+/// Oldest Java version jdtls itself runs on (projects may target older ones).
+pub const JDTLS_MIN_JAVA: u32 = 21;
+
+/// The JDK to run jdtls with: the first found that is new enough (`JAVA_HOME` wins).
+pub fn jdtls_runtime(jdks: &[Jdk]) -> Option<&Jdk> {
+    jdks.iter().find(|j| j.major >= JDTLS_MIN_JAVA)
 }
 
 /// jdtls `java.configuration.runtimes`: one JDK per Java version (the first
@@ -114,8 +152,9 @@ const METADATA_PROPERTY: &str = "java.import.generatesMetadataFilesAtProjectRoot
 
 /// jdtls: its Eclipse workspace (`-data`) lives under the IDE's data
 /// directory, one per server root, and no Eclipse metadata is written into
-/// the project; installed JDKs are registered as runtimes and `bundles`
-/// (e.g. the java-debug plugin jar) are loaded into the server.
+/// the project; it runs on a JDK 21+ (via `JAVA_HOME`, which its launcher
+/// reads), installed JDKs are registered as runtimes and `bundles` (e.g. the
+/// java-debug plugin jar) are loaded into the server.
 pub fn configure_jdtls(
     cfg: &mut LanguageServerConfig,
     server_root: &Path,
@@ -135,6 +174,14 @@ pub fn configure_jdtls(
     if !cfg.args.iter().any(|a| a.contains(METADATA_PROPERTY)) {
         cfg.args.push(format!("--jvm-arg=-D{METADATA_PROPERTY}=false"));
     }
+    if !cfg.env.contains_key("JAVA_HOME") {
+        match jdtls_runtime(jdks) {
+            Some(jdk) => {
+                cfg.env.insert("JAVA_HOME".to_owned(), jdk.home.to_string_lossy().into_owned());
+            }
+            None => cfg.launch_error = Some(missing_runtime_message(jdks)),
+        }
+    }
     let runtimes = runtimes(jdks);
     if !runtimes.is_empty() {
         merge_init_options(cfg, json!({ "settings": { "java": { "configuration": { "runtimes": runtimes } } } }));
@@ -143,6 +190,22 @@ pub fn configure_jdtls(
         let bundles: Vec<String> = bundles.iter().map(|b| b.to_string_lossy().into_owned()).collect();
         merge_init_options(cfg, json!({ "bundles": bundles }));
     }
+}
+
+fn missing_runtime_message(jdks: &[Jdk]) -> String {
+    let mut found: Vec<u32> = jdks.iter().map(|j| j.major).collect();
+    found.sort_unstable();
+    found.dedup();
+    let found = if found.is_empty() {
+        "no JDK was found".to_owned()
+    } else {
+        let list: Vec<String> = found.iter().map(u32::to_string).collect();
+        format!("found JDK {}", list.join(", "))
+    };
+    format!(
+        "jdtls needs JDK {JDTLS_MIN_JAVA} or newer to run ({found}). Install one (or point JAVA_HOME at it) and \
+         restart the server; the project can still target an older Java version."
+    )
 }
 
 /// The `java` launcher of a JDK home.
@@ -251,6 +314,8 @@ mod tests {
         assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": "/jdk21a" }));
         assert_eq!(rt[2], json!({ "name": "JavaSE-25", "path": "/jdk25" }));
         assert_eq!(opts["bundles"], json!(["/tools/java-debug/bin/com.microsoft.java.debug.plugin.jar"]));
+        assert_eq!(cfg.env["JAVA_HOME"], "/jdk25", "first JDK new enough to run jdtls");
+        assert_eq!(cfg.launch_error, None);
 
         // Deterministic (reconfigure compares configs) and idempotent.
         let before = cfg.clone();
@@ -260,6 +325,30 @@ mod tests {
         let mut other: LanguageServerConfig = toml::from_str("name = \"pyright\"\ncommand = \"x\"").unwrap();
         configure_jdtls(&mut other, Path::new("/p"), Path::new("/data"), &jdks, &bundles);
         assert!(other.args.is_empty() && other.initialization_options.is_none());
+    }
+
+    #[test]
+    fn jdtls_needs_a_jdk_21_to_run() {
+        let jdtls = || -> LanguageServerConfig { toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap() };
+        let old = [Jdk { major: 17, home: PathBuf::from("/jdk17") }, Jdk { major: 8, home: PathBuf::from("/jdk8") }];
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &old, &[]);
+        assert!(!cfg.env.contains_key("JAVA_HOME"));
+        let err = cfg.launch_error.unwrap();
+        assert!(err.contains("JDK 21 or newer") && err.contains("found JDK 8, 17"), "{err}");
+
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], &[]);
+        assert!(cfg.launch_error.unwrap().contains("no JDK was found"));
+
+        // An explicit JAVA_HOME is the user's call.
+        let mut cfg = jdtls();
+        cfg.env.insert("JAVA_HOME".into(), "/custom".into());
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &old, &[]);
+        assert_eq!((cfg.env["JAVA_HOME"].as_str(), cfg.launch_error), ("/custom", None));
+
+        let mixed = [old[0].clone(), Jdk { major: 21, home: PathBuf::from("/jdk21") }];
+        assert_eq!(jdtls_runtime(&mixed).unwrap().major, 21);
     }
 
     #[test]
