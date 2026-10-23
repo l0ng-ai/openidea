@@ -272,10 +272,7 @@ pub fn configure_jdtls(
         return;
     }
     // A Lombok agent from the user's JVM arguments wins.
-    let own_agent = cfg.args.iter().find_map(|a| {
-        let jar = a.split_once("-javaagent:")?.1;
-        jar.to_ascii_lowercase().contains("lombok").then(|| PathBuf::from(jar))
-    });
+    let own_agent = crate::lombok::agent_in_args(cfg.args.iter().map(String::as_str));
     let agent = own_agent.as_deref().or(lombok);
     if !cfg.args.iter().any(|a| a == "-data") {
         // ECJ builds incrementally: classes compiled without (or with another) Lombok

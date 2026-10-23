@@ -55,8 +55,25 @@ impl LombokAgent {
     }
 }
 
-/// The Lombok agent for the project at `root`; `managed` is the IDE-installed jar.
-pub fn lombok_agent(root: &Path, managed: Option<PathBuf>) -> LombokAgent {
+/// The Lombok jar of a `-javaagent:` among JVM arguments (bare or as `--jvm-arg=`).
+pub fn agent_in_args<'a>(args: impl IntoIterator<Item = &'a str>) -> Option<PathBuf> {
+    args.into_iter().find_map(|a| {
+        let jar = a.split_once("-javaagent:")?.1;
+        jar.to_ascii_lowercase().contains("lombok").then(|| PathBuf::from(jar))
+    })
+}
+
+/// The Lombok agent for the project at `root`: the user's own (`own`, from the JVM
+/// options) wins, then `managed` (the IDE-installed jar), then the build caches.
+pub fn lombok_agent(root: &Path, own: Option<PathBuf>, managed: Option<PathBuf>) -> LombokAgent {
+    if let Some(jar) = own {
+        let version = jar
+            .file_stem()
+            .and_then(|s| s.to_str()?.strip_prefix("lombok-"))
+            .filter(|v| parse_version(v).is_some())
+            .map(str::to_owned);
+        return LombokAgent::Found { jar, version };
+    }
     if !uses_lombok(root) {
         return LombokAgent::Unused;
     }
@@ -224,6 +241,19 @@ mod tests {
         assert_eq!(LombokAgent::Unused.problem(), None);
         assert_eq!(parse_version("1.18"), Some([1, 18, 0]));
         assert_eq!(parse_version("edge-SNAPSHOT"), None);
+    }
+
+    #[test]
+    fn the_users_agent_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let own = agent_in_args(["--jvm-arg=-Xmx2g", "--jvm-arg=-javaagent:/opt/lombok-1.18.26.jar"]);
+        assert_eq!(own.as_deref(), Some(Path::new("/opt/lombok-1.18.26.jar")));
+        assert_eq!(agent_in_args(["-javaagent:/opt/other.jar"]), None);
+        let agent = lombok_agent(tmp.path(), own, Some("/managed/lombok.jar".into()));
+        assert_eq!(agent.jar(), Some(Path::new("/opt/lombok-1.18.26.jar")));
+        assert!(agent.outdated(), "its version is read from the file name");
+        let plain = lombok_agent(tmp.path(), agent_in_args(["-javaagent:/opt/lombok.jar"]), None);
+        assert_eq!(plain.problem(), None, "a user agent is never reported missing");
     }
 
     #[test]
