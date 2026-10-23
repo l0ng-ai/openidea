@@ -1,0 +1,43 @@
+# Apps compared by bench.py. Any value can be a { windows, macos, linux } table.
+# Placeholders: {project} (absolute path), {project_name} (its directory name);
+# ~ and environment variables are expanded.
+#
+#   command       executable, launched directly (not through a shell or `open`)
+#   args          default ["{project}"]
+#   window_title  regex; the first visible window whose title matches marks "window_s"
+#   logs          globs of log files to watch, besides the app's stdout
+#   markers       name → regex; the first and last matching log line time is recorded
+#   ready_after   markers that must have appeared before "ready" can be declared
+#   cache_dirs    globs deleted by --wipe-caches, and measured for "cache_mb"
+#   install_dir   measured once for the install size
+#   quit_command  instead of WM_CLOSE (Windows) / SIGTERM (macOS, Linux)
+#   daemons       process names meant to outlive the app (not waited for or killed on exit)
+#   single_instance  default true: refuse to start while a process with the same
+#                 executable name runs (it would take over the launch)
+
+[apps.openidea]
+name = "OpenIDEA"
+command = { windows = "%LOCALAPPDATA%/OpenIDEA/openidea.exe", macos = "/Applications/OpenIDEA.app/Contents/MacOS/openidea", linux = "/usr/bin/openidea" }
+install_dir = { windows = "%LOCALAPPDATA%/OpenIDEA", macos = "/Applications/OpenIDEA.app" }
+logs = { windows = "%LOCALAPPDATA%/ai.l0ng.openidea/logs/openidea*.log", macos = "~/Library/Logs/ai.l0ng.openidea/openidea*.log", linux = "~/.local/share/ai.l0ng.openidea/logs/openidea*.log" }
+# The index and build caches. jdtls keeps its own workspace under lsp/jdtls,
+# next to the jdtls install, so a cold Java run still reuses jdtls's build state.
+cache_dirs = { windows = ["%APPDATA%/ai.l0ng.openidea/index", "%APPDATA%/ai.l0ng.openidea/cache"], macos = ["~/Library/Application Support/ai.l0ng.openidea/index", "~/Library/Application Support/ai.l0ng.openidea/cache"], linux = ["~/.local/share/ai.l0ng.openidea/index", "~/.local/share/ai.l0ng.openidea/cache"] }
+
+[apps.openidea.markers]
+project_opened = 'opened .* in window'
+indexed = 'indexed \d+ files'
+lsp_initialized = 'initialized: \{'
+
+[apps.idea]
+name = "IntelliJ IDEA"
+command = { windows = "C:/Program Files/JetBrains/IntelliJ IDEA 2026.2.3/bin/idea64.exe", macos = "/Applications/IntelliJ IDEA.app/Contents/MacOS/idea", linux = "~/idea/bin/idea" }
+daemons = ["jetbrainsd.exe", "jetbrainsd"]
+install_dir = { windows = "C:/Program Files/JetBrains/IntelliJ IDEA 2026.2.3", macos = "/Applications/IntelliJ IDEA.app", linux = "~/idea" }
+logs = { windows = "%LOCALAPPDATA%/JetBrains/IntelliJIdea2026.2/log/idea.log", macos = "~/Library/Logs/JetBrains/IntelliJIdea2026.2/idea.log", linux = "~/.cache/JetBrains/IntelliJIdea2026.2/log/idea.log" }
+# The VFS and the indexes (the whole "system" dir also holds logs and local history).
+cache_dirs = { windows = ["%LOCALAPPDATA%/JetBrains/IntelliJIdea2026.2/caches", "%LOCALAPPDATA%/JetBrains/IntelliJIdea2026.2/index"], macos = ["~/Library/Caches/JetBrains/IntelliJIdea2026.2/caches", "~/Library/Caches/JetBrains/IntelliJIdea2026.2/index"], linux = ["~/.cache/JetBrains/IntelliJIdea2026.2/caches", "~/.cache/JetBrains/IntelliJIdea2026.2/index"] }
+
+[apps.idea.markers]
+# Indexing done: IDEA leaves dumb mode, possibly several times; compare "last".
+smart = 'exit dumb mode \[{project_name}\]'

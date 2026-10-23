@@ -1,0 +1,2 @@
+psutil>=6
+pyobjc-framework-Quartz>=10; sys_platform == "darwin"
