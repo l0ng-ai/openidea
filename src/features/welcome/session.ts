@@ -6,7 +6,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { commands, isTauri, type Settings } from "@/platform/ipc";
-import { openProject, useProject } from "@/platform/project";
+import { openProject, startupLaunchHandled, useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 
 const SESSION_KEY = "openidea.session.openProject";
@@ -104,6 +104,8 @@ export async function reopenLastProject(): Promise<void> {
     /* use the local preference */
   }
   if (!reopenEnabled(settings, useSession.getState().reopenPref)) return;
+  // A project passed on the command line wins over the last session's.
+  await startupLaunchHandled();
   if (useProject.getState().project) return;
   await reopen(path);
 }

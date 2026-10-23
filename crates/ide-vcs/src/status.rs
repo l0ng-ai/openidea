@@ -87,7 +87,10 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
         }
     }
     // Persist refreshed stat info so the next status is cheaper (like `git status` does).
+    // Only when something changed: `write_changes` writes even an empty change set, and
+    // the rewritten `.git/index` comes back as a VCS change that triggers the next status.
     if let Some(mut outcome) = iter.into_outcome()
+        && outcome.has_changes()
         && let Some(Err(e)) = outcome.write_changes()
     {
         tracing::debug!("could not write refreshed index: {e}");

@@ -146,6 +146,26 @@ fn repository_without_commits() {
 }
 
 #[test]
+fn status_leaves_an_up_to_date_index_alone() {
+    // The watcher reports `.git/index` writes as VCS changes, which refresh the
+    // status: rewriting it unconditionally made that a loop.
+    let fx = Fixture::new();
+    fx.write("a.txt", "a\n");
+    // Older than the index, so it isn't racily clean (that settles after a write or two).
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    std::fs::File::options().write(true).open(fx.path("a.txt")).unwrap().set_modified(past).unwrap();
+    fx.commit_all("init");
+    let repo = fx.repo();
+    repo.status().unwrap(); // may persist refreshed stat info once
+    let index = fx.path(".git/index");
+    let before = std::fs::metadata(&index).unwrap().modified().unwrap();
+    for _ in 0..3 {
+        assert!(repo.status().unwrap().is_empty());
+    }
+    assert_eq!(std::fs::metadata(&index).unwrap().modified().unwrap(), before);
+}
+
+#[test]
 fn status_matrix() {
     let fx = Fixture::new();
     fx.write(".gitignore", "*.log\nbuild/\n");

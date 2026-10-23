@@ -27,6 +27,18 @@ export function confirmLeaveProject(): Promise<boolean> {
   return useProject.getState().project && leaveGuard ? leaveGuard() : Promise.resolve(true);
 }
 
+let startupLaunch: Promise<void> | null = null;
+
+/** Installs this window's startup launch (the project it was started or created for, features/app/windows.ts). */
+export function provideStartupLaunch(launch: Promise<void>) {
+  startupLaunch = launch;
+}
+
+/** Settles once the startup launch has opened its project (if any), so a restore doesn't race it. */
+export function startupLaunchHandled(): Promise<void> {
+  return (startupLaunch ?? Promise.resolve()).catch(() => {});
+}
+
 export async function openProject(path: string): Promise<ProjectInfo> {
   useProject.setState({ opening: true });
   try {

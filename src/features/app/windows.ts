@@ -6,7 +6,7 @@
 import type { Action } from "@/platform/actions";
 import { t } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { basename, confirmLeaveProject, openProject, useProject } from "@/platform/project";
+import { basename, confirmLeaveProject, openProject, provideStartupLaunch, useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import { ask } from "./prompt";
 
@@ -195,7 +195,7 @@ export function installLaunchHandling(): () => void {
   if (!isTauri()) return () => {};
   let disposed = false;
   let unlisten: (() => void) | undefined;
-  void consumeLaunch();
+  provideStartupLaunch(consumeLaunch());
   void import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
     const off = await getCurrentWebviewWindow().listen(LAUNCH_EVENT, () => void consumeLaunch());
     if (disposed) off();
