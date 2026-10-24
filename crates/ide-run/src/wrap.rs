@@ -93,15 +93,10 @@ pub fn find_tool(name: &str, config: &RunConfig, dir: &Path, root: &Path) -> Opt
 pub fn probe(argv: &[String], dir: &Path, config: &RunConfig) -> bool {
     let Some((program, args)) = argv.split_first() else { return false };
     let program = resolve(program, config);
-    Command::new(program)
-        .args(args)
-        .current_dir(dir)
-        .envs(&config.env)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    let mut cmd = Command::new(program);
+    cmd.args(args).current_dir(dir).envs(&config.env).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    ide_core::process::hide_console_window(&mut cmd);
+    cmd.status().is_ok_and(|s| s.success())
 }
 
 /// `program` as spawnable: bare names through the configuration's search path.

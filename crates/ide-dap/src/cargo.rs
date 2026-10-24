@@ -62,6 +62,8 @@ pub async fn build(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // Output is captured line by line: no console window, please.
+    ide_core::process::hide_console_window(cmd.as_std_mut());
     on_output(format!("> cargo {}\n", args.join(" ")));
     let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("failed to run cargo: {e}")))?;
     let stderr = child.stderr.take().ok_or_else(|| IdeError::internal("cargo stderr unavailable"))?;

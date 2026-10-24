@@ -168,6 +168,8 @@ impl Http {
         {
             cmd.arg("-H").arg(format!("Authorization: Bearer {token}"));
         }
+        // Downloads report through the install log: no console window.
+        ide_core::process::hide_console_window(&mut cmd);
         cmd
     }
 

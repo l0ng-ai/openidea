@@ -44,14 +44,11 @@ pub(crate) fn which(name: &str) -> Option<PathBuf> {
 /// Runs `program args` and returns trimmed stdout (stderr when stdout is empty)
 /// on success; `None` on failure or after `timeout`.
 pub(crate) fn query(program: &Path, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = Command::new(program)
-        .args(args)
-        .env("PATH", search_path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
+    let mut cmd = Command::new(program);
+    cmd.args(args).env("PATH", search_path()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Probes (SDK/toolchain versions) are quick, but a console window would still flash.
+    ide_core::process::hide_console_window(&mut cmd);
+    let mut child = cmd.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let mut stderr = child.stderr.take()?;
     let out = std::thread::spawn(move || {
@@ -97,6 +94,8 @@ pub(crate) fn stream(
 ) -> IdeResult<String> {
     let mut cmd = Command::new(program);
     cmd.args(args).env("PATH", search_path()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Downloads and installs report through `on_line`: no console window.
+    ide_core::process::hide_console_window(&mut cmd);
     cmd.envs(env.iter().map(|(k, v)| (k, v)));
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);

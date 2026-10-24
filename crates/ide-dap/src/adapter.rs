@@ -233,14 +233,17 @@ pub async fn prepare_debugpy(spec: &mut AdapterSpec) -> IdeResult<()> {
     let Some(python) = tokio::task::spawn_blocking(move || resolve_binary(&command, &cwd)).await.ok().flatten() else {
         return Ok(()); // Reported as a missing adapter when it is started.
     };
-    let probe = Command::new(&python)
+    let mut probe_cmd = Command::new(&python);
+    probe_cmd
         .args(["-c", "import debugpy.adapter"])
         .current_dir(&spec.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .status();
+        .kill_on_drop(true);
+    // A version probe still opens a window of its own on Windows without this.
+    ide_core::process::hide_console_window(probe_cmd.as_std_mut());
+    let probe = probe_cmd.status();
     if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_secs(15), probe).await
         && status.success()
     {
@@ -342,6 +345,8 @@ impl AdapterLauncher for ProcessLauncher {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
+            // Windows would give the adapter a console window of its own.
+            ide_core::process::hide_console_window(cmd.as_std_mut());
             let mut child =
                 cmd.spawn().map_err(|e| IdeError::unavailable(format!("failed to start {}: {e}", binary.display())))?;
             if let Some(err) = child.stderr.take() {

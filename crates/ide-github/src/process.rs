@@ -27,8 +27,7 @@ fn prepare(cmd: &mut Command) {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
+        ide_core::process::hide_console_window(cmd);
     }
 }
 

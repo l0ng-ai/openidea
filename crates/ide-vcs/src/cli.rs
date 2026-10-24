@@ -66,8 +66,7 @@ pub fn git_version(executable: Option<&Path>) -> IdeResult<String> {
     cmd.arg("--version").stdin(Stdio::null()).env("LC_ALL", "C");
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
+        ide_core::process::hide_console_window(&mut cmd);
     }
     let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run {}: {e}", exe.display())))?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -101,9 +100,7 @@ pub(crate) fn command(root: &Path) -> IdeResult<Command> {
         .env_remove("GIT_INDEX_FILE");
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        ide_core::process::hide_console_window(&mut cmd);
     }
     Ok(cmd)
 }

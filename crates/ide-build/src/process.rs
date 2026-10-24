@@ -54,9 +54,7 @@ pub(crate) fn run(
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        ide_core::process::hide_console_window(&mut command);
     }
     let mut child = command.spawn().map_err(|e| IdeError::unavailable(format!("cannot start {program}: {e}")))?;
     let (tx, rx) = mpsc::channel::<(Stream, String)>();

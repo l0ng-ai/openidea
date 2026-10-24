@@ -205,8 +205,8 @@ impl ProcessManager {
         {
             use std::os::windows::process::CommandExt;
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+            // Output goes to the IDE's run console; the child must not open one.
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | ide_core::process::CREATE_NO_WINDOW);
         }
 
         let mut child = cmd.spawn().map_err(|e| match e.kind() {
@@ -400,7 +400,7 @@ fn kill_tree(pid: u32, _force: bool) {
     // Console children have no reliable graceful signal from outside their console.
     let _ = Command::new("taskkill")
         .args(["/T", "/F", "/PID", &pid.to_string()])
-        .creation_flags(0x0800_0000)
+        .creation_flags(ide_core::process::CREATE_NO_WINDOW)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();

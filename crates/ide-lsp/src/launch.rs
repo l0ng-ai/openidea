@@ -72,13 +72,15 @@ fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> PathBuf {
     if !is_proxy || command.contains('/') {
         return binary;
     }
-    let works = std::process::Command::new(&binary)
+    let mut probe = std::process::Command::new(&binary);
+    probe
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
+        .stderr(std::process::Stdio::null());
+    // The probe runs before every launch, so a console window would flash here too.
+    ide_core::process::hide_console_window(&mut probe);
+    let works = probe.status().is_ok_and(|s| s.success());
     if works {
         return binary;
     }
