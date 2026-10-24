@@ -93,7 +93,7 @@ pub fn find_tool(name: &str, config: &RunConfig, dir: &Path, root: &Path) -> Opt
 pub fn probe(argv: &[String], dir: &Path, config: &RunConfig) -> bool {
     let Some((program, args)) = argv.split_first() else { return false };
     let program = resolve(program, config);
-    Command::new(program)
+    ide_core::process::no_window(&mut Command::new(program))
         .args(args)
         .current_dir(dir)
         .envs(&config.env)

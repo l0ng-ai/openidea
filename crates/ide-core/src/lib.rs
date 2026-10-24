@@ -10,6 +10,7 @@ pub mod event;
 pub mod ids;
 pub mod ignored;
 pub mod ipc_path;
+pub mod process;
 pub mod project_dir;
 pub mod settings;
 pub mod text;

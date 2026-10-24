@@ -72,7 +72,7 @@ fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> PathBuf {
     if !is_proxy || command.contains('/') {
         return binary;
     }
-    let works = std::process::Command::new(&binary)
+    let works = ide_core::process::no_window(&mut std::process::Command::new(&binary))
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

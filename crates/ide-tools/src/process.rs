@@ -48,7 +48,7 @@ pub fn run_streamed(cmd: Command, cancel: &CancellationToken, emit: Emit) -> Ide
 /// Like [`run_streamed`] but returns `(success, output, status text)` instead of failing on a non-zero exit.
 pub fn run_collect(mut cmd: Command, cancel: &CancellationToken, emit: Emit) -> IdeResult<(bool, String, String)> {
     emit(InstallEvent::Line { text: format!("$ {}", describe(&cmd)) });
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    ide_core::process::no_window(&mut cmd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run {}: {e}", describe(&cmd))))?;
     let (tx, rx) = mpsc::channel::<String>();
     let pipes: [Option<Box<dyn Read + Send>>; 2] = [
@@ -94,7 +94,7 @@ pub fn run_collect(mut cmd: Command, cancel: &CancellationToken, emit: Emit) -> 
 
 /// Runs `cmd` to completion within `timeout`; returns (success, stdout + stderr).
 pub fn run_quiet(mut cmd: Command, timeout: Duration) -> Option<(bool, String)> {
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    ide_core::process::no_window(&mut cmd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let mut stderr = child.stderr.take()?;
@@ -161,6 +161,7 @@ impl Http {
 
     fn base(&self, url: &str) -> Command {
         let mut cmd = Command::new(&self.curl);
+        ide_core::process::no_window(&mut cmd);
         cmd.args(["-fsSL", "--retry", "2", "--connect-timeout", "20", "-A", "openidea"]);
         if url.starts_with("https://api.github.com/")
             && let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN"))

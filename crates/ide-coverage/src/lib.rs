@@ -204,7 +204,7 @@ pub fn collect(spec: &CoverageReportSpec) -> IdeResult<CoverageSuite> {
         CoverageReportSpec::Exported { runner, argv, cwd, env, lcov } => {
             let (program, args) =
                 argv.split_first().ok_or_else(|| IdeError::invalid("empty coverage export command"))?;
-            let out = Command::new(program)
+            let out = ide_core::process::no_window(&mut Command::new(program))
                 .args(args)
                 .current_dir(cwd)
                 .envs(env)

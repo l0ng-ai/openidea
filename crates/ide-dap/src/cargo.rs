@@ -55,6 +55,7 @@ pub async fn build(
 ) -> IdeResult<PathBuf> {
     let cargo = find_binary("cargo", cwd).ok_or_else(|| IdeError::unavailable("`cargo` not found on PATH"))?;
     let mut cmd = tokio::process::Command::new(cargo);
+    ide_core::process::no_window(cmd.as_std_mut());
     cmd.args(args)
         .arg("--message-format=json-render-diagnostics")
         .current_dir(cwd)

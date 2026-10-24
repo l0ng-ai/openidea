@@ -241,6 +241,7 @@ impl Peer {
     ) -> std::io::Result<Self> {
         use std::process::Stdio;
         let mut cmd = tokio::process::Command::new(command);
+        ide_core::process::no_window(cmd.as_std_mut());
         cmd.args(args)
             .current_dir(cwd)
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))

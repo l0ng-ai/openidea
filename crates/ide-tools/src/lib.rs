@@ -311,7 +311,7 @@ impl Tools {
 
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut cmd = Command::new(program);
-        cmd.env("PATH", &self.child_path);
+        ide_core::process::no_window(&mut cmd).env("PATH", &self.child_path);
         cmd
     }
 
