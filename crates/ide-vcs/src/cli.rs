@@ -64,10 +64,7 @@ pub fn git_version(executable: Option<&Path>) -> IdeResult<String> {
     };
     let mut cmd = Command::new(&exe);
     cmd.arg("--version").stdin(Stdio::null()).env("LC_ALL", "C");
-    #[cfg(windows)]
-    {
-        ide_core::process::hide_console_window(&mut cmd);
-    }
+    ide_core::process::no_window(&mut cmd);
     let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run {}: {e}", exe.display())))?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if !out.status.success() || !text.starts_with("git version") {
@@ -98,10 +95,7 @@ pub(crate) fn command(root: &Path) -> IdeResult<Command> {
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE");
-    #[cfg(windows)]
-    {
-        ide_core::process::hide_console_window(&mut cmd);
-    }
+    ide_core::process::no_window(&mut cmd);
     Ok(cmd)
 }
 

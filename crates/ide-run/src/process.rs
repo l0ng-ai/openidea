@@ -205,7 +205,6 @@ impl ProcessManager {
         {
             use std::os::windows::process::CommandExt;
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-            // Output goes to the IDE's run console; the child must not open one.
             cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | ide_core::process::CREATE_NO_WINDOW);
         }
 

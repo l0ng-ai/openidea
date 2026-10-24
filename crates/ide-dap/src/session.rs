@@ -390,6 +390,7 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
         return Err("runInTerminal without args".into());
     };
     let mut cmd = tokio::process::Command::new(program);
+    ide_core::process::no_window(cmd.as_std_mut());
     cmd.args(rest).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     if let Some(cwd) = args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) {
         cmd.current_dir(cwd);
@@ -402,8 +403,6 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
             };
         }
     }
-    // The debuggee's output is forwarded to the IDE console: no window of its own.
-    ide_core::process::hide_console_window(cmd.as_std_mut());
     let mut child = cmd.spawn().map_err(|e| format!("failed to start {program}: {e}"))?;
     let pid = child.id();
     if let Some(out) = child.stdout.take() {

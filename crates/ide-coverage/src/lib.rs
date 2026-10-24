@@ -204,11 +204,12 @@ pub fn collect(spec: &CoverageReportSpec) -> IdeResult<CoverageSuite> {
         CoverageReportSpec::Exported { runner, argv, cwd, env, lcov } => {
             let (program, args) =
                 argv.split_first().ok_or_else(|| IdeError::invalid("empty coverage export command"))?;
-            let mut cmd = Command::new(program);
-            cmd.args(args).current_dir(cwd).envs(env);
-            // The runner reports through the IDE: no console window.
-            ide_core::process::hide_console_window(&mut cmd);
-            let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run {program}: {e}")))?;
+            let out = ide_core::process::no_window(&mut Command::new(program))
+                .args(args)
+                .current_dir(cwd)
+                .envs(env)
+                .output()
+                .map_err(|e| IdeError::unavailable(format!("cannot run {program}: {e}")))?;
             if !out.status.success() {
                 let text = String::from_utf8_lossy(&out.stderr).trim().to_owned();
                 let text = if text.is_empty() { String::from_utf8_lossy(&out.stdout).trim().to_owned() } else { text };

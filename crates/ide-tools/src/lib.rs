@@ -311,9 +311,7 @@ impl Tools {
 
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut cmd = Command::new(program);
-        cmd.env("PATH", &self.child_path);
-        // Version probes and installs report through the UI, never through a window.
-        ide_core::process::hide_console_window(&mut cmd);
+        ide_core::process::no_window(&mut cmd).env("PATH", &self.child_path);
         cmd
     }
 

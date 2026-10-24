@@ -25,10 +25,7 @@ fn prepare(cmd: &mut Command) {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    #[cfg(windows)]
-    {
-        ide_core::process::hide_console_window(cmd);
-    }
+    ide_core::process::no_window(cmd);
 }
 
 fn spawn(cmd: &mut Command) -> IdeResult<Child> {

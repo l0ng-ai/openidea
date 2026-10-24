@@ -228,8 +228,7 @@ impl Drop for KillOnDrop {
 
 impl Peer {
     /// Spawns `command` and speaks JSON-RPC over its stdio. Stderr lines are
-    /// forwarded to `tracing` and to `on_stderr`. The child gets no console
-    /// window, even though the IDE runs without a console of its own.
+    /// forwarded to `tracing` and to `on_stderr`.
     ///
     /// Must be called from within a Tokio runtime.
     pub fn spawn(
@@ -242,6 +241,7 @@ impl Peer {
     ) -> std::io::Result<Self> {
         use std::process::Stdio;
         let mut cmd = tokio::process::Command::new(command);
+        ide_core::process::no_window(cmd.as_std_mut());
         cmd.args(args)
             .current_dir(cwd)
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
@@ -249,9 +249,6 @@ impl Peer {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        // The peer speaks over stdio only: keep Windows from opening a console
-        // window for it (the IDE is console-less, so the child would get one).
-        ide_core::process::hide_console_window(cmd.as_std_mut());
         let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().ok_or_else(|| std::io::Error::other("child stdin unavailable"))?;
         let stdout = child.stdout.take().ok_or_else(|| std::io::Error::other("child stdout unavailable"))?;

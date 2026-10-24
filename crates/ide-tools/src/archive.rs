@@ -113,11 +113,13 @@ fn extract_zip(archive: &Path, dest: &Path) -> IdeResult<()> {
 /// `.tar.xz` goes through the system `tar` (bsdtar on macOS/Windows, GNU tar + xz on Linux).
 fn extract_tar_xz(archive: &Path, dest: &Path) -> IdeResult<()> {
     let tar = which::which("tar").map_err(|_| IdeError::unavailable("`tar` is required to unpack .tar.xz archives"))?;
-    let mut cmd = std::process::Command::new(tar);
-    cmd.arg("-xJf").arg(archive).arg("-C").arg(dest);
-    // Unpacking reports through the install log, never through a console window.
-    ide_core::process::hide_console_window(&mut cmd);
-    let out = cmd.output().map_err(|e| io_err("running tar", e))?;
+    let out = ide_core::process::no_window(&mut std::process::Command::new(tar))
+        .arg("-xJf")
+        .arg(archive)
+        .arg("-C")
+        .arg(dest)
+        .output()
+        .map_err(|e| io_err("running tar", e))?;
     if !out.status.success() {
         return Err(io_err("tar failed", String::from_utf8_lossy(&out.stderr).trim()));
     }
