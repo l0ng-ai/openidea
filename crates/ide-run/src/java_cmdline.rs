@@ -481,16 +481,12 @@ mod tests {
         for f in ["b.jar", "a.JAR", "notes.txt"] {
             std::fs::write(dir.path().join("lib").join(f), "").unwrap();
         }
-        let e = classpath_entries("classes:lib/*:/abs/x.jar", dir.path(), false);
-        assert_eq!(
-            e,
-            [
-                dir.path().join("classes"),
-                dir.path().join("lib/a.JAR"),
-                dir.path().join("lib/b.jar"),
-                "/abs/x.jar".into()
-            ]
-        );
+        // An absolute entry stays as is; built from the temp dir so it is absolute on every platform.
+        let abs = dir.path().join("abs").join("x.jar");
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let cp = ["classes", "lib/*", &abs.to_string_lossy()].join(sep);
+        let e = classpath_entries(&cp, dir.path(), cfg!(windows));
+        assert_eq!(e, [dir.path().join("classes"), dir.path().join("lib/a.JAR"), dir.path().join("lib/b.jar"), abs]);
     }
 
     /// A pathing jar really loads classes (and resources from directories) with this machine's JDKs.
