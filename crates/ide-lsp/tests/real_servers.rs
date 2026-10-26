@@ -227,3 +227,75 @@ async fn typescript_language_server_end_to_end() {
     .await;
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
+
+const APP_VUE: &str = "<script setup lang=\"ts\">\nconst count: number = 1\n</script>\n\n<template>\n  <div>{{ count }}</div>\n</template>\n";
+
+fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Value>) -> LanguageServerConfig {
+    LanguageServerConfig {
+        name: name.into(),
+        command: tools.join("node_modules/.bin").join(bin).to_string_lossy().into_owned(),
+        args: vec!["--stdio".into()],
+        env: Default::default(),
+        root_markers: vec!["package.json".into()],
+        initialization_options: init.map(|v| toml::Value::try_from(v).unwrap()),
+        install_hint: None,
+        fallback: false,
+        launch_error: None,
+    }
+}
+
+/// Vue Language Server 3 in hybrid mode: its `tsserver/request`s go through the
+/// client to vtsls with `@vue/typescript-plugin` (issue #25). Set
+/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vue/language-server typescript@"<7" @vtsls/language-server`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @vue/language-server and @vtsls/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn vue_hybrid_mode_end_to_end() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
+    std::fs::write(root.join("tsconfig.json"), "{\"compilerOptions\":{\"strict\":true},\"include\":[\"src/**/*\"]}")
+        .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let file = root.join("src/App.vue");
+    std::fs::write(&file, APP_VUE).unwrap();
+
+    let plugin = serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [{
+        "name": "@vue/typescript-plugin",
+        "location": tools.join("node_modules/@vue/language-server").to_string_lossy(),
+        "languages": ["vue"],
+        "configNamespace": "typescript",
+        "enableForWorkspaceTypeScriptVersions": true,
+    }] } } });
+    for with_vtsls in [false, true] {
+        let mut vue = lang("vue", "vue", npm_server(&tools, "vue-language-server", "vue-language-server", None));
+        if with_vtsls {
+            vue.language_servers.push(npm_server(&tools, "vtsls", "vtsls", Some(plugin.clone())));
+        }
+        let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![vue]));
+        let doc = DocId::next();
+        mgr.did_open(doc, &file, &LanguageId::new("vue"), 1, APP_VUE);
+        // `count` in `{{ count }}`.
+        let pos = Pos::new(5, 12);
+        if with_vtsls {
+            let hover = retry("hover", Duration::from_secs(90), || {
+                let mgr = mgr.clone();
+                async move { mgr.hover(doc, pos, Default::default()).await.ok().flatten() }
+            })
+            .await;
+            assert!(hover.contents.value.contains("count: number"), "{}", hover.contents.value);
+        }
+        retry("vue-language-server ready", Duration::from_secs(30), || {
+            let s = last_status(&events, "vue-language-server");
+            async move { matches!(s, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+        })
+        .await;
+        // Every request of vue-language-server waits for a tsserver answer (the
+        // project info); without vtsls it is `null` and the server falls back.
+        let symbols = tokio::time::timeout(Duration::from_secs(20), mgr.document_symbols(doc)).await;
+        assert!(matches!(symbols, Ok(Ok(_))), "vue-language-server did not answer: {symbols:?}");
+        let crashed = matches!(last_status(&events, "vue-language-server"), Some((ServerStatus::Crashed, _)));
+        assert!(!crashed, "{:?}", last_status(&events, "vue-language-server"));
+        tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+    }
+}

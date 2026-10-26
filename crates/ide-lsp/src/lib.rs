@@ -15,6 +15,7 @@ pub mod jdtls;
 mod launch;
 mod server;
 mod text;
+mod tsserver_bridge;
 pub mod types;
 mod uri;
 mod virtual_doc;

@@ -112,6 +112,10 @@ const fn ver(cmd: &'static str) -> Option<(&'static str, &'static [&'static str]
     Some((cmd, &["--version"]))
 }
 
+/// The TypeScript these npm servers load as a library (`tsserver.js`, `ts.server`):
+/// TypeScript 7 (the native port) ships neither, and `@latest` resolves to it.
+pub const TYPESCRIPT: &str = "typescript@<7";
+
 pub static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "rust-analyzer",
@@ -138,7 +142,7 @@ pub static TOOLS: &[ToolSpec] = &[
         display: "typescript-language-server",
         kind: LanguageServer,
         commands: &["typescript-language-server"],
-        method: Method::Npm { packages: &["typescript-language-server", "typescript"] },
+        method: Method::Npm { packages: &["typescript-language-server", TYPESCRIPT] },
         version: ver("typescript-language-server"),
         homepage: "https://github.com/typescript-language-server/typescript-language-server",
         needs: &[],
@@ -228,7 +232,7 @@ pub static TOOLS: &[ToolSpec] = &[
         display: "Svelte Language Server",
         kind: LanguageServer,
         commands: &["svelteserver"],
-        method: Method::Npm { packages: &["svelte-language-server"] },
+        method: Method::Npm { packages: &["svelte-language-server", TYPESCRIPT] },
         version: V,
         homepage: "https://github.com/sveltejs/language-tools",
         needs: &[],
@@ -238,7 +242,7 @@ pub static TOOLS: &[ToolSpec] = &[
         display: "Vue Language Server",
         kind: LanguageServer,
         commands: &["vue-language-server"],
-        method: Method::Npm { packages: &["@vue/language-server"] },
+        method: Method::Npm { packages: &["@vue/language-server", TYPESCRIPT] },
         version: V,
         homepage: "https://github.com/vuejs/language-tools",
         needs: &[],

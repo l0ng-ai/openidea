@@ -13,7 +13,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, watch};
 
-const CRASH_WINDOW: Duration = Duration::from_secs(180);
+/// An instance that stayed up this long ran fine: earlier crashes no longer count.
+const STABLE_UPTIME: Duration = Duration::from_secs(180);
 const MAX_RESTARTS: usize = 3;
 const STDERR_LINES: usize = 50;
 
@@ -66,7 +67,10 @@ pub struct Server {
     state: Mutex<State>,
     phase: watch::Sender<Phase>,
     status: Mutex<(ServerStatus, Option<String>)>,
-    crashes: Mutex<VecDeque<Instant>>,
+    /// Consecutive crashes of short-lived instances.
+    crashes: Mutex<usize>,
+    /// When the current instance was launched.
+    started: Mutex<Option<Instant>>,
     stderr: Mutex<VecDeque<String>>,
     pub progress: Mutex<HashMap<String, Progress>>,
     diagnostics: Mutex<HashMap<PathBuf, Vec<lsp::Diagnostic>>>,
@@ -88,7 +92,8 @@ impl Server {
             state: Mutex::new(State { generation: 0, conn: Conn::Idle }),
             phase: watch::channel(Phase::Down).0,
             status: Mutex::new((ServerStatus::Stopped, None)),
-            crashes: Mutex::new(VecDeque::new()),
+            crashes: Mutex::new(0),
+            started: Mutex::new(None),
             stderr: Mutex::new(VecDeque::new()),
             progress: Mutex::new(HashMap::new()),
             diagnostics: Mutex::new(HashMap::new()),
@@ -127,6 +132,7 @@ impl Server {
         }
         st.generation += 1;
         st.conn = Conn::Starting;
+        *self.started.lock() = Some(Instant::now());
         self.phase.send_replace(Phase::Starting);
         Some(st.generation)
     }
@@ -237,21 +243,22 @@ impl Server {
         }
     }
 
-    /// Records a crash; returns the backoff before restarting, or `None` when
-    /// the restart budget for the window is exhausted.
+    /// Records a crash; returns the backoff before restarting, or `None` once
+    /// [`MAX_RESTARTS`] instances in a row died before running [`STABLE_UPTIME`]
+    /// (a server that crashes on every start, however slowly, is not restarted forever).
     pub fn record_crash(&self) -> Option<Duration> {
+        let uptime = self.started.lock().map(|t| t.elapsed()).unwrap_or_default();
         let mut crashes = self.crashes.lock();
-        let now = Instant::now();
-        crashes.push_back(now);
-        while crashes.front().is_some_and(|t| now.duration_since(*t) > CRASH_WINDOW) {
-            crashes.pop_front();
+        if uptime >= STABLE_UPTIME {
+            *crashes = 0;
         }
-        let n = crashes.len();
+        *crashes += 1;
+        let n = *crashes;
         (n <= MAX_RESTARTS).then(|| Duration::from_millis(500) * (1 << (n - 1)) as u32)
     }
 
     pub fn reset_for_restart(&self) {
-        self.crashes.lock().clear();
+        *self.crashes.lock() = 0;
         let mut st = self.state.lock();
         if matches!(st.conn, Conn::Missing | Conn::Failed) {
             st.conn = Conn::Idle;
@@ -300,8 +307,8 @@ impl Server {
 
     pub fn stderr_tail(&self, n: usize) -> String {
         let buf = self.stderr.lock();
-        let skip = buf.len().saturating_sub(n);
-        buf.iter().skip(skip).cloned().collect::<Vec<_>>().join("\n")
+        let lines: Vec<&str> = buf.iter().map(String::as_str).collect();
+        crash_excerpt(&lines, n)
     }
 
     pub fn take_progress(&self) -> Vec<(TaskId, String)> {
@@ -339,5 +346,99 @@ impl Server {
     pub fn take_diagnostic_paths(&self) -> Vec<PathBuf> {
         self.published.lock().clear();
         self.diagnostics.lock().drain().map(|(p, _)| p).collect()
+    }
+}
+
+/// The last `n` stderr lines, led by the exception headline: Node.js / Python /
+/// JVM crashes print the error first and a stack after it, so a plain tail
+/// shows frames without saying what went wrong.
+pub(crate) fn crash_excerpt(lines: &[&str], n: usize) -> String {
+    const MAX_LINES: usize = 12;
+    let start = lines.len().saturating_sub(n);
+    let excerpt: Vec<&str> = match lines.iter().rposition(|l| is_error_headline(l)) {
+        Some(i) if i >= start => lines[start..].to_vec(),
+        Some(i) if lines.len() - i <= MAX_LINES => lines[i..].to_vec(),
+        Some(i) => [lines[i], "…"].into_iter().chain(lines[start..].iter().copied()).collect(),
+        None => lines[start..].to_vec(),
+    };
+    excerpt.join("\n")
+}
+
+fn is_error_headline(line: &str) -> bool {
+    let l = line.trim_start();
+    let head = l.split(':').next().unwrap_or_default();
+    let named = (head.ends_with("Error") || head.ends_with("Exception")) && !head.contains(' ') && head.len() < l.len();
+    named || l.starts_with("Exception in thread") || l.starts_with("thread '") && l.contains("panicked")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server() -> Server {
+        let cfg: LanguageServerConfig = toml::from_str("name = \"s\"\ncommand = \"s\"").unwrap();
+        Server::new(cfg, PathBuf::from("/p"), LanguageId::new("vue"))
+    }
+
+    #[test]
+    fn crashes_of_short_lived_instances_exhaust_the_budget_whatever_the_spacing() {
+        let s = server();
+        for _ in 0..MAX_RESTARTS {
+            // Even crashes spread minutes apart count while each instance dies young.
+            *s.started.lock() = Some(Instant::now());
+            assert!(s.record_crash().is_some());
+        }
+        *s.started.lock() = Some(Instant::now());
+        assert_eq!(s.record_crash(), None);
+        s.reset_for_restart();
+        assert!(s.record_crash().is_some());
+    }
+
+    #[test]
+    fn a_stable_run_resets_the_budget() {
+        let s = server();
+        for _ in 0..MAX_RESTARTS {
+            assert!(s.record_crash().is_some());
+        }
+        *s.started.lock() = Instant::now().checked_sub(STABLE_UPTIME);
+        assert_eq!(s.record_crash(), Some(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn crash_excerpt_keeps_the_exception_line() {
+        // Node.js 24 crash of vue-language-server (issue #25), verbatim shape.
+        let node = [
+            "C:\\tools\\node_modules\\@vue\\language-server\\lib\\server.js:40",
+            "                        projectInfoPromise = sendTsServerRequest('_vue:' + ts.server.protocol.CommandTypes.ProjectInfo, {",
+            "                                                                                     ^",
+            "",
+            "TypeError: Cannot read properties of undefined (reading 'protocol')",
+            "    at Object.getLanguageService (C:\\tools\\node_modules\\@vue\\language-server\\lib\\server.js:40:86)",
+            "    at Immediate.<anonymous> (C:\\tools\\node_modules\\@volar\\language-server\\lib\\features\\languageFeatures.js:744:62)",
+            "    at process.processImmediate (node:internal/timers:504:21)",
+            "",
+            "Node.js v24.12.0",
+        ];
+        let out = crash_excerpt(&node, 5);
+        assert!(out.starts_with("TypeError: Cannot read properties of undefined (reading 'protocol')"), "{out}");
+        assert!(out.ends_with("Node.js v24.12.0"));
+
+        let python = [
+            "Traceback (most recent call last):",
+            "  File \"x.py\", line 1",
+            "ModuleNotFoundError: No module named 'jedi'",
+        ];
+        assert_eq!(crash_excerpt(&python, 5), python.join("\n"));
+
+        let mut long_stack = vec!["Exception in thread \"main\" java.lang.IllegalStateException: boom"];
+        long_stack.extend(std::iter::repeat_n("\tat a.b.C.d(C.java:1)", 30));
+        let out = crash_excerpt(&long_stack, 5);
+        assert!(out.starts_with("Exception in thread \"main\""), "{out}");
+        assert_eq!(out.lines().count(), 7);
+
+        let plain = ["starting", "listening", "bye"];
+        assert_eq!(crash_excerpt(&plain, 2), "listening\nbye");
+        // "Error" in prose is not a headline.
+        assert_eq!(crash_excerpt(&["No Error here: fine", "a", "b"], 2), "a\nb");
     }
 }
