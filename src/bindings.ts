@@ -2810,6 +2810,11 @@ export type JavaLaunchInfo = {
 	javaHome: IpcPath | null,
 	/**  The `java` launcher to use (filled in by the caller from the installed JDKs). */
 	javaExec: string | null,
+	/**
+	 *  How a launcher that builds the command line itself must shorten it (java-debug's
+	 *  `shortenCommandLine`: `none` | `jarmanifest` | `argfile`; filled in by the caller).
+	 */
+	shortenCommandLine: string | null,
 	/**  First compile errors of the workspace when the build had errors. */
 	errors: JavaCompileError[],
 	/**  All compile errors (`errors` is capped). */
