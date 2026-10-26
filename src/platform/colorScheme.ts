@@ -122,6 +122,7 @@ const SCHEME_VARS = new Set<string>([
   "--fg-completion-match",
   "--fg-search-match",
   "--matched-brace-weight",
+  "--fw-code",
   "--bg-matched-tag",
 ]);
 

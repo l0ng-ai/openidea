@@ -76,6 +76,7 @@
 
   /* syntax (Islands Dark scheme) */
   --syn-keyword: #cf8e6d;
+  --syn-keyword-bold: initial;
   --syn-string: #6aab73;
   --syn-type: #bcbec4;
   --syn-function: #56a8f5;
@@ -171,6 +172,7 @@
   --fs-small: 12px;
   --fs-tiny: 11px;
   --fs-code: 13px;
+  --fw-code: 400;
   --fs-input-large: 15px;
   --lh-code: 22px;
 
@@ -408,7 +410,10 @@
   --gutter-deleted: #767a8a;
 
   /* syntax (Light scheme + Default / Python defaults) */
+  /* WebView weight compensation, calibrated against IDEA's JetBrains Mono rendering. */
+  --fw-code: 450;
   --syn-keyword: #0033b3;
+  --syn-keyword-bold: 550;
   --syn-string: #067d17;
   --syn-type: #000000;
   --syn-function: #00627a;
@@ -454,7 +459,7 @@
   --bg-text-search-result: #fcd47e;
   --bg-text-search-result-current: #f2bf57;
   --bg-matched-brace: #93d9d9;
-  --matched-brace-weight: normal;
+  --matched-brace-weight: inherit;
   --bg-matched-tag: #c9ecec;
   --bg-fold-placeholder: #e9f5e6;
   --fg-fold-placeholder: #414d41;

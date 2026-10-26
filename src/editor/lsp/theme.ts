@@ -339,7 +339,7 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-property": { color: "var(--syn-property)" },
   ".cm-sem-parameter": { color: "var(--syn-param, var(--syn-variable))" },
   ".cm-sem-self": { color: "var(--syn-self, var(--syn-keyword))" },
-  ".cm-sem-keyword": { color: "var(--syn-keyword)" },
+  ".cm-sem-keyword": { color: "var(--syn-keyword)", fontWeight: "var(--syn-keyword-bold, inherit)" },
   ".cm-sem-builtin:not(.cm-sem-function)": { color: "var(--syn-builtin, inherit)" },
   ".cm-sem-static": { fontStyle: "italic" },
   ".cm-sem-mutable": { textDecoration: "underline", textDecorationColor: "var(--fg-faint)", textUnderlineOffset: "3px" },

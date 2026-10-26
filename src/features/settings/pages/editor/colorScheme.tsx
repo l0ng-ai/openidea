@@ -62,6 +62,7 @@ function previewVars(id: SchemeId, o: Record<string, TextAttributesOverride> | u
       k.startsWith("--fg-") ||
       k.startsWith("--bg-") ||
       k.startsWith("--border-") ||
+      k === "--fw-code" ||
       k === "--caret"
     )
       vars[k] = v;

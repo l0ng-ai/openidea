@@ -130,6 +130,7 @@
   color: var(--fg-strong);
 }
 .previewArea {
+  font-weight: var(--fw-code);
   width: 100%;
   min-height: 240px;
   resize: vertical;
@@ -206,6 +207,7 @@
   font-size: var(--fs-small);
 }
 .schemePreview {
+  font-weight: var(--fw-code);
   margin: 14px 0 0;
   padding: 8px 0;
   border-radius: var(--radius-small);
