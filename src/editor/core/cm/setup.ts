@@ -26,6 +26,7 @@ import { highlightSelectionMatches } from "@codemirror/search";
 import type { EditorConfigProps } from "@/bindings";
 import type { EditorSettings } from "@/platform/ipc";
 import { editorPrefs, lineCommentStyleFor, type EditorExtras } from "@/platform/editorSettings";
+import { BUNDLED_MONO_FAMILY, monoFontFamily } from "@/platform/fonts";
 import { editorContributions, type EditorDocContext } from "@/editor/api";
 import { distractionFreeWidth, isDistractionFree } from "@/workbench/distractionFree";
 import { openideaHighlightStyle } from "./highlight";
@@ -160,9 +161,8 @@ export function fontExtension(settings: EditorSettings | undefined): Extension {
   const prefs = prefsOf(settings);
   const family = settings?.fontFamily;
   const fallback = prefs.fallbackFont.trim();
-  if ((family && family !== "JetBrains Mono") || fallback) {
-    const fam = (family || "JetBrains Mono").replace(/"/g, "");
-    vars.push(`--openidea-editor-font: "${fam}"${fallback ? `, "${fallback.replace(/"/g, "")}"` : ""}, var(--font-mono)`);
+  if ((family && family !== BUNDLED_MONO_FAMILY) || fallback) {
+    vars.push(`--openidea-editor-font: ${monoFontFamily(family, fallback, "var(--font-mono)")}`);
   }
   if (settings?.fontSize) vars.push(`--openidea-editor-font-size: ${settings.fontSize}px`, `--openidea-editor-base-size: ${settings.fontSize}px`);
   if (settings?.lineHeight) vars.push(`--openidea-editor-line-height: ${settings.lineHeight}px`, `--openidea-editor-base-line: ${settings.lineHeight}px`);

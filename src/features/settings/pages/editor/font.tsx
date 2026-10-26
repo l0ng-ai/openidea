@@ -1,6 +1,7 @@
 /** Editor › Font: family (installed fonts, monospaced filter), size, line height, ligatures, fallback, editable preview. */
 import { useMemo, useState } from "react";
 import { Checkbox, type SelectOption, T } from "@/ui";
+import { monoFontFamily } from "@/platform/fonts";
 import { NumberInput, Row, SearchLabel, Select } from "../../components/Form";
 import { useLabelMatch, useSetting } from "../../components/context";
 import { LIMITS } from "../../model/schema";
@@ -149,7 +150,7 @@ function Preview() {
   const [line] = useSetting<number>("editor.lineHeight");
   const [ligatures] = useSetting<boolean>("editor.ligatures");
   const [text, setText] = useState(SAMPLE);
-  const fam = `"${family.replace(/"/g, "")}"${fallback ? `, "${fallback.replace(/"/g, "")}"` : ""}, var(--font-mono)`;
+  const fam = monoFontFamily(family, fallback, "var(--font-mono)");
   return (
     <>
       <div className={styles.previewTitle}>

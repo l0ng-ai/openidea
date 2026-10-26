@@ -14,7 +14,8 @@ import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { splitCommandLine } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
-import { readSearchDecorations, readTerminalTheme, terminalFont, withFontExtras } from "./theme";
+import { editorPrefs } from "@/platform/editorSettings";
+import { readSearchDecorations, readTerminalTheme, remeasureWhenFontsLoad, terminalFont, type TerminalFontSettings } from "./theme";
 
 export interface TerminalSearchOptions {
   caseSensitive: boolean;
@@ -77,9 +78,10 @@ function beep() {
   }
 }
 
-function fontFor(t: TerminalSettingsValid) {
+/** The terminal font for `t`, resolved against the current editor font (also used by embedded terminals). */
+export function fontFor(t: TerminalFontSettings) {
   const e = useProject.getState().settings?.editor as { fontFamily?: string; fontSize?: number; lineHeight?: number } | undefined;
-  return withFontExtras(terminalFont(t, e), t);
+  return terminalFont(t, { ...e, fallbackFont: editorPrefs().fallbackFont });
 }
 
 const CURSOR: Record<TerminalSettingsValid["cursorShape"], "block" | "underline" | "bar"> = {
@@ -237,7 +239,10 @@ export class TerminalSession {
   applySettings(t: TerminalSettingsValid) {
     const font = fontFor(t);
     const o = this.term.options;
-    if (o.fontFamily !== font.family) o.fontFamily = font.family;
+    if (o.fontFamily !== font.family) {
+      o.fontFamily = font.family;
+      if (this.opened) remeasureWhenFontsLoad(this.term, font, () => !this.disposed, () => this.scheduleFit());
+    }
     if (o.fontSize !== font.size) o.fontSize = font.size;
     if (o.lineHeight !== font.lineHeight) o.lineHeight = font.lineHeight;
     if (o.letterSpacing !== font.letterSpacing) o.letterSpacing = font.letterSpacing;
@@ -288,6 +293,7 @@ export class TerminalSession {
       // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
       // selected text rendered at a visibly different weight than the rest.
       this.term.open(this.host);
+      remeasureWhenFontsLoad(this.term, fontFor(workflowSettings().terminal), () => !this.disposed, () => this.scheduleFit());
       this.term.textarea?.addEventListener("focus", () => this.opts.onFocus(this.key));
     }
     this.resizeObserver?.disconnect();
