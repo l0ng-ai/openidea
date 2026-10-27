@@ -10,6 +10,7 @@ vi.mock("@/workbench/contributions", async (orig) => {
 });
 
 const { inlayDecorations, inlayMenuItems } = await import("./inlay");
+const { usePlatform } = await import("@/platform/platformInfo");
 const { useContextMenuStore } = await import("@/ui");
 
 const hint: InlayHint = {
@@ -51,7 +52,11 @@ describe("inlay hints", () => {
     expect(view.dom.querySelector(".cm-lsp-inlay")!.textContent).toBe(": Foo");
     part.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
     expect(openFile).not.toHaveBeenCalled();
-    part.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, metaKey: true, ctrlKey: true }));
+    usePlatform.setState({ os: "windows" });
+    // ⌘ is not the navigation modifier off macOS.
+    part.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, metaKey: true }));
+    expect(openFile).not.toHaveBeenCalled();
+    part.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, ctrlKey: true }));
     expect(openFile).toHaveBeenCalledWith("/p/foo.rs", { selection: { line: 4, col: 7 }, focus: true });
   });
 
