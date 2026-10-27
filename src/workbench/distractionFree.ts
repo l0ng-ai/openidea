@@ -22,7 +22,6 @@ export const DISTRACTION_FREE_ACTION = "editor.toggleZen";
 export const DISTRACTION_FREE_CONTEXT = "distractionFree";
 export const DEFAULT_DISTRACTION_FREE_WIDTH = 80;
 const STORAGE_KEY = "openidea.distractionFree";
-const HINT_OFF_KEY = "openidea.distractionFree.hintOff";
 export const DISTRACTION_FREE_HINT_KEY = "distractionFree.hint";
 
 export const useDistractionFree = create<{ active: boolean }>(() => ({ active: false }));
@@ -67,39 +66,20 @@ export function distractionFreeHint(): string {
   return `To exit Distraction Free Mode, use View | Appearance | Exit Distraction Free Mode or ${way}.`;
 }
 
-function hintOff(): boolean {
-  try {
-    return localStorage.getItem(HINT_OFF_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
 /** Set on entering the mode; the hint shows once a project frame is there to leave. */
 let hintPending = false;
 
 function showHint() {
   if (!hintPending || !isDistractionFree() || !useToolWindowLayout.getState().scope) return;
   hintPending = false;
-  if (hintOff()) return;
   notify({
     key: DISTRACTION_FREE_HINT_KEY,
+    // Its own group: the balloon's "Don't Show Again" turns off this hint only (Settings › Notifications).
+    group: "distractionFree",
     level: "info",
     title: "Distraction Free Mode",
     body: distractionFreeHint(),
-    actions: [
-      { label: "Exit Distraction Free Mode", run: () => setDistractionFree(false) },
-      {
-        label: "Don't Show Again",
-        run: () => {
-          try {
-            localStorage.setItem(HINT_OFF_KEY, "1");
-          } catch {
-            /* storage unavailable */
-          }
-        },
-      },
-    ],
+    actions: [{ label: "Exit Distraction Free Mode", run: () => setDistractionFree(false) }],
   });
 }
 

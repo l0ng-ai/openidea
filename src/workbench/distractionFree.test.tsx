@@ -6,6 +6,7 @@ import { bindingsFor, installKeyboardDispatcher, useKeymap } from "@/platform/ke
 import { useProject } from "@/platform/project";
 import { registerStatusItem, registerToolWindow } from "./contributions";
 import { clearNotifications, useNotifications } from "./notificationStore";
+import { notificationActions } from "./Notifications";
 import {
   DISTRACTION_FREE_ACTION,
   DISTRACTION_FREE_HINT_KEY,
@@ -165,15 +166,24 @@ describe("distraction free mode", () => {
       expect(hint()?.balloon).toBe(true);
     });
 
-    it("stays off after Don't Show Again", () => {
+    it("offers Don't Show Again once, scoped to its own notification group", () => {
       setDistractionFree(true);
-      hint()!
-        .actions!.find((a) => a.label === "Don't Show Again")!
-        .run();
-      setDistractionFree(false);
-      clearNotifications();
-      setDistractionFree(true);
-      expect(hint()).toBeUndefined();
+      const labels = notificationActions(hint()!).map((a) => a.label);
+      expect(labels.filter((l) => l === "Don't Show Again")).toHaveLength(1);
+      expect(hint()!.group).toBe("distractionFree");
+    });
+
+    it("stays off once its group shows no popup", () => {
+      const settings = useProject.getState().settings;
+      useProject.setState({
+        settings: { ...settings, notifications: { groups: { distractionFree: { display: "none" } } } } as never,
+      });
+      try {
+        setDistractionFree(true);
+        expect(hint()?.balloon ?? false).toBe(false);
+      } finally {
+        useProject.setState({ settings });
+      }
     });
   });
 
