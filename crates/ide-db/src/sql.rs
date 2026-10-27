@@ -32,10 +32,9 @@ pub fn qualified(driver: DbDriver, schema: &str, table: &str) -> String {
     }
 }
 
-/// Databases one can connect to (PostgreSQL).
-/// PostgreSQL databases one can connect to; templates only with `system`.
-pub fn databases(system: bool) -> &'static str {
-    if system {
+/// PostgreSQL databases one can connect to; template databases only with `templates`.
+pub fn databases(templates: bool) -> &'static str {
+    if templates {
         "SELECT datname FROM pg_database WHERE datallowconn ORDER BY datname"
     } else {
         "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname"
@@ -65,7 +64,7 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
     }
 }
 
-/// Rows: `name, kind` where kind is `table` or `view`.
+/// Rows: `name, kind` where kind is `table`, `view` or `materialized view`.
 pub fn tables(driver: DbDriver, schema: &str) -> String {
     match driver {
         DbDriver::Sqlite => format!(
@@ -73,7 +72,13 @@ pub fn tables(driver: DbDriver, schema: &str) -> String {
              AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
             quote_ident(driver, schema)
         ),
-        _ => format!(
+        DbDriver::Postgres => format!(
+            "SELECT c.relname, CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' ELSE 'table' END \
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = {} AND c.relkind IN ('r', 'v', 'm', 'p', 'f') ORDER BY 1",
+            quote_literal(driver, schema)
+        ),
+        DbDriver::Mysql => format!(
             "SELECT table_name, CASE WHEN table_type LIKE '%VIEW%' THEN 'view' ELSE 'table' END \
              FROM information_schema.tables WHERE table_schema = {} ORDER BY 1",
             quote_literal(driver, schema)
@@ -146,7 +151,7 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
              WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY m.name, p.cid"
         }
         DbDriver::Postgres => {
-            "SELECT n.nspname, c.relname, CASE WHEN c.relkind IN ('v', 'm') THEN 'view' ELSE 'table' END, a.attname, \
+            "SELECT n.nspname, c.relname, CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' ELSE 'table' END, a.attname, \
              format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, \
              CASE WHEN EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary \
                AND a.attnum = ANY(i.indkey)) THEN 1 ELSE 0 END, \
@@ -375,6 +380,123 @@ pub fn postgres_ddl_indexes(oid: u32) -> String {
     )
 }
 
+/// Rows: `name, timing, events` of the triggers of a table (SQLite: `name, sql`).
+pub fn triggers(driver: DbDriver, schema: &str, table: &str) -> String {
+    let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
+    match driver {
+        DbDriver::Sqlite => format!(
+            "SELECT name, sql FROM {}.sqlite_master WHERE type = 'trigger' AND tbl_name = {t} ORDER BY name",
+            quote_ident(driver, schema)
+        ),
+        DbDriver::Postgres => format!(
+            "SELECT t.tgname, CASE WHEN t.tgtype & 2 <> 0 THEN 'before' WHEN t.tgtype & 64 <> 0 THEN 'instead of' \
+             ELSE 'after' END, concat_ws(' or ', CASE WHEN t.tgtype & 4 <> 0 THEN 'insert' END, \
+             CASE WHEN t.tgtype & 16 <> 0 THEN 'update' END, CASE WHEN t.tgtype & 8 <> 0 THEN 'delete' END, \
+             CASE WHEN t.tgtype & 32 <> 0 THEN 'truncate' END) \
+             FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE NOT t.tgisinternal AND n.nspname = {s} AND c.relname = {t} ORDER BY 1"
+        ),
+        DbDriver::Mysql => format!(
+            "SELECT trigger_name, lower(action_timing), lower(event_manipulation) FROM information_schema.triggers \
+             WHERE event_object_schema = {s} AND event_object_table = {t} ORDER BY 1"
+        ),
+    }
+}
+
+/// `before`, `insert` of SQLite's `CREATE TRIGGER name BEFORE INSERT ON …` (its catalog keeps only the text).
+pub fn sqlite_trigger_event(sql: &str) -> (String, String) {
+    let upper = sql.to_ascii_uppercase();
+    let words: Vec<&str> = upper.split_whitespace().collect();
+    let timing = if words.contains(&"BEFORE") {
+        "before"
+    } else if words.windows(2).any(|w| w == ["INSTEAD", "OF"]) {
+        "instead of"
+    } else {
+        "after"
+    };
+    let event = ["INSERT", "UPDATE", "DELETE"].into_iter().find(|e| words.contains(e)).unwrap_or_default();
+    (timing.to_owned(), event.to_ascii_lowercase())
+}
+
+/// Rows: `name, kind (function/procedure), arguments, result` of a schema's routines (none in SQLite).
+pub fn routines(driver: DbDriver, schema: &str) -> Option<String> {
+    let s = quote_literal(driver, schema);
+    match driver {
+        DbDriver::Sqlite => None,
+        // Functions of extensions are left out, as in IDEA.
+        DbDriver::Postgres => Some(format!(
+            "SELECT p.proname, CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END, \
+             pg_get_function_identity_arguments(p.oid), pg_get_function_result(p.oid) \
+             FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+             WHERE n.nspname = {s} AND p.prokind IN ('f', 'p') \
+             AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') ORDER BY 1, 3"
+        )),
+        DbDriver::Mysql => Some(format!(
+            "SELECT r.routine_name, lower(r.routine_type), \
+             (SELECT GROUP_CONCAT(CONCAT(p.parameter_name, ' ', p.dtd_identifier) ORDER BY p.ordinal_position \
+              SEPARATOR ', ') FROM information_schema.parameters p WHERE p.specific_schema = r.routine_schema \
+              AND p.specific_name = r.specific_name AND p.ordinal_position > 0), r.dtd_identifier \
+             FROM information_schema.routines r WHERE r.routine_schema = {s} ORDER BY 1"
+        )),
+    }
+}
+
+/// Rows: `name, data type` of a schema's sequences (PostgreSQL).
+pub fn sequences(driver: DbDriver, schema: &str) -> Option<String> {
+    (driver == DbDriver::Postgres).then(|| {
+        format!(
+            "SELECT sequence_name, data_type FROM information_schema.sequences WHERE sequence_schema = {} ORDER BY 1",
+            quote_literal(driver, schema)
+        )
+    })
+}
+
+/// The statement reading the definition of a routine (a row per overload), trigger
+/// or sequence, and the column that holds it.
+pub fn object_ddl(driver: DbDriver, schema: &str, kind: crate::DbObjectKind, name: &str) -> Option<(String, usize)> {
+    use crate::DbObjectKind as K;
+    let (s, n) = (quote_literal(driver, schema), quote_literal(driver, name));
+    let target = qualified(driver, schema, name);
+    Some(match (driver, kind) {
+        (DbDriver::Sqlite, K::Trigger) => (
+            format!(
+                "SELECT sql FROM {}.sqlite_master WHERE type = 'trigger' AND name = {n}",
+                quote_ident(driver, schema)
+            ),
+            0,
+        ),
+        (DbDriver::Postgres, K::Function | K::Procedure) => (
+            format!(
+                "SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+                 WHERE n.nspname = {s} AND p.proname = {n} ORDER BY pg_get_function_identity_arguments(p.oid)"
+            ),
+            0,
+        ),
+        (DbDriver::Postgres, K::Trigger) => (
+            format!(
+                "SELECT pg_get_triggerdef(t.oid, true) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE NOT t.tgisinternal AND n.nspname = {s} AND t.tgname = {n}"
+            ),
+            0,
+        ),
+        (DbDriver::Postgres, K::Sequence) => (
+            format!(
+                "SELECT format(E'create sequence %s\\n    as %s\\n    increment by %s\\n    minvalue %s\\n    \
+                 maxvalue %s\\n    start with %s%s', {}, data_type, increment_by, min_value, max_value, start_value, \
+                 CASE WHEN cycle THEN E'\\n    cycle' ELSE '' END) \
+                 FROM pg_sequences WHERE schemaname = {s} AND sequencename = {n}",
+                quote_literal(driver, &target)
+            ),
+            0,
+        ),
+        (DbDriver::Mysql, K::Function) => (format!("SHOW CREATE FUNCTION {target}"), 2),
+        (DbDriver::Mysql, K::Procedure) => (format!("SHOW CREATE PROCEDURE {target}"), 2),
+        (DbDriver::Mysql, K::Trigger) => (format!("SHOW CREATE TRIGGER {target}"), 2),
+        _ => return None,
+    })
+}
+
 /// A column of [`postgres_table_ddl`].
 pub struct DdlColumn {
     pub name: String,
@@ -462,6 +584,31 @@ mod tests {
             "DELETE FROM \"s\".\"t\" WHERE \"k\" IS NULL"
         );
         assert!(edit_statement(DbDriver::Postgres, "s", "t", &DbRowEdit::Delete { key: vec![] }).is_err());
+    }
+
+    #[test]
+    fn sqlite_trigger_events() {
+        let ev = sqlite_trigger_event;
+        assert_eq!(
+            ev("CREATE TRIGGER t BEFORE UPDATE OF a ON x BEGIN SELECT 1; END"),
+            ("before".into(), "update".into())
+        );
+        assert_eq!(ev("create trigger t instead of insert on v begin end"), ("instead of".into(), "insert".into()));
+        assert_eq!(ev("CREATE TRIGGER t DELETE ON x BEGIN END"), ("after".into(), "delete".into()));
+    }
+
+    #[test]
+    fn schema_objects_per_dialect() {
+        use crate::DbObjectKind as K;
+        assert!(routines(DbDriver::Sqlite, "main").is_none());
+        assert!(sequences(DbDriver::Mysql, "db").is_none());
+        assert!(routines(DbDriver::Postgres, "public").unwrap().contains("n.nspname = 'public'"));
+        assert_eq!(
+            object_ddl(DbDriver::Mysql, "db", K::Procedure, "p"),
+            Some(("SHOW CREATE PROCEDURE `db`.`p`".into(), 2))
+        );
+        assert!(object_ddl(DbDriver::Sqlite, "main", K::Function, "f").is_none());
+        assert!(object_ddl(DbDriver::Postgres, "s", K::Sequence, "q").unwrap().0.contains("sequencename = 'q'"));
     }
 
     #[test]

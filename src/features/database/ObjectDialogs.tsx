@@ -8,7 +8,7 @@ import { call, commands, type DbColumnInfo, type DbDriver } from "@/platform/ipc
 import { highlightInto } from "@/editor/lsp/markdown";
 import { Button, Checkbox, Dialog, IconButton, Input, Popup, Icon, T } from "@/ui";
 import { parseSourceUrl, sourceLabel, splitTarget } from "./model";
-import { nodeTarget, tableOf, type DbNode } from "./nodes";
+import { nodeTarget, schemaObjectOf, tableOf, type DbNode } from "./nodes";
 import {
   alterTableSql,
   canAlterColumn,
@@ -61,9 +61,14 @@ const driverOf = (id: string): DbDriver => sourceById(id)?.driver ?? "sqlite";
 const KIND_LABEL: Record<DbObjectRef["kind"], string> = {
   table: "table",
   view: "view",
+  materializedView: "materialized view",
   column: "column",
   index: "index",
   schema: "schema",
+  function: "function",
+  procedure: "procedure",
+  trigger: "trigger",
+  sequence: "sequence",
 };
 
 function objectName(o: DbObjectRef): string {
@@ -530,12 +535,18 @@ function QuickDoc({ node, anchor }: { node: DbNode; anchor: { x: number; y: numb
   const source = sourceById(id);
   const t = tableOf(node);
   const [ddl, setDdl] = useState<string | null>(null);
-  const showDdl = node.kind === "table";
+  const object = schemaObjectOf(node);
+  const showDdl = node.kind === "table" || !!object;
   useEffect(() => {
-    if (!showDdl || !t) return;
+    if (!showDdl || (!t && !object)) return;
     let live = true;
-    withConnection(t.id, () => call(commands.dbDdl(t.id, t.schema, t.table)))
-      .then((d) => live && setDdl(readableDdl(d, driverOf(t.id))))
+    const read = object
+      ? withConnection(object.id, () => call(commands.dbObjectDdl(object.id, object.schema, object.kind, object.name)))
+      : withConnection(t!.id, () => call(commands.dbDdl(t!.id, t!.schema, t!.table))).then((d) =>
+          readableDdl(d, driverOf(t!.id)),
+        );
+    read
+      .then((d) => live && setDdl(d))
       .catch((e: unknown) => live && setDdl(`-- ${e instanceof Error ? e.message : String(e)}`));
     return () => {
       live = false;
@@ -567,6 +578,24 @@ function QuickDoc({ node, anchor }: { node: DbNode; anchor: { x: number; y: numb
     case "schema":
     case "folder":
       rows.push(["Schema", node.schema]);
+      break;
+    case "routine":
+      rows.push(
+        ["Schema", node.schema],
+        [node.routine.kind === "procedure" ? "Procedure" : "Function", node.routine.name],
+      );
+      if (node.routine.arguments) rows.push(["Arguments", node.routine.arguments]);
+      if (node.routine.returns) rows.push(["Returns", node.routine.returns]);
+      break;
+    case "sequence":
+      rows.push(["Schema", node.schema], ["Sequence", node.sequence.name], ["Type", node.sequence.dataType]);
+      break;
+    case "trigger":
+      rows.push(
+        ["Table", node.table],
+        ["Trigger", node.trigger.name],
+        ["Fires", `${node.trigger.timing} ${node.trigger.events}`],
+      );
       break;
     default:
       if (t) rows.push(["Schema", t.schema], [t.view ? "View" : "Table", t.table]);

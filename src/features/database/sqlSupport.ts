@@ -87,7 +87,7 @@ function definition(path: string): ContributedDefinition {
     const sym = r?.symbol;
     const id = consoleSource(path);
     const reveal = (t: DbCompletionTable, column?: string) => {
-      if (id) void revealInTree(id, t.schema, t.name, t.kind === "view", column);
+      if (id) void revealInTree(id, t.schema, t.name, t.kind, column);
     };
     if (!sym) {
       showHint(view, "Cannot find declaration to go to");
@@ -126,13 +126,22 @@ function tableDoc(t: DbCompletionTable, model: DbCompletion | null): string {
   };
   const rows = t.columns.map(
     (c) =>
-      `| ${code(c.name)} | ${c.dataType} | ${[c.primaryKey ? "PK" : "", c.nullable ? "" : "not null", c.hasDefault ? "default" : "", refOf(c.name)]
+      `| ${code(c.name)} | ${c.dataType} | ${[
+        c.primaryKey ? "PK" : "",
+        c.nullable ? "" : "not null",
+        c.hasDefault ? "default" : "",
+        refOf(c.name),
+      ]
         .filter(Boolean)
         .join(", ")} |`,
   );
-  return [`${t.kind === "view" ? "view" : "table"} **${t.name}** in ${code(t.schema)}`, "", "| column | type | |", "|---|---|---|", ...rows].join(
-    "\n",
-  );
+  return [
+    `${t.kind === "materializedView" ? "materialized view" : t.kind} **${t.name}** in ${code(t.schema)}`,
+    "",
+    "| column | type | |",
+    "|---|---|---|",
+    ...rows,
+  ].join("\n");
 }
 
 function symbolDoc(sym: SqlSymbol, model: DbCompletion | null): string | null {
@@ -149,7 +158,11 @@ function symbolDoc(sym: SqlSymbol, model: DbCompletion | null): string | null {
       const c = sym.column;
       const owner = sym.table ? `${sym.table.schema}.${sym.table.name}` : sym.owner;
       if (!c) return `column ${code(sym.name)} of ${code(owner)}`;
-      const traits = [c.primaryKey ? "primary key" : "", c.nullable ? "" : "not null", c.hasDefault ? "has default" : ""].filter(Boolean);
+      const traits = [
+        c.primaryKey ? "primary key" : "",
+        c.nullable ? "" : "not null",
+        c.hasDefault ? "has default" : "",
+      ].filter(Boolean);
       return `column **${c.name}** ${code(c.dataType)}${traits.length ? ` ${traits.join(", ")}` : ""}\n\nof ${code(owner)}`;
     }
   }

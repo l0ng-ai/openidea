@@ -3,7 +3,7 @@
  * a WHERE filter, and pending cell edits / added / deleted rows submitted
  * together in one transaction. Tables without a primary key are read-only.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   call,
   commands,
@@ -13,11 +13,20 @@ import {
   type DbTablePage,
   type RequestId,
 } from "@/platform/ipc";
-import { Button, EmptyState, IconButton, Input, Select, Spinner, T } from "@/ui";
+import { Button, EmptyState, Icon, IconButton, Input, Select, Spinner, T, showContextMenu } from "@/ui";
 import { notifications, type EditorInput } from "@/workbench/contributions";
-import { Grid } from "./Grid";
-import { buildRowEdits, emptyEdits, hasEdits, type Cell, type PendingEdits } from "./model";
-import { sourceById, withConnection } from "./store";
+import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
+import type { ExportFormat } from "./export";
+import {
+  buildRowEdits,
+  emptyEdits,
+  formatOrderBy,
+  hasEdits,
+  parseOrderBy,
+  type Cell,
+  type PendingEdits,
+} from "./model";
+import { openDialog, sourceById, withConnection } from "./store";
 import type { TableRef } from "./tableInput";
 import styles from "./Database.module.css";
 
@@ -34,6 +43,10 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const [filter, setFilter] = useState("");
   const [nonce, setNonce] = useState(0);
   const [edits, setEdits] = useState<PendingEdits>(emptyEdits);
+  const [panel, setPanel] = useState<DataPanel | null>(null);
+  const [extractor, setExtractor] = useState<ExportFormat>("csv");
+  // The ORDER BY field while it's being edited; it shows the sort otherwise.
+  const [orderDraft, setOrderDraft] = useState<string | null>(null);
   // The page for the current parameters (`key`); stale while loading.
   const [loadedPage, setLoadedPage] = useState<{ key: string; page: DbTablePage | null; error: string | null } | null>(
     null,
@@ -77,17 +90,34 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const editable = pk.length > 0 && !sourceById(ref.id)?.readOnly;
   const loaded = page?.result.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
+  const gridColumns = useMemo(
+    () =>
+      columns.map((c) => ({
+        name: c.name,
+        type: c.typeName,
+        primaryKey: pk.includes(c.name),
+        foreignKey: fkColumns.has(c.name),
+      })),
+    // `pk` / `fkColumns` derive from `page`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [page],
+  );
 
-  const value = (row: number, col: number): Cell => {
-    const name = names[col]!;
-    if (row >= loaded) {
-      const ins = edits.inserts[row - loaded];
-      return ins?.has(name) ? ins.get(name)! : null;
-    }
-    const upd = edits.updates.get(row);
-    if (upd?.has(name)) return upd.get(name)!;
-    return page?.result.rows[row]?.[col] ?? null;
-  };
+  const value = useCallback(
+    (row: number, col: number): Cell => {
+      const name = names[col]!;
+      if (row >= loaded) {
+        const ins = edits.inserts[row - loaded];
+        return ins?.has(name) ? ins.get(name)! : null;
+      }
+      const upd = edits.updates.get(row);
+      if (upd?.has(name)) return upd.get(name)!;
+      return page?.result.rows[row]?.[col] ?? null;
+    },
+    // `names` / `loaded` derive from `page`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [page, edits],
+  );
 
   const onEdit = (row: number, col: number, v: Cell) => {
     const name = names[col]!;
@@ -144,6 +174,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
     });
 
   const dirty = hasEdits(edits);
+  const orderInvalid = orderDraft !== null && !parseOrderBy(orderDraft, names);
   return (
     <div className={styles.view}>
       <div className={styles.toolbar}>
@@ -175,20 +206,6 @@ export function TableEditor({ input }: { input: EditorInput }) {
             }}
           />
         </div>
-        <Input
-          className={styles.filter}
-          mono
-          aria-label="WHERE filter"
-          placeholder="WHERE (e.g. id > 10)"
-          value={filterText}
-          onChange={(e) => setFilterText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              setOffset(0);
-              setFilter(filterText.trim());
-            }
-          }}
-        />
         {editable && (
           <>
             <IconButton
@@ -205,6 +222,77 @@ export function TableEditor({ input }: { input: EditorInput }) {
           </>
         )}
         {loading && <Spinner size={12} />}
+        <span className={styles.spacer} />
+        <ExtractorSelect value={extractor} onChange={setExtractor} />
+        <IconButton
+          icon="export"
+          title="Export Data"
+          disabled={!page}
+          onClick={(e) =>
+            page &&
+            showContextMenu(
+              e,
+              exportMenu(
+                {
+                  columns: gridColumns,
+                  rows: page.result.rows,
+                  table: ref.table,
+                  driver: sourceById(ref.id)?.driver ?? "sqlite",
+                },
+                `${ref.schema}.${ref.table}`,
+                extractor,
+              ),
+            )
+          }
+        />
+        <IconButton
+          icon="import"
+          title="Import Data from File…"
+          disabled={!editable}
+          onClick={() => openDialog({ kind: "import", id: ref.id, schema: ref.schema, table: ref.table })}
+        />
+        <PanelToggle panel={panel} onChange={setPanel} />
+      </div>
+      <div className={styles.filterBar}>
+        <label className={styles.filterField}>
+          <Icon name="filter" size={14} />
+          <Input
+            variant="bare"
+            mono
+            aria-label="WHERE filter"
+            placeholder="WHERE"
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                setOffset(0);
+                setFilter(filterText.trim());
+              }
+            }}
+          />
+        </label>
+        <label className={styles.filterField}>
+          <Icon name="db-sort" size={14} />
+          <Input
+            variant="bare"
+            mono
+            aria-label="ORDER BY"
+            placeholder="ORDER BY"
+            invalid={orderInvalid}
+            value={orderDraft ?? formatOrderBy(sort)}
+            onChange={(e) => setOrderDraft(e.target.value)}
+            onBlur={() => !orderInvalid && setOrderDraft(null)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setOrderDraft(null);
+              if (e.key !== "Enter" || orderDraft === null) return;
+              const next = parseOrderBy(orderDraft, names);
+              if (!next) return;
+              setOffset(0);
+              setSort(next);
+              setOrderDraft(null);
+            }}
+          />
+        </label>
       </div>
       {page && !editable && (
         <div className={styles.notice}>
@@ -217,16 +305,14 @@ export function TableEditor({ input }: { input: EditorInput }) {
         <EmptyState title="Loading…" />
       ) : (
         <div className={styles.fill}>
-          <Grid
+          <DataView
             aria-label={`${ref.table} data`}
-            columns={columns.map((c) => ({
-              name: c.name,
-              type: c.typeName,
-              primaryKey: pk.includes(c.name),
-              foreignKey: fkColumns.has(c.name),
-            }))}
+            columns={gridColumns}
             rowCount={rowCount}
+            fixedRows={loaded}
             value={value}
+            panel={panel}
+            onPanelChange={setPanel}
             firstRowNumber={offset + 1}
             rowState={(r) => (r >= loaded ? "inserted" : edits.deletes.has(r) ? "deleted" : null)}
             isModified={(r, c) => !!edits.updates.get(r)?.has(names[c]!)}

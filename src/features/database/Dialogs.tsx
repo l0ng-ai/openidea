@@ -8,6 +8,9 @@ import { closeDialog, useDatabase } from "./store";
 import styles from "./Database.module.css";
 
 const ObjectDialogs = lazyComponent(() => import("./ObjectDialogs").then((m) => m.ObjectDialogs));
+const ExportDialog = lazyComponent(() => import("./ExportDialog").then((m) => m.ExportDialog));
+const HistoryDialog = lazyComponent(() => import("./DataDialogs").then((m) => m.HistoryDialog));
+const ImportDialog = lazyComponent(() => import("./DataDialogs").then((m) => m.ImportDialog));
 
 function PasswordDialog({ source, resolve }: { source: DataSource; resolve: (ok: boolean) => void }) {
   const [password, setPassword] = useState("");
@@ -178,6 +181,13 @@ export function DatabaseDialogs() {
       />
     );
   if (dialog.kind === "params") return <ParamsDialog names={dialog.names} resolve={dialog.resolve} />;
+  if (dialog.kind === "export")
+    return <ExportDialog data={dialog.data} source={dialog.source} initialFormat={dialog.format} />;
+  if (dialog.kind === "history") return <HistoryDialog key={dialog.id} id={dialog.id} path={dialog.path} />;
+  if (dialog.kind === "import")
+    return (
+      <ImportDialog key={`${dialog.id}.${dialog.table}`} id={dialog.id} schema={dialog.schema} table={dialog.table} />
+    );
   if (dialog.kind === "sshSecret")
     return (
       <SshSecretDialog key={dialog.source.id} source={dialog.source} prompt={dialog.prompt} resolve={dialog.resolve} />

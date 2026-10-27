@@ -7,7 +7,7 @@ async fn setup() -> (tempfile::TempDir, DbManager) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
     std::fs::File::create(root.join("app.db")).unwrap();
-    let db = DbManager::new(root.clone(), root.join("passwords.json"));
+    let db = DbManager::new(root.clone(), root.join("passwords.json"), root.join("history.json"));
     db.save_sources(vec![DataSource {
         id: "s1".into(),
         name: "app".into(),
@@ -244,6 +244,57 @@ async fn ddl_of_tables_and_views() -> IdeResult<()> {
     );
     assert_eq!(db.ddl("s1", "main", "named").await?, "CREATE VIEW named AS SELECT name FROM users;\n");
     assert!(db.ddl("s1", "main", "nope").await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn explains_queries_without_running_them() -> IdeResult<()> {
+    let (_tmp, db) = setup().await;
+    let c = CancellationToken::new();
+    let plan = db.explain("s1", "SELECT * FROM users WHERE id > 1 ORDER BY note;", &c).await?;
+    let ops: Vec<_> = plan.iter().map(|n| n.operation.as_str()).collect();
+    assert_eq!(ops, vec!["Index Scan", "Order By"]);
+    assert!(plan[0].params.starts_with("table: users;"), "{}", plan[0].params);
+    db.explain("s1", "DELETE FROM users", &c).await?;
+    assert_eq!(count(&db).await, "3");
+    Ok(())
+}
+
+#[tokio::test]
+async fn records_executed_statements_in_the_query_history() -> IdeResult<()> {
+    let (_tmp, db) = setup().await;
+    let c = CancellationToken::new();
+    db.execute("s1", "SELECT 1", 1, &c).await?;
+    assert!(db.execute("s1", "SELECT nope", 1, &c).await.is_err());
+    // Recorded off the async threads.
+    let mut texts = Vec::new();
+    for _ in 0..50 {
+        texts = db.history("s1").await?.into_iter().map(|e| e.text).collect::<Vec<_>>();
+        if texts.first().map(String::as_str) == Some("SELECT nope") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(texts[..2], ["SELECT nope", "SELECT 1"]);
+    db.remove_history("s1", Some(vec!["SELECT 1".into()])).await?;
+    assert!(!db.history("s1").await?.iter().any(|e| e.text == "SELECT 1"));
+    db.remove_history("s1", None).await?;
+    assert!(db.history("s1").await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn lists_triggers_and_their_ddl() -> IdeResult<()> {
+    let (_tmp, db) = setup().await;
+    let c = CancellationToken::new();
+    db.execute("s1", "CREATE TRIGGER users_touch AFTER UPDATE ON users BEGIN SELECT 1; END", 1, &c).await?;
+    let d = db.table_details("s1", "main", "users").await?;
+    let triggers: Vec<_> = d.triggers.iter().map(|t| (t.name.as_str(), t.timing.as_str(), t.events.as_str())).collect();
+    assert_eq!(triggers, vec![("users_touch", "after", "update")]);
+    let ddl = db.object_ddl("s1", "main", ide_db::DbObjectKind::Trigger, "users_touch").await?;
+    assert!(ddl.starts_with("CREATE TRIGGER users_touch"), "{ddl}");
+    // SQLite has neither routines nor sequences.
+    assert_eq!(db.schema_objects("s1", "main").await?, ide_db::SchemaObjects::default());
     Ok(())
 }
 

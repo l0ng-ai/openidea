@@ -248,6 +248,13 @@ const ICONS = {
   "db-index": "openidea/database/index",
   "db-schema": "openidea/database/schema",
   "db-console": "openidea/database/console",
+  "db-matview": "openidea/database/matview",
+  "db-routine": "openidea/database/routine",
+  "db-trigger": "openidea/database/trigger",
+  "db-sequence": "openidea/database/sequence",
+  "db-plan": "openidea/database/plan",
+  "db-chart": "openidea/database/chart",
+  "db-sort": "openidea/database/sort",
   "db-folder": "openidea/database/folder",
   "db-add": "openidea/database/addDropdown",
   "db-properties": "openidea/database/dataSourceProperties",
@@ -830,15 +837,7 @@ export function fileIconName(fileName: string): IconName {
 }
 
 export type FolderKind =
-  | "plain"
-  | "source"
-  | "test"
-  | "resources"
-  | "testResources"
-  | "excluded"
-  | "library"
-  | "github"
-  | "module";
+  "plain" | "source" | "test" | "resources" | "testResources" | "excluded" | "library" | "github" | "module";
 
 /** Folder icon by role (expui has no separate "open" folder glyph). */
 export function folderIconName(kind: FolderKind = "plain"): IconName {

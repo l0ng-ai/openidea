@@ -1,0 +1,4 @@
+<!-- OpenIDEA: query plan (operation tree) -->
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect x="2.5" y="2.5" width="5" height="3" rx="0.5" stroke="#6C707E"/><rect x="8.5" y="7.5" width="5" height="3" rx="0.5" stroke="#6C707E"/><rect x="8.5" y="11.5" width="5" height="3" rx="0.5" stroke="#6C707E"/><path d="M5 5.5V13H8.5M5 9H8.5" stroke="#6C707E"/>
+</svg>

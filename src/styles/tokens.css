@@ -42,6 +42,9 @@
   --link: #71a1fe;
   --link-hover: #92b7ff;
 
+  /* charts (IDEA's first series colour) */
+  --chart-series: #e07a7c;
+
   /* status */
   --danger: #f57e84;
   --warning: #d59637;
@@ -387,6 +390,8 @@
   --accent: #3871e1;
   --link: #2f5eb9;
   --link-hover: #2e4d89;
+
+  --chart-series: #d9686a;
 
   /* status */
   --danger: #c54e58;

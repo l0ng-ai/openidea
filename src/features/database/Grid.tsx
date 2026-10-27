@@ -42,7 +42,23 @@ export interface GridProps {
   rowMenu?: (rows: number[]) => MenuItem[];
   /** Row number shown for row 0 (paging). */
   firstRowNumber?: number;
+  /** Row number shown for a row (local sort / filter reorder them); `firstRowNumber + row` otherwise. */
+  rowNumber?: (row: number) => number;
+  /** The selected range changed (the Record / Value / Aggregates panel follows it). */
+  onSelectionChange?: (range: GridRange | null) => void;
+  /** The header's filter button (IDEA's local filter); `filtered` marks the columns with one. */
+  onFilter?: (col: number, anchor: HTMLElement) => void;
+  filtered?: (col: number) => boolean;
   "aria-label"?: string;
+}
+
+/** A selected block of cells, inclusive; `lead` is the cell last moved to. */
+export interface GridRange {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+  lead: { row: number; col: number };
 }
 
 interface Sel {
@@ -55,10 +71,15 @@ interface Sel {
 const ROW_H = 24;
 const NUM_W = 48;
 
-function initialWidth(c: GridColumn, sample: Cell[]): number {
-  const longest = Math.max(c.name.length + 2, ...sample.map((v) => Math.min((v ?? "<null>").length, 60)));
-  return Math.max(64, Math.min(320, longest * 7.5 + 20));
+/** Wide enough for the whole header (icon, name, filter, sort) and the longest sampled value. */
+function initialWidth(c: GridColumn, sample: Cell[], decorations: number): number {
+  const header = c.name.length * 8 + 32 + decorations;
+  const longest = Math.max(...sample.map((v) => Math.min((v ?? "<null>").length, 60)), 0) * 7.5 + 20;
+  return Math.max(64, Math.min(360, Math.max(header, longest)));
 }
+
+/** SQLite renders whole REALs as `3108.0`; IDEA shows `3108`. */
+const displayed = (v: string, numeric: boolean) => (numeric && /^-?\d+\.0$/.test(v) ? v.slice(0, -2) : v);
 
 function norm(s: Sel) {
   return {
@@ -80,13 +101,21 @@ export function Grid(props: GridProps) {
   useEffect(() => {
     const sampleRows = Math.min(rowCount, 50);
     const samples = columns.map((_, ci) => Array.from({ length: sampleRows }, (_, r) => value(r, ci)));
-    setWidths(columns.map((c, ci) => initialWidth(c, samples[ci]!)));
+    const decorations = (props.onFilter ? 20 : 0) + (onSort ? 20 : 0);
+    setWidths(columns.map((c, ci) => initialWidth(c, samples[ci]!, decorations)));
     setNumeric(columns.map((c, ci) => isNumericColumn(c.type, samples[ci]!)));
     setSel(null);
     setEditing(null);
     // Re-measure only when the column set changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [columnKey]);
+
+  const { onSelectionChange } = props;
+  useEffect(() => {
+    onSelectionChange?.(
+      sel && rowCount ? { ...norm(sel), lead: { row: Math.min(sel.r1, rowCount - 1), col: sel.c1 } } : null,
+    );
+  }, [sel, rowCount, onSelectionChange]);
 
   const virtualizer = useVirtualizer({
     count: rowCount,
@@ -112,7 +141,9 @@ export function Grid(props: GridProps) {
   const copy = (format: "tsv" | "csv", header: boolean, wholeRows = false) => {
     if (!sel) return;
     const n = norm(sel);
-    const cols = wholeRows ? columns.map((_, i) => i) : Array.from({ length: n.right - n.left + 1 }, (_, i) => n.left + i);
+    const cols = wholeRows
+      ? columns.map((_, i) => i)
+      : Array.from({ length: n.right - n.left + 1 }, (_, i) => n.left + i);
     const rows = selectedRows().map((r) => cols.map((c) => value(r, c)));
     const head = header ? cols.map((c) => columns[c]!.name) : null;
     const text = format === "tsv" ? toTsv(head, rows) : toCsv(head, rows);
@@ -153,7 +184,12 @@ export function Grid(props: GridProps) {
       startEdit(sel.r1, sel.c1);
       return;
     }
-    const moves: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+    const moves: Record<string, [number, number]> = {
+      ArrowUp: [-1, 0],
+      ArrowDown: [1, 0],
+      ArrowLeft: [0, -1],
+      ArrowRight: [0, 1],
+    };
     const m = moves[e.key];
     if (!m) return;
     e.preventDefault();
@@ -250,8 +286,31 @@ export function Grid(props: GridProps) {
                   className={styles.headerIcon}
                 />
                 <span className={styles.headerName}>{c.name}</span>
-                {s && <Icon name={s.descending ? "arrow-down" : "arrow-up"} size={12} className={styles.headerSort} />}
-                <span className={styles.resizer} onMouseDown={(e) => startResize(e, ci)} onClick={(e) => e.stopPropagation()} />
+                {props.onFilter && (
+                  <button
+                    type="button"
+                    className={clsx(styles.headerFilter, props.filtered?.(ci) && styles.headerFilterOn)}
+                    aria-label={`Filter ${c.name}`}
+                    title="Local filter"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      props.onFilter?.(ci, e.currentTarget);
+                    }}
+                  >
+                    <Icon name="filter" size={12} />
+                  </button>
+                )}
+                {s ? (
+                  <Icon name={s.descending ? "arrow-down" : "arrow-up"} size={12} className={styles.headerSort} />
+                ) : (
+                  onSort && <Icon name="db-sort" size={16} className={styles.headerSort} />
+                )}
+                <span
+                  className={styles.resizer}
+                  onMouseDown={(e) => startResize(e, ci)}
+                  onClick={(e) => e.stopPropagation()}
+                />
               </div>
             );
           })}
@@ -263,11 +322,15 @@ export function Grid(props: GridProps) {
             <div
               key={v.key}
               role="row"
-              className={clsx(styles.gridRow, state === "deleted" && styles.rowDeleted, state === "inserted" && styles.rowInserted)}
+              className={clsx(
+                styles.gridRow,
+                state === "deleted" && styles.rowDeleted,
+                state === "inserted" && styles.rowInserted,
+              )}
               style={{ gridTemplateColumns: template, transform: `translateY(${v.start + ROW_H}px)` }}
             >
               <div className={styles.rowNumber} onMouseDown={(e) => onRowNumberMouseDown(e, r)}>
-                {state === "inserted" ? "+" : firstRowNumber + r}
+                {state === "inserted" ? "+" : (props.rowNumber?.(r) ?? firstRowNumber + r)}
               </div>
               {columns.map((_, c) => {
                 if (editing && editing.row === r && editing.col === c) {
@@ -306,7 +369,7 @@ export function Grid(props: GridProps) {
                     onDoubleClick={() => startEdit(r, c)}
                     title={val != null && val.length > 40 ? val.slice(0, 2000) : undefined}
                   >
-                    {val === null ? <span className={styles.null}>&lt;null&gt;</span> : val}
+                    {val === null ? <span className={styles.null}>&lt;null&gt;</span> : displayed(val, !!numeric[c])}
                   </div>
                 );
               })}

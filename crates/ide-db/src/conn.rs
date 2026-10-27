@@ -40,6 +40,8 @@ pub struct QueryResult {
     /// More rows exist beyond the limit.
     pub has_more: bool,
     pub elapsed_ms: f64,
+    /// Until the server's first answer; the rest of `elapsed_ms` is fetching.
+    pub execution_ms: f64,
 }
 
 pub enum Pool {
@@ -130,7 +132,9 @@ macro_rules! fetch {
         let mut affected: Option<u64> = None;
         let mut has_more = false;
         let mut failure = None;
+        let mut first: Option<Instant> = None;
         while let Some(item) = stream.next().await {
+            first.get_or_insert_with(Instant::now);
             match item {
                 Ok(sqlx::Either::Left(done)) => affected = Some(affected.unwrap_or(0) + done.rows_affected()),
                 Ok(sqlx::Either::Right(row)) => {
@@ -152,12 +156,13 @@ macro_rules! fetch {
         drop(stream);
         match failure {
             Some(e) => Err(e),
-            None => Ok((columns, rows, affected, has_more)),
+            None => Ok((columns, rows, affected, has_more, first)),
         }
     }};
 }
 
-type Fetched = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, Option<u64>, bool);
+/// Columns, rows, rows affected, more rows beyond the limit, time of the first answer.
+type Fetched = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, Option<u64>, bool, Option<Instant>);
 
 /// The server-side id of a connection (to cancel its statement from another one).
 macro_rules! backend_id {
@@ -552,14 +557,16 @@ impl Held {
             }
             Held::Mysql(c) => run!(c, Some("SELECT CONNECTION_ID()"), |b: String| format!("KILL QUERY {b}")),
         };
-        let (columns, rows, affected, has_more) = fetched;
+        let (columns, rows, affected, has_more, first) = fetched;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
         Ok(QueryResult {
             statement: sql.to_owned(),
             affected: if columns.is_empty() { Some(affected.unwrap_or(0) as f64) } else { None },
             columns,
             rows,
             has_more,
-            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            elapsed_ms,
+            execution_ms: first.map_or(elapsed_ms, |t| t.duration_since(started).as_secs_f64() * 1000.0),
         })
     }
 }

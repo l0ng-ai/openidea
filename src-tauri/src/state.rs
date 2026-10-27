@@ -397,7 +397,11 @@ impl AppState {
         mark("recent");
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
 
-        let db = Arc::new(ide_db::DbManager::new(root.clone(), self.data_dir.join("db-passwords.json")));
+        let db = Arc::new(ide_db::DbManager::new(
+            root.clone(),
+            self.data_dir.join("db-passwords.json"),
+            self.data_dir.join("db-history.json"),
+        ));
         let http_history = Arc::new(ide_http::History::new(self.data_dir.join("http-history").join(&project_key)));
         let project = Arc::new(Project {
             root,

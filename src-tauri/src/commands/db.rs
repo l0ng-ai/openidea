@@ -1,7 +1,10 @@
 use crate::state::AppState;
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
-use ide_db::{CompletionModel, DataSource, DbRowEdit, QueryResult, SortKey, TableDetails, TableInfo, TablePage};
+use ide_db::{
+    CompletionModel, DataSource, DbObjectKind, DbRowEdit, HistoryEntry, PlanNode, QueryResult, SchemaObjects, SortKey,
+    TableDetails, TableInfo, TablePage,
+};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{State, Window};
@@ -173,6 +176,72 @@ pub async fn db_ddl(
 ) -> IdeResult<String> {
     let db = state.project(window.label())?.db.clone();
     db.ddl(&id, &schema, &table).await
+}
+
+/// The routines and sequences of `schema` (the tree's `routines` / `sequences`).
+#[tauri::command]
+#[specta::specta]
+pub async fn db_schema_objects(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    schema: String,
+) -> IdeResult<SchemaObjects> {
+    let db = state.project(window.label())?.db.clone();
+    db.schema_objects(&id, &schema).await
+}
+
+/// The definition of a routine, trigger or sequence (Go to DDL, Quick Documentation).
+#[tauri::command]
+#[specta::specta]
+pub async fn db_object_ddl(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    schema: String,
+    kind: DbObjectKind,
+    name: String,
+) -> IdeResult<String> {
+    let db = state.project(window.label())?.db.clone();
+    db.object_ddl(&id, &schema, kind, &name).await
+}
+
+/// Explain Plan: the execution plan of `statement` on `id`, without running it.
+#[tauri::command]
+#[specta::specta]
+pub async fn db_explain(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    id: String,
+    statement: String,
+) -> IdeResult<Vec<PlanNode>> {
+    let db = state.project(window.label())?.db.clone();
+    let cancel = state.begin_request(request);
+    let result = db.explain(&id, &statement, &cancel).await;
+    state.end_request(request);
+    result
+}
+
+/// The statements data source `id` ran, newest first (Browse Query History).
+#[tauri::command]
+#[specta::specta]
+pub async fn db_history(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<Vec<HistoryEntry>> {
+    let db = state.project(window.label())?.db.clone();
+    db.history(&id).await
+}
+
+/// Removes statements from the query history of `id` (`None`: all of them).
+#[tauri::command]
+#[specta::specta]
+pub async fn db_remove_history(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    texts: Option<Vec<String>>,
+) -> IdeResult<()> {
+    let db = state.project(window.label())?.db.clone();
+    db.remove_history(&id, texts).await
 }
 
 /// Writes exported result data (CSV, JSON, SQL…) to `path`.

@@ -16,7 +16,7 @@ import {
   setFileDecorations,
   toolWindowService,
 } from "@/workbench/contributions";
-import { SQL_LANGUAGE, consoleExtension, executeInView } from "./console";
+import { SQL_LANGUAGE, consoleExtension, executeInView, explainInView } from "./console";
 import { DatabaseDialogs } from "./Dialogs";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { nodeTarget, type DbNode } from "./nodes";
@@ -28,6 +28,7 @@ import {
   consoleTints,
   loadSources,
   openConsole,
+  openHistory,
   openSourceDialog,
   useDatabase,
   watchIdleConnections,
@@ -52,7 +53,12 @@ export function activate(): () => void {
       onUse: true,
       component: lazyComponent(() => import("./ResultsView").then((m) => m.ResultsView)),
     }),
-    registerEditorKind({ kind: TABLE_KIND, component: lazyComponent(() => import("./TableEditor").then((m) => m.TableEditor)), title: tableTitle, icon: () => "database" }),
+    registerEditorKind({
+      kind: TABLE_KIND,
+      component: lazyComponent(() => import("./TableEditor").then((m) => m.TableEditor)),
+      title: tableTitle,
+      icon: () => "database",
+    }),
     registerOverlay({ id: "database.dialogs", component: DatabaseDialogs }),
     registerEditorContribution({ id: "database.console", order: 57, extensions: consoleExtension }),
     // A reopened project starts with a fresh backend: forget the old one's state.
@@ -66,6 +72,7 @@ export function activate(): () => void {
         schemas: {},
         tables: {},
         details: {},
+        objects: {},
         completion: {},
         results: [],
         output: [],
@@ -143,6 +150,37 @@ export function activate(): () => void {
             return;
           }
           await executeInView(e.view, e.ctx.path);
+        },
+      },
+      {
+        id: "db.explainPlan",
+        title: "Explain Plan",
+        category: "Tools",
+        icon: "db-plan",
+        keywords: ["query plan", "explain", "sql"],
+        when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
+        run: async () => {
+          const e = activeEditor();
+          if (!e || e.ctx.language !== SQL_LANGUAGE) return;
+          if (!useDatabase.getState().loaded) await loadSources();
+          await explainInView(e.view, e.ctx.path);
+        },
+      },
+      {
+        id: "db.queryHistory",
+        title: "Browse Query History",
+        category: "Tools",
+        icon: "history",
+        keywords: ["database", "sql", "history"],
+        when: "projectOpen",
+        run: async () => {
+          if (!useDatabase.getState().loaded) await loadSources();
+          const e = activeEditor();
+          const path = e?.ctx.language === SQL_LANGUAGE ? e.ctx.path : null;
+          const s = useDatabase.getState();
+          const id =
+            (path && consoleSource(path)) ?? s.selectedSource ?? (s.sources.length === 1 ? s.sources[0]!.id : null);
+          openHistory(path, id ?? null);
         },
       },
     ]),

@@ -738,6 +738,16 @@ export const commands = {
 	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
 	/**  The DDL of table or view `table` (Go to DDL, Generate DDL). */
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
+	/**  The routines and sequences of `schema` (the tree's `routines` / `sequences`). */
+	dbSchemaObjects: (id: string, schema: string) => typedError<DbSchemaObjects, IdeError>(__TAURI_INVOKE("db_schema_objects", { id, schema })),
+	/**  The definition of a routine, trigger or sequence (Go to DDL, Quick Documentation). */
+	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
+	/**  Explain Plan: the execution plan of `statement` on `id`, without running it. */
+	dbExplain: (request: RequestId, id: string, statement: string) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement })),
+	/**  The statements data source `id` ran, newest first (Browse Query History). */
+	dbHistory: (id: string) => typedError<DbHistoryEntry[], IdeError>(__TAURI_INVOKE("db_history", { id })),
+	/**  Removes statements from the query history of `id` (`None`: all of them). */
+	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	/**  Tables, columns and foreign keys for SQL completion. */
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
 	/**  Writes exported result data (CSV, JSON, SQL…) to `path`. */
@@ -1515,6 +1525,12 @@ export type DbForeignKey = {
 	refColumns: string[],
 };
 
+export type DbHistoryEntry = {
+	text: string,
+	/**  Milliseconds since the Unix epoch. */
+	time: number | null,
+};
+
 export type DbIndexInfo = {
 	name: string,
 	unique: boolean,
@@ -1527,9 +1543,19 @@ export type DbIntrospection = {
 	databases?: string[],
 	allSchemas?: boolean,
 	schemas?: string[],
-	/**  `pg_catalog`, `information_schema`, `mysql`…, and PostgreSQL template databases. */
+	/**  `pg_catalog`, `information_schema`, `mysql`…, and service databases (`rdsadmin`…). */
 	showSystem?: boolean,
+	/**  PostgreSQL template databases (`template0`, `template1`). */
+	showTemplates?: boolean,
+	/**
+	 *  Object filter: the tree lists only tables, views, routines and sequences matching
+	 *  one of these patterns (`*`, `?`; separated by commas or spaces). Empty: all.
+	 */
+	objectFilter?: string,
 };
+
+/**  Schema objects other than tables and columns (Go to DDL, Drop). */
+export type DbObjectKind = "function" | "procedure" | "trigger" | "sequence";
 
 /**  Options tab: session settings applied to every connection. */
 export type DbOptions = {
@@ -1544,6 +1570,23 @@ export type DbOptions = {
 	keepAliveSecs?: number | null,
 	/**  Disconnect after this long without statements (enforced by the UI, which sees the activity). */
 	autoDisconnectSecs?: number | null,
+	/**  PostgreSQL: show only the configured database, its schemas right under the data source. */
+	singleDatabase?: boolean,
+};
+
+/**  One operation of a plan; `parent` indexes the plan's node list (roots: `None`). */
+export type DbPlanNode = {
+	parent: number | null,
+	/**  `Full Scan`, `Index Scan`, `Hash Join`… */
+	operation: string,
+	/**  The object it works on and its key details (`table: o;`). */
+	params: string,
+	properties: DbPlanProperty[],
+};
+
+export type DbPlanProperty = {
+	name: string,
+	value: string,
 };
 
 /**
@@ -1566,6 +1609,8 @@ export type DbQueryResult = {
 	/**  More rows exist beyond the limit. */
 	hasMore: boolean,
 	elapsedMs: number | null,
+	/**  Until the server's first answer; the rest of `elapsed_ms` is fetching. */
+	executionMs: number | null,
 };
 
 export type DbResultColumn = {
@@ -1573,11 +1618,31 @@ export type DbResultColumn = {
 	typeName: string,
 };
 
+export type DbRoutineInfo = {
+	name: string,
+	/**  `Function` or `Procedure`. */
+	kind: DbObjectKind,
+	arguments: string,
+	/**  Result type of a function. */
+	returns: string | null,
+};
+
 /**
  *  A pending change of the table editor. `key` identifies the row: its primary
  *  key columns with their original values.
  */
 export type DbRowEdit = { kind: "update"; key: DbCellValue[]; values: DbCellValue[] } | { kind: "insert"; values: DbCellValue[] } | { kind: "delete"; key: DbCellValue[] };
+
+/**  A schema's routines and sequences (the tree's `routines` / `sequences` folders). */
+export type DbSchemaObjects = {
+	routines: DbRoutineInfo[],
+	sequences: DbSequenceInfo[],
+};
+
+export type DbSequenceInfo = {
+	name: string,
+	dataType: string,
+};
 
 export type DbSortKey = {
 	column: string,
@@ -1621,6 +1686,7 @@ export type DbTableDetails = {
 	columns: DbColumnInfo[],
 	indexes: DbIndexInfo[],
 	foreignKeys: DbForeignKey[],
+	triggers: DbTriggerInfo[],
 };
 
 export type DbTableInfo = {
@@ -1628,12 +1694,20 @@ export type DbTableInfo = {
 	kind: DbTableKind,
 };
 
-export type DbTableKind = "table" | "view";
+export type DbTableKind = "table" | "view" | "materializedView";
 
 export type DbTablePage = {
 	result: DbQueryResult,
 	details: DbTableDetails,
 	offset: number | null,
+};
+
+export type DbTriggerInfo = {
+	name: string,
+	/**  `before`, `after`, `instead of`. */
+	timing: string,
+	/**  `insert`, `update or delete`… */
+	events: string,
 };
 
 /**  Transaction control of the data source's consoles. */

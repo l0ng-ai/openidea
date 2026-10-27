@@ -3,6 +3,8 @@
 //! and statement splitting ([`split`]), for SQLite, PostgreSQL and MySQL/MariaDB.
 
 pub mod conn;
+pub mod history;
+pub mod plan;
 pub mod secrets;
 pub mod source;
 pub mod split;
@@ -10,11 +12,14 @@ pub mod sql;
 pub mod tunnel;
 
 pub use conn::{Held, Pool, QueryResult, ResultColumn};
+pub use history::HistoryEntry;
+pub use plan::{PlanNode, PlanProperty};
 pub use source::{
     DataSource, DbColor, DbDriver, DbIntrospection, DbOptions, DbProperty, DbSsh, DbSshAuth, DbSslMode, DbTxMode,
 };
 pub use sql::{CellValue, DbRowEdit, SortKey};
 
+use history::HistoryStore;
 use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use parking_lot::Mutex;
 use secrets::SecretStore;
@@ -31,6 +36,67 @@ use tunnel::{OpenError, Tunnel, TunnelSpec, UnknownHostKey};
 pub enum DbTableKind {
     Table,
     View,
+    MaterializedView,
+}
+
+impl DbTableKind {
+    fn from_catalog(kind: Option<&str>) -> Self {
+        match kind {
+            Some("view") => Self::View,
+            Some("materialized view") => Self::MaterializedView,
+            _ => Self::Table,
+        }
+    }
+}
+
+/// Schema objects other than tables and columns (Go to DDL, Drop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DbObjectKind {
+    Function,
+    Procedure,
+    Trigger,
+    Sequence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbTriggerInfo")]
+pub struct TriggerInfo {
+    pub name: String,
+    /// `before`, `after`, `instead of`.
+    pub timing: String,
+    /// `insert`, `update or delete`…
+    pub events: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbRoutineInfo")]
+pub struct RoutineInfo {
+    pub name: String,
+    /// `Function` or `Procedure`.
+    pub kind: DbObjectKind,
+    pub arguments: String,
+    /// Result type of a function.
+    pub returns: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbSequenceInfo")]
+pub struct SequenceInfo {
+    pub name: String,
+    pub data_type: String,
+}
+
+/// A schema's routines and sequences (the tree's `routines` / `sequences` folders).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbSchemaObjects")]
+pub struct SchemaObjects {
+    pub routines: Vec<RoutineInfo>,
+    pub sequences: Vec<SequenceInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -68,6 +134,7 @@ pub struct TableDetails {
     pub columns: Vec<ColumnInfo>,
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKey>,
+    pub triggers: Vec<TriggerInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -148,6 +215,7 @@ pub struct DbManager {
     known_hosts: PathBuf,
     ssh_config: Option<PathBuf>,
     saved_passwords: SecretStore,
+    history: Arc<HistoryStore>,
     /// Passwords entered this session (not saved, or not yet), by credential key.
     session_passwords: Mutex<HashMap<String, String>>,
     /// Manual-commit data sources, each with the connection of its open
@@ -251,21 +319,24 @@ async fn end_session(session: &Session) {
 }
 
 impl DbManager {
-    /// `passwords` is the app-wide file of saved passwords ([`SecretStore`]).
-    pub fn new(root: PathBuf, passwords: PathBuf) -> Self {
+    /// `passwords` / `history` are the app-wide files of saved passwords
+    /// ([`SecretStore`]) and query history ([`HistoryStore`]).
+    pub fn new(root: PathBuf, passwords: PathBuf, history: PathBuf) -> Self {
         let ssh_dir = dirs::home_dir().unwrap_or_default().join(".ssh");
-        Self::with_ssh_files(root, passwords, ssh_dir.join("known_hosts"), Some(ssh_dir.join("config")))
+        Self::with_ssh_files(root, passwords, history, ssh_dir.join("known_hosts"), Some(ssh_dir.join("config")))
     }
 
     /// [`DbManager::new`] with other `known_hosts` / `~/.ssh/config` files (tests).
     pub fn with_ssh_files(
         root: PathBuf,
         passwords: PathBuf,
+        history: PathBuf,
         known_hosts: PathBuf,
         ssh_config: Option<PathBuf>,
     ) -> Self {
         Self {
             saved_passwords: SecretStore::new(passwords, &root),
+            history: Arc::new(HistoryStore::new(history, &root)),
             root,
             pools: Mutex::default(),
             tunnels: Mutex::default(),
@@ -529,14 +600,15 @@ impl DbManager {
     /// The databases of the server of data source `id` (PostgreSQL), the connected one first.
     pub async fn databases(&self, id: &str) -> IdeResult<Databases> {
         let id = split_target(id).0;
-        let system = self.source(id)?.introspection.show_system;
+        let introspection = self.source(id)?.introspection;
+        let system = introspection.show_system;
         let pool = self.pool(id).await?;
         if pool.driver() != DbDriver::Postgres {
             return Err(IdeError::invalid("only PostgreSQL data sources list databases"));
         }
         let first = |rows: Vec<Vec<Option<String>>>| rows.into_iter().filter_map(|r| r.into_iter().next().flatten());
         let current = first(pool.rows("SELECT current_database()", 1).await?).next().unwrap_or_default();
-        let rows = pool.rows(sql::databases(system), MAX_META_ROWS).await?;
+        let rows = pool.rows(sql::databases(introspection.show_templates), MAX_META_ROWS).await?;
         let mut names: Vec<String> =
             first(rows).filter(|n| system || *n == current || !sql::INTERNAL_DATABASES.contains(&n.as_str())).collect();
         if !names.contains(&current) {
@@ -562,9 +634,7 @@ impl DbManager {
             .filter_map(|r| {
                 let mut it = r.into_iter();
                 let name = it.next().flatten()?;
-                let kind =
-                    if it.next().flatten().as_deref() == Some("view") { DbTableKind::View } else { DbTableKind::Table };
-                Some(TableInfo { name, kind })
+                Some(TableInfo { name, kind: DbTableKind::from_catalog(it.next().flatten().as_deref()) })
             })
             .collect())
     }
@@ -612,7 +682,85 @@ impl DbManager {
                 .collect();
         }
         foreign_keys.retain(|k| k.columns.len() == k.ref_columns.len());
-        Ok(TableDetails { columns, indexes, foreign_keys })
+        let triggers = pool
+            .rows(&sql::triggers(driver, schema, table), MAX_META_ROWS)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("triggers: {}", e.message);
+                Vec::new()
+            })
+            .into_iter()
+            .filter_map(|r| {
+                let mut it = r.into_iter();
+                let name = it.next().flatten()?;
+                let (timing, events) = if driver == DbDriver::Sqlite {
+                    sql::sqlite_trigger_event(&it.next().flatten().unwrap_or_default())
+                } else {
+                    (it.next().flatten().unwrap_or_default(), it.next().flatten().unwrap_or_default())
+                };
+                Some(TriggerInfo { name, timing, events })
+            })
+            .collect();
+        Ok(TableDetails { columns, indexes, foreign_keys, triggers })
+    }
+
+    /// The routines and sequences of `schema`.
+    pub async fn schema_objects(&self, id: &str, schema: &str) -> IdeResult<SchemaObjects> {
+        let pool = self.pool(id).await?;
+        let driver = pool.driver();
+        let mut out = SchemaObjects::default();
+        if let Some(q) = sql::routines(driver, schema) {
+            out.routines = pool
+                .rows(&q, MAX_META_ROWS)
+                .await?
+                .into_iter()
+                .filter_map(|r| {
+                    let mut it = r.into_iter();
+                    let name = it.next().flatten()?;
+                    let kind = if it.next().flatten().as_deref() == Some("procedure") {
+                        DbObjectKind::Procedure
+                    } else {
+                        DbObjectKind::Function
+                    };
+                    let arguments = it.next().flatten().unwrap_or_default();
+                    let returns = it.next().flatten().filter(|r| !r.is_empty() && kind == DbObjectKind::Function);
+                    Some(RoutineInfo { name, kind, arguments, returns })
+                })
+                .collect();
+        }
+        if let Some(q) = sql::sequences(driver, schema) {
+            out.sequences = pool
+                .rows(&q, MAX_META_ROWS)
+                .await?
+                .into_iter()
+                .filter_map(|r| {
+                    let mut it = r.into_iter();
+                    Some(SequenceInfo {
+                        name: it.next().flatten()?,
+                        data_type: it.next().flatten().unwrap_or_default(),
+                    })
+                })
+                .collect();
+        }
+        Ok(out)
+    }
+
+    /// The definition of a routine (every overload), trigger or sequence.
+    pub async fn object_ddl(&self, id: &str, schema: &str, kind: DbObjectKind, name: &str) -> IdeResult<String> {
+        let pool = self.pool(id).await?;
+        let (q, column) = sql::object_ddl(pool.driver(), schema, kind, name)
+            .ok_or_else(|| IdeError::invalid(format!("no {kind:?} objects in this database")))?;
+        let defs: Vec<String> = pool
+            .rows(&q, MAX_META_ROWS)
+            .await?
+            .into_iter()
+            .filter_map(|r| r.into_iter().nth(column).flatten())
+            .map(|d| format!("{};\n", d.trim_end().trim_end_matches(';')))
+            .collect();
+        if defs.is_empty() {
+            return Err(IdeError::not_found(format!("{schema}.{name}")));
+        }
+        Ok(defs.join("\n"))
     }
 
     /// The DDL of table or view `name`: SQLite's stored statements, MySQL's
@@ -708,7 +856,7 @@ impl DbManager {
                 _ => tables.push(CompletionTable {
                     schema,
                     name,
-                    kind: if kind == "view" { DbTableKind::View } else { DbTableKind::Table },
+                    kind: DbTableKind::from_catalog(Some(&kind)),
                     columns: vec![column],
                 }),
             }
@@ -732,7 +880,60 @@ impl DbManager {
         Ok(CompletionModel { default_schema, tables, foreign_keys })
     }
 
+    /// Runs `statement` on `id` (in its open transaction in manual-commit mode),
+    /// recording it in the data source's query history.
     pub async fn execute(
+        &self,
+        id: &str,
+        statement: &str,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        let r = self.run(id, statement, max_rows, cancel).await;
+        let ran = match &r {
+            Ok(_) => true,
+            Err(e) => !matches!(e.kind, ErrorKind::Cancelled | ErrorKind::PermissionDenied),
+        };
+        if ran {
+            self.remember_statement(id, statement);
+        }
+        r
+    }
+
+    fn remember_statement(&self, id: &str, statement: &str) {
+        let (history, source, text) = (self.history.clone(), split_target(id).0.to_owned(), statement.to_owned());
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = history.add(&source, &text, time) {
+                tracing::warn!("{}", e.message);
+            }
+        });
+    }
+
+    /// The query history of data source `id`, newest first.
+    pub async fn history(&self, id: &str) -> IdeResult<Vec<HistoryEntry>> {
+        let (history, source) = (self.history.clone(), split_target(id).0.to_owned());
+        tokio::task::spawn_blocking(move || history.list(&source)).await.map_err(|e| IdeError::internal(e.to_string()))
+    }
+
+    /// Forgets statements of the query history of `id` (all of them for `None`).
+    pub async fn remove_history(&self, id: &str, texts: Option<Vec<String>>) -> IdeResult<()> {
+        let (history, source) = (self.history.clone(), split_target(id).0.to_owned());
+        tokio::task::spawn_blocking(move || history.remove(&source, texts.as_deref()))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?
+    }
+
+    /// The execution plan of `statement` (explained, not run).
+    pub async fn explain(&self, id: &str, statement: &str, cancel: &CancellationToken) -> IdeResult<Vec<PlanNode>> {
+        let driver = self.pool(id).await?.driver();
+        let result = self.run(id, &plan::explain_statement(driver, statement), MAX_META_ROWS, cancel).await?;
+        plan::parse(driver, &result)
+    }
+
+    async fn run(
         &self,
         id: &str,
         statement: &str,

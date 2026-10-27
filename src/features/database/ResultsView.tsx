@@ -3,13 +3,13 @@
  * executed statement with its outcome, and a `Result N` tab per result set —
  * a toolbar (re-run, export / copy as CSV, JSON, SQL…), the grid and a floating row count.
  */
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { call, commands } from "@/platform/ipc";
-import { EmptyState, IconButton, Spinner, Tabs, showContextMenu, type MenuItem, T } from "@/ui";
-import { notifications } from "@/workbench/contributions";
-import { EXPORT_FORMATS, exportData, type ExportData, type ExportFormat } from "./export";
-import { Grid } from "./Grid";
+import type { DbPlanNode } from "@/platform/ipc";
+import { EmptyState, Icon, IconButton, Spinner, Tabs, Tree, showContextMenu, T } from "@/ui";
+import { ChartView } from "./ChartView";
+import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
+import type { ExportData, ExportFormat } from "./export";
 import { analyze } from "./sql/analyze";
 import {
   OUTPUT_TAB,
@@ -63,52 +63,17 @@ function queryTable(text: string, data: Pick<ExportData, "driver">): string {
   return a.refs.find((r) => r.depth === 0 && r.kind === "table")?.name ?? "MY_TABLE";
 }
 
-async function saveExport(format: ExportFormat, data: ExportData) {
-  const f = EXPORT_FORMATS.find((x) => x.id === format)!;
-  let path: string | null;
-  try {
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    path = await save({
-      defaultPath: `${data.table}.${f.extension}`,
-      filters: [{ name: f.label, extensions: [f.extension] }],
-    });
-  } catch {
-    return;
-  }
-  if (!path) return;
-  try {
-    await call(commands.dbExportFile(path, exportData(format, data)));
-    notifications().notify({ level: "info", title: `${data.rows.length} rows exported`, body: path, key: "db-export" });
-  } catch (e) {
-    notifications().notify({
-      level: "error",
-      title: "Cannot export data",
-      body: e instanceof Error ? e.message : String(e),
-    });
-  }
-}
-
-function exportMenu(data: ExportData): MenuItem[] {
-  return [
-    ...EXPORT_FORMATS.map((f): MenuItem => ({
-      label: `Copy as ${f.label}`,
-      icon: "copy",
-      run: () => void navigator.clipboard?.writeText(exportData(f.id, data)),
-    })),
-    { kind: "separator" },
-    ...EXPORT_FORMATS.map((f): MenuItem => ({
-      label: `Export to ${f.label} File…`,
-      run: () => void saveExport(f.id, data),
-    })),
-  ];
-}
-
 function Result({ tab }: { tab: ResultTab }) {
+  const [view, setView] = useState<"table" | "chart">("table");
+  const [panel, setPanel] = useState<DataPanel | null>(null);
+  const [extractor, setExtractor] = useState<ExportFormat>("csv");
   const r = tab.outcome.result;
+  const columns = useMemo(() => (r ? r.columns.map((c) => ({ name: c.name, type: c.typeName })) : []), [r]);
+  const value = useCallback((row: number, col: number) => r?.rows[row]?.[col] ?? null, [r]);
   if (!r) return null;
   const driver = sourceById(tab.sourceId)?.driver ?? "sqlite";
   const data = (): ExportData => ({
-    columns: r.columns.map((c) => ({ name: c.name, type: c.typeName })),
+    columns,
     rows: r.rows,
     driver,
     table: queryTable(tab.outcome.statement.text, { driver }),
@@ -116,25 +81,153 @@ function Result({ tab }: { tab: ResultTab }) {
   return (
     <div className={styles.view}>
       <div className={styles.toolbar}>
-        <IconButton icon="refresh" title="Rerun Query" disabled={tab.busy} onClick={() => void rerunResult(tab.id)} />
+        <IconButton icon="db-table" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
+        <IconButton icon="db-chart" title="Chart" aria-pressed={view === "chart"} onClick={() => setView("chart")} />
         <span className={styles.toolbarSeparator} />
-        <IconButton icon="export" title="Export Data" onClick={(e) => showContextMenu(e, exportMenu(data()))} />
+        <IconButton icon="refresh" title="Rerun Query" disabled={tab.busy} onClick={() => void rerunResult(tab.id)} />
+        {tab.busy && <Spinner size={12} />}
+        <span className={styles.spacer} />
+        <span className={styles.resultSource} title={tab.outcome.statement.text}>
+          {targetLabel(tab.sourceId)}
+        </span>
+        <ExtractorSelect value={extractor} onChange={setExtractor} />
+        <IconButton
+          icon="export"
+          title="Export Data"
+          onClick={(e) =>
+            showContextMenu(e, exportMenu(data(), queryTable(tab.outcome.statement.text, { driver }), extractor))
+          }
+        />
+        {view === "table" && <PanelToggle panel={panel} onChange={setPanel} />}
+      </div>
+      {view === "chart" ? (
+        <div className={styles.fill}>
+          <ChartView columns={columns} rows={r.rows} />
+        </div>
+      ) : (
+        <div className={clsx(styles.fill, styles.gridHost)}>
+          <DataView
+            columns={columns}
+            rowCount={r.rows.length}
+            value={value}
+            panel={panel}
+            onPanelChange={setPanel}
+            aria-label={tab.title}
+          />
+          <div className={styles.rowPill} role="status" title={outcomeSummary(tab.outcome)}>
+            {r.rows.length} row{r.rows.length === 1 ? "" : "s"}
+            {r.hasMore ? " (limit reached)" : ""}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface PlanRow {
+  node: DbPlanNode;
+  index: number;
+  key: string;
+}
+
+/** IDEA's operation icons: a table for scans of one, a key for index lookups, an arrow for the statement. */
+function planIcon(r: PlanRow): string | null {
+  if (r.index < 0) return "arrow-left";
+  if (/index/i.test(r.node.operation)) return "db-key";
+  if (/scan/i.test(r.node.operation)) return "db-table";
+  return null;
+}
+
+/** IDEA's Query Plan tab: the operation tree with its parameters, the selected operation's properties beside it. */
+function PlanResult({ tab }: { tab: ResultTab }) {
+  const plan = useMemo(() => tab.plan ?? [], [tab.plan]);
+  const rows = useMemo(() => plan.map((node, index): PlanRow => ({ node, index, key: String(index) })), [plan]);
+  // IDEA roots the operations in the statement itself ("Select").
+  const statement = useMemo((): PlanRow => {
+    const kind = /^\s*(\w+)/.exec(tab.outcome.statement.text)?.[1]?.toLowerCase() ?? "statement";
+    const operation = kind[0]!.toUpperCase() + kind.slice(1);
+    return {
+      node: { parent: null, operation, params: "", properties: [{ name: "Operation", value: kind }] },
+      index: -1,
+      key: "statement",
+    };
+  }, [tab.outcome.statement.text]);
+  const [selected, setSelected] = useState(-1);
+  // Everything starts expanded, a re-explained plan too.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const keys = useMemo(() => [statement.key, ...rows.map((r) => r.key)], [statement, rows]);
+  const expanded = useMemo(() => new Set(keys.filter((k) => !collapsed.has(k))), [keys, collapsed]);
+  const setExpanded = (next: ReadonlySet<string>) => setCollapsed(new Set(keys.filter((k) => !next.has(k))));
+  const children = (r: PlanRow) =>
+    r === statement ? rows.filter((c) => c.node.parent === null) : rows.filter((c) => c.node.parent === r.index);
+  const props = (selected < 0 ? statement : rows[selected])?.node.properties ?? [];
+  const selectedKey = selected < 0 ? statement.key : String(selected);
+  return (
+    <div className={styles.view}>
+      <div className={styles.toolbar}>
+        <IconButton icon="refresh" title="Explain Again" disabled={tab.busy} onClick={() => void rerunResult(tab.id)} />
         {tab.busy && <Spinner size={12} />}
         <span className={styles.spacer} />
         <span className={styles.resultSource} title={tab.outcome.statement.text}>
           {targetLabel(tab.sourceId)}
         </span>
       </div>
-      <div className={clsx(styles.fill, styles.gridHost)}>
-        <Grid
-          columns={r.columns.map((c) => ({ name: c.name, type: c.typeName }))}
-          rowCount={r.rows.length}
-          value={(row, col) => r.rows[row]?.[col] ?? null}
-        />
-        <div className={styles.rowPill} role="status" title={outcomeSummary(tab.outcome)}>
-          {r.rows.length} row{r.rows.length === 1 ? "" : "s"}
-          {r.hasMore ? " (limit reached)" : ""}
+      <div className={clsx(styles.fill, styles.planView)}>
+        <div className={styles.planTree}>
+          <div className={styles.planHeader}>
+            <span>
+              <T>Operation</T>
+            </span>
+            <span>
+              <T>Params</T>
+            </span>
+          </div>
+          {plan.length ? (
+            <Tree<PlanRow>
+              aria-label="Query plan"
+              roots={[statement]}
+              selected={new Set([selectedKey])}
+              expanded={expanded}
+              onExpandedChange={setExpanded}
+              getKey={(r) => r.key}
+              getLabel={(r) => r.node.operation}
+              getChildren={(r) => children(r)}
+              isExpandable={(r) => children(r).length > 0}
+              onSelectionChange={(_, lead) => lead && setSelected(lead.index)}
+              renderNode={(r) => (
+                <span className={styles.planRow}>
+                  <span className={styles.planOperation}>
+                    {planIcon(r) && <Icon name={planIcon(r)!} size={16} />}
+                    {r.node.operation}
+                  </span>
+                  <span className={styles.planParams}>{r.node.params}</span>
+                </span>
+              )}
+            />
+          ) : (
+            <EmptyState title="Empty plan" />
+          )}
         </div>
+        <table className={styles.planProperties} aria-label="Plan node properties">
+          <thead>
+            <tr>
+              <th>
+                <T>Property</T>
+              </th>
+              <th>
+                <T>Value</T>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.map((p) => (
+              <tr key={p.name}>
+                <td>{p.name}</td>
+                <td>{p.value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -164,13 +257,15 @@ export function ResultsView() {
           ...results.map((r) => ({
             id: String(r.id),
             label: r.title,
-            icon: "db-table",
+            icon: r.plan ? "db-plan" : "db-table",
             closable: true,
             tooltip: r.outcome.statement.text,
           })),
         ]}
       />
-      <div className={styles.fill}>{tab ? <Result key={tab.id} tab={tab} /> : <Output />}</div>
+      <div className={styles.fill}>
+        {!tab ? <Output /> : tab.plan ? <PlanResult key={tab.id} tab={tab} /> : <Result key={tab.id} tab={tab} />}
+      </div>
     </div>
   );
 }

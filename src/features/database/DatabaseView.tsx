@@ -1,6 +1,7 @@
 /**
  * Database tool window (IDEA's layout): data source → database (PostgreSQL) → schema → `tables` /
- * `views` folders → table → `columns` / `keys` / `foreign keys` / `indexes`,
+ * `views` / `materialized views` / `routines` / `sequences` folders → table → `columns` / `keys` /
+ * `foreign keys` / `indexes` / `triggers`,
  * with counts and column types, loaded lazily. Double-click a table to open its data, a data
  * source to open its query console.
  */
@@ -21,8 +22,8 @@ import {
   type TreeHandle,
   T,
 } from "@/ui";
-import { colorVar, databaseKey, shownNames, sourceIcon, splitTarget, targetOf } from "./model";
-import { nodeTarget, type DbNode as Node, type Group } from "./nodes";
+import { colorVar, databaseKey, passesObjectFilter, shownNames, sourceIcon, splitTarget, targetOf } from "./model";
+import { nodeTarget, schemaObjectOf, tableFolder, type DbNode as Node, type Folder, type Group } from "./nodes";
 import {
   connect,
   detailsKey,
@@ -33,6 +34,7 @@ import {
   loadSources,
   loadTables,
   openConsole,
+  openObjectDdl,
   tablesKey,
   useDatabase,
   type Loaded,
@@ -46,7 +48,18 @@ const GROUP_LABELS: Record<Group, string> = {
   keys: "keys",
   foreignKeys: "foreign keys",
   indexes: "indexes",
+  triggers: "triggers",
 };
+
+const FOLDER_LABELS: Record<Folder, string> = {
+  tables: "tables",
+  views: "views",
+  materializedViews: "materialized views",
+  routines: "routines",
+  sequences: "sequences",
+};
+
+const FOLDERS: readonly Folder[] = ["tables", "views", "materializedViews", "routines", "sequences"];
 
 function status<T>(key: string, l: Loaded<T> | undefined, map: (v: T) => Node[]): Node[] | undefined {
   if (!l) return undefined;
@@ -64,6 +77,7 @@ function groupsOf(d: DbTableDetails): Group[] {
   if (primaryKey(d).length) g.push("keys");
   if (d.foreignKeys.length) g.push("foreignKeys");
   if (d.indexes.length) g.push("indexes");
+  if (d.triggers.length) g.push("triggers");
   return g;
 }
 
@@ -71,6 +85,7 @@ function groupSize(d: DbTableDetails, g: Group): number {
   if (g === "columns") return d.columns.length;
   if (g === "keys") return primaryKey(d).length ? 1 : 0;
   if (g === "foreignKeys") return d.foreignKeys.length;
+  if (g === "triggers") return d.triggers.length;
   return d.indexes.length;
 }
 
@@ -96,9 +111,24 @@ export function DatabaseView() {
     [st.sources],
   );
 
+  /** Schemas tab › Object filter of the data source of target `id`. */
+  const shown = (id: string) => {
+    const filter = sourceOf(id)?.introspection?.objectFilter;
+    return (o: { name: string }) => passesObjectFilter(o.name, filter);
+  };
   const tablesOf = (id: string, schema: string) => {
     const t = st.tables[tablesKey(id, schema)];
-    return t?.status === "ok" ? t.value : null;
+    return t?.status === "ok" ? t.value.filter(shown(id)) : null;
+  };
+  const routinesOf = (id: string, schema: string) =>
+    (st.objects[tablesKey(id, schema)]?.routines ?? []).filter(shown(id));
+  const sequencesOf = (id: string, schema: string) =>
+    (st.objects[tablesKey(id, schema)]?.sequences ?? []).filter(shown(id));
+  /** Members of a schema folder: tables / views / materialized views, routines or sequences. */
+  const folderSize = (id: string, schema: string, folder: Folder): number => {
+    if (folder === "routines") return routinesOf(id, schema).length;
+    if (folder === "sequences") return sequencesOf(id, schema).length;
+    return (tablesOf(id, schema) ?? []).filter((t) => tableFolder(t.kind) === folder).length;
   };
   const detailsOf = (id: string, schema: string, table: string) => {
     const d = st.details[detailsKey(id, schema, table)];
@@ -140,15 +170,36 @@ export function DatabaseView() {
       case "database":
         return schemasOf(n.key, n.id);
       case "schema":
-        return status(n.key, st.tables[tablesKey(n.id, n.schema)], (v) =>
-          (["tables", "views"] as const)
-            .filter((f) => v.some((t) => (t.kind === "view") === (f === "views")))
-            .map((folder) => ({ kind: "folder", key: `${n.key}/${folder}`, id: n.id, schema: n.schema, folder })),
+        return status(n.key, st.tables[tablesKey(n.id, n.schema)], () =>
+          FOLDERS.filter((f) => folderSize(n.id, n.schema, f) > 0).map((folder): Node => ({
+            kind: "folder",
+            key: `${n.key}/${folder}`,
+            id: n.id,
+            schema: n.schema,
+            folder,
+          })),
         );
-      case "folder":
+      case "folder": {
+        const at = { id: n.id, schema: n.schema };
+        if (n.folder === "routines")
+          // Overloads share a name: the key tells them apart by their arguments.
+          return routinesOf(n.id, n.schema).map((routine) => ({
+            kind: "routine",
+            key: `${n.key}/${routine.name}(${routine.arguments})`,
+            routine,
+            ...at,
+          }));
+        if (n.folder === "sequences")
+          return sequencesOf(n.id, n.schema).map((sequence) => ({
+            kind: "sequence",
+            key: `${n.key}/${sequence.name}`,
+            sequence,
+            ...at,
+          }));
         return (tablesOf(n.id, n.schema) ?? [])
-          .filter((t) => (t.kind === "view") === (n.folder === "views"))
-          .map((table) => ({ kind: "table", key: `${n.key}/${table.name}`, id: n.id, schema: n.schema, table }));
+          .filter((t) => tableFolder(t.kind) === n.folder)
+          .map((table) => ({ kind: "table", key: `${n.key}/${table.name}`, table, ...at }));
+      }
       case "table": {
         const d = st.details[detailsKey(n.id, n.schema, n.table.name)];
         if (!d || d.status === "loading") return undefined;
@@ -182,6 +233,8 @@ export function DatabaseView() {
             return d.foreignKeys.map((fk, i) => ({ kind: "foreignKey", key: `${n.key}/${i}`, fk, ...at }));
           case "indexes":
             return d.indexes.map((index) => ({ kind: "index", key: `${n.key}/${index.name}`, index, ...at }));
+          case "triggers":
+            return d.triggers.map((trigger) => ({ kind: "trigger", key: `${n.key}/${trigger.name}`, trigger, ...at }));
         }
         return undefined;
       }
@@ -211,7 +264,13 @@ export function DatabaseView() {
       case "schema":
         return n.schema;
       case "folder":
-        return n.folder;
+        return FOLDER_LABELS[n.folder];
+      case "routine":
+        return n.routine.name;
+      case "sequence":
+        return n.sequence.name;
+      case "trigger":
+        return n.trigger.name;
       case "table":
         return n.table.name;
       case "group":
@@ -247,9 +306,13 @@ export function DatabaseView() {
         return s?.status === "ok" ? String(shownSchemas(n.id, s.value).length) : undefined;
       }
       case "folder":
-        return String(
-          (tablesOf(n.id, n.schema) ?? []).filter((t) => (t.kind === "view") === (n.folder === "views")).length,
-        );
+        return String(folderSize(n.id, n.schema, n.folder));
+      case "routine":
+        return `(${n.routine.arguments})${n.routine.returns ? `: ${n.routine.returns}` : ""}`;
+      case "sequence":
+        return n.sequence.dataType;
+      case "trigger":
+        return `${n.trigger.timing} ${n.trigger.events}`.trim();
       case "group": {
         const d = detailsOf(n.id, n.schema, n.table);
         return d ? String(groupSize(d, n.group)) : undefined;
@@ -279,7 +342,13 @@ export function DatabaseView() {
       case "group":
         return "db-folder";
       case "table":
-        return n.table.kind === "view" ? "db-view" : "db-table";
+        return n.table.kind === "view" ? "db-view" : n.table.kind === "materializedView" ? "db-matview" : "db-table";
+      case "routine":
+        return "db-routine";
+      case "sequence":
+        return "db-sequence";
+      case "trigger":
+        return "db-trigger";
       case "column":
         return n.column.primaryKey ? "db-column-key" : n.foreignKey ? "db-column-fk" : "db-column";
       case "key":
@@ -387,6 +456,10 @@ export function DatabaseView() {
             if (n.kind === "table") openTableData(n.id, n.schema, n.table.name);
             else if (n.kind === "source") void openConsole(n.source.id ?? "");
             else if (n.kind === "database") void openConsole(n.id);
+            else {
+              const o = schemaObjectOf(n);
+              if (o) void openObjectDdl(o.id, o.schema, o.kind, o.name);
+            }
           }}
           activateExpandable={(n) => n.kind === "table"}
           onContextMenu={(n, _sel, e) => {

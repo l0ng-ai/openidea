@@ -77,6 +77,8 @@ pub struct DbOptions {
     pub keep_alive_secs: Option<u32>,
     /// Disconnect after this long without statements (enforced by the UI, which sees the activity).
     pub auto_disconnect_secs: Option<u32>,
+    /// PostgreSQL: show only the configured database, its schemas right under the data source.
+    pub single_database: bool,
 }
 
 /// Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`.
@@ -87,13 +89,26 @@ pub struct DbIntrospection {
     pub databases: Vec<String>,
     pub all_schemas: bool,
     pub schemas: Vec<String>,
-    /// `pg_catalog`, `information_schema`, `mysql`…, and PostgreSQL template databases.
+    /// `pg_catalog`, `information_schema`, `mysql`…, and service databases (`rdsadmin`…).
     pub show_system: bool,
+    /// PostgreSQL template databases (`template0`, `template1`).
+    pub show_templates: bool,
+    /// Object filter: the tree lists only tables, views, routines and sequences matching
+    /// one of these patterns (`*`, `?`; separated by commas or spaces). Empty: all.
+    pub object_filter: String,
 }
 
 impl Default for DbIntrospection {
     fn default() -> Self {
-        Self { all_databases: true, databases: Vec::new(), all_schemas: true, schemas: Vec::new(), show_system: false }
+        Self {
+            all_databases: true,
+            databases: Vec::new(),
+            all_schemas: true,
+            schemas: Vec::new(),
+            show_system: false,
+            show_templates: false,
+            object_filter: String::new(),
+        }
     }
 }
 

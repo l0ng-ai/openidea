@@ -45,7 +45,9 @@ import {
   cancelConsole,
   consoleSource,
   executeConsole,
+  explainConsole,
   finishTransaction,
+  openHistory,
   loadCompletion,
   listsDatabases,
   loadDatabases,
@@ -94,7 +96,12 @@ const runField = StateField.define<RunState>({
         if (a <= m.to && b >= m.from) touched = true;
       });
       if (!touched)
-        marks.push({ ...m, from: tr.changes.mapPos(m.from), to: tr.changes.mapPos(m.to), timingAt: tr.changes.mapPos(m.timingAt) });
+        marks.push({
+          ...m,
+          from: tr.changes.mapPos(m.from),
+          to: tr.changes.mapPos(m.to),
+          timingAt: tr.changes.mapPos(m.timingAt),
+        });
     }
     return { ...value, marks };
   },
@@ -102,8 +109,12 @@ const runField = StateField.define<RunState>({
     EditorView.decorations.from(f, (st) => {
       const ranges = [];
       for (const m of st.marks) {
-        if (m.error) ranges.push(Decoration.mark({ class: "cm-openidea-db-error", attributes: { title: m.error } }).range(m.from, m.to));
-        if (m.ms !== null) ranges.push(Decoration.widget({ widget: new TimingWidget(m.ms), side: 1 }).range(m.timingAt));
+        if (m.error)
+          ranges.push(
+            Decoration.mark({ class: "cm-openidea-db-error", attributes: { title: m.error } }).range(m.from, m.to),
+          );
+        if (m.ms !== null)
+          ranges.push(Decoration.widget({ widget: new TimingWidget(m.ms), side: 1 }).range(m.timingAt));
       }
       return Decoration.set(ranges, true);
     }),
@@ -134,7 +145,11 @@ class RunMarker extends GutterMarker {
     return other.error === this.error;
   }
   toDOM() {
-    const el = iconNode(this.error ? "error" : "check", 14, this.error ? "cm-openidea-db-run-error" : "cm-openidea-db-run-ok");
+    const el = iconNode(
+      this.error ? "error" : "check",
+      14,
+      this.error ? "cm-openidea-db-run-error" : "cm-openidea-db-run-ok",
+    );
     el.title = this.error ?? "Executed";
     return el;
   }
@@ -196,6 +211,12 @@ export async function executeInView(view: EditorView, path: string) {
   if (outcomes.length) markOutcomes(view, outcomes);
 }
 
+/** Explain Plan of the statement at the caret (or the first selected one) of `view`. */
+export async function explainInView(view: EditorView, path: string) {
+  const sel = view.state.selection.main;
+  await explainConsole(path, view.state.doc.toString(), sel.from, sel.to);
+}
+
 const consolePath = Facet.define<string, string>({ combine: (v) => v[0] ?? "" });
 
 function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
@@ -209,7 +230,8 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const databases = useDatabase((s) => s.databases);
   const boundId = bound ? splitTarget(bound).id : null;
   useEffect(() => {
-    if (boundId && listsDatabases(sourceById(boundId)) && !useDatabase.getState().databases[boundId]) void loadDatabases(boundId);
+    if (boundId && listsDatabases(sourceById(boundId)) && !useDatabase.getState().databases[boundId])
+      void loadDatabases(boundId);
   }, [boundId]);
   const targets = useMemo(() => {
     const out: Array<{ value: string; label: string; detail?: string; icon: string }> = [];
@@ -219,11 +241,17 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       const host = sourceLabel(s).slice((s.name ?? "").length + 1);
       if (listsDatabases(s) && dbs?.status === "ok") {
         for (const name of dbs.value.names)
-          out.push({ value: targetOf(id, name, dbs.value.current), label: `${s.name ?? ""}: ${name}`, detail: host, icon: "database" });
+          out.push({
+            value: targetOf(id, name, dbs.value.current),
+            label: `${s.name ?? ""}: ${name}`,
+            detail: host,
+            icon: "database",
+          });
       } else out.push({ value: id, label: s.name ?? "", detail: host, icon: "db-schema" });
     }
     // A console bound to a database whose list is not loaded yet still shows it.
-    if (bound && !out.some((o) => o.value === bound)) out.push({ value: bound, label: targetLabel(bound), icon: "database" });
+    if (bound && !out.some((o) => o.value === bound))
+      out.push({ value: bound, label: targetLabel(bound), icon: "database" });
     return out;
   }, [sources, databases, bound]);
   useEffect(() => {
@@ -241,7 +269,20 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         disabled={!bound || running}
         onClick={() => void executeInView(view, path)}
       />
-      <IconButton icon="stop" title="Cancel Running Statement" disabled={!running} onClick={() => cancelConsole(path)} />
+      <IconButton
+        icon="db-plan"
+        title="Explain Plan"
+        disabled={!bound || running}
+        onClick={() => void explainInView(view, path)}
+      />
+      <IconButton
+        icon="stop"
+        title="Cancel Running Statement"
+        disabled={!running}
+        onClick={() => cancelConsole(path)}
+      />
+      <span className={styles.toolbarSeparator} />
+      <IconButton icon="history" title="Browse Query History" disabled={!bound} onClick={() => openHistory(path)} />
       <span className={styles.toolbarSeparator} />
       <Select
         aria-label="Row limit"
@@ -262,8 +303,18 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       />
       {manual && (
         <>
-          <IconButton icon="commit" title="Commit" disabled={!pending || running} onClick={() => bound && void finishTransaction(bound, true)} />
-          <IconButton icon="revert" title="Roll Back" disabled={!pending || running} onClick={() => bound && void finishTransaction(bound, false)} />
+          <IconButton
+            icon="commit"
+            title="Commit"
+            disabled={!pending || running}
+            onClick={() => bound && void finishTransaction(bound, true)}
+          />
+          <IconButton
+            icon="revert"
+            title="Roll Back"
+            disabled={!pending || running}
+            onClick={() => bound && void finishTransaction(bound, false)}
+          />
         </>
       )}
       <span className={styles.spacer} />

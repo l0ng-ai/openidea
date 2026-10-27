@@ -1,0 +1,4 @@
+<!-- OpenIDEA: result chart (bars on an axis) -->
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M2.5 2.5V13.5H13.5" stroke="#6C707E" stroke-linecap="round"/><path d="M5.5 11.5V8.5M8.5 11.5V5.5M11.5 11.5V7.5" stroke="#6C707E" stroke-width="2"/>
+</svg>

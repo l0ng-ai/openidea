@@ -60,7 +60,15 @@ const SSH_AUTH: Array<SelectOption<DbSshAuth>> = [
 /** Driver property names the Advanced tab suggests, and what the backend does with them. */
 const PROPERTIES: Record<string, { names: string[]; hint: string }> = {
   postgres: {
-    names: ["statement_timeout", "lock_timeout", "idle_in_transaction_session_timeout", "search_path", "work_mem", "application_name", "connect_timeout"],
+    names: [
+      "statement_timeout",
+      "lock_timeout",
+      "idle_in_transaction_session_timeout",
+      "search_path",
+      "work_mem",
+      "application_name",
+      "connect_timeout",
+    ],
     hint: "Sent as run-time parameters when connecting (any server setting, e.g. statement_timeout). application_name names the session; connect_timeout is in seconds.",
   },
   mysql: {
@@ -90,6 +98,7 @@ const blankOptions = (): DbOptions => ({
   startupScript: "",
   keepAliveSecs: null,
   autoDisconnectSecs: null,
+  singleDatabase: false,
 });
 
 const blankIntrospection = (): DbIntrospection => ({
@@ -98,6 +107,8 @@ const blankIntrospection = (): DbIntrospection => ({
   allSchemas: true,
   schemas: [],
   showSystem: false,
+  showTemplates: false,
+  objectFilter: "",
 });
 
 const parsePort = (v: string) => {
@@ -326,7 +337,8 @@ export function SourceDialog({
   const ssh: DbSsh = { ...blankSsh(), ...s.ssh };
   const setSsh = (patch: Partial<DbSsh>) => setS((x) => ({ ...x, ssh: { ...blankSsh(), ...x.ssh, ...patch } }));
   const options: DbOptions = { ...blankOptions(), ...s.options };
-  const setOptions = (patch: Partial<DbOptions>) => setS((x) => ({ ...x, options: { ...blankOptions(), ...x.options, ...patch } }));
+  const setOptions = (patch: Partial<DbOptions>) =>
+    setS((x) => ({ ...x, options: { ...blankOptions(), ...x.options, ...patch } }));
   const intro: DbIntrospection = { ...blankIntrospection(), ...s.introspection };
   const setIntro = (patch: Partial<DbIntrospection>) =>
     setS((x) => ({ ...x, introspection: { ...blankIntrospection(), ...x.introspection, ...patch } }));
@@ -342,7 +354,8 @@ export function SourceDialog({
   const urlValid = !!parsedUrl && parsedUrl.source.driver === s.driver;
   const host = urlOnly ? (parsedUrl?.source.host ?? "") : (s.host ?? "");
   const database = urlOnly ? (parsedUrl?.source.database ?? "") : (s.database ?? "");
-  const name = s.name?.trim() || (sqlite ? fileSourceName(s.file ?? "") : `${database || s.user || "db"}@${host || "localhost"}`);
+  const name =
+    s.name?.trim() || (sqlite ? fileSourceName(s.file ?? "") : `${database || s.user || "db"}@${host || "localhost"}`);
   const sshOn = !sqlite && !!ssh.enabled;
   const valid = sqlite ? !!s.file?.trim() : (urlOnly ? urlValid : !!s.host?.trim()) && (!sshOn || !!ssh.host?.trim());
   const sslOn = (s.ssl ?? "prefer") !== "disable";
@@ -472,7 +485,12 @@ export function SourceDialog({
                 <T>Host:</T>
               </label>
               <div className={styles.formRow}>
-                <Input id="db-host" className={styles.fill} value={s.host ?? ""} onChange={(e) => set({ host: e.target.value })} />
+                <Input
+                  id="db-host"
+                  className={styles.fill}
+                  value={s.host ?? ""}
+                  onChange={(e) => set({ host: e.target.value })}
+                />
                 <label className={styles.formLabel} htmlFor="db-port">
                   <T>Port:</T>
                 </label>
@@ -514,7 +532,11 @@ export function SourceDialog({
               placeholder={initial && password === undefined ? "<unchanged>" : ""}
               onChange={(e) => setPassword(e.target.value)}
             />
-            <Checkbox checked={!!s.savePassword} onChange={(savePassword) => set({ savePassword })} label="Save password" />
+            <Checkbox
+              checked={!!s.savePassword}
+              onChange={(savePassword) => set({ savePassword })}
+              label="Save password"
+            />
           </div>
           {!urlOnly && (
             <>
@@ -587,7 +609,9 @@ export function SourceDialog({
           <Input
             id="db-time-zone"
             value={options.timeZone ?? ""}
-            placeholder={postgres ? "Server default, e.g. UTC or Europe/Berlin" : "UTC (+00:00), e.g. Europe/Berlin or +08:00"}
+            placeholder={
+              postgres ? "Server default, e.g. UTC or Europe/Berlin" : "UTC (+00:00), e.g. Europe/Berlin or +08:00"
+            }
             onChange={(e) => setOptions({ timeZone: e.target.value })}
           />
           <SecondsOption
@@ -604,6 +628,16 @@ export function SourceDialog({
         fallback={300}
         onChange={(autoDisconnectSecs) => setOptions({ autoDisconnectSecs })}
       />
+      {postgres && (
+        <>
+          <span />
+          <Checkbox
+            checked={!!options.singleDatabase}
+            onChange={(singleDatabase) => setOptions({ singleDatabase })}
+            label="Single database mode (show only the configured database)"
+          />
+        </>
+      )}
       <label className={styles.formLabel} htmlFor="db-startup">
         <T>Startup script:</T>
       </label>
@@ -612,7 +646,13 @@ export function SourceDialog({
         className={styles.textArea}
         spellCheck={false}
         value={options.startupScript ?? ""}
-        placeholder={postgres ? "SET statement_timeout = '30s';" : sqlite ? "PRAGMA foreign_keys = ON;" : "SET SESSION sql_mode = 'ANSI';"}
+        placeholder={
+          postgres
+            ? "SET statement_timeout = '30s';"
+            : sqlite
+              ? "PRAGMA foreign_keys = ON;"
+              : "SET SESSION sql_mode = 'ANSI';"
+        }
         onChange={(e) => setOptions({ startupScript: e.target.value })}
       />
       <span />
@@ -686,7 +726,9 @@ export function SourceDialog({
         <>
           <span />
           <span className={styles.formHint}>
-            <T>{"Uses HostName, User, Port, IdentityFile and ProxyJump from ~/.ssh/config, and keys of the SSH agent."}</T>
+            <T>
+              {"Uses HostName, User, Port, IdentityFile and ProxyJump from ~/.ssh/config, and keys of the SSH agent."}
+            </T>
           </span>
         </>
       ) : (
@@ -775,11 +817,30 @@ export function SourceDialog({
           onAll={(allSchemas) => setIntro({ allSchemas })}
           onChosen={(schemas) => setIntro({ schemas })}
         />
+        <div className={styles.formRow}>
+          <label className={styles.formLabel} htmlFor="db-object-filter">
+            <T>Object filter:</T>
+          </label>
+          <Input
+            id="db-object-filter"
+            mono
+            value={intro.objectFilter ?? ""}
+            placeholder="e.g. order*, customers (tables, views, routines, sequences)"
+            onChange={(e) => setIntro({ objectFilter: e.target.value })}
+          />
+        </div>
         <Checkbox
           checked={!!intro.showSystem}
           onChange={(showSystem) => setIntro({ showSystem })}
-          label={postgres ? "Show system schemas and template databases" : "Show system schemas"}
+          label="Show internal system schemas"
         />
+        {postgres && (
+          <Checkbox
+            checked={!!intro.showTemplates}
+            onChange={(showTemplates) => setIntro({ showTemplates })}
+            label="Show template databases"
+          />
+        )}
         <div className={styles.formRow}>
           <Button disabled={!initial?.id || busy} onClick={() => void loadNames()}>
             <T>Load Names from Server</T>
@@ -815,7 +876,12 @@ export function SourceDialog({
               placeholder="<user defined>"
               onChange={(e) => setProperty(i, { name: e.target.value })}
             />
-            <Input aria-label="Property value" value={p.value ?? ""} placeholder="<value>" onChange={(e) => setProperty(i, { value: e.target.value })} />
+            <Input
+              aria-label="Property value"
+              value={p.value ?? ""}
+              placeholder="<value>"
+              onChange={(e) => setProperty(i, { value: e.target.value })}
+            />
             <IconButton
               icon="close"
               size="small"
@@ -871,7 +937,13 @@ export function SourceDialog({
           <T>Name:</T>
         </label>
         <div className={styles.formRow}>
-          <Input id="db-name" className={styles.fill} value={s.name ?? ""} placeholder={name} onChange={(e) => set({ name: e.target.value })} />
+          <Input
+            id="db-name"
+            className={styles.fill}
+            value={s.name ?? ""}
+            placeholder={name}
+            onChange={(e) => set({ name: e.target.value })}
+          />
           <span className={styles.formLabel}>
             <T>Color:</T>
           </span>
@@ -883,7 +955,9 @@ export function SourceDialog({
             onChange={(c) => set({ color: c === "none" ? null : c })}
             renderValue={(o) => (
               <span className={styles.colorValue}>
-                {o && o.value !== "none" && <span className={styles.colorSwatch} style={{ background: colorVar(o.value as DbColor) }} />}
+                {o && o.value !== "none" && (
+                  <span className={styles.colorSwatch} style={{ background: colorVar(o.value as DbColor) }} />
+                )}
                 <T>{o?.label ?? "No color"}</T>
               </span>
             )}
@@ -932,4 +1006,3 @@ export function SourceDialog({
     </Dialog>
   );
 }
-

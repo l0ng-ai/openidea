@@ -1,5 +1,5 @@
 /** Pure helpers of the database tools: clipboard formats, edits, labels. */
-import type { DbCellValue, DbColor, DbProperty, DbRowEdit, DbSslMode, DataSource } from "@/platform/ipc";
+import type { DbCellValue, DbColor, DbProperty, DbRowEdit, DbSortKey, DbSslMode, DataSource } from "@/platform/ipc";
 import { vendorOf, vendorOfScheme } from "./vendors";
 
 export type Cell = string | null;
@@ -21,6 +21,74 @@ export function toCsv(header: readonly string[] | null, rows: ReadonlyArray<read
   const lines = rows.map((r) => r.map(field).join(","));
   if (header) lines.unshift(header.map(field).join(","));
   return lines.join("\r\n");
+}
+
+/** Rows of RFC 4180 text with separator `sep` (quoted fields, `""`, CR LF); a trailing newline adds no row. */
+export function parseDelimited(text: string, sep: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  let i = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+  for (; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quoted) {
+      if (ch !== '"') field += ch;
+      else if (text[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else quoted = false;
+    } else if (ch === '"' && field === "") quoted = true;
+    else if (ch === sep) {
+      row.push(field);
+      field = "";
+    } else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else field += ch;
+  }
+  if (field !== "" || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** The separator of delimited text: tab when its first line has more tabs than commas or semicolons. */
+export function guessSeparator(text: string): string {
+  const first = text.slice(0, text.search(/\r?\n|$/));
+  const count = (c: string) => first.split(c).length - 1;
+  return [",", "\t", ";"].reduce((best, c) => (count(c) > count(best) ? c : best), ",");
+}
+
+/**
+ * Insert edits importing `rows` into a table with `columns`: by header name
+ * (case-insensitive; unknown names skipped) or by position. `emptyAsNull`
+ * turns empty fields into NULL.
+ */
+export function importEdits(
+  rows: readonly string[][],
+  columns: readonly string[],
+  header: boolean,
+  emptyAsNull: boolean,
+): { edits: DbRowEdit[]; mapped: string[] } {
+  const target = (h: string) => columns.find((c) => c.toLowerCase() === h.trim().toLowerCase()) ?? null;
+  const map: Array<string | null> = header
+    ? (rows[0] ?? []).map(target)
+    : columns.slice(0, Math.max(0, ...rows.map((r) => r.length)));
+  const body = header ? rows.slice(1) : rows;
+  const edits: DbRowEdit[] = body
+    .filter((r) => r.some((v) => v !== ""))
+    .map((r) => ({
+      kind: "insert",
+      values: map.flatMap((column, i) =>
+        column === null ? [] : [{ column, value: emptyAsNull && (r[i] ?? "") === "" ? null : (r[i] ?? null) }],
+      ),
+    }));
+  return { edits, mapped: map.filter((c): c is string => c !== null) };
 }
 
 /** Pending changes of the table editor. Row indices refer to the loaded page. */
@@ -53,7 +121,8 @@ export function buildRowEdits(
     out.push({ kind: "update", key: keyOf(row), values: [...changes].map(([column, value]) => ({ column, value })) });
   }
   for (const row of [...edits.deletes].sort((a, b) => a - b)) out.push({ kind: "delete", key: keyOf(row) });
-  for (const ins of edits.inserts) out.push({ kind: "insert", values: [...ins].map(([column, value]) => ({ column, value })) });
+  for (const ins of edits.inserts)
+    out.push({ kind: "insert", values: [...ins].map(([column, value]) => ({ column, value })) });
   return out;
 }
 
@@ -80,15 +149,49 @@ export function colorVar(color: DbColor | null | undefined): string | undefined 
 /** `*` / `?` wildcard match of the Schemas tab (case-sensitive, like the server's names). */
 export function matchesPattern(name: string, pattern: string): boolean {
   if (!/[*?]/.test(pattern)) return name === pattern;
-  const re = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+  const re = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
   return new RegExp(`^${re}$`).test(name);
+}
+
+/** The table editor's ORDER BY field for a sort: `name DESC, id`. */
+export function formatOrderBy(sort: readonly DbSortKey[]): string {
+  return sort.map((k) => (k.descending ? `${k.column} DESC` : k.column)).join(", ");
+}
+
+/** Parses the ORDER BY field (`col [ASC|DESC], …`, names matched case-insensitively); null when a part isn't a column. */
+export function parseOrderBy(text: string, columns: readonly string[]): DbSortKey[] | null {
+  const out: DbSortKey[] = [];
+  for (const part of text
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)) {
+    const m = /^("?)([^"]+?)\1(?:\s+(asc|desc))?$/i.exec(part);
+    const column = m && columns.find((c) => c.toLowerCase() === m[2]!.trim().toLowerCase());
+    if (!column) return null;
+    out.push({ column, descending: m[3]?.toLowerCase() === "desc" });
+  }
+  return out;
+}
+
+/** Schemas tab › Object filter: `name` matches one of its patterns (comma / space separated; empty: all). */
+export function passesObjectFilter(name: string, filter: string | null | undefined): boolean {
+  const patterns = (filter ?? "").split(/[\s,]+/).filter(Boolean);
+  return !patterns.length || patterns.some((p) => matchesPattern(name.toLowerCase(), p.toLowerCase()));
 }
 
 /**
  * The databases / schemas the tree shows (Schemas tab): all of them, or the
  * ones matching a chosen name or pattern; `keep` (the connected database) always stays.
  */
-export function shownNames(names: readonly string[], all: boolean | undefined, chosen: readonly string[] | undefined, keep?: string | null): string[] {
+export function shownNames(
+  names: readonly string[],
+  all: boolean | undefined,
+  chosen: readonly string[] | undefined,
+  keep?: string | null,
+): string[] {
   if (all !== false) return [...names];
   const picks = (chosen ?? []).map((p) => p.trim()).filter(Boolean);
   return names.filter((n) => n === keep || picks.some((p) => matchesPattern(n, p)));
@@ -115,7 +218,8 @@ export function idleTargets(
 }
 
 export function newSourceId(): string {
-  const rnd = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+  const rnd =
+    typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
   return rnd.replace(/[^a-zA-Z0-9-]/g, "").slice(0, 36);
 }
 
@@ -127,7 +231,11 @@ export type ConnectRemedy = "password" | "sshSecret" | "trustHostKey" | null;
  * or rejected SSH password / passphrase, or a database password. A changed host
  * key is never offered for trust.
  */
-export function connectRemedy(kind: string | undefined, message: string, source?: Pick<DataSource, "ssh">): ConnectRemedy {
+export function connectRemedy(
+  kind: string | undefined,
+  message: string,
+  source?: Pick<DataSource, "ssh">,
+): ConnectRemedy {
   if (/^Unknown SSH host key/.test(message)) return "trustHostKey";
   if (kind !== "permissionDenied") return null;
   if (/^SSH host key .* has changed/.test(message)) return null;
@@ -189,7 +297,10 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
     const file = sqlite[1]!.replace(/^\/([A-Za-z]:)/, "$1");
     return { source: { driver: "sqlite", file, name: fileSourceName(file) }, password: null };
   }
-  const m = /^([a-z][a-z0-9]*):\/\/(?:([^:@/]*)(?::([^@/]*))?@)?([^:/?,]+|\[[^\]]+\])(?::(\d+))?(?:,[^/?]*)?(?:\/([^?]*))?(?:\?(.*))?$/i.exec(url);
+  const m =
+    /^([a-z][a-z0-9]*):\/\/(?:([^:@/]*)(?::([^@/]*))?@)?([^:/?,]+|\[[^\]]+\])(?::(\d+))?(?:,[^/?]*)?(?:\/([^?]*))?(?:\?(.*))?$/i.exec(
+      url,
+    );
   const vendor = m ? vendorOfScheme(m[1]!) : undefined;
   if (!m || !vendor || vendor.driver === "sqlite") return null;
   const dec = (s: string | undefined) => {
@@ -204,7 +315,13 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
   let user = dec(m[2]);
   let password = m[3] !== undefined ? dec(m[3]) : null;
   const host = m[4]!.replace(/^\[(.*)\]$/, "$1");
-  const source: Partial<DataSource> = { driver: vendor.driver, host, port, user, database: dec(m[6]).replace(/\/$/, "") };
+  const source: Partial<DataSource> = {
+    driver: vendor.driver,
+    host,
+    port,
+    user,
+    database: dec(m[6]).replace(/\/$/, ""),
+  };
   if (vendor.id !== vendor.driver) source.vendor = vendor.id;
   const properties: DbProperty[] = [];
   for (const [k, v] of new URLSearchParams(m[7] ?? "")) {

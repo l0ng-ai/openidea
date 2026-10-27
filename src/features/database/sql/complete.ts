@@ -130,7 +130,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
     eq(t.schema, defaultSchema) || driver === "sqlite" ? q(t.name) : `${q(t.schema)}.${q(t.name)}`;
   const tableCandidate = (t: DbCompletionTable, boost: number, qualified = false): SqlCandidate => ({
     label: t.name,
-    kind: t.kind === "view" ? "view" : "table",
+    kind: t.kind !== "table" ? "view" : "table",
     tail: t.schema ? `(${t.schema})` : undefined,
     type: sourceName,
     insert: qualified ? `${q(t.schema)}.${q(t.name)}` : tableText(t),
@@ -192,7 +192,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
       for (const t of tables) {
         schemas.add(t.schema);
         const local = eq(t.schema, defaultSchema) || driver === "sqlite";
-        out.push(tableCandidate(t, local ? (t.kind === "view" ? 28 : 30) : 0, !local));
+        out.push(tableCandidate(t, local ? (t.kind !== "table" ? 28 : 30) : 0, !local));
       }
       for (const s of schemas)
         if (!eq(s, defaultSchema) || schemas.size > 1)
@@ -204,7 +204,9 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
     case "afterTable": {
       if (!ctx.ref.alias && ctx.ref.kind === "table" && a.verb !== "INSERT" && a.verb !== "REPLACE") {
         // IDEA suggests an alias first.
-        const taken = new Set(a.refs.filter((r) => r !== ctx.ref).flatMap((r) => [refName(r).toLowerCase(), r.name.toLowerCase()]));
+        const taken = new Set(
+          a.refs.filter((r) => r !== ctx.ref).flatMap((r) => [refName(r).toLowerCase(), r.name.toLowerCase()]),
+        );
         out.push({ label: aliasFor(ctx.ref.name, taken), kind: "alias", boost: 45 });
       }
       if (a.verb === "UPDATE") keywords(["SET", "AS"], 20);
@@ -237,7 +239,15 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
       // The columns an INSERT needs (no default), then all of them.
       const required = all.filter((c) => !c.hasDefault).map((c) => c.name);
       if (required.length > 1) out.push(columnsCandidate(ctx.target, required, 60, false));
-      if (all.length > 1 && all.length !== required.length) out.push(columnsCandidate(ctx.target, all.map((c) => c.name), 55, false));
+      if (all.length > 1 && all.length !== required.length)
+        out.push(
+          columnsCandidate(
+            ctx.target,
+            all.map((c) => c.name),
+            55,
+            false,
+          ),
+        );
       out.push(...all.map((c) => columnCandidate(c, ownerOf(ctx.target), t, 50)));
       keywords(["SELECT", "VALUES"], 5);
       return out;
@@ -271,14 +281,21 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName }: Comple
         seen.add(key);
         const ambiguous = r.depth > 0 || (count.get(c.name.toLowerCase()) ?? 0) > 1;
         out.push(
-          columnCandidate(c, owner, t, r.depth === 0 ? 40 : 20, ambiguous ? `${q(refName(r))}.${q(c.name)}` : undefined),
+          columnCandidate(
+            c,
+            owner,
+            t,
+            r.depth === 0 ? 40 : 20,
+            ambiguous ? `${q(refName(r))}.${q(c.name)}` : undefined,
+          ),
         );
       }
       if (assigning) continue;
       out.push({ label: refName(r), kind: "alias", boost: 35 });
       // The whole column list (IDEA's "expand *" item in the select list).
       const names = columnsOf(r).map((c) => c.name);
-      if (clause === "select" && r.depth === 0 && names.length > 1) out.push(columnsCandidate(r, names, 30, inner.length > 1));
+      if (clause === "select" && r.depth === 0 && names.length > 1)
+        out.push(columnsCandidate(r, names, 30, inner.length > 1));
     }
     if (assigning) return;
     if (!inner.length && a.fromInsert !== null && clause === "select") {
@@ -478,5 +495,5 @@ function tableDoc(t: DbCompletionTable): string {
   const cols = t.columns.map(
     (c) => `  ${c.name.padEnd(width)}  ${c.dataType}${c.nullable ? "" : " NOT NULL"}${c.primaryKey ? " PK" : ""}`,
   );
-  return `${t.kind === "view" ? "VIEW" : "TABLE"} ${t.schema}.${t.name}\n${cols.join("\n")}`;
+  return `${t.kind === "materializedView" ? "MATERIALIZED VIEW" : t.kind === "view" ? "VIEW" : "TABLE"} ${t.schema}.${t.name}\n${cols.join("\n")}`;
 }

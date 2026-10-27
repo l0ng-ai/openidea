@@ -141,9 +141,15 @@
   flex: 1;
   min-height: 0;
 }
+/* Gives way before the name does. */
 .treeDetail {
   color: var(--fg-muted);
   margin-left: 6px;
+  min-width: 0;
+  flex-shrink: 100;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* IDEA: counts after folders, column types in a smaller grey face, key rows in grey. */
 .treeCount {
@@ -291,9 +297,28 @@
 }
 
 /* Table editor. */
-.filter {
+/* The table editor's WHERE | ORDER BY row (IDEA). */
+.filterBar {
+  display: flex;
+  flex: none;
+  height: var(--h-header);
+  border-bottom: 1px solid var(--border);
+}
+.filterField {
   flex: 1;
-  min-width: 120px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  color: var(--fg-muted);
+}
+.filterField + .filterField {
+  border-left: 1px solid var(--border);
+}
+.filterField > input {
+  flex: 1;
+  min-width: 0;
 }
 .pager {
   display: flex;
@@ -659,27 +684,38 @@
   user-select: text;
 }
 .sqlPreview :global(.tok-keyword),
-.sqlPreview :global(.tok-operatorKeyword) {
+.codeText :global(.tok-keyword),
+.sqlPreview :global(.tok-operatorKeyword),
+.codeText :global(.tok-operatorKeyword) {
   color: var(--syn-keyword);
 }
 .sqlPreview :global(.tok-string),
-.sqlPreview :global(.tok-string2) {
+.codeText :global(.tok-string),
+.sqlPreview :global(.tok-string2),
+.codeText :global(.tok-string2) {
   color: var(--syn-string);
 }
 .sqlPreview :global(.tok-number),
+.codeText :global(.tok-number),
 .sqlPreview :global(.tok-bool),
-.sqlPreview :global(.tok-atom) {
+.codeText :global(.tok-bool),
+.sqlPreview :global(.tok-atom),
+.codeText :global(.tok-atom) {
   color: var(--syn-number);
 }
-.sqlPreview :global(.tok-typeName) {
+.sqlPreview :global(.tok-typeName),
+.codeText :global(.tok-typeName) {
   color: var(--syn-keyword);
 }
-.sqlPreview :global(.tok-comment) {
+.sqlPreview :global(.tok-comment),
+.codeText :global(.tok-comment) {
   color: var(--syn-comment);
   font-style: italic;
 }
 .sqlPreview :global(.tok-punctuation),
-.sqlPreview :global(.tok-operator) {
+.codeText :global(.tok-punctuation),
+.sqlPreview :global(.tok-operator),
+.codeText :global(.tok-operator) {
   color: var(--syn-punct);
 }
 .modifyBody {
@@ -771,4 +807,394 @@
 .quickDocLinks {
   display: flex;
   justify-content: flex-start;
+}
+
+/* Result views: grid + Record / Value / Aggregates panel. */
+.dataView {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+.dataView > .fill {
+  min-width: 0;
+}
+.headerFilter {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.headerFilter:hover {
+  background: var(--bg-hover);
+}
+.headerFilterOn {
+  color: var(--accent);
+}
+.filterPill {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-popup);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  box-shadow: var(--shadow-popup);
+}
+.filterPillClear {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+.filterPopup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 280px;
+  padding: 8px;
+}
+.filterValues {
+  max-height: 260px;
+  overflow: auto;
+}
+.filterValue {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--h-row);
+}
+.filterValue > :first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filterCount {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.filterEmpty {
+  padding: 12px;
+  color: var(--fg-muted);
+  text-align: center;
+}
+.filterButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sidePanel {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+}
+.sidePanelHead {
+  display: flex;
+  align-items: center;
+  padding-right: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.sidePanelBody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.recordFields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+.recordField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.recordLabel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-secondary);
+}
+.valueView {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  padding: 8px;
+  box-sizing: border-box;
+}
+.valueText {
+  flex: 1;
+  min-height: 120px;
+  resize: none;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-input);
+  color: var(--fg-strong);
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--fs-code);
+}
+.valueText:focus {
+  outline: none;
+  border-color: var(--focus-ring);
+}
+.aggregates {
+  width: 100%;
+  border-collapse: collapse;
+}
+.aggregates th,
+.aggregates td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-weight: normal;
+}
+.aggregates th {
+  color: var(--fg-secondary);
+  width: 40%;
+}
+.aggregates td {
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  word-break: break-all;
+}
+
+/* Chart. */
+.chartBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-header);
+  padding: 0 8px;
+  flex: none;
+  border-bottom: 1px solid var(--border);
+}
+.chartHost {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.chartSettings {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+}
+.chartGrid {
+  stroke: var(--border);
+}
+.chartAxis {
+  stroke: var(--fg-muted);
+}
+.chartTick {
+  fill: var(--fg-muted);
+  font-size: 10px;
+}
+.chartAxisName {
+  fill: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.chartBarMark {
+  fill: var(--chart-series);
+  fill-opacity: 0.9;
+}
+.chartBarMark:hover {
+  fill-opacity: 1;
+}
+.chartLine {
+  fill: none;
+  stroke: var(--chart-series);
+  stroke-width: 2;
+}
+.chartDot {
+  fill: var(--chart-series);
+}
+
+/* Query plan. */
+.planView {
+  display: flex;
+  min-height: 0;
+}
+.planTree {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.planHeader,
+.planRow {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 1fr;
+  gap: 12px;
+  width: 100%;
+}
+.planHeader {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-secondary);
+}
+.planOperation {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.planParams {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-secondary);
+}
+.planProperties {
+  flex: none;
+  width: 320px;
+  align-self: flex-start;
+  border-collapse: collapse;
+  border-left: 1px solid var(--border);
+}
+.planProperties th,
+.planProperties td {
+  padding: 4px 8px;
+  text-align: left;
+  font-weight: normal;
+  border-bottom: 1px solid var(--border);
+  word-break: break-word;
+}
+.planProperties th {
+  color: var(--fg-secondary);
+}
+
+/* Export / history / import dialogs. */
+.exportDialog {
+  display: flex;
+  gap: 16px;
+  height: 420px;
+  padding: 14px;
+}
+.exportOptions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 300px;
+  flex: none;
+}
+.exportOptions .formLabel,
+.exportPreview .formLabel {
+  text-align: left;
+}
+.exportPreview {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.exportPreviewText,
+.historyPreview {
+  flex: 1;
+  min-height: 0;
+}
+.codePreview {
+  display: flex;
+  align-items: flex-start;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-editor);
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--fs-code);
+  line-height: 1.6;
+}
+.codeGutter {
+  position: sticky;
+  left: 0;
+  flex: none;
+  min-width: 36px;
+  min-height: 100%;
+  padding: 8px 10px 8px 8px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-editor);
+  color: var(--fg-muted);
+  text-align: right;
+  user-select: none;
+}
+.codeText {
+  flex: 1;
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--fg-editor, var(--fg-strong));
+  font: inherit;
+  white-space: pre;
+  user-select: text;
+}
+.historyDialog {
+  display: flex;
+  gap: 12px;
+  height: 440px;
+  padding: 14px;
+}
+.historyList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 300px;
+  flex: none;
+  min-height: 0;
+}
+.historyItem {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  min-width: 0;
+}
+.historyText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--openidea-editor-font, var(--font-mono));
+}
+.importPreview {
+  max-height: 200px;
+  margin: 0 14px 14px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.importPreview table {
+  border-collapse: collapse;
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--fs-code);
+}
+.importPreview td {
+  padding: 2px 8px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.importHeader td {
+  color: var(--fg-strong);
+  font-weight: 600;
 }

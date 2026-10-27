@@ -30,18 +30,30 @@ export function qualifiedName(driver: DbDriver, schema: string, name: string): s
   return `${ident(driver, schema)}.${ident(driver, name)}`;
 }
 
-export type DbObjectKind = "table" | "view" | "column" | "index" | "schema";
+export type DbObjectKind =
+  | "table"
+  | "view"
+  | "materializedView"
+  | "column"
+  | "index"
+  | "schema"
+  | "function"
+  | "procedure"
+  | "trigger"
+  | "sequence";
 
 /** A schema object of a data source, as the tree actions see it. */
 export interface DbObjectRef {
   kind: DbObjectKind;
   schema: string;
-  /** Table / view / index / schema name; the column's table for a column. */
+  /** Table / view / index / schema / routine / trigger / sequence name; the column's table for a column. */
   name: string;
   /** Column name (kind `column`). */
   column?: string;
-  /** Table of an index (MySQL drops an index `ON` its table). */
+  /** Table of an index or trigger (MySQL drops an index `ON` its table, PostgreSQL a trigger). */
   table?: string;
+  /** Argument types of a PostgreSQL routine (tells overloads apart). */
+  arguments?: string;
 }
 
 /** IDEA's Copy Reference: the object's qualified name. */
@@ -52,7 +64,10 @@ export function reference(driver: DbDriver, o: DbObjectRef): string {
 }
 
 export const canRename = (driver: DbDriver, o: DbObjectRef) =>
-  o.kind === "table" || o.kind === "column" || (o.kind === "view" && driver !== "sqlite") || (o.kind === "index" && driver === "postgres");
+  o.kind === "table" ||
+  o.kind === "column" ||
+  (o.kind === "view" && driver !== "sqlite") ||
+  (o.kind === "index" && driver === "postgres");
 
 /** The statement renaming `o` to `to`. */
 export function renameSql(driver: DbDriver, o: DbObjectRef, to: string): string {
@@ -87,17 +102,34 @@ export function dropSql(driver: DbDriver, o: DbObjectRef, opts: DropOptions): st
     case "column":
       return `alter table ${qualifiedName(driver, o.schema, o.name)} drop column ${ifExists && driver === "postgres" ? ifExists : ""}${ident(driver, o.column ?? "")}${cascade};`;
     case "index":
-      if (driver === "mysql") return `drop index ${ident(driver, o.name)} on ${qualifiedName(driver, o.schema, o.table ?? "")};`;
+      if (driver === "mysql")
+        return `drop index ${ident(driver, o.name)} on ${qualifiedName(driver, o.schema, o.table ?? "")};`;
       return `drop index ${ifExists}${qualifiedName(driver, o.schema, o.name)}${cascade};`;
     case "schema":
       return `drop ${driver === "mysql" ? "database" : "schema"} ${ifExists}${ident(driver, o.name)}${cascade};`;
+    case "materializedView":
+      return `drop materialized view ${ifExists}${qualifiedName(driver, o.schema, o.name)}${cascade};`;
+    case "function":
+    case "procedure": {
+      const args = driver === "postgres" ? `(${o.arguments ?? ""})` : "";
+      return `drop ${o.kind} ${ifExists}${qualifiedName(driver, o.schema, o.name)}${args}${cascade};`;
+    }
+    case "trigger":
+      if (driver === "postgres")
+        return `drop trigger ${ifExists}${ident(driver, o.name)} on ${qualifiedName(driver, o.schema, o.table ?? "")}${cascade};`;
+      return `drop trigger ${ifExists}${qualifiedName(driver, o.schema, o.name)};`;
     default:
       return `drop ${o.kind} ${ifExists}${qualifiedName(driver, o.schema, o.name)}${cascade};`;
   }
 }
 
 /** Object Actions › Truncate (SQLite has no TRUNCATE: `delete from`). */
-export function truncateSql(driver: DbDriver, schema: string, table: string, opts: { restartIdentity: boolean; cascade: boolean }): string {
+export function truncateSql(
+  driver: DbDriver,
+  schema: string,
+  table: string,
+  opts: { restartIdentity: boolean; cascade: boolean },
+): string {
   const q = qualifiedName(driver, schema, table);
   if (driver === "sqlite") return `delete from ${q};`;
   if (driver === "mysql") return `truncate table ${q};`;
@@ -115,7 +147,13 @@ export const SCRIPT_LABELS: Record<ScriptKind, string> = {
 };
 
 /** SQL Scripts › … templates (IDEA's live templates `sel`, `selc`, `ins`, `upd`, `del`). */
-export function scriptSql(driver: DbDriver, kind: ScriptKind, schema: string, table: string, columns: readonly DbColumnInfo[]): string {
+export function scriptSql(
+  driver: DbDriver,
+  kind: ScriptKind,
+  schema: string,
+  table: string,
+  columns: readonly DbColumnInfo[],
+): string {
   const q = qualifiedName(driver, schema, table);
   const names = columns.map((c) => ident(driver, c.name));
   const keys = columns.filter((c) => c.primaryKey).map((c) => ident(driver, c.name));
@@ -172,7 +210,12 @@ function columnDefinition(driver: DbDriver, c: ColumnDraft): string {
 }
 
 /** `create table` for New › Table. */
-export function createTableSql(driver: DbDriver, schema: string, name: string, columns: readonly ColumnDraft[]): string {
+export function createTableSql(
+  driver: DbDriver,
+  schema: string,
+  name: string,
+  columns: readonly ColumnDraft[],
+): string {
   const live = columns.filter((c) => !c.dropped && c.name.trim());
   const keys = live.filter((c) => c.primaryKey).map((c) => ident(driver, c.name));
   const items = live.map((c) => `    ${columnDefinition(driver, c)}`);
@@ -190,7 +233,13 @@ export function canAlterColumn(driver: DbDriver, c: ColumnDraft): boolean {
  * (Modify Table): renames, added / dropped columns, and — PostgreSQL / MySQL —
  * type, nullability and default changes.
  */
-export function alterTableSql(driver: DbDriver, schema: string, table: string, name: string, columns: readonly ColumnDraft[]): string[] {
+export function alterTableSql(
+  driver: DbDriver,
+  schema: string,
+  table: string,
+  name: string,
+  columns: readonly ColumnDraft[],
+): string[] {
   const out: string[] = [];
   const q = () => qualifiedName(driver, schema, table);
   for (const c of columns) {
@@ -215,11 +264,15 @@ export function alterTableSql(driver: DbDriver, schema: string, table: string, n
     const col = ident(driver, renamed ? c.name : o.name);
     if (c.dataType.trim() && c.dataType.trim() !== o.dataType)
       out.push(`alter table ${q()} alter column ${col} type ${c.dataType.trim()};`);
-    if (c.notNull !== !o.nullable) out.push(`alter table ${q()} alter column ${col} ${c.notNull ? "set" : "drop"} not null;`);
+    if (c.notNull !== !o.nullable)
+      out.push(`alter table ${q()} alter column ${col} ${c.notNull ? "set" : "drop"} not null;`);
     if (c.default.trim() !== (o.default ?? "").trim())
-      out.push(`alter table ${q()} alter column ${col} ${c.default.trim() ? `set default ${c.default.trim()}` : "drop default"};`);
+      out.push(
+        `alter table ${q()} alter column ${col} ${c.default.trim() ? `set default ${c.default.trim()}` : "drop default"};`,
+      );
   }
   // Renamed last: the column statements above name the table as it was.
-  if (name.trim() && name.trim() !== table) out.push(renameSql(driver, { kind: "table", schema, name: table }, name.trim()));
+  if (name.trim() && name.trim() !== table)
+    out.push(renameSql(driver, { kind: "table", schema, name: table }, name.trim()));
   return out;
 }

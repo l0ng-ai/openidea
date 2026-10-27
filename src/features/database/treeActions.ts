@@ -7,7 +7,7 @@ import { call, commands, type DataSource, type DbDriver, type DbTableInfo } from
 import { registerActions, type Action } from "@/platform/actions";
 import { editorService, notifications, showServiceView, toolWindowService } from "@/workbench/contributions";
 import { splitTarget } from "./model";
-import { nodeTarget, objectOf, tableOf, type DbNode } from "./nodes";
+import { nodeTarget, objectOf, schemaObjectOf, tableFolder, tableOf, type DbNode } from "./nodes";
 import { canDrop, canRename, reference, scriptSql, type ScriptKind } from "./objects";
 import {
   DB_TOOL_WINDOW,
@@ -23,6 +23,7 @@ import {
   openConsole,
   openConsoleWith,
   openDdl,
+  openObjectDdl,
   openDialog,
   openSourceDialog,
   readableDdl,
@@ -66,7 +67,9 @@ async function copy(text: string, what: string) {
 
 /** Where Quick Documentation opens: below the tree's selected row. */
 function rowAnchor(): { x: number; y: number } {
-  const row = document.querySelector('[role="tree"][aria-label="Data sources"] [role="treeitem"][aria-selected="true"]');
+  const row = document.querySelector(
+    '[role="tree"][aria-label="Data sources"] [role="treeitem"][aria-selected="true"]',
+  );
   const r = row?.getBoundingClientRect();
   return r ? { x: r.left + 24, y: r.bottom + 2 } : { x: window.innerWidth / 2, y: window.innerHeight / 3 };
 }
@@ -89,6 +92,9 @@ async function ddlOf(n: DbNode): Promise<{ id: string; text: string } | null> {
   const one = async (schema: string, table: string) =>
     readableDdl(await withConnection(id, () => call(commands.dbDdl(id, schema, table))), driverOf(id));
   try {
+    const o = schemaObjectOf(n);
+    if (o)
+      return { id, text: await withConnection(id, () => call(commands.dbObjectDdl(id, o.schema, o.kind, o.name))) };
     const t = tableOf(n);
     if (t) return { id, text: await one(t.schema, t.table) };
     let schemas: string[] = [];
@@ -100,14 +106,20 @@ async function ddlOf(n: DbNode): Promise<{ id: string; text: string } | null> {
     }
     const parts: string[] = [];
     for (const schema of schemas) {
-      const tables = (await tablesIn(id, schema)).filter((t) => n.kind !== "folder" || (t.kind === "view") === (n.folder === "views"));
+      const tables = (await tablesIn(id, schema)).filter(
+        (t) => n.kind !== "folder" || tableFolder(t.kind) === n.folder,
+      );
       // Tables before views: views select from them.
-      tables.sort((a, b) => Number(a.kind === "view") - Number(b.kind === "view"));
+      tables.sort((a, b) => Number(a.kind !== "table") - Number(b.kind !== "table"));
       for (const t of tables) parts.push(await one(schema, t.name));
     }
     return { id, text: parts.join("\n") };
   } catch (e) {
-    notifications().notify({ level: "error", title: "Cannot generate the DDL", body: e instanceof Error ? e.message : String(e) });
+    notifications().notify({
+      level: "error",
+      title: "Cannot generate the DDL",
+      body: e instanceof Error ? e.message : String(e),
+    });
     return null;
   }
 }
@@ -126,17 +138,34 @@ export async function insertScript(n: DbNode, kind: ScriptKind) {
 /** SQL Scripts › Run SQL Script…: picks a `.sql` file and runs all its statements. */
 async function runScriptFile(id: string) {
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const file = await open({ multiple: false, directory: false, title: "Run SQL Script", filters: [{ name: "SQL", extensions: ["sql", "ddl"] }] });
+  const file = await open({
+    multiple: false,
+    directory: false,
+    title: "Run SQL Script",
+    filters: [{ name: "SQL", extensions: ["sql", "ddl"] }],
+  });
   if (typeof file !== "string") return;
   try {
     const text = await call(commands.fsReadText(file));
     const statements = await call(commands.dbStatements(id, text, 0, text.length));
     useDatabase.setState({ activeResult: OUTPUT_TAB });
     showServiceView(RESULTS_VIEW, false);
-    if (await runSql(id, statements.map((s) => s.text)))
-      notifications().notify({ level: "info", title: `Script finished: ${statements.length} statement${statements.length === 1 ? "" : "s"}` });
+    if (
+      await runSql(
+        id,
+        statements.map((s) => s.text),
+      )
+    )
+      notifications().notify({
+        level: "info",
+        title: `Script finished: ${statements.length} statement${statements.length === 1 ? "" : "s"}`,
+      });
   } catch (e) {
-    notifications().notify({ level: "error", title: "Cannot run the script", body: e instanceof Error ? e.message : String(e) });
+    notifications().notify({
+      level: "error",
+      title: "Cannot run the script",
+      body: e instanceof Error ? e.message : String(e),
+    });
   }
 }
 
@@ -156,7 +185,12 @@ function refreshNode(n: DbNode | null) {
 }
 
 export function registerDatabaseTreeActions(): () => void {
-  const tree = (a: Omit<Action, "category">): Action => ({ category: "Database", when: OPEN, keyWhen: DB_VIEW_FOCUS, ...a });
+  const tree = (a: Omit<Action, "category">): Action => ({
+    category: "Database",
+    when: OPEN,
+    keyWhen: DB_VIEW_FOCUS,
+    ...a,
+  });
   return registerActions([
     tree({
       id: "db.properties",
@@ -223,6 +257,8 @@ export function registerDatabaseTreeActions(): () => void {
       keywords: ["edit source", "definition", "create table"],
       run: ({ arg }) => {
         const n = nodeFrom(arg);
+        const o = n && schemaObjectOf(n);
+        if (o) return void openObjectDdl(o.id, o.schema, o.kind, o.name);
         const t = n && tableOf(n);
         if (t) void openDdl(t.id, t.schema, t.table);
       },
@@ -269,7 +305,8 @@ export function registerDatabaseTreeActions(): () => void {
       keywords: ["delete all rows", "empty table"],
       run: ({ arg }) => {
         const n = nodeFrom(arg);
-        if (n?.kind === "table" && n.table.kind !== "view") openDialog({ kind: "truncate", id: n.id, schema: n.schema, table: n.table.name });
+        if (n?.kind === "table" && n.table.kind === "table")
+          openDialog({ kind: "truncate", id: n.id, schema: n.schema, table: n.table.name });
       },
     }),
     tree({
@@ -281,7 +318,13 @@ export function registerDatabaseTreeActions(): () => void {
         const n = nodeFrom(arg);
         const t = n && tableOf(n);
         if (!t || t.view) return;
-        openDialog({ kind: "modifyTable", id: t.id, schema: t.schema, table: t.table, focusColumn: n.kind === "column" ? n.column.name : undefined });
+        openDialog({
+          kind: "modifyTable",
+          id: t.id,
+          schema: t.schema,
+          table: t.table,
+          focusColumn: n.kind === "column" ? n.column.name : undefined,
+        });
       },
     }),
     tree({
@@ -293,7 +336,8 @@ export function registerDatabaseTreeActions(): () => void {
         const n = nodeFrom(arg);
         const id = n && nodeTarget(n);
         if (!n || !id) return;
-        const schema = "schema" in n && typeof n.schema === "string" ? n.schema : driverOf(id) === "sqlite" ? "main" : null;
+        const schema =
+          "schema" in n && typeof n.schema === "string" ? n.schema : driverOf(id) === "sqlite" ? "main" : null;
         if (schema !== null) openDialog({ kind: "modifyTable", id, schema, table: null });
       },
     }),
@@ -305,7 +349,19 @@ export function registerDatabaseTreeActions(): () => void {
       run: ({ arg }) => {
         const n = nodeFrom(arg);
         const t = n && tableOf(n);
-        if (t && !t.view) openDialog({ kind: "modifyTable", id: t.id, schema: t.schema, table: t.table, addColumn: true });
+        if (t && !t.view)
+          openDialog({ kind: "modifyTable", id: t.id, schema: t.schema, table: t.table, addColumn: true });
+      },
+    }),
+    tree({
+      id: "db.importData",
+      title: "Import Data from File…",
+      icon: "import",
+      keywords: ["csv", "tsv", "load data"],
+      run: ({ arg }) => {
+        const n = nodeFrom(arg);
+        if (n?.kind === "table" && n.table.kind === "table")
+          openDialog({ kind: "import", id: n.id, schema: n.schema, table: n.table.name });
       },
     }),
     tree({
@@ -383,7 +439,7 @@ export function registerDatabaseTreeActions(): () => void {
       keywords: ["foreign key"],
       run: ({ arg }) => {
         const n = nodeFrom(arg);
-        if (n?.kind === "foreignKey") void revealInTree(n.id, n.fk.refSchema, n.fk.refTable, false);
+        if (n?.kind === "foreignKey") void revealInTree(n.id, n.fk.refSchema, n.fk.refTable, "table");
       },
     }),
     tree({
