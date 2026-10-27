@@ -86,6 +86,8 @@ export async function javaLaunchConfig(rc: RunConfig, root: string): Promise<Lau
       javaExec: resolved.command === "java" ? undefined : resolved.command,
       vmArgs: joinJavaArgs(parsed.vmArgs),
       args: joinJavaArgs(parsed.programArgs),
+      // java-debug spawns the JVM itself: it must shorten a classpath too long for the OS the same way Run does.
+      shortenCommandLine: info.shortenCommandLine ?? "none",
       console: "internalConsole",
       stopOnEntry: false,
     }),

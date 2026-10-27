@@ -13,6 +13,7 @@ pub mod libraries;
 pub mod locate;
 pub mod lombok;
 pub mod python;
+mod vue;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
