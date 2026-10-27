@@ -107,7 +107,7 @@ export function Select<V extends string = string>({
         }}
       >
         {renderValue ? (
-          renderValue(current)
+          <span className={styles.value}>{renderValue(current)}</span>
         ) : (
           <>
             {current?.icon && <Icon name={current.icon} size={14} />}
