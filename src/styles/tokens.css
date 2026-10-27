@@ -384,6 +384,7 @@
   --fg-gutter: #aeb3c2;
   --fg-icon: #6c707e;
 
+  /* accent */
   --accent: #3871e1;
   --link: #2f5eb9;
   --link-hover: #2e4d89;
@@ -495,6 +496,7 @@
   --ansi-bright-cyan: #1b9ea3;
   --ansi-bright-white: #5f6269;
 
+  /* shadows and window controls */
   --shadow-popup: 0 6px 20px rgba(0, 0, 0, 0.12);
   --shadow-dialog: 0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 10px 24px rgba(0, 0, 0, 0.1), 0 24px 72px rgba(0, 0, 0, 0.2);
   --traffic-close: #ff5f57;

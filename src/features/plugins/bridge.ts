@@ -1,13 +1,14 @@
 /**
  * Glue between backend plugins and the workbench: plugin commands become
- * actions, editor requests are applied to the active editor, theme overrides
- * become CSS variables, notifications become balloons.
+ * actions, editor requests are applied to the active editor, the selected
+ * theme becomes a stylesheet of CSS variables, notifications become balloons.
  */
 import { EditorSelection } from "@codemirror/state";
 import type { ActiveTheme, PluginEvent, PluginInfo } from "@/bindings";
 import { activeEditor, useEditorRegistry } from "@/editor/api";
 import { registerAction, type Action } from "@/platform/actions";
 import { notifications } from "@/workbench/contributions";
+import { applyThemeAttributes, currentThemeId, syncWindowBackground } from "@/workbench/theme";
 import { pluginsBackend } from "./backend";
 import { refreshPlugins, runPluginCommand, usePlugins } from "./store";
 
@@ -64,23 +65,44 @@ export function syncPluginActions(): () => void {
 
 // --- theme ------------------------------------------------------------------
 
-let appliedTokens: string[] = [];
+export const PLUGIN_THEME_STYLE_ID = "openidea-plugin-theme";
 
-/** Applies a plugin theme's token overrides as inline CSS variables on :root (null clears). */
+/** Stylesheet for a plugin theme. Its selector outranks every built-in theme block. */
+export function pluginThemeCss(theme: ActiveTheme["theme"]): string {
+  const kind = theme.kind === "light" ? "light" : "dark";
+  const decls = [`  color-scheme: ${kind};`];
+  for (const [name, value] of Object.entries(theme.tokens)) {
+    // Backend validates; keep the guard so a malformed payload can't inject declarations.
+    if (!/^--[a-z0-9-]+$/.test(name) || value == null || /[;{}<>\\]/.test(value)) continue;
+    decls.push(`  ${name}: ${value};`);
+  }
+  return `:root[data-plugin-theme]:not([data-plugin-theme=""]) {\n${decls.join("\n")}\n}\n`;
+}
+
+/**
+ * Applies a plugin theme (null restores the built-in one): its tokens as a
+ * stylesheet over the built-in light or dark base named by its `kind`. A
+ * stylesheet rather than inline styles, so the accent picked in Settings ›
+ * Appearance and the editor colour scheme still layer on top.
+ */
 export function applyPluginTheme(theme: ActiveTheme | null, root: HTMLElement = document.documentElement) {
-  for (const name of appliedTokens) root.style.removeProperty(name);
-  appliedTokens = [];
+  const doc = root.ownerDocument;
+  doc.getElementById(PLUGIN_THEME_STYLE_ID)?.remove();
+  const had = root.dataset.pluginTheme !== undefined;
   if (!theme) {
     delete root.dataset.pluginTheme;
-    return;
+    delete root.dataset.pluginThemeKind;
+    if (had) applyThemeAttributes(currentThemeId(), root);
+  } else {
+    const style = doc.createElement("style");
+    style.id = PLUGIN_THEME_STYLE_ID;
+    style.textContent = pluginThemeCss(theme.theme);
+    doc.head.appendChild(style);
+    root.dataset.pluginTheme = `${theme.pluginId}/${theme.theme.id}`;
+    root.dataset.pluginThemeKind = theme.theme.kind === "light" ? "light" : "dark";
+    applyThemeAttributes(currentThemeId(), root);
   }
-  for (const [name, value] of Object.entries(theme.theme.tokens)) {
-    // Backend validates; keep the guard so a malformed payload can't inject declarations.
-    if (!/^--[a-z0-9-]+$/.test(name) || value == null || /[;{}<>]/.test(value)) continue;
-    root.style.setProperty(name, value);
-    appliedTokens.push(name);
-  }
-  root.dataset.pluginTheme = `${theme.pluginId}/${theme.theme.id}`;
+  if (had || theme) syncWindowBackground();
 }
 
 export function trackPluginTheme(): () => void {
