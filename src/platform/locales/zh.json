@@ -287,6 +287,7 @@
   "menu.db.showToolWindow": "数据库",
   "menu.db.newDataSource": "新建数据源…",
   "menu.db.openConsole": "打开查询控制台",
+  "menu.vim.toggle": "Vim",
   "menu.window.new": "新建窗口",
   "menu.window.next": "下一个项目窗口",
   "menu.window.previous": "上一个项目窗口",
