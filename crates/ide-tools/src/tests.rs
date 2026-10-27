@@ -272,6 +272,54 @@ echo "added 1 package""#,
     assert!(env.root.join("package.json").exists());
 }
 
+/// Servers that load TypeScript as a library get one with its JS API: `@latest`
+/// is TypeScript 7 (native, no `ts.server`), which crashed vue-language-server (#25).
+/// Uninstalling one keeps the TypeScript another installed server still uses.
+#[cfg(unix)]
+#[test]
+fn npm_typescript_is_pinned_and_shared() {
+    let env = Env::new();
+    let log = env.root.parent().unwrap().join("npm-args.txt");
+    env.script(
+        &env.sys,
+        "npm",
+        &format!(
+            r#"echo "$@" >> '{log}'
+prefix=""; for a in "$@"; do [ "$prev" = "--prefix" ] && prefix="$a"; prev="$a"; done
+[ "$1" = "install" ] || exit 0
+/bin/mkdir -p "$prefix/node_modules/.bin"
+for a in "$@"; do case "$a" in
+  typescript-language-server@latest) n=typescript-language-server;;
+  @vue/language-server@latest) n=vue-language-server; d=@vue/language-server;;
+  *) continue;;
+esac
+d="${{d:-$n}}"; /bin/mkdir -p "$prefix/node_modules/$d"
+echo '{{"version":"1.0.0"}}' > "$prefix/node_modules/$d/package.json"
+printf '#!/bin/sh\necho 1.0.0\n' > "$prefix/node_modules/.bin/$n"; /bin/chmod +x "$prefix/node_modules/.bin/$n"; d=""
+done"#,
+            log = log.display()
+        ),
+    );
+    let tools = env.tools();
+    for name in ["vue-language-server", "typescript-language-server"] {
+        assert_eq!(
+            tools.install(name, &langs(), &CancellationToken::new(), &|_| {}).unwrap().status,
+            ToolStatus::Installed
+        );
+    }
+    let installs = fs::read_to_string(&log).unwrap();
+    for line in installs.lines() {
+        assert!(line.contains("typescript@<7") && !line.contains("typescript@latest"), "{line}");
+    }
+    assert!(installs.contains("@vue/language-server@latest"), "{installs}");
+
+    fs::write(&log, "").unwrap();
+    tools.uninstall("vue-language-server", &langs()).unwrap();
+    let uninstall = fs::read_to_string(&log).unwrap();
+    assert!(uninstall.contains("uninstall") && uninstall.contains("@vue/language-server"), "{uninstall}");
+    assert!(!uninstall.contains("typescript"), "typescript-language-server still needs it: {uninstall}");
+}
+
 #[test]
 fn installed_bundle_is_detected_and_resolvable() {
     let env = Env::new();
