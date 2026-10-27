@@ -68,6 +68,9 @@ pub type ApplyEditHook = Arc<dyn Fn(WorkspaceEdit) -> bool + Send + Sync>;
 /// settings before each launch; receives the server's workspace root.
 pub type ConfigFn = dyn Fn(&mut LanguageServerConfig, &Path) + Send + Sync;
 pub type ConfigHook = Arc<ConfigFn>;
+/// The servers a language uses, from its definition's list (user settings
+/// disable some and add others).
+pub type ServersFn = dyn Fn(&LanguageId, &[LanguageServerConfig]) -> Vec<LanguageServerConfig> + Send + Sync;
 
 struct Attached {
     server: Arc<Server>,
@@ -146,6 +149,7 @@ pub struct LspManager {
     docs: Mutex<HashMap<DocId, DocState>>,
     apply_edit_hook: RwLock<Option<ApplyEditHook>>,
     config_hook: RwLock<Option<ConfigHook>>,
+    servers_hook: RwLock<Option<Arc<ServersFn>>>,
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
     shutting_down: AtomicBool,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
@@ -264,6 +268,7 @@ impl LspManager {
             docs: Mutex::new(HashMap::new()),
             apply_edit_hook: RwLock::new(None),
             config_hook: RwLock::new(None),
+            servers_hook: RwLock::new(None),
             candidates_hook: RwLock::new(None),
             shutting_down: AtomicBool::new(false),
             shown_messages: Mutex::new(HashSet::new()),
@@ -297,10 +302,9 @@ impl LspManager {
     /// The servers serving `path`: every regular one, and each `fallback` one
     /// only while all servers listed before it are missing.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
-        let Some(cfg) = self.languages.get(language) else { return Vec::new() };
         let mut out = Vec::new();
         let mut available_before = false;
-        for sc in &cfg.language_servers {
+        for sc in &self.language_servers(language) {
             if sc.fallback && available_before {
                 continue;
             }
@@ -311,8 +315,18 @@ impl LspManager {
         out
     }
 
+    /// The definitions of the servers `language` uses.
+    fn language_servers(&self, language: &LanguageId) -> Vec<LanguageServerConfig> {
+        let Some(cfg) = self.languages.get(language) else { return Vec::new() };
+        match self.servers_hook.read().clone() {
+            Some(hook) => hook(language, &cfg.language_servers),
+            None => cfg.language_servers,
+        }
+    }
+
     /// A server turned out to be missing: attach the fallbacks it was hiding
-    /// to the open documents (and start them).
+    /// to the open documents (and start them). Also attaches servers newly
+    /// enabled in settings.
     fn attach_fallbacks(&self) {
         let open: Vec<(DocId, LanguageId, PathBuf)> =
             self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
@@ -431,6 +445,14 @@ impl LspManager {
         };
         if let Err(e) = peer.notify("initialized", json!({})) {
             tracing::warn!("{}: {e}", server.name);
+        }
+        // Servers that don't ask with `workspace/configuration` only learn settings this way.
+        let cfg = server.effective_config();
+        if cfg.settings.is_some()
+            && let Err(e) =
+                peer.notify("workspace/didChangeConfiguration", json!({ "settings": handler::all_settings(&cfg) }))
+        {
+            tracing::debug!("{}: didChangeConfiguration: {e}", server.name);
         }
         let run = Running { generation, peer: peer.clone(), caps: Arc::new(RwLock::new(caps)) };
 
@@ -1778,6 +1800,11 @@ impl LspManager {
         *self.config_hook.write() = Some(Arc::from(hook));
     }
 
+    /// Installed by `src-tauri` to apply the servers enabled / defined in settings.
+    pub fn set_servers_hook(&self, hook: Box<ServersFn>) {
+        *self.servers_hook.write() = Some(Arc::from(hook));
+    }
+
     /// The server's base configuration with the settings hook applied.
     fn configured(&self, server: &Server) -> LanguageServerConfig {
         let mut cfg = server.config.clone();
@@ -1789,11 +1816,26 @@ impl LspManager {
 
     /// Restarts running servers whose settings-derived configuration changed
     /// (e.g. a new project interpreter); stopped ones pick it up on their next start.
+    /// A change of `settings` alone reaches a running server without a restart.
+    /// Servers no longer enabled stop; newly enabled ones attach to open documents.
     pub async fn reconfigure(&self) {
+        self.stop_unlisted().await;
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         for s in servers {
             let next = self.configured(&s);
-            if next == s.effective_config() {
+            let current = s.effective_config();
+            if next == current {
+                continue;
+            }
+            let without_settings = |c: &LanguageServerConfig| LanguageServerConfig { settings: None, ..c.clone() };
+            if let Some(run) = s.running()
+                && without_settings(&next) == without_settings(&current)
+            {
+                s.set_effective_config(next);
+                let params = json!({ "settings": handler::all_settings(&s.effective_config()) });
+                if let Err(e) = run.peer.notify("workspace/didChangeConfiguration", params) {
+                    tracing::debug!("{}: didChangeConfiguration: {e}", s.name);
+                }
                 continue;
             }
             match s.status() {
@@ -1814,6 +1856,28 @@ impl LspManager {
                 }
                 ide_core::event::ServerStatus::Stopped => {}
             }
+        }
+        self.attach_fallbacks();
+    }
+
+    /// Stops and forgets the servers that none of their languages uses any more.
+    async fn stop_unlisted(&self) {
+        let servers: Vec<Arc<Server>> = self.servers.lock().clone();
+        let unlisted: Vec<Arc<Server>> = servers
+            .into_iter()
+            .filter(|s| !s.languages().iter().any(|l| self.language_servers(l).iter().any(|c| c.name == s.name)))
+            .collect();
+        if unlisted.is_empty() {
+            return;
+        }
+        for s in &unlisted {
+            tracing::info!("{}: no longer enabled, stopping", s.name);
+            self.stop_instance(s, true).await;
+        }
+        let gone = |s: &Arc<Server>| unlisted.iter().any(|u| u.id == s.id);
+        self.servers.lock().retain(|s| !gone(s));
+        for d in self.docs.lock().values_mut() {
+            d.servers.retain(|a| !gone(&a.server));
         }
     }
 

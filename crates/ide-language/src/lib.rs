@@ -72,6 +72,10 @@ pub struct LanguageServerConfig {
     /// JSON passed as `initializationOptions`.
     #[serde(default)]
     pub initialization_options: Option<toml::Value>,
+    /// Answers `workspace/configuration`; without it the sections are looked up
+    /// in `initialization_options`.
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
     /// Human hint shown when the binary is missing.
     #[serde(default)]
     pub install_hint: Option<String>,

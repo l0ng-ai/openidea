@@ -28,6 +28,7 @@ fn server(name: &str) -> LanguageServerConfig {
         env: BTreeMap::new(),
         root_markers: vec![],
         initialization_options: None,
+        settings: None,
         install_hint: None,
         connect: None,
         fallback: false,
@@ -203,6 +204,59 @@ fn project_jdk_and_maven_settings() {
 
     s.languages.java.jdk = "missing".into();
     assert_eq!(project_jdk(tmp.path(), &s), None);
+}
+
+#[test]
+fn language_server_settings_disable_add_and_override() {
+    use crate::apply::{language_servers, server_launch_overrides, server_protocol_overrides, with_custom_servers};
+    use ide_core::settings::LanguageServerSettings;
+    use serde_json::json;
+
+    let mut s = Settings::default();
+    s.language_servers.insert("pylsp".into(), LanguageServerSettings { enabled: false, ..Default::default() });
+    s.language_servers.insert(
+        "ruff".into(),
+        LanguageServerSettings {
+            command: "ruff".into(),
+            args: Some(vec!["server".into()]),
+            languages: vec!["python".into()],
+            root_markers: vec!["pyproject.toml".into()],
+            ..Default::default()
+        },
+    );
+    let defined = [server("basedpyright"), server("pylsp")];
+    let names = |v: Vec<LanguageServerConfig>| v.into_iter().map(|c| c.name).collect::<Vec<_>>();
+    assert_eq!(names(language_servers("python", &defined, &s)), ["basedpyright", "ruff"]);
+    assert_eq!(names(language_servers("rust", &[server("rust-analyzer")], &s)), ["rust-analyzer"]);
+
+    // Listed with the tools even while disabled.
+    let mut langs = ide_language::LanguageRegistry::load(None).unwrap().all();
+    with_custom_servers(&mut langs, &s);
+    let python = langs.iter().find(|l| l.id.as_str() == "python").unwrap();
+    let mut ruff = python.language_servers.iter().find(|c| c.name == "ruff").unwrap().clone();
+    assert_eq!(ruff.root_markers, ["pyproject.toml"]);
+    server_launch_overrides(&mut ruff, &s);
+    assert_eq!((ruff.command.as_str(), ruff.args.as_slice()), ("ruff", &["server".to_string()][..]));
+
+    s.language_servers.insert(
+        "rust-analyzer".into(),
+        LanguageServerSettings {
+            env: BTreeMap::from([("RA_LOG".into(), "info".into())]),
+            initialization_options: Some(json!({ "check": { "command": "clippy" } })),
+            settings: Some(json!({ "rust-analyzer": { "cargo": { "features": "all" } } })),
+            ..Default::default()
+        },
+    );
+    let mut ra = server("rust-analyzer");
+    ra.args = vec!["--stdio".into()];
+    ra.initialization_options = Some(toml::Value::Table(toml::toml! { checkOnSave = false }));
+    server_launch_overrides(&mut ra, &s);
+    assert_eq!(ra.args, ["--stdio"], "no args setting keeps the definition's");
+    server_protocol_overrides(&mut ra, &s);
+    assert_eq!(ra.env["RA_LOG"], "info");
+    let init = serde_json::to_value(ra.initialization_options.unwrap()).unwrap();
+    assert_eq!(init, json!({ "checkOnSave": false, "check": { "command": "clippy" } }));
+    assert_eq!(ra.settings, Some(json!({ "rust-analyzer": { "cargo": { "features": "all" } } })));
 }
 
 #[test]

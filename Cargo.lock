@@ -4019,6 +4019,7 @@ dependencies = [
  "serde",
  "serde_json",
  "specta",
+ "specta-typescript",
  "thiserror 2.0.21",
  "tokio-util",
 ]
@@ -4169,6 +4170,7 @@ dependencies = [
  "parking_lot",
  "regex-lite",
  "serde",
+ "serde_json",
  "specta",
  "toml 0.9.12+spec-1.1.0",
  "tracing",

@@ -26,6 +26,17 @@ fn tools(app: &AppHandle, state: &AppState, window: &Window) -> IdeResult<Tools>
     Ok(Tools::new(&data).with_custom_paths(custom).with_found_paths(found.into_iter().collect()))
 }
 
+/// The language definitions plus the servers defined in the window's settings.
+fn languages(state: &AppState, window: &Window) -> Vec<ide_language::LanguageConfig> {
+    let settings = match state.project(window.label()) {
+        Ok(project) => project.settings.effective(),
+        Err(_) => state.global_settings.effective(),
+    };
+    let mut langs = state.languages.all();
+    ide_sdk::apply::with_custom_servers(&mut langs, &settings);
+    langs
+}
+
 fn join_err(e: impl std::fmt::Display) -> IdeError {
     IdeError::internal(e.to_string())
 }
@@ -35,7 +46,7 @@ fn join_err(e: impl std::fmt::Display) -> IdeError {
 #[specta::specta]
 pub async fn tools_list(app: AppHandle, window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ToolInfo>> {
     let tools = tools(&app, &state, &window)?;
-    let langs = state.languages.all();
+    let langs = languages(&state, &window);
     tauri::async_runtime::spawn_blocking(move || tools.list(&langs)).await.map_err(join_err)
 }
 
@@ -52,7 +63,7 @@ pub async fn tools_install(
     on_event: Channel<InstallEvent>,
 ) -> IdeResult<ToolInfo> {
     let tools = tools(&app, &state, &window)?;
-    let langs = state.languages.all();
+    let langs = languages(&state, &window);
     let cancel = state.begin_request(request);
     let result = tauri::async_runtime::spawn_blocking(move || {
         tools.install(&name, &langs, &cancel, &|e| {
@@ -79,7 +90,7 @@ pub async fn tools_uninstall(
     name: String,
 ) -> IdeResult<ToolInfo> {
     let tools = tools(&app, &state, &window)?;
-    let langs = state.languages.all();
+    let langs = languages(&state, &window);
     let info =
         tauri::async_runtime::spawn_blocking(move || tools.uninstall(&name, &langs)).await.map_err(join_err)??;
     reconfigure_servers(&state);

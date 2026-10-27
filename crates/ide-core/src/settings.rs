@@ -41,6 +41,9 @@ pub struct Settings {
     /// Language servers / debug adapters at a user-chosen location, by the
     /// command the language definition launches (`elixir-ls`, `codelldb`).
     pub tools: BTreeMap<String, ToolSettings>,
+    /// Per language server, by name (`rust-analyzer`): launch and protocol
+    /// options on top of the language definition, or a server defined here.
+    pub language_servers: BTreeMap<String, LanguageServerSettings>,
     /// Editor › Inspections profiles.
     pub inspections: InspectionSettings,
     /// Editor › Natural Languages › Spelling.
@@ -52,6 +55,58 @@ pub struct Settings {
 pub struct ToolSettings {
     /// Executable to launch instead of the managed / `PATH` one; empty = auto-detect.
     pub path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LanguageServerSettings {
+    /// `false` keeps the server from starting for any language.
+    pub enabled: bool,
+    /// Executable to launch instead of the definition's; required for a server
+    /// defined here (one with `languages`).
+    pub command: String,
+    /// Replaces the definition's arguments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub args: Option<Vec<String>>,
+    /// Added to the server's environment.
+    pub env: BTreeMap<String, String>,
+    /// Merged over the definition's `initializationOptions` (sent once at startup).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional, type = Option<specta_typescript::Unknown>)]
+    pub initialization_options: Option<serde_json::Value>,
+    /// Answers the server's `workspace/configuration` requests; changes are pushed
+    /// with `workspace/didChangeConfiguration` without a restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional, type = Option<specta_typescript::Unknown>)]
+    pub settings: Option<serde_json::Value>,
+    /// Language ids a server defined here serves (`python`); empty for the servers
+    /// of the language definitions.
+    pub languages: Vec<String>,
+    /// Files marking a workspace root for a server defined here (`pyproject.toml`).
+    pub root_markers: Vec<String>,
+}
+
+impl Default for LanguageServerSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            command: String::new(),
+            args: None,
+            env: BTreeMap::new(),
+            initialization_options: None,
+            settings: None,
+            languages: Vec::new(),
+            root_markers: Vec::new(),
+        }
+    }
+}
+
+impl LanguageServerSettings {
+    /// A server defined in settings rather than by a language definition.
+    pub fn is_custom(&self) -> bool {
+        !self.languages.is_empty()
+    }
 }
 
 impl Settings {
@@ -82,6 +137,7 @@ impl Default for Settings {
             actions_on_save: ActionsOnSaveSettings::default(),
             external_tools: Vec::new(),
             tools: BTreeMap::new(),
+            language_servers: BTreeMap::new(),
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
         }

@@ -28,6 +28,11 @@ export const commands = {
 	 */
 	settingsGetGlobal: () => __TAURI_INVOKE<Settings_Serialize>("settings_get_global"),
 	/**
+	 *  A key's value as written in one layer (the global or this project's file),
+	 *  without defaults or the other layer, as JSON text; `None` when that layer doesn't set it.
+	 */
+	settingsGetLayerValue: (scope: SettingsScope, key: string) => __TAURI_INVOKE<string | null>("settings_get_layer_value", { scope, key }),
+	/**
 	 *  `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 	 *  value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 	 *  re-reads its effective settings.
@@ -3298,6 +3303,64 @@ export type LanguageInfo_Serialize = {
 	firstLine?: string | null,
 };
 
+export type LanguageServerSettings = LanguageServerSettings_Serialize | LanguageServerSettings_Deserialize;
+
+export type LanguageServerSettings_Deserialize = {
+	/**  `false` keeps the server from starting for any language. */
+	enabled?: boolean,
+	/**
+	 *  Executable to launch instead of the definition's; required for a server
+	 *  defined here (one with `languages`).
+	 */
+	command?: string,
+	/**  Replaces the definition's arguments. */
+	args?: string[] | null,
+	/**  Added to the server's environment. */
+	env?: { [key in string]: string },
+	/**  Merged over the definition's `initializationOptions` (sent once at startup). */
+	initializationOptions?: unknown | null,
+	/**
+	 *  Answers the server's `workspace/configuration` requests; changes are pushed
+	 *  with `workspace/didChangeConfiguration` without a restart.
+	 */
+	settings?: unknown | null,
+	/**
+	 *  Language ids a server defined here serves (`python`); empty for the servers
+	 *  of the language definitions.
+	 */
+	languages?: string[],
+	/**  Files marking a workspace root for a server defined here (`pyproject.toml`). */
+	rootMarkers?: string[],
+};
+
+export type LanguageServerSettings_Serialize = {
+	/**  `false` keeps the server from starting for any language. */
+	enabled: boolean,
+	/**
+	 *  Executable to launch instead of the definition's; required for a server
+	 *  defined here (one with `languages`).
+	 */
+	command: string,
+	/**  Replaces the definition's arguments. */
+	args?: string[] | null,
+	/**  Added to the server's environment. */
+	env: { [key in string]: string },
+	/**  Merged over the definition's `initializationOptions` (sent once at startup). */
+	initializationOptions?: unknown | null,
+	/**
+	 *  Answers the server's `workspace/configuration` requests; changes are pushed
+	 *  with `workspace/didChangeConfiguration` without a restart.
+	 */
+	settings?: unknown | null,
+	/**
+	 *  Language ids a server defined here serves (`python`); empty for the servers
+	 *  of the language definitions.
+	 */
+	languages: string[],
+	/**  Files marking a workspace root for a server defined here (`pyproject.toml`). */
+	rootMarkers: string[],
+};
+
 export type LanguagesSettings = {
 	python?: PythonSettings,
 	node?: NodeSettings,
@@ -4649,6 +4712,11 @@ export type Settings_Deserialize = {
 	 *  command the language definition launches (`elixir-ls`, `codelldb`).
 	 */
 	tools?: { [key in string]: ToolSettings },
+	/**
+	 *  Per language server, by name (`rust-analyzer`): launch and protocol
+	 *  options on top of the language definition, or a server defined here.
+	 */
+	languageServers?: { [key in string]: LanguageServerSettings_Deserialize },
 	/**  Editor › Inspections profiles. */
 	inspections?: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
@@ -4691,6 +4759,11 @@ export type Settings_Serialize = {
 	 *  command the language definition launches (`elixir-ls`, `codelldb`).
 	 */
 	tools: { [key in string]: ToolSettings },
+	/**
+	 *  Per language server, by name (`rust-analyzer`): launch and protocol
+	 *  options on top of the language definition, or a server defined here.
+	 */
+	languageServers: { [key in string]: LanguageServerSettings_Serialize },
 	/**  Editor › Inspections profiles. */
 	inspections: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */

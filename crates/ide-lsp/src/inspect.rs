@@ -65,8 +65,7 @@ impl LspManager {
     /// run doesn't prompt to install every language it meets.
     pub fn serves_path(&self, path: &Path) -> bool {
         let lang = self.languages.detect(path, None);
-        let Some(config) = self.languages.get(&lang) else { return false };
-        config.language_servers.iter().any(|ls| {
+        self.language_servers(&lang).iter().any(|ls| {
             let mut cfg = ls.clone();
             if let Some(hook) = self.config_hook.read().clone() {
                 hook(&mut cfg, &self.project_root);

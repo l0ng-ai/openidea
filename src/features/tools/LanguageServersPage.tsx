@@ -1,13 +1,16 @@
 /**
  * Settings › Languages & Frameworks › Language Servers, laid out like the
  * Plugins page: language servers and debug adapters in a list on the left,
- * the selected tool's location, custom path and install actions on the right.
+ * the selected tool's location, custom path, install actions and server
+ * settings on the right. Servers of one's own are added here too.
  */
 import { useEffect, useId, useMemo, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import type { ToolInfo } from "@/bindings";
 import { Badge, Button, EmptyState, IconButton, Input, ProgressBar, SearchField, Spinner, T } from "@/ui";
+import { useProject } from "@/platform/project";
 import { toolsBackend } from "./backend";
+import { AddServerForm, ServerSettings } from "./ServerSettings";
 import {
   cancelInstall,
   installTool,
@@ -63,6 +66,7 @@ function JobRow({ name, job }: { name: string; job: InstallJob }) {
 }
 
 function ToolRow({ tool, selected, onSelect }: { tool: ToolInfo; selected: boolean; onSelect: () => void }) {
+  const disabled = useProject((s) => s.settings?.languageServers?.[tool.name]?.enabled === false);
   return (
     <li className={clsx(styles.row, selected && styles.rowSelected)}>
       <button
@@ -80,6 +84,11 @@ function ToolRow({ tool, selected, onSelect }: { tool: ToolInfo; selected: boole
         {tool.kind !== "languageServer" && (
           <span className={styles.kindTag}>
             <T>{KIND_LABEL[tool.kind]}</T>
+          </span>
+        )}
+        {disabled && (
+          <span className={styles.kindTag}>
+            <T>Off</T>
           </span>
         )}
         <span className={styles.rowLanguages}>{tool.languages.join(", ")}</span>
@@ -258,6 +267,7 @@ function Details({ tool }: { tool: ToolInfo }) {
           {log.join("\n")}
         </pre>
       )}
+      {tool.kind === "languageServer" && <ServerSettings tool={tool} />}
     </div>
   );
 }
@@ -267,6 +277,7 @@ export function LanguageServersPage() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     void refreshTools();
@@ -285,6 +296,7 @@ export function LanguageServersPage() {
     const i = selected ? ordered.indexOf(selected) : -1;
     const next = ordered[Math.min(ordered.length - 1, Math.max(0, i + (e.key === "ArrowDown" ? 1 : -1)))];
     if (!next) return;
+    setAdding(false);
     setSelectedName(next.name);
     e.currentTarget.querySelector<HTMLElement>(`[data-tool="${CSS.escape(next.name)}"]`)?.focus();
   };
@@ -296,7 +308,15 @@ export function LanguageServersPage() {
           <T>{title}</T> <span className={styles.groupCount}>{list.length}</span>
         </li>
         {list.map((t) => (
-          <ToolRow key={t.name} tool={t} selected={t === selected} onSelect={() => setSelectedName(t.name)} />
+          <ToolRow
+            key={t.name}
+            tool={t}
+            selected={!adding && t === selected}
+            onSelect={() => {
+              setAdding(false);
+              setSelectedName(t.name);
+            }}
+          />
         ))}
       </>
     );
@@ -305,7 +325,7 @@ export function LanguageServersPage() {
     <div className={styles.page}>
       <p className={styles.intro}>
         Language servers and debug adapters used by the IDE. Missing tools can be installed into the IDE&apos;s own
-        tools folder; nothing is downloaded until you click Install.
+        tools folder; nothing is downloaded until you click Install. Add any other LSP server with +.
       </p>
       {error && (
         <div className={styles.error} role="alert">
@@ -321,6 +341,13 @@ export function LanguageServersPage() {
               onChange={setQuery}
               placeholder="Filter by tool or language"
               aria-label="Filter language servers"
+            />
+            <IconButton
+              icon="plus"
+              size="small"
+              title="Add Language Server…"
+              aria-pressed={adding}
+              onClick={() => setAdding(true)}
             />
             {loading ? (
               <Spinner size={14} label="Checking tools" />
@@ -362,7 +389,20 @@ export function LanguageServersPage() {
             )}
           </ul>
         </div>
-        {selected ? (
+        {adding ? (
+          <div className={styles.details}>
+            <AddServerForm
+              existing={tools.map((t) => t.name)}
+              onAdded={(name) => {
+                setAdding(false);
+                setFilter("all");
+                setQuery("");
+                setSelectedName(name);
+              }}
+              onCancel={() => setAdding(false)}
+            />
+          </div>
+        ) : selected ? (
           <Details key={selected.name} tool={selected} />
         ) : (
           <EmptyState className={styles.detailsEmpty} title={loaded ? "No tool selected" : "Loading…"} />

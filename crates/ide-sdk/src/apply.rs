@@ -5,8 +5,8 @@ use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path};
 use crate::{bin_dir, exe, venv_of};
 use crate::{godot, vue};
-use ide_core::settings::Settings;
-use ide_language::LanguageServerConfig;
+use ide_core::settings::{LanguageServerSettings, Settings};
+use ide_language::{LanguageConfig, LanguageServerConfig};
 use ide_run::RunConfig;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -299,6 +299,77 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if !path_dirs.is_empty() {
         let dirs: Vec<&Path> = path_dirs.iter().map(PathBuf::as_path).collect();
         cfg.env.insert("PATH".into(), path_with(&dirs));
+    }
+}
+
+/// The servers `language` uses after Settings › Language Servers: the
+/// definition's ones that aren't disabled, then the ones defined in settings for it.
+pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Settings) -> Vec<LanguageServerConfig> {
+    let enabled = |name: &str| s.language_servers.get(name).is_none_or(|ls| ls.enabled);
+    let mut out: Vec<LanguageServerConfig> = defined.iter().filter(|c| enabled(&c.name)).cloned().collect();
+    for (name, ls) in &s.language_servers {
+        if ls.enabled && ls.languages.iter().any(|l| l == language) && !out.iter().any(|c| &c.name == name) {
+            out.push(custom_server(name, ls));
+        }
+    }
+    out
+}
+
+/// Adds the servers defined in settings to the languages they serve (to list
+/// them with the tools); disabled ones stay so they can be turned back on.
+pub fn with_custom_servers(langs: &mut [LanguageConfig], s: &Settings) {
+    for (name, ls) in s.language_servers.iter().filter(|(_, ls)| ls.is_custom()) {
+        for lang in langs.iter_mut().filter(|l| ls.languages.iter().any(|id| id == l.id.as_str())) {
+            if !lang.language_servers.iter().any(|c| &c.name == name) {
+                lang.language_servers.push(custom_server(name, ls));
+            }
+        }
+    }
+}
+
+fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfig {
+    LanguageServerConfig {
+        name: name.to_owned(),
+        command: ls.command.trim().to_owned(),
+        args: Vec::new(),
+        env: Default::default(),
+        root_markers: ls.root_markers.clone(),
+        initialization_options: None,
+        settings: None,
+        install_hint: Some(match ls.command.trim() {
+            "" => format!("Set the command of `{name}` in Settings › Language Servers"),
+            command => format!("`{command}` was not found: install it, or set its path in Settings › Language Servers"),
+        }),
+        connect: None,
+        fallback: false,
+        launch_error: None,
+    }
+}
+
+/// Command and arguments from Settings › Language Servers; applied before
+/// [`configure_server`] so toolchain adjustments (a custom path, JVM args) still follow.
+pub fn server_launch_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
+    let Some(ls) = s.language_servers.get(&cfg.name) else { return };
+    if let Some(command) = non_empty(ls.command.trim()) {
+        cfg.command = command.to_owned();
+    }
+    if let Some(args) = &ls.args {
+        cfg.args = args.clone();
+    }
+}
+
+/// Environment, `initializationOptions` and `workspace/configuration` settings
+/// from Settings › Language Servers; applied last so they win over derived values.
+pub fn server_protocol_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
+    let Some(ls) = s.language_servers.get(&cfg.name) else { return };
+    cfg.env.extend(ls.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    if let Some(options) = &ls.initialization_options {
+        merge_init_options(cfg, options.clone());
+    }
+    if let Some(settings) = &ls.settings {
+        let mut current = cfg.settings.take().filter(Value::is_object).unwrap_or_else(|| json!({}));
+        merge(&mut current, settings.clone());
+        cfg.settings = Some(current);
     }
 }
 

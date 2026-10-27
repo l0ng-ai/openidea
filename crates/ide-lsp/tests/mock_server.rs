@@ -203,6 +203,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         env: Default::default(),
         root_markers: vec!["mock.toml".into()],
         initialization_options: Some(toml::Value::Table(toml::toml! { flag = true nested = { deep = 1 } })),
+        settings: None,
         install_hint: Some(format!("install {name}")),
         connect: None,
         fallback: false,
@@ -793,6 +794,54 @@ async fn launch_error_fails_without_starting_the_server() {
     });
     assert_eq!(reason.as_deref(), Some("needs JDK 21"));
     assert!(!h.statuses("mock").contains(&ServerStatus::Crashed));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_changes_reach_servers_without_restarts() {
+    let h = harness(&[("mock", incremental_caps()), ("extra", incremental_caps())]);
+    let settings: Arc<Mutex<Option<Value>>> = Default::default();
+    let disabled: Arc<Mutex<Vec<String>>> = Default::default();
+    {
+        let settings = settings.clone();
+        h.mgr.set_config_hook(Box::new(move |cfg, _| cfg.settings = settings.lock().clone()));
+    }
+    {
+        let disabled = disabled.clone();
+        h.mgr.set_servers_hook(Box::new(move |_, defined| {
+            defined.iter().filter(|c| !disabled.lock().contains(&c.name)).cloned().collect()
+        }));
+    }
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("extra", ServerStatus::Ready).await;
+
+    // Only `settings` changed: pushed to the running server, which keeps running.
+    let s = h.launcher.state("mock");
+    *settings.lock() = Some(json!({ "nested": { "other": 2 } }));
+    h.mgr.reconfigure().await;
+    eventually(|| !s.notified("workspace/didChangeConfiguration").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeConfiguration")[0],
+        json!({ "settings": { "flag": true, "nested": { "deep": 1, "other": 2 } } })
+    );
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+    let cfg: Value = s
+        .peer()
+        .request("workspace/configuration", json!({ "items": [{ "section": "nested.other" }] }), None)
+        .await
+        .unwrap();
+    assert_eq!(cfg, json!([2]));
+
+    // Disabled: stopped and forgotten; enabled again: attached to the open document.
+    disabled.lock().push("extra".into());
+    h.mgr.reconfigure().await;
+    assert_eq!(h.mgr.servers().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["mock"]);
+    assert_eq!(h.statuses("extra").last(), Some(&ServerStatus::Stopped));
+    disabled.lock().clear();
+    h.mgr.reconfigure().await;
+    h.wait_status("extra", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("extra").notified("textDocument/didOpen").len() == 2).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

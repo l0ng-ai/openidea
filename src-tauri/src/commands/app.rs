@@ -136,6 +136,24 @@ pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
     state.global_settings.effective()
 }
 
+/// A key's value as written in one layer (the global or this project's file),
+/// without defaults or the other layer, as JSON text; `None` when that layer doesn't set it.
+#[tauri::command]
+#[specta::specta]
+pub fn settings_get_layer_value(
+    window: Window,
+    state: State<'_, AppState>,
+    scope: SettingsScope,
+    key: String,
+) -> Option<String> {
+    let value = match (scope, state.project(window.label())) {
+        (SettingsScope::Project, Ok(p)) => p.settings.layer_value(scope, &key),
+        (SettingsScope::Project, Err(_)) => None,
+        (SettingsScope::Global, _) => state.global_settings.layer_value(scope, &key),
+    };
+    value.map(|v| v.to_string())
+}
+
 /// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 /// value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 /// re-reads its effective settings.
@@ -185,7 +203,7 @@ pub fn settings_set(
         });
     }
     // A new interpreter / toolchain / server executable restarts the language servers it affects.
-    if ["languages", "tools"].iter().any(|k| key == *k || key.starts_with(&format!("{k}."))) {
+    if ["languages", "tools", "languageServers"].iter().any(|k| key == *k || key.starts_with(&format!("{k}."))) {
         let affected = if project_scope { current.iter().cloned().collect() } else { state.projects() };
         for project in affected {
             let lsp = project.lsp.clone();

@@ -115,7 +115,10 @@ fn set_in_document(doc: &mut DocumentMut, segments: &[&str], value: Option<toml_
             if value.is_none() {
                 return;
             }
-            table.insert(seg, Item::Table(Table::new()));
+            // Implicit: no `[languageServers]` header above `[languageServers.ruff]`.
+            let mut new = Table::new();
+            new.set_implicit(true);
+            table.insert(seg, Item::Table(new));
         }
         table = table.get_mut(seg).and_then(Item::as_table_like_mut).expect("table just ensured");
     }
@@ -174,6 +177,12 @@ impl SettingsStore {
         serde_json::from_value(merged).unwrap_or_default()
     }
 
+    /// The value of a dotted key as written in one layer's file (not merged).
+    pub fn layer_value(&self, scope: SettingsScope, key: &str) -> Option<Json> {
+        let layer = read_layer(self.file(scope)?)?;
+        key.split('.').try_fold(&layer, |v, seg| v.get(seg)).cloned()
+    }
+
     /// Effective (merged) settings.
     pub fn effective(&self) -> Settings {
         self.effective.read().clone()
@@ -188,9 +197,15 @@ impl SettingsStore {
         if segments.iter().any(|s| s.is_empty()) {
             return Err(IdeError::invalid(format!("invalid settings key {key:?}")));
         }
-        let mut cursor = &defaults_json();
+        let defaults = defaults_json();
+        let mut cursor = &defaults;
         for seg in &segments {
-            cursor = cursor.get(seg).ok_or_else(|| IdeError::invalid(format!("unknown setting {key:?}")))?;
+            match cursor.get(seg) {
+                Some(next) => cursor = next,
+                // An entry of a map setting (`languageServers.rust-analyzer`): the merge below validates it.
+                None if cursor.as_object().is_some_and(|m| m.is_empty()) => break,
+                None => return Err(IdeError::invalid(format!("unknown setting {key:?}"))),
+            }
         }
 
         let text = match std::fs::read_to_string(&file) {
@@ -350,6 +365,39 @@ mod tests {
         let s =
             store.set(SettingsScope::Global, "appearance.statusBarWidgets", json!({"editor.caret": false})).unwrap();
         assert_eq!(s.appearance.status_bar_widgets.len(), 1);
+        // One entry of a map setting, set and removed on its own.
+        let s = store
+            .set(
+                SettingsScope::Global,
+                "languageServers.rust-analyzer",
+                json!({"args": ["--log"], "initializationOptions": {"check": {"command": "clippy"}}}),
+            )
+            .unwrap();
+        let ra = &s.language_servers["rust-analyzer"];
+        assert!(ra.enabled);
+        assert_eq!(ra.args.as_deref(), Some(&["--log".to_string()][..]));
+        assert_eq!(ra.initialization_options, Some(json!({"check": {"command": "clippy"}})));
+        assert_eq!(
+            store.layer_value(SettingsScope::Global, "languageServers.rust-analyzer.args"),
+            Some(json!(["--log"]))
+        );
+        assert_eq!(
+            store
+                .set(SettingsScope::Global, "languageServers.rust-analyzer", json!({"enabled": "no"}))
+                .unwrap_err()
+                .kind,
+            ide_core::error::ErrorKind::InvalidInput
+        );
+        let s = store.set(SettingsScope::Global, "languageServers.rust-analyzer", json!(null)).unwrap();
+        assert!(s.language_servers.is_empty());
+        // New parent tables stay implicit: no empty `[languageServers]` header.
+        let fresh = tmp.path().join("fresh");
+        let s = SettingsStore::load(&fresh, None)
+            .set(SettingsScope::Global, "languageServers.ruff.languages", json!(["python"]))
+            .unwrap();
+        assert!(s.language_servers["ruff"].is_custom());
+        let text = std::fs::read_to_string(fresh.join("settings.toml")).unwrap();
+        assert_eq!(text, "[languageServers.ruff]\nlanguages = [\"python\"]\n");
 
         // Project layer is created on demand and wins.
         let s = store.set(SettingsScope::Project, "editor.fontSize", json!(12)).unwrap();

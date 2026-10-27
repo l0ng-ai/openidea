@@ -125,13 +125,7 @@ impl ClientHandler {
     }
 
     fn configuration(&self, params: &Value) -> Value {
-        let options = self
-            .server
-            .effective_config()
-            .initialization_options
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok())
-            .unwrap_or(Value::Null);
+        let options = all_settings(&self.server.effective_config());
         let items = params.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
         Value::Array(
             items
@@ -242,5 +236,31 @@ impl Handler for ClientHandler {
             "workspace/diagnostic/refresh" | "workspace/inlineValue/refresh" => Ok(Value::Null),
             other => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {other}"))),
         }
+    }
+}
+
+/// What `workspace/configuration` sections are looked up in: the server's
+/// `initializationOptions` with its `settings` merged over them.
+pub(crate) fn all_settings(cfg: &ide_language::LanguageServerConfig) -> Value {
+    let mut out = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or(Value::Null);
+    if let Some(settings) = &cfg.settings {
+        merge(&mut out, settings.clone());
+    }
+    out
+}
+
+fn merge(base: &mut Value, layer: Value) {
+    match (base, layer) {
+        (Value::Object(base), Value::Object(layer)) => {
+            for (k, v) in layer {
+                match base.get_mut(&k) {
+                    Some(existing) => merge(existing, v),
+                    None => {
+                        base.insert(k, v);
+                    }
+                }
+            }
+        }
+        (base, layer) => *base = layer,
     }
 }

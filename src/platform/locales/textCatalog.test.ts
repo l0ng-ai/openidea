@@ -178,6 +178,10 @@ const UNTRANSLATED = new Set<string>([
   "NAME",
   "node_modules/typescript",
   "PascalCase",
+  "pyproject.toml",
+  "python",
+  "ruff",
+  "server",
   "snake_case",
   // Identifiers that only look like text: icon names, error codes, categories, console output
   "app",

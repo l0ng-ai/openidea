@@ -22,7 +22,7 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 tracing-appender = "0.2"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
-specta-typescript = "0.0.12"
+specta-typescript.workspace = true
 specta.workspace = true
 serde.workspace = true
 serde_json.workspace = true
