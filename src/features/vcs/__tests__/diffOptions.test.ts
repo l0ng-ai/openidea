@@ -125,7 +125,7 @@ describe("diff options", () => {
     parent.remove();
   });
 
-  it("renders consecutive replacement lines as a continuous block", () => {
+  it("keeps word highlighting on paired lines of a multi-line replacement", () => {
     const parent = document.createElement("div");
     document.body.appendChild(parent);
     const mv = new MergeView({
@@ -134,14 +134,37 @@ describe("diff options", () => {
         extensions: viewerBase({ readOnly: true }),
       },
       b: {
-        doc: "before\nfrom new.first import A\nfrom new.second import B\nafter\n",
+        doc: "before\nfrom new.first import A\nfrom new.second import B\nadded line\nafter\n",
         extensions: viewerBase({ readOnly: true }),
       },
       parent,
       diffConfig: { override: whitespaceDiff("none") },
     });
-    expect(mv.a.dom.querySelectorAll(".cm-changedLine.cm-diffWholeLine")).toHaveLength(2);
-    expect(mv.b.dom.querySelectorAll(".cm-changedLine.cm-diffWholeLine")).toHaveLength(2);
+    expect(mv.a.dom.querySelectorAll(".cm-changedLine")).toHaveLength(2);
+    expect(mv.a.dom.querySelector(".cm-diffWholeLine")).toBeNull();
+    expect([...mv.a.dom.querySelectorAll(".cm-changedText")].map((e) => e.textContent)).toEqual([
+      "old",
+      "X",
+      "old",
+      "Y",
+    ]);
+    expect(mv.b.dom.querySelectorAll(".cm-changedLine")).toHaveLength(3);
+    expect([...mv.b.dom.querySelectorAll(".cm-diffWholeLine")].map((e) => e.textContent)).toEqual(["added line"]);
+    expect(mv.b.dom.querySelectorAll(".cm-changedLine:not(.cm-diffWholeLine) .cm-changedText")).toHaveLength(4);
+    mv.destroy();
+    parent.remove();
+  });
+
+  it("marks a deleted last line as a whole line", () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const mv = new MergeView({
+      a: { doc: "keep\ngone", extensions: viewerBase({ readOnly: true }) },
+      b: { doc: "keep", extensions: viewerBase({ readOnly: true }) },
+      parent,
+      diffConfig: { override: whitespaceDiff("none") },
+    });
+    expect([...mv.a.dom.querySelectorAll(".cm-diffWholeLine")].map((e) => e.textContent)).toEqual(["gone"]);
     mv.destroy();
     parent.remove();
   });

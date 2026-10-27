@@ -3,7 +3,7 @@
  * based theme + syntax colours and lazy language loading by file name.
  */
 import { HighlightStyle, LanguageDescription, syntaxHighlighting, type LanguageSupport } from "@codemirror/language";
-import { EditorState, type Extension } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, type Extension, type Line } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -12,47 +12,60 @@ import {
   highlightActiveLine,
   keymap,
   lineNumbers,
+  type DecorationSet,
+  type ViewUpdate,
 } from "@codemirror/view";
 import { getChunks } from "@codemirror/merge";
 import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
 import { tags as t } from "@lezer/highlight";
 
-// Multi-line changes use a continuous background on both sides. Single-line
-// replacements retain inline highlighting for their changed words.
+const wholeLine = Decoration.line({ class: "cm-diffWholeLine" });
+
+/**
+ * Marks the changed lines that have no counterpart on the other side (inserted
+ * or deleted as a whole) so they get a solid background. Lines paired with a
+ * line on the other side keep the line tint plus word-level highlights.
+ */
+function wholeLineDeco(view: EditorView): DecorationSet {
+  const info = getChunks(view.state);
+  if (!info || !info.side) return Decoration.none;
+  const isA = info.side === "a";
+  const { doc } = view.state;
+  const { from: vpFrom, to: vpTo } = view.viewport;
+  const builder = new RangeSetBuilder<Decoration>();
+  for (const chunk of info.chunks) {
+    const from = isA ? chunk.fromA : chunk.fromB;
+    const to = isA ? chunk.toA : chunk.toB;
+    if (from >= vpTo) break;
+    if (from === to || to < vpFrom) continue;
+    const otherEmpty = isA ? chunk.fromB === chunk.toB : chunk.fromA === chunk.toA;
+    const ranges = chunk.changes.map((c) => (isA ? [c.fromA, c.toA] : [c.fromB, c.toB]).map((p) => p + from));
+    // Covered including the line break after it, or the one before it (a deleted last line).
+    const covered = (line: Line) =>
+      ranges.some(([f = 0, t = 0]) => (f <= line.from && t > line.to) || (f < line.from && t >= line.to));
+    for (let line = doc.lineAt(Math.max(from, vpFrom)); line.from < Math.min(to, vpTo);) {
+      if (otherEmpty || covered(line)) builder.add(line.from, line.from, wholeLine);
+      if (line.number === doc.lines) break;
+      line = doc.line(line.number + 1);
+    }
+  }
+  return builder.finish();
+}
+
 const wholeChangedLines = ViewPlugin.fromClass(
   class {
-    decorations;
+    decorations: DecorationSet;
     constructor(view: EditorView) {
-      this.decorations = this.build(view);
+      this.decorations = wholeLineDeco(view);
     }
-    update(update: import("@codemirror/view").ViewUpdate) {
+    update(update: ViewUpdate) {
       if (
         update.docChanged ||
         update.viewportChanged ||
         getChunks(update.startState)?.chunks !== getChunks(update.state)?.chunks
       )
-        this.decorations = this.build(update.view);
-    }
-    build(view: EditorView) {
-      const info = getChunks(view.state);
-      const marks = [];
-      if (info && info.side !== "b" && info.side !== "a") return Decoration.none;
-      for (const chunk of info?.chunks ?? []) {
-        const isA = info!.side === "a";
-        const from = isA ? chunk.fromA : chunk.fromB;
-        const to = isA ? chunk.toA : chunk.toB;
-        if (from === to || from > view.state.doc.length) continue;
-        const otherEmpty = isA ? chunk.fromB === chunk.toB : chunk.fromA === chunk.toA;
-        const end = Math.min(to - 1, view.state.doc.length);
-        if (!otherEmpty && view.state.doc.lineAt(from).number === view.state.doc.lineAt(end).number) continue;
-        for (let line = view.state.doc.lineAt(from); line.from < to;) {
-          marks.push(Decoration.line({ class: "cm-diffWholeLine" }).range(line.from));
-          if (line.number === view.state.doc.lines) break;
-          line = view.state.doc.line(line.number + 1);
-        }
-      }
-      return Decoration.set(marks, true);
+        this.decorations = wholeLineDeco(update.view);
     }
   },
   { decorations: (value) => value.decorations },
@@ -116,7 +129,6 @@ export const viewerTheme = EditorView.theme(
     "&.cm-merge-a .cm-diffWholeLine .cm-changedText, &.cm-merge-b .cm-diffWholeLine .cm-changedText": {
       background: "transparent",
     },
-    "&.cm-merge-b .cm-diffWholeLine .cm-insertedLine": { background: "transparent" },
     "&.cm-merge-a .cm-changedText, .cm-deletedChunk .cm-deletedText": {
       background: "color-mix(in srgb, var(--danger) 26%, transparent)",
     },
@@ -126,7 +138,6 @@ export const viewerTheme = EditorView.theme(
     "&.cm-merge-b .cm-changedText, .cm-insertedLine .cm-changedText": {
       background: "color-mix(in srgb, var(--success) 26%, transparent)",
     },
-    ".cm-insertedLine": { backgroundColor: "color-mix(in srgb, var(--gutter-added) 12%, transparent)" },
     ".cm-changeGutter": { width: "3px", paddingLeft: "0" },
     "&.cm-merge-a .cm-changedLineGutter, .cm-deletedLineGutter": { background: "var(--gutter-deleted)" },
     "&.cm-merge-b .cm-changedLineGutter": { background: "var(--gutter-modified)" },
