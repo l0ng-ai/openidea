@@ -21,7 +21,9 @@ fn tools(app: &AppHandle, state: &AppState, window: &Window) -> IdeResult<Tools>
         .iter()
         .filter_map(|(command, t)| Some((command.clone(), ide_sdk::apply::setting_path(&root, &t.path)?)))
         .collect();
-    Ok(Tools::new(&data).with_custom_paths(custom))
+    // Godot is usually an app bundle / Flatpak outside the search path.
+    let found = ide_sdk::godot::find(None).map(|p| (ide_sdk::godot::COMMAND.to_owned(), p));
+    Ok(Tools::new(&data).with_custom_paths(custom).with_found_paths(found.into_iter().collect()))
 }
 
 fn join_err(e: impl std::fmt::Display) -> IdeError {

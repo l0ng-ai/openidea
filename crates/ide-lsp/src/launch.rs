@@ -1,5 +1,6 @@
 //! Starting server processes: binary resolution and the [`Launcher`] seam.
 
+use ide_core::CancellationToken;
 use ide_jsonrpc::{Handler, Peer};
 use ide_language::LanguageServerConfig;
 use std::ffi::OsString;
@@ -27,13 +28,28 @@ pub trait Launcher: Send + Sync + 'static {
         on_stderr: Box<dyn Fn(String) + Send + Sync>,
     ) -> Result<Peer, LaunchError>;
 
+    /// [`Launcher::launch`] that gives up once `cancel` fires (the server was stopped
+    /// while still starting). Launchers that return at once need not override it.
+    fn launch_cancellable(
+        &self,
+        config: &LanguageServerConfig,
+        root: &Path,
+        handler: Arc<dyn Handler>,
+        on_stderr: Box<dyn Fn(String) + Send + Sync>,
+        cancel: &CancellationToken,
+    ) -> Result<Peer, LaunchError> {
+        let _ = cancel;
+        self.launch(config, root, handler, on_stderr)
+    }
+
     /// Whether `config` could start without a `Missing` error.
     fn available(&self, _config: &LanguageServerConfig, _root: &Path) -> bool {
         true
     }
 }
 
-/// Resolves `command` on an augmented `PATH` and spawns it with stdio transport.
+/// Resolves `command` on an augmented `PATH` and spawns it with stdio transport,
+/// or for a `connect` server reaches it over TCP (see [`crate::tcp`]).
 pub struct ProcessLauncher;
 
 impl Launcher for ProcessLauncher {
@@ -44,11 +60,36 @@ impl Launcher for ProcessLauncher {
         handler: Arc<dyn Handler>,
         on_stderr: Box<dyn Fn(String) + Send + Sync>,
     ) -> Result<Peer, LaunchError> {
+        self.launch_cancellable(config, root, handler, on_stderr, &CancellationToken::new())
+    }
+
+    fn launch_cancellable(
+        &self,
+        config: &LanguageServerConfig,
+        root: &Path,
+        handler: Arc<dyn Handler>,
+        on_stderr: Box<dyn Fn(String) + Send + Sync>,
+        cancel: &CancellationToken,
+    ) -> Result<Peer, LaunchError> {
         let search = server_search_path(config);
-        let binary = which::which_in(&config.command, Some(&search), root).map_err(|_| LaunchError::Missing)?;
-        let binary = resolve_rustup_proxy(&config.command, binary);
+        let binary = which::which_in(&config.command, Some(&search), root)
+            .ok()
+            .map(|b| resolve_rustup_proxy(&config.command, b));
         let mut env: Vec<(String, String)> = vec![("PATH".into(), search.to_string_lossy().into_owned())];
         env.extend(config.env.iter().filter(|(k, _)| *k != "PATH").map(|(k, v)| (k.clone(), v.clone())));
+        if let Some(addr) = &config.connect {
+            return crate::tcp::connect_or_start(
+                config,
+                addr,
+                binary.as_deref(),
+                &env,
+                root,
+                handler,
+                on_stderr,
+                cancel,
+            );
+        }
+        let binary = binary.ok_or(LaunchError::Missing)?;
         Peer::spawn(&binary.to_string_lossy(), &config.args, root, &env, handler, on_stderr)
             .map_err(|e| LaunchError::Failed(format!("failed to start {}: {e}", binary.display())))
     }

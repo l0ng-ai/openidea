@@ -61,7 +61,14 @@ pub fn run_start(
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
     }
-    let encoding = project.settings.effective().console.encoding;
+    let settings = project.settings.effective();
+    // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
+    let mut config = config;
+    ide_sdk::apply::resolve_run_command(&mut config, &root, &settings);
+    if config.command == ide_sdk::godot::COMMAND {
+        return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
+    }
+    let encoding = settings.console.encoding;
     let options = StartOptions { encoding: Some(encoding).filter(|e| !e.trim().is_empty()) };
     state.processes.start(
         &root,

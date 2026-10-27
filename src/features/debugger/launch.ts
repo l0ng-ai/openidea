@@ -196,6 +196,24 @@ function delveLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   return out;
 }
 
+/** The scene a `godot --path <dir> [scene]` command line plays: `main`, or a `res://` path. */
+export function godotScene(args: readonly string[]): string {
+  const scene = args.find((a, i) => args[i - 1] !== "--path" && /\.t?scn$/i.test(a));
+  if (!scene) return "main";
+  return scene.startsWith("res://") ? scene : `res://${scene.replace(/^\.\//, "")}`;
+}
+
+/**
+ * Godot: the adapter inside the editor plays the scene itself (with the editor's run
+ * settings), so the launch names the project (checked against the editor's) and the scene.
+ */
+function godotLaunch(rc: RunConfig, cwd: string): LaunchConfig {
+  const i = rc.args.indexOf("--path");
+  const dir = i >= 0 ? rc.args[i + 1] : undefined;
+  const project = dir ? join(cwd, dir) : cwd;
+  return { ...base(rc, "godot", project), extraJson: JSON.stringify({ project, scene: godotScene(rc.args) }) };
+}
+
 /** A native program under CodeLLDB or lldb-dap: program, args, cwd, env. */
 function nativeLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {
   const out: LaunchConfig = { ...base(rc, adapter, cwd), program: resolveCommand(rc.command, cwd), args: [...rc.args] };
@@ -219,6 +237,7 @@ export function launchConfigFor(rc: RunConfig, root: string): LaunchConfig | nul
   if (adapter === "debugpy") return debugpyLaunch(rc, cwd);
   if (adapter === "js-debug") return jsDebugLaunch(rc, cwd);
   if (adapter === "delve") return delveLaunch(rc, cwd);
+  if (adapter === "godot") return godotLaunch(rc, cwd);
   // Adapters without a template (hidden in Edit Configurations): generic arguments.
   return {
     ...base(rc, adapter, cwd),

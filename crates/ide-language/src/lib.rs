@@ -75,6 +75,14 @@ pub struct LanguageServerConfig {
     /// Human hint shown when the binary is missing.
     #[serde(default)]
     pub install_hint: Option<String>,
+    /// `host:port` of a server that speaks LSP over TCP (Godot's editor). Connects
+    /// there when something listens; otherwise starts `command` (when installed)
+    /// and connects once it accepts: to `127.0.0.1:${port}` when the arguments
+    /// contain `${port}` (a free port), else to this address. `${root}` in the
+    /// arguments is the workspace root. A server reached without starting it is
+    /// never shut down or killed by the IDE.
+    #[serde(default)]
+    pub connect: Option<String>,
     /// An alternative to the servers listed before it (pyright after
     /// basedpyright): only used while none of those is installed.
     #[serde(default)]
@@ -96,6 +104,10 @@ pub struct DebuggerConfig {
     /// `stdio` or `tcp`.
     #[serde(default = "default_transport")]
     pub transport: String,
+    /// `tcp` only: `host:port` of an adapter running inside another program (the
+    /// Godot editor). Used when it accepts connections; otherwise `command` is started.
+    #[serde(default)]
+    pub connect: Option<String>,
     #[serde(default)]
     pub install_hint: Option<String>,
 }

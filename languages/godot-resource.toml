@@ -1,0 +1,8 @@
+id = "godot-resource"
+name = "Godot Resource"
+# Text scenes / resources, `project.godot`, import metadata and export presets (INI-like).
+extensions = ["tscn", "tres", "godot", "import"]
+filenames = ["export_presets.cfg", "override.cfg", "extension_list.cfg"]
+line-comment = ";"
+indent = { tab-size = 4, insert-spaces = false }
+ui-mode = "Properties files"

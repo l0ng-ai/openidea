@@ -1,0 +1,8 @@
+id = "gdshader"
+name = "Godot Shader"
+extensions = ["gdshader", "gdshaderinc"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+indent = { tab-size = 4, insert-spaces = false }
+# GLSL-like: the C mode colours keywords, types, numbers and comments.
+ui-mode = "C"

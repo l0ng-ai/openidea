@@ -284,6 +284,8 @@ pub struct Tools {
     platform: Platform,
     /// Executables chosen in settings, by command.
     custom: BTreeMap<String, PathBuf>,
+    /// Executables found outside the search path (app bundles), by command.
+    found: BTreeMap<String, PathBuf>,
 }
 
 impl Tools {
@@ -297,12 +299,18 @@ impl Tools {
         let system: Vec<PathBuf> = std::env::split_paths(&search_path).filter(|d| !ours.contains(d)).collect();
         let system_path = std::env::join_paths(&system).unwrap_or_default();
         let child_path = std::env::join_paths(ours.iter().chain(system.iter())).unwrap_or_default();
-        Self { root, system_path, child_path, platform, custom: BTreeMap::new() }
+        Self { root, system_path, child_path, platform, custom: BTreeMap::new(), found: BTreeMap::new() }
     }
 
     /// Reports the executables chosen in settings (command → path) as the tools' location.
     pub fn with_custom_paths(mut self, custom: BTreeMap<String, PathBuf>) -> Self {
         self.custom = custom;
+        self
+    }
+
+    /// Reports executables located outside the search path (command → path) as on the PATH.
+    pub fn with_found_paths(mut self, found: BTreeMap<String, PathBuf>) -> Self {
+        self.found = found;
         self
     }
 
@@ -429,7 +437,7 @@ impl Tools {
         let Some(spec) = spec else {
             let u = usage?;
             let command = u.command.clone()?;
-            let path = self.which(&command);
+            let path = self.which(&command).or_else(|| self.found.get(&command).cloned());
             return Some(ToolInfo {
                 name: name.to_string(),
                 display_name: name.to_string(),

@@ -620,6 +620,14 @@ impl DebugManager {
         if config.adapter == "js-debug" && arguments.get("__workspaceFolder").is_none() {
             arguments["__workspaceFolder"] = json!(cwd);
         }
+        // Godot compares `project` with its own (resolved) project path: `/tmp/game` is
+        // rejected by an editor that opened `/private/tmp/game`.
+        if config.adapter == "godot"
+            && let Some(project) = arguments.get("project").and_then(Value::as_str)
+            && let Ok(real) = std::fs::canonicalize(project)
+        {
+            arguments["project"] = json!(real);
+        }
         if config.adapter == "codelldb" && arguments.get("sourceLanguages").is_none() {
             arguments["sourceLanguages"] = json!(["rust"]);
         }
@@ -984,8 +992,8 @@ impl DebugManager {
     }
 
     pub async fn stack_trace(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<Vec<StackFrame>> {
-        let body = self
-            .session(s)?
+        let session = self.session(s)?;
+        let body = session
             .conn
             .request_timeout(
                 "stackTrace",
@@ -993,11 +1001,14 @@ impl DebugManager {
                 REQUEST_TIMEOUT,
             )
             .await?;
-        Ok(body
-            .get("stackFrames")
-            .and_then(Value::as_array)
-            .map(|f| f.iter().map(frame_from).collect())
-            .unwrap_or_default())
+        let frame = |f: &Value| {
+            let mut frame = frame_from(f);
+            if let Some(client) = frame.path.as_deref().and_then(|p| session.client_path(&p.to_string_lossy())) {
+                frame.path = Some(client.into());
+            }
+            frame
+        };
+        Ok(body.get("stackFrames").and_then(Value::as_array).map(|f| f.iter().map(frame).collect()).unwrap_or_default())
     }
 
     pub async fn scopes(&self, s: DebugSessionId, frame_id: i64) -> IdeResult<Vec<Scope>> {

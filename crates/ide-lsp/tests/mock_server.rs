@@ -192,6 +192,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         root_markers: vec!["mock.toml".into()],
         initialization_options: Some(toml::Value::Table(toml::toml! { flag = true nested = { deep = 1 } })),
         install_hint: Some(format!("install {name}")),
+        connect: None,
         fallback: false,
         launch_error: None,
     }

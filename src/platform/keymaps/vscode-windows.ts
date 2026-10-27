@@ -20,8 +20,8 @@ const translated = Object.fromEntries(
 
 export const vscodeWindows: Record<string, string[]> = {
   ...translated,
-  "navigate.back": ["Alt+Left"],
-  "navigate.forward": ["Alt+Right"],
+  "navigate.back": ["Alt+Left", "Button4"],
+  "navigate.forward": ["Alt+Right", "Button5"],
   "find.replaceInFile": ["Ctrl+H"],
   "find.next": ["F3"],
   "find.previous": ["Shift+F3"],

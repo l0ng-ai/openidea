@@ -903,6 +903,24 @@ fn outline_more_languages() {
         ",
     );
     check_outline(
+        "gdscript",
+        "class_name Player\nextends Node\n\nsignal died\nenum State { IDLE, RUN }\nconst SPEED = 2\n@export var hp := 3\n\nfunc _init(a):\n\tpass\n\nfunc jump(height: float) -> void:\n\tvar local = 1\n\nclass Inner:\n\tvar x = 0\n\tfunc go():\n\t\tpass\n",
+        "
+        Class Player
+        Event died
+        Enum State
+          EnumMember IDLE
+          EnumMember RUN
+        Constant SPEED
+        Field hp
+        Constructor _init
+        Function jump
+        Class Inner
+          Field x
+          Method go
+        ",
+    );
+    check_outline(
         "cmake",
         "project(Foo)\nfunction(my_fn arg)\n  message(${arg})\nendfunction()\nadd_executable(app main.c)\n",
         "

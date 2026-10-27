@@ -295,6 +295,21 @@ fn deno_tasks() {
 }
 
 #[test]
+fn godot_projects_run_their_main_scene() {
+    let dir = project(&[("project.godot", "config_version=5\n"), ("demo/project.godot", "config_version=5\n")]);
+    let c = detect(dir.path());
+    let root = find(&c, "godot:project");
+    assert_eq!((root.name.as_str(), root.kind.as_str()), ("Godot Project", "godot"));
+    assert_eq!(cmdline(root), "godot --path .");
+    assert_eq!(root.cwd, None);
+    assert_eq!(root.debug_adapter.as_deref(), Some("godot"));
+    let demo = find(&c, "godot:project:demo");
+    assert_eq!(demo.name, "Godot Project (demo)");
+    assert_eq!(demo.cwd, Some(std::path::PathBuf::from("demo").into()));
+    assert!(detect(project(&[("main.gd", "extends Node\n")]).path()).is_empty());
+}
+
+#[test]
 fn just_recipes() {
     let justfile = "\
 set shell := [\"bash\", \"-c\"]

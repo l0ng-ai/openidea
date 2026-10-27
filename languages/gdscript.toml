@@ -1,0 +1,26 @@
+id = "gdscript"
+name = "GDScript"
+extensions = ["gd"]
+line-comment = "#"
+# Godot's default (Editor Settings › Text Editor › Behavior › Indent › Type).
+indent = { tab-size = 4, insert-spaces = false }
+tree-sitter = "gdscript"
+
+# The language server runs inside the Godot editor and speaks LSP over TCP only:
+# connect to an open editor, else start a headless editor for the project on a free port.
+[[language-servers]]
+name = "godot"
+command = "godot"
+args = ["--headless", "--editor", "--path", "${root}", "--lsp-port", "${port}"]
+connect = "127.0.0.1:6005"
+root-markers = ["project.godot"]
+install-hint = "Open the project in the Godot editor, or install Godot 4 and set the Godot executable in Settings › Languages & Frameworks › Language Servers › godot"
+
+# Godot's debug adapter also lives in the editor (DAP over TCP, port 6006).
+[debugger]
+adapter = "godot"
+command = "godot"
+args = ["--headless", "--editor", "--path", "${root}", "--dap-port", "${port}"]
+transport = "tcp"
+connect = "127.0.0.1:6006"
+install-hint = "Open the project in the Godot editor, or install Godot 4 and set the Godot executable in Settings › Languages & Frameworks › Language Servers › godot"

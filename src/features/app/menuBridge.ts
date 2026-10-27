@@ -11,7 +11,7 @@ import { executeAction, getAction, isActionEnabled, useActions } from "@/platfor
 import { useContextKeys } from "@/platform/context";
 import { keysWithPrefix, t, tx, useI18n } from "@/platform/i18n";
 import { commands, isTauri, type DynamicItem, type MenuConfig, type MenuNode } from "@/platform/ipc";
-import { bindingsFor, effectiveBindings, formatBinding, useKeymap } from "@/platform/keymap";
+import { effectiveBindings, formatBinding, primaryKeyBinding, useKeymap } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { useContributions } from "@/workbench/contributions";
 import { isDistractionFree, useDistractionFree } from "@/workbench/distractionFree";
@@ -48,7 +48,7 @@ export function buildMenuConfig(os: HostOs): MenuConfig {
   const shortcuts: Record<string, string> = {};
   for (const [, id] of effectiveBindings()) {
     if (id in shortcuts) continue;
-    const first = bindingsFor(id)[0];
+    const first = primaryKeyBinding(id);
     if (first) shortcuts[id] = menuShortcut(first, os);
   }
   return { locale: useI18n.getState().locale, labels, shortcuts, dynamic: dynamicMenuItems() };

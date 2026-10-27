@@ -49,6 +49,9 @@ describe("IDEA keymap parity", () => {
     ["usages.rerun", ["Meta+R"], ["Ctrl+F5"]],
     // Vcs.Log.GoToRef: Find in the Git Log table.
     ["vcs.log.goToRef", ["Meta+F"], ["Ctrl+F"]],
+    // Back / Forward also carry the mouse side buttons (`<mouse-shortcut keystroke="button4"/>`).
+    ["navigate.back", ["Meta+[", "Meta+Alt+Left", "Button4"], ["Ctrl+Alt+Left", "Button4"]],
+    ["navigate.forward", ["Meta+]", "Meta+Alt+Right", "Button5"], ["Ctrl+Alt+Right", "Button5"]],
   ])("%s", (id, mac, win) => {
     expect(intellijMacos[id]).toEqual(mac);
     expect(intellijWindows[id]).toEqual(win);

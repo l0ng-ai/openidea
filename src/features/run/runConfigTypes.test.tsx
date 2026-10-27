@@ -77,6 +77,26 @@ describe("configuration types", () => {
     expect(withParams(old, params)).toMatchObject({ command: "cargo", args: ["run", "--bin", "my app"] });
   });
 
+  it("Godot runs the main scene or a chosen one, and reads detected configurations back", () => {
+    const godot = typeFor("godot")!;
+    expect(godot.debugAdapter).toBe("godot");
+    const c = cfg("g", { kind: "godot" });
+    expect(withParams(c, { projectDir: "game", scene: "", arguments: "" })).toMatchObject({
+      command: "godot",
+      args: ["--path", "."],
+      cwd: "game",
+    });
+    expect(withParams(c, { scene: "res://one.tscn", arguments: "--debug-collisions" })).toMatchObject({
+      args: ["--path", ".", "res://one.tscn", "--debug-collisions"],
+      cwd: null,
+    });
+    const detected = cfg("godot:project", { kind: "godot", command: "/Apps/Godot.app/Contents/MacOS/Godot", args: ["--path", "."] });
+    expect(godot.paramsFrom!(detected)).toEqual({ projectDir: "", scene: "", arguments: "" });
+    const scene = { ...detected, cwd: "demo", args: ["--path", ".", "res://a.tscn", "--verbose"] };
+    expect(godot.paramsFrom!(scene)).toEqual({ projectDir: "demo", scene: "res://a.tscn", arguments: "--verbose" });
+    expect(godot.paramsFrom!(cfg("x", { command: "cargo" }))).toBeNull();
+  });
+
   it("shell script files and text derive the command line", () => {
     const c = cfg("s");
     expect(

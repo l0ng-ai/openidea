@@ -137,6 +137,14 @@ describe("remote attach requests", () => {
     });
   });
 
+  it("Attach to Godot connects to the editor's debug adapter for the project", () => {
+    const l = remoteAttachConfig(configOf(remote.godotAttachType), "/p/game")!;
+    expect(l).toMatchObject({ adapter: "godot", request: "attach", cwd: "/p/game" });
+    expect(JSON.parse(l.extraJson!)).toEqual({ debugServer: "localhost:6006", project: "/p/game" });
+    const custom = remoteAttachConfig(configOf(remote.godotAttachType, { port: "6010" }), "/p")!;
+    expect(JSON.parse(custom.extraJson!).debugServer).toBe("localhost:6010");
+  });
+
   it("Attach to Node.js attaches js-debug to the inspector with local/remote roots", () => {
     const l = remoteAttachConfig(configOf(nodeRemoteType, { host: "web", remoteRoot: "/usr/src/app" }), "/p")!;
     expect(l.adapter).toBe("js-debug");

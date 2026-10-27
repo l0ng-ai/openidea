@@ -881,3 +881,137 @@ async fn hot_swap_only_for_java_debug() {
     let failed = hot_swap_result(&json!({"changedClasses": [], "errorMessage": "boom"}));
     assert_eq!(failed.error_message.as_deref(), Some("boom"));
 }
+
+fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegistry> {
+    let lang = ide_language::LanguageConfig {
+        id: ide_core::LanguageId::new("gdscript"),
+        name: "GDScript".into(),
+        extensions: vec!["gd".into()],
+        filenames: vec![],
+        first_line: None,
+        line_comment: None,
+        block_comment: None,
+        indent: None,
+        ui_mode: None,
+        tree_sitter: None,
+        language_servers: vec![],
+        debugger: Some(ide_language::DebuggerConfig {
+            adapter: "godot".into(),
+            command: command.into(),
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            transport: "tcp".into(),
+            connect: Some(format!("127.0.0.1:{port}")),
+            install_hint: Some("Open the project in the Godot editor".into()),
+        }),
+    };
+    Arc::new(LanguageRegistry::from_configs(vec![lang]))
+}
+
+fn godot_launch(project: &std::path::Path) -> LaunchConfig {
+    LaunchConfig {
+        name: "Main Scene".into(),
+        adapter: "godot".into(),
+        request: "launch".into(),
+        program: None,
+        args: vec![],
+        cwd: Some(project.to_path_buf().into()),
+        env: BTreeMap::new(),
+        extra_json: Some(json!({"project": project, "scene": "main"}).to_string()),
+    }
+}
+
+/// Godot's debug adapter runs inside the editor (port 6006): an open editor is
+/// used as is, nothing is started.
+#[tokio::test]
+async fn godot_connects_to_the_editor_adapter() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let log: Log = Arc::default();
+    let server_log = log.clone();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        fake_adapter(stream, server_log, Script::default()).await;
+    });
+    let (owner, _events) = recording_owner("main");
+    let manager = DebugManager::new(godot_registry(port, "openidea-no-such-godot", &[]));
+    let project = std::env::temp_dir();
+    let id = manager.start(godot_launch(&project), owner).await.unwrap();
+    let launch = log.lock().iter().find(|m| m["command"] == "launch").cloned().unwrap();
+    assert_eq!(launch["arguments"]["scene"], "main");
+    assert_eq!(launch["arguments"]["project"], json!(std::fs::canonicalize(&project).unwrap()));
+    assert!(log.lock().iter().any(|m| m["command"] == "configurationDone"));
+    manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn godot_without_editor_or_executable_says_what_to_do() {
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let (owner, _events) = recording_owner("main");
+    let manager = DebugManager::new(godot_registry(port, "openidea-no-such-godot", &[]));
+    let err = manager.start(godot_launch(&std::env::temp_dir()), owner).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(err.message.contains("Open the project in the Godot editor"), "{}", err.message);
+}
+
+/// No editor open: the command (a headless editor) is started for the project and
+/// the client connects once it listens; the started process ends with the session.
+#[cfg(unix)]
+#[tokio::test]
+async fn godot_starts_a_headless_editor_when_none_is_open() {
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let log: Log = Arc::default();
+    let server_log = log.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        fake_adapter(stream, server_log, Script::default()).await;
+    });
+    let (owner, _events) = recording_owner("main");
+    // `sleep` stands in for `godot --headless --editor --path ${root} …`.
+    let manager = DebugManager::new(godot_registry(port, "sleep", &["30"]));
+    let id = manager.start(godot_launch(&std::env::temp_dir()), owner).await.unwrap();
+    assert!(log.lock().iter().any(|m| m["command"] == "launch"));
+    manager.stop(id).await.unwrap();
+}
+
+/// Godot never stops at a breakpoint given through a symlinked path (it maps scripts
+/// to `res://` by its resolved project path): breakpoints and `project` go out resolved.
+#[cfg(unix)]
+#[tokio::test]
+async fn godot_gets_resolved_paths() {
+    let real = std::env::temp_dir().join(format!("openidea-godot-real-{}", std::process::id()));
+    let link = std::env::temp_dir().join(format!("openidea-godot-link-{}", std::process::id()));
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("player.gd"), "extends Node\n").unwrap();
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let real = std::fs::canonicalize(&real).unwrap();
+
+    let log: Log = Arc::default();
+    let (owner, _events) = recording_owner("main");
+    let manager = DebugManager::with_launcher(
+        godot_registry(1, "godot", &[]),
+        Arc::new(FakeLauncher { log: log.clone(), script: Script::default() }),
+    );
+    let bp = Breakpoint { line: 0, condition: None, hit_condition: None, log_message: None, enabled: true };
+    manager.set_breakpoints(link.join("player.gd"), vec![bp]).await.unwrap();
+    let id = manager.start(godot_launch(&link), owner).await.unwrap();
+    let sent = log.lock().iter().find(|m| m["command"] == "setBreakpoints").cloned().unwrap();
+    assert_eq!(sent["arguments"]["source"]["path"], json!(real.join("player.gd")));
+    let launch = log.lock().iter().find(|m| m["command"] == "launch").cloned().unwrap();
+    assert_eq!(launch["arguments"]["project"], json!(real));
+    manager.stop(id).await.unwrap();
+    std::fs::remove_file(&link).ok();
+    std::fs::remove_dir_all(&real).ok();
+}
+
+#[test]
+fn root_and_address_placeholders() {
+    let args: Vec<String> = ["--path", "${root}", "--dap-port", "${port}"].iter().map(|s| s.to_string()).collect();
+    let args = adapter::substitute_port(&adapter::substitute_root(&args, std::path::Path::new("/g")), 6010);
+    assert_eq!(args, ["--path", "/g", "--dap-port", "6010"]);
+    assert_eq!(adapter::parse_address("127.0.0.1:6006"), Some(("127.0.0.1".into(), 6006)));
+    assert_eq!(adapter::parse_address("[::1]:6006"), Some(("::1".into(), 6006)));
+    assert_eq!(adapter::parse_address("6006"), None);
+}

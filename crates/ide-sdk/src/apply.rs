@@ -3,8 +3,8 @@
 
 use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path};
-use crate::vue;
 use crate::{bin_dir, exe, venv_of};
+use crate::{godot, vue};
 use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use ide_run::RunConfig;
@@ -169,8 +169,28 @@ pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
 /// paths, toolchain `PATH`, env (`GOROOT`, `RUST_SRC_PATH`, `VIRTUAL_ENV`) and
 /// server settings (`python.pythonPath`, rust-analyzer `check.command`, `typescript.tsdk`).
 /// `root` is the project root, `server_root` the server's workspace root.
+/// The executable to launch for `command`: the one chosen in settings, else for
+/// commands with well-known install locations (Godot) the one found there.
+pub fn tool_command(root: &Path, s: &Settings, command: &str) -> Option<PathBuf> {
+    let custom = s.tool_path(command).and_then(|p| setting_path(root, p));
+    if command == godot::COMMAND {
+        return godot::find(custom);
+    }
+    custom
+}
+
+/// Points a run configuration launching a bare tool name at the executable from
+/// [`tool_command`] (Godot apps live outside the search path).
+pub fn resolve_run_command(config: &mut RunConfig, root: &Path, s: &Settings) {
+    if config.command == godot::COMMAND
+        && let Some(path) = tool_command(root, s, &config.command)
+    {
+        config.command = path.to_string_lossy().into_owned();
+    }
+}
+
 pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
-    if let Some(custom) = s.tool_path(&cfg.command).and_then(|p| setting_path(root, p)) {
+    if let Some(custom) = tool_command(root, s, &cfg.command) {
         cfg.command = custom.to_string_lossy().into_owned();
     }
     let mut path_dirs: Vec<PathBuf> = Vec::new();
@@ -329,6 +349,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let mvn_options = maven_options(root, s);
 
     for c in configs.iter_mut() {
+        resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
             "python" | "pytest" => {

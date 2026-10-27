@@ -197,4 +197,15 @@ describe("run config → launch config", () => {
     // lldb-dap takes `KEY=VALUE` strings.
     expect(extra(dap)).toEqual({ env: ["K=v"] });
   });
+
+  it("Godot: the editor's adapter plays the main scene or the chosen one of the project", () => {
+    const project = rc({ kind: "godot", command: "/Apps/Godot", args: ["--path", "."], cwd: "game", debugAdapter: "godot" });
+    const main = launchConfigFor(project, "/p")!;
+    expect(main).toMatchObject({ adapter: "godot", request: "launch", cwd: "/p/game", program: null });
+    expect(extra(main)).toEqual({ project: "/p/game", scene: "main" });
+    const scene = launchConfigFor({ ...project, args: ["--path", ".", "res://levels/one.tscn"] }, "/p")!;
+    expect(extra(scene)).toEqual({ project: "/p/game", scene: "res://levels/one.tscn" });
+    const relative = launchConfigFor({ ...project, cwd: null, args: ["--path", "game", "menu.tscn"] }, "/p")!;
+    expect(extra(relative)).toEqual({ project: "/p/game", scene: "res://menu.tscn" });
+  });
 });

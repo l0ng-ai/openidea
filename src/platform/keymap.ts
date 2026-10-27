@@ -6,7 +6,9 @@
  * (`Meta+K Meta+C`). A modifier pressed twice is `Shift Shift` (IDEA's double
  * Shift, `Ctrl Ctrl`…); pressed twice and held, then a key, `Alt Alt+Up`.
  * Keys are matched by physical position (`KeyboardEvent.code`), so ⌥-letter
- * combos work on macOS where `event.key` would be a symbol.
+ * combos work on macOS where `event.key` would be a symbol. Mouse shortcuts
+ * name the button 1-based (`Button4` = back side button, `Button5` = forward),
+ * optionally with modifiers (`Alt+Button4`); they are single strokes.
  */
 import { create } from "zustand";
 import { getAction, isActionKeyEnabled, executeAction } from "./actions";
@@ -64,6 +66,27 @@ interface KeymapState {
 }
 
 export const useKeymap = create<KeymapState>(() => ({ preset: defaultPreset(), overrides: {} }));
+
+const MOUSE_KEY_RE = /^Button(\d+)$/i;
+
+/** A mouse shortcut (`Button4`, `Shift+Button5`) rather than a keystroke. */
+export function isMouseBinding(binding: string): boolean {
+  const b = binding.trim();
+  return !/\s/.test(b) && MOUSE_KEY_RE.test(b.split("+").pop()!);
+}
+
+/**
+ * The mouse stroke of a press of a non-primary button: DOM `button` 3 / 4
+ * (back / forward side buttons) → `Button4` / `Button5`. Left, middle and
+ * right buttons have their own meaning everywhere, so they are not shortcuts.
+ */
+export function mouseStrokeOf(
+  e: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
+): string | null {
+  if (!Number.isInteger(e.button) || e.button < 3) return null;
+  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Meta"].filter(Boolean);
+  return [...mods, `Button${e.button + 1}`].join("+");
+}
 
 const STROKE_RE = /^(?:(?:Ctrl|Alt|Shift|Meta)\+)*[^\s+]+$|^(?:(?:Ctrl|Alt|Shift|Meta)\+)*\+$/i;
 
@@ -183,7 +206,8 @@ export function normalizeBinding(binding: string): string {
       const parts = stroke.split("+");
       const key = parts.pop()!;
       const mods = MOD_ORDER.filter((m) => parts.some((p) => p.toLowerCase() === m.toLowerCase()));
-      return [...mods, key.length === 1 ? key.toUpperCase() : key].join("+");
+      const mouse = MOUSE_KEY_RE.exec(key);
+      return [...mods, mouse ? `Button${mouse[1]}` : key.length === 1 ? key.toUpperCase() : key].join("+");
     })
     .join(" ");
 }
@@ -264,6 +288,11 @@ const SYMBOLS: Record<string, string> = {
  * Windows/Linux: `Ctrl+Shift+N`, chords as `Ctrl+K, Ctrl+I`, `Shift, Shift`, `Ctrl, Ctrl+Up`.
  */
 export function formatBinding(binding: string, mac = isMacHost()): string {
+  if (isMouseBinding(binding)) {
+    const parts = normalizeBinding(binding).split("+");
+    const button = `${parts.pop()} Click`;
+    return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + button : [...parts, button].join("+");
+  }
   if (!mac) return normalizeBinding(binding).split(" ").join(", ");
   const double = parseDoubleModifier(binding);
   if (double) return SYMBOLS[double.modifier]!.repeat(2) + (double.key ? (SYMBOLS[double.key] ?? double.key) : "");
@@ -278,8 +307,13 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
     .join(" ");
 }
 
+/** The first keyboard binding of an action: what menus and tooltips show. */
+export function primaryKeyBinding(actionId: string): string | undefined {
+  return bindingsFor(actionId).find((b) => !isMouseBinding(b));
+}
+
 export function shortcutLabel(actionId: string): string | undefined {
-  const b = bindingsFor(actionId)[0];
+  const b = primaryKeyBinding(actionId);
   return b ? formatBinding(b) : undefined;
 }
 
@@ -463,8 +497,26 @@ export function installKeyboardDispatcher(target: Window = window, now: () => nu
     for (const id of ids.reverse()) if (runIfEnabled(id)) return;
   };
 
-  // Shift+click (extend a selection) is not half of a double Shift.
-  const onMouseDown = () => resetTap();
+  const onMouseDown = (e: MouseEvent) => {
+    // Shift+click (extend a selection) is not half of a double Shift.
+    resetTap();
+    if (suspended > 0) return;
+    const stroke = mouseStrokeOf(e);
+    if (!stroke) return;
+    // Side buttons never reach the target (no editor selection, no focus change).
+    e.preventDefault();
+    e.stopPropagation();
+    reset();
+    const ids = effectiveBindings().filter(([b]) => b === stroke).map(([, id]) => id);
+    for (const id of ids.reverse()) if (runIfEnabled(id)) return;
+  };
+
+  /** The release of a side button: swallowed so the webview doesn't navigate its own history. */
+  const onMouseRelease = (e: MouseEvent) => {
+    if (e.button < 3) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
 
   const onBlur = () => {
     reset();
@@ -474,11 +526,15 @@ export function installKeyboardDispatcher(target: Window = window, now: () => nu
   target.addEventListener("keydown", onKeyDown, true);
   target.addEventListener("keyup", onKeyUp, true);
   target.addEventListener("mousedown", onMouseDown, true);
+  target.addEventListener("mouseup", onMouseRelease, true);
+  target.addEventListener("auxclick", onMouseRelease, true);
   target.addEventListener("blur", onBlur);
   return () => {
     target.removeEventListener("keydown", onKeyDown, true);
     target.removeEventListener("keyup", onKeyUp, true);
     target.removeEventListener("mousedown", onMouseDown, true);
+    target.removeEventListener("mouseup", onMouseRelease, true);
+    target.removeEventListener("auxclick", onMouseRelease, true);
     target.removeEventListener("blur", onBlur);
   };
 }

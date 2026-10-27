@@ -18,6 +18,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::process::{Child, Command};
 
 pub const PORT_PLACEHOLDER: &str = "${port}";
+/// Replaced by the session's working directory (the project) in adapter arguments.
+pub const ROOT_PLACEHOLDER: &str = "${root}";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Transport {
@@ -38,6 +40,9 @@ pub struct AdapterSpec {
     pub env: Vec<(String, String)>,
     /// Host of an adapter that is already running (`debugServer`); `None` is the loopback interface.
     pub server_host: Option<String>,
+    /// `host:port` of an adapter inside another program (the Godot editor): connected to
+    /// when it accepts, else `command` is started.
+    pub connect: Option<String>,
 }
 
 /// Built-in adapters used when no language definition names `adapter`.
@@ -47,6 +52,7 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
         command: command.to_owned(),
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         transport: transport.to_owned(),
+        connect: None,
         install_hint: Some(hint.to_owned()),
     };
     Some(match adapter {
@@ -119,12 +125,26 @@ pub fn resolve(config: &DebuggerConfig, cwd: PathBuf) -> AdapterSpec {
         cwd,
         env: Vec::new(),
         server_host: None,
+        connect: config.connect.clone(),
     }
 }
 
 /// Replaces every `${port}` occurrence (also inside larger arguments like `127.0.0.1:${port}`).
 pub fn substitute_port(args: &[String], port: u16) -> Vec<String> {
     args.iter().map(|a| a.replace(PORT_PLACEHOLDER, &port.to_string())).collect()
+}
+
+/// Replaces every `${root}` occurrence with `root`.
+pub fn substitute_root(args: &[String], root: &Path) -> Vec<String> {
+    let root = root.to_string_lossy();
+    args.iter().map(|a| a.replace(ROOT_PLACEHOLDER, &root)).collect()
+}
+
+/// Splits `host:port` (`[v6]:port`).
+pub fn parse_address(addr: &str) -> Option<(String, u16)> {
+    let (host, port) = addr.trim().rsplit_once(':')?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    Some((host.to_owned(), port.parse().ok().filter(|p| *p != 0)?))
 }
 
 /// A port that was free a moment ago on the loopback interface.
@@ -306,6 +326,10 @@ pub trait AdapterLauncher: Send + Sync + 'static {
 pub struct ProcessLauncher;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long an adapter inside another program (a headless Godot editor) may take to listen.
+const EMBEDDED_START_TIMEOUT: Duration = Duration::from_secs(120);
+/// Probe of a `connect` address before starting the command.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 impl AdapterLauncher for ProcessLauncher {
     fn launch(&self, mut spec: AdapterSpec, reuse_port: Option<u16>) -> LaunchFuture {
@@ -327,6 +351,28 @@ impl AdapterLauncher for ProcessLauncher {
                     stderr,
                 });
             }
+            let embedded = match spec.connect.as_deref().filter(|_| spec.transport == Transport::Tcp) {
+                Some(addr) => Some(
+                    parse_address(addr)
+                        .ok_or_else(|| IdeError::invalid(format!("invalid debug adapter address `{addr}`")))?,
+                ),
+                None => None,
+            };
+            // An adapter inside a program the user runs (the Godot editor): use it, never stop it.
+            if let Some((host, port)) = &embedded
+                && let Ok(Ok(stream)) =
+                    tokio::time::timeout(PROBE_TIMEOUT, tokio::net::TcpStream::connect((host.as_str(), *port))).await
+            {
+                let _ = stream.set_nodelay(true);
+                let (r, w) = stream.into_split();
+                return Ok(AdapterIo {
+                    reader: Box::new(r),
+                    writer: Box::new(w),
+                    child: None,
+                    port: Some(*port),
+                    stderr,
+                });
+            }
             if spec.adapter == DEBUGPY_TOOL {
                 prepare_debugpy(&mut spec).await?;
             }
@@ -337,12 +383,17 @@ impl AdapterLauncher for ProcessLauncher {
                 .flatten()
                 .ok_or_else(|| missing(&spec))?;
             let port = match spec.transport {
-                Transport::Tcp => Some(free_port()?),
+                // An embedded adapter started without `${port}` listens on its usual address.
+                Transport::Tcp => match &embedded {
+                    Some((_, port)) if !spec.args.iter().any(|a| a.contains(PORT_PLACEHOLDER)) => Some(*port),
+                    _ => Some(free_port()?),
+                },
                 Transport::Stdio => None,
             };
+            let args = substitute_root(&spec.args, &spec.cwd);
             let args = match port {
-                Some(port) => substitute_port(&spec.args, port),
-                None => spec.args.clone(),
+                Some(port) => substitute_port(&args, port),
+                None => args,
             };
             let mut cmd = Command::new(&binary);
             ide_core::process::no_window(cmd.as_std_mut());
@@ -374,7 +425,8 @@ impl AdapterLauncher for ProcessLauncher {
                     if let Some(out) = child.stdout.take() {
                         pump_lines(out, spec.adapter.clone(), stderr.clone());
                     }
-                    let stream = match connect_with_retries(LOOPBACK, port, Some(&mut child), CONNECT_TIMEOUT).await {
+                    let timeout = if embedded.is_some() { EMBEDDED_START_TIMEOUT } else { CONNECT_TIMEOUT };
+                    let stream = match connect_with_retries(LOOPBACK, port, Some(&mut child), timeout).await {
                         Ok(s) => s,
                         Err(e) => {
                             let _ = child.start_kill();
