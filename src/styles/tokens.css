@@ -645,6 +645,8 @@ html {
   --link: #a7c5ff;
   --link-hover: #d0dffe;
 
+  --chart-series: #ff9b9f;
+
   --danger: #ff9b9f;
   --warning: #f2c55c;
   --success: #8ec39d;
