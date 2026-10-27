@@ -35,6 +35,7 @@ import { activate as services } from "./services";
 import { activate as github } from "./github";
 import { activate as httpClient } from "./http-client";
 import { activate as database } from "./database";
+import { activate as vim, activateSettingsPages as vimPages } from "./vim";
 
 type Activate = () => void | (() => void);
 
@@ -71,6 +72,7 @@ const features: Array<[string, Activate]> = [
   ["github", github],
   ["http-client", httpClient],
   ["database", database],
+  ["vim", vim],
 ];
 
 export function activateFeatures(): () => void {
@@ -100,6 +102,7 @@ export function activateSettingsWindowFeatures(parent: string): () => void {
     ["todo", todoPages],
     ["plugins", pluginsPages],
     ["tools", toolsPages],
+    ["vim", vimPages],
   ];
   const disposers: Array<() => void> = [];
   for (const [name, activate] of pages) {

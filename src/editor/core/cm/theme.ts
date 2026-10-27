@@ -6,6 +6,7 @@
  * ones are read through `--editor-*` locals with fallbacks to the base tokens.
  */
 import { EditorView } from "@codemirror/view";
+import { BRACKET_COLORS } from "./rainbowBrackets";
 
 export const openideaTheme = EditorView.theme({
   "&": {
@@ -157,6 +158,19 @@ export const openideaTheme = EditorView.theme({
     backgroundRepeat: "no-repeat",
     backgroundPosition: "6px 0",
   },
+
+  // Rainbow brackets (cm/rainbowBrackets.ts); `*` too: the syntax highlighter's span sits inside and would win.
+  ...Object.fromEntries(
+    Array.from({ length: BRACKET_COLORS }, (_, i) => [
+      `.cm-rainbow-bracket-${i + 1}, .cm-rainbow-bracket-${i + 1} *`,
+      {
+        color: `var(--syn-bracket-${i + 1})`,
+        fontWeight: `var(--syn-bracket-${i + 1}-bold, inherit)`,
+        fontStyle: `var(--syn-bracket-${i + 1}-italic, inherit)`,
+      },
+    ]),
+  ),
+  ".cm-rainbow-bracket-unmatched, .cm-rainbow-bracket-unmatched *": { color: "var(--syn-invalid)" },
 
   // Whitespace rendering
   ".cm-highlightSpace": {

@@ -7,6 +7,7 @@ import { history, historyKeymap } from "@codemirror/commands";
 import { keymap } from "@codemirror/view";
 import { unifiedMergeView } from "@codemirror/merge";
 import type { MergeSides } from "@/bindings";
+import { embeddedEditorExtensions } from "@/editor/api";
 import { useTxTemplate } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { Button, IconButton, Spinner, T } from "@/ui";
@@ -202,6 +203,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         viewerBase({ readOnly: false }),
         history(),
         keymap.of(historyKeymap),
+        embeddedEditorExtensions(path),
         lang,
         conflictField.init((s) => ({ conflicts: start.conflicts, deco: decorate(s, start.conflicts) })),
         resultTheme,
@@ -218,7 +220,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       result.destroy();
       resultView.current = null;
     };
-  }, [state, lang]);
+  }, [state, lang, path]);
 
   const goto = (dir: 1 | -1) => {
     const v = resultView.current;

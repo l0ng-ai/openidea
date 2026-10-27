@@ -249,7 +249,7 @@ export function JavaPage() {
         <Row
           label="JVM options"
           htmlFor={id}
-          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx2g. A Lombok agent is added automatically when the project uses Lombok."
+          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx2g. A Lombok agent is added automatically: the one installed in Language Servers, else, when the project uses Lombok (its build, an inherited parent POM or Gradle build, or its sources' imports), the newest from the Maven / Gradle caches."
         >
           <Input
             id={id}

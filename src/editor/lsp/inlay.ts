@@ -8,7 +8,7 @@ import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { call, commands, isTauri, type InlayHint } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
-import { hasPrimaryModifier } from "@/platform/keymap";
+import { isNavigationGesture } from "@/platform/navigationModifier";
 import { maybeEditorService } from "@/workbench/contributions";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { useProject } from "@/platform/project";
@@ -69,7 +69,7 @@ class InlayWidget extends WidgetType {
           const loc = part.location;
           // ⌘-click (Ctrl elsewhere) navigates to the declaration the part names, as in IDEA.
           span.addEventListener("mousedown", (e) => {
-            if (e.button !== 0 || !hasPrimaryModifier(e)) return;
+            if (e.button !== 0 || !isNavigationGesture(e)) return;
             e.preventDefault();
             e.stopPropagation();
             void maybeEditorService()?.openFile(loc.path, {

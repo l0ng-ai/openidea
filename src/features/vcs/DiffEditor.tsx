@@ -14,7 +14,7 @@ import {
   unifiedMergeView,
   type Chunk,
 } from "@codemirror/merge";
-import { attachDocument, type DocumentAttachment } from "@/editor/api";
+import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
 import { setContext } from "@/platform/context";
 import { call, commands } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
@@ -223,7 +223,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
       viewerBase({ readOnly: !editable }),
       lang,
       att?.extension ?? [],
-      editable ? editableExtensions() : [],
+      editable ? [editableExtensions(), embeddedEditorExtensions(path)] : [],
       notes ? diffAnnotations((data.annotations ?? []).filter((n) => n.side === notes), styles) : [],
     ];
     let views: Views;

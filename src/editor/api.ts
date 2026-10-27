@@ -17,8 +17,8 @@
  *  - Right-hand overview marks: `scrollbarMarks`; save hooks:
  *    `registerSaveParticipant`; Back/Forward history: `getNavigationHistory`.
  */
-import { Annotation, Facet, type EditorState, type Extension, type RangeSet, type Transaction } from "@codemirror/state";
-import { GutterMarker, type EditorView } from "@codemirror/view";
+import { Annotation, Compartment, Facet, type EditorState, type Extension, type RangeSet, type Transaction } from "@codemirror/state";
+import { GutterMarker, ViewPlugin, type EditorView } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
@@ -45,6 +45,11 @@ export interface EditorContribution {
   order?: number;
   /** Return extensions for one editor instance (called on creation). */
   extensions: (ctx: EditorDocContext) => Extension | Extension[];
+  /**
+   * Also applies to editable editors outside editor/core (the diff viewer's
+   * editable side, the merge result), which get `doc: -1`. Default false.
+   */
+  embedded?: boolean;
 }
 
 export interface TextEditorHandle {
@@ -84,6 +89,49 @@ export function registerEditorContribution(c: EditorContribution): () => void {
 export function editorContributions(): EditorContribution[] {
   return [...useEditorRegistry.getState().contributions.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
 }
+
+const embeddedCompartment = new Compartment();
+const embeddedViews = new Map<EditorView, EditorDocContext>();
+
+function embeddedContributions(ctx: EditorDocContext): Extension[] {
+  const out: Extension[] = [];
+  for (const c of editorContributions()) {
+    if (!c.embedded) continue;
+    try {
+      out.push(c.extensions(ctx));
+    } catch (e) {
+      console.error(`editor contribution ${c.id} failed`, e);
+    }
+  }
+  return out;
+}
+
+/**
+ * Contributions flagged `embedded` for an editable editor that editor/core
+ * does not own (diff viewer, merge result). Reconfigured live when
+ * contributions change.
+ */
+export function embeddedEditorExtensions(path: string): Extension {
+  const ctx: EditorDocContext = { doc: -1, path, language: "", uiMode: null, readOnly: false };
+  return [
+    embeddedCompartment.of(embeddedContributions(ctx)),
+    ViewPlugin.define((view) => {
+      embeddedViews.set(view, ctx);
+      return { destroy: () => void embeddedViews.delete(view) };
+    }),
+  ];
+}
+
+const embeddedOf = (m: Map<string, EditorContribution>) => [...m.values()].filter((c) => c.embedded);
+
+useEditorRegistry.subscribe((s, prev) => {
+  if (s.contributions === prev.contributions) return;
+  const now = embeddedOf(s.contributions);
+  const before = embeddedOf(prev.contributions);
+  if (now.length === before.length && now.every((c, i) => c === before[i])) return;
+  for (const [view, ctx] of embeddedViews)
+    view.dispatch({ effects: embeddedCompartment.reconfigure(embeddedContributions(ctx)) });
+});
 
 export function activeEditor(): TextEditorHandle | null {
   return useEditorRegistry.getState().active;

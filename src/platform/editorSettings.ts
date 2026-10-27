@@ -52,6 +52,10 @@ export function lineCommentStyleFor(prefs: EditorExtras, language: string | unde
 
 export const EDITOR_EXTRA_DEFAULTS = {
   colorOverrides: {} as Record<string, Record<string, TextAttributesOverride>>,
+  /** Color Scheme › Language Defaults › Semantic highlighting (rainbow locals / parameters). */
+  semanticHighlighting: false,
+  /** Color Scheme › Language Defaults › Rainbow brackets. */
+  rainbowBrackets: false,
   ligatures: false,
   fallbackFont: "",
   /** Typography Settings › Main / Bold font weight (CSS weights, IDEA's Regular / Bold). */
