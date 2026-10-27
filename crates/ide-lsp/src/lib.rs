@@ -1858,6 +1858,74 @@ impl LspManager {
             }
         }
         self.attach_fallbacks();
+        self.detach_shadowed_fallbacks().await;
+    }
+
+    /// A server enabled again shadows the fallbacks attached in its place: they
+    /// leave the open documents, and stop once no document uses them.
+    async fn detach_shadowed_fallbacks(&self) {
+        let open: Vec<(DocId, LanguageId, PathBuf)> =
+            self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
+        let mut shadowed: Vec<(DocId, Vec<ide_core::ServerId>)> = Vec::new();
+        for (id, language, path) in open {
+            let configs = self.language_servers(&language);
+            let wanted = self.servers_for(&language, &path);
+            let docs = self.docs.lock();
+            let Some(d) = docs.get(&id) else { continue };
+            let gone: Vec<ide_core::ServerId> = d
+                .servers
+                .iter()
+                .filter(|a| {
+                    !wanted.iter().any(|w| w.id == a.server.id)
+                        && configs.iter().any(|c| c.fallback && c.name == a.server.name)
+                })
+                .map(|a| a.server.id)
+                .collect();
+            if !gone.is_empty() {
+                shadowed.push((id, gone));
+            }
+        }
+        if shadowed.is_empty() {
+            return;
+        }
+        let mut detached: Vec<Arc<Server>> = Vec::new();
+        {
+            let mut docs = self.docs.lock();
+            for (id, gone) in shadowed {
+                let Some(d) = docs.get_mut(&id) else { continue };
+                let (leaving, staying): (Vec<Attached>, Vec<Attached>) =
+                    d.servers.drain(..).partition(|a| gone.contains(&a.server.id));
+                d.servers = staying;
+                for a in leaving {
+                    if let Some(run) = a.server.running()
+                        && a.opened_gen == Some(run.generation)
+                        && run.caps.read().open_close
+                        && let Err(e) =
+                            run.peer.notify("textDocument/didClose", json!({ "textDocument": { "uri": d.uri } }))
+                    {
+                        tracing::debug!("{}: didClose: {e}", a.server.name);
+                    }
+                    self.sink.emit(ide_core::IdeEvent::Diagnostics {
+                        path: d.path.clone().into(),
+                        source: a.server.name.clone(),
+                        items: Vec::new(),
+                    });
+                    if !detached.iter().any(|s| s.id == a.server.id) {
+                        detached.push(a.server);
+                    }
+                }
+            }
+            let in_use = |s: &Arc<Server>| docs.values().any(|d| d.servers.iter().any(|a| a.server.id == s.id));
+            detached.retain(|s| !in_use(s));
+        }
+        if detached.is_empty() {
+            return;
+        }
+        for s in &detached {
+            tracing::info!("{}: shadowed by an enabled server, stopping", s.name);
+            self.stop_instance(s, true).await;
+        }
+        self.servers.lock().retain(|s| !detached.iter().any(|d| d.id == s.id));
     }
 
     /// Stops and forgets the servers that none of their languages uses any more.

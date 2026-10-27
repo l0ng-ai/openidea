@@ -869,6 +869,40 @@ async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_fallback_leaves_when_the_preferred_server_is_enabled_again() {
+    let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
+    let disabled: Arc<Mutex<Vec<String>>> = Default::default();
+    {
+        let disabled = disabled.clone();
+        h.mgr.set_servers_hook(Box::new(move |_, defined| {
+            defined.iter().filter(|c| !disabled.lock().contains(&c.name)).cloned().collect()
+        }));
+    }
+    let (doc, path) = h.open("a.mk", "x");
+    let uri = uri_of(&path);
+    h.wait_status("main", ServerStatus::Ready).await;
+    assert!(h.statuses("alt").is_empty());
+
+    // Preferred disabled: the fallback takes over the open document.
+    disabled.lock().push("main".into());
+    h.mgr.reconfigure().await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    assert_eq!(h.mgr.servers().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["alt"]);
+
+    // Enabled again: the fallback closes the document and stops.
+    disabled.lock().clear();
+    h.mgr.reconfigure().await;
+    h.wait_status("main", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("main").docs.lock().contains_key(&uri)).await;
+    assert!(!h.launcher.state("alt").notified("textDocument/didClose").is_empty());
+    assert_eq!(h.statuses("alt").last(), Some(&ServerStatus::Stopped));
+    assert_eq!(h.mgr.servers().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["main"]);
+    assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
+    assert_eq!(h.launcher.state("alt").requested("textDocument/hover").len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn implementations_per_position() {
     let caps = json!({ "textDocumentSync": 1, "implementationProvider": true });
     let h = harness(&[("mock", caps)]);
