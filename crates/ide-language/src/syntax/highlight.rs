@@ -440,6 +440,31 @@ mod tests {
                 ],
             ),
             ("make", "# hi\nCC := gcc\nall: main.o\n\t$(CC) -o app main.o\n", &[("# hi", K::Comment)]),
+            (
+                "gdscript",
+                "extends Node2D\nclass_name Player\n# hi\n@export var speed: float = 1.5\nconst MAX_HP = 10\nsignal died(cause)\n\nfunc _ready() -> void:\n\tvar label = $Label\n\tself.position.x += speed\n\tprint(\"ready\", &\"name\", 3)\n",
+                &[
+                    ("extends", K::Keyword),
+                    ("Node2D", K::Type),
+                    ("class_name", K::Keyword),
+                    ("Player", K::Type),
+                    ("# hi", K::Comment),
+                    ("@export", K::Attribute),
+                    ("var", K::Keyword),
+                    ("float", K::Type),
+                    ("1.5", K::Number),
+                    ("MAX_HP", K::Constant),
+                    ("signal", K::Keyword),
+                    ("func", K::Keyword),
+                    ("_ready", K::Function),
+                    ("$Label", K::StringSpecial),
+                    ("self", K::SelfVariable),
+                    ("print", K::FunctionCall),
+                    ("\"ready\"", K::String),
+                    ("&\"name\"", K::StringSpecial),
+                    ("3", K::Number),
+                ],
+            ),
         ];
         for (lang, src, expect) in cases {
             let got = spans(lang, src);

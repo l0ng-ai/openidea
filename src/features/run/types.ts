@@ -111,6 +111,47 @@ const program: RunConfigTypeContribution = {
     c.args.length || !/\s/.test(c.command) ? { program: c.command, arguments: formatArgs(c.args) } : null,
 };
 
+const isScene = (a: string) => /\.t?scn$/i.test(a);
+const isGodot = (cmd: string) => /^godot([-.\w]*)$/i.test(baseName(cmd).replace(/\.exe$/i, ""));
+
+/**
+ * Godot: `godot --path <project>` runs the main scene, `… <scene>` one scene. The
+ * executable is the one from Settings › Language Servers › godot (else detected).
+ */
+const godot: RunConfigTypeContribution = {
+  id: "godot",
+  label: "Godot",
+  icon: "file-gdscript",
+  description: "Run a Godot project's main scene or a chosen scene",
+  ownsWorkingDirectory: true,
+  debugAdapter: "godot",
+  fields: [
+    { key: "projectDir", label: "Project directory", mono: true, placeholder: "Project root (holds project.godot)" },
+    {
+      key: "scene",
+      label: "Scene",
+      mono: true,
+      placeholder: "Main scene",
+      hint: "e.g. res://levels/level_1.tscn; empty runs the project's main scene",
+      suggestions: (configs) => [...new Set(configs.filter((c) => c.kind === "godot").flatMap((c) => c.args.filter(isScene)))],
+    },
+    { key: "arguments", label: "Arguments", mono: true, placeholder: "Godot command line options, e.g. --debug-collisions" },
+  ],
+  commandLine: (p) => ({
+    command: "godot",
+    args: ["--path", ".", ...(p.scene?.trim() ? [p.scene.trim()] : []), ...parseArgs(p.arguments ?? "")],
+    cwd: p.projectDir?.trim() || null,
+  }),
+  paramsFrom(c) {
+    if (!isGodot(c.command)) return null;
+    const rest = [...c.args];
+    const path = rest.indexOf("--path");
+    if (path >= 0) rest.splice(path, 2);
+    const scene = rest.find(isScene) ?? "";
+    return { projectDir: dirOf(c.cwd), scene, arguments: formatArgs(rest.filter((a) => a !== scene)) };
+  },
+};
+
 const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"];
 const NPM_COMMANDS = ["run", "test", "start", "install", "ci", "publish", "pack"];
 
@@ -228,7 +269,7 @@ const compound: RunConfigTypeContribution = {
   commandLine: () => null,
 };
 
-export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [shell, program, npm, gradle, maven, compound];
+export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [shell, program, npm, gradle, maven, godot, compound];
 
 export function registerBuiltinTypes(): () => void {
   const disposers = BUILTIN_TYPES.map(registerRunConfigType);

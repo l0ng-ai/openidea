@@ -14,6 +14,7 @@ mod inspect;
 pub mod jdtls;
 mod launch;
 mod server;
+mod tcp;
 mod text;
 mod tsserver_bridge;
 pub mod types;
@@ -332,7 +333,9 @@ impl LspManager {
         let handler = Arc::new(handler::ClientHandler::new(self.me.clone(), server.clone(), generation));
         let me = self.clone();
         let tail = server.clone();
-        // The settings hook may touch the filesystem (e.g. scanning for JDKs).
+        let cancel = server.start_token();
+        // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
+        // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
             let cfg = me.configured(&tail);
             tail.set_effective_config(cfg.clone());
@@ -342,7 +345,7 @@ impl LspManager {
                 let missing = !me.launcher.available(&cfg, &root);
                 return Err(if missing { LaunchError::Missing } else { LaunchError::Config(message.clone()) });
             }
-            me.launcher.launch(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)))
+            me.launcher.launch_cancellable(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)), &cancel)
         })
         .await
         .unwrap_or_else(|e| Err(LaunchError::Failed(e.to_string())));
@@ -444,9 +447,11 @@ impl LspManager {
             return;
         }
         let tail = server.stderr_tail(5);
-        let mut message = match code {
-            Some(c) => format!("{} exited with code {c}", server.name),
-            None => format!("{} terminated unexpectedly", server.name),
+        let cfg = server.effective_config();
+        let mut message = match (code, &cfg.connect) {
+            (Some(c), _) => format!("{} exited with code {c}", server.name),
+            (None, Some(addr)) => format!("{}: the connection to the server ({addr}) closed", server.name),
+            (None, None) => format!("{} terminated unexpectedly", server.name),
         };
         if !tail.is_empty() {
             message.push_str(":\n");
@@ -1753,6 +1758,15 @@ impl LspManager {
             return;
         };
         let peer = run.peer.clone();
+        // A server we connected to without starting it (an open Godot editor) is not
+        // ours to shut down: only the connection closes.
+        if peer.pid().is_none() && server.effective_config().connect.is_some() {
+            peer.kill();
+            server.end_stop(run.generation);
+            self.clear_server_state(server);
+            server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+            return;
+        }
         let graceful = async {
             peer.request::<_, Value>("shutdown", (), None).await.ok();
             peer.notify("exit", ()).ok();

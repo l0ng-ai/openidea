@@ -276,7 +276,13 @@ impl Peer {
             });
         }
 
-        let inner = peer.inner.clone();
+        peer.supervise(child);
+        Ok(peer)
+    }
+
+    /// Kills `child` when the connection is torn down; closes the connection when it exits.
+    fn supervise(&self, mut child: tokio::process::Child) {
+        let inner = self.inner.clone();
         tokio::spawn(async move {
             let status = tokio::select! {
                 status = child.wait() => status.ok(),
@@ -287,7 +293,6 @@ impl Peer {
             };
             inner.mark_closed(status.and_then(|s| s.code()));
         });
-        Ok(peer)
     }
 
     /// Speaks JSON-RPC over arbitrary byte streams (in-memory pipes in tests, TCP sockets).
@@ -300,6 +305,25 @@ impl Peer {
         W: AsyncWrite + Unpin + Send + 'static,
     {
         Self::start(reader, writer, handler, true, None)
+    }
+
+    /// [`Peer::connect`] over streams served by `child` (a server reached over a socket
+    /// it listens on): the child is killed with the connection, and its exit closes it.
+    ///
+    /// Must be called from within a Tokio runtime.
+    pub fn connect_with_child<R, W>(
+        reader: R,
+        writer: W,
+        handler: Arc<dyn Handler>,
+        child: tokio::process::Child,
+    ) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let peer = Self::start(reader, writer, handler, true, child.id());
+        peer.supervise(child);
+        peer
     }
 
     fn start<R, W>(reader: R, mut writer: W, handler: Arc<dyn Handler>, close_on_eof: bool, pid: Option<u32>) -> Self

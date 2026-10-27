@@ -71,6 +71,7 @@ async fn missing_binary_is_reported_with_install_hint() {
         root_markers: vec![],
         initialization_options: None,
         install_hint: Some("npm i -g nope-ls".into()),
+        connect: None,
         fallback: false,
         launch_error: None,
     };
@@ -198,6 +199,7 @@ async fn typescript_language_server_end_to_end() {
         root_markers: vec!["tsconfig.json".into()],
         initialization_options: None,
         install_hint: None,
+        connect: None,
         fallback: false,
         launch_error: None,
     };
@@ -239,6 +241,7 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
         root_markers: vec!["package.json".into()],
         initialization_options: init.map(|v| toml::Value::try_from(v).unwrap()),
         install_hint: None,
+        connect: None,
         fallback: false,
         launch_error: None,
     }

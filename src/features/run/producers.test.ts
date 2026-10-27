@@ -262,6 +262,26 @@ describe("project producers", () => {
     cfg({ id: "pytest", kind: "pytest", command: ".venv/bin/pytest", args: [], isTest: true }),
   ];
 
+  it("Godot scenes run with godot --path in the project holding them (Current Scene)", () => {
+    const godot = [
+      cfg({ id: "godot:project", kind: "godot", command: "godot", args: ["--path", "."], debugAdapter: "godot" }),
+      cfg({ id: "godot:project:demo", kind: "godot", command: "godot", args: ["--path", "."], cwd: "demo" }),
+    ];
+    const root = produceContext({ path: `${ROOT}/levels/one.tscn`, root: ROOT, configs: godot }, OPTIMISTIC)!;
+    expect(root).toMatchObject({ name: "one.tscn", scope: "file" });
+    expect(root.config).toMatchObject({
+      kind: "godot",
+      command: "godot",
+      args: ["--path", ".", "res://levels/one.tscn"],
+      cwd: null,
+      debugAdapter: "godot",
+    });
+    const nested = produceContext({ path: `${ROOT}/demo/main.tscn`, root: ROOT, configs: godot }, OPTIMISTIC)!;
+    expect(nested.config).toMatchObject({ args: ["--path", ".", "res://main.tscn"], cwd: "demo" });
+    // Outside a Godot project there is nothing to run.
+    expect(produceContext({ path: `${ROOT}/a.tscn`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+  });
+
   it("keeps package.json test files on the project's runner", () => {
     const p = produceContext({ path: `${ROOT}/src/a.test.ts`, root: ROOT, configs, content: "test('x', () => {})" }, ALL)!;
     expect(p).toMatchObject({ name: "a.test.ts", scope: "file" });

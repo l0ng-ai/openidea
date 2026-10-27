@@ -2,7 +2,7 @@
 
 use crate::caps::ServerCaps;
 use ide_core::event::ServerStatus;
-use ide_core::{IdeEvent, LanguageId, ServerId, SharedSink, TaskId};
+use ide_core::{CancellationToken, IdeEvent, LanguageId, ServerId, SharedSink, TaskId};
 use ide_jsonrpc::Peer;
 use ide_language::LanguageServerConfig;
 use lsp_types as lsp;
@@ -65,6 +65,8 @@ pub struct Server {
     effective: Mutex<Option<LanguageServerConfig>>,
     languages: Mutex<Vec<LanguageId>>,
     state: Mutex<State>,
+    /// Fired when the instance being started is abandoned (stop / restart while starting).
+    start_cancel: Mutex<CancellationToken>,
     phase: watch::Sender<Phase>,
     status: Mutex<(ServerStatus, Option<String>)>,
     /// Consecutive crashes of short-lived instances.
@@ -90,6 +92,7 @@ impl Server {
             effective: Mutex::new(None),
             languages: Mutex::new(vec![language]),
             state: Mutex::new(State { generation: 0, conn: Conn::Idle }),
+            start_cancel: Mutex::new(CancellationToken::new()),
             phase: watch::channel(Phase::Down).0,
             status: Mutex::new((ServerStatus::Stopped, None)),
             crashes: Mutex::new(0),
@@ -132,6 +135,7 @@ impl Server {
         }
         st.generation += 1;
         st.conn = Conn::Starting;
+        *self.start_cancel.lock() = CancellationToken::new();
         *self.started.lock() = Some(Instant::now());
         self.phase.send_replace(Phase::Starting);
         Some(st.generation)
@@ -197,6 +201,7 @@ impl Server {
             }
             Conn::Starting => {
                 st.generation += 1; // invalidates the in-flight start
+                self.start_cancel.lock().cancel();
                 self.phase.send_replace(Phase::Down);
                 None
             }
@@ -205,6 +210,11 @@ impl Server {
                 None
             }
         }
+    }
+
+    /// Cancelled when the current start is abandoned.
+    pub fn start_token(&self) -> CancellationToken {
+        self.start_cancel.lock().clone()
     }
 
     pub fn end_stop(&self, generation: u64) {

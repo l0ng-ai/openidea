@@ -20,7 +20,7 @@ pub async fn debug_start(
     };
     let root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();
     let custom = |command: &str| {
-        let path = ide_sdk::apply::setting_path(&root, settings.tool_path(command)?)?;
+        let path = ide_sdk::apply::tool_command(&root, &settings, command)?;
         Some(path.to_string_lossy().into_owned())
     };
     state.debugger.start_with(config, owner, custom).await

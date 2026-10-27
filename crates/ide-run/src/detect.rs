@@ -19,6 +19,7 @@ pub(crate) fn detect(root: &Path) -> Vec<RunConfig> {
     detect_python(root, &mut out);
     detect_make(root, &mut out);
     detect_just(root, &mut out);
+    detect_godot(root, &mut out);
 
     let mut seen = HashSet::new();
     out.retain(|c| seen.insert(c.id.clone()));
@@ -797,6 +798,24 @@ pub(crate) fn just_recipes(src: &str) -> Vec<String> {
         }
     }
     recipes
+}
+
+// ---------------------------------------------------------------- godot
+
+/// Godot projects (`project.godot`) at the root or one level down: "Godot Project"
+/// runs the main scene (`godot --path .`), debuggable through the editor's adapter.
+fn detect_godot(root: &Path, out: &mut Vec<RunConfig>) {
+    let dirs = std::iter::once(root.to_path_buf()).chain(subdirs(root));
+    for dir in dirs.filter(|d| d.join("project.godot").is_file()) {
+        let rel = relative(root, &dir);
+        let (id, name, cwd) = if rel.as_os_str().is_empty() {
+            ("godot:project".to_owned(), "Godot Project".to_owned(), None)
+        } else {
+            let r = rel.to_string_lossy();
+            (format!("godot:project:{r}"), format!("Godot Project ({r})"), Some(rel.clone()))
+        };
+        out.push(config(id, name, "godot", "godot", &["--path", "."]).debug("godot").in_dir(cwd));
+    }
 }
 
 fn detect_just(root: &Path, out: &mut Vec<RunConfig>) {

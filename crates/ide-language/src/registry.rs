@@ -22,9 +22,12 @@ const BUILTIN: &[(&str, &str)] = &[
     ("erlang", include_str!("../../../languages/erlang.toml")),
     ("fsharp", include_str!("../../../languages/fsharp.toml")),
     ("gitattributes", include_str!("../../../languages/gitattributes.toml")),
+    ("gdscript", include_str!("../../../languages/gdscript.toml")),
+    ("gdshader", include_str!("../../../languages/gdshader.toml")),
     ("go", include_str!("../../../languages/go.toml")),
     ("gomod", include_str!("../../../languages/gomod.toml")),
     ("gowork", include_str!("../../../languages/gowork.toml")),
+    ("godot-resource", include_str!("../../../languages/godot-resource.toml")),
     ("graphql", include_str!("../../../languages/graphql.toml")),
     ("groovy", include_str!("../../../languages/groovy.toml")),
     ("haskell", include_str!("../../../languages/haskell.toml")),
@@ -542,10 +545,17 @@ mod tests {
             }
             for ls in &cfg.language_servers {
                 assert!(!ls.command.is_empty() && ls.install_hint.is_some(), "{name}: {} incomplete", ls.name);
+                if let Some(addr) = &ls.connect {
+                    assert!(addr.parse::<std::net::SocketAddr>().is_ok(), "{name}: bad connect address {addr}");
+                }
             }
             if let Some(d) = &cfg.debugger {
                 assert!(matches!(d.transport.as_str(), "stdio" | "tcp"), "{name}: bad transport");
                 assert!(d.install_hint.is_some(), "{name}: debugger without install hint");
+                if let Some(addr) = &d.connect {
+                    assert_eq!(d.transport, "tcp", "{name}: `connect` needs the tcp transport");
+                    assert!(addr.parse::<std::net::SocketAddr>().is_ok(), "{name}: bad connect address {addr}");
+                }
             }
             for ext in &cfg.extensions {
                 assert_eq!(ext, &ext.to_ascii_lowercase(), "{name}: extensions must be lower case");
@@ -679,11 +689,39 @@ mod tests {
             (".gitignore", "ignore"),
             (".gitattributes", "gitattributes"),
             ("server.log", "log"),
+            ("player.gd", "gdscript"),
+            ("main.tscn", "godot-resource"),
+            ("theme.tres", "godot-resource"),
+            ("project.godot", "godot-resource"),
+            ("icon.svg.import", "godot-resource"),
+            ("export_presets.cfg", "godot-resource"),
+            ("water.gdshader", "gdshader"),
             ("notes.txt", "plaintext"),
         ];
         for (path, id) in cases {
             assert_eq!(detect(&reg, path), id, "{path}");
         }
+    }
+
+    #[test]
+    fn gdscript_definition() {
+        let reg = reg();
+        let gd = reg.get(&LanguageId::new("gdscript")).unwrap();
+        assert_eq!(gd.line_comment.as_deref(), Some("#"));
+        let indent = gd.indent.unwrap();
+        assert!(!indent.insert_spaces, "Godot indents with tabs");
+        assert_eq!(gd.tree_sitter.as_deref(), Some("gdscript"));
+        let ls = &gd.language_servers[0];
+        assert_eq!((ls.name.as_str(), ls.command.as_str()), ("godot", "godot"));
+        assert_eq!(ls.connect.as_deref(), Some("127.0.0.1:6005"));
+        assert_eq!(ls.root_markers, ["project.godot"]);
+        assert!(ls.args.iter().any(|a| a == "${port}") && ls.args.iter().any(|a| a == "${root}"));
+        let dbg = gd.debugger.as_ref().unwrap();
+        assert_eq!((dbg.adapter.as_str(), dbg.transport.as_str()), ("godot", "tcp"));
+        assert_eq!(dbg.connect.as_deref(), Some("127.0.0.1:6006"));
+        assert!(dbg.args.iter().any(|a| a == "--dap-port"));
+        let res = reg.get(&LanguageId::new("godot-resource")).unwrap();
+        assert_eq!(res.line_comment.as_deref(), Some(";"));
     }
 
     #[test]

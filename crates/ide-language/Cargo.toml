@@ -53,6 +53,7 @@ tree-sitter-xml = "0.7.0"
 tree-sitter-haskell = "0.23.1"
 tree-sitter-dart = "0.2.0"
 tree-sitter-graphql = "0.3.0"
+tree-sitter-gdscript = "6.1.0"
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false }

@@ -450,4 +450,14 @@ pub(crate) static SPECS: &[Spec] = &[
         imports: NONE,
         constructors: NONE,
     },
+    Spec {
+        name: "gdscript",
+        language: tree_sitter_gdscript::LANGUAGE,
+        outline: outline!("gdscript"),
+        highlights: Some(Highlights { query: highlights!("gdscript"), first_wins: false }),
+        fold_nodes: &["string"],
+        fold_bodies: &["body", "class_body", "match_body"],
+        imports: NONE,
+        constructors: &["_init"],
+    },
 ];

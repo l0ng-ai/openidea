@@ -12,6 +12,7 @@ export const REMOTE_JVM = "remote-jvm";
 export const GO_REMOTE = "go-remote";
 export const PYTHON_REMOTE = "python-remote";
 export const NODE_REMOTE = "node-remote";
+export const GODOT_ATTACH = "godot-attach";
 
 type Params = Readonly<Record<string, string>>;
 
@@ -220,11 +221,36 @@ export const nodeRemoteType: RunConfigTypeContribution = {
   commandLine: () => null,
 };
 
+// ---------------------------------------------------------------------------
+// Attach to Godot (the editor's debug adapter, Editor Settings › Network › Debug Adapter)
+
+export const godotAttachType: RunConfigTypeContribution = {
+  id: GODOT_ATTACH,
+  label: "Attach to Godot",
+  icon: "file-gdscript",
+  description: "Debug the game the Godot editor is running, through the editor's debug adapter",
+  defaults: { host: "localhost", port: "6006" },
+  debugOnly: true,
+  debugAdapter: "godot",
+  fields: [
+    hostField,
+    portField,
+    {
+      key: "hint",
+      label: "Before attaching",
+      control: "output",
+      value: () => "Open the project in the Godot editor and run a scene (F5 / F6)",
+    },
+  ],
+  commandLine: () => null,
+};
+
 export const REMOTE_TYPES: readonly RunConfigTypeContribution[] = [
   remoteJvmType,
   goRemoteType,
   pythonRemoteType,
   nodeRemoteType,
+  godotAttachType,
 ];
 
 export const isRemoteConfig = (c: Pick<RunConfig, "kind">) => REMOTE_TYPES.some((t) => t.id === c.kind);
@@ -291,6 +317,8 @@ export function remoteAttachConfig(rc: RunConfig, root: string): LaunchConfig | 
         justMyCode: skip,
         ...(map ? { pathMappings: [{ localRoot: map.local, remoteRoot: map.remote }] } : {}),
       });
+    case GODOT_ATTACH:
+      return attachBase(rc, "godot", root, { debugServer: serverAddress(host, portOf(p, 6006)), project: root });
     case NODE_REMOTE:
       return attachBase(rc, "js-debug", root, {
         type: "pwa-node",

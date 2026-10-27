@@ -89,6 +89,7 @@ pub fn locate_tools_in(names: &[String], near: Option<&Path>, search: &std::ffi:
                     near.and_then(|n| local_bin(n, name))
                         .or_else(|| on_path(name, search))
                         .or_else(|| jdk_tool(name, &crate::java::installed_jdks()))
+                        .or_else(|| (name == crate::godot::COMMAND).then(|| crate::godot::find(None)).flatten())
                 })
                 .flatten();
             LocatedTool { name: name.clone(), path: path.map(Into::into), version: None }

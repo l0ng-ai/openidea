@@ -29,6 +29,7 @@ fn server(name: &str) -> LanguageServerConfig {
         root_markers: vec![],
         initialization_options: None,
         install_hint: None,
+        connect: None,
         fallback: false,
         launch_error: None,
     }
@@ -290,6 +291,36 @@ fn custom_tool_path_replaces_the_command() {
     let mut cfg = server("zls");
     configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
     assert_eq!(cfg.command, "zls");
+}
+
+#[test]
+fn the_godot_setting_applies_to_server_debugger_and_run_configurations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.tools.insert("godot".into(), ide_core::settings::ToolSettings { path: "~/Godot/godot".into() });
+    let expected = crate::home_dir().unwrap().join("Godot/godot");
+    assert_eq!(crate::apply::tool_command(tmp.path(), &s, "godot"), Some(expected.clone()));
+    let mut cfg = LanguageServerConfig { command: "godot".into(), ..server("godot") };
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(Path::new(&cfg.command), expected);
+    let mut run = RunConfig {
+        id: "godot:project".into(),
+        name: "Godot Project".into(),
+        kind: "godot".into(),
+        command: "godot".into(),
+        args: vec!["--path".into(), ".".into()],
+        cwd: None,
+        env: BTreeMap::new(),
+        detected: true,
+        is_test: false,
+        debug_adapter: Some("godot".into()),
+        allow_parallel: false,
+        extras: Default::default(),
+    };
+    apply_to_run_configs(std::slice::from_mut(&mut run), tmp.path(), &s);
+    assert_eq!(Path::new(&run.command), expected);
+    // Other commands keep their name without a setting.
+    assert_eq!(crate::apply::tool_command(tmp.path(), &s, "zls"), None);
 }
 
 #[test]
