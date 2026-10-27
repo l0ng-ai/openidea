@@ -245,7 +245,7 @@ export async function runFileRefactoring(
   } catch (e) {
     notifications().notify({
       level: "error",
-      title: `Cannot ${label.toLowerCase()} ${moves.length === 1 ? nameOf(moves[0]!.from) : `${moves.length} items`}`,
+      title: `${label === "Move" ? "Cannot move" : "Cannot rename"} ${moves.length === 1 ? nameOf(moves[0]!.from) : `${moves.length} items`}`,
       body: e instanceof Error ? e.message : String(e),
     });
     return "failed";
