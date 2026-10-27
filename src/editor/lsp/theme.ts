@@ -329,6 +329,7 @@ export const lspTheme = EditorView.theme({
   },
   // A part naming a declaration (⌘-click navigates there).
   ".cm-lsp-inlay-part:hover": { textDecoration: "underline", textUnderlineOffset: "2px" },
+  ".cm-lsp-navigation-modifier .cm-lsp-inlay-part:hover": { cursor: "pointer" },
   // Inline completion: the suggestion as gray text at the caret.
   ".cm-inline-ghost": { color: "var(--fg-subtle)", whiteSpace: "pre" },
   ".cm-lsp-inlay-pl": { marginLeft: "4px" },
@@ -350,7 +351,11 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-builtin:not(.cm-sem-function)": { color: "var(--syn-builtin, inherit)" },
   ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
   ".cm-sem-python-static": { fontStyle: "var(--syn-python-static-italic, normal)" },
-  ".cm-sem-mutable": { textDecoration: "underline", textDecorationColor: "var(--fg-faint)", textUnderlineOffset: "3px" },
+  ".cm-sem-mutable": {
+    textDecoration: "underline",
+    textDecorationColor: "var(--fg-faint)",
+    textUnderlineOffset: "3px",
+  },
   ".cm-sem-deprecated": { textDecoration: "line-through" },
   // Semantic highlighting: after the base classes so a parameter's colour gives way, and over the
   // syntax highlighter's span inside.
