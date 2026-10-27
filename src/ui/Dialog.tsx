@@ -6,6 +6,7 @@ import { Button, IconButton } from "./Button";
 import { Icon } from "./icons";
 import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
 import { useTx } from "@/platform/i18n";
+import { selectableText } from "./selectableText";
 import styles from "./Dialog.module.css";
 
 /**
@@ -276,7 +277,12 @@ function DialogInner({
   }, []);
 
   const drag = (e: PointerEvent<HTMLDivElement>) => {
-    if (popup || e.button !== 0 || (e.target as Element).closest("button, input, label, a, select, textarea")) return;
+    if (
+      popup ||
+      e.button !== 0 ||
+      (e.target as Element).closest(`button, input, label, a, select, textarea, .${selectableText}`)
+    )
+      return;
     const el = ref.current;
     if (!el) return;
     e.preventDefault();
@@ -355,8 +361,10 @@ function DialogInner({
           <div className={styles.message} data-dialog-body="" onPointerDown={drag}>
             <MessageIcon kind={icon} />
             <div className={styles.messageText}>
-              {title != null && <div className={styles.messageTitle}>{title}</div>}
-              <div className={styles.messageBody}>{typeof children === "string" ? tx(children) : children}</div>
+              {title != null && <div className={clsx(styles.messageTitle, selectableText)}>{title}</div>}
+              <div className={clsx(styles.messageBody, selectableText)}>
+                {typeof children === "string" ? tx(children) : children}
+              </div>
               {footerStart && <div className={styles.messageExtra}>{footerStart}</div>}
             </div>
           </div>
