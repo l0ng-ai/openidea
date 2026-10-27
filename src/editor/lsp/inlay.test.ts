@@ -66,9 +66,7 @@ describe("inlay hints", () => {
 
   it("offers to disable hints of the clicked kind", () => {
     const view = editorWith([hint]);
-    view.dom
-      .querySelector(".cm-lsp-inlay")!
-      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    view.dom.querySelector(".cm-lsp-inlay")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
     const items = useContextMenuStore.getState().menu?.items ?? [];
     expect(items.map((i) => ("label" in i ? i.label : i.kind))).toEqual([
       "Disable Type hints",
