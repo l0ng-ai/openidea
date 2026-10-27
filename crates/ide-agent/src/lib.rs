@@ -703,8 +703,11 @@ impl Task {
             .chain(prompt.images.iter().map(|i| i.name.clone().unwrap_or_else(|| "image".into())))
             .collect();
         self.push_entry(AgentEntry::User { text: prompt.text.clone(), attachments });
-        self.set_status(AgentStatus::Running, None);
+        // Launching the agent can take a while (`npx` fetches its adapter on first use).
+        let starting = self.live.lock().as_ref().is_none_or(|l| l.peer.is_closed());
+        self.set_status(if starting { AgentStatus::Starting } else { AgentStatus::Running }, None);
         let live = self.ensure_session().await?;
+        self.set_status(AgentStatus::Running, None);
         if !prompt.images.is_empty() && !live.images {
             return Err("This agent can't read images.".into());
         }
@@ -720,6 +723,14 @@ impl Task {
             .await;
         match result {
             Ok(v) => Ok(v.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn").to_owned()),
+            // Signed out, or the account was refused (Claude Code: "API Error: 403").
+            Err(RpcError::Server { message, .. }) if message.to_lowercase().contains("auth") => {
+                let provider = self.state.lock().task.provider.clone();
+                Err(match self.shared.spec(&provider) {
+                    Some(spec) => format!("{} needs you to sign in. {}", spec.name, spec.login_hint),
+                    None => message,
+                })
+            }
             Err(e) => Err(self.describe(e)),
         }
     }

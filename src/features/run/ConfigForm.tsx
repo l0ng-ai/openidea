@@ -23,6 +23,7 @@ import {
   type ConfigErrors,
 } from "./configs";
 import { EnvDialog } from "./EnvDialog";
+import { withTarget } from "./remote";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
 import styles from "./Run.module.css";
 
@@ -150,6 +151,7 @@ export interface ConfigFormProps {
 export function ConfigForm({ config, all, type, errors, template, onChange, modifyRequest }: ConfigFormProps) {
   const openByDefault = useWorkflowSettings((s) => s.run.showOnStart);
   const externalTools = useWorkflowSettings((s) => s.externalTools);
+  const runTargets = useWorkflowSettings((s) => s.runTargets);
   const toolWindows = useContributions((s) => s.toolWindows);
   const tx = useTx();
   const txTemplate = useTxTemplate();
@@ -260,6 +262,13 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   if (config.debugAdapter && !ADAPTERS.some((a) => a.id === config.debugAdapter))
     adapterOptions.push({ value: config.debugAdapter, label: txTemplate(`${config.debugAdapter} (no launch template)`) });
 
+  const targetOptions: SelectOption[] = [
+    { value: "", label: "Local machine" },
+    ...runTargets.map((t) => ({ value: t.id, label: t.name.trim() || t.id })),
+  ];
+  if (config.target && !runTargets.some((t) => t.id === config.target))
+    targetOptions.push({ value: config.target, label: txTemplate(`${config.target} (missing)`) });
+
   const chips = (
     [
       "allowParallel",
@@ -298,6 +307,25 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
             aria-label="Store as project file (.openidea/run.toml); otherwise in the workspace (.openidea/run.local.toml)"
           />
         </div>
+      )}
+      {!noProcess && (
+        <Field
+          label="Run on"
+          hint={
+            config.target
+              ? "Debugging is not available on run targets."
+              : runTargets.length
+                ? undefined
+                : "Add SSH hosts in Settings › Build, Execution, Deployment › Run Targets."
+          }
+        >
+          <Select
+            value={config.target ?? ""}
+            options={targetOptions}
+            onChange={(target) => onChange(withTarget(config, target))}
+            aria-label="Run on"
+          />
+        </Field>
       )}
       <div className={styles.formSection}>
         <span className={styles.formSectionTitle}>{tx(type?.label ?? kindLabel(config.kind))}</span>

@@ -1,0 +1,28 @@
+[package]
+name = "ide-ssh"
+description = "SSH connections: configurations, host keys, authentication, remote commands, SFTP, port forwarding and askpass"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+dirs.workspace = true
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-config = "0.58.0"
+russh-sftp = "2.4"
+flate2 = "1"
+
+[features]
+# `testing`: an in-process SSH / SFTP server for tests of crates built on this one.
+testing = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile.workspace = true

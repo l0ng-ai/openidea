@@ -122,23 +122,16 @@ pub struct DbProperty {
     pub value: String,
 }
 
-/// How the SSH tunnel authenticates (IDEA's SSH configuration "Authentication type").
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub enum DbSshAuth {
-    Password,
-    /// A private key file, optionally protected by a passphrase.
-    KeyPair,
-    /// `~/.ssh/config` (HostName, User, Port, IdentityFile, ProxyJump) and the SSH agent.
-    #[default]
-    OpenSsh,
-}
+/// How the SSH tunnel authenticates (shared with Settings › SSH Configurations).
+pub use ide_core::remote_settings::SshAuth as DbSshAuth;
 
 /// Connect through an SSH tunnel: the database host and port are reached from `host`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DbSsh {
     pub enabled: bool,
+    /// A Settings › SSH Configurations id to connect with; empty = the fields below.
+    pub config: String,
     /// Host name, or a `Host` alias of `~/.ssh/config` with [`DbSshAuth::OpenSsh`].
     pub host: String,
     pub port: Option<u16>,

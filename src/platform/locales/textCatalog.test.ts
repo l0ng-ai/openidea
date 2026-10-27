@@ -79,6 +79,12 @@ const BUILT_AT_RUNTIME = new Set<string>([]);
 
 /** Text that stays as written in every locale: names, code, formats, shortcuts. */
 const UNTRANSLATED = new Set<string>([
+  // SSH and run-target placeholders
+  "SSH",
+  "example.com",
+  "java",
+  "node",
+  "python3",
   // Products, tools and formats
   "Amazon Aurora MySQL",
   "Amazon Redshift",

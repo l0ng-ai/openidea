@@ -7,7 +7,8 @@ mod commands;
 mod events;
 mod logging;
 mod menu;
-mod shell_env;
+mod remote_dev;
+
 mod state;
 mod theme_frame;
 mod windows;
@@ -37,7 +38,7 @@ pub fn run() {
     let context = tauri::generate_context!();
     logging::init(&context.config().identifier);
 
-    let refresh_shell_path = shell_env::inherit_login_shell_path(&context.config().identifier);
+    let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
     if let Some(data) = dirs::data_dir() {
         ide_tools::extend_process_path(&data.join(&context.config().identifier));

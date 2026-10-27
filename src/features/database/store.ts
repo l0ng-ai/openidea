@@ -31,8 +31,9 @@ import {
   toolWindowService,
   type FileDecoration,
 } from "@/workbench/contributions";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { ask, confirm } from "@/workbench/messages";
-import { colorVar, connectRemedy, databaseKey, idleTargets, newSourceId, splitTarget } from "./model";
+import { colorVar, connectRemedy, databaseKey, effectiveSsh, idleTargets, newSourceId, splitTarget } from "./model";
 import { tableFolder, type DbNode } from "./nodes";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
@@ -331,11 +332,13 @@ function askTrustHost(prompt: string): Promise<boolean> {
 /** Asks the user what a failed connection needs (password, SSH secret, host key trust); false = give up. */
 export async function resolveConnectError(e: unknown, source: DataSource): Promise<boolean> {
   if (!(e instanceof IpcError)) return false;
-  switch (connectRemedy(e.kind, e.message, source)) {
+  // Prompts show the SSH configuration's host and authentication when the tunnel uses one.
+  const resolved = { ...source, ssh: effectiveSsh(source.ssh, workflowSettings().ssh.configs) };
+  switch (connectRemedy(e.kind, e.message, resolved)) {
     case "password":
       return askPassword(source);
     case "sshSecret":
-      return askSshSecret(source, e.message);
+      return askSshSecret(resolved, e.message);
     case "trustHostKey":
       if (!(await askTrustHost(e.message))) return false;
       await call(commands.dbTrustSshHost(source.id ?? ""));

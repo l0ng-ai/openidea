@@ -1310,4 +1310,14 @@ fn spelling_regions_cover_declared_names_only() {
         .map(|r| &py[r.start..r.end])
         .collect();
     assert_eq!(names, ["load_config", "path", "retries", "total"]);
+    // Names in paths and calls are uses.
+    let rs = "use crate::ui::keymap;\nfn run() { let n = std::ffi::OsStr::new(\"x\"); a::b::millis(); }\n";
+    let names: Vec<&str> = syntax()
+        .spelling_regions(&lang("rust"), rs)
+        .unwrap()
+        .iter()
+        .filter(|r| r.kind == SpellingKind::Name)
+        .map(|r| &rs[r.start..r.end])
+        .collect();
+    assert_eq!(names, ["run", "n"]);
 }

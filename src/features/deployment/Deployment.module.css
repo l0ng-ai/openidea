@@ -1,0 +1,178 @@
+/* Remote Host tool window */
+.view {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.toolbar {
+  height: 32px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+}
+.serverSelect {
+  min-width: 0;
+  max-width: 220px;
+  margin-right: 4px;
+}
+.rootPath {
+  flex: none;
+  padding: 0 10px 4px;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.treeHost {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.treeHost > * {
+  flex: 1;
+  min-height: 0;
+}
+.viewError {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+}
+.center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  color: var(--fg-subtle);
+}
+.error {
+  color: var(--danger);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.note {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+  word-break: break-word;
+}
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* Notifications */
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.reportErrors {
+  margin: 0;
+  padding-left: 16px;
+}
+
+/* Sync dialog */
+.sync {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 360px;
+}
+.syncTableHost {
+  flex: 1;
+  max-height: 460px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 4px);
+}
+.syncTable {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.syncTable th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: normal;
+  color: var(--fg-muted);
+  background: var(--bg-island);
+  height: var(--h-list-row);
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.syncTable td {
+  height: var(--h-list-row);
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.syncTable tbody tr:hover {
+  background: var(--bg-tree-hover);
+}
+.choiceCol {
+  width: 128px;
+}
+.sizeCol {
+  width: 80px;
+}
+.timeCol {
+  width: 128px;
+}
+.statusCol {
+  width: 112px;
+}
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.choice {
+  width: 100%;
+  height: 22px;
+  color: var(--fg);
+  background: var(--bg-input, var(--bg-island));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 4px);
+  font: inherit;
+}
+.skipped td:not(:first-child) {
+  color: var(--fg-subtle);
+}
+.emptyCell {
+  text-align: center;
+  color: var(--fg-subtle);
+}
+.status-localOnly,
+.status-localNewer {
+  color: var(--vcs-added, var(--accent));
+}
+.status-remoteOnly,
+.status-remoteNewer {
+  color: var(--vcs-modified, var(--accent));
+}
+.status-different {
+  color: var(--warning);
+}
+.status-same {
+  color: var(--fg-subtle);
+}
+
+/* SSH password prompt */
+.secret {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}

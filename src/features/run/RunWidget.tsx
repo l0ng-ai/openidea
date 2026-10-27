@@ -7,6 +7,7 @@ import { useTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { runExecutors, useRunExecutors } from "@/workbench/contributions";
 import { configIcon } from "./configs";
+import { useRemoteLabel } from "./remote";
 import { CURRENT_FILE, rerunSession, sessionsOf, startRun, stopSession, useRun } from "./store";
 import { isDebugOnly } from "./types";
 import styles from "./Run.module.css";
@@ -14,6 +15,7 @@ import styles from "./Run.module.css";
 /** Title bar: configuration chooser, Run / Debug, and Rerun / Stop while running. */
 export function RunWidget() {
   const tx = useTx();
+  const label = useRemoteLabel();
   const configs = useRun((s) => s.configs);
   const selectedId = useRun((s) => s.selectedId);
   const sessions = useRun((s) => s.sessions);
@@ -73,7 +75,7 @@ export function RunWidget() {
           </span>
         )}
         <span className={styles.widgetName}>
-          {selected?.name ?? tx(currentFile ? "Current File" : "Select Configuration")}
+          {selected ? label(selected) : tx(currentFile ? "Current File" : "Select Configuration")}
         </span>
         <Icon name="chevron-down" size={14} className={styles.widgetChevron} />
       </BarButton>

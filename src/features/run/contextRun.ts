@@ -30,6 +30,7 @@ import {
 } from "./producers";
 import { runWithExecutor } from "./executors";
 import { goModulePath, loadGoModules } from "./goModules";
+import { remoteDebugBlocked } from "./remote";
 import { toolEnv } from "./runtimes";
 import { adoptTemporary, loadConfigs, modifyTemporary, startRun, useRun } from "./store";
 import { tx } from "@/platform/i18n";
@@ -107,6 +108,7 @@ export async function launchProduced(p: Produced, debug: boolean): Promise<void>
     await startRun(config);
     return;
   }
+  if (remoteDebugBlocked(config)) return;
   if (p.debug) {
     if (!getAction("debug.startConfig")) {
       notifications().notify({ group: "run", level: "warning", title: "Debugger is not available", key: "run-no-debugger" });

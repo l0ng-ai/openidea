@@ -4,7 +4,9 @@ import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { HighlightedText, Icon, IconButton, List, Popup, SearchField, fuzzyMatch, listNavigate, T } from "@/ui";
 import type { RunConfig } from "@/platform/ipc";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { commandLine, configIcon, groupConfigs } from "./configs";
+import { targetName } from "./remote";
 import { canDeleteConfig, CURRENT_FILE, deleteConfig, saveTemporary, selectConfig, startRun, useRun } from "./store";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
@@ -76,6 +78,7 @@ function ConfigChooser() {
   const configs = useRun((s) => s.configs);
   const selectedId = useRun((s) => s.selectedId);
   const temporary = useRun((s) => s.temporary);
+  const runTargets = useWorkflowSettings((s) => s.runTargets);
   const [query, setQuery] = useState("");
   const rows = useMemo(
     () =>
@@ -273,6 +276,7 @@ function ConfigChooser() {
                 <span className={clsx(styles.chooserName, c.id === selectedId && styles.chooserSelected)}>
                   {r.indices ? <HighlightedText text={c.name} indices={r.indices} /> : c.name}
                 </span>
+                {c.target && <span className={styles.chooserMuted}>@ {targetName(c, runTargets)}</span>}
                 {c.isTest && <span className={styles.badge}>test</span>}
                 {!c.detected && <span className={styles.chooserMuted}>user</span>}
                 {temporary.includes(c.id) && <span className={styles.chooserMuted}>temporary</span>}

@@ -19,6 +19,7 @@ import { createTestParser, frameworkFor, TestResults, withTestReporting, type Te
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
 import { compoundChildren } from "./configs";
+import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
 import { tx } from "@/platform/i18n";
@@ -537,7 +538,8 @@ export async function startRun(
     if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
-    const info = await call(commands.runStart(launch.isTest ? withTestReporting(launch) : launch, channel));
+    const started = launch.isTest ? withTestReporting(launch) : launch;
+    const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     if (info.pty && rt.terminalSize) void commands.runResize(info.id, rt.terminalSize.cols, rt.terminalSize.rows);
     // The process may already have exited (fast commands) before we got its id.
@@ -553,7 +555,12 @@ export async function startRun(
     enqueue(sessionId, { kind: "stderr", text: tx`Error running '${config.name}': ${message}\n` });
     flush(sessionId);
     patchSession(sessionId, { status: "failed", endedAt: Date.now() });
-    notifications().notify({ group: "run", level: "error", title: `Error running '${config.name}'`, body: message });
+    notifications().notify({
+      group: "run",
+      level: "error",
+      title: `Error running '${remoteLabel(config)}'`,
+      body: message,
+    });
   }
   return getSession(sessionId) ?? null;
 }

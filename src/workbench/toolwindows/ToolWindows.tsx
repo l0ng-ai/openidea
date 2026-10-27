@@ -573,8 +573,13 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       const root = ref.current;
       if (!root) return;
       const body = root.querySelector<HTMLElement>("[data-toolwindow-body]");
-      const target =
-        body?.querySelector<HTMLElement>("[data-autofocus]") ?? body?.querySelector<HTMLElement>(FOCUSABLE) ?? root;
+      // Like IDEA, activation focuses the content (a field, list or tree), never a button or
+      // link: a scripted focus on one draws its focus ring (an empty view's "New…" link).
+      const content = [...(body?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(
+        (el) => !el.matches('button, a[href], [role="button"], [role="link"]'),
+      );
+      if (body && !content && !body.hasAttribute("tabindex")) body.tabIndex = -1;
+      const target = body?.querySelector<HTMLElement>("[data-autofocus]") ?? content ?? body ?? root;
       target.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(raf);

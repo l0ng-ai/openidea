@@ -285,7 +285,7 @@ html {
   --bg-toolbar-selected: #2e4d89;
   --bg-toolbar-selected-hover: #2f5eb9;
   --bg-button-primary: var(--accent);
-  --bg-button-primary-hover: #2f5eb9;
+  --bg-button-primary-hover: var(--accent-hover);
   --fg-button-primary: #ffffff;
   --bg-button: transparent;
   --border-button: #40434a;
@@ -569,7 +569,7 @@ html {
   --bg-toolbar-pressed: #00000020;
   --bg-toolbar-selected: #d0dffe;
   --bg-toolbar-selected-hover: #bdd3ff;
-  --bg-button-primary-hover: #2f5eb9;
+  --bg-button-primary-hover: var(--accent-hover);
   --fg-button-primary: #ffffff;
   --bg-button: #ffffff;
   --border-button: #d1d3d9;
@@ -783,7 +783,7 @@ html {
   --bg-toolbar-pressed: #ffffff38;
   --bg-toolbar-selected: #2a4b8f;
   --bg-toolbar-selected-hover: #3560b0;
-  --bg-button-primary-hover: #a7c5ff;
+  --bg-button-primary-hover: var(--accent-hover);
   --fg-button-primary: #000000;
   --bg-button: transparent;
   --border-button: #8b8e95;

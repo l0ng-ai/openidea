@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import type { RunTargetValid } from "@/platform/remoteSettings";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, Tabs, type TabItem, T } from "@/ui";
 import { executeAction } from "@/platform/actions";
@@ -7,6 +8,7 @@ import { ConsoleModel } from "./console";
 import { ConsoleView } from "./ConsoleView";
 import { TerminalConsole } from "./TerminalConsole";
 import { runDirectory } from "./navigate";
+import { remoteLabel } from "./remote";
 import {
   acceptsInput,
   clearConsole,
@@ -187,11 +189,11 @@ function SessionPanel({ session }: { session: RunSession }) {
   );
 }
 
-function sessionItems(sessions: readonly RunSession[]): TabItem[] {
+function sessionItems(sessions: readonly RunSession[], targets: readonly RunTargetValid[]): TabItem[] {
   return sessions.map((s) => ({
     id: s.id,
-    label: s.config.name,
-    text: s.config.name,
+    label: remoteLabel(s.config, targets),
+    text: remoteLabel(s.config, targets),
     icon: sessionIcon(s),
     color: failed(s) ? "var(--danger)" : undefined,
     closable: true,
@@ -220,11 +222,12 @@ function currentTab(
 export function RunTabs() {
   const sessions = useRun((s) => s.sessions);
   const traces = useStackTraces((s) => s.tabs);
+  const runTargets = useWorkflowSettings((s) => s.runTargets);
   const active = useRun((s) => s.activeSession);
   const current = currentTab(sessions, traces, active);
   if (!current) return null;
   const items: TabItem[] = [
-    ...sessionItems(sessions),
+    ...sessionItems(sessions, runTargets),
     ...traces.map((t) => ({ id: t.id, label: t.title, text: t.title, closable: true })),
   ];
   return (

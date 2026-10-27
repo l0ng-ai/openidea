@@ -36,6 +36,9 @@ ide-web = { path = "crates/ide-web" }
 ide-spell = { path = "crates/ide-spell" }
 ide-agent = { path = "crates/ide-agent" }
 ide-clipboard = { path = "crates/ide-clipboard" }
+ide-ssh = { path = "crates/ide-ssh" }
+ide-remote = { path = "crates/ide-remote" }
+ide-host = { path = "crates/ide-host" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }

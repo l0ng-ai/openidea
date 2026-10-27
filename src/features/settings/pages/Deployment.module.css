@@ -1,0 +1,169 @@
+.layout {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.serverList {
+  min-height: 160px;
+  max-height: 360px;
+  overflow: auto;
+}
+.serverRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-list-row);
+  padding: 0 8px;
+  cursor: default;
+}
+.serverRow:hover {
+  background: var(--bg-tree-hover);
+}
+.serverSelected,
+.serverSelected:hover {
+  background: var(--bg-tree-selected);
+}
+.serverName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.default {
+  font-weight: 600;
+}
+.empty {
+  padding: 8px;
+  color: var(--fg-subtle);
+}
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.panel {
+  display: flex;
+  flex-direction: column;
+  padding-top: 4px;
+}
+.panel > div {
+  grid-template-columns: 140px minmax(0, 1fr);
+}
+.wide {
+  width: 320px;
+}
+.field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.note {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
+.ok {
+  color: var(--success);
+}
+.error {
+  color: var(--danger);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.problem {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.secretRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.testRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+}
+
+/* Mappings table: always-editable cells. */
+.mappingTable {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.mappingTable th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--fg-muted);
+  height: var(--h-list-row);
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+}
+.mappingTable td {
+  height: var(--h-list-row);
+  padding: 1px 2px;
+}
+.mappingTable tbody tr.selectedRow {
+  background: var(--bg-tree-selected);
+}
+.cellInput {
+  width: 100%;
+}
+
+/* Remote folder chooser. */
+.chooser {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 320px;
+}
+.chooserPath {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chooserPath > input {
+  flex: 1;
+}
+.folderList {
+  flex: 1;
+  min-height: 240px;
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 4px);
+  outline: none;
+}
+.folderRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-list-row);
+  padding: 0 8px;
+  cursor: default;
+}
+.folderRow:hover {
+  background: var(--bg-tree-hover);
+}
+.folderSelected,
+.folderSelected:hover {
+  background: var(--bg-tree-selected);
+}
+.center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  color: var(--fg-subtle);
+}

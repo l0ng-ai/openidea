@@ -1,0 +1,50 @@
+[package]
+name = "ide-host"
+description = "The IDE backend without a UI toolkit: projects per window, terminals, processes, and the JSON-RPC server for remote development"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "openidea-server"
+path = "src/bin/server.rs"
+
+[dependencies]
+ide-core.workspace = true
+ide-text.workspace = true
+ide-vfs.workspace = true
+ide-workspace.workspace = true
+ide-language.workspace = true
+ide-index.workspace = true
+ide-syntax.workspace = true
+ide-search.workspace = true
+ide-lsp.workspace = true
+ide-vcs.workspace = true
+ide-dap.workspace = true
+ide-build.workspace = true
+ide-analysis.workspace = true
+ide-coverage.workspace = true
+ide-spell.workspace = true
+ide-terminal.workspace = true
+ide-run.workspace = true
+ide-sdk.workspace = true
+ide-http.workspace = true
+ide-db.workspace = true
+ide-ssh.workspace = true
+ide-remote.workspace = true
+ide-jsonrpc.workspace = true
+ide-agent.workspace = true
+ide-tools = { path = "../ide-tools" }
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+parking_lot.workspace = true
+dunce.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }
+tempfile.workspace = true

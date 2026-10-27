@@ -531,7 +531,7 @@ a token.
 | `--bg-toolbar-pressed` | `#ffffff29` | `#00000020` |
 | `--bg-toolbar-selected` | `#2e4d89` | `#d0dffe` |
 | `--bg-toolbar-selected-hover` | `#2f5eb9` | `#bdd3ff` |
-| `--bg-button-primary-hover` | `#2f5eb9` | `#2f5eb9` |
+| `--bg-button-primary-hover` | `var(--accent-hover)` | `var(--accent-hover)` |
 | `--fg-button-primary` | `#ffffff` | `#ffffff` |
 | `--bg-button` | `transparent` | `#ffffff` |
 | `--border-button` | `#40434a` | `#d1d3d9` |

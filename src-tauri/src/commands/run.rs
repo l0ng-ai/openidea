@@ -1,6 +1,10 @@
+//! IPC commands of `ide_host::ops::run` (the shared implementation).
+
 use crate::state::AppState;
-use ide_core::{IdeError, IdeResult, RunId};
-use ide_run::{OutputChunk, RunConfig, RunInfo, StartOptions};
+use ide_core::{IdeResult, RunId};
+#[allow(unused_imports)]
+pub use ide_host::ops::run::*;
+use ide_run::{OutputChunk, RunConfig, RunInfo};
 use tauri::ipc::Channel;
 use tauri::{State, Window};
 
@@ -8,113 +12,77 @@ use tauri::{State, Window};
 #[tauri::command]
 #[specta::specta]
 pub fn run_configs(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<RunConfig>> {
-    let project = state.project(window.label())?;
-    let root = project.root.clone();
-    let user = ide_run::load_user_configs(&root)?;
-    let mut all: Vec<RunConfig> =
-        ide_run::detect(&root).into_iter().filter(|d| !user.iter().any(|u| u.id == d.id)).collect();
-    all.extend(user);
-    // Project interpreter / package manager / toolchains from Languages & Frameworks.
-    ide_sdk::apply::apply_to_run_configs(&mut all, &root, &project.settings.effective());
-    Ok(all)
+    ide_host::ops::run::configs(&state.host, window.label())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn run_save_configs(window: Window, state: State<'_, AppState>, configs: Vec<RunConfig>) -> IdeResult<()> {
-    let root = state.project(window.label())?.root.clone();
-    ide_run::save_user_configs(&root, &configs)
-}
-
-/// Configuration templates: per-type defaults applied to new configurations.
-#[tauri::command]
-#[specta::specta]
-pub fn run_templates(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<RunConfig>> {
-    let root = state.project(window.label())?.root.clone();
-    ide_run::load_templates(&root)
+    ide_host::ops::run::save_configs(&state.host, window.label(), &configs)
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn run_save_templates(window: Window, state: State<'_, AppState>, templates: Vec<RunConfig>) -> IdeResult<()> {
-    let root = state.project(window.label())?.root.clone();
-    ide_run::save_templates(&root, &templates)
-}
-
-/// The environment runs inherit when "Include system environment variables" is on.
-#[tauri::command]
-#[specta::specta]
-pub fn run_system_env() -> std::collections::BTreeMap<String, String> {
-    ide_run::system_env()
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn run_start(
+pub async fn run_start(
     window: Window,
     state: State<'_, AppState>,
     config: RunConfig,
     on_output: Channel<OutputChunk>,
 ) -> IdeResult<RunInfo> {
-    let project = state.project(window.label())?;
-    let root = project.root.clone();
-    if config.command.is_empty() {
-        return Err(IdeError::invalid("run configuration has no command"));
-    }
-    let settings = project.settings.effective();
-    // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
-    let mut config = config;
-    ide_sdk::apply::resolve_run_command(&mut config, &root, &settings);
-    if config.command == ide_sdk::godot::COMMAND {
-        return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
-    }
-    let encoding = settings.console.encoding;
-    let options = StartOptions { encoding: Some(encoding).filter(|e| !e.trim().is_empty()) };
-    state.processes.start(
-        &root,
-        &config,
-        &options,
-        project.sink.clone(),
-        Box::new(move |chunk| {
-            let _ = on_output.send(chunk);
-        }),
-    )
+    let emit = std::sync::Arc::new(move |chunk| {
+        let _ = on_output.send(chunk);
+    });
+    ide_host::ops::run::start(&state.host, window.label(), config, emit).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn run_stop(window: Window, state: State<'_, AppState>, id: RunId) -> IdeResult<()> {
-    let settings = match state.project(window.label()) {
-        Ok(p) => p.settings.effective(),
-        Err(_) => state.global_settings.effective(),
-    };
-    let grace = std::time::Duration::from_millis(u64::from(settings.run.termination_timeout_ms));
-    state.processes.stop_with_grace(id, grace)
+    ide_host::ops::run::stop(&state.host, window.label(), id)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn run_stdin(state: State<'_, AppState>, id: RunId, data: String) -> IdeResult<()> {
-    state.processes.write_stdin(id, &data)
+    ide_host::ops::run::stdin(&state.host, id, &data)
 }
 
 /// Terminal size of a run started with "Emulate terminal in output console".
 #[tauri::command]
 #[specta::specta]
 pub fn run_resize(state: State<'_, AppState>, id: RunId, cols: u16, rows: u16) -> IdeResult<()> {
-    state.processes.resize(id, cols, rows)
+    ide_host::ops::run::resize(&state.host, id, cols, rows)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn run_list(state: State<'_, AppState>) -> Vec<RunInfo> {
-    state.processes.list()
+    ide_host::ops::run::list(&state.host)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn run_close_stdin(state: State<'_, AppState>, id: RunId) -> IdeResult<()> {
-    state.processes.close_stdin(id)
+    ide_host::ops::run::close_stdin(&state.host, id)
+}
+/// Configuration templates: per-type defaults applied to new configurations.
+#[tauri::command]
+#[specta::specta]
+pub fn run_templates(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<RunConfig>> {
+    ide_host::ops::run::run_templates(&state.host, window.label())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn run_save_templates(window: Window, state: State<'_, AppState>, templates: Vec<RunConfig>) -> IdeResult<()> {
+    ide_host::ops::run::run_save_templates(&state.host, window.label(), templates)
+}
+
+/// The environment runs inherit when "Include system environment variables" is on.
+#[tauri::command]
+#[specta::specta]
+pub fn run_system_env(state: State<'_, AppState>) -> std::collections::BTreeMap<String, String> {
+    ide_host::ops::run::run_system_env(&state.host, "")
 }
 
 /// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
@@ -127,12 +95,5 @@ pub async fn run_test_reports(
     module: Option<std::path::PathBuf>,
     since_ms: f64,
 ) -> IdeResult<Vec<ide_run::junit::TestCaseReport>> {
-    let root = state.project(window.label())?.root.clone();
-    let dir = module.map(|m| root.join(m)).unwrap_or(root);
-    let since = std::time::UNIX_EPOCH + std::time::Duration::from_millis(since_ms.max(0.0) as u64);
-    tauri::async_runtime::spawn_blocking(move || {
-        ide_run::junit::read_reports(&ide_run::junit::report_dirs(&dir), since)
-    })
-    .await
-    .map_err(|e| IdeError::internal(e.to_string()))
+    ide_host::ops::run::run_test_reports(&state.host, window.label(), module, since_ms).await
 }

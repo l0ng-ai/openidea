@@ -12,22 +12,14 @@ pub fn term_spawn(
     options: TerminalOptions,
     on_output: Channel<String>,
 ) -> IdeResult<TerminalInfo> {
-    // Python › "Activate virtualenv": typed into the new shell, like PyCharm.
-    let activation = state
-        .project(window.label())
-        .ok()
-        .and_then(|p| ide_sdk::apply::terminal_activation(&p.root, &p.settings.effective(), options.shell.as_deref()));
-    let info = state.terminals.spawn(
+    ide_host::ops::term::spawn(
+        &state.host,
+        window.label(),
         options,
-        state.window_sink(window.label()),
-        Box::new(move |chunk| {
+        std::sync::Arc::new(move |chunk| {
             let _ = on_output.send(chunk);
         }),
-    )?;
-    if let Some(line) = activation {
-        let _ = state.terminals.write(info.id, &format!(" {line}\r"));
-    }
-    Ok(info)
+    )
 }
 
 #[tauri::command]

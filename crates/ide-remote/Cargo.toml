@@ -1,0 +1,23 @@
+[package]
+name = "ide-remote"
+description = "Remote work over SSH: SFTP deployment (mappings, upload, download, sync) and run targets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+ide-ssh.workspace = true
+ide-run.workspace = true
+serde.workspace = true
+specta.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+globset.workspace = true
+ignore.workspace = true
+
+[dev-dependencies]
+ide-ssh = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile.workspace = true

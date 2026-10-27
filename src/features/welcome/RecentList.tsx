@@ -1,6 +1,7 @@
 import { useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import type { RecentProject } from "@/platform/ipc";
+import { parseRemoteLocation } from "@/platform/remote";
 import {
   HighlightedText,
   Icon,
@@ -38,7 +39,9 @@ export function ProjectBadge({ name, className }: { name: string; className?: st
 }
 
 export function recentMenu(project: RecentProject, onOpened?: () => void): MenuItem[] {
-  return [
+  // A remote project opens in this window only, and has no local folder.
+  const local = parseRemoteLocation(project.path) === null;
+  const items: MenuItem[] = [
     {
       id: "open",
       label: "Open",
@@ -68,6 +71,9 @@ export function recentMenu(project: RecentProject, onOpened?: () => void): MenuI
       run: () => void askRemoveRecent(project),
     },
   ];
+  return local
+    ? items
+    : items.filter((i) => !("id" in i && i.id === "reveal") && !("action" in i && i.action === "file.openInNewWindow"));
 }
 
 function relativeTime(ms: number | null): string | null {
@@ -82,7 +88,17 @@ function relativeTime(ms: number | null): string | null {
   return new Date(ms).toLocaleDateString();
 }
 
-function RecentRow({ m, active, compact, onOpened }: { m: RecentMatch; active: boolean; compact?: boolean; onOpened?: () => void }) {
+function RecentRow({
+  m,
+  active,
+  compact,
+  onOpened,
+}: {
+  m: RecentMatch;
+  active: boolean;
+  compact?: boolean;
+  onOpened?: () => void;
+}) {
   const opening = useRecent((s) => s.opening === m.project.path);
   const when = relativeTime(m.project.openedAtMs);
   return (

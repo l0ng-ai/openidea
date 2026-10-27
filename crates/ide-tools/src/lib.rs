@@ -14,6 +14,7 @@ pub mod jdk;
 pub mod platform;
 mod process;
 pub mod registry;
+pub mod server;
 pub mod sources;
 
 use ide_core::error::ErrorKind;

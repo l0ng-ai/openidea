@@ -7,6 +7,7 @@ import { initProjectRoots, useProjectRoots } from "@/platform/projectRoots";
 import { folderIconName } from "@/ui";
 import {
   localChangedPaths,
+  provideProjectViewSelection,
   registerOverlay,
   registerProjectViewRoot,
   registerToolWindow,
@@ -19,6 +20,7 @@ import { NewPopupHost } from "./NewPopup";
 import { RefactoringPreviewHost } from "./RefactoringPreview";
 import { ProjectHeaderActions, useProjectHeaderMenu, useProjectTitleMenu } from "./HeaderActions";
 import { loadHomeDir } from "./home";
+import { selectedNodes } from "./operations";
 import { ProjectView } from "./ProjectView";
 import { applyFsChange, initProjectTree, reloadAll, setChangedFiles, setOpenFiles, useProjectTree } from "./store";
 
@@ -128,6 +130,11 @@ export function activate(): () => void {
     registerOverlay({ id: "project.refactoringPreview", component: RefactoringPreviewHost }),
     registerOverlay({ id: "project.newPopup", component: NewPopupHost }),
     registerProjectActions(),
+    provideProjectViewSelection(() =>
+      selectedNodes()
+        .filter((n) => !n.group)
+        .map((n) => n.path),
+    ),
     onIdeEvent("fsChanged", (e) => void applyFsChange(e)),
   ];
   return () => {

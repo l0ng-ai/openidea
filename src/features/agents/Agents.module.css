@@ -9,6 +9,14 @@
   min-height: 0;
 }
 
+.loading {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+
 .row {
   display: flex;
   align-items: center;

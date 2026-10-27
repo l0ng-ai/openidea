@@ -7,7 +7,8 @@ async fn setup() -> (tempfile::TempDir, DbManager) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
     std::fs::File::create(root.join("app.db")).unwrap();
-    let db = DbManager::new(root.clone(), root.join("passwords.json"), root.join("history.json"));
+    let ssh = std::sync::Arc::new(ide_ssh::SshManager::new(root.join("ssh-passwords.json")));
+    let db = DbManager::new(root.clone(), root.join("passwords.json"), root.join("history.json"), ssh);
     db.save_sources(vec![DataSource {
         id: "s1".into(),
         name: "app".into(),

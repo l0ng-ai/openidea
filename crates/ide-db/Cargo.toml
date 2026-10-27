@@ -17,8 +17,7 @@ parking_lot.workspace = true
 futures.workspace = true
 sqlx.workspace = true
 dirs.workspace = true
-russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
-russh-config = "0.58.0"
+ide-ssh.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

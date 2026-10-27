@@ -4,6 +4,7 @@
  * `ide-core::workflow_settings` defaults). Normalisation never throws.
  */
 import { useProject } from "./project";
+import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSettings";
 
 export type UpdateMethod = "merge" | "rebase";
 export type IncomingCheck = "auto" | "always" | "never";
@@ -121,7 +122,7 @@ export interface ExternalToolValid {
   openConsole: boolean;
 }
 
-export interface WorkflowSettings {
+export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
   console: ConsoleSettingsValid;
   debugger: DebuggerSettingsValid;
@@ -239,6 +240,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   },
   actionsOnSave: { optimizeImports: false, cleanup: false },
   externalTools: [],
+  ...DEFAULT_REMOTE,
 };
 
 type Obj = Record<string, unknown>;
@@ -423,6 +425,7 @@ export function validateWorkflow(raw: unknown): WorkflowSettings {
     terminal: validateTerminal(root.terminal),
     actionsOnSave: validateActionsOnSave(root.actionsOnSave),
     externalTools: validateExternalTools(root.externalTools),
+    ...validateRemote(root),
   };
 }
 

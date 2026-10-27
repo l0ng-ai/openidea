@@ -1,8 +1,11 @@
+//! IPC commands of `ide_host::ops::agent` (the shared implementation).
+
 use crate::state::AppState;
 use ide_agent::{
     AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentPrompt, AgentProvider, AgentQueued, AgentTask, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath};
+use ide_host::ops::agent;
 use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::{State, Window};
@@ -15,16 +18,19 @@ pub fn agent_subscribe(
     state: State<'_, AppState>,
     on_event: Channel<AgentEvent>,
 ) -> IdeResult<Vec<AgentTask>> {
-    let project = state.project(window.label())?;
-    Ok(project.agents.subscribe(Arc::new(move |e| {
-        let _ = on_event.send(e);
-    })))
+    agent::subscribe(
+        &state.host,
+        window.label(),
+        Arc::new(move |e| {
+            let _ = on_event.send(e);
+        }),
+    )
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn agent_providers(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<AgentProvider>> {
-    Ok(state.project(window.label())?.agents.providers())
+    agent::providers(&state.host, window.label())
 }
 
 /// Slash commands to complete for `provider` in `task`'s directory, or in the project
@@ -37,21 +43,19 @@ pub async fn agent_commands(
     provider: String,
     task: Option<String>,
 ) -> IdeResult<Vec<AgentCommand>> {
-    let project = state.project(window.label())?;
-    project.agents.commands(&provider, task.as_deref()).await
+    agent::commands(&state.host, window.label(), provider, task).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn agent_entries(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<Vec<AgentEntry>> {
-    state.project(window.label())?.agents.entries(&task)
+    agent::entries(&state.host, window.label(), task)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_create(window: Window, state: State<'_, AppState>, request: NewAgentTask) -> IdeResult<AgentTask> {
-    let project = state.project(window.label())?;
-    project.agents.create(request).await
+    agent::create(&state.host, window.label(), request).await
 }
 
 /// Sends a message; while the agent works it is queued, or with `now` it interrupts the turn.
@@ -64,8 +68,7 @@ pub async fn agent_prompt(
     prompt: AgentPrompt,
     now: bool,
 ) -> IdeResult<()> {
-    let project = state.project(window.label())?;
-    project.agents.prompt(&task, prompt, now).await
+    agent::prompt(&state.host, window.label(), task, prompt, now).await
 }
 
 /// Drops a queued message and returns it (to edit it).
@@ -77,7 +80,7 @@ pub fn agent_unqueue(
     task: String,
     queued: String,
 ) -> IdeResult<AgentQueued> {
-    state.project(window.label())?.agents.unqueue(&task, &queued)
+    agent::unqueue(&state.host, window.label(), task, queued)
 }
 
 /// Sends a queued message now, interrupting the current turn.
@@ -89,7 +92,7 @@ pub fn agent_send_queued_now(
     task: String,
     queued: String,
 ) -> IdeResult<()> {
-    state.project(window.label())?.agents.send_queued_now(&task, &queued)
+    agent::send_queued_now(&state.host, window.label(), task, queued)
 }
 
 /// Changes a session setting (model, mode, thinking effort…).
@@ -102,14 +105,13 @@ pub async fn agent_set_config(
     option: String,
     value: String,
 ) -> IdeResult<()> {
-    let project = state.project(window.label())?;
-    project.agents.set_config(&task, &option, value).await
+    agent::set_config(&state.host, window.label(), task, option, value).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn agent_cancel(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<()> {
-    state.project(window.label())?.agents.cancel(&task)
+    agent::cancel(&state.host, window.label(), task)
 }
 
 /// Answers a permission request; `option: null` cancels it.
@@ -122,13 +124,13 @@ pub fn agent_respond(
     permission: u32,
     option: Option<String>,
 ) -> IdeResult<()> {
-    state.project(window.label())?.agents.respond(&task, permission, option)
+    agent::respond(&state.host, window.label(), task, permission, option)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn agent_archive(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<()> {
-    state.project(window.label())?.agents.archive(&task)
+    agent::archive(&state.host, window.label(), task)
 }
 
 #[tauri::command]
@@ -139,15 +141,13 @@ pub async fn agent_delete(
     task: String,
     remove_worktree: bool,
 ) -> IdeResult<()> {
-    let project = state.project(window.label())?;
-    project.agents.delete(&task, remove_worktree).await
+    agent::delete(&state.host, window.label(), task, remove_worktree).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_changes(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<Vec<AgentChange>> {
-    let project = state.project(window.label())?;
-    project.agents.changes(&task).await
+    agent::changes(&state.host, window.label(), task).await
 }
 
 /// Content of `path` when the task started (left side of its diff).
@@ -159,6 +159,5 @@ pub async fn agent_base_text(
     task: String,
     path: IpcPath,
 ) -> IdeResult<Option<String>> {
-    let project = state.project(window.label())?;
-    project.agents.base_text(&task, path.into_path_buf()).await
+    agent::base_text(&state.host, window.label(), task, path).await
 }

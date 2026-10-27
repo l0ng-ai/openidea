@@ -111,6 +111,7 @@ struct FileConfig {
     emulate_terminal: bool,
     #[serde(alias = "stopCommand")]
     stop_command: Option<String>,
+    target: Option<String>,
 }
 
 fn slug(s: &str) -> String {
@@ -173,6 +174,7 @@ fn convert(configs: Vec<FileConfig>, local: bool) -> Vec<RunConfig> {
                 focus_tool_window: c.focus_tool_window,
                 emulate_terminal: c.emulate_terminal,
                 stop_command: non_empty(c.stop_command),
+                target: non_empty(c.target),
             },
         });
     }
@@ -274,6 +276,9 @@ fn to_table(c: &RunConfig) -> Table {
     }
     if let Some(stop) = &x.stop_command {
         t.insert("stop-command", value(stop));
+    }
+    if let Some(target) = &x.target {
+        t.insert("target", value(target));
     }
     t
 }

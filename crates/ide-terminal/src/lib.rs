@@ -189,14 +189,19 @@ impl TerminalManager {
     fn session(&self, id: TerminalId) -> IdeResult<Arc<Session>> {
         self.sessions.lock().get(&id).cloned().ok_or_else(|| not_found(id))
     }
-}
 
-impl Drop for TerminalManager {
-    fn drop(&mut self) {
+    /// Terminates every session (shutting down).
+    pub fn kill_all(&self) {
         let sessions: Vec<_> = self.sessions.lock().drain().map(|(_, s)| s).collect();
         for s in sessions {
             terminate(&s);
         }
+    }
+}
+
+impl Drop for TerminalManager {
+    fn drop(&mut self) {
+        self.kill_all();
     }
 }
 

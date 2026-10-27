@@ -131,8 +131,49 @@ jobs:
             gh release upload "$TAG" "$dmg" --clobber
           done
 
+  # The remote development server, per host platform it can run on. The desktop
+  # app downloads the one for the host (ide-tools `server`) and installs it over SSH.
+  # Linux builds are static (musl), so they run whatever the host's glibc.
+  server:
+    needs: create-release
+    name: Server (${{ matrix.os }}-${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, target: x86_64-unknown-linux-musl, os: linux, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, os: linux, arch: aarch64 }
+          - { runner: macos-latest, target: aarch64-apple-darwin, os: macos, arch: aarch64 }
+          - { runner: macos-latest, target: x86_64-apple-darwin, os: macos, arch: x86_64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: "server-${{ matrix.target }}" }
+      - name: musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        run: |
+          # musl-tools only ships `musl-gcc`; cc-rs would look for `<arch>-linux-musl-gcc`.
+          if [ "$RUNNER_OS" = Linux ]; then export CC_${TARGET//-/_}=musl-gcc; fi
+          cargo build --release --locked -p ide-host --bin openidea-server --target "$TARGET"
+        env:
+          TARGET: ${{ matrix.target }}
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET: openidea-server-${{ matrix.os }}-${{ matrix.arch }}.gz
+        run: |
+          gzip -9 -c target/${{ matrix.target }}/release/openidea-server > "$ASSET"
+          if command -v sha256sum >/dev/null; then sha256sum "$ASSET"; else shasum -a 256 "$ASSET"; fi > "$ASSET.sha256"
+          gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+
   publish:
-    needs: [create-release, build]
+    needs: [create-release, build, server]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7

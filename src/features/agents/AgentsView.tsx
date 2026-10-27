@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import type { AgentStatus as Status, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { confirmChecked } from "@/workbench/messages";
-import { Icon, IconButton, Spinner, T, Tree, showContextMenu, type MenuItem } from "@/ui";
+import { EmptyState, Icon, IconButton, Spinner, T, Tree, showContextMenu, type MenuItem } from "@/ui";
 import { age, branchLabel, groupTasks, isBusy, type TaskGroup } from "./model";
 import { archiveTask, deleteTask, openHome, openTask, useAgents } from "./store";
 import styles from "./Agents.module.css";
@@ -35,13 +35,20 @@ export function TaskStatusIcon({ status }: { status: Status }) {
 
 export function AgentsView() {
   const loaded = useAgents((s) => s.loaded);
+  const error = useAgents((s) => s.error);
   const tasks = useAgents((s) => s.tasks);
   const providers = useAgents((s) => s.providers);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["g:archived"]));
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const roots = useMemo<Node[]>(() => groupTasks(tasks.values()).map((group) => ({ kind: "group", group })), [tasks]);
   const expanded = useMemo(() => new Set(roots.map(nodeKey).filter((k) => !collapsed.has(k))), [roots, collapsed]);
-  if (!loaded) return <Spinner />;
+  if (!loaded)
+    return (
+      <div className={styles.loading}>
+        <Spinner />
+      </div>
+    );
+  if (error) return <EmptyState title="Cannot load agent tasks">{error}</EmptyState>;
   const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
 
   return (

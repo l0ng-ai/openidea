@@ -452,7 +452,7 @@ pub mod shelf;
 mod status;
 mod write;
 
-pub use cli::{detected_git_executable, git_version, set_git_executable};
+pub use cli::{detected_git_executable, git_version, set_askpass_env, set_git_executable};
 pub use diff::build_partial_patch;
 pub use manage::{MergeOptions, RebaseOptions, RemoteEdit, Worktree};
 pub use remotes::Remote;

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEven
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, type RunConfig } from "@/platform/ipc";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Dialog, Icon, IconButton, Input, T } from "@/ui";
 import {
   notifications,
@@ -24,6 +25,7 @@ import {
   validateConfig,
   type ConfigErrors,
 } from "./configs";
+import { targetName } from "./remote";
 import { saveUserConfigs, selectConfig, useRun } from "./store";
 import { blankTemplate, COMPOUND, missingParams, newConfigOfType, templateId, typeFor } from "./types";
 import styles from "./Run.module.css";
@@ -127,6 +129,7 @@ function EditConfigsDialog() {
   // "Modify Run Configuration…": the would-be configuration is saved on OK even when unedited.
   const [dirty, setDirty] = useState(() => useRun.getState().editDirty);
   const [saving, setSaving] = useState(false);
+  const runTargets = useWorkflowSettings((s) => s.runTargets);
   const [adding, setAdding] = useState<{ x: number; y: number } | null>(null);
   const [modifyRequest, setModifyRequest] = useState(0);
   const addRef = useRef<HTMLButtonElement>(null);
@@ -482,6 +485,7 @@ function EditConfigsDialog() {
                         className={clsx(styles.chooserIcon, temporary.includes(c.id) && styles.chooserTemporary)}
                       />
                       <span className={styles.chooserName}>{c.name || <T>Unnamed</T>}</span>
+                      {c.target && <span className={styles.chooserMuted}>@ {targetName(c, runTargets)}</span>}
                       {errorsById[c.id] && <Icon name="error" size={12} className={styles.failed} label="Invalid" />}
                       {!c.detected && <span className={styles.chooserMuted}>{c.local ? "local" : "user"}</span>}
                     </button>

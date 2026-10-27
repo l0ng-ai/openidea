@@ -286,6 +286,7 @@ export function TerminalTabs() {
     { kind: "separator" },
     { kind: "header", label: "New Predefined Session" },
     ...shellItems(shells),
+    { kind: "action", action: "ssh.startSession", label: "SSH Session…" },
     { kind: "separator" },
     { kind: "action", action: "terminal.splitRight" },
     { kind: "action", action: "terminal.splitDown" },

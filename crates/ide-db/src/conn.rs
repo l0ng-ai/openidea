@@ -192,7 +192,7 @@ fn looks_like_query(sql: &str) -> bool {
 
 fn file_setting(path: &str) -> Option<PathBuf> {
     let path = path.trim();
-    (!path.is_empty()).then(|| crate::tunnel::expand(path))
+    (!path.is_empty()).then(|| ide_ssh::expand(path))
 }
 
 fn is_identifier(name: &str) -> bool {

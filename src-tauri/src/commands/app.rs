@@ -17,14 +17,7 @@ pub struct AppInfo {
     pub config_dir: ide_core::IpcPath,
 }
 
-#[derive(Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectInfo {
-    pub root: ide_core::IpcPath,
-    pub name: String,
-    pub is_git: bool,
-    pub settings: Settings,
-}
+pub use ide_host::ops::project::ProjectInfo;
 
 #[tauri::command]
 #[specta::specta]
@@ -69,18 +62,7 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
 }
 
 fn project_info(project: &crate::state::Project) -> ProjectInfo {
-    let settings = project.settings.effective();
-    let custom = settings.general.project_name.trim();
-    ProjectInfo {
-        name: if custom.is_empty() {
-            project.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-        } else {
-            custom.to_owned()
-        },
-        is_git: !project.repos.read().is_empty(),
-        settings,
-        root: project.root.clone().into(),
-    }
+    ide_host::ops::project::info(project)
 }
 
 /// File › Rename Project…: the project's display name (title bar, recent
@@ -122,10 +104,7 @@ pub fn languages(state: State<'_, AppState>) -> Vec<LanguageInfo> {
 #[specta::specta]
 pub fn settings_get(window: Window, state: State<'_, AppState>) -> Settings {
     state.note_ipc();
-    match state.project(window.label()) {
-        Ok(p) => p.settings.effective(),
-        Err(_) => state.global_settings.effective(),
-    }
+    ide_host::ops::project::settings(&state.host, window.label())
 }
 
 /// Defaults plus the global layer, without any project's values: what new
@@ -148,76 +127,22 @@ pub fn settings_set(
     key: String,
     value: String,
 ) -> IdeResult<Settings> {
-    let value: serde_json::Value =
-        serde_json::from_str(&value).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
-    let current = state.project(window.label()).ok();
-    let project_scope = matches!(scope, SettingsScope::Project) && current.is_some();
-    let settings = match &current {
-        Some(p) if project_scope => p.settings.set(scope, &key, value)?,
-        Some(p) => {
-            state.global_settings.set(SettingsScope::Global, &key, value)?;
-            p.settings.reload()
-        }
-        None => state.global_settings.set(SettingsScope::Global, &key, value)?,
-    };
-    if let Some(p) = &current {
-        p.documents.set_file_defaults(ide_workspace::FileDefaults::from_settings(&settings, Some(&p.root)));
-    }
-    // A global value reaches every other open project too.
-    if !project_scope {
-        for project in state.projects() {
-            if current.as_ref().is_some_and(|c| c.root == project.root) {
-                continue;
-            }
-            let effective = project.settings.reload();
-            project
-                .documents
-                .set_file_defaults(ide_workspace::FileDefaults::from_settings(&effective, Some(&project.root)));
-        }
-    }
-    // File type associations re-detect open documents (off the command thread).
-    if key == "files" || key.starts_with("files.fileType") {
-        let affected = if project_scope { current.iter().cloned().collect() } else { state.projects() };
-        tauri::async_runtime::spawn_blocking(move || {
-            for project in affected {
-                project.apply_file_types(&project.settings.effective());
-            }
-        });
-    }
-    // A new interpreter / toolchain / server executable restarts the language servers it affects.
-    if ["languages", "tools", "languageServers"].iter().any(|k| key == *k || key.starts_with(&format!("{k}."))) {
-        let affected = if project_scope { current.iter().cloned().collect() } else { state.projects() };
-        for project in affected {
-            let lsp = project.lsp.clone();
-            tauri::async_runtime::spawn(async move { lsp.reconfigure().await });
-        }
-    }
-    let roots_changed = key == "projectStructure" || key.starts_with("projectStructure.");
-    // Content roots and excludes (files.exclude, ignored names, excluded folders) reach the
-    // index and the watchers without reopening the project (the rescan runs in the background).
-    if roots_changed || key == "files" || key.starts_with("files.") {
-        let affected = if project_scope { current.iter().cloned().collect() } else { state.projects() };
-        tauri::async_runtime::spawn_blocking(move || {
-            for project in affected {
-                project.refresh_index_scope();
-            }
-        });
-    }
+    let applied = ide_host::ops::project::set_settings(&state.host, window.label(), scope, &key, &value)?;
     // A project value concerns only that project's window (and its settings window).
     let event = ide_core::IdeEvent::SettingsChanged { key };
-    if project_scope {
+    if applied.project_scope {
         let owner = AppState::owner_window(window.label());
         for label in [owner.to_owned(), crate::windows::settings_label(owner)] {
             let sink = crate::events::TauriSink { app: state.app.clone(), window: Some(label) };
             sink.emit(event.clone());
-            if let Some(p) = current.as_ref().filter(|_| roots_changed) {
-                sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: p.root.clone().into() });
+            if let Some(root) = &applied.roots_changed {
+                sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: root.clone() });
             }
         }
     } else {
         state.sink.emit(event);
     }
-    Ok(settings)
+    Ok(applied.settings)
 }
 
 /// File › Manage IDE Settings › Export Settings…: the global settings plus the
@@ -254,6 +179,7 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
         let lsp = project.lsp.clone();
         tauri::async_runtime::spawn(async move { lsp.reconfigure().await });
     }
+    crate::commands::ssh::apply_ssh_settings(&state);
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
     let settings = match state.project(window.label()) {
         Ok(p) => p.settings.effective(),
@@ -267,7 +193,7 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
 #[tauri::command]
 #[specta::specta]
 pub fn project_roots(window: Window, state: State<'_, AppState>) -> IdeResult<ide_workspace::ProjectRoots> {
-    Ok(state.project(window.label())?.roots())
+    ide_host::ops::project::roots(&state.host, window.label())
 }
 
 /// The project open in this window (a settings window: its parent's), if any.

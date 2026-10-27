@@ -3,7 +3,7 @@
  * lives in a detached host element owned by the session (not by React), so a
  * session survives its tool window being hidden or its pane being re-mounted.
  */
-import { Terminal, type IDisposable, type ILink } from "@xterm/xterm";
+import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
@@ -105,6 +105,18 @@ export async function openExternal(url: string) {
   }
 }
 
+/**
+ * OSC 8 hyperlinks (`claude` / `gh` login links…): open in the system browser.
+ * xterm's default confirms with `window.confirm` and then calls `window.open`,
+ * which does nothing in the app's webview.
+ */
+export const LINK_HANDLER: ILinkHandler = {
+  activate: (event, uri) => {
+    event.preventDefault();
+    if (/^https?:\/\//i.test(uri)) void openExternal(uri);
+  },
+};
+
 export async function openFileLink(link: Extract<TerminalLink, { kind: "file" }>, cwd: string) {
   const selection = link.line ? { line: link.line - 1, col: Math.max(0, (link.col ?? 1) - 1) } : undefined;
   const path = resolvePath(link.path, cwd);
@@ -188,6 +200,7 @@ export class TerminalSession {
       // Same width as the IDE's scrollbars (global.css); the slider is styled there too (Terminal.module.css).
       overviewRuler: { width: 10 },
       theme: readTerminalTheme(),
+      linkHandler: LINK_HANDLER,
     });
     this.term.loadAddon(this.fit);
     this.term.loadAddon(this.searchAddon);

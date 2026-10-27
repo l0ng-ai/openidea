@@ -100,6 +100,28 @@ pub enum IdeEvent {
     ProjectRootsChanged {
         root: crate::IpcPath,
     },
+    /// A child process (`ssh`, `git`) asks for a credential; answered with `ssh_askpass_answer`.
+    Askpass {
+        id: u64,
+        prompt: String,
+        kind: AskpassKind,
+    },
+    /// Prompt `id` was answered (in any window) or gave up.
+    AskpassDone {
+        id: u64,
+    },
+}
+
+/// What an askpass prompt asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AskpassKind {
+    /// Password or passphrase: hidden input.
+    Secret,
+    /// User name: visible input.
+    Text,
+    /// Yes / no (an unknown host key); answered with `yes` or `no`.
+    Confirm,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

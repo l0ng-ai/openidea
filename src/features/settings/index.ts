@@ -16,6 +16,7 @@ import { registerActions, type Action } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isPopupOpen, lazyComponent } from "@/ui";
 import { loadSettings, useProject } from "@/platform/project";
+import { restoreRemote } from "@/platform/remote";
 import { provideSettingsSearchIndex, registerOverlay } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
 import { LazySettingsDialog, loadBuiltinPages, unloadBuiltinPages } from "./dialog/LazySettingsDialog";
@@ -202,6 +203,7 @@ export function activateSettingsWindow(parent: string): () => void {
   ];
   void (async () => {
     await loadBuiltinPages();
+    await restoreRemote();
     const project = await commands.projectCurrent().catch(() => null);
     if (project) useProject.setState({ project, settings: project.settings });
     else await loadSettings().catch((e) => console.warn("cannot load settings", e));

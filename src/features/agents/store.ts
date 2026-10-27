@@ -31,6 +31,8 @@ export const HOME = "home";
 
 interface AgentsState {
   loaded: boolean;
+  /** Why the tasks could not be loaded. */
+  error: string | null;
   tasks: Map<string, AgentTask>;
   /** Entries of the tasks opened in this window. */
   entries: Map<string, AgentEntry[]>;
@@ -69,6 +71,7 @@ const fallbackDraft: Draft = { provider: "claude", config: {}, isolation: "workt
 
 export const useAgents = create<AgentsState>(() => ({
   loaded: false,
+  error: null,
   tasks: new Map(),
   entries: new Map(),
   changes: new Map(),
@@ -111,13 +114,17 @@ export async function connect(): Promise<void> {
   channel.onmessage = (e) => {
     if (gen === generation) onEvent(e);
   };
-  const [tasks, providers] = await Promise.all([
-    call(commands.agentSubscribe(channel)),
-    call(commands.agentProviders()),
-  ]);
+  let tasks: AgentTask[], providers: AgentProvider[];
+  try {
+    [tasks, providers] = await Promise.all([call(commands.agentSubscribe(channel)), call(commands.agentProviders())]);
+  } catch (e) {
+    if (gen === generation) useAgents.setState({ loaded: true, error: e instanceof Error ? e.message : String(e) });
+    return;
+  }
   if (gen !== generation) return;
   useAgents.setState({
     loaded: true,
+    error: null,
     tasks: new Map(tasks.map((t) => [t.id, t])),
     entries: new Map(),
     changes: new Map(),
@@ -133,7 +140,7 @@ export async function connect(): Promise<void> {
 
 export function disconnect() {
   generation++;
-  useAgents.setState({ loaded: false, tasks: new Map(), entries: new Map(), changes: new Map() });
+  useAgents.setState({ loaded: false, error: null, tasks: new Map(), entries: new Map(), changes: new Map() });
 }
 
 function onEvent(e: AgentEvent) {

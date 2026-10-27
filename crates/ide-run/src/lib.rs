@@ -125,6 +125,10 @@ pub struct RunExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub stop_command: Option<String>,
+    /// Settings › Run Targets id the process runs on (over SSH); `None` = this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub target: Option<String>,
 }
 
 impl Default for RunExtras {
@@ -145,6 +149,7 @@ impl Default for RunExtras {
             focus_tool_window: false,
             emulate_terminal: false,
             stop_command: None,
+            target: None,
         }
     }
 }

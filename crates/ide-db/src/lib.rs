@@ -9,7 +9,6 @@ pub mod secrets;
 pub mod source;
 pub mod split;
 pub mod sql;
-pub mod tunnel;
 
 pub use conn::{Held, Pool, QueryResult, ResultColumn};
 pub use history::HistoryEntry;
@@ -21,6 +20,7 @@ pub use sql::{CellValue, DbRowEdit, SortKey};
 
 use history::HistoryStore;
 use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
+use ide_ssh::{SshManager, SshTarget, Tunnel};
 use parking_lot::Mutex;
 use secrets::SecretStore;
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tunnel::{OpenError, Tunnel, TunnelSpec, UnknownHostKey};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -210,12 +209,12 @@ pub struct DbManager {
     tunnels: Mutex<HashMap<String, Arc<Tunnel>>>,
     /// Serialises opening tunnels so concurrent connects share one.
     tunnel_open: tokio::sync::Mutex<()>,
-    /// Host keys awaiting the user's trust, by data source id.
-    unknown_host_keys: Mutex<HashMap<String, UnknownHostKey>>,
-    known_hosts: PathBuf,
-    ssh_config: Option<PathBuf>,
+    /// App-wide SSH connections and host-key trust.
+    ssh: Arc<SshManager>,
     saved_passwords: SecretStore,
     history: Arc<HistoryStore>,
+    /// Records executed statements in the history off the async threads, in order.
+    recorder: std::sync::mpsc::Sender<(String, String, f64)>,
     /// Passwords entered this session (not saved, or not yet), by credential key.
     session_passwords: Mutex<HashMap<String, String>>,
     /// Manual-commit data sources, each with the connection of its open
@@ -281,12 +280,12 @@ pub fn split_target(target: &str) -> (&str, Option<&str>) {
 }
 
 /// Says which leg failed when the database is unreachable from the SSH host.
-fn through_tunnel(e: IdeError, source: &DataSource, tunneled: bool) -> IdeError {
-    let Some(ssh) = source.ssh.as_ref().filter(|_| tunneled && e.kind == ErrorKind::Io) else { return e };
+fn through_tunnel(e: IdeError, source: &DataSource, via: Option<&str>) -> IdeError {
+    let Some(via) = via.filter(|_| e.kind == ErrorKind::Io) else { return e };
     let port = source.port.or(source.driver.default_port()).unwrap_or_default();
     IdeError::new(
         ErrorKind::Io,
-        format!("{} through the SSH tunnel ({}:{port} as seen from {})", e.message, source.host, ssh.host),
+        format!("{} through the SSH tunnel ({}:{port} as seen from {via})", e.message, source.host),
     )
 }
 
@@ -321,29 +320,31 @@ async fn end_session(session: &Session) {
 impl DbManager {
     /// `passwords` / `history` are the app-wide files of saved passwords
     /// ([`SecretStore`]) and query history ([`HistoryStore`]).
-    pub fn new(root: PathBuf, passwords: PathBuf, history: PathBuf) -> Self {
-        let ssh_dir = dirs::home_dir().unwrap_or_default().join(".ssh");
-        Self::with_ssh_files(root, passwords, history, ssh_dir.join("known_hosts"), Some(ssh_dir.join("config")))
-    }
-
-    /// [`DbManager::new`] with other `known_hosts` / `~/.ssh/config` files (tests).
-    pub fn with_ssh_files(
-        root: PathBuf,
-        passwords: PathBuf,
-        history: PathBuf,
-        known_hosts: PathBuf,
-        ssh_config: Option<PathBuf>,
-    ) -> Self {
+    pub fn new(root: PathBuf, passwords: PathBuf, history: PathBuf, ssh: Arc<SshManager>) -> Self {
+        let history = Arc::new(HistoryStore::new(history, &root));
+        let (recorder, statements) = std::sync::mpsc::channel::<(String, String, f64)>();
+        {
+            let history = history.clone();
+            let spawned = std::thread::Builder::new().name("openidea-db-history".into()).spawn(move || {
+                for (source, text, time) in statements {
+                    if let Err(e) = history.add(&source, &text, time) {
+                        tracing::warn!("{}", e.message);
+                    }
+                }
+            });
+            if let Err(e) = spawned {
+                tracing::warn!("query history recorder: {e}");
+            }
+        }
         Self {
             saved_passwords: SecretStore::new(passwords, &root),
-            history: Arc::new(HistoryStore::new(history, &root)),
+            history,
+            recorder,
             root,
             pools: Mutex::default(),
             tunnels: Mutex::default(),
             tunnel_open: tokio::sync::Mutex::new(()),
-            unknown_host_keys: Mutex::default(),
-            known_hosts,
-            ssh_config,
+            ssh,
             session_passwords: Mutex::default(),
             sessions: Mutex::default(),
         }
@@ -397,7 +398,14 @@ impl DbManager {
     }
 
     /// [`DbManager::set_password`] for the SSH password / key passphrase.
+    /// A data source using an SSH configuration sets that configuration's secret.
     pub async fn set_ssh_secret(&self, id: &str, secret: Option<String>, save: bool) -> IdeResult<()> {
+        let config = self.sources()?.into_iter().find(|s| s.id == id).and_then(|s| s.ssh).map(|s| s.config);
+        if let Some(c) = config.filter(|c| !c.trim().is_empty()) {
+            let save = self.ssh.config(&c).map(|c| c.save_secret).unwrap_or(save);
+            self.ssh.set_secret(&c, secret, save);
+            return Ok(());
+        }
         self.remember(secrets::ssh_key(id), secret, save).await
     }
 
@@ -443,10 +451,27 @@ impl DbManager {
 
     /// Trusts the host key that failed the last connection of `id` (adds it to `known_hosts`).
     pub async fn trust_ssh_host(&self, id: &str) -> IdeResult<()> {
-        let key =
-            self.unknown_host_keys.lock().remove(id).ok_or_else(|| IdeError::not_found("no host key to trust"))?;
-        let path = self.known_hosts.clone();
-        tokio::task::spawn_blocking(move || key.trust(&path)).await.map_err(|e| IdeError::internal(e.to_string()))?
+        if self.ssh.trust_host(&self.host_key(id)).await.is_ok() {
+            return Ok(());
+        }
+        let config = self.sources()?.into_iter().find(|s| s.id == id).and_then(|s| s.ssh).map(|s| s.config);
+        match config.filter(|c| !c.trim().is_empty()) {
+            Some(c) => self.ssh.trust_host(&c).await,
+            None => Err(IdeError::not_found("no host key to trust")),
+        }
+    }
+
+    /// Key of the unknown host keys of data source `id`'s own SSH settings.
+    fn host_key(&self, id: &str) -> String {
+        format!("db:{}:{id}", self.root.display())
+    }
+
+    /// How the SSH host of `ssh` is shown in errors.
+    fn ssh_label(&self, ssh: &DbSsh) -> String {
+        match self.ssh.config(ssh.config.trim()) {
+            Ok(c) if !ssh.config.trim().is_empty() => c.label(),
+            _ => ssh.host.clone(),
+        }
     }
 
     /// Opens the SSH tunnel of `source` when it has one, returning the settings to
@@ -470,35 +495,34 @@ impl DbManager {
                 return Ok((local(&t), Some(t)));
             }
         }
-        let secret = match ssh_secret {
-            Some(s) => Some(s),
-            None => self.secret(secrets::ssh_key(&source.id), ssh.save_secret).await,
+        let config = ssh.config.trim();
+        let session = if config.is_empty() {
+            let secret = match ssh_secret {
+                Some(s) => Some(s),
+                None => self.secret(secrets::ssh_key(&source.id), ssh.save_secret).await,
+            };
+            let target = SshTarget {
+                host: ssh.host.clone(),
+                port: ssh.port,
+                user: ssh.user.clone(),
+                auth: ssh.auth,
+                key_file: ssh.key_file.clone(),
+            };
+            Arc::new(self.ssh.connect(&self.host_key(&source.id), &target, secret.as_deref()).await?)
+        } else {
+            if let Some(s) = ssh_secret {
+                let save = self.ssh.config(config)?.save_secret;
+                self.ssh.set_secret(config, Some(s), save);
+            }
+            self.ssh.session(config).await?
         };
         let target_port = source.port.or(source.driver.default_port()).unwrap_or_default();
         let target_host = if source.host.trim().is_empty() { "localhost" } else { source.host.trim() };
-        let spec = TunnelSpec {
-            ssh,
-            secret: secret.as_deref(),
-            target_host,
-            target_port,
-            known_hosts: &self.known_hosts,
-            ssh_config: self.ssh_config.as_deref(),
-        };
-        match Tunnel::open(spec).await {
-            Ok(t) => {
-                let t = Arc::new(t);
-                if shared {
-                    self.tunnels.lock().insert(source.id.clone(), t.clone());
-                }
-                Ok((local(&t), Some(t)))
-            }
-            Err(OpenError::Other(e)) => Err(e),
-            Err(OpenError::UnknownHostKey(k)) => {
-                let message = format!("Unknown SSH host key for {}:{} ({})", k.host, k.port, k.fingerprint());
-                self.unknown_host_keys.lock().insert(source.id.clone(), *k);
-                Err(IdeError::new(ErrorKind::Protocol, message))
-            }
+        let t = Arc::new(Tunnel::open(session, target_host, target_port).await?);
+        if shared {
+            self.tunnels.lock().insert(source.id.clone(), t.clone());
         }
+        Ok((local(&t), Some(t)))
     }
 
     /// Connects with `source` as given (not necessarily saved): Test Connection.
@@ -514,9 +538,13 @@ impl DbManager {
             None => self.password(source).await,
         };
         let (target, tunnel) = self.endpoint(source, ssh_secret, false).await?;
-        let pool = Pool::connect(&target, password.as_deref(), Some(&self.root))
-            .await
-            .map_err(|e| through_tunnel(e, source, tunnel.is_some()))?;
+        let pool = Pool::connect(&target, password.as_deref(), Some(&self.root)).await.map_err(|e| {
+            through_tunnel(
+                e,
+                source,
+                tunnel.is_some().then(|| self.ssh_label(source.ssh.as_ref().expect("tunneled"))).as_deref(),
+            )
+        })?;
         let version = match source.driver {
             DbDriver::Sqlite => "SELECT 'SQLite ' || sqlite_version()",
             DbDriver::Postgres => "SELECT version()",
@@ -553,7 +581,11 @@ impl DbManager {
             Ok(p) => Arc::new(p),
             Err(e) => {
                 self.drop_unused_tunnel(source_id);
-                return Err(through_tunnel(e, &source, tunnel.is_some()));
+                return Err(through_tunnel(
+                    e,
+                    &source,
+                    tunnel.is_some().then(|| self.ssh_label(source.ssh.as_ref().expect("tunneled"))).as_deref(),
+                ));
             }
         };
         // Another caller may have connected meanwhile; keep theirs.
@@ -901,15 +933,10 @@ impl DbManager {
     }
 
     fn remember_statement(&self, id: &str, statement: &str) {
-        let (history, source, text) = (self.history.clone(), split_target(id).0.to_owned(), statement.to_owned());
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = history.add(&source, &text, time) {
-                tracing::warn!("{}", e.message);
-            }
-        });
+        let _ = self.recorder.send((split_target(id).0.to_owned(), statement.to_owned(), time));
     }
 
     /// The query history of data source `id`, newest first.

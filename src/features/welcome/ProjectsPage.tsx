@@ -4,6 +4,8 @@ import clsx from "clsx";
 import { executeAction, useActions } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
+import { useRemoteProgress } from "@/platform/remote";
+import { stageLabel } from "@/features/remote-dev/model";
 import {
   Button,
   HighlightedText,
@@ -23,6 +25,7 @@ import { tx } from "@/platform/i18n";
 
 function HeaderButtons() {
   const canClone = useActions((s) => s.actions.has("vcs.clone"));
+  const canRemote = useActions((s) => s.actions.has("remote.connect"));
   const opening = useProject((s) => s.opening);
   const openKey = shortcutLabel("file.openProject");
   return (
@@ -37,6 +40,11 @@ function HeaderButtons() {
       {canClone && (
         <Button onClick={() => void executeAction("vcs.clone")}>
           <T>Clone Repository</T>
+        </Button>
+      )}
+      {canRemote && (
+        <Button disabled={opening} onClick={() => void executeAction("remote.connect")}>
+          <T>Remote Development</T>
         </Button>
       )}
     </div>
@@ -102,6 +110,11 @@ function ProjectRow({
   onOpen: () => void;
 }) {
   const opening = useRecent((s) => s.opening === m.project.path);
+  // Opening a remote project: which stage of connecting it is at.
+  const progress = useRemoteProgress((s) => (opening ? s.progress : null));
+  const stage = progress
+    ? tx(stageLabel(progress.stage)) + (progress.fraction == null ? "" : ` ${Math.round(progress.fraction * 100)}%`)
+    : null;
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (selected) ref.current?.scrollIntoView?.({ block: "nearest" });
@@ -128,7 +141,13 @@ function ProjectRow({
       <ProjectBadge name={m.project.name} className={styles.projectBadge} />
       <span className={styles.projectText}>
         <HighlightedText className={styles.projectName} text={m.project.name} indices={m.nameMatch} tone="strong" />
-        <HighlightedText className={styles.projectPath} text={m.displayPath} indices={m.pathMatch} />
+        {stage ? (
+          <span className={styles.projectPath} role="status">
+            {stage}
+          </span>
+        ) : (
+          <HighlightedText className={styles.projectPath} text={m.displayPath} indices={m.pathMatch} />
+        )}
         {m.project.branch && (
           <span className={styles.projectBranch}>
             <Icon name="branch" size={14} />

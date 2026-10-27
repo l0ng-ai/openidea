@@ -84,8 +84,13 @@ fn is_name_leaf(kind: &str) -> bool {
 /// `name = …` assignments) rather than a use of one.
 fn declares(cursor: &TreeCursor<'_>, node: &Node<'_>) -> bool {
     let parent = node.parent().map(|p| p.kind()).unwrap_or_default();
+    // Paths and calls name what is declared elsewhere (`use a::b::name`, `a.name()`).
+    let reference = ["scoped", "qualified", "invocation", "member_access", "use_", "import", "call"]
+        .iter()
+        .any(|k| parent.contains(k));
     match cursor.field_name() {
-        Some("name" | "pattern" | "declarator") => true,
+        Some("name") => !reference,
+        Some("pattern" | "declarator") => true,
         Some("left") => parent.contains("assignment") || parent.contains("declarator"),
         _ => parent.contains("parameter"),
     }

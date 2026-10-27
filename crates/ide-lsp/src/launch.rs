@@ -74,7 +74,7 @@ impl Launcher for ProcessLauncher {
         let search = server_search_path(config);
         let binary = which::which_in(&config.command, Some(&search), root)
             .ok()
-            .map(|b| resolve_rustup_proxy(&config.command, b));
+            .and_then(|b| resolve_rustup_proxy(&config.command, b));
         let mut env: Vec<(String, String)> = vec![("PATH".into(), search.to_string_lossy().into_owned())];
         env.extend(config.env.iter().filter(|(k, _)| *k != "PATH").map(|(k, v)| (k.clone(), v.clone())));
         if let Some(addr) = &config.connect {
@@ -109,11 +109,12 @@ fn server_search_path(config: &LanguageServerConfig) -> OsString {
 /// minimal environment.
 /// `~/.cargo/bin/<tool>` is usually a rustup proxy that fails when the active
 /// toolchain lacks the component (common for rust-analyzer). In that case use
-/// the newest installed toolchain that ships the binary.
-fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> PathBuf {
+/// the newest installed toolchain that ships the binary; with none, the tool is
+/// missing (an install hint, not a server that crashes on every restart).
+fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> Option<PathBuf> {
     let is_proxy = binary.parent().is_some_and(|d| d.ends_with(".cargo/bin"));
     if !is_proxy || command.contains('/') {
-        return binary;
+        return Some(binary);
     }
     let works = ide_core::process::no_window(&mut std::process::Command::new(&binary))
         .arg("--version")
@@ -123,7 +124,7 @@ fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> PathBuf {
         .status()
         .is_ok_and(|s| s.success());
     if works {
-        return binary;
+        return Some(binary);
     }
     let toolchains = std::env::var_os("RUSTUP_HOME")
         .map(PathBuf::from)
@@ -143,9 +144,12 @@ fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> PathBuf {
     match candidates.pop() {
         Some((_, path)) => {
             tracing::info!("using {} instead of the rustup proxy", path.display());
-            path
+            Some(path)
         }
-        None => binary,
+        None => {
+            tracing::info!("{} is a rustup proxy without the component", binary.display());
+            None
+        }
     }
 }
 
@@ -286,7 +290,7 @@ mod proxy_tests {
     #[test]
     fn non_proxy_binaries_are_kept() {
         let p = PathBuf::from("/usr/bin/true");
-        assert_eq!(resolve_rustup_proxy("true", p.clone()), p);
+        assert_eq!(resolve_rustup_proxy("true", p.clone()), Some(p));
     }
 
     /// Exercises the real machine setup when a broken rustup proxy is present.
@@ -295,7 +299,7 @@ mod proxy_tests {
     fn broken_rustup_proxy_falls_back_to_a_toolchain() {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap());
         let proxy = home.join(".cargo/bin/rust-analyzer");
-        let resolved = resolve_rustup_proxy("rust-analyzer", proxy.clone());
+        let resolved = resolve_rustup_proxy("rust-analyzer", proxy.clone()).unwrap();
         eprintln!("resolved: {}", resolved.display());
         assert_ne!(resolved, proxy);
     }

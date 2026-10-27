@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { commands, isTauri, type Settings } from "@/platform/ipc";
 import { openProject, startupLaunchHandled, useProject } from "@/platform/project";
+import { connectRemote, parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { notifications } from "@/workbench/contributions";
 
 const SESSION_KEY = "openidea.session.openProject";
@@ -60,14 +61,15 @@ export function reopenEnabled(settings: Settings | null | undefined, pref: boole
 
 /** Keeps the remembered project in sync: set while a project is open, cleared on explicit close. */
 export function trackSession(): () => void {
-  const root = useProject.getState().project?.root;
+  const root = projectLocation(useProject.getState().project?.root);
   if (root) {
     write(SESSION_KEY, root);
     windowProject(root);
   }
   return useProject.subscribe((s, prev) => {
-    const now = s.project?.root ?? null;
-    const before = prev.project?.root ?? null;
+    // A remote project is remembered by its location (`ssh://…`), reopened over SSH.
+    const now = projectLocation(s.project?.root);
+    const before = projectLocation(prev.project?.root);
     if (now === before) return;
     if (now) write(SESSION_KEY, now);
     else if (before && !useSession.getState().reopening) write(SESSION_KEY, null);
@@ -114,7 +116,9 @@ async function reopen(path: string) {
   const name = path.slice(path.lastIndexOf("/") + 1) || path;
   useSession.setState({ reopening: path });
   try {
-    await openProject(path);
+    const remote = parseRemoteLocation(path);
+    if (remote) await connectRemote(remote.sshConfig, remote.path);
+    else await openProject(path);
   } catch (e) {
     write(SESSION_KEY, null);
     windowProject(null);

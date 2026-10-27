@@ -19,6 +19,14 @@ pub fn set_git_executable(path: Option<&Path>) {
     }
 }
 
+/// Environment that routes credential prompts (`ssh` passphrases and host keys,
+/// HTTPS user names and passwords) to the UI; empty = prompts fail.
+static ASKPASS: std::sync::RwLock<Vec<(String, String)>> = std::sync::RwLock::new(Vec::new());
+
+pub fn set_askpass_env(env: Vec<(String, String)>) {
+    *ASKPASS.write().unwrap_or_else(|e| e.into_inner()) = env;
+}
+
 /// Locates the auto-detected git executable once per process.
 ///
 /// GUI apps on macOS start with a minimal `PATH`, so a few well-known install
@@ -95,6 +103,9 @@ pub(crate) fn command(root: &Path) -> IdeResult<Command> {
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE");
+    for (k, v) in ASKPASS.read().unwrap_or_else(|e| e.into_inner()).iter() {
+        cmd.env(k, v);
+    }
     ide_core::process::no_window(&mut cmd);
     Ok(cmd)
 }

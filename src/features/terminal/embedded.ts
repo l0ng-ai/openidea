@@ -11,7 +11,7 @@ import type { EmbeddedTerminal, EmbeddedTerminalOptions } from "@/workbench/cont
 import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { findTerminalLinks } from "./links";
-import { fontFor, openExternal, openFileLink } from "./session";
+import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
 import { readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
 
 const live = new Set<Terminal>();
@@ -26,6 +26,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const settings = workflowSettings().terminal;
   const font = fontFor(settings);
   const term = new Terminal({
+    linkHandler: LINK_HANDLER,
     fontFamily: font.family,
     fontSize: font.size,
     lineHeight: font.lineHeight,

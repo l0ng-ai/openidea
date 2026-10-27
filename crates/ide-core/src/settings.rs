@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 pub use crate::editor_settings::*;
 pub use crate::inspection_settings::*;
+pub use crate::remote_settings::*;
 pub use crate::workflow_settings::*;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -48,6 +49,12 @@ pub struct Settings {
     pub inspections: InspectionSettings,
     /// Editor › Natural Languages › Spelling.
     pub spelling: SpellingSettings,
+    /// Tools › SSH Configurations.
+    pub ssh: SshSettings,
+    /// Build, Execution, Deployment › Deployment.
+    pub deployment: DeploymentSettings,
+    /// Build, Execution, Deployment › Run Targets.
+    pub run_targets: Vec<RunTarget>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -140,6 +147,9 @@ impl Default for Settings {
             language_servers: BTreeMap::new(),
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
+            ssh: SshSettings::default(),
+            deployment: DeploymentSettings::default(),
+            run_targets: Vec::new(),
         }
     }
 }

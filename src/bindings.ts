@@ -805,6 +805,70 @@ export const commands = {
 	 *  "Unknown SSH host key" (records it in `~/.ssh/known_hosts`).
 	 */
 	dbTrustSshHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_trust_ssh_host", { id })),
+	/**  Test Connection: connects with `config` as edited (not necessarily saved). */
+	sshTest: (config: SshConfiguration, secret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("ssh_test", { config, secret })),
+	/**  Remembers the password / passphrase of configuration `id` (`None` forgets it). */
+	sshSetSecret: (id: string, secret: string | null, save: boolean) => __TAURI_INVOKE<void>("ssh_set_secret", { id, secret, save }),
+	/**  Whether connecting with configuration `id` needs a password first. */
+	sshNeedsSecret: (id: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("ssh_needs_secret", { id })),
+	/**  Trusts the host key that failed the last connection of configuration `id`. */
+	sshTrustHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("ssh_trust_host", { id })),
+	/**  Ids of the configurations with an open connection. */
+	sshConnected: () => __TAURI_INVOKE<string[]>("ssh_connected"),
+	sshDisconnect: (id: string) => __TAURI_INVOKE<void>("ssh_disconnect", { id }),
+	/**  Answers an `IdeEvent::Askpass` prompt (`None`: cancelled); every window drops it. */
+	sshAskpassAnswer: (id: number, answer: string | null) => __TAURI_INVOKE<void>("ssh_askpass_answer", { id, answer }),
+	/**
+	 *  Tools › Start SSH Session: the system `ssh` command line for configuration `id`
+	 *  (run in a terminal tab, so prompts and host-key questions are answered there).
+	 */
+	sshTerminalCommand: (id: string) => typedError<SshTerminalCommand, IdeError>(__TAURI_INVOKE("ssh_terminal_command", { id })),
+	/**  Tools › Deployment › Upload to…: files and folders to `server` (default server when `None`). */
+	deployUpload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_upload", { paths, server, request })),
+	/**  Download from…: the remote counterparts of files and folders. */
+	deployDownload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_download", { paths, server, request })),
+	/**  Deletes the remote counterparts of files and folders. */
+	deployDeleteRemote: (paths: IpcPath[], server: string | null) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_delete_remote", { paths, server })),
+	/**  Sync with Deployed: local and remote files under `path`, side by side. */
+	deployCompare: (path: IpcPath, server: string | null, request: RequestId) => typedError<SyncEntry[], IdeError>(__TAURI_INVOKE("deploy_compare", { path, server, request })),
+	/**  Applies the Sync with Deployed choices. */
+	deploySync: (steps: SyncStep[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_sync", { steps, server, request })),
+	/**  Where `path` is deployed (remote path, web URL); `None` when not mapped. */
+	deployInfo: (path: IpcPath, server: string | null) => typedError<{
+	server: string,
+	remotePath: string,
+	webUrl: string | null,
+} | null, IdeError>(__TAURI_INVOKE("deploy_info", { path, server })),
+	/**  Remote Host tool window: the server root of `server`, resolved on the host. */
+	deployServerRoot: (server: string) => typedError<string, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
+	/**  Entries of a remote folder of SSH configuration `ssh` (`~`: the login directory). */
+	remoteList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_list", { ssh, path })),
+	/**  Opens a remote file for editing: a local copy, uploaded back on save. */
+	remoteOpen: (ssh: string, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { ssh, path })),
+	/**  The remote file a local copy stands for: (SSH configuration id, remote path). */
+	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[string, string] | null>("remote_of", { path }),
+	remoteDelete: (ssh: string, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { ssh, path })),
+	remoteMkdir: (ssh: string, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_mkdir", { ssh, path })),
+	remoteRename: (ssh: string, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { ssh, from, to })),
+	/**
+	 *  File › Remote Development: opens `path` on the host of SSH configuration
+	 *  `ssh_config` in this window (installs / starts the server as needed).
+	 */
+	remoteConnect: (sshConfig: string, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { sshConfig, path, onProgress })),
+	/**  The remote session of this window (a settings window: its parent's), if any. */
+	remoteCurrent: () => __TAURI_INVOKE<{
+	sshConfig: string,
+	root: string,
+	host: string,
+	commands: string[],
+} | null>("remote_current"),
+	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
+	/**
+	 *  Runs a command on the window's remote server; `args` and the result are JSON
+	 *  text. Streaming arguments are `{ "$channel": id }`; their values arrive on
+	 *  `on_channel` tagged with the id.
+	 */
+	remoteInvoke: (cmd: string, args: string, onChannel: Channel<ChannelFrame>) => typedError<string, IdeError>(__TAURI_INVOKE("remote_invoke", { cmd, args, onChannel })),
 	/**  Test Connection: connects with unsaved settings and returns the server version. */
 	dbTest: (source: DataSource, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
@@ -1127,6 +1191,15 @@ export type ArtifactKey = {
 	artifactId: string,
 };
 
+/**  What an askpass prompt asks for. */
+export type AskpassKind = 
+/**  Password or passphrase: hidden input. */
+"secret" | 
+/**  User name: visible input. */
+"text" | 
+/**  Yes / no (an unknown host key); answered with `yes` or `no`. */
+"confirm";
+
 export type AttachKind = "java" | "node" | "python" | "go" | "native";
 
 export type AttachableProcess = {
@@ -1147,6 +1220,13 @@ export type AutoImportSettings = {
 	addUnambiguous?: boolean,
 	optimizeOnTheFly?: boolean,
 };
+
+/**  When local changes are uploaded to the default deployment server. */
+export type AutoUpload = "never" | 
+/**  Files saved with Save / Save All (⌘S). */
+"onExplicitSave" | 
+/**  Every save, including autosave and external changes. */
+"always";
 
 /**  A step run before a configuration launches; a failing step aborts the launch. */
 export type BeforeLaunchTask = {
@@ -1338,6 +1418,12 @@ export type ChangelistState = {
 	active: string,
 	/**  Project-relative path → list id. Files not listed belong to the active list. */
 	files?: { [key in string]: string },
+};
+
+/**  A value for one streaming argument of a remote command (`data`: JSON text). */
+export type ChannelFrame = {
+	id: number,
+	data: string,
 };
 
 export type CheckStatus = "pending" | "success" | "failure" | "cancelled" | "skipped" | "neutral";
@@ -1912,23 +1998,18 @@ export type DbSortKey = {
 /**  Connect through an SSH tunnel: the database host and port are reached from `host`. */
 export type DbSsh = {
 	enabled?: boolean,
+	/**  A Settings › SSH Configurations id to connect with; empty = the fields below. */
+	config?: string,
 	/**  Host name, or a `Host` alias of `~/.ssh/config` with [`DbSshAuth::OpenSsh`]. */
 	host?: string,
 	port?: number | null,
 	user?: string,
-	auth?: DbSshAuth,
+	auth?: SshAuth,
 	/**  Private key for [`DbSshAuth::KeyPair`]; `~/` is the home directory. */
 	keyFile?: string,
 	/**  Keep the SSH password / key passphrase in the saved passwords. */
 	saveSecret?: boolean,
 };
-
-/**  How the SSH tunnel authenticates (IDEA's SSH configuration "Authentication type"). */
-export type DbSshAuth = "password" | 
-/**  A private key file, optionally protected by a passphrase. */
-"keyPair" | 
-/**  `~/.ssh/config` (HostName, User, Port, IdentityFile, ProxyJump) and the SSH agent. */
-"openSsh";
 
 export type DbSslMode = "disable" | "prefer" | "require" | 
 /**  Require, and check the server certificate against the CA file. */
@@ -2026,6 +2107,51 @@ export type DeletedBranch = {
 	upstream: string | null,
 	/**  It was not fully merged: its own commits are now unreachable from any branch. */
 	unmerged: boolean,
+};
+
+/**  Where a local file is deployed. */
+export type DeployedPath = {
+	server: string,
+	remotePath: string,
+	webUrl: string | null,
+};
+
+export type DeploymentMapping = {
+	/**  Project-relative folder; empty = the project root. */
+	local?: string,
+	/**  Remote folder, relative to the server root (a leading `/` is the root too). */
+	deployment?: string,
+	/**  Web path, relative to the server's URL. */
+	web?: string,
+};
+
+/**  An SFTP server and how project folders map onto it. */
+export type DeploymentServer = {
+	id?: string,
+	name?: string,
+	/**  [`SshConfiguration::id`]. */
+	sshConfig?: string,
+	/**  Absolute remote folder the mappings are relative to; empty = the login directory. */
+	rootPath?: string,
+	/**  Web server URL of the root (Open in Browser on the deployed file). */
+	webUrl?: string,
+	mappings?: DeploymentMapping[],
+	/**  Remote paths (relative to the root) never touched. */
+	excludedPaths?: string[],
+};
+
+/**  Build, Execution, Deployment › Deployment (and its Options page). */
+export type DeploymentSettings = {
+	servers?: DeploymentServer[],
+	/**  Server used by Upload / Download / Sync and automatic upload; empty = none. */
+	defaultServer?: string,
+	autoUpload?: AutoUpload,
+	/**  Delete remote files when their local file is deleted (automatic upload). */
+	deleteRemote?: boolean,
+	/**  Keep local modification times on uploaded files. */
+	preserveTimestamps?: boolean,
+	/**  File names never uploaded or downloaded (`*` and `?` wildcards; `;`-separated in the UI). */
+	exclude?: string[],
 };
 
 export type Diagnostic = {
@@ -2616,6 +2742,11 @@ export type FileSettings = {
 	fileTypeOverrides?: { [key in string]: string },
 };
 
+export type FileStamp = {
+	size: number,
+	mtime: number | null,
+};
+
 export type FileStatus = {
 	path: IpcPath,
 	relPath: string,
@@ -2961,7 +3092,11 @@ export type IdeEvent =
  *  The project's source / test / resource / excluded roots changed (build files
  *  changed or folders were marked); the UI re-reads them with `project_roots`.
  */
-{ type: "projectRootsChanged"; root: IpcPath };
+{ type: "projectRootsChanged"; root: IpcPath } | 
+/**  A child process (`ssh`, `git`) asks for a credential; answered with `ssh_askpass_answer`. */
+{ type: "askpass"; id: number; prompt: string; kind: AskpassKind } | 
+/**  Prompt `id` was answered (in any window) or gave up. */
+{ type: "askpassDone"; id: number };
 
 /**  An identifier-like token whose text equals the searched name. */
 export type IdentifierOccurrence = {
@@ -4306,6 +4441,20 @@ export type RemoteEdit = { op: "add"; name: string; url: string } | { op: "remov
 /**  Renames `name` to `new_name` (when different) and sets its URL. */
 { op: "edit"; name: string; new_name: string; url: string };
 
+/**  A remote directory entry. */
+export type RemoteEntry = {
+	name: string,
+	/**  Absolute remote path. */
+	path: string,
+	isDir: boolean,
+	isSymlink: boolean,
+	size: number,
+	/**  Seconds since the Unix epoch. */
+	mtime: number | null,
+	/**  `rwxr-xr-x`. */
+	permissions: string,
+};
+
 export type RemoteOp = { op: "fetch" } | { op: "pull"; rebase: boolean } | { op: "push"; force_with_lease: boolean; set_upstream: boolean; 
 /**  Push dialog › Push tags. */
 tags?: PushTags | null } | 
@@ -4320,6 +4469,47 @@ tags?: PushTags | null } |
 { op: "updateBranch"; branch: string } | 
 /**  Pull dialog: `branches` of `remote` (none = the configured merge branch). */
 { op: "pullFrom"; remote: string; branches: string[]; rebase: boolean; options: MergeOptions };
+
+export type RemoteProgress = {
+	stage: RemoteStage,
+	fraction: number | null,
+};
+
+export type RemoteProject = RemoteProject_Serialize | RemoteProject_Deserialize;
+
+export type RemoteProject_Deserialize = {
+	sshConfig: string,
+	root: string,
+	/**  `user@host:port` of the SSH configuration. */
+	host: string,
+	serverVersion: string,
+	os: string,
+	/**  Commands the server answers (the rest run locally). */
+	commands: string[],
+	project: ProjectInfo_Deserialize,
+};
+
+export type RemoteProject_Serialize = {
+	sshConfig: string,
+	root: string,
+	/**  `user@host:port` of the SSH configuration. */
+	host: string,
+	serverVersion: string,
+	os: string,
+	/**  Commands the server answers (the rest run locally). */
+	commands: string[],
+	project: ProjectInfo_Serialize,
+};
+
+export type RemoteSession = {
+	sshConfig: string,
+	root: string,
+	host: string,
+	commands: string[],
+};
+
+/**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
+export type RemoteStage = "connecting" | "checking" | "downloading" | "uploading" | "starting" | "opening";
 
 export type ReplaceEvent = 
 /**  A file was changed (`replacements` > 0) or had nothing left to replace. */
@@ -4452,6 +4642,8 @@ export type RunExtras_Deserialize = {
 	 *  with the run's working directory and environment.
 	 */
 	stopCommand?: string | null,
+	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
+	target?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -4487,6 +4679,8 @@ export type RunExtras_Serialize = {
 	 *  with the run's working directory and environment.
 	 */
 	stopCommand?: string | null,
+	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
+	target?: string | null,
 };
 
 /**  A process started from a run configuration. */
@@ -4510,6 +4704,22 @@ export type RunSettings = {
 	showOnStart?: boolean,
 	/**  Grace period between interrupt and kill when stopping a process. */
 	terminationTimeoutMs?: number,
+};
+
+/**  Build, Execution, Deployment › Run Targets: run configurations on another machine. */
+export type RunTarget = {
+	id?: string,
+	name?: string,
+	/**  [`SshConfiguration::id`]. */
+	sshConfig?: string,
+	/**  Remote folder the project is synchronised to and run from. */
+	projectRoot?: string,
+	/**  Upload changed project files before each run. */
+	syncBeforeRun?: boolean,
+	/**  Interpreters on the target; empty = the one on the remote `PATH`. */
+	python?: string,
+	node?: string,
+	java?: string,
 };
 
 export type RustSettings = {
@@ -4716,6 +4926,12 @@ export type Settings_Deserialize = {
 	inspections?: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
 	spelling?: SpellingSettings,
+	/**  Tools › SSH Configurations. */
+	ssh?: SshSettings,
+	/**  Build, Execution, Deployment › Deployment. */
+	deployment?: DeploymentSettings,
+	/**  Build, Execution, Deployment › Run Targets. */
+	runTargets?: RunTarget[],
 };
 
 export type Settings_Serialize = {
@@ -4763,6 +4979,12 @@ export type Settings_Serialize = {
 	inspections: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
 	spelling: SpellingSettings,
+	/**  Tools › SSH Configurations. */
+	ssh: SshSettings,
+	/**  Build, Execution, Deployment › Deployment. */
+	deployment: DeploymentSettings,
+	/**  Build, Execution, Deployment › Run Targets. */
+	runTargets: RunTarget[],
 };
 
 export type Severity = "error" | "warning" | "info" | "hint";
@@ -4845,6 +5067,39 @@ export type SqlStatement = {
 	from: number,
 	to: number,
 	text: string,
+};
+
+/**  How an SSH connection authenticates. */
+export type SshAuth = "password" | 
+/**  A private key file, optionally protected by a passphrase. */
+"keyPair" | 
+/**  `~/.ssh/config` (HostName, User, Port, IdentityFile, ProxyJump) and the SSH agent. */
+"openSsh";
+
+/**  A named SSH host, shared by terminals, deployment, run targets and data sources. */
+export type SshConfiguration = {
+	id?: string,
+	name?: string,
+	/**  Host name, or a `Host` alias of `~/.ssh/config` with [`SshAuth::OpenSsh`]. */
+	host?: string,
+	port?: number | null,
+	user?: string,
+	auth?: SshAuth,
+	/**  Private key for [`SshAuth::KeyPair`]; `~/` is the home directory. */
+	keyFile?: string,
+	/**  Keep the password / key passphrase in the saved passwords. */
+	saveSecret?: boolean,
+};
+
+/**  Tools › SSH Configurations. */
+export type SshSettings = {
+	configs?: SshConfiguration[],
+};
+
+export type SshTerminalCommand = {
+	shell: string,
+	args: string[],
+	title: string,
 };
 
 export type StackFrame = {
@@ -4973,10 +5228,32 @@ export type SymbolMatch = {
 	indices: number[],
 };
 
+export type SyncAction = "upload" | "download" | "deleteRemote" | "deleteLocal";
+
+/**  One file of Sync with Deployed. */
+export type SyncEntry = {
+	/**  Project-relative, `/`-separated. */
+	path: string,
+	remotePath: string,
+	local: FileStamp | null,
+	remote: FileStamp | null,
+	status: SyncStatus,
+};
+
 export type SyncProgress = {
 	message: string,
 	/**  0..1, or `None` when indeterminate. */
 	fraction: number | null,
+};
+
+export type SyncStatus = "localOnly" | "remoteOnly" | "localNewer" | "remoteNewer" | 
+/**  Same time, different size. */
+"different" | "same";
+
+export type SyncStep = {
+	/**  Project-relative, `/`-separated. */
+	path: string,
+	action: SyncAction,
 };
 
 /**  Counters for diagnostics (`app_metrics`). */
@@ -5219,6 +5496,18 @@ export type ToolStatus =
 "onPath" | 
 /**  The executable chosen in settings. */
 "custom" | "missing";
+
+export type TransferError = {
+	path: string,
+	message: string,
+};
+
+export type TransferReport = {
+	files: number,
+	/**  Files left alone: excluded, or outside every mapping. */
+	skipped: number,
+	errors: TransferError[],
+};
 
 export type TypeScriptSettings = {
 	/**

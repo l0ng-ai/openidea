@@ -28,6 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
+blake3.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 dirs.workspace = true
@@ -57,6 +58,10 @@ ide-agent.workspace = true
 ide-db.workspace = true
 ide-web.workspace = true
 ide-spell.workspace = true
+ide-ssh.workspace = true
+ide-remote.workspace = true
+ide-host.workspace = true
+ide-jsonrpc.workspace = true
 ide-tools = { path = "../crates/ide-tools" }
 ide-plugin = { path = "../crates/ide-plugin" }
 ide-docker = { path = "../crates/ide-docker" }

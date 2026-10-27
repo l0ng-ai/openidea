@@ -3,6 +3,8 @@ import { create } from "zustand";
 import { executeAction, getAction } from "@/platform/actions";
 import { commands, IpcError, isTauri, type RecentProject } from "@/platform/ipc";
 import { openProject, useProject } from "@/platform/project";
+import { connectRemote, forgetRemote, parseRemoteLocation, recentRemotes, remoteLocation } from "@/platform/remote";
+import { tx } from "@/platform/i18n";
 import { fuzzyMatch } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 
@@ -24,7 +26,12 @@ export const useRecent = create<RecentState>(() => ({
 }));
 
 const SAMPLE: RecentProject[] = [
-  { path: "/Users/dev/dev/acme-api", name: "acme-api", openedAtMs: Date.now() - 3_600_000, branch: "feature/order-paging" },
+  {
+    path: "/Users/dev/dev/acme-api",
+    name: "acme-api",
+    openedAtMs: Date.now() - 3_600_000,
+    branch: "feature/order-paging",
+  },
   { path: "/Users/dev/dev/openidea", name: "openidea", openedAtMs: Date.now() - 86_400_000, branch: "main" },
   { path: "/Users/dev/oss/tokio", name: "tokio", openedAtMs: Date.now() - 5 * 86_400_000, branch: "master" },
   { path: "/Users/dev/scratch/py-notes", name: "py-notes", openedAtMs: null, branch: null },
@@ -38,20 +45,43 @@ export async function loadRecent() {
   const [projects, info, home] = await Promise.all([
     commands.recentProjects().catch(() => [] as RecentProject[]),
     commands.appInfo().catch(() => null),
-    import("@tauri-apps/api/path")
-      .then((m) => m.homeDir())
-      .catch(() => null),
+    import("@tauri-apps/api/path").then((m) => m.homeDir()).catch(() => null),
   ]);
   useRecent.setState({
-    projects,
+    projects: withRemotes(projects),
     loaded: true,
     version: info?.version ?? useRecent.getState().version,
     home: home ? home.replace(/\/+$/, "") : useRecent.getState().home,
   });
 }
 
+/** The recent remote projects (Remote Development) among the local ones, most recent first. */
+function withRemotes(local: RecentProject[]): RecentProject[] {
+  const remote: RecentProject[] = recentRemotes().map((r) => ({
+    path: remoteLocation(r.sshConfig, r.path),
+    name: r.name,
+    openedAtMs: r.openedAtMs,
+    branch: null,
+  }));
+  if (remote.length === 0) return local;
+  return [...local, ...remote].sort((a, b) => (b.openedAtMs ?? 0) - (a.openedAtMs ?? 0));
+}
+
+/** `host:path` of a remote project location, else `null`. */
+export function remoteDisplay(location: string): string | null {
+  const r = parseRemoteLocation(location);
+  if (!r) return null;
+  const host = recentRemotes().find((x) => x.sshConfig === r.sshConfig && x.path === r.path)?.host || r.sshConfig;
+  return `${host}:${r.path}`;
+}
+
 export async function removeRecent(path: string) {
   useRecent.setState((s) => ({ projects: s.projects.filter((p) => p.path !== path) }));
+  const remote = parseRemoteLocation(path);
+  if (remote) {
+    forgetRemote(remote.sshConfig, remote.path);
+    return;
+  }
   if (!isTauri()) return;
   const r = await commands.removeRecentProject(path);
   if (r.status === "error")
@@ -68,6 +98,8 @@ export async function openRecent(project: Pick<RecentProject, "path" | "name">):
     });
     return false;
   }
+  const remote = parseRemoteLocation(project.path);
+  if (remote) return openRemote(project, remote);
   const current = useProject.getState().project;
   if (current?.root === project.path) return true;
   // With a project open, the app feature applies "Open project in" (new / this window / ask).
@@ -86,6 +118,28 @@ export async function openRecent(project: Pick<RecentProject, "path" | "name">):
       level: "error",
       title: missing ? `Project folder not found: ${project.name}` : `Cannot open ${project.name}`,
       body: missing ? project.path : message,
+      key: `welcome.open:${project.path}`,
+      actions: [{ label: "Remove from Recent Projects", run: () => void removeRecent(project.path) }],
+    });
+    return false;
+  } finally {
+    useRecent.setState({ opening: null });
+  }
+}
+
+async function openRemote(
+  project: Pick<RecentProject, "path" | "name">,
+  remote: { sshConfig: string; path: string },
+): Promise<boolean> {
+  useRecent.setState({ opening: project.path });
+  try {
+    await connectRemote(remote.sshConfig, remote.path);
+    return true;
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: tx`Cannot open ${project.name}`,
+      body: e instanceof Error ? e.message : String(e),
       key: `welcome.open:${project.path}`,
       actions: [{ label: "Remove from Recent Projects", run: () => void removeRecent(project.path) }],
     });
@@ -125,7 +179,7 @@ export function filterRecent(projects: readonly RecentProject[], query: string, 
     project,
     nameMatch: null as number[] | null,
     pathMatch: null as number[] | null,
-    displayPath: tildify(project.path, home),
+    displayPath: remoteDisplay(project.path) ?? tildify(project.path, home),
   }));
   if (!q) return all;
   const byName: RecentMatch[] = [];

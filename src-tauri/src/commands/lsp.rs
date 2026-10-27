@@ -1,13 +1,11 @@
-use crate::state::{AppState, apply_workspace_edit as apply_edit};
+//! IPC commands of `ide_host::ops::lsp` (the shared implementation).
+
+use crate::state::AppState;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
+#[allow(unused_imports)]
+pub use ide_host::ops::lsp::*;
 use ide_lsp::types::*;
 use tauri::{State, Window};
-
-macro_rules! project {
-    ($window:expr, $state:expr) => {
-        $state.project($window.label())?
-    };
-}
 
 #[tauri::command]
 #[specta::specta]
@@ -19,11 +17,7 @@ pub async fn lsp_completion(
     pos: Pos,
     trigger: Option<String>,
 ) -> IdeResult<CompletionList> {
-    let lsp = project!(window, state).lsp.clone();
-    let cancel = state.begin_request(request);
-    let result = lsp.completion(doc, pos, trigger, cancel).await;
-    state.end_request(request);
-    result
+    ide_host::ops::lsp::lsp_completion(&state.host, window.label(), request, doc, pos, trigger).await
 }
 
 /// Inline (ghost text) suggestions at `pos`; `automatic` when triggered by typing.
@@ -37,11 +31,7 @@ pub async fn lsp_inline_completion(
     pos: Pos,
     automatic: bool,
 ) -> IdeResult<Vec<InlineCompletionItem>> {
-    let lsp = project!(window, state).lsp.clone();
-    let cancel = state.begin_request(request);
-    let result = lsp.inline_completion(doc, pos, automatic, cancel).await;
-    state.end_request(request);
-    result
+    ide_host::ops::lsp::lsp_inline_completion(&state.host, window.label(), request, doc, pos, automatic).await
 }
 
 #[tauri::command]
@@ -52,7 +42,7 @@ pub async fn lsp_resolve_completion(
     doc: DocId,
     item: CompletionItem,
 ) -> IdeResult<CompletionItem> {
-    project!(window, state).lsp.resolve_completion(doc, item).await
+    ide_host::ops::lsp::lsp_resolve_completion(&state.host, window.label(), doc, item).await
 }
 
 #[tauri::command]
@@ -64,11 +54,7 @@ pub async fn lsp_hover(
     doc: DocId,
     pos: Pos,
 ) -> IdeResult<Option<Hover>> {
-    let lsp = project!(window, state).lsp.clone();
-    let cancel = state.begin_request(request);
-    let result = lsp.hover(doc, pos, cancel).await;
-    state.end_request(request);
-    result
+    ide_host::ops::lsp::lsp_hover(&state.host, window.label(), request, doc, pos).await
 }
 
 #[tauri::command]
@@ -79,7 +65,7 @@ pub async fn lsp_signature_help(
     doc: DocId,
     pos: Pos,
 ) -> IdeResult<Option<SignatureHelp>> {
-    project!(window, state).lsp.signature_help(doc, pos).await
+    ide_host::ops::lsp::lsp_signature_help(&state.host, window.label(), doc, pos).await
 }
 
 #[tauri::command]
@@ -91,7 +77,7 @@ pub async fn lsp_goto(
     pos: Pos,
     kind: GotoKind,
 ) -> IdeResult<Vec<Location>> {
-    project!(window, state).lsp.goto(doc, pos, kind).await
+    ide_host::ops::lsp::lsp_goto(&state.host, window.label(), doc, pos, kind).await
 }
 
 /// Implementations of the symbols at `positions`, one list per position (the
@@ -106,11 +92,7 @@ pub async fn lsp_implementations(
     doc: DocId,
     positions: Vec<Pos>,
 ) -> IdeResult<Vec<Vec<Location>>> {
-    let lsp = project!(window, state).lsp.clone();
-    let cancel = state.begin_request(request);
-    let result = lsp.implementations(doc, &positions, cancel).await;
-    state.end_request(request);
-    result
+    ide_host::ops::lsp::lsp_implementations(&state.host, window.label(), request, doc, positions).await
 }
 
 /// Contents of a virtual document (library class, decompiled code) that a
@@ -122,7 +104,7 @@ pub async fn lsp_virtual_document(
     state: State<'_, AppState>,
     uri: String,
 ) -> IdeResult<VirtualDocument> {
-    project!(window, state).lsp.virtual_document(&uri).await
+    ide_host::ops::lsp::lsp_virtual_document(&state.host, window.label(), uri).await
 }
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
@@ -139,11 +121,16 @@ pub async fn lsp_references(
     include_declaration: bool,
     project_wide: bool,
 ) -> IdeResult<References> {
-    let lsp = project!(window, state).lsp.clone();
-    let cancel = state.begin_request(request);
-    let result = lsp.references(doc, pos, include_declaration, project_wide, cancel).await;
-    state.end_request(request);
-    result
+    ide_host::ops::lsp::lsp_references(
+        &state.host,
+        window.label(),
+        request,
+        doc,
+        pos,
+        include_declaration,
+        project_wide,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -154,7 +141,7 @@ pub async fn lsp_document_highlights(
     doc: DocId,
     pos: Pos,
 ) -> IdeResult<Vec<Highlight>> {
-    project!(window, state).lsp.document_highlights(doc, pos).await
+    ide_host::ops::lsp::lsp_document_highlights(&state.host, window.label(), doc, pos).await
 }
 
 #[tauri::command]
@@ -165,11 +152,7 @@ pub async fn lsp_workspace_symbols(
     request: RequestId,
     query: String,
 ) -> IdeResult<Vec<WorkspaceSymbol>> {
-    let lsp = project!(window, state).lsp.clone();
-    let cancel = state.begin_request(request);
-    let result = lsp.workspace_symbols(&query, cancel).await;
-    state.end_request(request);
-    result
+    ide_host::ops::lsp::lsp_workspace_symbols(&state.host, window.label(), request, query).await
 }
 
 #[tauri::command]
@@ -181,7 +164,7 @@ pub async fn lsp_code_actions(
     range: Range,
     only: Vec<String>,
 ) -> IdeResult<Vec<CodeAction>> {
-    project!(window, state).lsp.code_actions(doc, range, only).await
+    ide_host::ops::lsp::lsp_code_actions(&state.host, window.label(), doc, range, only).await
 }
 
 /// Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability).
@@ -195,11 +178,7 @@ pub async fn lsp_code_action_query(
     range: Range,
     only: Vec<String>,
 ) -> IdeResult<CodeActionQuery> {
-    let lsp = project!(window, state).lsp.clone();
-    let cancel = state.begin_request(request);
-    let result = lsp.code_action_query(doc, range, only, cancel).await;
-    state.end_request(request);
-    result
+    ide_host::ops::lsp::lsp_code_action_query(&state.host, window.label(), request, doc, range, only).await
 }
 
 /// Resolves a code action's edit without applying it (intention preview).
@@ -211,10 +190,7 @@ pub async fn lsp_resolve_code_action(
     doc: DocId,
     action: CodeAction,
 ) -> IdeResult<CodeAction> {
-    if action.edit.is_some() {
-        return Ok(action);
-    }
-    project!(window, state).lsp.resolve_code_action(doc, action).await
+    ide_host::ops::lsp::lsp_resolve_code_action(&state.host, window.label(), doc, action).await
 }
 
 /// Resolves (if needed), applies the edit, then runs the command of a code action.
@@ -226,19 +202,7 @@ pub async fn lsp_apply_code_action(
     doc: DocId,
     action: CodeAction,
 ) -> IdeResult<()> {
-    let project = project!(window, state);
-    let action = if action.edit.is_none() && action.command.is_none() {
-        project.lsp.resolve_code_action(doc, action).await?
-    } else {
-        action
-    };
-    if let Some(edit) = &action.edit {
-        apply_edit(&project.documents, edit)?;
-    }
-    if let Some(command) = action.command {
-        project.lsp.execute_command(doc, command).await?;
-    }
-    Ok(())
+    ide_host::ops::lsp::lsp_apply_code_action(&state.host, window.label(), doc, action).await
 }
 
 #[tauri::command]
@@ -249,7 +213,7 @@ pub async fn lsp_prepare_rename(
     doc: DocId,
     pos: Pos,
 ) -> IdeResult<Option<Range>> {
-    project!(window, state).lsp.prepare_rename(doc, pos).await
+    ide_host::ops::lsp::lsp_prepare_rename(&state.host, window.label(), doc, pos).await
 }
 
 /// Computes the rename edit without applying it, so the UI can preview conflicts.
@@ -262,7 +226,7 @@ pub async fn lsp_rename(
     pos: Pos,
     new_name: String,
 ) -> IdeResult<WorkspaceEdit> {
-    project!(window, state).lsp.rename(doc, pos, new_name).await
+    ide_host::ops::lsp::lsp_rename(&state.host, window.label(), doc, pos, new_name).await
 }
 
 #[tauri::command]
@@ -274,7 +238,7 @@ pub async fn lsp_format(
     range: Option<Range>,
     options: FormatOptions,
 ) -> IdeResult<Vec<TextEdit>> {
-    project!(window, state).lsp.format(doc, range, options).await
+    ide_host::ops::lsp::lsp_format(&state.host, window.label(), doc, range, options).await
 }
 
 #[tauri::command]
@@ -285,7 +249,7 @@ pub async fn lsp_inlay_hints(
     doc: DocId,
     range: Range,
 ) -> IdeResult<Vec<InlayHint>> {
-    project!(window, state).lsp.inlay_hints(doc, range).await
+    ide_host::ops::lsp::lsp_inlay_hints(&state.host, window.label(), doc, range).await
 }
 
 #[tauri::command]
@@ -295,13 +259,13 @@ pub async fn lsp_semantic_tokens(
     state: State<'_, AppState>,
     doc: DocId,
 ) -> IdeResult<Option<SemanticTokens>> {
-    project!(window, state).lsp.semantic_tokens(doc).await
+    ide_host::ops::lsp::lsp_semantic_tokens(&state.host, window.label(), doc).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn lsp_code_lens(window: Window, state: State<'_, AppState>, doc: DocId) -> IdeResult<Vec<CodeLens>> {
-    project!(window, state).lsp.code_lens(doc).await
+    ide_host::ops::lsp::lsp_code_lens(&state.host, window.label(), doc).await
 }
 
 /// Links in a document (`href`s, Markdown links, `#include`s…) from its language servers.
@@ -312,7 +276,7 @@ pub async fn lsp_document_links(
     state: State<'_, AppState>,
     doc: DocId,
 ) -> IdeResult<Vec<DocumentLink>> {
-    project!(window, state).lsp.document_links(doc).await
+    ide_host::ops::lsp::lsp_document_links(&state.host, window.label(), doc).await
 }
 
 #[tauri::command]
@@ -324,7 +288,7 @@ pub async fn lsp_call_hierarchy(
     pos: Pos,
     direction: HierarchyDirection,
 ) -> IdeResult<Vec<HierarchyItem>> {
-    project!(window, state).lsp.call_hierarchy(doc, pos, direction).await
+    ide_host::ops::lsp::lsp_call_hierarchy(&state.host, window.label(), doc, pos, direction).await
 }
 
 #[tauri::command]
@@ -336,39 +300,26 @@ pub async fn lsp_type_hierarchy(
     pos: Pos,
     direction: HierarchyDirection,
 ) -> IdeResult<Vec<HierarchyItem>> {
-    project!(window, state).lsp.type_hierarchy(doc, pos, direction).await
+    ide_host::ops::lsp::lsp_type_hierarchy(&state.host, window.label(), doc, pos, direction).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn lsp_servers(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ServerInfo>> {
-    Ok(project!(window, state).lsp.servers())
+    ide_host::ops::lsp::lsp_servers(&state.host, window.label())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn lsp_restart(window: Window, state: State<'_, AppState>, server: ServerId) -> IdeResult<()> {
-    project!(window, state).lsp.restart(server).await
+    ide_host::ops::lsp::lsp_restart(&state.host, window.label(), server).await
 }
 
 /// Applies a (previewed) workspace edit, e.g. after rename confirmation.
 #[tauri::command]
 #[specta::specta]
 pub fn apply_workspace_edit(window: Window, state: State<'_, AppState>, edit: WorkspaceEdit) -> IdeResult<()> {
-    let project = project!(window, state);
-    // Multi-file refactorings leave a Local History point to go back to.
-    let paths: Vec<&std::path::Path> = edit
-        .files
-        .iter()
-        .filter_map(|f| match f {
-            ide_core::FileEdit::Edit { path, .. } => Some(&**path),
-            _ => None,
-        })
-        .collect();
-    if edit.files.len() > 1 {
-        project.record_before_refactoring(&paths, "Apply changes");
-    }
-    apply_edit(&project.documents, &edit)
+    ide_host::ops::lsp::apply_workspace_edit(&state.host, window.label(), edit)
 }
 
 /// Runs a server command (`workspace/executeCommand`), e.g. a completion item's
@@ -381,5 +332,5 @@ pub async fn lsp_execute_command(
     doc: DocId,
     command: Command,
 ) -> IdeResult<()> {
-    project!(window, state).lsp.execute_command(doc, command).await
+    ide_host::ops::lsp::lsp_execute_command(&state.host, window.label(), doc, command).await
 }

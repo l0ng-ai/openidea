@@ -772,6 +772,20 @@ export function menuGroupItems(menu: ContextMenuId, ctx: MenuGroupContext): Menu
   return out;
 }
 
+// Project view selection, for actions run outside the project view (Find Action,
+// main menu) right after it had focus. Provided by features/project-tree.
+let projectSelection: (() => string[]) | undefined;
+
+export function provideProjectViewSelection(get: () => string[]): () => void {
+  projectSelection = get;
+  return () => {
+    if (projectSelection === get) projectSelection = undefined;
+  };
+}
+
+/** Selected project view paths (absolute); empty without a project view. */
+export const projectViewSelection = (): string[] => projectSelection?.() ?? [];
+
 /** Runs the groups' `prepare` hooks, giving up after `timeoutMs` so the menu never waits long. */
 export async function prepareMenuGroups(menu: ContextMenuId, ctx: MenuGroupContext, timeoutMs = 200): Promise<void> {
   const pending = groupsFor(menu)

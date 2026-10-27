@@ -13,13 +13,26 @@ import {
   type DbOptions,
   type DbProperty,
   type DbSsh,
-  type DbSshAuth,
+  type SshAuth,
   type DbSslMode,
   type DbTxMode,
 } from "@/platform/ipc";
+import { executeAction } from "@/platform/actions";
 import { tx, useTx, useTxTemplate } from "@/platform/i18n";
+import { sshLabel as configLabel } from "@/platform/remoteSettings";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Checkbox, Dialog, IconButton, Input, Select, Tabs, T, type SelectOption } from "@/ui";
-import { colorVar, connectRemedy, fileSourceName, newSourceId, parseSourceUrl, sshLabel } from "./model";
+import {
+  colorVar,
+  connectRemedy,
+  effectiveSsh,
+  fileSourceName,
+  newSourceId,
+  parseSourceUrl,
+  sshConfigOf,
+  sshLabel,
+  sshTunnelReady,
+} from "./model";
 import { closeDialog, loadDatabases, loadSchemas, saveSource, useDatabase } from "./store";
 import { VENDORS, sourceUrl, vendorById, vendorOf } from "./vendors";
 import styles from "./Database.module.css";
@@ -52,7 +65,7 @@ const TX: Array<SelectOption<DbTxMode>> = [
   { value: "manual", label: "Manual" },
 ];
 
-const SSH_AUTH: Array<SelectOption<DbSshAuth>> = [
+const SSH_AUTH: Array<SelectOption<SshAuth>> = [
   { value: "openSsh", label: "OpenSSH config and authentication agent" },
   { value: "password", label: "Password" },
   { value: "keyPair", label: "Key pair" },
@@ -340,6 +353,11 @@ export function SourceDialog({
 
   const set = (patch: Partial<DataSource>) => setS((x) => ({ ...x, ...patch }));
   const ssh: DbSsh = { ...blankSsh(), ...s.ssh };
+  const sshConfigs = useWorkflowSettings((w) => w.ssh.configs);
+  const sshConfigId = ssh.config?.trim() ?? "";
+  const sshConfig = sshConfigOf(ssh, sshConfigs);
+  // The host / user / authentication in effect (the chosen SSH configuration's).
+  const sshUsed: DbSsh = effectiveSsh(ssh, sshConfigs) ?? ssh;
   const setSsh = (patch: Partial<DbSsh>) => setS((x) => ({ ...x, ssh: { ...blankSsh(), ...x.ssh, ...patch } }));
   const options: DbOptions = { ...blankOptions(), ...s.options };
   const setOptions = (patch: Partial<DbOptions>) =>
@@ -362,7 +380,9 @@ export function SourceDialog({
   const name =
     s.name?.trim() || (sqlite ? fileSourceName(s.file ?? "") : `${database || s.user || "db"}@${host || "localhost"}`);
   const sshOn = !sqlite && !!ssh.enabled;
-  const valid = sqlite ? !!s.file?.trim() : (urlOnly ? urlValid : !!s.host?.trim()) && (!sshOn || !!ssh.host?.trim());
+  const valid = sqlite
+    ? !!s.file?.trim()
+    : (urlOnly ? urlValid : !!s.host?.trim()) && (!sshOn || sshTunnelReady(ssh, sshConfigs));
   const sslOn = (s.ssl ?? "prefer") !== "disable";
 
   /** What is saved / tested: a preset's port when the field was left empty. */
@@ -408,7 +428,7 @@ export function SourceDialog({
       setTest({ ok: true, text: tx`Succeeded: ${v}` });
     } catch (e) {
       const text = e instanceof Error ? e.message : String(e);
-      const trust = e instanceof IpcError && connectRemedy(e.kind, e.message) === "trustHostKey";
+      const trust = e instanceof IpcError && connectRemedy(e.kind, e.message, { ssh: sshUsed }) === "trustHostKey";
       setTest({ ok: false, text, trust });
     } finally {
       setBusy(false);
@@ -416,7 +436,8 @@ export function SourceDialog({
   };
 
   const trustAndRetry = async () => {
-    await call(commands.dbTrustSshHost(s.id ?? ""));
+    // A shared SSH configuration records the failed host key under its own id.
+    await call(sshConfigId ? commands.sshTrustHost(sshConfigId) : commands.dbTrustSshHost(s.id ?? ""));
     await runTest();
   };
 
@@ -426,7 +447,7 @@ export function SourceDialog({
       await saveSource(
         { ...effective(), properties: properties.filter((p) => p.name?.trim()) },
         sqlite ? undefined : password === undefined ? undefined : password || null,
-        !sshOn || sshSecret === undefined || ssh.auth === "openSsh" ? undefined : sshSecret || null,
+        !sshOn || sshSecret === undefined || sshUsed.auth === "openSsh" ? undefined : sshSecret || null,
       );
       closeDialog();
     } catch (e) {
@@ -513,7 +534,7 @@ export function SourceDialog({
           {sshOn && (
             <>
               <span />
-              <span className={styles.formHint}>Reached from the SSH host {sshLabel({ ssh })}.</span>
+              <span className={styles.formHint}>Reached from the SSH host {sshLabel({ ssh: sshUsed })}.</span>
             </>
           )}
           <label className={styles.formLabel} htmlFor="db-user">
@@ -667,67 +688,105 @@ export function SourceDialog({
     </>
   );
 
+  const sshConfigOptions: SelectOption[] = [
+    { value: "", label: "Custom (fields below)" },
+    ...sshConfigs.map((c) => ({ value: c.id, label: c.name.trim() || configLabel(c) || c.id, detail: configLabel(c) })),
+    ...(sshConfigId && !sshConfig ? [{ value: sshConfigId, label: tx`${sshConfigId} (missing)` }] : []),
+  ];
   const sshTab = (
     <>
       <span />
       <Checkbox checked={!!ssh.enabled} onChange={(enabled) => setSsh({ enabled })} label="Use SSH tunnel" />
-      <label className={styles.formLabel} htmlFor="db-ssh-host">
-        <T>Host:</T>
-      </label>
-      <div className={styles.formRow}>
-        <Input
-          id="db-ssh-host"
-          className={styles.fill}
-          disabled={!sshOn}
-          value={ssh.host ?? ""}
-          placeholder={ssh.auth === "openSsh" ? "host or ~/.ssh/config alias" : "bastion.example.com"}
-          onChange={(e) => setSsh({ host: e.target.value })}
-        />
-        <label className={styles.formLabel} htmlFor="db-ssh-port">
-          <T>Port:</T>
-        </label>
-        <Input
-          id="db-ssh-port"
-          className={styles.portInput}
-          inputMode="numeric"
-          disabled={!sshOn}
-          value={ssh.port ?? ""}
-          placeholder="22"
-          onChange={(e) => setSsh({ port: parsePort(e.target.value) })}
-        />
-      </div>
-      <label className={styles.formLabel} htmlFor="db-ssh-user">
-        <T>User:</T>
-      </label>
-      <Input
-        id="db-ssh-user"
-        disabled={!sshOn}
-        value={ssh.user ?? ""}
-        placeholder={ssh.auth === "openSsh" ? "from ~/.ssh/config" : ""}
-        onChange={(e) => setSsh({ user: e.target.value })}
-      />
       <span className={styles.formLabel}>
-        <T>Authentication:</T>
+        <T>Configuration:</T>
       </span>
       <Select
-        aria-label="SSH authentication type"
+        aria-label="SSH configuration"
         disabled={!sshOn}
-        value={ssh.auth ?? "openSsh"}
-        options={SSH_AUTH}
-        onChange={(auth) => setSsh({ auth })}
+        value={sshConfigId}
+        options={sshConfigOptions}
+        onChange={(config) => setSsh({ config })}
       />
-      {ssh.auth === "keyPair" && (
-        <FileField
-          id="db-ssh-key"
-          label="Private key:"
-          value={ssh.keyFile ?? ""}
-          placeholder="~/.ssh/id_ed25519"
-          disabled={!sshOn}
-          title="Private Key File"
-          onChange={(keyFile) => setSsh({ keyFile })}
-        />
+      {sshConfigId && (
+        <>
+          <span />
+          <span className={styles.formHint}>
+            {sshConfig ? (
+              <>{txTemplate(`Connects to ${configLabel(sshConfig) || sshConfig.name}.`)} </>
+            ) : (
+              <span className={styles.bad}>{txTemplate(`SSH configuration ${sshConfigId} no longer exists.`)} </span>
+            )}
+            <button
+              type="button"
+              className={styles.linkButton}
+              onClick={() => void executeAction("file.settings", "tools.sshConfigurations")}
+            >
+              <T>Edit SSH Configurations…</T>
+            </button>
+          </span>
+        </>
       )}
-      {ssh.auth === "openSsh" ? (
+      {!sshConfigId && (
+        <>
+          <label className={styles.formLabel} htmlFor="db-ssh-host">
+            <T>Host:</T>
+          </label>
+          <div className={styles.formRow}>
+            <Input
+              id="db-ssh-host"
+              className={styles.fill}
+              disabled={!sshOn}
+              value={ssh.host ?? ""}
+              placeholder={ssh.auth === "openSsh" ? "host or ~/.ssh/config alias" : "bastion.example.com"}
+              onChange={(e) => setSsh({ host: e.target.value })}
+            />
+            <label className={styles.formLabel} htmlFor="db-ssh-port">
+              <T>Port:</T>
+            </label>
+            <Input
+              id="db-ssh-port"
+              className={styles.portInput}
+              inputMode="numeric"
+              disabled={!sshOn}
+              value={ssh.port ?? ""}
+              placeholder="22"
+              onChange={(e) => setSsh({ port: parsePort(e.target.value) })}
+            />
+          </div>
+          <label className={styles.formLabel} htmlFor="db-ssh-user">
+            <T>User:</T>
+          </label>
+          <Input
+            id="db-ssh-user"
+            disabled={!sshOn}
+            value={ssh.user ?? ""}
+            placeholder={ssh.auth === "openSsh" ? "from ~/.ssh/config" : ""}
+            onChange={(e) => setSsh({ user: e.target.value })}
+          />
+          <span className={styles.formLabel}>
+            <T>Authentication:</T>
+          </span>
+          <Select
+            aria-label="SSH authentication type"
+            disabled={!sshOn}
+            value={ssh.auth ?? "openSsh"}
+            options={SSH_AUTH}
+            onChange={(auth) => setSsh({ auth })}
+          />
+          {ssh.auth === "keyPair" && (
+            <FileField
+              id="db-ssh-key"
+              label="Private key:"
+              value={ssh.keyFile ?? ""}
+              placeholder="~/.ssh/id_ed25519"
+              disabled={!sshOn}
+              title="Private Key File"
+              onChange={(keyFile) => setSsh({ keyFile })}
+            />
+          )}
+        </>
+      )}
+      {sshUsed.auth === "openSsh" && !sshConfigId && (
         <>
           <span />
           <span className={styles.formHint}>
@@ -736,10 +795,11 @@ export function SourceDialog({
             </T>
           </span>
         </>
-      ) : (
+      )}
+      {sshUsed.auth !== "openSsh" && (
         <>
           <label className={styles.formLabel} htmlFor="db-ssh-secret">
-            {tx(ssh.auth === "password" ? "Password:" : "Passphrase:")}
+            {tx(sshUsed.auth === "password" ? "Password:" : "Passphrase:")}
           </label>
           <div className={styles.formRow}>
             <Input
@@ -751,12 +811,14 @@ export function SourceDialog({
               placeholder={initial && sshSecret === undefined ? "<unchanged>" : ""}
               onChange={(e) => setSshSecret(e.target.value)}
             />
-            <Checkbox
-              checked={!!ssh.saveSecret}
-              disabled={!sshOn}
-              onChange={(saveSecret) => setSsh({ saveSecret })}
-              label="Save password"
-            />
+            {!sshConfigId && (
+              <Checkbox
+                checked={!!ssh.saveSecret}
+                disabled={!sshOn}
+                onChange={(saveSecret) => setSsh({ saveSecret })}
+                label="Save password"
+              />
+            )}
           </div>
         </>
       )}

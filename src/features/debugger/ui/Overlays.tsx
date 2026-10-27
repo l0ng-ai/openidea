@@ -1,7 +1,7 @@
 /** Debugger popovers and dialogs: breakpoint properties, View Breakpoints, Evaluate, config chooser. */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MutableRefObject } from "react";
 import { basename, relativePath, useProject } from "@/platform/project";
-import { executeAction } from "@/platform/actions";
+import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, type AttachableProcess, type RunConfig, type Variable } from "@/platform/ipc";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { Button, Checkbox, Dialog, Icon, IconButton, Input, Kbd, List, Menu, Popup, Toggle, T } from "@/ui";
@@ -821,7 +821,8 @@ function ConfigChooser() {
   const close = () => useOverlays.setState({ chooser: null });
   const pick = (c: RunConfig) => {
     close();
-    void executeAction("debug.startConfig", c);
+    // Through Run (before-launch tasks, run-target checks) when it is loaded.
+    void executeAction(getAction("run.debugConfig") ? "run.debugConfig" : "debug.startConfig", c);
   };
   return (
     <Dialog

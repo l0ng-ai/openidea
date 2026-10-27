@@ -39,6 +39,7 @@ import { runConfigsRunAnything } from "./runAnything";
 import { runServiceProvider } from "./services";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
+import { remoteDebugBlocked } from "./remote";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { runGutter } from "./runGutter";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
@@ -93,6 +94,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
     await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id])));
     return;
   }
+  if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain))) return;
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
   if (isDebugOnly(config) && getAction("debug.startConfig")) {

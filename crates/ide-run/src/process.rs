@@ -575,10 +575,9 @@ impl ProcessManager {
     pub fn list(&self) -> Vec<RunInfo> {
         self.runs.lock().values().map(|e| e.info()).collect()
     }
-}
 
-impl Drop for ProcessManager {
-    fn drop(&mut self) {
+    /// Kills every running process tree at once (shutting down).
+    pub fn kill_all(&self) {
         for entry in self.runs.lock().values() {
             if !entry.exited.load(Ordering::Acquire)
                 && let Some(pid) = entry.pid
@@ -586,6 +585,12 @@ impl Drop for ProcessManager {
                 kill_tree(pid, true);
             }
         }
+    }
+}
+
+impl Drop for ProcessManager {
+    fn drop(&mut self) {
+        self.kill_all();
     }
 }
 

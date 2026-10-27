@@ -502,7 +502,9 @@ impl Peer {
         }
 
         // Notifications are delivered in order on a dedicated thread. Requests start from the same
-        // queue, so a request handler sees every notification that arrived before it.
+        // queue, so a request handler sees every notification that arrived before it, and responses
+        // complete from it, so a caller sees the notifications sent before its response (a streamed
+        // result's last values).
         let (notif_tx, notif_rx) = std::sync::mpsc::channel::<Incoming>();
         {
             let handler = handler.clone();
@@ -524,6 +526,9 @@ impl Peer {
                             }
                             Incoming::Request(id, method, params) => {
                                 runtime.spawn(handle_request(inner.clone(), handler.clone(), id, method, params));
+                            }
+                            Incoming::Response(tx, result) => {
+                                let _ = tx.send(result);
                             }
                         }
                     }
@@ -696,6 +701,7 @@ fn parse_id(id: &Value) -> Option<i64> {
 enum Incoming {
     Notification(String, Value),
     Request(Value, String, Value),
+    Response(oneshot::Sender<Result<Value, RpcError>>, Result<Value, RpcError>),
 }
 
 async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value, method: String, params: Value) {
@@ -767,7 +773,7 @@ fn dispatch(inner: &Arc<Inner>, notif_tx: &std::sync::mpsc::Sender<Incoming>, bo
                 }
                 _ => Ok(obj.remove("result").unwrap_or(Value::Null)),
             };
-            let _ = tx.send(result);
+            let _ = notif_tx.send(Incoming::Response(tx, result));
         }
     }
 }

@@ -1,5 +1,15 @@
 /** Pure helpers of the database tools: clipboard formats, edits, labels. */
-import type { DbCellValue, DbColor, DbProperty, DbRowEdit, DbSortKey, DbSslMode, DataSource } from "@/platform/ipc";
+import type {
+  DbCellValue,
+  DbColor,
+  DbProperty,
+  DbRowEdit,
+  DbSortKey,
+  DbSsh,
+  DbSslMode,
+  DataSource,
+} from "@/platform/ipc";
+import type { SshConfigValid } from "@/platform/remoteSettings";
 import { vendorOf, vendorOfScheme } from "./vendors";
 
 export type Cell = string | null;
@@ -251,6 +261,31 @@ export function sshLabel(source: Pick<DataSource, "ssh">): string {
   const ssh = source.ssh;
   if (!ssh?.host) return "";
   return `${ssh.user ? `${ssh.user}@` : ""}${ssh.host}${ssh.port ? `:${ssh.port}` : ""}`;
+}
+
+/** The SSH configuration a tunnel connects with; undefined for the inline fields or a missing one. */
+export function sshConfigOf(
+  ssh: DbSsh | null | undefined,
+  configs: readonly SshConfigValid[],
+): SshConfigValid | undefined {
+  const id = ssh?.config?.trim();
+  return id ? configs.find((c) => c.id === id) : undefined;
+}
+
+/** The SSH settings in effect: those of the chosen SSH configuration, else the inline fields. */
+export function effectiveSsh(ssh: DbSsh | null | undefined, configs: readonly SshConfigValid[]): DbSsh | null {
+  if (!ssh) return null;
+  const c = sshConfigOf(ssh, configs);
+  return c
+    ? { ...ssh, host: c.host, port: c.port, user: c.user, auth: c.auth, keyFile: c.keyFile, saveSecret: c.saveSecret }
+    : ssh;
+}
+
+/** Whether the SSH tab names a host to tunnel through (always, when the tunnel is off). */
+export function sshTunnelReady(ssh: DbSsh | null | undefined, configs: readonly SshConfigValid[]): boolean {
+  if (!ssh?.enabled) return true;
+  if (ssh.config?.trim()) return !!sshConfigOf(ssh, configs)?.host.trim();
+  return !!ssh.host?.trim();
 }
 
 /**

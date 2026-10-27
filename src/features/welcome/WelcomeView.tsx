@@ -2,10 +2,12 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
-import { useT } from "@/platform/i18n";
+import { useT, useTx } from "@/platform/i18n";
 import { isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { Icon, IconButton, Menu, Spinner, type MenuItem, T } from "@/ui";
+import { useRemoteProgress } from "@/platform/remote";
+import { stageLabel } from "@/features/remote-dev/model";
+import { Icon, IconButton, Menu, ProgressBar, Spinner, type MenuItem, T } from "@/ui";
 import { useSettingsPages } from "@/workbench/contributions";
 import { ErrorBoundary, Slot } from "@/workbench/ErrorBoundary";
 import logo from "../../../src-tauri/icons/128x128.png";
@@ -111,6 +113,28 @@ function useFolderDrop(): boolean {
   return over;
 }
 
+/** The last session's project opening at startup; a remote one shows how far connecting is. */
+function Reopening({ location }: { location: string }) {
+  const tx = useTx();
+  const progress = useRemoteProgress((s) => s.progress);
+  const name = location.slice(location.lastIndexOf("/") + 1);
+  const percent = progress?.fraction == null ? "" : ` ${Math.round(progress.fraction * 100)}%`;
+  return (
+    <div className={styles.reopening} role="status">
+      <div className={styles.reopeningTitle}>
+        <Spinner size={16} />
+        <span>{tx`Opening ${name}…`}</span>
+      </div>
+      {progress && (
+        <div className={styles.reopeningStage}>
+          <span>{tx(stageLabel(progress.stage)) + percent}</span>
+          <ProgressBar value={progress.fraction} aria-label={tx(stageLabel(progress.stage))} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WelcomeView() {
   const t = useT();
   const version = useRecent((s) => s.version);
@@ -125,15 +149,7 @@ export function WelcomeView() {
     void loadRecent();
   }, []);
 
-  if (reopening) {
-    const name = reopening.slice(reopening.lastIndexOf("/") + 1);
-    return (
-      <div className={styles.reopening} role="status">
-        <Spinner size={16} />
-        <span>Opening {name}…</span>
-      </div>
-    );
-  }
+  if (reopening) return <Reopening location={reopening} />;
 
   return (
     <div className={styles.welcome}>

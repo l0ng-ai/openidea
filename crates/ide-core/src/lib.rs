@@ -13,6 +13,7 @@ pub mod inspection_settings;
 pub mod ipc_path;
 pub mod process;
 pub mod project_dir;
+pub mod remote_settings;
 pub mod settings;
 pub mod text;
 pub mod workflow_settings;
