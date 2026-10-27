@@ -87,7 +87,8 @@ function previewVars(id: SchemeId, o: Record<string, TextAttributesOverride> | u
 /** Text styled like an attribute in the preview. */
 function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
   if (!attr?.token) return attr?.fg ? { color: `var(${attr.fg})` } : {};
-  if (attr.italicOnly) return { fontStyle: `var(--syn-${attr.token}-italic, ${attr.defaultItalic === false ? "normal" : "italic"})` };
+  if (attr.italicOnly)
+    return { fontStyle: `var(--syn-${attr.token}-italic, ${attr.defaultItalic === false ? "normal" : "italic"})` };
   const t = attr.token;
   return {
     color: `var(--syn-${t})`,
@@ -156,7 +157,7 @@ function AttributeEditor({
       {attr.italicOnly && (
         <div className={styles.attrRow}>
           <Checkbox
-            checked={v.italic ?? (attr.defaultItalic ?? true)}
+            checked={v.italic ?? attr.defaultItalic ?? true}
             onChange={(b) => set({ italic: b === (attr.defaultItalic ?? true) ? undefined : b })}
             label="Italic"
           />
@@ -205,7 +206,11 @@ function AttributeEditor({
           )}
         </div>
       )}
-      {!attr.italicOnly && <div className={styles.inherited}><T>Unchecked values are inherited from the scheme.</T></div>}
+      {!attr.italicOnly && (
+        <div className={styles.inherited}>
+          <T>Unchecked values are inherited from the scheme.</T>
+        </div>
+      )}
     </div>
   );
 }
