@@ -821,6 +821,11 @@ impl Repo {
     pub fn diff_with_worktree(&self, rev: &str) -> IdeResult<Vec<ChangedFile>> {
         ops::diff_with_worktree(self, rev)
     }
+    /// `(repo-relative path, added lines, deleted lines)` of the tracked files whose
+    /// working-tree content differs from `rev`.
+    pub fn numstat_with_worktree(&self, rev: &str) -> IdeResult<Vec<(String, u32, u32)>> {
+        ops::numstat_with_worktree(self, rev)
+    }
 
     // ---- patches and shelf ----
 

@@ -1,14 +1,19 @@
 /**
  * Editor session per project (IDEA's workspace.xml editor state): open file
  * tabs with pinned / preview flags and the active tab of every pane, the split
- * layout, the active pane and caret / scroll position per file. Serialised to
+ * layout, the active pane and caret / scroll position per file. Tabs of editor
+ * kinds that ask for it (`EditorKindContribution.restorable`, like IDEA's
+ * FileEditorProvider state) are saved too, as their whole input. Serialised to
  * plain JSON (localStorage, keyed by project root) and rebuilt into a fresh
  * TabsState with new ids.
  */
+import type { EditorInput } from "@/workbench/contributions";
 import { initialTabsState, paneIds, type LayoutNode, type Pane, type Tab, type TabsState } from "./tabs";
 
+/** A file tab (`path`), or a tab of a restorable editor kind (`input`, with JSON `data`). */
 export interface SessionTab {
-  path: string;
+  path?: string;
+  input?: EditorInput;
   pinned?: boolean;
   preview?: boolean;
 }
@@ -34,18 +39,26 @@ export interface EditorSession {
 
 const STORAGE_PREFIX = "openidea.editorSession.v1:";
 
-export function serializeSession(s: TabsState, files: Record<string, FileViewState>): EditorSession | null {
+const isFileTab = (t: Tab) => t.input.kind === "file" && !!t.input.path;
+
+/** `restorable`: whether a non-file tab is saved (its kind asked for it). */
+export function serializeSession(
+  s: TabsState,
+  files: Record<string, FileViewState>,
+  restorable: (input: EditorInput) => boolean = () => false,
+): EditorSession | null {
+  const saved = (t: Tab) => isFileTab(t) || (t.input.kind !== "file" && restorable(t.input));
   const walk = (n: LayoutNode): SessionLayout | null => {
     if (n.kind === "pane") {
       const pane = s.panes[n.paneId];
       if (!pane) return null;
-      const fileTabs = pane.tabs.filter((t) => t.input.kind === "file" && !!t.input.path);
-      if (!fileTabs.length) return null;
-      const active = Math.max(0, fileTabs.findIndex((t) => t.id === pane.active));
+      const kept = pane.tabs.filter(saved);
+      if (!kept.length) return null;
+      const active = Math.max(0, kept.findIndex((t) => t.id === pane.active));
       return {
         kind: "pane",
-        tabs: fileTabs.map((t) => ({
-          path: t.input.path!,
+        tabs: kept.map((t) => ({
+          ...(isFileTab(t) ? { path: t.input.path! } : { input: { ...t.input } }),
           ...(t.pinned ? { pinned: true } : {}),
           ...(t.preview ? { preview: true } : {}),
         })),
@@ -59,10 +72,11 @@ export function serializeSession(s: TabsState, files: Record<string, FileViewSta
   const layout = walk(s.layout);
   if (!layout) return null;
   // Active pane index among panes that survived serialisation.
-  const kept = paneIds(s).filter((id) => s.panes[id]?.tabs.some((t) => t.input.kind === "file" && t.input.path));
+  const kept = paneIds(s).filter((id) => s.panes[id]?.tabs.some(saved));
   const activePane = Math.max(0, kept.indexOf(s.activePane));
   const paths = new Set<string>();
-  const collect = (l: SessionLayout) => (l.kind === "pane" ? l.tabs.forEach((t) => paths.add(t.path)) : l.children.forEach(collect));
+  const collect = (l: SessionLayout) =>
+    l.kind === "pane" ? l.tabs.forEach((t) => t.path && paths.add(t.path)) : l.children.forEach(collect);
   collect(layout);
   const keptFiles: Record<string, FileViewState> = {};
   for (const p of paths) if (files[p]) keptFiles[p] = files[p]!;
@@ -78,8 +92,14 @@ export function slashPath(p: string): string {
 }
 
 function isSessionTab(v: unknown): v is SessionTab {
-  return !!v && typeof v === "object" && typeof (v as SessionTab).path === "string" && !!(v as SessionTab).path;
+  if (!v || typeof v !== "object") return false;
+  const t = v as SessionTab;
+  if (typeof t.path === "string") return !!t.path;
+  const i = t.input as Partial<EditorInput> | undefined;
+  return !!i && typeof i.kind === "string" && i.kind !== "file" && typeof i.key === "string" && !!i.key;
 }
+
+const tabKey = (t: SessionTab) => (t.path !== undefined ? `file:${t.path}` : `input:${t.input!.key}`);
 
 /** Validates untrusted JSON; returns null when unusable. */
 export function parseSession(raw: unknown): EditorSession | null {
@@ -90,7 +110,9 @@ export function parseSession(raw: unknown): EditorSession | null {
     if (!l || typeof l !== "object" || depth > 16) return null;
     const n = l as SessionLayout;
     if (n.kind === "pane") {
-      const tabs = Array.isArray(n.tabs) ? n.tabs.filter(isSessionTab).map((t) => ({ ...t, path: slashPath(t.path) })) : [];
+      const tabs = Array.isArray(n.tabs)
+        ? n.tabs.filter(isSessionTab).map((t) => (t.path !== undefined ? { ...t, path: slashPath(t.path) } : t))
+        : [];
       if (!tabs.length) return null;
       const active = typeof n.active === "number" && n.active >= 0 && n.active < tabs.length ? Math.floor(n.active) : 0;
       return { kind: "pane", tabs, active };
@@ -128,17 +150,23 @@ export function restoreTabsState(session: EditorSession, fileKey: (path: string)
       const seen = new Set<string>();
       const tabs: Tab[] = [];
       let preview = false;
+      const byKey = new Map<string, Tab>();
       for (const t of l.tabs) {
-        if (seen.has(t.path)) continue;
-        seen.add(t.path);
+        const key = tabKey(t);
+        if (seen.has(key)) continue;
+        seen.add(key);
         // At most one preview tab per pane; pinned tabs first.
         const isPreview: boolean = !!t.preview && !t.pinned && !preview;
         preview ||= isPreview;
-        tabs.push({ id: id("tab"), input: { kind: "file", key: fileKey(t.path), path: t.path }, pinned: !!t.pinned, preview: isPreview });
+        const input: EditorInput =
+          t.path !== undefined ? { kind: "file", key: fileKey(t.path), path: t.path } : { ...t.input! };
+        const tab: Tab = { id: id("tab"), input, pinned: !!t.pinned, preview: isPreview };
+        byKey.set(key, tab);
+        tabs.push(tab);
       }
       tabs.sort((a, b) => Number(b.pinned) - Number(a.pinned));
-      const activePath = l.tabs[l.active]?.path;
-      const active = tabs.find((t) => t.input.path === activePath) ?? tabs[0]!;
+      const activeTab = l.tabs[l.active];
+      const active = (activeTab && byKey.get(tabKey(activeTab))) ?? tabs[0]!;
       panes[paneId] = { id: paneId, tabs, active: active.id, mru: [active.id, ...tabs.filter((t) => t !== active).map((t) => t.id)] };
       order.push(paneId);
       return { kind: "pane", paneId };

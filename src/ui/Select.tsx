@@ -134,6 +134,7 @@ export function Select<V extends string = string>({
                 <span className={styles.check} />
                 {o.icon && <Icon name={o.icon} size={14} />}
                 <span>{tx(o.label)}</span>
+                {o.detail && <span className={styles.sizerDetail}>{tx(o.detail)}</span>}
               </div>
             ))}
           </div>

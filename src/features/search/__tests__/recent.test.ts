@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ToolWindowContribution } from "@/workbench/contributions";
+import type { OpenEditorTab, ToolWindowContribution } from "@/workbench/contributions";
 import {
   fromNavigationHistory,
   isDismissed,
@@ -14,6 +14,7 @@ import {
   lineSegments,
   locationBreadcrumb,
   locationTime,
+  switcherItems,
   switcherPaths,
   switcherSelection,
   switcherToolWindows,
@@ -128,6 +129,27 @@ describe("recent files switcher", () => {
 
   it("lists only open files in the switcher, most recent first", () => {
     expect(switcherPaths(["/c", "/x", "/a", "/c"], ["/a", "/b", "/c"])).toEqual(["/c", "/a", "/b"]);
+  });
+
+  it("lists every open editor in the switcher, not just files", () => {
+    const tab = (kind: string, key: string, title: string, lastActive: number, path?: string): OpenEditorTab => ({
+      input: { kind, key, path },
+      title,
+      icon: kind === "file" ? "file" : "toolwindow-agents",
+      lastActive,
+    });
+    const tabs = [
+      tab("agent-session", "agent:1", "Fix the parser", 3),
+      tab("file", "/p/src/b.rs", "b.rs", 2, "/p/src/b.rs"),
+      tab("file", "/p/src/a.rs", "a.rs", 0, "/p/src/a.rs"),
+      tab("diff", "diff:x", "c.rs (main ↔ x)", 0, "/p/src/c.rs"),
+    ];
+    const items = switcherItems(["/p/src/a.rs"], tabs, "", "/p");
+    expect(items.map((i) => i.name)).toEqual(["Fix the parser", "b.rs", "a.rs", "c.rs (main ↔ x)"]);
+    expect(items[0]).toMatchObject({ path: "agent:1", dir: "", editor: { icon: "toolwindow-agents" } });
+    expect(items[1]!.editor).toBeUndefined();
+    expect(items[3]).toMatchObject({ path: "diff:x", dir: "src" });
+    expect(switcherItems([], tabs, "parser", "/p").map((i) => i.name)).toEqual(["Fix the parser"]);
   });
 
   it("moves the switcher selection past the end of the files into the tool windows", () => {

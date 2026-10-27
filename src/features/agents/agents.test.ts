@@ -1,0 +1,167 @@
+import { describe, expect, it } from "vitest";
+import type { AgentConfigOption, AgentEntry, AgentStatus, AgentTask } from "@/bindings";
+import {
+  applyCompletion,
+  atEdgeLine,
+  canSend,
+  completionAt,
+  imageFromDataUrl,
+  mainOptions,
+  matchCommands,
+  mentionOf,
+  modeIcon,
+  nextValue,
+  recall,
+  toPrompt,
+  usageLabel,
+} from "./composerModel";
+import { age, attentionChange, branchLabel, groupTasks, upsertEntry } from "./model";
+import { markdownHtml } from "./Markdown";
+
+function task(id: string, status: AgentStatus, updatedMs: number): AgentTask {
+  return {
+    id,
+    title: id,
+    provider: "claude",
+    model: null,
+    status,
+    isolation: "worktree",
+    cwd: "/w",
+    branch: `agent/${id}`,
+    base: "main",
+    baseCommit: "abc",
+    error: null,
+    createdMs: 0,
+    updatedMs,
+    config: [],
+    commands: [],
+    usage: null,
+    queue: [],
+  };
+}
+
+const option = (category: string, values: string[], current: string | null): AgentConfigOption => ({
+  id: category,
+  name: category,
+  description: null,
+  category,
+  current,
+  values: values.map((value) => ({ value, name: value, description: null })),
+  via: "option",
+});
+
+describe("agent composer", () => {
+  it("completes @files anywhere and /commands as the first word", () => {
+    expect(completionAt("fix @src/le", 11)).toEqual({ kind: "file", query: "src/le", from: 4, to: 11 });
+    expect(completionAt("/rev", 4)).toEqual({ kind: "command", query: "rev", from: 0, to: 4 });
+    expect(completionAt("run /rev", 8)).toBeNull();
+    expect(completionAt("a@b", 3)).toBeNull();
+    const c = completionAt("see @le and", 7)!;
+    expect(applyCompletion("see @le and", c, "@src/lexer.rs")).toEqual({ text: "see @src/lexer.rs and", caret: 18 });
+    const cmds = [
+      { name: "init", description: "", hint: null },
+      { name: "review", description: "", hint: null },
+      { name: "pr-review", description: "", hint: null },
+    ];
+    expect(matchCommands(cmds, "rev").map((c) => c.name)).toEqual(["review", "pr-review"]);
+  });
+
+  it("sends only the files still mentioned", () => {
+    const prompt = toPrompt({
+      text: " look at @src/a.rs:3-5 and @b.rs ",
+      files: [
+        { path: "/w/src/a.rs", rel: "src/a.rs" },
+        { path: "/w/b.rs", rel: "b.rs" },
+        { path: "/w/b.rs", rel: "b.rs" },
+        { path: "/w/gone.rs", rel: "gone.rs" },
+      ],
+      images: [],
+    });
+    expect(prompt).toEqual({ text: "look at @src/a.rs:3-5 and @b.rs", files: ["/w/src/a.rs", "/w/b.rs"], images: [] });
+    expect(mentionOf("a.rs", { from: 3, to: 3 })).toBe("@a.rs:3");
+    expect(canSend({ text: " ", files: [], images: [] })).toBe(false);
+  });
+
+  it("recalls history from the edge lines only", () => {
+    const h = ["newest", "older"];
+    expect(recall(h, -1, -1)).toBe(0);
+    expect(recall(h, 0, -1)).toBe(1);
+    expect(recall(h, 1, -1)).toBeNull();
+    expect(recall(h, 0, 1)).toBe(-1);
+    expect(recall(h, -1, 1)).toBeNull();
+    expect(atEdgeLine("a\nb", 1, -1)).toBe(true);
+    expect(atEdgeLine("a\nb", 3, -1)).toBe(false);
+    expect(atEdgeLine("a\nb", 1, 1)).toBe(false);
+  });
+
+  it("picks the main settings and cycles the mode", () => {
+    const config = [option("fast", ["on"], null), option("mode", ["ask", "code"], "code"), option("model", ["m"], "m")];
+    expect(mainOptions(config).map((o) => o.id)).toEqual(["model", "mode"]);
+    expect(nextValue(config[1]!)).toBe("ask");
+    expect(["default", "acceptEdits", "plan", "auto", "bypassPermissions", "auto_edit", "read-only", "x"].map(modeIcon)).toEqual([
+      "lock",
+      "edit",
+      "todo",
+      "run",
+      "unlock",
+      "edit",
+      "eye",
+      "lock",
+    ]);
+    expect(usageLabel({ used: 24_000, size: 200_000, cost: 0.4, currency: "USD" })).toEqual({
+      short: "12%",
+      detail: "24k / 200k tokens · $0.40",
+    });
+    expect(imageFromDataUrl("data:image/png;base64,AAA", "a.png")).toEqual({ mimeType: "image/png", data: "AAA", name: "a.png" });
+    expect(imageFromDataUrl("data:text/plain;base64,AAA")).toBeNull();
+  });
+});
+
+describe("agents model", () => {
+  it("groups tasks by what they need, newest first", () => {
+    const groups = groupTasks([
+      task("a", "ready", 1),
+      task("b", "needsInput", 2),
+      task("c", "running", 3),
+      task("d", "starting", 4),
+      task("e", "ready", 5),
+    ]);
+    expect(groups.map((g) => [g.status, g.tasks.map((t) => t.id)])).toEqual([
+      ["needsInput", ["b"]],
+      ["running", ["d", "c"]],
+      ["ready", ["e", "a"]],
+    ]);
+  });
+
+  it("upserts entries in place and refuses gaps", () => {
+    const a: AgentEntry = { type: "agent", text: "a" };
+    const b: AgentEntry = { type: "agent", text: "b" };
+    expect(upsertEntry([a], 0, b)).toEqual([b]);
+    expect(upsertEntry([a], 1, b)).toEqual([a, b]);
+    expect(upsertEntry([a], 3, b)).toBeNull();
+  });
+
+  it("notifies on finish, failure and questions only", () => {
+    expect(attentionChange("running", "ready")).toBe("finished");
+    expect(attentionChange("running", "failed")).toBe("failed");
+    expect(attentionChange("running", "needsInput")).toBe("input");
+    expect(attentionChange("needsInput", "running")).toBeNull();
+    expect(attentionChange("ready", "archived")).toBeNull();
+    expect(attentionChange(undefined, "ready")).toBeNull();
+  });
+
+  it("formats labels", () => {
+    expect(branchLabel("agent/fix-lexer")).toBe("fix-lexer");
+    expect(branchLabel(null)).toBe("");
+    expect(age(0, 30_000)).toBe("now");
+    expect(age(0, 5 * 60_000)).toBe("5m");
+    expect(age(0, 3 * 3_600_000)).toBe("3h");
+  });
+
+  it("renders agent markdown without scripts", () => {
+    const html = markdownHtml("**bold** <img src=x onerror=alert(1)><script>alert(1)</script>");
+    expect(html).toContain("<strong>bold</strong>");
+    expect(html).not.toContain("onerror");
+    expect(html).not.toContain("<script");
+  });
+});

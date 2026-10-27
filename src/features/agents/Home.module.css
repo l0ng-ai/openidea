@@ -1,0 +1,53 @@
+.home {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 24px 12vh;
+  background: var(--bg-editor);
+  color: var(--fg);
+}
+.inner {
+  width: min(720px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.heading {
+  margin: 0 0 10px;
+  font-size: 18px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--fg-strong);
+  text-wrap: balance;
+}
+
+/* Under the box: the project and where the agent works. */
+.where {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px;
+  font-size: var(--fs-small);
+}
+.project {
+  margin-right: 6px;
+  color: var(--fg-muted);
+}
+
+.note,
+.warning {
+  margin: 0;
+  padding: 0 4px;
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.warning {
+  color: var(--danger);
+}

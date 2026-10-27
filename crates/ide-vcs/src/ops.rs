@@ -349,6 +349,26 @@ pub(crate) fn diff_with_worktree(r: &Repo, rev: &str) -> IdeResult<Vec<ChangedFi
     Ok(parse_name_status(&out.stdout_str()))
 }
 
+/// Added / deleted line counts of tracked files whose working-tree content differs from `rev`
+/// (`git diff --numstat`); binary files count 0.
+pub(crate) fn numstat_with_worktree(r: &Repo, rev: &str) -> IdeResult<Vec<(String, u32, u32)>> {
+    check_commits(&[rev.to_string()])?;
+    let out = run(r.root(), &["diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", rev, "--"], None)?;
+    Ok(parse_numstat(&out.stdout_str()))
+}
+
+pub(crate) fn parse_numstat(text: &str) -> Vec<(String, u32, u32)> {
+    text.split('\0')
+        .filter_map(|rec| {
+            let mut parts = rec.splitn(3, '\t');
+            let added = parts.next()?.parse().unwrap_or(0);
+            let deleted = parts.next()?.parse().unwrap_or(0);
+            let path = parts.next().filter(|p| !p.is_empty())?;
+            Some((path.to_owned(), added, deleted))
+        })
+        .collect()
+}
+
 /// Files that differ between two revisions (Update Project's "N files updated").
 pub(crate) fn diff_revisions(r: &Repo, from: &str, to: &str) -> IdeResult<Vec<ChangedFile>> {
     check_commits(&[from.to_string(), to.to_string()])?;
@@ -400,6 +420,15 @@ mod tests {
                 ("gone", ChangeKind::Deleted, None),
                 ("new.rs", ChangeKind::Renamed, Some("old.rs")),
             ]
+        );
+    }
+
+    #[test]
+    fn numstat_parsing() {
+        let got = parse_numstat("3\t1\tsrc/a.rs\0-\t-\timg.png\0\x30\t7\tdir/b c.txt\0");
+        assert_eq!(
+            got,
+            vec![("src/a.rs".to_owned(), 3, 1), ("img.png".to_owned(), 0, 0), ("dir/b c.txt".to_owned(), 0, 7)]
         );
     }
 }

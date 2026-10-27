@@ -85,6 +85,11 @@
   padding: 0 8px;
   white-space: nowrap;
 }
+/* Short details (a count, a command) widen the popup; long ones (paths, URLs) are cut. */
+.sizerDetail {
+  max-width: 240px;
+  overflow: hidden;
+}
 .optionLabel {
   flex: 1 0 auto;
   overflow: hidden;

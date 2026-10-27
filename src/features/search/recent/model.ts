@@ -1,4 +1,4 @@
-import type { ToolWindowContribution } from "@/workbench/contributions";
+import type { EditorInput, OpenEditorTab, ToolWindowContribution } from "@/workbench/contributions";
 import type { OutlineItem } from "@/platform/ipc";
 import { formatTimestamp } from "@/platform/dateFormat";
 import type { CodeToken } from "@/editor/lsp/markdown";
@@ -13,6 +13,8 @@ export interface RecentFileItem {
   name: string;
   dir: string;
   indices: number[];
+  /** Switcher: an open editor that is not a file (agent session, diff…); `path` is its input key. */
+  editor?: { input: EditorInput; icon: string };
 }
 
 export function filterRecentFiles(
@@ -52,6 +54,54 @@ export function switcherPaths(recent: readonly string[], open: readonly string[]
   const out = [...new Set(recent.filter((p) => isOpen.has(p)))];
   const listed = new Set(out);
   for (const p of open) if (!listed.has(p)) out.push(p);
+  return out;
+}
+
+const isFileTab = (t: OpenEditorTab) => !!t.input.path && (t.input.kind === "file" || t.input.kind === "virtual");
+
+/**
+ * Switcher (⌃⇥) rows: every open editor, like IDEA (whose editors are all files). Tabs active
+ * this session come first, most recent first; then the other open files in recent-files
+ * order; then the other editors in tab order.
+ */
+export function switcherItems(
+  recent: readonly string[],
+  tabs: readonly OpenEditorTab[],
+  query: string,
+  root: string | null,
+): RecentFileItem[] {
+  const fileTabs = new Map(tabs.filter(isFileTab).map((t) => [t.input.path!, t]));
+  const ordered = [
+    ...tabs.filter((t) => t.lastActive > 0),
+    ...switcherPaths(recent, [...fileTabs.keys()]).flatMap((p) => {
+      const t = fileTabs.get(p)!;
+      return t.lastActive > 0 ? [] : [t];
+    }),
+    ...tabs.filter((t) => t.lastActive === 0 && !isFileTab(t)),
+  ];
+  const out: RecentFileItem[] = [];
+  for (const t of ordered) {
+    if (isFileTab(t)) {
+      out.push(...filterRecentFiles([t.input.path!], query, { root }));
+      continue;
+    }
+    let indices: number[] = [];
+    if (query.trim()) {
+      const hit = matchText(t.title, query);
+      if (!hit) continue;
+      indices = hit.indices;
+    }
+    const path = t.input.path;
+    const rel = path && root && path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
+    out.push({
+      path: t.input.key,
+      rel: rel ?? t.title,
+      name: t.title,
+      dir: rel ? relDir(rel) : "",
+      indices,
+      editor: { input: t.input, icon: t.icon },
+    });
+  }
   return out;
 }
 

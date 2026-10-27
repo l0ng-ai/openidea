@@ -1,0 +1,145 @@
+/* A framed text area (IDEA text field frame), with the pickers in its bottom row. */
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-popup);
+  background: var(--bg-field, var(--bg-button));
+  box-shadow: inset 0 0 0 1px var(--border-button);
+  cursor: text;
+  transition: box-shadow var(--dur-fast) var(--ease);
+}
+.composer:focus-within {
+  box-shadow:
+    inset 0 0 0 1px var(--focus-ring),
+    0 0 0 1px var(--focus-ring);
+}
+.textarea {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: var(--fs-ui);
+  line-height: 1.5;
+  padding: 10px 12px 2px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.textarea:focus-visible {
+  outline: none;
+}
+.textarea::placeholder {
+  color: var(--fg-faint);
+}
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px 6px;
+  cursor: default;
+}
+.spacer {
+  flex: 1;
+}
+.pickerValue {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+.pickerName {
+  color: var(--fg-subtle);
+}
+
+.images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px 0;
+  cursor: default;
+}
+.image {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+}
+.image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.removeImage {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--bg-popup);
+  color: var(--fg);
+  cursor: pointer;
+  opacity: 0;
+}
+.image:hover .removeImage,
+.removeImage:focus-visible {
+  opacity: 1;
+}
+
+/* `@` / `/` completion, above the box like a code-completion popup. */
+.popup {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 4px);
+  z-index: 10;
+  width: min(560px, 100%);
+  max-height: 300px;
+  overflow: auto;
+  padding: 4px 0;
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-popup);
+  background: var(--bg-popup);
+  box-shadow: var(--shadow-popup);
+  cursor: default;
+}
+.item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-row);
+  margin: 0 4px;
+  padding: 0 8px;
+  border-radius: var(--radius-row);
+  white-space: nowrap;
+}
+.active {
+  background: var(--bg-list-selected);
+}
+.itemName {
+  flex: none;
+  color: var(--fg-strong);
+}
+.itemHint {
+  flex: none;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.itemDetail {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+}

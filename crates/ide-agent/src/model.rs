@@ -1,0 +1,285 @@
+//! IPC types: tasks, their timeline entries and the events streamed to the UI.
+
+use ide_core::IpcPath;
+use serde::{Deserialize, Serialize};
+use specta::Type;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentStatus {
+    /// Creating the worktree / starting the agent.
+    Starting,
+    Running,
+    /// Waiting for a permission answer.
+    NeedsInput,
+    /// The turn ended; the result can be reviewed or the conversation continued.
+    Ready,
+    Failed,
+    Archived,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum Isolation {
+    /// A new git worktree on its own branch.
+    Worktree,
+    /// The project's own checkout.
+    Local,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTask {
+    pub id: String,
+    pub title: String,
+    /// [`AgentProvider::id`].
+    pub provider: String,
+    /// Model the task runs on (its `model` setting), when known.
+    pub model: Option<String>,
+    pub status: AgentStatus,
+    pub isolation: Isolation,
+    /// Directory the agent works in (the worktree, or the project root).
+    pub cwd: IpcPath,
+    /// Branch of the task's worktree.
+    pub branch: Option<String>,
+    /// Branch (or revision) the worktree was created from.
+    pub base: Option<String>,
+    /// Commit the task's changes are compared against.
+    pub base_commit: Option<String>,
+    /// Why the task failed, when it did.
+    pub error: Option<String>,
+    pub created_ms: f64,
+    pub updated_ms: f64,
+    /// The session's settings (model, mode, thinking effort…) as last reported, with the
+    /// user's choices applied.
+    pub config: Vec<AgentConfigOption>,
+    /// Slash commands the agent offers.
+    pub commands: Vec<AgentCommand>,
+    /// Context window use, when the agent reports it.
+    pub usage: Option<AgentUsage>,
+    /// Messages waiting for the current turn to end, oldest first.
+    pub queue: Vec<AgentQueued>,
+}
+
+/// One value of a select-type session setting.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfigValue {
+    pub value: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// How a setting is changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentConfigVia {
+    /// `session/set_config_option`.
+    #[default]
+    Option,
+    /// `session/set_mode` (agents that report `modes` instead of a mode config option).
+    Mode,
+    /// `session/set_model` (agents that report `models` instead of a model config option).
+    Model,
+}
+
+/// A session setting: an ACP select config option, or the older `modes` / `models`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfigOption {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// ACP category: `model`, `mode`, `thought_level`, or agent-specific.
+    pub category: Option<String>,
+    pub current: Option<String>,
+    pub values: Vec<AgentConfigValue>,
+    pub via: AgentConfigVia,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCommand {
+    /// Without the leading `/`.
+    pub name: String,
+    pub description: String,
+    /// What to type after the command, when it takes input.
+    pub hint: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUsage {
+    /// Tokens in the context window.
+    pub used: u32,
+    /// Size of the context window.
+    pub size: u32,
+    /// Session cost so far.
+    pub cost: Option<f64>,
+    pub currency: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentImage {
+    pub mime_type: String,
+    /// Base64, without a `data:` prefix.
+    pub data: String,
+    pub name: Option<String>,
+}
+
+/// A message to the agent: text, plus files to look at and images.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPrompt {
+    pub text: String,
+    pub files: Vec<IpcPath>,
+    pub images: Vec<AgentImage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQueued {
+    pub id: String,
+    pub prompt: AgentPrompt,
+}
+
+/// A setting chosen for a new task, by [`AgentConfigOption::id`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfigChoice {
+    pub id: String,
+    pub value: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentToolStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolDiff {
+    pub path: IpcPath,
+    pub added: u32,
+    pub removed: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPlanItem {
+    pub content: String,
+    /// `pending`, `in_progress` or `completed`.
+    pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPermissionOption {
+    pub id: String,
+    pub name: String,
+    /// `allow_once`, `allow_always`, `reject_once` or `reject_always`.
+    pub kind: String,
+}
+
+/// One item of a task's conversation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum AgentEntry {
+    User {
+        text: String,
+        /// Names of the files and images sent with it.
+        attachments: Vec<String>,
+    },
+    Agent {
+        text: String,
+    },
+    Thought {
+        text: String,
+    },
+    Tool {
+        id: String,
+        title: String,
+        /// ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`…
+        kind: String,
+        status: AgentToolStatus,
+        locations: Vec<IpcPath>,
+        /// Text the tool reported (command output…), truncated.
+        output: Option<String>,
+        diffs: Vec<AgentToolDiff>,
+    },
+    Plan {
+        items: Vec<AgentPlanItem>,
+    },
+    Permission {
+        id: u32,
+        title: String,
+        options: Vec<AgentPermissionOption>,
+        /// Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled".
+        chosen: Option<String>,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProvider {
+    pub id: String,
+    pub name: String,
+    /// The command line that starts its ACP server.
+    pub command: String,
+    /// Whether the command was found (on `PATH`).
+    pub installed: bool,
+    /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.
+    pub config: Vec<AgentConfigOption>,
+    /// Slash commands it offered last time.
+    pub commands: Vec<AgentCommand>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NewAgentTask {
+    pub prompt: AgentPrompt,
+    pub provider: String,
+    /// Settings for the new session (model, mode…).
+    pub config: Vec<AgentConfigChoice>,
+    pub isolation: Isolation,
+    /// Branch to start the worktree from; the current branch when `None`.
+    pub base: Option<String>,
+}
+
+/// A file the task changed, relative to [`AgentTask::base_commit`].
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChange {
+    pub path: IpcPath,
+    pub rel_path: String,
+    pub kind: ide_vcs::ChangeKind,
+    pub added: u32,
+    pub removed: u32,
+}
+
+/// Streamed to the window that subscribed (`AgentManager::subscribe`).
+#[derive(Clone, Debug, Serialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum AgentEvent {
+    /// A task was created or its metadata changed.
+    Task {
+        task: AgentTask,
+    },
+    Removed {
+        id: String,
+    },
+    /// Entry `index` of `task` was added or replaced.
+    Entry {
+        task: String,
+        index: u32,
+        entry: AgentEntry,
+    },
+}

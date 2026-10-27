@@ -1,7 +1,8 @@
 //! Transport shared by the LSP and DAP clients.
 //!
 //! * [`framing`]: `Content-Length` header framing over any async byte stream
-//!   (used by both protocols).
+//!   (used by both protocols), and newline-delimited JSON ([`Framing::Lines`],
+//!   the Agent Client Protocol).
 //! * [`Peer`]: a JSON-RPC 2.0 endpoint with request/response correlation,
 //!   cancellation (`$/cancelRequest`) and handlers for server→client traffic.
 
@@ -85,6 +86,34 @@ pub mod framing {
         let mut buf = Vec::with_capacity(header.len() + body.len());
         buf.extend_from_slice(header.as_bytes());
         buf.extend_from_slice(body);
+        writer.write_all(&buf).await?;
+        writer.flush().await
+    }
+
+    /// Reads one newline-terminated message, skipping blank lines.
+    pub async fn read_line_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let n = (&mut *reader).take(MAX_MESSAGE_LEN as u64 + 1).read_until(b'\n', &mut line).await?;
+            if n == 0 {
+                return Ok(None);
+            }
+            if line.len() > MAX_MESSAGE_LEN {
+                return Err(Error::new(ErrorKind::InvalidData, "message too large"));
+            }
+            let text = trim_line(&line);
+            if !text.iter().all(u8::is_ascii_whitespace) {
+                return Ok(Some(text.to_vec()));
+            }
+        }
+    }
+
+    /// Writes one message followed by `\n` and flushes once.
+    pub async fn write_line_message<W: AsyncWrite + Unpin>(writer: &mut W, body: &[u8]) -> std::io::Result<()> {
+        let mut buf = Vec::with_capacity(body.len() + 1);
+        buf.extend_from_slice(body);
+        buf.push(b'\n');
         writer.write_all(&buf).await?;
         writer.flush().await
     }
@@ -210,6 +239,32 @@ impl Inner {
     }
 }
 
+/// How messages are delimited on the wire.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Framing {
+    /// `Content-Length` headers (LSP, DAP).
+    #[default]
+    ContentLength,
+    /// One JSON message per line (Agent Client Protocol).
+    Lines,
+}
+
+impl Framing {
+    async fn read<R: tokio::io::AsyncBufRead + Unpin>(self, reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
+        match self {
+            Framing::ContentLength => framing::read_message(reader).await,
+            Framing::Lines => framing::read_line_message(reader).await,
+        }
+    }
+
+    async fn write<W: AsyncWrite + Unpin>(self, writer: &mut W, body: &[u8]) -> std::io::Result<()> {
+        match self {
+            Framing::ContentLength => framing::write_message(writer, body).await,
+            Framing::Lines => framing::write_line_message(writer, body).await,
+        }
+    }
+}
+
 /// A connected JSON-RPC peer. Cloning shares the connection.
 #[derive(Clone)]
 pub struct Peer {
@@ -239,6 +294,19 @@ impl Peer {
         handler: Arc<dyn Handler>,
         on_stderr: Box<dyn Fn(String) + Send + Sync>,
     ) -> std::io::Result<Self> {
+        Self::spawn_framed(command, args, cwd, env, handler, on_stderr, Framing::ContentLength)
+    }
+
+    /// [`spawn`](Self::spawn) with the given wire framing.
+    pub fn spawn_framed(
+        command: &str,
+        args: &[String],
+        cwd: &std::path::Path,
+        env: &[(String, String)],
+        handler: Arc<dyn Handler>,
+        on_stderr: Box<dyn Fn(String) + Send + Sync>,
+        framing: Framing,
+    ) -> std::io::Result<Self> {
         use std::process::Stdio;
         let mut cmd = tokio::process::Command::new(command);
         ide_core::process::no_window(cmd.as_std_mut());
@@ -255,7 +323,7 @@ impl Peer {
         let stderr = child.stderr.take();
         let pid = child.id();
 
-        let peer = Self::start(stdout, stdin, handler, false, pid);
+        let peer = Self::start(stdout, stdin, handler, false, pid, framing);
 
         if let Some(stderr) = stderr {
             let name = command.to_owned();
@@ -304,7 +372,16 @@ impl Peer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        Self::start(reader, writer, handler, true, None)
+        Self::start(reader, writer, handler, true, None, Framing::ContentLength)
+    }
+
+    /// [`connect`](Self::connect) with the given wire framing.
+    pub fn connect_framed<R, W>(reader: R, writer: W, handler: Arc<dyn Handler>, framing: Framing) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::start(reader, writer, handler, true, None, framing)
     }
 
     /// [`Peer::connect`] over streams served by `child` (a server reached over a socket
@@ -321,12 +398,19 @@ impl Peer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let peer = Self::start(reader, writer, handler, true, child.id());
+        let peer = Self::start(reader, writer, handler, true, child.id(), Framing::ContentLength);
         peer.supervise(child);
         peer
     }
 
-    fn start<R, W>(reader: R, mut writer: W, handler: Arc<dyn Handler>, close_on_eof: bool, pid: Option<u32>) -> Self
+    fn start<R, W>(
+        reader: R,
+        mut writer: W,
+        handler: Arc<dyn Handler>,
+        close_on_eof: bool,
+        pid: Option<u32>,
+        framing: Framing,
+    ) -> Self
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
@@ -354,7 +438,7 @@ impl Peer {
                         _ = kill.cancelled() => None,
                     };
                     let Some(body) = body else { break };
-                    if let Err(e) = framing::write_message(&mut writer, &body).await {
+                    if let Err(e) = framing.write(&mut writer, &body).await {
                         tracing::debug!("jsonrpc write failed: {e}");
                         if let Some(inner) = weak.upgrade() {
                             inner.close_transport();
@@ -393,7 +477,7 @@ impl Peer {
                 let mut reader = BufReader::new(reader);
                 loop {
                     let msg = tokio::select! {
-                        msg = framing::read_message(&mut reader) => msg,
+                        msg = framing.read(&mut reader) => msg,
                         _ = inner.kill.cancelled() => break,
                     };
                     match msg {

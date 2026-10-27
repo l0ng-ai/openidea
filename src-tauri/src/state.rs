@@ -74,6 +74,8 @@ pub struct Project {
     pub db: Arc<ide_db::DbManager>,
     /// HTTP Client responses (IDEA's `.idea/httpRequests`), in the app data dir.
     pub http_history: Arc<ide_http::History>,
+    /// Coding agent tasks (Agents tool window).
+    pub agents: Arc<ide_agent::AgentManager>,
     watcher: Watcher,
     /// Watchers of the Project Structure content roots outside the project folder.
     content_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
@@ -403,6 +405,21 @@ impl AppState {
             self.data_dir.join("db-history.json"),
         ));
         let http_history = Arc::new(ide_http::History::new(self.data_dir.join("http-history").join(&project_key)));
+        let agents = Arc::new(ide_agent::AgentManager::new(
+            ide_agent::AgentPaths {
+                project_root: root.clone(),
+                store_dir: self.data_dir.join("agents").join(&project_key),
+                // Outside the app data dir: its path has spaces on macOS, which trips up build scripts.
+                worktrees_dir: dirs::home_dir()
+                    .unwrap_or_else(|| self.data_dir.clone())
+                    .join(".openidea")
+                    .join("worktrees")
+                    .join(&project_key),
+                models_file: self.data_dir.join("agents").join("models.json"),
+                custom_agents_dir: Some(self.config_dir.join("agents")),
+            },
+            tauri::async_runtime::handle().inner().clone(),
+        ));
         let project = Arc::new(Project {
             root,
             sink,
@@ -420,6 +437,7 @@ impl AppState {
             cache_dir: self.data_dir.join("cache").join(&project_key),
             db,
             http_history,
+            agents,
             watcher,
             content_watchers: Mutex::new(content_watchers),
             _scratch_watcher: scratch_watcher,
@@ -430,6 +448,7 @@ impl AppState {
 
     pub fn close_project(&self, window: &str) {
         if let Some(project) = self.projects.write().remove(window) {
+            project.agents.shutdown();
             let lsp = project.lsp.clone();
             tauri::async_runtime::spawn(async move { lsp.shutdown_all().await });
         }

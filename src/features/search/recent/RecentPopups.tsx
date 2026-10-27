@@ -10,6 +10,7 @@ import {
   toolWindowService,
   useContributions,
   useFileDecoration,
+  type OpenEditorTab,
   type ToolWindowContribution,
 } from "@/workbench/contributions";
 import { highlightTokens, languageForPath, type CodeToken } from "@/editor/lsp/markdown";
@@ -24,6 +25,7 @@ import {
   lineSegments,
   locationBreadcrumb,
   locationTime,
+  switcherItems,
   switcherPaths,
   switcherSelection,
   switcherToolWindows,
@@ -59,13 +61,20 @@ function RecentFilesDialog() {
   const root = useProject((s) => s.project?.root ?? null);
   const toolWindows = useContributions((s) => s.toolWindows);
   const [paths, setPaths] = useState<string[] | null>(null);
+  // Switcher: the open editor tabs (files and others), when the editor service lists them.
+  const [tabs] = useState<OpenEditorTab[] | null>(() => (switcher ? (maybeEditorService()?.openTabs?.() ?? null) : null));
   const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
   const [query, setQuery] = useState("");
   const [column, setColumn] = useState<"files" | "tools">("files");
   const [fileIndex, setFileIndex] = useState<number | null>(null);
   const [toolIndex, setToolIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const activePath = useMemo(() => maybeEditorService()?.activePath() ?? null, []);
+  // The current editor: a file path, or the key of a non-file editor (Switcher lists those too).
+  const activePath = useMemo(() => {
+    const top = tabs?.[0];
+    if (top && top.lastActive > 0 && top.input.kind !== "file" && top.input.kind !== "virtual") return top.input.key;
+    return maybeEditorService()?.activePath() ?? null;
+  }, [tabs]);
 
   useEffect(() => {
     let alive = true;
@@ -83,12 +92,14 @@ function RecentFilesDialog() {
 
   const files = useMemo(
     () =>
-      filterRecentFiles(
-        (paths ?? []).filter((p) => !removed.has(p)),
-        query,
-        { root, edited, editedOnly },
-      ),
-    [paths, removed, query, root, edited, editedOnly],
+      tabs
+        ? switcherItems(paths ?? [], tabs, query, root).filter((f) => !removed.has(f.path))
+        : filterRecentFiles(
+            (paths ?? []).filter((p) => !removed.has(p)),
+            query,
+            { root, edited, editedOnly },
+          ),
+    [paths, tabs, removed, query, root, edited, editedOnly],
   );
   const tools = useMemo(() => switcherToolWindows(toolWindows.values(), !!root, query), [toolWindows, root, query]);
   const fIndex = files.length
@@ -98,7 +109,13 @@ function RecentFilesDialog() {
   const effectiveColumn = column === "files" && !files.length && tools.length ? "tools" : column;
 
   const openFile = (item: RecentFileItem | undefined, side = false) => {
-    if (item) afterClose(() => void openLocation(item.path, null, { side }));
+    if (!item) return;
+    const editor = item.editor;
+    afterClose(() =>
+      editor
+        ? void maybeEditorService()?.openInput(editor.input, { side, focus: true })
+        : void openLocation(item.path, null, { side }),
+    );
   };
 
   const openTool = (tw: ToolWindowContribution | undefined) => {
@@ -114,7 +131,8 @@ function RecentFilesDialog() {
     }
     const item = files[fIndex];
     if (!item) return;
-    maybeEditorService()?.closePath?.(item.path);
+    if (item.editor) maybeEditorService()?.closeInput?.(item.path);
+    else maybeEditorService()?.closePath?.(item.path);
     if (!switcher) void call(commands.removeRecent(item.path)).catch(() => {});
     setRemoved((r) => new Set(r).add(item.path));
     setFileIndex(fIndex);
@@ -197,7 +215,7 @@ function RecentFilesDialog() {
   const recentShortcut = shortcutLabel("navigate.recentFiles");
   const locationsShortcut = shortcutLabel("navigate.recentLocations");
   const title = switcher ? "Switcher" : editedOnly ? "Recently Edited Files" : "Recent Files";
-  const footerPath = selected?.path ?? (selectedTool ? "" : (root ?? ""));
+  const footerPath = (selected?.editor ? selected.rel : selected?.path) ?? (selectedTool ? "" : (root ?? ""));
   return (
     <Dialog open onClose={hideRecentPopup} width={720} aria-label={title} className={styles.dialog}>
       <header className={styles.header}>
@@ -320,10 +338,10 @@ function ToolRow({ tw, indices }: { tw: ToolWindowContribution; indices: number[
 }
 
 function RecentFileRow({ item, current }: { item: RecentFileItem; current: boolean }) {
-  const deco = useFileDecoration(item.path);
+  const deco = useFileDecoration(item.editor ? "" : item.path);
   return (
     <>
-      <Icon name={fileIconName(item.name)} size={16} className={styles.icon} />
+      <Icon name={item.editor?.icon ?? fileIconName(item.name)} size={16} className={styles.icon} />
       <span
         className={clsx(styles.name, current && styles.current)}
         style={deco.color ? { color: deco.color } : undefined}

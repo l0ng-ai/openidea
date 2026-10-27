@@ -322,6 +322,10 @@ export const vscodeMacos: Record<string, string[]> = {
   "find.popup.previousResult": ["Meta+Shift+G"],
   "find.popup.openResult": [],
   "find.popup.recentSearches": ["Alt+Down"],
+  // Agents (VS Code's chat: ⇧⌘I)
+  "agents.newTask": ["Meta+Shift+I"],
+  "agents.showToolWindow": [],
+  "agents.sendToAgent": [],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.
   "find.field.newLine": ["Meta+Shift+Enter"],
   "find.field.recentSearches": ["Alt+Down"],

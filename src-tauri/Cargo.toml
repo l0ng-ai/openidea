@@ -53,6 +53,7 @@ ide-analysis.workspace = true
 ide-coverage.workspace = true
 ide-profiler.workspace = true
 ide-http.workspace = true
+ide-agent.workspace = true
 ide-db.workspace = true
 ide-web.workspace = true
 ide-spell.workspace = true

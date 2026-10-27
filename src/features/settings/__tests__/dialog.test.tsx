@@ -128,6 +128,26 @@ describe("Settings dialog", () => {
     ]);
   });
 
+  it("edits and saves independent custom font weights", async () => {
+    const dialog = await openDialog("editor.font");
+    for (const [label, value] of [
+      ["Main font weight", "449"],
+      ["Bold font weight", "650"],
+    ]) {
+      fireEvent.click(within(dialog).getByRole("button", { name: label }));
+      fireEvent.click(screen.getByRole("option", { name: "Custom" }));
+      fireEvent.change(within(dialog).getByLabelText(`${label} custom value`), { target: { value } });
+    }
+    const preview = within(dialog).getByLabelText("Font preview");
+    expect(preview.style.getPropertyValue("--fw-code")).toBe("450");
+    expect(preview.style.getPropertyValue("--fw-code-bold")).toBe("650");
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet.mock.calls).toEqual([
+      ["global", "editor.boldFontWeight", "650"],
+      ["global", "editor.fontWeight", "450"],
+    ]);
+  });
+
   it("Cancel discards staged edits", async () => {
     const dialog = await openDialog("editor.codeStyle.other");
     fireEvent.change(within(dialog).getByLabelText("Tab size"), { target: { value: "2" } });

@@ -53,6 +53,27 @@ export const commands = {
 	cancelRequest: (id: RequestId) => __TAURI_INVOKE<void>("cancel_request", { id }),
 	/**  Routes frontend logs into the backend `tracing` pipeline. */
 	logFrontend: (level: LogLevel, message: string) => __TAURI_INVOKE<void>("log_frontend", { level, message }),
+	/**  Streams the project's agent events to this window; returns every task. */
+	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
+	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	agentEntries: (task: string) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task })),
+	agentCreate: (request: NewAgentTask) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create", { request })),
+	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
+	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
+	/**  Drops a queued message and returns it (to edit it). */
+	agentUnqueue: (task: string, queued: string) => typedError<AgentQueued, IdeError>(__TAURI_INVOKE("agent_unqueue", { task, queued })),
+	/**  Sends a queued message now, interrupting the current turn. */
+	agentSendQueuedNow: (task: string, queued: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_send_queued_now", { task, queued })),
+	/**  Changes a session setting (model, mode, thinking effort…). */
+	agentSetConfig: (task: string, option: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_config", { task, option, value })),
+	agentCancel: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task })),
+	/**  Answers a permission request; `option: null` cancels it. */
+	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
+	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
+	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
+	agentChanges: (task: string) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task })),
+	/**  Content of `path` when the task started (left side of its diff). */
+	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
 	fsReadDir: (path: string) => typedError<FileEntry[], IdeError>(__TAURI_INVOKE("fs_read_dir", { path })),
 	/**  Size and text/binary classification, from the file's head only. */
 	fsProbe: (path: string) => typedError<FileProbe, IdeError>(__TAURI_INVOKE("fs_probe", { path })),
@@ -814,6 +835,180 @@ export type ActionsOnSaveSettings = {
 export type ActiveTheme = {
 	pluginId: string,
 	theme: ThemeDef,
+};
+
+/**  A file the task changed, relative to [`AgentTask::base_commit`]. */
+export type AgentChange = {
+	path: IpcPath,
+	relPath: string,
+	kind: ChangeKind,
+	added: number,
+	removed: number,
+};
+
+export type AgentCommand = {
+	/**  Without the leading `/`. */
+	name: string,
+	description: string,
+	/**  What to type after the command, when it takes input. */
+	hint: string | null,
+};
+
+/**  A setting chosen for a new task, by [`AgentConfigOption::id`]. */
+export type AgentConfigChoice = {
+	id: string,
+	value: string,
+};
+
+/**  A session setting: an ACP select config option, or the older `modes` / `models`. */
+export type AgentConfigOption = {
+	id: string,
+	name: string,
+	description: string | null,
+	/**  ACP category: `model`, `mode`, `thought_level`, or agent-specific. */
+	category: string | null,
+	current: string | null,
+	values: AgentConfigValue[],
+	via: AgentConfigVia,
+};
+
+/**  One value of a select-type session setting. */
+export type AgentConfigValue = {
+	value: string,
+	name: string,
+	description: string | null,
+};
+
+/**  How a setting is changed. */
+export type AgentConfigVia = 
+/**  `session/set_config_option`. */
+"option" | 
+/**  `session/set_mode` (agents that report `modes` instead of a mode config option). */
+"mode" | 
+/**  `session/set_model` (agents that report `models` instead of a model config option). */
+"model";
+
+/**  One item of a task's conversation. */
+export type AgentEntry = { type: "user"; text: string; 
+/**  Names of the files and images sent with it. */
+attachments: string[] } | { type: "agent"; text: string } | { type: "thought"; text: string } | { type: "tool"; id: string; title: string; 
+/**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
+kind: string; status: AgentToolStatus; locations: IpcPath[]; 
+/**  Text the tool reported (command output…), truncated. */
+output: string | null; diffs: AgentToolDiff[] } | { type: "plan"; items: AgentPlanItem[] } | { type: "permission"; id: number; title: string; options: AgentPermissionOption[]; 
+/**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
+chosen: string | null } | { type: "error"; message: string };
+
+/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+export type AgentEvent = 
+/**  A task was created or its metadata changed. */
+{ type: "task"; task: AgentTask } | { type: "removed"; id: string } | 
+/**  Entry `index` of `task` was added or replaced. */
+{ type: "entry"; task: string; index: number; entry: AgentEntry };
+
+export type AgentImage = {
+	mimeType: string,
+	/**  Base64, without a `data:` prefix. */
+	data: string,
+	name: string | null,
+};
+
+export type AgentPermissionOption = {
+	id: string,
+	name: string,
+	/**  `allow_once`, `allow_always`, `reject_once` or `reject_always`. */
+	kind: string,
+};
+
+export type AgentPlanItem = {
+	content: string,
+	/**  `pending`, `in_progress` or `completed`. */
+	status: string,
+};
+
+/**  A message to the agent: text, plus files to look at and images. */
+export type AgentPrompt = {
+	text: string,
+	files: IpcPath[],
+	images: AgentImage[],
+};
+
+export type AgentProvider = {
+	id: string,
+	name: string,
+	/**  The command line that starts its ACP server. */
+	command: string,
+	/**  Whether the command was found (on `PATH`). */
+	installed: boolean,
+	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
+	config: AgentConfigOption[],
+	/**  Slash commands it offered last time. */
+	commands: AgentCommand[],
+};
+
+export type AgentQueued = {
+	id: string,
+	prompt: AgentPrompt,
+};
+
+export type AgentStatus = 
+/**  Creating the worktree / starting the agent. */
+"starting" | "running" | 
+/**  Waiting for a permission answer. */
+"needsInput" | 
+/**  The turn ended; the result can be reviewed or the conversation continued. */
+"ready" | "failed" | "archived";
+
+export type AgentTask = {
+	id: string,
+	title: string,
+	/**  [`AgentProvider::id`]. */
+	provider: string,
+	/**  Model the task runs on (its `model` setting), when known. */
+	model: string | null,
+	status: AgentStatus,
+	isolation: Isolation,
+	/**  Directory the agent works in (the worktree, or the project root). */
+	cwd: IpcPath,
+	/**  Branch of the task's worktree. */
+	branch: string | null,
+	/**  Branch (or revision) the worktree was created from. */
+	base: string | null,
+	/**  Commit the task's changes are compared against. */
+	baseCommit: string | null,
+	/**  Why the task failed, when it did. */
+	error: string | null,
+	createdMs: number | null,
+	updatedMs: number | null,
+	/**
+	 *  The session's settings (model, mode, thinking effort…) as last reported, with the
+	 *  user's choices applied.
+	 */
+	config: AgentConfigOption[],
+	/**  Slash commands the agent offers. */
+	commands: AgentCommand[],
+	/**  Context window use, when the agent reports it. */
+	usage: AgentUsage | null,
+	/**  Messages waiting for the current turn to end, oldest first. */
+	queue: AgentQueued[],
+};
+
+export type AgentToolDiff = {
+	path: IpcPath,
+	added: number,
+	removed: number,
+};
+
+export type AgentToolStatus = "pending" | "running" | "completed" | "failed";
+
+export type AgentUsage = {
+	/**  Tokens in the context window. */
+	used: number,
+	/**  Size of the context window. */
+	size: number,
+	/**  Session cost so far. */
+	cost: number | null,
+	currency: string | null,
 };
 
 export type AppInfo = {
@@ -2910,6 +3105,12 @@ export type InvalidateCachesOptions = {
 /**  A path field of an IPC type. */
 export type IpcPath = string;
 
+export type Isolation = 
+/**  A new git worktree on its own branch. */
+"worktree" | 
+/**  The project's own checkout. */
+"local";
+
 export type IssueLink = {
 	/**  Regular expression matched in commit messages. */
 	pattern?: string,
@@ -3452,6 +3653,16 @@ export type MethodStat = {
 	frame: number,
 	selfWeight: number | null,
 	total: number | null,
+};
+
+export type NewAgentTask = {
+	prompt: AgentPrompt,
+	provider: string,
+	/**  Settings for the new session (model, mode…). */
+	config: AgentConfigChoice[],
+	isolation: Isolation,
+	/**  Branch to start the worktree from; the current branch when `None`. */
+	base: string | null,
 };
 
 /**  Result of `node_at`: the smallest named node covering a range, with its ancestors. */

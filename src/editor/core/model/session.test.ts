@@ -39,6 +39,31 @@ describe("editor session", () => {
     expect(r.layout).toMatchObject({ kind: "split", dir: "column" });
   });
 
+  it("saves tabs of restorable editor kinds with their input", () => {
+    let s = initialTabsState();
+    s = open(s, "/p/a.ts");
+    s = openTab(s, s.activePane, { kind: "agent-session", key: "agent:1", data: { task: "1" } }).state;
+    s = openTab(s, s.activePane, { kind: "diff", key: "diff:x", data: { big: true } }).state;
+    s = openTab(s, s.activePane, { kind: "agent-session", key: "agent:1", data: { task: "1" } }).state;
+    const restorable = (i: { kind: string }) => i.kind === "agent-session";
+    const session = serializeSession(s, {}, restorable)!;
+    expect(session.layout).toMatchObject({ kind: "pane", active: 1 });
+    const r = restoreTabsState(parseSession(JSON.parse(JSON.stringify(session)))!, fileKey);
+    const pane = r.panes[paneIds(r)[0]!]!;
+    expect(pane.tabs.map((t) => t.input)).toEqual([file("/p/a.ts"), { kind: "agent-session", key: "agent:1", data: { task: "1" } }]);
+    expect(pane.active).toBe(pane.tabs[1]!.id);
+    // Only restorable tabs: still a session. Junk inputs (file kind, no key) are dropped.
+    const empty = initialTabsState();
+    const only = openTab(empty, empty.activePane, { kind: "agent-session", key: "agent:2", data: {} }).state;
+    expect(serializeSession(only, {}, restorable)).not.toBeNull();
+    expect(serializeSession(only, {})).toBeNull();
+    const junk = parseSession({
+      version: 1,
+      layout: { kind: "pane", tabs: [{ input: { kind: "file", key: "k" } }, { input: { kind: "x" } }, { input: { kind: "x", key: "y" } }], active: 0 },
+    })!;
+    expect(junk.layout).toEqual({ kind: "pane", tabs: [{ input: { kind: "x", key: "y" } }], active: 0 });
+  });
+
   it("returns null for sessions without file tabs and rejects junk", () => {
     expect(serializeSession(initialTabsState(), {})).toBeNull();
     expect(parseSession({ version: 2 })).toBeNull();

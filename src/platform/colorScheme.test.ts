@@ -60,9 +60,10 @@ describe("color schemes", () => {
     const d = validateEditorExtras({});
     expect([d.fontWeight, d.boldFontWeight]).toEqual([400, 700]);
     const v = validateEditorExtras({ fontWeight: 349, boldFontWeight: 1200 });
-    expect([v.fontWeight, v.boldFontWeight]).toEqual([300, 900]);
+    expect([v.fontWeight, v.boldFontWeight]).toEqual([350, 900]);
     expect(validateEditorExtras({ fontWeight: "bold" }).fontWeight).toBe(400);
     expect(fontWeightVars(500, undefined)).toEqual({ "--fw-code": "500", "--fw-code-bold": "700" });
+    expect(fontWeightVars(450, 650)).toEqual({ "--fw-code": "450", "--fw-code-bold": "650" });
   });
 
   it("coerces editor settings to their defaults' shape", () => {

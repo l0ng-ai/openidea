@@ -295,6 +295,9 @@ export const intellijWindows: Record<string, string[]> = {
   "http.runAll": [],
   "db.execute": ["Ctrl+Enter"],
   "db.showToolWindow": [],
+  "agents.newTask": ["Ctrl+Alt+Shift+I"],
+  "agents.showToolWindow": [],
+  "agents.sendToAgent": [],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
   "db.openConsole": ["Ctrl+Shift+Q"],
   "db.newDataSource": [],

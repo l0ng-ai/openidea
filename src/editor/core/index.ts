@@ -42,6 +42,7 @@ export function activate(): void | (() => void) {
     saveAll: () => ctrl.saveAll(),
     focus: () => ctrl.focus(),
     openPaths: () => ctrl.openPaths(),
+    openTabs: () => ctrl.openTabs(),
     closePath: (path) => ctrl.closePath(path),
     closeInput: (key) => ctrl.closeInput(key),
     reformat: async (path) => {

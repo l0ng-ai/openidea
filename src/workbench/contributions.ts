@@ -103,6 +103,11 @@ export interface EditorKindContribution {
   component: ComponentType<{ input: EditorInput }>;
   title: (input: EditorInput) => string;
   icon?: (input: EditorInput) => string;
+  /**
+   * Its tabs are saved with the editor session and reopened with the project (their
+   * `data` must be plain JSON). The editor closes tabs whose target is gone itself.
+   */
+  restorable?: boolean;
 }
 
 /**
@@ -371,6 +376,14 @@ export interface OpenOptions {
   asText?: boolean;
 }
 
+export interface OpenEditorTab {
+  input: EditorInput;
+  title: string;
+  icon: string;
+  /** Activation order this session (higher is more recent); 0 if never active. */
+  lastActive: number;
+}
+
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
@@ -384,6 +397,8 @@ export interface EditorService {
   focus?(): void;
   /** Paths of the documents open in editor tabs (all panes, tab order). */
   openPaths?(): string[];
+  /** Every open tab, files or not, most recently active first (Switcher). */
+  openTabs?(): OpenEditorTab[];
   /** Closes every tab showing `path`. */
   closePath?(path: string): void;
   /** Closes the tab of the input with this `key` (e.g. a merge editor once applied). */

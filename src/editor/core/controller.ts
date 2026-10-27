@@ -21,11 +21,13 @@ import {
   menuGroupItems,
   notifications,
   resolveFileEditor,
+  useContributions,
   type EditorInput,
   type OpenOptions,
+  type OpenEditorTab,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
-import { showContextMenu, type MenuItem } from "@/ui";
+import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
 import { usePlatform } from "@/platform/platformInfo";
 import {
   activateTab,
@@ -140,6 +142,32 @@ function isTextTab(tab: Tab | null | undefined): tab is Tab & { input: { path: s
   return !!tab && isTextInput(tab.input);
 }
 
+type EditorKinds = ReturnType<typeof useContributions.getState>["editorKinds"];
+
+/** Tab title of an editor input: the file name, or what its editor kind calls it. */
+export function tabTitle(input: EditorInput, kinds: EditorKinds): string {
+  if (input.kind === "file") return basename(input.path ?? input.key);
+  if (input.kind === "virtual")
+    return (input.data as VirtualInputData | undefined)?.title ?? basename(input.path ?? input.key);
+  const kind = kinds.get(input.kind);
+  try {
+    return kind?.title(input) ?? input.key;
+  } catch {
+    return input.key;
+  }
+}
+
+export function tabIcon(input: EditorInput, kinds: EditorKinds): string {
+  if (input.kind === "file") return fileIconName(basename(input.path ?? ""));
+  if (input.kind === "virtual") return fileIconName(tabTitle(input, kinds));
+  const kind = kinds.get(input.kind);
+  try {
+    return kind?.icon?.(input) ?? "file";
+  } catch {
+    return "file";
+  }
+}
+
 export class EditorController implements SlotHost {
   manager: DocumentManager;
   readonly slots = new Map<string, EditorSlot>();
@@ -157,6 +185,9 @@ export class EditorController implements SlotHost {
   private restoredViews = new Map<string, FileViewState>();
   /** Tabs created by session restore; dropped silently if their file is gone. */
   private restoredTabs = new Set<string>();
+  /** When each input key was last the active tab (a counter, across panes). */
+  private lastActive = new Map<string, number>();
+  private activeClock = 0;
 
   constructor(backend: DocBackend = docBackend(), scheduler?: Scheduler) {
     this.manager = new DocumentManager(
@@ -178,6 +209,7 @@ export class EditorController implements SlotHost {
       useTabs.subscribe((s) => {
         const prev = prevTabs;
         prevTabs = s;
+        this.stampActive(s);
         this.onTabsChanged(prev, s);
       }),
     );
@@ -301,7 +333,8 @@ export class EditorController implements SlotHost {
       if (files[path] && slot.model.lastFocused !== slot && !this.restoredViews.has(path)) continue;
       files[path] = slot.viewState();
     }
-    storeSession(root, serializeSession(useTabs.getState(), files));
+    const kinds = useContributions.getState().editorKinds;
+    storeSession(root, serializeSession(useTabs.getState(), files, (input) => !!kinds.get(input.kind)?.restorable));
   }
 
   /** Reopens the tabs, splits and carets saved for `root` (after the project opened). */
@@ -991,6 +1024,29 @@ export class EditorController implements SlotHost {
     }
     const pane = document.querySelector<HTMLElement>(`[data-pane-id="${useTabs.getState().activePane}"]`);
     pane?.querySelector<HTMLElement>("[data-editor-focus], .cm-content")?.focus({ preventScroll: true });
+  }
+
+  private stampActive(s: TabsState) {
+    const pane = s.panes[s.activePane];
+    const key = pane?.tabs.find((t) => t.id === pane.active)?.input.key;
+    if (key && this.lastActive.get(key) !== this.activeClock) this.lastActive.set(key, ++this.activeClock);
+  }
+
+  /** Every open tab once (all panes), most recently active first; tabs never active this session follow in tab order. */
+  openTabs(): OpenEditorTab[] {
+    const s = useTabs.getState();
+    const kinds = useContributions.getState().editorKinds;
+    const out = new Map<string, OpenEditorTab>();
+    for (const id of paneIds(s))
+      for (const t of s.panes[id]?.tabs ?? [])
+        if (!out.has(t.input.key))
+          out.set(t.input.key, {
+            input: t.input,
+            title: tabTitle(t.input, kinds),
+            icon: tabIcon(t.input, kinds),
+            lastActive: this.lastActive.get(t.input.key) ?? 0,
+          });
+    return [...out.values()].sort((a, b) => b.lastActive - a.lastActive);
   }
 
   openPaths(): string[] {

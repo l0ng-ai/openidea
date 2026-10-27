@@ -120,6 +120,28 @@ async fn request_response_and_errors() {
     assert!(matches!(err, RpcError::Protocol(_)));
 }
 
+#[tokio::test]
+async fn line_framing_round_trips_and_skips_blank_lines() {
+    let mut buf = Vec::new();
+    framing::write_line_message(&mut buf, br#"{"a":1}"#).await.unwrap();
+    buf.extend_from_slice(b"\r\n\n{\"b\":2}\r\n");
+    let mut reader = tokio::io::BufReader::new(&buf[..]);
+    assert_eq!(framing::read_line_message(&mut reader).await.unwrap().unwrap(), br#"{"a":1}"#);
+    assert_eq!(framing::read_line_message(&mut reader).await.unwrap().unwrap(), br#"{"b":2}"#);
+    assert!(framing::read_line_message(&mut reader).await.unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn line_framed_peers_talk() {
+    let (a_io, b_io) = duplex(64 * 1024);
+    let (ar, aw) = tokio::io::split(a_io);
+    let (br, bw) = tokio::io::split(b_io);
+    let client = Peer::connect_framed(ar, aw, Arc::new(NoopHandler), Framing::Lines);
+    let _server = Peer::connect_framed(br, bw, Arc::new(Recorder::default()), Framing::Lines);
+    let v: Value = client.request("echo", json!({"x": "line\nbreak"}), None).await.unwrap();
+    assert_eq!(v, json!({"x": "line\nbreak"}));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn notifications_arrive_in_order() {
     let rec = Arc::new(Recorder::default());

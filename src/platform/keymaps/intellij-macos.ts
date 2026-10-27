@@ -298,6 +298,9 @@ export const intellijMacos: Record<string, string[]> = {
   "http.runAll": [],
   "db.execute": ["Meta+Enter"],
   "db.showToolWindow": [],
+  "agents.newTask": ["Meta+Shift+I"],
+  "agents.showToolWindow": [],
+  "agents.sendToAgent": [],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
   "db.openConsole": ["Meta+Shift+L"],
   "db.newDataSource": [],
