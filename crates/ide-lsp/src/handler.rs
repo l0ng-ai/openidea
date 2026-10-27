@@ -128,7 +128,8 @@ impl ClientHandler {
         Value::Array(
             items
                 .iter()
-                .map(|item| match item.get("section").and_then(Value::as_str) {
+                // vtsls asks for the whole configuration as section `""`.
+                .map(|item| match item.get("section").and_then(Value::as_str).filter(|s| !s.is_empty()) {
                     Some(section) if section == self.server.name => options.clone(),
                     // Servers that take settings under `initializationOptions.settings`
                     // (jdtls) ask for the same sections later.
@@ -193,6 +194,7 @@ impl Handler for ClientHandler {
                     _ => tracing::debug!("[{}] {text}", self.server.name),
                 }
             }
+            "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
             "telemetry/event" | "$/logTrace" | "$/cancelRequest" => {}
             other => tracing::trace!("[{}] unhandled notification {other}", self.server.name),
         }

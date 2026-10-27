@@ -90,6 +90,14 @@ struct Manifest {
 
 const MANIFEST: &str = ".openidea-tool.json";
 
+/// `typescript@<7` → `typescript`, `@vue/language-server` unchanged.
+fn npm_name(spec: &str) -> &str {
+    match spec[1..].find('@') {
+        Some(i) => &spec[..i + 1],
+        None => spec,
+    }
+}
+
 pub fn tools_dir(app_data: &Path) -> PathBuf {
     app_data.join("tools")
 }
@@ -349,6 +357,17 @@ impl Tools {
         json.get("version")?.as_str().map(String::from)
     }
 
+    /// Whether an installed npm tool other than `tool` also installs `package`.
+    fn npm_dependency_in_use(&self, tool: &str, package: &str) -> bool {
+        TOOLS.iter().any(|t| match t.method {
+            Method::Npm { packages } if t.name != tool => {
+                packages.iter().skip(1).any(|p| npm_name(p) == package)
+                    && self.npm_package_version(npm_name(packages[0])).is_some()
+            }
+            _ => false,
+        })
+    }
+
     fn query_version(&self, spec: &ToolSpec, found: &Path) -> Option<String> {
         let (cmd, args) = spec.version?;
         let sibling = found.parent().and_then(|d| self.exe_in(d, cmd));
@@ -518,7 +537,7 @@ impl Tools {
                 let managed = managed_bin_dir(&self.root, spec, self.platform).and_then(|d| self.exe_in(&d, main));
                 if let Some(path) = managed {
                     let version = match spec.method {
-                        Method::Npm { packages } => self.npm_package_version(packages[0]),
+                        Method::Npm { packages } => self.npm_package_version(npm_name(packages[0])),
                         _ => self.manifest(spec.name).and_then(|m| m.version),
                     }
                     .or_else(|| self.query_version(spec, &path));
@@ -644,7 +663,7 @@ impl Tools {
         let (manager, pnpm) = self.npm_manager()?;
         self.ensure_package_json()?;
         let mut c = self.command(manager);
-        let specs = packages.iter().map(|p| format!("{p}@latest"));
+        let specs = packages.iter().map(|p| if npm_name(p) == *p { format!("{p}@latest") } else { p.to_string() });
         if pnpm {
             c.arg("add").arg("--dir").arg(&self.root).args(specs);
         } else {
@@ -1038,12 +1057,19 @@ impl Tools {
             }
             Method::Npm { packages } => {
                 if self.root.join("node_modules").exists() {
+                    // Shared dependencies (`typescript`) stay while another installed tool needs them.
+                    let packages: Vec<&str> = packages
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, p)| *i == 0 || !self.npm_dependency_in_use(spec.name, npm_name(p)))
+                        .map(|(_, p)| npm_name(p))
+                        .collect();
                     let (manager, pnpm) = self.npm_manager()?;
                     let mut c = self.command(manager);
                     if pnpm {
-                        c.arg("remove").arg("--dir").arg(&self.root).args(packages);
+                        c.arg("remove").arg("--dir").arg(&self.root).args(&packages);
                     } else {
-                        c.args(["uninstall", "--no-fund", "--no-audit", "--prefix"]).arg(&self.root).args(packages);
+                        c.args(["uninstall", "--no-fund", "--no-audit", "--prefix"]).arg(&self.root).args(&packages);
                     }
                     c.current_dir(&self.root);
                     run_streamed(c, &cancel, &quiet)?;
