@@ -18,6 +18,9 @@ import { serverBackoff } from "./availability";
 import { iconNode } from "./iconMarkup";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
+import { inspectionsAt } from "./diagnostics";
+import { SPELLING_INSPECTION } from "@/platform/inspections";
+import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 
 const isQuickFix = (a: CodeAction) => !!a.kind && (a.kind === "quickfix" || a.kind.startsWith("quickfix."));
 
@@ -170,25 +173,57 @@ export async function intentionPreview(
   return { kind: "text", text: full.command && !full.edit ? "Preview isn't available for this action" : "No changes in this file" };
 }
 
+/**
+ * IDEA's → menu on inspection-derived intentions: with one inspection reporting
+ * at the caret its quick fixes get its controls (Edit inspection profile
+ * setting, Disable inspection); otherwise each inspection there gets a row of
+ * its own. Typo fixes carry theirs already.
+ */
+export function withInspectionControls(view: EditorView, items: ListPopupItem[]): ListPopupItem[] {
+  const doc = docOf(view);
+  if (!doc) return items;
+  const inspections = inspectionsAt(doc.path, view.state.doc, view.state.selection.main.head).filter(
+    (i) => i.id !== SPELLING_INSPECTION,
+  );
+  if (!inspections.length) return items;
+  const fixes = items.filter((i) => i.icon === "bulb-fix" && !i.submenu);
+  if (inspections.length === 1 && fixes.length) {
+    const submenu = intentionControls(inspections[0]!);
+    return items.map((i) => (fixes.includes(i) ? { ...i, submenu } : i));
+  }
+  return [
+    ...items,
+    ...inspections.map((inspection) => ({
+      id: `inspection:${inspection.id}`,
+      label: `Inspection '${inspection.name}' options`,
+      icon: "settings",
+      run: () => editInspectionSettings(inspection.id),
+      submenu: intentionControls(inspection),
+    })),
+  ];
+}
+
 /** ⌥↵ */
 export async function showIntentions(view: EditorView) {
   try {
     // Typo fixes come first and need no language server.
     const local = spellingIntentions(view);
     let actions: CodeAction[] = [];
+    let failure: { error: unknown } | null = null;
     try {
       // Like IDEA, only applicable intentions are listed (servers also report disabled refactorings).
       actions = await fetchIntentions(view);
     } catch (e) {
-      if (!local.length) throw e;
-    }
-    if (!actions.length && !local.length) {
-      showHint(view, "No intentions available");
-      return;
+      failure = { error: e };
     }
     const sorted = sortCodeActions(actions);
     const resolved = new Map<CodeAction, Promise<CodeAction>>();
-    const items = [...local, ...actionItems(view, sorted, resolved)];
+    const items = withInspectionControls(view, [...local, ...actionItems(view, sorted, resolved)]);
+    if (!items.length) {
+      if (failure) throw failure.error;
+      showHint(view, "No intentions available");
+      return;
+    }
     openPopup({
       kind: "list",
       anchor: caretAnchor(view, view.state.selection.main.head),

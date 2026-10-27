@@ -5,7 +5,7 @@ use crate::state::{AppState, Project};
 use ide_core::settings::SpellingSettings;
 use ide_core::{DocId, IdeError, IdeResult, RequestId};
 use ide_language::SpellingKind;
-use ide_spell::{Region, RegionKind, Speller, Typo};
+use ide_spell::{Region, RegionKind, SpellScope, Speller, Typo};
 use std::path::{Path, PathBuf};
 use tauri::{State, Window};
 
@@ -33,13 +33,15 @@ fn speller(project: &Project) -> Speller {
 }
 
 /// Misspelt words in the comments, string literals and declared names of
-/// `doc` (all of its text for prose). Cancel with `cancel_request(request)`.
+/// `doc` that `scope` includes (all of its text for prose). Cancel with
+/// `cancel_request(request)`.
 #[tauri::command]
 #[specta::specta]
 pub async fn spell_check(
     window: Window,
     state: State<'_, AppState>,
     doc: DocId,
+    scope: SpellScope,
     request: RequestId,
 ) -> IdeResult<Vec<Typo>> {
     let project = state.project(window.label())?;
@@ -65,6 +67,7 @@ pub async fn spell_check(
                         SpellingKind::Name => RegionKind::Name,
                     },
                 })
+                .filter(|r| scope.includes(r.kind))
                 .collect()
         };
         if cancel.is_cancelled() {

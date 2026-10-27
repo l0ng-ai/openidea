@@ -10,8 +10,11 @@ import {
   renameProfile,
   setLevel,
   withProfileOverrides,
+  pathToInspection,
+  setOption,
   type InspectionNode,
 } from "../pages/editor/inspectionsModel";
+import { splitPageTarget } from "../model/staging";
 import { validateInspections } from "@/platform/inspections";
 import { NATURAL_LANGUAGES_PAGE, SPELLING_PAGE } from "../pages/editor/spelling";
 import { INSPECTIONS_PAGE } from "../pages/editor/inspections";
@@ -121,5 +124,26 @@ describe("inspection profile management", () => {
     expect(EDITOR_PAGES).toContain(SPELLING_PAGE);
     expect(SPELLING_PAGE.id.startsWith(`${NATURAL_LANGUAGES_PAGE.id}.`)).toBe(true);
     expect(SPELLING_PAGE.keywords).toContain("accepted words");
+  });
+});
+
+describe("inspection options and focus (issue #42)", () => {
+  it("stores Typo options apart from defaults and keeps them through validation", () => {
+    const off = setOption({}, "builtin:spelling", "processCode", false);
+    expect(off).toEqual({ "builtin:spelling": { options: { processCode: false } } });
+    expect(validateInspections({ default: off }).default).toEqual(off);
+    expect(setOption(off, "builtin:spelling", "processCode", true)).toEqual({});
+  });
+
+  it("opens Settings on an inspection: page#id, ancestors to expand", () => {
+    expect(splitPageTarget("editor.inspections#lsp:ruff:F401")).toEqual({
+      pageId: "editor.inspections",
+      focus: "lsp:ruff:F401",
+    });
+    expect(splitPageTarget("editor.general")).toEqual({ pageId: "editor.general", focus: null });
+    const tree = buildInspectionTree([], []);
+    const path = pathToInspection(tree, "builtin:spelling");
+    expect(path).toEqual(["group:Proofreading", "Proofreading/builtin:spelling"]);
+    expect(pathToInspection(tree, "nope")).toBeNull();
   });
 });

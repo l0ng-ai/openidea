@@ -4305,6 +4305,7 @@ dependencies = [
  "ide-core",
  "parking_lot",
  "serde",
+ "serde_json",
  "specta",
  "spellbook",
  "tracing",

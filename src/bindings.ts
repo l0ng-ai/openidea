@@ -213,9 +213,10 @@ export const commands = {
 	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError>(__TAURI_INVOKE("web_unresolved_references", { doc })),
 	/**
 	 *  Misspelt words in the comments, string literals and declared names of
-	 *  `doc` (all of its text for prose). Cancel with `cancel_request(request)`.
+	 *  `doc` that `scope` includes (all of its text for prose). Cancel with
+	 *  `cancel_request(request)`.
 	 */
-	spellCheck: (doc: DocId, request: RequestId) => typedError<Typo[], IdeError>(__TAURI_INVOKE("spell_check", { doc, request })),
+	spellCheck: (doc: DocId, scope: SpellScope, request: RequestId) => typedError<Typo[], IdeError>(__TAURI_INVOKE("spell_check", { doc, scope, request })),
 	/**  Replacements for a misspelt `word`, best first (Typo › Change to…). */
 	spellSuggest: (word: string) => typedError<string[], IdeError>(__TAURI_INVOKE("spell_suggest", { word })),
 	/**
@@ -2734,6 +2735,11 @@ export type InspectionLevel = "error" | "warning" | "weakWarning" | "serverProbl
 export type InspectionOverride = {
 	enabled?: boolean | null,
 	severity?: InspectionLevel | null,
+	/**
+	 *  The inspection's own options (Typo: `processCode`, `processLiterals`,
+	 *  `processComments`); absent ones keep their defaults.
+	 */
+	options?: { [key in string]: boolean } | null,
 };
 
 export type InspectionSettings = {
@@ -4313,6 +4319,16 @@ export type SourceFolder = {
 	detectedFrom: string | null,
 };
 
+/**
+ *  The Typo inspection's options (IDEA's "Process code / literals / comments");
+ *  plain text and Markdown are always checked.
+ */
+export type SpellScope = {
+	code?: boolean,
+	literals?: boolean,
+	comments?: boolean,
+};
+
 /**  Editor › Natural Languages › Spelling. */
 export type SpellingSettings = {
 	/**  Application-level dictionary: accepted words (IDE settings). */
@@ -4712,7 +4728,14 @@ export type Typo = {
 	/**  UTF-16 range of the word. */
 	range: Range,
 	word: string,
+	context: TypoContext,
 };
+
+/**
+ *  What a typo is part of: correcting one in `Code` (a declared name) must
+ *  rename the symbol; the others may replace the word in place.
+ */
+export type TypoContext = "code" | "literal" | "comment" | "prose";
 
 /**  What [`FileMoves::undo`] did. */
 export type UndoOutcome = {
