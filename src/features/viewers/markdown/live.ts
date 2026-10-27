@@ -5,7 +5,8 @@
  */
 import { ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { create } from "zustand";
-import { registerEditorContribution } from "@/editor/api";
+import { registerEditorContribution, useEditorRegistry } from "@/editor/api";
+import { fontZoom, setFontZoom } from "@/editor/core/cm/prefs";
 import { isMarkdownPath } from "../fileKinds";
 
 export interface LiveMarkdown {
@@ -14,15 +15,40 @@ export interface LiveMarkdown {
   topLine: number;
   /** Bumped when the editor scrolls, so equal lines still resync. */
   scrollSeq: number;
+  /** Editor font zoom in pixels, shared with the preview. */
+  fontZoom: number;
 }
 
 export const useLiveMarkdown = create<Record<string, LiveMarkdown | undefined>>(() => ({}));
 
 const TEXT_DELAY = 120;
+const ZOOM_KEY = "openidea.markdown.fontZoom";
+let latestZoom = 0;
+
+function storedZoom(): number {
+  try {
+    const value = localStorage.getItem(ZOOM_KEY);
+    if (value === null || !/^-?\d+$/.test(value)) return 0;
+    const zoom = Number(value);
+    return Number.isSafeInteger(zoom) && zoom >= -6 && zoom <= 36 ? zoom : 0;
+  } catch {
+    return latestZoom;
+  }
+}
+
+function saveZoom(zoom: number) {
+  latestZoom = zoom;
+  try {
+    if (zoom === 0) localStorage.removeItem(ZOOM_KEY);
+    else localStorage.setItem(ZOOM_KEY, String(zoom));
+  } catch {
+    // Zoom remains available for this editor if storage is unavailable.
+  }
+}
 
 function publish(path: string, patch: Partial<LiveMarkdown>) {
   useLiveMarkdown.setState((s) => {
-    const prev = s[path] ?? { text: "", topLine: 0, scrollSeq: 0 };
+    const prev = s[path] ?? { text: "", topLine: 0, scrollSeq: 0, fontZoom: 0 };
     return { [path]: { ...prev, ...patch } };
   });
 }
@@ -47,11 +73,29 @@ function livePlugin(path: string) {
       };
 
       constructor(private view: EditorView) {
-        publish(path, { text: view.state.doc.toString() });
+        publish(path, { text: view.state.doc.toString(), fontZoom: view.state.field(fontZoom, false) ?? 0 });
         view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
       }
 
       update(u: ViewUpdate) {
+        const zoom = u.state.field(fontZoom, false) ?? 0;
+        if (zoom !== (u.startState.field(fontZoom, false) ?? 0)) {
+          saveZoom(zoom);
+          publish(path, { fontZoom: zoom });
+          // Dispatch outside the current CodeMirror update; all open Markdown views
+          // share the same zoom, including when multiple changes arrive at once.
+          queueMicrotask(() => {
+            for (const editor of useEditorRegistry.getState().editors) {
+              if (
+                !editor.ctx.virtual &&
+                isMarkdownPath(editor.ctx.path) &&
+                editor.view.state.field(fontZoom, false) !== latestZoom
+              ) {
+                editor.view.dispatch({ effects: setFontZoom.of(latestZoom) });
+              }
+            }
+          });
+        }
         if (!u.docChanged) return;
         clearTimeout(this.timer);
         this.timer = setTimeout(() => publish(path, { text: this.view.state.doc.toString() }), TEXT_DELAY);
@@ -71,6 +115,7 @@ function livePlugin(path: string) {
 export function registerMarkdownLiveSource(): () => void {
   return registerEditorContribution({
     id: "viewers.markdownLive",
-    extensions: (ctx) => (!ctx.virtual && isMarkdownPath(ctx.path) ? [livePlugin(ctx.path)] : []),
+    extensions: (ctx) =>
+      !ctx.virtual && isMarkdownPath(ctx.path) ? [fontZoom.init(() => storedZoom()), livePlugin(ctx.path)] : [],
   });
 }

@@ -47,7 +47,7 @@
   background: var(--bg-editor, var(--bg-app));
   color: var(--fg);
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: calc(14px + var(--markdown-font-zoom, 0px));
   line-height: 1.6;
   overflow-wrap: break-word;
 }
@@ -112,7 +112,7 @@
 .preview :global(pre code) {
   padding: 0;
   background: none;
-  font-size: var(--fs-code);
+  font-size: calc(var(--fs-code) + var(--markdown-font-zoom, 0px));
 }
 .preview :global(blockquote) {
   padding: 0 1em;

@@ -21,7 +21,9 @@ afterEach(() => {
 describe("selectable read-only surfaces", () => {
   it("Markdown preview (the reported case)", () => {
     act(() =>
-      useLiveMarkdown.setState({ "/p/README.md": { text: "# Title\n\nSome *text*", topLine: 0, scrollSeq: 0 } }),
+      useLiveMarkdown.setState({
+        "/p/README.md": { text: "# Title\n\nSome *text*", topLine: 0, scrollSeq: 0, fontZoom: 0 },
+      }),
     );
     act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, "/p/README.md": "preview" } })));
     render(
@@ -31,6 +33,8 @@ describe("selectable read-only surfaces", () => {
     );
     const preview = screen.getByRole("document", { name: "Markdown preview" });
     expect(preview).toHaveClass(selectableText);
+    act(() => useLiveMarkdown.setState({ "/p/README.md": { text: "# Title", topLine: 0, scrollSeq: 0, fontZoom: 3 } }));
+    expect(preview.style.getPropertyValue("--markdown-font-zoom")).toBe("3px");
     expect(screen.getByRole("toolbar", { name: "Markdown editor layout" }).closest(`.${selectableText}`)).toBeNull();
   });
 

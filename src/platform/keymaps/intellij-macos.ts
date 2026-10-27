@@ -290,6 +290,8 @@ export const intellijMacos: Record<string, string[]> = {
   "image.actualSize": ["Meta+/"],
   "image.fitToWindow": [],
   "image.toggleChessboard": [],
+  "markdown.zoomIn": ["Meta+=", "Meta+Shift+="],
+  "markdown.zoomOut": ["Meta+-"],
   "markdown.editorOnly": [],
   "markdown.editorAndPreview": [],
   "markdown.previewOnly": [],

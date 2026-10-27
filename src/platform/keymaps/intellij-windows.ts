@@ -287,6 +287,8 @@ export const intellijWindows: Record<string, string[]> = {
   "image.actualSize": ["Ctrl+/"],
   "image.fitToWindow": [],
   "image.toggleChessboard": [],
+  "markdown.zoomIn": ["Ctrl+=", "Ctrl+Shift+="],
+  "markdown.zoomOut": ["Ctrl+-"],
   "markdown.editorOnly": [],
   "markdown.editorAndPreview": [],
   "markdown.previewOnly": [],

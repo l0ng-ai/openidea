@@ -279,6 +279,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "image.actualSize": [],
   "image.fitToWindow": [],
   "image.toggleChessboard": [],
+  "markdown.zoomIn": ["Meta+=", "Meta+Shift+="],
+  "markdown.zoomOut": ["Meta+-"],
   "markdown.editorOnly": [],
   "markdown.editorAndPreview": ["Meta+K V"],
   "markdown.previewOnly": ["Meta+Shift+V"],
