@@ -275,11 +275,14 @@ export function TitleBar({
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
   const className = clsx(styles.bar, overlay && styles.overlay, frameless && styles.frameless);
+  // Distraction Free Mode: the window frame only. Where the title bar carries the
+  // main menu (Windows) it stays, or nothing would lead back out of the mode.
   if (bare)
     return (
       <header className={className} data-tauri-drag-region data-titlebar="bare">
         {frameless && (
           <>
+            <MainMenu />
             <div className={styles.drag} data-tauri-drag-region />
             <WindowControls />
           </>
