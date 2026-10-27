@@ -286,6 +286,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_set_data_breakpoints,
         debug::debug_data_breakpoint_info,
         debug::debug_attachable_processes,
+        debug::debug_listen_for_jvm,
         debug::debug_redefine_classes,
         coverage::coverage_prepare,
         coverage::coverage_collect,

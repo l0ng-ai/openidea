@@ -36,6 +36,8 @@ pub struct AdapterSpec {
     pub cwd: PathBuf,
     /// Extra environment of the adapter process (debugpy's private copy on `PYTHONPATH`).
     pub env: Vec<(String, String)>,
+    /// Host of an adapter that is already running (`debugServer`); `None` is the loopback interface.
+    pub server_host: Option<String>,
 }
 
 /// Built-in adapters used when no language definition names `adapter`.
@@ -116,6 +118,7 @@ pub fn resolve(config: &DebuggerConfig, cwd: PathBuf) -> AdapterSpec {
         install_hint: config.install_hint.clone(),
         cwd,
         env: Vec::new(),
+        server_host: None,
     }
 }
 
@@ -309,7 +312,12 @@ impl AdapterLauncher for ProcessLauncher {
         Box::pin(async move {
             let stderr = Arc::new(parking_lot::Mutex::new(Vec::new()));
             if let Some(port) = reuse_port {
-                let stream = connect_with_retries(port, None, Duration::from_secs(5)).await?;
+                // A remote adapter (`dlv --headless` on another machine) may answer slowly.
+                let (host, timeout) = match spec.server_host.as_deref() {
+                    Some(host) => (host, CONNECT_TIMEOUT),
+                    None => (LOOPBACK, Duration::from_secs(5)),
+                };
+                let stream = connect_with_retries(host, port, None, timeout).await?;
                 let (r, w) = stream.into_split();
                 return Ok(AdapterIo {
                     reader: Box::new(r),
@@ -366,7 +374,7 @@ impl AdapterLauncher for ProcessLauncher {
                     if let Some(out) = child.stdout.take() {
                         pump_lines(out, spec.adapter.clone(), stderr.clone());
                     }
-                    let stream = match connect_with_retries(port, Some(&mut child), CONNECT_TIMEOUT).await {
+                    let stream = match connect_with_retries(LOOPBACK, port, Some(&mut child), CONNECT_TIMEOUT).await {
                         Ok(s) => s,
                         Err(e) => {
                             let _ = child.start_kill();
@@ -410,14 +418,17 @@ fn pump_lines<R: AsyncRead + Unpin + Send + 'static>(
     });
 }
 
+const LOOPBACK: &str = "127.0.0.1";
+
 async fn connect_with_retries(
+    host: &str,
     port: u16,
     mut child: Option<&mut Child>,
     timeout: Duration,
 ) -> IdeResult<tokio::net::TcpStream> {
     let deadline = Instant::now() + timeout;
     loop {
-        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+        match tokio::net::TcpStream::connect((host, port)).await {
             Ok(s) => {
                 let _ = s.set_nodelay(true);
                 return Ok(s);
@@ -432,7 +443,7 @@ async fn connect_with_retries(
                 }
                 if Instant::now() >= deadline {
                     return Err(IdeError::unavailable(format!(
-                        "could not connect to debug adapter on port {port}: {e}"
+                        "could not connect to debug adapter at {host}:{port}: {e}"
                     )));
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;

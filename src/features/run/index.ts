@@ -39,7 +39,7 @@ import { runConfigsRunAnything } from "./runAnything";
 import { runServiceProvider } from "./services";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
-import { registerBuiltinTypes } from "./types";
+import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { runGutter } from "./runGutter";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
 import { clearRuntimeCache } from "./runtimes";
@@ -93,6 +93,11 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
     return;
   }
   if (!(await prepareLaunch(config, chain))) return;
+  // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
+  if (isDebugOnly(config) && getAction("debug.startConfig")) {
+    await executeAction("debug.startConfig", config);
+    return;
+  }
   // A single compiled file (rustc / clang): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {

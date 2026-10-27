@@ -12,6 +12,7 @@ pub mod adapter;
 pub mod attach;
 mod cargo;
 pub mod connection;
+pub mod jdwp;
 mod session;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
@@ -45,7 +46,8 @@ pub struct LaunchConfig {
     /// A `"cargo": {"args": [...], "filter": {"name", "kind"}}` entry builds with cargo
     /// and launches the produced executable; `"debugServer": <port>` connects to an
     /// adapter already listening on that local port (e.g. java-debug inside jdtls)
-    /// instead of starting one.
+    /// instead of starting one, `"debugServer": "host:port"` to one on another machine
+    /// (`dlv --headless`, `debugpy --listen`).
     pub extra_json: Option<String>,
 }
 
@@ -357,15 +359,34 @@ pub(crate) fn substitute_free_port(value: &mut Value, port: &mut impl FnMut() ->
     })
 }
 
+/// Where a running adapter listens: `debugServer` of the launch arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DebugServer {
+    /// `None` for the loopback interface (an adapter inside a local process such as jdtls).
+    pub host: Option<String>,
+    pub port: u16,
+}
+
 /// Removes `debugServer` (VS Code's "connect to a running adapter" attribute) from the
-/// launch arguments and returns its port.
-pub(crate) fn take_debug_server(arguments: &mut Value) -> IdeResult<Option<u16>> {
+/// launch arguments: a port (`4711`, `"4711"`) on this machine, or `"host:port"` /
+/// `"[v6]:port"` of a remote one (`dlv --headless`, `debugpy --listen`).
+pub(crate) fn take_debug_server(arguments: &mut Value) -> IdeResult<Option<DebugServer>> {
     let Some(v) = arguments.as_object_mut().and_then(|o| o.remove("debugServer")) else { return Ok(None) };
-    let port = v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()));
-    match port.and_then(|p| u16::try_from(p).ok()).filter(|p| *p != 0) {
-        Some(p) => Ok(Some(p)),
-        None => Err(IdeError::invalid(format!("invalid debugServer port: {v}"))),
+    let invalid = || IdeError::invalid(format!("invalid debugServer address: {v}"));
+    let port_of = |p: u64| u16::try_from(p).ok().filter(|p| *p != 0);
+    if let Some(p) = v.as_u64() {
+        return port_of(p).map(|port| Some(DebugServer { host: None, port })).ok_or_else(invalid);
     }
+    let s = v.as_str().map(str::trim).ok_or_else(invalid)?;
+    let (host, port) = match s.rsplit_once(':') {
+        Some((host, port)) => {
+            let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+            (Some(host).filter(|h| !h.is_empty()).map(str::to_owned), port)
+        }
+        None => (None, s),
+    };
+    let port = port.trim().parse::<u64>().ok().and_then(port_of).ok_or_else(invalid)?;
+    Ok(Some(DebugServer { host, port }))
 }
 
 /// DAP stack frame → [`StackFrame`] (1-based → 0-based).
@@ -558,6 +579,9 @@ impl DebugManager {
         }
         let id = DebugSessionId::next();
         let debug_server = take_debug_server(&mut arguments)?;
+        if let Some(server) = &debug_server {
+            spec.server_host = server.host.clone();
+        }
         if let Some(cargo) = arguments.as_object_mut().and_then(|o| o.remove("cargo")) {
             let cargo_args: Vec<String> = cargo
                 .get("args")
@@ -599,8 +623,8 @@ impl DebugManager {
         if config.adapter == "codelldb" && arguments.get("sourceLanguages").is_none() {
             arguments["sourceLanguages"] = json!(["rust"]);
         }
-        self.start_session(id, owner, config.name, config.adapter, None, config.request, arguments, spec, debug_server)
-            .await
+        let port = debug_server.map(|s| s.port);
+        self.start_session(id, owner, config.name, config.adapter, None, config.request, arguments, spec, port).await
     }
 
     /// `startDebugging` reverse request: a child session on the same adapter.

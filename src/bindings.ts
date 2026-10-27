@@ -582,6 +582,11 @@ export const commands = {
 	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
 	/**  Attach to Process: the user's processes a debugger can attach to. */
 	debugAttachableProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_attachable_processes")),
+	/**
+	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
+	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
+	 */
+	debugListenForJvm: (request: RequestId, host: string, port: number) => typedError<number, IdeError>(__TAURI_INVOKE("debug_listen_for_jvm", { request, host, port })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
 	/**
@@ -2944,7 +2949,8 @@ export type LaunchConfig = {
 	 *  A `"cargo": {"args": [...], "filter": {"name", "kind"}}` entry builds with cargo
 	 *  and launches the produced executable; `"debugServer": <port>` connects to an
 	 *  adapter already listening on that local port (e.g. java-debug inside jdtls)
-	 *  instead of starting one.
+	 *  instead of starting one, `"debugServer": "host:port"` to one on another machine
+	 *  (`dlv --headless`, `debugpy --listen`).
 	 */
 	extraJson: string | null,
 };
