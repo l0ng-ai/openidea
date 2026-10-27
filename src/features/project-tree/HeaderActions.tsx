@@ -19,6 +19,7 @@ export const OPTION_LABELS: Array<[keyof ViewOptions, string]> = [
   ["autoscrollToSource", "Autoscroll to Source"],
   ["autoscrollFromSource", "Autoscroll from Source"],
   ["singleClickOpen", "Open Files with Single Click"],
+  ["singleClickExpand", "Expand Directories with Single Click"],
   ["previewTab", "Enable Preview Tab"],
 ];
 

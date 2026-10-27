@@ -72,6 +72,7 @@ import {
   selectModel,
   setDropTarget,
   setExpanded,
+  toggleExpanded,
   setSelection,
   useProjectTree,
   type Editing,
@@ -221,6 +222,7 @@ interface RowProps {
   detail: string | null;
   onEditDone: () => void;
   onClick: (node: ProjectNode, e: ReactMouseEvent) => void;
+  onDoubleClick: (node: ProjectNode, e: ReactMouseEvent) => void;
   onPointerDown: (node: ProjectNode, e: ReactPointerEvent) => void;
 }
 
@@ -233,6 +235,7 @@ const Row = memo(function Row({
   detail,
   onEditDone,
   onClick,
+  onDoubleClick,
   onPointerDown,
 }: RowProps) {
   const deco = useFileDecoration(node.path);
@@ -252,6 +255,7 @@ const Row = memo(function Row({
       data-dir={node.dir || undefined}
       title={deco.tooltip}
       onClick={(e) => onClick(node, e)}
+      onDoubleClick={(e) => onDoubleClick(node, e)}
       onPointerDown={(e) => onPointerDown(node, e)}
     >
       <Icon name={icon} size={16} className={clsx(styles.icon, node.dir && styles.folderIcon, dimIcon && styles.faded)} />
@@ -408,17 +412,30 @@ export function ProjectView() {
 
   const focusTree = useCallback(() => requestAnimationFrame(() => handle.current?.focus()), []);
 
+  // A pointer drag that ends on the row it started from still clicks it.
+  const dragged = useRef(false);
+
   const onRowClick = useCallback((node: ProjectNode, e: ReactMouseEvent) => {
     if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.detail > 1) return;
-    if (node.dir || node.placeholder) return;
+    if (node.placeholder || dragged.current) return;
     const { options: o, editing: ed } = useProjectTree.getState();
     if (ed) return;
+    if (node.dir) {
+      if (o.singleClickExpand) toggleExpanded(node);
+      return;
+    }
     if (o.singleClickOpen) void openFile(node.path, { focus: false });
     else if (o.previewTab) void openFile(node.path, { preview: true, focus: false });
   }, []);
 
   // Pointer-driven drag & drop (HTML5 DnD is unreliable inside the Tauri webview).
+  // The single click already toggled the folder; double-click must not toggle it back.
+  const onRowDoubleClick = useCallback((node: ProjectNode, e: ReactMouseEvent) => {
+    if (node.dir && !node.placeholder && useProjectTree.getState().options.singleClickExpand) e.stopPropagation();
+  }, []);
+
   const onRowPointerDown = useCallback((node: ProjectNode, e: ReactPointerEvent) => {
+    if (e.button === 0) dragged.current = false;
     if (e.button !== 0 || node.root || node.placeholder || node.readOnly || useProjectTree.getState().editing) return;
     const before = useProjectTree.getState().selected;
     const lead = useProjectTree.getState().lead;
@@ -430,6 +447,7 @@ export function ProjectView() {
       if (!active) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
         active = true;
+        dragged.current = true;
         const m = selectModel(useProjectTree.getState());
         const keys = before.has(node.key) ? [...before] : [node.key];
         if (before.has(node.key)) setSelection(before, lead);
@@ -577,10 +595,11 @@ export function ProjectView() {
         detail={node.root && !node.icon ? rootDetail : (node.detail ?? null)}
         onEditDone={focusTree}
         onClick={onRowClick}
+        onDoubleClick={onRowDoubleClick}
         onPointerDown={onRowPointerDown}
       />
     ),
-    [editing, cutPaths, dropTarget, rootDetail, focusTree, onRowClick, onRowPointerDown],
+    [editing, cutPaths, dropTarget, rootDetail, focusTree, onRowClick, onRowDoubleClick, onRowPointerDown],
   );
 
   if (!root) return null;

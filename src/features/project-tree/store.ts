@@ -24,6 +24,7 @@ import {
   planRefresh,
   visibleEntries,
   type Placeholder,
+  type ProjectNode,
   type TreeModel,
   type TreeOptions,
 } from "./model";
@@ -38,6 +39,8 @@ export interface ViewOptions extends TreeOptions {
   autoscrollToSource: boolean;
   /** Single click opens files (as regular tabs). */
   singleClickOpen: boolean;
+  /** Single click on a folder row expands / collapses it. */
+  singleClickExpand: boolean;
   /** Single click shows files in the preview tab (IDEA's "Enable Preview Tab"). */
   previewTab: boolean;
 }
@@ -47,6 +50,7 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   autoscrollFromSource: false,
   autoscrollToSource: false,
   singleClickOpen: false,
+  singleClickExpand: false,
   // IDEA's "Enable Preview Tab" is off by default.
   previewTab: false,
 };
@@ -295,6 +299,17 @@ export function setChangedFiles(paths: readonly string[]) {
 export function setExpanded(expanded: ReadonlySet<string>) {
   set({ expanded });
   persistExpanded();
+}
+
+/** Expands or collapses a folder node; expanding a compacted chain opens every folder in it. */
+export function toggleExpanded(node: Pick<ProjectNode, "key" | "chain">) {
+  const next = new Set(get().expanded);
+  if (next.has(node.key)) next.delete(node.key);
+  else {
+    next.add(node.key);
+    for (const p of node.chain) next.add(keyLike(node.key, p));
+  }
+  setExpanded(next);
 }
 
 export function setSelection(selected: ReadonlySet<string>, lead: string | null) {

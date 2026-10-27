@@ -3649,5 +3649,12 @@
   "Process literals": "处理字面量",
   "Process comments": "处理注释",
   "Distraction Free Mode": "无干扰模式",
-  "Exit Distraction Free Mode": "退出无干扰模式"
+  "Exit Distraction Free Mode": "退出无干扰模式",
+  "Show Hidden Files": "显示隐藏文件",
+  "Show Excluded Files": "显示已排除的文件",
+  "Compact Middle Packages": "压缩中间软件包",
+  "Sort Folders First": "文件夹排在前面",
+  "Open Files with Single Click": "单击打开文件",
+  "Expand Directories with Single Click": "单击展开目录",
+  "Enable Preview Tab": "启用预览标签页"
 }

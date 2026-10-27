@@ -10,6 +10,8 @@ import {
   revealPath,
   setExpanded,
   setSelection,
+  setViewOption,
+  toggleExpanded,
   useProjectTree,
 } from "./store";
 import { beginNew, commitEditing, copySelection, paste, transfer } from "./operations";
@@ -171,5 +173,29 @@ describe("file operations", () => {
     await loadDir(ROOT);
     expect(await transfer(["/p/docs"], "/p/docs", "move")).toBe(false);
     expect(fs.nodes.has("/p/docs/guide.md")).toBe(true);
+  });
+});
+
+describe("single-click expansion", () => {
+  it("toggles a folder, opening every folder of a compacted chain", async () => {
+    await loadDir(ROOT);
+    await loadDir("/p/src");
+    await vi.waitFor(() => expect(childLabels(ROOT)).toContain("src/main/kotlin"));
+    const chain = currentModel().byKey.get("/p/src")!;
+    toggleExpanded(chain);
+    expect([...useProjectTree.getState().expanded]).toEqual(
+      expect.arrayContaining(["/p/src", "/p/src/main", "/p/src/main/kotlin"]),
+    );
+    toggleExpanded(chain);
+    expect(useProjectTree.getState().expanded.has("/p/src")).toBe(false);
+  });
+
+  it("is off by default and its option persists across reloads", async () => {
+    expect(useProjectTree.getState().options.singleClickExpand).toBe(false);
+    setViewOption("singleClickExpand", true);
+    vi.resetModules();
+    const fresh = await import("./store");
+    expect(fresh.useProjectTree.getState().options.singleClickExpand).toBe(true);
+    setViewOption("singleClickExpand", false);
   });
 });

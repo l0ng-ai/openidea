@@ -109,6 +109,38 @@ describe("ProjectView", () => {
     act(() => setViewOption("previewTab", false));
   });
 
+  it("expands and collapses folders on single click only when enabled", async () => {
+    const { row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    const src = () => row("src").querySelector("[data-project-path]")!;
+    const click = (detail = 1, init: MouseEventInit = {}) => {
+      fireEvent.mouseDown(row("src"), { detail, ...init });
+      fireEvent.click(src(), { detail, ...init });
+    };
+    click();
+    expect(rows()).not.toContain("App.kt");
+
+    act(() => setViewOption("singleClickExpand", true));
+    click();
+    await waitFor(() => expect(rows()).toContain("App.kt"));
+    click();
+    expect(rows()).not.toContain("App.kt");
+
+    // A double click toggles once: the second click and the dblclick are ignored.
+    click(1);
+    click(2);
+    fireEvent.doubleClick(src());
+    await waitFor(() => expect(rows()).toContain("App.kt"));
+
+    // Modifier clicks only change the selection.
+    fireEvent.mouseDown(row("README.md"));
+    click(1, { metaKey: true });
+    expect(useProjectTree.getState().selected).toEqual(new Set(["/w/acme/README.md", "/w/acme/src"]));
+    click(1, { shiftKey: true });
+    expect(rows()).toContain("App.kt");
+    act(() => setViewOption("singleClickExpand", false));
+  });
+
   it("cancels a new file when its name field loses focus", async () => {
     const { rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
