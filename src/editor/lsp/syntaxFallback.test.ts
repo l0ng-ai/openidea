@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { IdeError, Locals, NodeAt, Range, SymbolMatch, SyntaxNode } from "@/bindings";
@@ -8,6 +8,9 @@ const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
 const unavailable = () => Promise.resolve({ status: "error" as const, error: { kind: "unavailable", message: "no server" } as IdeError });
 
 const cmd = {
+  lspHover: vi.fn((): R<unknown> => ok(null)),
+  lspDocumentLinks: vi.fn(() => ok([])),
+  cancelRequest: vi.fn(() => ok(null)),
   lspGoto: vi.fn((): R<unknown> => unavailable()),
   lspDocumentHighlights: vi.fn((): R<unknown> => unavailable()),
   lspPrepareRename: vi.fn((): R<unknown> => unavailable()),
@@ -388,5 +391,86 @@ describe("rename wiring", () => {
     cmd.syntaxLocals.mockReturnValueOnce(ok(local({ references: [] })));
     await startRename(view);
     expect(useLspPopup.getState().popup?.kind).toBe("rename");
+  });
+});
+
+describe("modifier-hover navigation recovery", () => {
+  const target = { path: "/p/target.ts", range: r(0, 0, 1), uri: null };
+  let mac = false;
+  beforeAll(async () => {
+    mac = (await import("@/platform/keymap")).isMacHost();
+  });
+  function move(view: EditorView, pos = 0, primary = true) {
+    vi.spyOn(view, "posAtCoords").mockReturnValue(pos);
+    view.contentDOM.dispatchEvent(
+      new MouseEvent("mousemove", {
+        bubbles: true,
+        metaKey: primary && mac,
+        ctrlKey: primary && !mac,
+      }),
+    );
+  }
+
+  it("shows the link without waiting for documentation", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
+    cmd.lspHover.mockReturnValueOnce(new Promise(() => {}));
+    const view = editor("foo");
+    move(view);
+    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("foo"));
+    expect(cmd.lspHover).toHaveBeenCalled();
+  });
+
+  it("retries a transient server error instead of caching no target", async () => {
+    cmd.lspGoto.mockReturnValueOnce(
+      Promise.resolve({ status: "error", error: { kind: "internal", message: "timeout" } }),
+    );
+    const view = editor("foo");
+    move(view);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
+    move(view);
+    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("foo"));
+    expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a stuck probe and ignores its eventual response", async () => {
+    let finish!: (value: Awaited<R<unknown>>) => void;
+    cmd.lspGoto.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const view = editor("foo");
+    vi.useFakeTimers();
+    try {
+      move(view);
+      await vi.advanceTimersByTimeAsync(3001);
+      cmd.lspGoto.mockReturnValueOnce(ok([target]));
+      move(view);
+      expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("foo"));
+    finish({ status: "ok", data: [] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("foo");
+  });
+
+  it("ignores a late probe after moving to a different word", async () => {
+    let finish!: (value: Awaited<R<unknown>>) => void;
+    cmd.lspGoto.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
+    const view = editor("foo bar");
+    move(view);
+    move(view, 4);
+    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("bar"));
+    finish({ status: "ok", data: [target] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("bar");
   });
 });

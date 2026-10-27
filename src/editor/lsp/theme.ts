@@ -348,7 +348,8 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-self": { color: "var(--syn-self, var(--syn-keyword))" },
   ".cm-sem-keyword": { color: "var(--syn-keyword)", fontWeight: "var(--syn-keyword-bold, inherit)" },
   ".cm-sem-builtin:not(.cm-sem-function)": { color: "var(--syn-builtin, inherit)" },
-  ".cm-sem-static": { fontStyle: "italic" },
+  ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
+  ".cm-sem-python-static": { fontStyle: "var(--syn-python-static-italic, normal)" },
   ".cm-sem-mutable": { textDecoration: "underline", textDecorationColor: "var(--fg-faint)", textUnderlineOffset: "3px" },
   ".cm-sem-deprecated": { textDecoration: "line-through" },
   // Semantic highlighting: after the base classes so a parameter's colour gives way, and over the

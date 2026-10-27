@@ -87,6 +87,8 @@ function previewVars(id: SchemeId, o: Record<string, TextAttributesOverride> | u
 /** Text styled like an attribute in the preview. */
 function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
   if (!attr?.token) return attr?.fg ? { color: `var(${attr.fg})` } : {};
+  if (attr.italicOnly)
+    return { fontStyle: `var(--syn-${attr.token}-italic, ${attr.defaultItalic === false ? "normal" : "italic"})` };
   const t = attr.token;
   return {
     color: `var(--syn-${t})`,
@@ -111,6 +113,8 @@ const SAMPLE: Seg[][] = [
     [" = ", "operator"],
     ["3", "number"],
   ],
+  [["    static_field", "staticSymbol"], [" = 3"]],
+  [["    python_field", "pyStaticSymbol"], [" = 3"]],
   [
     ["    def ", "keyword"],
     ["greet", "functionDeclaration"],
@@ -150,7 +154,16 @@ function AttributeEditor({
   };
   return (
     <div className={styles.attrEditor} aria-label={`${attr.name} attributes`}>
-      {attr.token && (
+      {attr.italicOnly && (
+        <div className={styles.attrRow}>
+          <Checkbox
+            checked={v.italic ?? attr.defaultItalic ?? true}
+            onChange={(b) => set({ italic: b === (attr.defaultItalic ?? true) ? undefined : b })}
+            label="Italic"
+          />
+        </div>
+      )}
+      {attr.token && !attr.italicOnly && (
         <>
           <div className={styles.attrRow}>
             <Checkbox checked={!!v.bold} onChange={(b) => set({ bold: b || undefined })} label="Bold" />
@@ -159,11 +172,11 @@ function AttributeEditor({
         </>
       )}
       {attr.fg && <ColorRow label="Foreground" value={v.foreground} onChange={(c) => set({ foreground: c })} />}
-      {(attr.bg || attr.token) && (
+      {(attr.bg || (attr.token && !attr.italicOnly)) && (
         <ColorRow label="Background" value={v.background} onChange={(c) => set({ background: c })} />
       )}
       {attr.effect && <ColorRow label="Effects" value={v.effectColor} onChange={(c) => set({ effectColor: c })} />}
-      {attr.token && (
+      {attr.token && !attr.italicOnly && (
         <div className={styles.attrRow}>
           <Checkbox
             checked={!!v.effect && v.effect !== "none"}
@@ -193,9 +206,11 @@ function AttributeEditor({
           )}
         </div>
       )}
-      <div className={styles.inherited}>
-        <T>Unchecked values are inherited from the scheme.</T>
-      </div>
+      {!attr.italicOnly && (
+        <div className={styles.inherited}>
+          <T>Unchecked values are inherited from the scheme.</T>
+        </div>
+      )}
     </div>
   );
 }

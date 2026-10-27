@@ -26,6 +26,10 @@ describe("color schemes", () => {
     expect(over).toContain("--syn-keyword-bold: var(--fw-code-bold, 700) !important");
     const regular = schemeCss("theme-default", { light: { keyword: { bold: false } } }, root);
     expect(regular).toContain("--syn-keyword-bold: var(--fw-code, 400) !important");
+    const upright = schemeCss("theme-default", { light: { staticSymbol: { italic: false } } }, root);
+    expect(upright).toContain("--syn-static-italic: normal !important");
+    const pythonItalic = schemeCss("theme-default", { light: { pyStaticSymbol: { italic: true } } }, root);
+    expect(pythonItalic).toContain("--syn-python-static-italic: italic !important");
   });
 
   it("keeps editor weights out of the schemes", () => {

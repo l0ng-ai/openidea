@@ -80,7 +80,7 @@ export interface SemanticRange {
 }
 
 /** Decodes absolute `[line, col, len, type, modifiers]` quintuples into styled ranges. */
-export function semanticRanges(doc: Text, tokens: SemanticTokens, rainbow = false): SemanticRange[] {
+export function semanticRanges(doc: Text, tokens: SemanticTokens, rainbow = false, language?: string): SemanticRange[] {
   const out: SemanticRange[] = [];
   const { data, tokenTypes, tokenModifiers } = tokens;
   // Servers with a `local` modifier (TypeScript) tell module-level variables apart.
@@ -102,6 +102,7 @@ export function semanticRanges(doc: Text, tokens: SemanticTokens, rainbow = fals
     if (constant && (type === "variable" || type === "property")) base = "constant";
     if (base && base !== "variable") classes.push(`cm-sem-${base}`);
     for (const n of names) if (MODIFIER_CLASS[n]) classes.push(`cm-sem-${MODIFIER_CLASS[n]}`);
+    if (language === "python" && names.includes("static")) classes.push("cm-sem-python-static");
     const local =
       rainbow &&
       !constant &&
@@ -163,7 +164,7 @@ const semanticPlugin = ViewPlugin.fromClass(
     }
     decorate(doc: Text, tokens: SemanticTokens | null) {
       this.last = { doc, tokens };
-      const ranges = tokens ? semanticRanges(doc, tokens, this.rainbow) : [];
+      const ranges = tokens ? semanticRanges(doc, tokens, this.rainbow, docOf(this.view)?.language) : [];
       this.view.dispatch({
         effects: setSemantic.of(Decoration.set(ranges.map((r) => markFor(r.className).range(r.from, r.to)), true)),
       });
