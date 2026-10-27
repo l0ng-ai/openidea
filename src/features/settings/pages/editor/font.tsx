@@ -6,7 +6,7 @@ import { useMemo, useState } from "react";
 import { Checkbox, type SelectOption, T } from "@/ui";
 import { monoFontFamily } from "@/platform/fonts";
 import { NumberInput, Row, SearchLabel, Select } from "../../components/Form";
-import { useLabelMatch, useSetting } from "../../components/context";
+import { useLabelMatch, usePageContext, useSetting } from "../../components/context";
 import { FONT_WEIGHTS, fontWeightOf, fontWeightVars } from "@/platform/editorSettings";
 import { LIMITS } from "../../model/schema";
 import { editorPage } from "./kit";
@@ -135,7 +135,32 @@ function FallbackRow() {
   );
 }
 
-const WEIGHT_OPTIONS: SelectOption[] = FONT_WEIGHTS.map(([w, name]) => ({ value: String(w), label: name, detail: String(w) }));
+const WEIGHT_OPTIONS: SelectOption[] = [
+  ...FONT_WEIGHTS.map(([w, name]) => ({ value: String(w), label: name, detail: String(w) })),
+  { value: "custom", label: "Custom" },
+];
+
+function WeightRow({ label, value, onChange, defaultWeight, hint }: { label: string; value: number; onChange: (value: number) => void; defaultWeight: number; hint?: string }) {
+  const [customSelected, setCustomSelected] = useState(false);
+  const weight = fontWeightOf(value, defaultWeight);
+  const custom = customSelected || !FONT_WEIGHTS.some(([w]) => w === weight);
+  return (
+    <Row label={label} hint={hint}>
+      <Select
+        value={custom ? "custom" : String(weight)}
+        options={WEIGHT_OPTIONS}
+        onChange={(v) => {
+          setCustomSelected(v === "custom");
+          if (v !== "custom") onChange(Number(v));
+        }}
+        aria-label={label}
+      />
+      {custom && (
+        <NumberInput value={weight} onChange={(n) => onChange(fontWeightOf(n, defaultWeight))} min={100} max={900} step={50} integer aria-label={`${label} custom value`} />
+      )}
+    </Row>
+  );
+}
 
 /**
  * IDEA's Main / Bold font weight. IDEA lists the weights the family ships; the
@@ -143,26 +168,13 @@ const WEIGHT_OPTIONS: SelectOption[] = FONT_WEIGHTS.map(([w, name]) => ({ value:
  * standard names (the WebView picks the nearest face or synthesises bold).
  */
 function WeightRows() {
+  const { scope } = usePageContext();
   const [main, setMain] = useSetting<number>("editor.fontWeight");
   const [bold, setBold] = useSetting<number>("editor.boldFontWeight");
   return (
     <>
-      <Row label="Main font weight">
-        <Select
-          value={String(fontWeightOf(main, 400))}
-          options={WEIGHT_OPTIONS}
-          onChange={(v) => setMain(Number(v))}
-          aria-label="Main font weight"
-        />
-      </Row>
-      <Row label="Bold font weight" hint="Used wherever the color scheme shows text in bold">
-        <Select
-          value={String(fontWeightOf(bold, 700))}
-          options={WEIGHT_OPTIONS}
-          onChange={(v) => setBold(Number(v))}
-          aria-label="Bold font weight"
-        />
-      </Row>
+      <WeightRow key={`${scope}-main`} label="Main font weight" value={main} onChange={setMain} defaultWeight={400} />
+      <WeightRow key={`${scope}-bold`} label="Bold font weight" value={bold} onChange={setBold} defaultWeight={700} hint="Used wherever the color scheme shows text in bold" />
     </>
   );
 }

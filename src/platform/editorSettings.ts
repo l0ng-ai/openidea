@@ -205,10 +205,10 @@ export const FONT_WEIGHTS: ReadonlyArray<readonly [number, string]> = [
   [900, "Black"],
 ];
 
-/** Nearest CSS weight step (100–900); `def` for anything that is not a number. */
+/** CSS weight from 100 to 900, rounded to the nearest 50. */
 export function fontWeightOf(raw: unknown, def: number): number {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return def;
-  return Math.min(900, Math.max(100, Math.round(raw / 100) * 100));
+  return Math.min(900, Math.max(100, Math.round(raw / 50) * 50));
 }
 
 /** `--fw-code` / `--fw-code-bold`: what editor-font text and its bold runs render with. */
