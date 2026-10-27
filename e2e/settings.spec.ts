@@ -4,8 +4,16 @@ test("⌘, opens Settings with the page tree; Escape closes", async ({ workbench
   await page.keyboard.press("Meta+,");
   const dialog = page.getByRole("dialog", { name: "Settings" });
   await expect(dialog).toBeVisible();
-  for (const name of ["Appearance & Behavior", "Keymap", "Editor", "Plugins", "Version Control"]) {
-    await expect(dialog.getByRole("treeitem", { name, exact: true })).toBeVisible();
+  const item = (name: string) => dialog.getByRole("treeitem", { name, exact: true });
+  for (const name of ["Appearance & Behavior", "Keymap", "Editor"]) {
+    await expect(item(name)).toBeVisible();
+  }
+  // The tree is virtualized: collapse Editor (expanded by default) so the later groups render.
+  await item("Editor").click();
+  await page.keyboard.press("ArrowLeft");
+  await expect(item("Editor")).not.toHaveAttribute("aria-expanded", "true");
+  for (const name of ["Plugins", "Version Control"]) {
+    await expect(item(name)).toBeVisible();
   }
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
