@@ -1,6 +1,7 @@
 /** Debugger actions (ids match `keymaps/intellij-macos.ts`). */
 import { registerActions, type Action } from "@/platform/actions";
 import { call, commands, isCancelled, isTauri, nextRequestId, type RunConfig, type RunId } from "@/platform/ipc";
+import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { activeEditor } from "@/editor/api";
 import { maybeEditorService, notifications, toolWindowService } from "@/workbench/contributions";
@@ -55,7 +56,9 @@ async function report(title: string, p: Promise<unknown>) {
   try {
     await p;
   } catch (e) {
-    notifications().notify({ group: "run", level: "error", title, body: errorText(e), key: "debug.action" });
+    // A Java launch without a JDK new enough (for jdtls or the project) offers to download one.
+    const actions = downloadJdkActions(errorText(e));
+    notifications().notify({ group: "run", level: "error", title, body: errorText(e), key: "debug.action", actions });
   }
 }
 

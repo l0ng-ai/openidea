@@ -244,7 +244,7 @@ export function JavaPage() {
           directory
           browseTitle="Select JDK Home Directory"
           aria-label="Language server JDK"
-          hint="Runs jdtls only, like IDEA's JDK for importer; the project keeps compiling and running with the Project JDK. jdtls needs JDK 21 or newer (recent releases 25). The jdtls executable itself is set in Language Servers."
+          hint="Runs jdtls only, like IDEA's JDK for importer; the project keeps compiling and running with the Project JDK. jdtls needs JDK 21 or newer (recent releases 25); Download JDK… in the list fetches one. The jdtls executable itself is set in Language Servers."
         />
         <Row
           label="JVM options"

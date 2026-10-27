@@ -2,11 +2,13 @@
  * Tools installer: Settings › Languages & Frameworks › Language Servers, plus
  * install prompts for missing language servers.
  *
- * Actions: `tools.languageServers` (open the page), `tools.install` (arg: tool name).
+ * Actions: `tools.languageServers` (open the page), `tools.install` (arg: tool name),
+ * `java.downloadJdk` (arg: `DownloadJdkArgs`).
  */
 import { lazyComponent } from "@/ui";
 import { executeAction, registerActions } from "@/platform/actions";
 import { registerSettingsPage } from "@/workbench/contributions";
+import { installJdkPrompts, registerJdkActions } from "./jdk";
 import { installMissingServerPrompts } from "./missing";
 import { installTool, refreshTools, SETTINGS_PAGE_ID, toolByName, useTools } from "./store";
 
@@ -55,6 +57,8 @@ export function activate(): () => void {
       },
     ]),
     installMissingServerPrompts(),
+    registerJdkActions(),
+    installJdkPrompts(),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import type { BuildTool, GradleModel, MavenModel, RunConfig } from "@/platform/ipc";
+import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { editorService } from "@/workbench/contributions";
 import {
@@ -191,13 +192,20 @@ function Banner({ tool }: { tool: BuildTool }) {
         </Button>
       </div>
     );
-  if (info.syncError)
+  if (info.syncError) {
+    const [jdkFix] = downloadJdkActions(info.syncError);
     return (
       <div className={clsx(styles.banner, styles.bannerWarning)} title={info.syncError}>
         <Icon name="warning" size={16} />
         <span className={styles.bannerText}>{info.syncError.split("\n")[0]}</span>
+        {jdkFix && (
+          <Button size="small" variant="ghost" onClick={jdkFix.run}>
+            {jdkFix.label}
+          </Button>
+        )}
       </div>
     );
+  }
   return null;
 }
 

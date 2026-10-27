@@ -7,6 +7,7 @@ import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type OutputChunk, type RunConfig, type RunId, type TestCaseReport } from "@/platform/ipc";
 import { formatCompileErrors, isJvmApplication, parseJavaArgs, resolveJavaCommand } from "@/platform/javaLaunch";
+import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -590,6 +591,17 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     if (info.build === "failed") say("Build failed; launching with the last compiled classes.\n", "stderr");
     const compileReport = formatCompileErrors(info);
     if (compileReport) say(compileReport, "stderr");
+    // No installed JDK is new enough for the module: offer to download one.
+    const jdkHint = info.hints.find((h) => downloadJdkActions(h).length);
+    if (jdkHint)
+      notifications().notify({
+        group: "run",
+        level: "warning",
+        key: "run.jdk-missing",
+        title: `No JDK can run '${config.name}'`,
+        body: jdkHint,
+        actions: downloadJdkActions(jdkHint),
+      });
     if (!info.classPaths.length) {
       say("The classpath is empty: is the module imported by the Java language server?\n", "stderr");
       return null;
@@ -598,7 +610,9 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     say(`Cannot resolve the classpath: ${message}\n`, "stderr");
-    notifications().notify({ group: "run", level: "error", title: `Cannot run '${config.name}'`, body: message });
+    // jdtls can't start without a newer JDK: "Download JDK 25".
+    const actions = downloadJdkActions(message);
+    notifications().notify({ group: "run", level: "error", title: `Cannot run '${config.name}'`, body: message, actions });
     return null;
   }
 }

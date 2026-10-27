@@ -357,3 +357,16 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
+
+/* Download JDK dialog */
+.downloadGrid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 10px;
+}
+.downloadProgress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

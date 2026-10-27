@@ -497,6 +497,19 @@ export const commands = {
 	toolsInstall: (name: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_install", { name, request, onEvent })),
 	/**  Removes a tool the IDE installed. */
 	toolsUninstall: (name: string) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_uninstall", { name })),
+	/**  JDK distributions Download JDK offers. */
+	jdkDownloadVendors: () => __TAURI_INVOKE<JdkVendor[]>("jdk_download_vendors"),
+	/**  Java versions `vendor` publishes; cancellable with `cancel_request(request)`. */
+	jdkDownloadReleases: (vendor: string, request: RequestId) => typedError<JdkReleases, IdeError>(__TAURI_INVOKE("jdk_download_releases", { vendor, request })),
+	/**  Where Download JDK puts JDKs unless told otherwise. */
+	jdkDownloadLocation: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("jdk_download_location")),
+	/**
+	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
+	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable
+	 *  with `cancel_request(request)`. The JDK is then detected like an installed one,
+	 *  and language servers waiting for a JDK (jdtls) start on it.
+	 */
+	jdkDownload: (vendor: string, version: number, location: string | null, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("jdk_download", { vendor, version, location, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
@@ -2872,6 +2885,22 @@ export type JavaSettings = {
 	jdtlsVmArgs?: string,
 	/**  Build Tools › Maven. */
 	maven?: MavenSettings,
+};
+
+/**  Java versions a vendor publishes. */
+export type JdkReleases = {
+	/**  Feature versions, newest first. */
+	versions: number[],
+	/**  The long-term-support ones among them. */
+	lts: number[],
+	/**  The version offered first (the newest LTS). */
+	recommended: number,
+};
+
+/**  A JDK distribution the IDE can download. */
+export type JdkVendor = {
+	id: string,
+	name: string,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */

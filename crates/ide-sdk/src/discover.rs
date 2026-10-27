@@ -394,27 +394,33 @@ fn release_value(release: &str, key: &str) -> Option<String> {
 }
 
 fn jdk() -> Vec<Sdk> {
+    crate::java::rescan_jdks().iter().map(jdk_sdk).collect()
+}
+
+/// A JDK as the SDK pickers list it (`Eclipse Adoptium 25.0.1`).
+pub fn jdk_sdk(j: &crate::java::Jdk) -> Sdk {
     let java_home = std::env::var_os("JAVA_HOME").and_then(|h| dunce::canonicalize(h).ok());
-    crate::java::rescan_jdks()
-        .iter()
-        .map(|j| {
-            let release = std::fs::read_to_string(j.home.join("release")).unwrap_or_default();
-            let version = release_value(&release, "JAVA_VERSION").unwrap_or_else(|| j.major.to_string());
-            let name = match release_value(&release, "IMPLEMENTOR") {
-                Some(vendor) => format!("{vendor} {version}"),
-                None => format!("JDK {version}"),
-            };
-            let source = if java_home.as_ref() == Some(&j.home) { "JAVA_HOME" } else { "system" };
-            Sdk {
-                path: j.home.clone().into(),
-                name,
-                version: Some(version),
-                source: source.to_owned(),
-                home: Some(j.home.clone().into()),
-                extra: None,
-            }
-        })
-        .collect()
+    let release = std::fs::read_to_string(j.home.join("release")).unwrap_or_default();
+    let version = release_value(&release, "JAVA_VERSION").unwrap_or_else(|| j.major.to_string());
+    let name = match release_value(&release, "IMPLEMENTOR") {
+        Some(vendor) => format!("{vendor} {version}"),
+        None => format!("JDK {version}"),
+    };
+    let source = if java_home.as_ref() == Some(&j.home) {
+        "JAVA_HOME"
+    } else if crate::java::is_downloaded(&j.home) {
+        "downloaded"
+    } else {
+        "system"
+    };
+    Sdk {
+        path: j.home.clone().into(),
+        name,
+        version: Some(version),
+        source: source.to_owned(),
+        home: Some(j.home.clone().into()),
+        extra: None,
+    }
 }
 
 // ------------------------------------------------------------------ maven

@@ -85,7 +85,11 @@ pub fn locate_tools_in(names: &[String], near: Option<&Path>, search: &std::ffi:
         .iter()
         .map(|name| {
             let path = valid_name(name)
-                .then(|| near.and_then(|n| local_bin(n, name)).or_else(|| on_path(name, search)))
+                .then(|| {
+                    near.and_then(|n| local_bin(n, name))
+                        .or_else(|| on_path(name, search))
+                        .or_else(|| jdk_tool(name, &crate::java::installed_jdks()))
+                })
                 .flatten();
             LocatedTool { name: name.clone(), path: path.map(Into::into), version: None }
         })
@@ -106,6 +110,16 @@ pub fn locate_tools_in(names: &[String], near: Option<&Path>, search: &std::ffi:
     })
 }
 
+/// `java` / `javac` / `jshell` of the newest installed JDK when none is on the
+/// search path (JDKs installed without `PATH` changes, or downloaded by the IDE).
+fn jdk_tool(name: &str, jdks: &[crate::java::Jdk]) -> Option<PathBuf> {
+    if !["java", "javac", "jshell"].contains(&name) {
+        return None;
+    }
+    let jdk = jdks.iter().max_by_key(|j| j.major)?;
+    Some(jdk.home.join("bin").join(crate::exe(name))).filter(|p| p.is_file())
+}
+
 /// Directory for binaries compiled from single source files (`rustc`, `clang`).
 pub fn compile_dir() -> PathBuf {
     std::env::temp_dir().join("openidea-run")
@@ -122,6 +136,26 @@ mod tests {
         assert_eq!(parse_tool_version("deno 2.1.4 (stable, release, aarch64-apple-darwin)").as_deref(), Some("2.1.4"));
         assert_eq!(parse_tool_version("1.1.38").as_deref(), Some("1.1.38"));
         assert_eq!(parse_tool_version("no version here"), None);
+    }
+
+    #[test]
+    fn java_falls_back_to_the_newest_installed_jdk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jdk = |major: u32| {
+            let home = tmp.path().join(format!("jdk{major}"));
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            for t in ["java", "javac"] {
+                std::fs::write(home.join("bin").join(crate::exe(t)), "").unwrap();
+            }
+            crate::java::Jdk { major, home }
+        };
+        let jdks = [jdk(17), jdk(25), jdk(21)];
+        let newest = tmp.path().join("jdk25/bin");
+        assert_eq!(jdk_tool("java", &jdks), Some(newest.join(crate::exe("java"))));
+        assert_eq!(jdk_tool("javac", &jdks), Some(newest.join(crate::exe("javac"))));
+        assert_eq!(jdk_tool("jshell", &jdks), None, "not in this JDK");
+        assert_eq!(jdk_tool("node", &jdks), None);
+        assert_eq!(jdk_tool("java", &[]), None);
     }
 
     #[test]

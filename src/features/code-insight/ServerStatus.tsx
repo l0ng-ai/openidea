@@ -3,6 +3,7 @@ import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { getAction, executeAction } from "@/platform/actions";
 import { BarButton, Button, IconButton, Popup, T } from "@/ui";
+import { downloadJdkActions } from "@/platform/jdk";
 import { relativePath, useProject } from "@/platform/project";
 import { STATUS_LABEL, restartServer, serversSummary, useServers } from "./servers";
 import styles from "./ServerStatus.module.css";
@@ -41,45 +42,59 @@ export function ServerStatus() {
           <div className={styles.header}>
             <T>Language Servers</T>
           </div>
-          {servers.map((s) => (
-            <div key={s.id} className={styles.server}>
-              <div className={styles.line}>
-                <span className={clsx(styles.dot, styles[toneOf(s.status)])} aria-hidden />
-                <span className={styles.name}>{s.name}</span>
-                <span className={styles.status}>{STATUS_LABEL[s.status]}</span>
-                <span className={styles.spacer} />
-                {s.status === "missing" && canInstall ? (
-                  <Button
-                    size="small"
-                    aria-label={`Install ${s.name}`}
-                    onClick={() => {
-                      setOpen(false);
-                      void executeAction("tools.install", s.name);
-                    }}
-                  >
-                    <T>Install</T>
-                  </Button>
-                ) : (
-                  <IconButton
-                    icon="refresh"
-                    size="small"
-                    title={`Restart ${s.name}`}
-                    disabled={s.status === "missing" || s.status === "starting"}
-                    onClick={() => void restartServer(s.id)}
-                  />
+          {servers.map((s) => {
+            // jdtls without a JDK new enough to run it: "Download JDK 25".
+            const [jdkFix] = s.status === "misconfigured" ? downloadJdkActions(s.message) : [];
+            return (
+              <div key={s.id} className={styles.server}>
+                <div className={styles.line}>
+                  <span className={clsx(styles.dot, styles[toneOf(s.status)])} aria-hidden />
+                  <span className={styles.name}>{s.name}</span>
+                  <span className={styles.status}>{STATUS_LABEL[s.status]}</span>
+                  <span className={styles.spacer} />
+                  {jdkFix ? (
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        setOpen(false);
+                        jdkFix.run();
+                      }}
+                    >
+                      {jdkFix.label}
+                    </Button>
+                  ) : s.status === "missing" && canInstall ? (
+                    <Button
+                      size="small"
+                      aria-label={`Install ${s.name}`}
+                      onClick={() => {
+                        setOpen(false);
+                        void executeAction("tools.install", s.name);
+                      }}
+                    >
+                      <T>Install</T>
+                    </Button>
+                  ) : (
+                    <IconButton
+                      icon="refresh"
+                      size="small"
+                      title={`Restart ${s.name}`}
+                      disabled={s.status === "missing" || s.status === "starting"}
+                      onClick={() => void restartServer(s.id)}
+                    />
+                  )}
+                </div>
+                {(s.languages.length > 0 || s.root) && (
+                  <div className={styles.meta}>
+                    {s.languages.join(", ")}
+                    {s.root && s.root !== root ? ` · ${relativePath(root, s.root) || s.root}` : ""}
+                  </div>
+                )}
+                {s.message && (
+                  <div className={clsx(styles.message, s.status === "missing" && styles.install)}>{s.message}</div>
                 )}
               </div>
-              {(s.languages.length > 0 || s.root) && (
-                <div className={styles.meta}>
-                  {s.languages.join(", ")}
-                  {s.root && s.root !== root ? ` · ${relativePath(root, s.root) || s.root}` : ""}
-                </div>
-              )}
-              {s.message && (
-                <div className={clsx(styles.message, s.status === "missing" && styles.install)}>{s.message}</div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Popup>
     </>

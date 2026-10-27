@@ -20,6 +20,7 @@ import {
   type RunConfig,
   type SyncProgress,
 } from "@/platform/ipc";
+import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import { removeTask, upsertTask } from "@/workbench/tasks";
@@ -207,6 +208,7 @@ export async function syncTool(tool: BuildTool): Promise<void> {
         title: tool === "maven" ? "Maven sync finished with errors" : "Gradle sync failed",
         body: error,
         key: `build-sync-${tool}`,
+        actions: downloadJdkActions(error),
       });
   } catch (e) {
     if (!isCancelled(e))

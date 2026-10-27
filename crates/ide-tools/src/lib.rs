@@ -10,6 +10,7 @@
 //! [`tools_bin_dirs`] on the process `PATH` at startup.
 
 pub mod archive;
+pub mod jdk;
 pub mod platform;
 mod process;
 pub mod registry;
@@ -948,33 +949,7 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
-        let archive = staging.join(&dl.name);
-        http.download(&dl.url, &archive, dl.size, cancel, emit)?;
-        let expected = match (&dl.sha256, &dl.checksum_url) {
-            (Some(h), _) => Some(h.clone()),
-            (None, Some(url)) => match http.get_text(url, cancel) {
-                Ok(text) => sources::parse_checksum(&text, &dl.name),
-                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-                Err(_) => None,
-            },
-            (None, None) => None,
-        };
-        match expected {
-            Some(expected) => {
-                let actual = sources::sha256_file(&archive)?;
-                if actual != expected {
-                    return Err(IdeError::new(
-                        ErrorKind::Io,
-                        format!("checksum mismatch for {}: expected {expected}, got {actual}", dl.name),
-                    ));
-                }
-                emit(InstallEvent::Line { text: "Checksum verified (SHA-256)".into() });
-            }
-            None => emit(InstallEvent::Line { text: "No checksum published; skipping verification".into() }),
-        }
-        if cancel.is_cancelled() {
-            return Err(IdeError::cancelled());
-        }
+        let archive = fetch_verified(http, dl, staging, cancel, emit)?;
         emit(InstallEvent::Line { text: "Extracting…".into() });
         let pkg = staging.join("pkg");
         let kind = archive::ArchiveKind::from_name(&dl.name);
@@ -1018,11 +993,8 @@ impl Tools {
                 archive::link_executable(&bin, main, &target)?;
             }
         }
-        #[cfg(target_os = "macos")]
-        {
-            // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
-            let _ = Command::new("xattr").args(["-dr", "com.apple.quarantine"]).arg(&final_dir).output();
-        }
+        // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
+        clear_quarantine(&final_dir);
         self.write_manifest(spec.name, &Manifest { version: Some(dl.version.clone()), source: Some(dl.url.clone()) })
     }
 
@@ -1089,6 +1061,55 @@ impl Tools {
         }
         self.info(name, langs)
     }
+}
+
+/// Downloads `dl` into `staging` and checks its SHA-256 when one is published;
+/// returns the downloaded file.
+fn fetch_verified(
+    http: &Http,
+    dl: &sources::Download,
+    staging: &Path,
+    cancel: &CancellationToken,
+    emit: Emit,
+) -> IdeResult<PathBuf> {
+    let archive = staging.join(&dl.name);
+    http.download(&dl.url, &archive, dl.size, cancel, emit)?;
+    let expected = match (&dl.sha256, &dl.checksum_url) {
+        (Some(h), _) => Some(h.clone()),
+        (None, Some(url)) => match http.get_text(url, cancel) {
+            Ok(text) => sources::parse_checksum(&text, &dl.name),
+            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+            Err(_) => None,
+        },
+        (None, None) => None,
+    };
+    match expected {
+        Some(expected) => {
+            let actual = sources::sha256_file(&archive)?;
+            if actual != expected {
+                return Err(IdeError::new(
+                    ErrorKind::Io,
+                    format!("checksum mismatch for {}: expected {expected}, got {actual}", dl.name),
+                ));
+            }
+            emit(InstallEvent::Line { text: "Checksum verified (SHA-256)".into() });
+        }
+        None => emit(InstallEvent::Line { text: "No checksum published; skipping verification".into() }),
+    }
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    Ok(archive)
+}
+
+/// Removes the quarantine flag archives may carry, so macOS runs what was unpacked.
+fn clear_quarantine(dir: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("xattr").args(["-dr", "com.apple.quarantine"]).arg(dir).output();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = dir;
 }
 
 #[cfg(test)]
