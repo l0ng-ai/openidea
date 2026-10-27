@@ -3,10 +3,16 @@
  * `cm-sem-*` classes (styled with the --syn-* tokens) layered over the Lezer
  * highlighting. Refreshed after edits (debounced); in between, existing marks
  * are mapped through the changes.
+ *
+ * Semantic highlighting (Color Scheme › Language Defaults, IDEA's rainbow
+ * identifiers): local variables and parameters additionally get
+ * `cm-sem-rainbow-<n>`, `n` derived from the name, so one name keeps one
+ * colour (`--syn-rainbow-<n>`) throughout the file.
  */
 import { Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { commands, type SemanticTokens } from "@/platform/ipc";
+import { editorPrefs } from "@/platform/editorSettings";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
 import { onLspRefresh, serverBackoff } from "./availability";
 
@@ -50,6 +56,23 @@ const MODIFIER_CLASS: Record<string, string> = {
   defaultLibrary: "builtin",
 };
 
+/** Number of `--syn-rainbow-<n>` colours (IDEA's five semantic highlighting colours). */
+export const RAINBOW_COLORS = 5;
+
+/** Stable 1-based palette index of an identifier (FNV-1a over its UTF-16 units). */
+export function rainbowIndex(name: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) {
+    h ^= name.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return ((h >>> 0) % RAINBOW_COLORS) + 1;
+}
+
+/** Locals and parameters only: no fields, statics, constants, library or `self` names. */
+const RAINBOW_TYPES = new Set(["variable", "parameter"]);
+const NOT_LOCAL = new Set(["static", "constant", "defaultLibrary", "global", "classScope", "fileScope"]);
+
 export interface SemanticRange {
   from: number;
   to: number;
@@ -57,9 +80,11 @@ export interface SemanticRange {
 }
 
 /** Decodes absolute `[line, col, len, type, modifiers]` quintuples into styled ranges. */
-export function semanticRanges(doc: Text, tokens: SemanticTokens): SemanticRange[] {
+export function semanticRanges(doc: Text, tokens: SemanticTokens, rainbow = false): SemanticRange[] {
   const out: SemanticRange[] = [];
   const { data, tokenTypes, tokenModifiers } = tokens;
+  // Servers with a `local` modifier (TypeScript) tell module-level variables apart.
+  const marksLocals = tokenModifiers.includes("local");
   for (let i = 0; i + 4 < data.length; i += 5) {
     const line = data[i]!,
       col = data[i + 1]!,
@@ -77,11 +102,19 @@ export function semanticRanges(doc: Text, tokens: SemanticTokens): SemanticRange
     if (constant && (type === "variable" || type === "property")) base = "constant";
     if (base && base !== "variable") classes.push(`cm-sem-${base}`);
     for (const n of names) if (MODIFIER_CLASS[n]) classes.push(`cm-sem-${MODIFIER_CLASS[n]}`);
-    if (!classes.length) continue;
+    const local =
+      rainbow &&
+      !constant &&
+      RAINBOW_TYPES.has(type) &&
+      !names.some((n) => NOT_LOCAL.has(n)) &&
+      (type === "parameter" || !marksLocals || names.includes("local"));
+    if (!classes.length && !local) continue;
     const l = doc.line(line + 1);
     const from = l.from + Math.min(col, l.length);
     const to = Math.min(from + len, l.to);
-    if (from < to) out.push({ from, to, className: classes.join(" ") });
+    if (from >= to) continue;
+    if (local) classes.push(`cm-sem-rainbow-${rainbowIndex(doc.sliceString(from, to))}`);
+    out.push({ from, to, className: classes.join(" ") });
   }
   return out.sort((a, b) => a.from - b.from || a.to - b.to);
 }
@@ -107,12 +140,33 @@ const semanticPlugin = ViewPlugin.fromClass(
   class {
     private refresh = debounce(() => void this.run(), 600);
     private offReady: () => void;
+    private rainbow = editorPrefs().semanticHighlighting;
+    /** Last answer, re-decorated without a request when Semantic highlighting is toggled. */
+    private last: { doc: Text; tokens: SemanticTokens | null } | null = null;
+    private destroyed = false;
     constructor(private view: EditorView) {
       this.refresh();
       this.offReady = onLspRefresh("semanticTokens", () => this.refresh());
     }
     update(u: ViewUpdate) {
       if (u.docChanged) this.refresh();
+      const rainbow = editorPrefs().semanticHighlighting;
+      if (rainbow === this.rainbow) return;
+      this.rainbow = rainbow;
+      const last = this.last;
+      // Settings arrive as a compartment reconfiguration; no dispatching inside an update.
+      if (last && last.doc === u.state.doc)
+        queueMicrotask(() => {
+          if (!this.destroyed && this.view.state.doc === last.doc) this.decorate(last.doc, last.tokens);
+        });
+      else this.refresh();
+    }
+    decorate(doc: Text, tokens: SemanticTokens | null) {
+      this.last = { doc, tokens };
+      const ranges = tokens ? semanticRanges(doc, tokens, this.rainbow) : [];
+      this.view.dispatch({
+        effects: setSemantic.of(Decoration.set(ranges.map((r) => markFor(r.className).range(r.from, r.to)), true)),
+      });
     }
     async run() {
       const view = this.view;
@@ -122,15 +176,13 @@ const semanticPlugin = ViewPlugin.fromClass(
       try {
         const tokens = await lspRequest(() => commands.lspSemanticTokens(doc.doc));
         if (view.state.doc !== state.doc) return this.refresh();
-        const ranges = tokens ? semanticRanges(state.doc, tokens) : [];
-        view.dispatch({
-          effects: setSemantic.of(Decoration.set(ranges.map((r) => markFor(r.className).range(r.from, r.to)), true)),
-        });
+        this.decorate(state.doc, tokens);
       } catch (e) {
         if (isUnavailable(e)) serverBackoff.mark(doc.doc);
       }
     }
     destroy() {
+      this.destroyed = true;
       this.refresh.cancel();
       this.offReady();
     }

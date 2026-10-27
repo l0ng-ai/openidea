@@ -354,9 +354,27 @@ export const COLOR_SCHEME_PAGE = editorPage({
     "background",
     "bold",
     "italic",
+    "rainbow",
     ...SCHEMES.map((s) => s.name),
   ],
   sections: [
     { items: [{ t: "custom", label: "Scheme", keywords: ATTRIBUTES.map((a) => a.name), component: ColorSchemePage }] },
+    {
+      title: "Language Defaults",
+      items: [
+        {
+          t: "check",
+          key: "editor.semanticHighlighting",
+          label: "Semantic highlighting",
+          hint: "Local variables and parameters get a colour derived from their name (needs a language server).",
+        },
+        {
+          t: "check",
+          key: "editor.rainbowBrackets",
+          label: "Rainbow brackets",
+          hint: "Color (), [] and {} by nesting depth; unmatched brackets use the error color.",
+        },
+      ],
+    },
   ],
 });

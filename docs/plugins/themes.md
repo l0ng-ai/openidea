@@ -195,6 +195,7 @@ The full table is `UI_KEYS` in [`scripts/theme/intellij.ts`](../../scripts/theme
 | `--syn-annotation`, `--syn-decorator` | `DEFAULT_METADATA` |
 | `--syn-punct`, `--syn-escape` | `DEFAULT_OPERATION_SIGN`, `DEFAULT_VALID_STRING_ESCAPE` |
 | `--syn-tag`, `--syn-attribute`, `--syn-todo`, `--syn-invalid` | `DEFAULT_TAG`, `DEFAULT_ATTRIBUTE`, `TODO_DEFAULT_ATTRIBUTES`, `BAD_CHARACTER` |
+| `--syn-rainbow-1` … `--syn-rainbow-5` (Semantic highlighting) | `RAINBOW_COLOR1` … `RAINBOW_COLOR5` |
 | `--wave-error`, `--wave-warning` | `ERRORS_ATTRIBUTES`, `WARNING_ATTRIBUTES` (effect colour) |
 | `--bg-matched-brace`, `--bg-identifier-under-caret` | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES` |
 | `--bg-text-search-result`, `--bg-search-match` | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES` |
@@ -238,6 +239,7 @@ from `type`, then map:
 | `--fg-whitespace` | `editorWhitespace.foreground` |
 | `--bg-text-search-result`, `--bg-text-search-result-current` | `editor.findMatchHighlightBackground`, `editor.findMatchBackground` |
 | `--bg-matched-brace` | `editorBracketMatch.background` |
+| `--syn-bracket-1` … `--syn-bracket-3` (Rainbow brackets) | `editorBracketHighlight.foreground1` … `foreground3` |
 | `--bg-identifier-under-caret`, `-write` | `editor.wordHighlightBackground`, `editor.wordHighlightStrongBackground` |
 | `--wave-error`, `--wave-warning` | `editorError.foreground`, `editorWarning.foreground` |
 | `--gutter-modified`, `--gutter-added`, `--gutter-deleted` | `editorGutter.modifiedBackground`, `.addedBackground`, `.deletedBackground` |
@@ -292,7 +294,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-194 themeable tokens: 112 in the UI theme file, 82 in the editor colour scheme file.
+202 themeable tokens: 112 in the UI theme file, 90 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -401,6 +403,14 @@ a token.
 | `--syn-markup-code` | `#6aab73` | `#067d17` |
 | `--syn-invalid` | `#f75464` | `#f50000` |
 | `--syn-inline-value` | `#868a91` | `#8c8c8c` |
+| `--syn-rainbow-1` | `#6fafbd` | `#9b3b6a` |
+| `--syn-rainbow-2` | `#d79b6e` | `#114d77` |
+| `--syn-rainbow-3` | `#9fbf6b` | `#9c6a2c` |
+| `--syn-rainbow-4` | `#c98bc6` | `#005910` |
+| `--syn-rainbow-5` | `#8e9cf0` | `#bc5150` |
+| `--syn-bracket-1` | `#e8c25b` | `#0431fa` |
+| `--syn-bracket-2` | `#d78bd6` | `#319331` |
+| `--syn-bracket-3` | `#4ea7f0` | `#7b3814` |
 
 ### Editor (editor scheme)
 
@@ -419,7 +429,7 @@ a token.
 | `--bg-text-search-result` | `#114957` | `#fcd47e` |
 | `--bg-text-search-result-current` | `#165e70` | `#f2bf57` |
 | `--bg-matched-brace` | `#43454a` | `#93d9d9` |
-| `--matched-brace-weight` | `700` | `normal` |
+| `--matched-brace-weight` | `var(--fw-code-bold)` | `inherit` |
 | `--bg-matched-tag` | `#3f4045` | `#c9ecec` |
 | `--bg-fold-placeholder` | `#393b40` | `#e9f5e6` |
 | `--fg-fold-placeholder` | `#868991` | `#414d41` |

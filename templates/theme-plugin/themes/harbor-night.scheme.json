@@ -35,6 +35,14 @@
     "--syn-markup-code": "#9ccc7a",
     "--syn-invalid": "#ff6b7a",
     "--syn-inline-value": "#6b7a8f",
+    "--syn-rainbow-1": "#7fd1c4",
+    "--syn-rainbow-2": "#e0a46e",
+    "--syn-rainbow-3": "#b9a3f0",
+    "--syn-rainbow-4": "#9ccc7a",
+    "--syn-rainbow-5": "#e58fa3",
+    "--syn-bracket-1": "#f2d07a",
+    "--syn-bracket-2": "#d7a0e0",
+    "--syn-bracket-3": "#6fc3df",
 
     // Editor
     "--fg-editor": "#d9dfe8",

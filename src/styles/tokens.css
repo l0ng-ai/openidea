@@ -115,6 +115,14 @@ html {
   --syn-markup-code: #6aab73;
   --syn-invalid: #f75464;
   --syn-inline-value: #868a91;
+  --syn-rainbow-1: #6fafbd;
+  --syn-rainbow-2: #d79b6e;
+  --syn-rainbow-3: #9fbf6b;
+  --syn-rainbow-4: #c98bc6;
+  --syn-rainbow-5: #8e9cf0;
+  --syn-bracket-1: #e8c25b;
+  --syn-bracket-2: #d78bd6;
+  --syn-bracket-3: #4ea7f0;
 
   /* editor (scheme colours) */
   --fg-editor: #bcbec4;
@@ -449,6 +457,14 @@ html {
   --syn-markup-code: #067d17;
   --syn-invalid: #f50000;
   --syn-inline-value: #8c8c8c;
+  --syn-rainbow-1: #9b3b6a;
+  --syn-rainbow-2: #114d77;
+  --syn-rainbow-3: #9c6a2c;
+  --syn-rainbow-4: #005910;
+  --syn-rainbow-5: #bc5150;
+  --syn-bracket-1: #0431fa;
+  --syn-bracket-2: #319331;
+  --syn-bracket-3: #7b3814;
 
   /* editor */
   --fg-editor: #080808;
@@ -670,6 +686,14 @@ html {
   --syn-markup-code: #8ccc94;
   --syn-invalid: #ff8a95;
   --syn-inline-value: #a5a8ae;
+  --syn-rainbow-1: #8fd0de;
+  --syn-rainbow-2: #f0b88a;
+  --syn-rainbow-3: #bedc8a;
+  --syn-rainbow-4: #e8a8e4;
+  --syn-rainbow-5: #b0bcff;
+  --syn-bracket-1: #ffd700;
+  --syn-bracket-2: #ee90ee;
+  --syn-bracket-3: #87cefa;
 
   --fg-editor: #e3e4e8;
   --caret: #ffffff;

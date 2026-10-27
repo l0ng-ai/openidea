@@ -36,6 +36,7 @@ import { changeLane, overviewLane } from "./lanes";
 import { foldingExtension } from "./folding";
 import { syntaxHighlightField } from "./syntaxHighlight";
 import { indentGuides } from "./indentGuides";
+import { rainbowBrackets } from "./rainbowBrackets";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
 import { findExtension } from "./find";
 import { codeLensExtension } from "./codeLens";
@@ -204,6 +205,7 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
   return [
     prefs.codeEditing.highlightBraces ? bracketMatching({ renderMatch }) : [],
     prefs.appearance.indentGuides ? indentGuides : [],
+    prefs.rainbowBrackets ? rainbowBrackets() : [],
     prefs.codeEditing.highlightSelection ? highlightSelectionMatches({ minSelectionLength: 2, maxMatches: 500 }) : [],
   ];
 }

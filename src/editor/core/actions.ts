@@ -40,6 +40,9 @@ import { useDocMeta, useOutline } from "./model/document";
 import { fontZoom, setFontZoom } from "./cm/prefs";
 import { useEditorRegistry } from "@/editor/api";
 import { useProject } from "@/platform/project";
+import { call, commands } from "@/platform/ipc";
+import { editorPrefs } from "@/platform/editorSettings";
+import { notifications } from "@/workbench/contributions";
 import { toggleReadOnly } from "./fileAttributes";
 import { openNavBarPopup } from "./view/NavBarPopup";
 import {
@@ -298,6 +301,26 @@ function addNextOccurrence(view: EditorView) {
   if (nextOccurrence(view) === "notFound") void executeAction("editor.showHint", { text: "Not found, press again to search from the top" });
 }
 
+/** Settings › Editor › Color Scheme switches that are also toggle actions. */
+type SchemeSwitch = "semanticHighlighting" | "rainbowBrackets";
+
+export async function toggleSchemeSwitch(key: SchemeSwitch, on = !editorPrefs()[key]): Promise<void> {
+  try {
+    useProject.setState({ settings: await call(commands.settingsSet("global", `editor.${key}`, JSON.stringify(on))) });
+  } catch (e) {
+    notifications().notify({ level: "error", title: "Cannot change the setting", body: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+const schemeSwitch = (id: string, title: string, key: SchemeSwitch, keywords: string[]): Action => ({
+  id,
+  title,
+  category: "Editor",
+  keywords,
+  toggled: () => editorPrefs()[key],
+  run: () => toggleSchemeSwitch(key),
+});
+
 // ---------------------------------------------------------------------------------
 
 export function registerEditorActions(): () => void {
@@ -316,6 +339,16 @@ export function registerEditorActions(): () => void {
     return pane?.active ? { paneId: pane.id, tabId: pane.active } : null;
   };
   return registerActions([
+    schemeSwitch("editor.toggleSemanticHighlighting", "Semantic Highlighting", "semanticHighlighting", [
+      "rainbow variables",
+      "rainbow identifiers",
+      "color scheme",
+    ]),
+    schemeSwitch("editor.toggleRainbowBrackets", "Rainbow Brackets", "rainbowBrackets", [
+      "bracket pair colorization",
+      "rainbow parentheses",
+      "color scheme",
+    ]),
     text("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
     text("code.commentBlock", "Comment with Block Comment", (v) => toggleBlockComment(v)),
     text("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),

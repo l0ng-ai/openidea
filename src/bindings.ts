@@ -2016,6 +2016,13 @@ export type EditorSettings_Deserialize = {
 	colorScheme?: string,
 	/**  Color Scheme edits: scheme id → attribute id → override. */
 	colorOverrides?: { [key in string]: { [key in string]: TextAttributesOverride_Deserialize } },
+	/**
+	 *  Color Scheme › Language Defaults › Semantic highlighting: local variables and
+	 *  parameters get a colour derived from their name (IDEA's rainbow identifiers).
+	 */
+	semanticHighlighting?: boolean,
+	/**  Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth. */
+	rainbowBrackets?: boolean,
 	ligatures?: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont?: string,
@@ -2056,6 +2063,13 @@ export type EditorSettings_Serialize = {
 	colorScheme: string,
 	/**  Color Scheme edits: scheme id → attribute id → override. */
 	colorOverrides: { [key in string]: { [key in string]: TextAttributesOverride_Serialize } },
+	/**
+	 *  Color Scheme › Language Defaults › Semantic highlighting: local variables and
+	 *  parameters get a colour derived from their name (IDEA's rainbow identifiers).
+	 */
+	semanticHighlighting: boolean,
+	/**  Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth. */
+	rainbowBrackets: boolean,
 	ligatures: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont: string,

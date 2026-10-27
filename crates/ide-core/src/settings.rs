@@ -289,6 +289,11 @@ pub struct EditorSettings {
     pub color_scheme: String,
     /// Color Scheme edits: scheme id → attribute id → override.
     pub color_overrides: BTreeMap<String, BTreeMap<String, TextAttributesOverride>>,
+    /// Color Scheme › Language Defaults › Semantic highlighting: local variables and
+    /// parameters get a colour derived from their name (IDEA's rainbow identifiers).
+    pub semantic_highlighting: bool,
+    /// Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth.
+    pub rainbow_brackets: bool,
     pub ligatures: bool,
     /// Fallback font for glyphs the main font lacks; empty = none.
     pub fallback_font: String,
@@ -329,6 +334,8 @@ impl Default for EditorSettings {
             format_on_save: false,
             color_scheme: "theme-default".into(),
             color_overrides: BTreeMap::new(),
+            semantic_highlighting: false,
+            rainbow_brackets: false,
             ligatures: false,
             fallback_font: String::new(),
             font_weight: 400,
