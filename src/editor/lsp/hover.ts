@@ -4,7 +4,8 @@
  * history, `docs.ts`) and code.quickDefinition (⌥Space, definition source popup).
  */
 import { EditorSelection } from "@codemirror/state";
-import { hoverTooltip, type EditorView } from "@codemirror/view";
+import { closeHoverTooltips, hasHoverTooltips, hoverTooltip, ViewPlugin, type EditorView } from "@codemirror/view";
+import type { Extension } from "@codemirror/state";
 import {
   commands,
   isTauri,
@@ -32,6 +33,7 @@ import { basename } from "@/platform/project";
 import { iconNode } from "./iconMarkup";
 import { editorPrefs } from "@/platform/editorSettings";
 import { CONTRIBUTED_HOVER, contributedAt, type ContributedHover } from "@/editor/api";
+import { navigationModifierHeld, onNavigationModifier, pointerTarget } from "@/platform/navigationModifier";
 
 let hoverRequest: RequestId | null = null;
 
@@ -98,43 +100,78 @@ function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLEle
   return box;
 }
 
-/** Hover: problems always; quick documentation per Settings › Editor › Code Editing. */
-export function hoverExtension() {
-  return hoverTooltip(
-    async (view, pos) => {
-      const diags = diagnosticsAt(view, pos);
-      let hover: Hover | null = null;
-      if (editorPrefs().codeEditing.quickDocOnHover)
-        try {
-          hover = await requestHover(view, pos);
-        } catch (e) {
-          reportLspError(view, e, false);
-        }
-      if (!diags.length && !hover) return null;
-      let from = pos,
-        to = pos;
-      if (hover?.range) ({ from, to } = rangeToOffsets(view.state.doc, hover.range));
-      else if (diags.length) ({ from, to } = diags[0]!);
-      else {
-        const word = view.state.wordAt(pos);
-        if (word) ({ from, to } = word);
-      }
-      const lang = docOf(view)?.uiMode ?? null;
-      return {
-        pos: from,
-        end: to,
-        above: true,
-        create: () => {
-          const dom = document.createElement("div");
-          dom.className = `cm-lsp-hover ${selectableText}`;
-          if (diags.length) dom.appendChild(renderDiagnostics(view, diags));
-          if (hover) dom.appendChild(renderMarkup(hover.contents, lang));
-          return { dom };
-        },
-      };
+/**
+ * Whether the plain hover (problems + quick documentation) stays out: while
+ * ⌘/Ctrl is held the ⌘-hover link and its brief info (`navigation.ts`) own the
+ * pointer, as in IDEA; and over an inlay hint, which has its own tooltip.
+ */
+export function hoverYields(): boolean {
+  return navigationModifierHeld() || !!pointerTarget()?.closest?.(".cm-lsp-inlay");
+}
+
+/** Problems always; quick documentation per Settings › Editor › Code Editing. */
+export async function hoverSource(view: EditorView, pos: number) {
+  if (hoverYields()) return null;
+  const diags = diagnosticsAt(view, pos);
+  let hover: Hover | null = null;
+  if (editorPrefs().codeEditing.quickDocOnHover)
+    try {
+      hover = await requestHover(view, pos);
+    } catch (e) {
+      reportLspError(view, e, false);
+    }
+  // ⌘/Ctrl pressed while the server answered.
+  if (hoverYields()) return null;
+  if (!diags.length && !hover) return null;
+  let from = pos,
+    to = pos;
+  if (hover?.range) ({ from, to } = rangeToOffsets(view.state.doc, hover.range));
+  else if (diags.length) ({ from, to } = diags[0]!);
+  else {
+    const word = view.state.wordAt(pos);
+    if (word) ({ from, to } = word);
+  }
+  const lang = docOf(view)?.uiMode ?? null;
+  return {
+    pos: from,
+    end: to,
+    above: true,
+    create: () => {
+      const dom = document.createElement("div");
+      dom.className = `cm-lsp-hover ${selectableText}`;
+      if (diags.length) dom.appendChild(renderDiagnostics(view, diags));
+      if (hover) dom.appendChild(renderMarkup(hover.contents, lang));
+      return { dom };
     },
-    { hoverTime: Math.max(100, editorPrefs().codeEditing.quickDocDelay) },
-  );
+  };
+}
+
+/**
+ * Pressing ⌘/Ctrl closes the open hover popups (documentation, problems,
+ * debugger values) so the ⌘-hover info replaces them instead of stacking;
+ * a popup the pointer is in stays (selecting text in it and copying).
+ */
+const hoverYieldsToNavigation = ViewPlugin.fromClass(
+  class {
+    private off: () => void;
+    constructor(view: EditorView) {
+      this.off = onNavigationModifier((held) => {
+        if (!held || !hasHoverTooltips(view.state)) return;
+        if (pointerTarget()?.closest?.(".cm-tooltip")) return;
+        view.dispatch({ effects: closeHoverTooltips });
+      });
+    }
+    destroy() {
+      this.off();
+    }
+  },
+);
+
+export function hoverExtension(): Extension {
+  return [
+    hoverTooltip(hoverSource, { hoverTime: Math.max(100, editorPrefs().codeEditing.quickDocDelay) }),
+    hoverYieldsToNavigation,
+  ];
 }
 
 /** The documentation popup has the keyboard (F1 pressed twice, or clicked into). */

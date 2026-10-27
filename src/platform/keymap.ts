@@ -120,6 +120,31 @@ export function applyKeymapSettings(preset: unknown, overrides: unknown, customK
 let suspended = 0;
 
 /**
+ * Decides whether a keystroke belongs to the focused component rather than to
+ * the IDE keymap (e.g. Vim mode's shortcut conflicts set to "Vim"). `stroke`
+ * is the canonical first stroke (`Ctrl+R`).
+ */
+export type KeyClaim = (e: KeyboardEvent, stroke: string) => boolean;
+
+const keyClaims = new Set<KeyClaim>();
+
+/** Registers a key claim; the dispatcher leaves claimed keystrokes to their target. */
+export function registerKeyClaim(claim: KeyClaim): () => void {
+  keyClaims.add(claim);
+  return () => void keyClaims.delete(claim);
+}
+
+function isClaimed(e: KeyboardEvent, stroke: string): boolean {
+  for (const claim of keyClaims)
+    try {
+      if (claim(e, stroke)) return true;
+    } catch (err) {
+      console.error("key claim failed", err);
+    }
+  return false;
+}
+
+/**
  * Pauses the global keyboard dispatcher (e.g. while recording a shortcut).
  * Returns a function that resumes it; calls nest.
  */
@@ -388,6 +413,7 @@ export function installKeyboardDispatcher(target: Window = window, now: () => nu
       if (isAltGrTyping(e)) return;
       const hasCommandMod = e.metaKey || e.ctrlKey || e.altKey;
       if (!hasCommandMod && isPlainTextField(e.target) && !/^(Shift\+)?(F\d{1,2}|Escape)$/.test(stroke)) return;
+      if (isClaimed(e, stroke)) return;
     }
 
     const seq = [...pending, stroke].join(" ");

@@ -49,7 +49,8 @@ import { requestHover } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
-import { hasPrimaryModifier, isMacHost, shortcutLabel } from "@/platform/keymap";
+import { shortcutLabel } from "@/platform/keymap";
+import { isNavigationGesture, onNavigationModifier } from "@/platform/navigationModifier";
 import { create } from "zustand";
 
 export async function navigateTo(loc: Location) {
@@ -337,7 +338,16 @@ const linkPlugin = ViewPlugin.fromClass(
     private probed = new Map<string, { info: NavInfo | null } | null>();
     private probedDoc: Text | null = null;
     private probing: string | null = null;
-    constructor(readonly view: EditorView) {}
+    private off: () => void;
+    constructor(readonly view: EditorView) {
+      // Window-wide, so ⌘/Ctrl over an unfocused editor underlines too; released anywhere clears it.
+      this.off = onNavigationModifier((held) => {
+        if (!held || this.last) this.show(held);
+      });
+    }
+    destroy() {
+      this.off();
+    }
     private set(value: LinkState | null) {
       const current = this.view.state.field(linkField);
       if (current === value || (current && value && current.from === value.from && current.to === value.to && current.info === value.info))
@@ -391,25 +401,17 @@ const linkPlugin = ViewPlugin.fromClass(
   {
     eventHandlers: {
       mousemove(e) {
-        this.last = { x: e.clientX, y: e.clientY };
-        this.show(hasPrimaryModifier(e) && !e.altKey && !e.shiftKey);
+        // Not through a popup or an inlay hint (which navigates on its own ⌘-click) to the text under it.
+        const over = e.target instanceof Element ? e.target : null;
+        this.last = over?.closest(".cm-tooltip, .cm-lsp-inlay") ? null : { x: e.clientX, y: e.clientY };
+        this.show(isNavigationGesture(e));
       },
       mouseleave() {
         this.last = null;
         this.show(false);
       },
-      keydown(e) {
-        if (e.key === (isMacHost() ? "Meta" : "Control")) this.show(true);
-      },
-      keyup(e) {
-        if (e.key === (isMacHost() ? "Meta" : "Control")) this.show(false);
-      },
-      blur() {
-        this.show(false);
-      },
       mousedown(e, view) {
-        if (e.button !== 0 || !hasPrimaryModifier(e) || e.altKey || e.shiftKey) return false;
-        if (isMacHost() ? e.ctrlKey : e.metaKey) return false;
+        if (e.button !== 0 || !isNavigationGesture(e)) return false;
         const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
         if (pos == null) return false;
         e.preventDefault();
