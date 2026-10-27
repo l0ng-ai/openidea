@@ -1,89 +1,87 @@
-.section,
-.addForm {
+.form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 16px;
   min-width: 0;
 }
+
+/* IDEA titled separator: "Startup ─────────". */
 .section {
-  margin-top: 6px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-.sectionHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  min-width: 0;
 }
 .sectionTitle {
-  color: var(--fg-strong);
-  font-weight: 600;
-}
-.title {
-  color: var(--fg-strong);
-  font-size: var(--fs-input-large);
-  font-weight: 600;
-}
-.intro {
-  margin: 0;
-  color: var(--fg-secondary);
-}
-.segmented {
-  display: flex;
-  flex: none;
-  height: var(--h-control-small);
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
-  overflow: hidden;
-}
-.segment {
-  padding: 0 10px;
-  border: 0;
-  background: transparent;
-  color: var(--fg-secondary);
-  font: inherit;
-  white-space: nowrap;
-}
-.segment:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-.segment:disabled {
-  color: var(--fg-faint);
-}
-.segment:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-.segmentOn {
-  background: var(--bg-selected);
-  color: var(--fg-strong);
-}
-.fields {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  column-gap: 16px;
-  row-gap: 10px;
-  align-items: baseline;
-}
-.field {
-  display: contents;
-}
-.fieldLabel {
-  color: var(--fg-secondary);
-}
-.fieldValue {
-  min-width: 0;
-}
-.inputRow {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+  height: 22px;
+  margin-bottom: 4px;
+  color: var(--fg-strong);
 }
-.input {
+.sectionRule {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.sectionToggle {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sectionToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sectionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0 0 12px;
+}
+
+/* Label above a full-width control: the details pane is narrow. */
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.label {
+  color: var(--fg);
+}
+.label::after {
+  content: ":";
+}
+.control {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.hint {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.note {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.error {
+  color: var(--danger);
+}
+.code {
+  font-family: var(--font-mono);
+}
+.grow {
   flex: 1;
   min-width: 0;
 }
+
 .area {
   flex: 1;
   min-width: 0;
@@ -109,19 +107,82 @@
 .invalid:focus {
   box-shadow: inset 0 0 0 2px var(--danger);
 }
-.hint {
-  margin-top: 2px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-}
-.error {
-  margin-top: 2px;
-  color: var(--danger);
-  font-size: var(--fs-small);
-  overflow-wrap: anywhere;
-}
-.footer {
+
+.picker {
   display: flex;
-  grid-column: 1 / -1;
-  gap: 4px;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: var(--h-control);
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  background: var(--bg-input);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+}
+.picker:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.pickerText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.placeholder {
+  color: var(--fg-muted);
+}
+.pickerPopup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 260px;
+  padding: 8px;
+}
+.pickerList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+.link:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+.link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dialogBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 4px;
+}
+/* Dialogs are wide enough for "Label: [control]". */
+.dialogBody .row {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+}
+.dialogBody .control {
+  align-items: center;
 }

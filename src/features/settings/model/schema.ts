@@ -5,12 +5,8 @@
  * back to the default (mirrors `ide-core::settings` defaults).
  */
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
-import {
-  validateFileTypeOverrides,
-  validateFileTypes,
-  type FileTypeAssociations,
-} from "@/platform/fileTypes";
-import type { Settings } from "@/platform/ipc";
+import { validateFileTypeOverrides, validateFileTypes, type FileTypeAssociations } from "@/platform/fileTypes";
+import type { LanguageServerSettings, Settings } from "@/platform/ipc";
 import {
   DEFAULT_LANGUAGES,
   DEFAULT_PROJECT_STRUCTURE,
@@ -86,7 +82,14 @@ export interface ValidSettings extends WorkflowSettings {
   inspections: InspectionSettingsValid;
   /** Editor › Natural Languages › Spelling. */
   spelling: SpellingValid;
+  /** Executables chosen for language servers / debug adapters, by command. */
+  tools: Record<string, { path: string }>;
+  /** Settings › Language Servers, by server name (as the backend sends them). */
+  languageServers: Record<string, LanguageServerEntry>;
 }
+
+/** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
+export type LanguageServerEntry = Partial<LanguageServerSettings>;
 
 export interface SpellingValid {
   ideWords: string[];
@@ -144,6 +147,8 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
   inspections: DEFAULT_INSPECTIONS,
   spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
+  tools: {},
+  languageServers: {},
   ...DEFAULT_WORKFLOW,
 };
 
@@ -244,6 +249,15 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     projectStructure: validateProjectStructure(root.projectStructure),
     inspections: validateInspections(root.inspections),
     spelling: validateSpelling(root.spelling),
+    tools: Object.fromEntries(
+      Object.entries(obj(root.tools)).flatMap(([cmd, t]) => {
+        const path = obj(t).path;
+        return typeof path === "string" ? [[cmd, { path }]] : [];
+      }),
+    ),
+    languageServers: Object.fromEntries(
+      Object.entries(obj(root.languageServers)).map(([name, ls]) => [name, obj(ls) as LanguageServerEntry]),
+    ),
     ...validateWorkflow(root),
   };
 }
@@ -263,6 +277,16 @@ export function setAt<T>(source: T, key: string, value: unknown): T {
   const [head, ...rest] = key.split(".");
   const base = obj(source);
   return { ...base, [head!]: rest.length ? setAt(base[head!], rest.join("."), value) : value } as T;
+}
+
+/** Like `setAt`, but `null` / `undefined` removes the key (as a settings write of `null` does). */
+export function putAt<T>(source: T, key: string, value: unknown): T {
+  const [head, ...rest] = key.split(".");
+  const base = { ...obj(source) };
+  if (rest.length) base[head!] = putAt(base[head!], rest.join("."), value);
+  else if (value == null) delete base[head!];
+  else base[head!] = value;
+  return base as T;
 }
 
 export function deepEqual(a: unknown, b: unknown): boolean {

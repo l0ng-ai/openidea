@@ -8,7 +8,15 @@
  * The workbench renders whatever is registered; the action
  * `toolwindow.<id>` toggles it (registered automatically).
  */
-import { useEffect, useRef, type ComponentType, type ReactNode, type RefObject } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  type ComponentType,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import type { RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
 import { create } from "zustand";
@@ -453,7 +461,10 @@ export interface EmbeddedTerminalOptions {
   "aria-label"?: string;
 }
 
-export type EmbeddedTerminalFactory = (host: HTMLElement, options: EmbeddedTerminalOptions) => Promise<EmbeddedTerminal>;
+export type EmbeddedTerminalFactory = (
+  host: HTMLElement,
+  options: EmbeddedTerminalOptions,
+) => Promise<EmbeddedTerminal>;
 
 const services: {
   editor?: EditorService;
@@ -587,6 +598,29 @@ export interface SettingsPageContribution {
   /** Extra words matched by the settings search. */
   keywords?: string[];
   component: ComponentType;
+  /** The page edits settings that a project can override (Global / This project switch). */
+  projectScope?: boolean;
+}
+
+/**
+ * What a settings page edits through: values of the page's scope with the
+ * edits not applied yet. Edits are written on Apply / OK and dropped on Cancel.
+ */
+export interface SettingsForm {
+  scope: "global" | "project";
+  /** Value of a dotted key (map entries too, e.g. `languageServers.ruff.args`). */
+  useValue(key: string): unknown;
+  /** Stages a value; `null` removes the key on Apply. */
+  set(key: string, value: unknown): void;
+}
+
+export const SettingsFormContext = createContext<SettingsForm | null>(null);
+
+/** The form of the settings page being shown (provided by the Settings dialog). */
+export function useSettingsForm(): SettingsForm {
+  const form = useContext(SettingsFormContext);
+  if (!form) throw new Error("useSettingsForm outside a settings page");
+  return form;
 }
 
 export const useSettingsPages = create<{ pages: Map<string, SettingsPageContribution> }>(() => ({ pages: new Map() }));
@@ -684,14 +718,7 @@ export function projectViewRoots(map: ReadonlyMap<string, ProjectViewRootContrib
 // in `paths[0]`, the target directory (features/templates: file templates, http-client: HTTP Request).
 
 export type ContextMenuId =
-  | "editor"
-  | "projectView"
-  | "editorTab"
-  | "editorGutter"
-  | "openIn"
-  | "stopProcess"
-  | "selectIn"
-  | "new";
+  "editor" | "projectView" | "editorTab" | "editorGutter" | "openIn" | "stopProcess" | "selectIn" | "new";
 
 export interface MenuGroupContext {
   /** Files / directories the menu is for (absolute paths; a virtual URI for virtual documents). */
@@ -869,7 +896,9 @@ export interface RunConfigTypeContribution {
   debugAdapter?: string;
 }
 
-export const useRunConfigTypes = create<{ types: Map<string, RunConfigTypeContribution> }>(() => ({ types: new Map() }));
+export const useRunConfigTypes = create<{ types: Map<string, RunConfigTypeContribution> }>(() => ({
+  types: new Map(),
+}));
 
 export function registerRunConfigType(type: RunConfigTypeContribution): () => void {
   useRunConfigTypes.setState((s) => ({ types: new Map(s.types).set(type.id, type) }));
@@ -1005,7 +1034,11 @@ export function setLocalChanges(provider: string, lists: LocalChangelist[]): () 
 }
 
 /** Paths of the changed files, of one list (`listId`) or all; `existing` leaves out deleted files. */
-export function localChangedPaths(lists: readonly LocalChangelist[], listId?: string | null, existing = false): string[] {
+export function localChangedPaths(
+  lists: readonly LocalChangelist[],
+  listId?: string | null,
+  existing = false,
+): string[] {
   const out: string[] = [];
   for (const l of lists) {
     if (listId && l.id !== listId) continue;
@@ -1053,7 +1086,9 @@ export function registerRunAnythingProvider(p: RunAnythingProvider): () => void 
 
 /** Registered providers in order. */
 export function runAnythingProviderList(): RunAnythingProvider[] {
-  return [...runAnythingProviders.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id));
+  return [...runAnythingProviders.values()].sort(
+    (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
+  );
 }
 
 // ---------------------------------------------------------------------------

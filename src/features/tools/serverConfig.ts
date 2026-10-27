@@ -5,9 +5,20 @@
  */
 import type { LanguageServerSettings } from "@/bindings";
 
-/** What one settings layer sets for a server (any field may be absent). */
+/** What the settings set for a server (any field may be absent). */
 export type ServerEntry = Partial<LanguageServerSettings>;
 export type ServerField = keyof LanguageServerSettings;
+
+/** Settings keys of a server's entry and of a tool's executable. */
+export const serverKey = (name: string, field?: ServerField) =>
+  field ? `languageServers.${name}.${field}` : `languageServers.${name}`;
+export const toolPathKey = (command: string) => `tools.${command}.path`;
+
+/** The server's name proposed for an executable (`/opt/bin/ruff` → `ruff`). */
+export function nameFromCommand(command: string): string {
+  const base = command.trim().split(/[\\/]/).pop() ?? "";
+  return base.replace(/\.(exe|cmd|bat)$/i, "").replace(/[^A-Za-z0-9_+-]/g, "-");
+}
 
 /** Names become settings keys: no dots or spaces. */
 export const SERVER_NAME = /^[A-Za-z0-9][A-Za-z0-9_+-]*$/;
@@ -48,24 +59,24 @@ export function formatArgs(args: readonly string[] | undefined | null): string {
   return (args ?? []).map((a) => (a === "" || /[\s"'\\]/.test(a) ? `"${a.replace(/["\\]/g, "\\$&")}"` : a)).join(" ");
 }
 
-/** `KEY=value` per line; blank lines and `#` comments are skipped. */
+/** `NAME=value` pairs separated by `;` (or new lines), as in run configurations. */
 export function parseEnv(text: string): Record<string, string> | null {
   const env: Record<string, string> = {};
-  text.split("\n").forEach((raw, i) => {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) return;
-    const eq = line.indexOf("=");
-    const key = eq < 0 ? "" : line.slice(0, eq).trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Line ${i + 1}: expected NAME=value`);
-    env[key] = line.slice(eq + 1);
-  });
+  for (const raw of text.split(/[;\n]/)) {
+    const pair = raw.trim();
+    if (!pair) continue;
+    const eq = pair.indexOf("=");
+    const key = eq < 0 ? "" : pair.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Expected NAME=value: ${pair}`);
+    env[key] = pair.slice(eq + 1).trim();
+  }
   return Object.keys(env).length ? env : null;
 }
 
 export function formatEnv(env: Record<string, string> | undefined | null): string {
   return Object.entries(env ?? {})
     .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
+    .join("; ");
 }
 
 /** A JSON object (settings.toml has no `null`, so neither may the object). */

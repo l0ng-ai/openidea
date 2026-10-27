@@ -3,10 +3,8 @@
  * simulation in plain-browser development and tests (no network, ever).
  */
 import { Channel } from "@tauri-apps/api/core";
-import type { InstallEvent, RequestId, SettingsScope, ToolInfo } from "@/bindings";
-import { call, commands, IpcError, isTauri, type Settings } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
-import type { ServerEntry, ServerField } from "./serverConfig";
+import type { InstallEvent, RequestId, ToolInfo } from "@/bindings";
+import { call, commands, IpcError, isTauri } from "@/platform/ipc";
 
 export interface LanguageChoice {
   id: string;
@@ -20,20 +18,11 @@ export interface ToolsBackend {
   cancel(request: RequestId): void;
   /** Restarts running language servers named `name` (after an install). */
   restartServers(name: string): Promise<void>;
-  /** Launches `command` from `path` instead of the detected one (global setting); "" clears it. */
-  setCustomPath(command: string, path: string): Promise<void>;
   /** File chooser for an executable; null when cancelled. */
   chooseExecutable(title: string, defaultPath?: string): Promise<string | null>;
-  /** What one settings layer sets for server `name` (`languageServers.<name>`). */
-  serverEntry(scope: SettingsScope, name: string): Promise<ServerEntry | null>;
-  /** Writes one field of the entry (`field` null: the whole entry); `null` removes it. */
-  setServerSetting(scope: SettingsScope, name: string, field: ServerField | null, value: unknown): Promise<void>;
   /** Languages a server defined in settings can serve. */
   languages(): Promise<LanguageChoice[]>;
 }
-
-const serverKey = (name: string, field: ServerField | null) =>
-  field ? `languageServers.${name}.${field}` : `languageServers.${name}`;
 
 export const tauriToolsBackend: ToolsBackend = {
   list: () => call(commands.toolsList()),
@@ -55,25 +44,10 @@ export const tauriToolsBackend: ToolsBackend = {
       servers.filter((s) => s.name === name).map((s) => call(commands.lspRestart(s.id)).catch(() => {})),
     );
   },
-  setCustomPath: async (command, path) => {
-    const tools = { ...(await commands.settingsGet()).tools };
-    if (path) tools[command] = { path };
-    else delete tools[command];
-    const settings = await call(commands.settingsSet("global", "tools", JSON.stringify(tools)));
-    useProject.setState({ settings });
-  },
   chooseExecutable: async (title, defaultPath) => {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({ directory: false, multiple: false, title, defaultPath: defaultPath || undefined });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
-  },
-  serverEntry: async (scope, name) => {
-    const json = await commands.settingsGetLayerValue(scope, serverKey(name, null));
-    return json ? (JSON.parse(json) as ServerEntry) : null;
-  },
-  setServerSetting: async (scope, name, field, value) => {
-    const settings = await call(commands.settingsSet(scope, serverKey(name, field), JSON.stringify(value ?? null)));
-    useProject.setState({ settings });
   },
   languages: async () =>
     (await commands.languages()).map((l) => ({ id: l.id, name: l.name })).sort((a, b) => a.name.localeCompare(b.name)),
@@ -94,6 +68,8 @@ function tool(partial: Partial<ToolInfo> & Pick<ToolInfo, "name" | "languages">)
     installHint: null,
     homepage: null,
     customError: null,
+    defaultArgs: [],
+    defaultInitializationOptions: null,
     ...partial,
   };
 }
@@ -227,58 +203,12 @@ export class MemoryToolsBackend implements ToolsBackend {
     this.restarted.push(name);
   }
 
-  /** Paths set through `setCustomPath`, by command. */
-  customPaths: Record<string, string> = {};
   /** What `chooseExecutable` answers. */
   chosen: string | null = null;
-
-  async setCustomPath(command: string, path: string) {
-    if (path) this.customPaths[command] = path;
-    else delete this.customPaths[command];
-    for (const t of this.tools.filter((x) => x.command === command)) {
-      this.replace(path ? { ...t, status: "custom", path, version: null } : { ...t, status: "missing", path: null });
-    }
-  }
 
   async chooseExecutable() {
     return this.chosen;
   }
-
-  /** `languageServers` per settings layer. */
-  layers: Record<SettingsScope, Record<string, ServerEntry>> = { global: {}, project: {} };
-
-  async serverEntry(scope: SettingsScope, name: string) {
-    const entry = this.layers[scope][name];
-    return entry ? structuredClone(entry) : null;
-  }
-
-  async setServerSetting(scope: SettingsScope, name: string, field: ServerField | null, value: unknown) {
-    const layer = this.layers[scope];
-    if (field === null) {
-      if (value == null) delete layer[name];
-      else layer[name] = structuredClone(value) as ServerEntry;
-    } else {
-      const entry: Record<string, unknown> = { ...layer[name] };
-      if (value == null) delete entry[field];
-      else entry[field] = structuredClone(value);
-      layer[name] = entry as ServerEntry;
-    }
-    const names = new Set([...Object.keys(this.layers.global), ...Object.keys(this.layers.project)]);
-    const languageServers: Record<string, ServerEntry> = Object.fromEntries(
-      [...names].map((n) => [n, { ...this.layers.global[n], ...this.layers.project[n] }]),
-    );
-    useProject.setState((s) => ({ settings: { ...s.settings, languageServers } as Settings }));
-    // Servers defined in settings are listed like the real backend lists them.
-    this.tools = this.tools.filter((t) => t.name !== name || !this.custom.has(name));
-    this.custom.delete(name);
-    const { command = "", languages = [] } = languageServers[name] ?? {};
-    if (languages.length) {
-      this.custom.add(name);
-      this.tools.push(tool({ name, command, languages, installMethod: null, canInstall: false }));
-    }
-  }
-
-  private custom = new Set<string>();
 
   async languages() {
     return [

@@ -19,7 +19,19 @@ export function activateSettingsPages(): () => void {
     title: "Language Servers",
     group: "Languages & Frameworks",
     order: 400,
-    keywords: ["lsp", "language server", "debugger", "adapter", "dap", "install", "rust-analyzer", "gopls", "pyright"],
+    keywords: [
+      "lsp",
+      "language server",
+      "debugger",
+      "adapter",
+      "dap",
+      "install",
+      "initialization options",
+      "rust-analyzer",
+      "gopls",
+      "pyright",
+    ],
+    projectScope: true,
     component: lazyComponent(() => import("./LanguageServersPage").then((m) => m.LanguageServersPage)),
   });
 }

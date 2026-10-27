@@ -1,12 +1,11 @@
 /** Tool list + running installs. Installs show in the status-bar task list too. */
 import { create } from "zustand";
-import type { RequestId, SettingsScope, ToolInfo } from "@/bindings";
+import type { RequestId, ToolInfo } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { upsertTask } from "@/workbench/tasks";
 import { toolsBackend } from "./backend";
-import type { ServerField } from "./serverConfig";
 import { tx } from "@/platform/i18n";
 
 export const SETTINGS_PAGE_ID = "languages.servers";
@@ -175,49 +174,6 @@ export async function uninstallTool(name: string): Promise<boolean> {
       group: "tools",
       level: "error",
       title: `Failed to uninstall ${toolByName(name)?.displayName ?? name}`,
-      body: errorText(e),
-    });
-    return false;
-  }
-}
-
-/** Launches `command` from `path` (empty: auto-detect again), then re-checks the tools. */
-export async function setCustomPath(command: string, path: string): Promise<boolean> {
-  try {
-    await toolsBackend().setCustomPath(command, path.trim());
-    await refreshTools();
-    return true;
-  } catch (e) {
-    notifications().notify({
-      group: "tools",
-      level: "error",
-      title: `Failed to set the path of ${command}`,
-      body: errorText(e),
-    });
-    return false;
-  }
-}
-
-/**
- * Writes one field of `languageServers.<name>` in `scope` (`field` null: the whole
- * entry; `value` null: remove it). Running servers pick it up right away.
- */
-export async function saveServerSetting(
-  scope: SettingsScope,
-  name: string,
-  field: ServerField | null,
-  value: unknown,
-): Promise<boolean> {
-  try {
-    await toolsBackend().setServerSetting(scope, name, field, value);
-    // Servers defined in settings come and go from the list.
-    if (field === null || field === "command" || field === "languages") await refreshTools();
-    return true;
-  } catch (e) {
-    notifications().notify({
-      group: "tools",
-      level: "error",
-      title: `Failed to save the settings of ${name}`,
       body: errorText(e),
     });
     return false;

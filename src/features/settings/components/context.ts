@@ -1,5 +1,6 @@
 /** Page context for the form components: which page / scope they edit and the search query. */
-import { createContext, useCallback, useContext } from "react";
+import { createContext, useCallback, useContext, useMemo } from "react";
+import type { SettingsForm } from "@/workbench/contributions";
 import { stage, stagedValue, useSettingsDialog, type Scope } from "../model/staging";
 import { labelMatches } from "../model/pages";
 
@@ -21,6 +22,25 @@ export function useSetting<T>(key: string, scopeOverride?: Scope): [T, (value: T
   const value = useSettingsDialog((s) => stagedValue(s, scope, key)) as T;
   const set = useCallback((v: T) => stage(pageId, scope, key, v), [pageId, scope, key]);
   return [value, set];
+}
+
+/** `stagedValue` for components; recomputed only when the base or the staged edits change. */
+export function useStagedValue(scope: Scope, key: string): unknown {
+  const base = useSettingsDialog((s) => (scope === "global" ? s.globalBase : s.base));
+  const staged = useSettingsDialog((s) => s.staged);
+  return useMemo(() => stagedValue({ base, globalBase: base, staged }, scope, key), [base, staged, scope, key]);
+}
+
+/** The form contributed pages edit through (`useSettingsForm`). */
+export function useSettingsFormFor(pageId: string, scope: Scope): SettingsForm {
+  return useMemo(
+    () => ({
+      scope,
+      useValue: (key: string) => useStagedValue(scope, key),
+      set: (key: string, value: unknown) => stage(pageId, scope, key, value),
+    }),
+    [pageId, scope],
+  );
 }
 
 export function useSearchQuery(): string {

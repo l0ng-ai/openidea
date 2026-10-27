@@ -9,7 +9,7 @@
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useProject } from "@/platform/project";
-import { useSettingsPages, type SettingsPageContribution } from "@/workbench/contributions";
+import { SettingsFormContext, useSettingsPages, type SettingsPageContribution } from "@/workbench/contributions";
 import {
   Dialog,
   DialogButtons,
@@ -22,7 +22,7 @@ import {
   type TreeHandle,
   T,
 } from "@/ui";
-import { PageContext } from "../components/context";
+import { PageContext, useSettingsFormFor } from "../components/context";
 import { SearchLabel } from "../components/Form";
 import { breadcrumb, buildPageTree, filterPageTree, flatten, groupKey, type PageNode } from "../model/pages";
 import {
@@ -102,60 +102,63 @@ function PageHost({
   const hasProject = useProject((s) => !!s.project);
   const newProjects = useSettingsDialog((s) => s.newProjects);
   const spec = page ? builtinSpec(page.id) : undefined;
-  const projectScope = !!spec?.projectScope && hasProject && !newProjects;
+  const projectScope = !!(spec?.projectScope ?? page?.projectScope) && hasProject && !newProjects;
   const scopeKey = spec?.scopeGroup ?? pageId;
   const chosen = useSettingsDialog((s) => s.scopes[scopeKey]) ?? spec?.defaultScope;
   const scope: Scope = projectScope && chosen === "project" ? "project" : "global";
   // Where a project value is the norm, say what the global one is for.
   const globalNote = newProjects || (projectScope && scope === "global" && spec?.defaultScope === "project");
   const ctx = useMemo(() => ({ pageId, scope }), [pageId, scope]);
+  const form = useSettingsFormFor(pageId, scope);
   if (!node) return <EmptyState title="Nothing found" icon="search" />;
   const Body = page?.component;
   return (
     <PageContext.Provider value={ctx}>
-      <div className={styles.pageHeader}>
-        <div className={styles.crumbs} aria-label={tx("Breadcrumb")}>
-          {crumbs.map((c, i) => (
-            <span key={i} className={styles.crumb}>
-              {i > 0 && <Icon name="chevron-right" size={12} className={styles.crumbSep} />}
-              <span>
-                <T>{c}</T>
+      <SettingsFormContext.Provider value={form}>
+        <div className={styles.pageHeader}>
+          <div className={styles.crumbs} aria-label={tx("Breadcrumb")}>
+            {crumbs.map((c, i) => (
+              <span key={i} className={styles.crumb}>
+                {i > 0 && <Icon name="chevron-right" size={12} className={styles.crumbSep} />}
+                <span>
+                  <T>{c}</T>
+                </span>
               </span>
-            </span>
-          ))}
+            ))}
+          </div>
+          {dirty && (
+            <button type="button" className={styles.reset} onClick={onReset}>
+              <T>Reset</T>
+            </button>
+          )}
+          {projectScope && !spec?.ownScopeSwitch && <ScopeSwitch pageId={scopeKey} scope={scope} />}
+          <span className={styles.history}>
+            <IconButton icon="arrow-left" title="Back" size="small" disabled={!history.back} onClick={history.back} />
+            <IconButton
+              icon="arrow-right"
+              title="Forward"
+              size="small"
+              disabled={!history.forward}
+              onClick={history.forward}
+            />
+          </span>
         </div>
-        {dirty && (
-          <button type="button" className={styles.reset} onClick={onReset}>
-            <T>Reset</T>
-          </button>
+        {scope === "project" && (
+          <div className={styles.scopeNote}>
+            <Icon name="info" size={14} />
+            <T>Saved to .openidea/settings.toml in this project; overrides the global value.</T>
+          </div>
         )}
-        {projectScope && !spec?.ownScopeSwitch && <ScopeSwitch pageId={scopeKey} scope={scope} />}
-        <span className={styles.history}>
-          <IconButton icon="arrow-left" title="Back" size="small" disabled={!history.back} onClick={history.back} />
-          <IconButton
-            icon="arrow-right"
-            title="Forward"
-            size="small"
-            disabled={!history.forward}
-            onClick={history.forward}
-          />
-        </span>
-      </div>
-      {scope === "project" && (
-        <div className={styles.scopeNote}>
-          <Icon name="info" size={14} />
-          <T>Saved to .openidea/settings.toml in this project; overrides the global value.</T>
+        {globalNote && (
+          <div className={styles.scopeNote}>
+            <Icon name="info" size={14} />
+            <T>Saved to the global settings: used by new projects and by projects without their own value.</T>
+          </div>
+        )}
+        <div className={styles.pageBody}>
+          <PageErrorBoundary pageId={pageId}>{Body ? <Body /> : <GroupPage node={node} />}</PageErrorBoundary>
         </div>
-      )}
-      {globalNote && (
-        <div className={styles.scopeNote}>
-          <Icon name="info" size={14} />
-          <T>Saved to the global settings: used by new projects and by projects without their own value.</T>
-        </div>
-      )}
-      <div className={styles.pageBody}>
-        <PageErrorBoundary pageId={pageId}>{Body ? <Body /> : <GroupPage node={node} />}</PageErrorBoundary>
-      </div>
+      </SettingsFormContext.Provider>
     </PageContext.Provider>
   );
 }

@@ -177,12 +177,6 @@ impl SettingsStore {
         serde_json::from_value(merged).unwrap_or_default()
     }
 
-    /// The value of a dotted key as written in one layer's file (not merged).
-    pub fn layer_value(&self, scope: SettingsScope, key: &str) -> Option<Json> {
-        let layer = read_layer(self.file(scope)?)?;
-        key.split('.').try_fold(&layer, |v, seg| v.get(seg)).cloned()
-    }
-
     /// Effective (merged) settings.
     pub fn effective(&self) -> Settings {
         self.effective.read().clone()
@@ -377,10 +371,6 @@ mod tests {
         assert!(ra.enabled);
         assert_eq!(ra.args.as_deref(), Some(&["--log".to_string()][..]));
         assert_eq!(ra.initialization_options, Some(json!({"check": {"command": "clippy"}})));
-        assert_eq!(
-            store.layer_value(SettingsScope::Global, "languageServers.rust-analyzer.args"),
-            Some(json!(["--log"]))
-        );
         assert_eq!(
             store
                 .set(SettingsScope::Global, "languageServers.rust-analyzer", json!({"enabled": "no"}))

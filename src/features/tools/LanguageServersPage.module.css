@@ -25,7 +25,7 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  width: 300px;
+  width: 264px;
   min-height: 0;
   border-right: 1px solid var(--border);
 }
@@ -38,6 +38,13 @@
 .search {
   flex: 1;
   min-width: 0;
+}
+.toolbarSep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--border);
 }
 .segmented {
   display: flex;
@@ -111,6 +118,10 @@
   outline: none;
   background: var(--bg-hover);
 }
+.rowOff .rowName,
+.rowOff .rowLanguages {
+  color: var(--fg-muted);
+}
 .rowName {
   flex: none;
   max-width: 60%;
@@ -162,6 +173,7 @@
   gap: 12px;
 }
 .headerText {
+  flex: 1;
   min-width: 0;
 }
 .title {
@@ -178,59 +190,35 @@
 }
 .actions {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 4px;
 }
-.fields {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  column-gap: 16px;
-  row-gap: 8px;
-  align-items: baseline;
-  margin-top: 4px;
-}
-.field {
-  display: contents;
-}
-.fieldLabel {
-  color: var(--fg-secondary);
-}
-.fieldValue {
-  min-width: 0;
-  color: var(--fg);
-}
-code.fieldValue {
-  font-family: var(--font-mono);
+.linkButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
   font-size: var(--fs-small);
+  cursor: pointer;
 }
-.breakAll {
-  overflow-wrap: anywhere;
+.linkButton:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
 }
-.version {
-  font-variant-numeric: tabular-nums;
-}
-.pathRow {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.pathInput {
-  flex: 1;
-  min-width: 0;
+.linkButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .fieldHint {
-  margin-top: 2px;
+  margin-top: -4px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
 }
-.fieldError,
 .error {
   color: var(--danger);
   overflow-wrap: anywhere;
-}
-.fieldError {
-  margin-top: 2px;
-  font-size: var(--fs-small);
 }
 .notice {
   padding: 6px 8px;
@@ -265,7 +253,7 @@ code.fieldValue {
   font-size: var(--fs-small);
 }
 .log {
-  margin: 0;
+  margin: 4px 0 0;
   padding: 6px 8px;
   max-height: 240px;
   overflow: auto;

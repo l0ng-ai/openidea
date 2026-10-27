@@ -6,7 +6,7 @@
 import { create } from "zustand";
 import { call, commands, isTauri, type Settings } from "@/platform/ipc";
 import { loadSettings, useProject } from "@/platform/project";
-import { deepEqual, getAt, setAt, validateSettings, type ValidSettings } from "./schema";
+import { deepEqual, getAt, putAt, setAt, validateSettings, type ValidSettings } from "./schema";
 
 export type Scope = "global" | "project";
 
@@ -119,19 +119,48 @@ export function setPageScope(pageId: string, scope: Scope) {
   useSettingsDialog.setState((s) => ({ scopes: { ...s.scopes, [pageId]: scope } }));
 }
 
-/** Current value of `key` as the page shows it: staged edit, else the effective value. */
+const isInside = (key: string, parent: string) => key.startsWith(`${parent}.`);
+
+/**
+ * Current value of `key` as the page shows it: staged edit, else the effective
+ * value. Edits staged for a parent (a whole map entry) or inside `key` (one
+ * field of it) show through too.
+ */
 export function stagedValue(s: Bases & Pick<SettingsDialogState, "staged">, scope: Scope, key: string): unknown {
   const hit = s.staged[stageKey(scope, key)];
-  return hit ? hit.value : getAt(baseFor(s, scope), key);
+  if (hit) return hit.value;
+  const related = Object.values(s.staged).filter(
+    (c) => c.scope === scope && (isInside(key, c.key) || isInside(c.key, key)),
+  );
+  let value = getAt(baseFor(s, scope), key);
+  for (const c of related.sort((a, b) => a.key.length - b.key.length)) {
+    value = isInside(key, c.key)
+      ? (getAt(c.value, key.slice(c.key.length + 1)) ?? undefined)
+      : putAt(value, c.key.slice(key.length + 1), c.value);
+  }
+  return value;
 }
 
+/**
+ * Stages `value` for `key`; `null` removes the key on Apply. An edit inside an
+ * entry staged as a whole (a map entry just added) goes into that entry; a new
+ * value for `key` drops the edits staged inside it.
+ */
 export function stage(page: string, scope: Scope, key: string, value: unknown) {
   useSettingsDialog.setState((s) => {
     const staged = { ...s.staged };
+    const parent = Object.values(staged).find((c) => c.scope === scope && isInside(key, c.key));
+    if (parent) {
+      const merged = putAt(parent.value, key.slice(parent.key.length + 1), value);
+      staged[stageKey(scope, parent.key)] = { ...parent, value: merged };
+      return { staged, error: null };
+    }
+    for (const [id, c] of Object.entries(staged)) if (c.scope === scope && isInside(c.key, key)) delete staged[id];
     const id = stageKey(scope, key);
+    const next = value === undefined ? null : value;
     // Back to the scope's current value: nothing to write.
-    if (deepEqual(value, getAt(baseFor(s, scope), key))) delete staged[id];
-    else staged[id] = { scope, key, value, page };
+    if (deepEqual(next ?? undefined, getAt(baseFor(s, scope), key))) delete staged[id];
+    else staged[id] = { scope, key, value: next, page };
     return { staged, error: null };
   });
 }
@@ -147,7 +176,7 @@ export function resetPage(page: string) {
 /** Writes to perform, global layer first so a project value still wins afterwards. */
 export function pendingChanges(s: Bases & Pick<SettingsDialogState, "staged">): StagedChange[] {
   return Object.values(s.staged)
-    .filter((c) => !deepEqual(c.value, getAt(baseFor(s, c.scope), c.key)))
+    .filter((c) => !deepEqual(c.value ?? undefined, getAt(baseFor(s, c.scope), c.key)))
     .sort((a, b) => (a.scope === b.scope ? a.key.localeCompare(b.key) : a.scope === "global" ? -1 : 1));
 }
 
@@ -217,7 +246,7 @@ export async function applySettings(deps?: PersistDeps): Promise<boolean> {
     globalBase: useProject.getState().project
       ? changes
           .filter((c) => c.scope === "global" && done.has(stageKey(c.scope, c.key)))
-          .reduce((g, c) => setAt(g, c.key, c.value), st.globalBase)
+          .reduce((g, c) => putAt(g, c.key, c.value), st.globalBase)
       : base,
     staged: Object.fromEntries(Object.entries(st.staged).filter(([k]) => !done.has(k))),
   }));

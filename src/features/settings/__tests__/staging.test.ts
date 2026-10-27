@@ -53,6 +53,33 @@ describe("settings staging", () => {
     expect(pendingChanges(s())).toHaveLength(1);
   });
 
+  it("stages entries of map settings and fields inside them", () => {
+    const page = "languages.servers";
+    const s = () => useSettingsDialog.getState();
+    // A field of an entry nobody has set yet; reading the map shows it.
+    stage(page, "global", "languageServers.rust-analyzer.args", ["--log"]);
+    expect(stagedValue(s(), "global", "languageServers")).toEqual({ "rust-analyzer": { args: ["--log"] } });
+    // Cleared again: nothing to write.
+    stage(page, "global", "languageServers.rust-analyzer.args", null);
+    expect(pendingChanges(s())).toEqual([]);
+
+    // A new entry, then an edit inside it: one write of the whole entry.
+    stage(page, "global", "languageServers.ruff", { command: "ruff", languages: ["python"] });
+    stage(page, "global", "languageServers.ruff.args", ["server"]);
+    stage(page, "global", "languageServers.ruff.command", null);
+    expect(stagedValue(s(), "global", "languageServers.ruff.args")).toEqual(["server"]);
+    expect(pendingChanges(s()).map((c) => [c.key, c.value])).toEqual([
+      ["languageServers.ruff", { languages: ["python"], args: ["server"] }],
+    ]);
+
+    // Removing an entry drops the edits staged inside it.
+    stage(page, "global", "languageServers.gopls.env", { GOFLAGS: "-mod=mod" });
+    stage(page, "global", "languageServers.gopls", null);
+    stage(page, "global", "languageServers.ruff", null);
+    expect(pendingChanges(s())).toEqual([]);
+    expect(stagedValue(s(), "global", "languageServers")).toEqual({});
+  });
+
   it("opens Settings for New Projects on request", () => {
     expect(useSettingsDialog.getState().newProjects).toBe(false);
     openSettings("languages.java", { newProjects: true });

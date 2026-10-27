@@ -8,6 +8,7 @@ import { MemoryToolsBackend, sampleTools, setToolsBackend } from "../backend";
 import { cancelInstall, installTool, refreshTools, uninstallTool, useTools } from "../store";
 import { filterTools, LanguageServersPage } from "../LanguageServersPage";
 import { installMissingServerPrompts, missingKey } from "../missing";
+import { resetTestForm, stagedFor, TestSettingsForm } from "./settingsForm";
 
 type Note = Parameters<NotificationService["notify"]>[0];
 let notes: Note[];
@@ -126,12 +127,19 @@ describe("missing language server prompt", () => {
 });
 
 describe("LanguageServersPage", () => {
+  beforeEach(() => resetTestForm());
+  const renderPage = () =>
+    render(
+      <TestSettingsForm>
+        <LanguageServersPage />
+      </TestSettingsForm>,
+    );
   const listItem = (name: string) =>
     screen.getByRole("list", { name: /language servers/i }).querySelector<HTMLElement>(`[data-tool="${name}"]`)!;
 
   it("lists tools and installs from the details pane", async () => {
     const user = userEvent.setup();
-    render(<LanguageServersPage />);
+    renderPage();
     await screen.findByText("gopls");
     await user.click(listItem("gopls"));
     const details = screen.getByLabelText("gopls details");
@@ -148,7 +156,7 @@ describe("LanguageServersPage", () => {
 
   it("explains why a tool cannot be installed", async () => {
     const user = userEvent.setup();
-    render(<LanguageServersPage />);
+    renderPage();
     await screen.findByText("solargraph");
     await user.click(listItem("solargraph"));
     expect(screen.getByText("gem install solargraph")).toBeInTheDocument();
@@ -156,23 +164,26 @@ describe("LanguageServersPage", () => {
     expect(screen.getByText("curl is required to download tools")).toBeInTheDocument();
   });
 
-  it("sets and clears a custom path", async () => {
+  it("stages and clears a custom path", async () => {
     const user = userEvent.setup();
-    render(<LanguageServersPage />);
+    renderPage();
     await screen.findByText("gopls");
     await user.click(listItem("gopls"));
     const path = within(screen.getByLabelText("gopls details")).getByRole("textbox", { name: "Path" });
-    await user.type(path, "/opt/go/bin/gopls{Enter}");
-    await waitFor(() => expect(screen.getByLabelText("gopls details")).toHaveTextContent("Custom"));
-    expect(backend.customPaths).toEqual({ gopls: "/opt/go/bin/gopls" });
-    await user.click(screen.getByRole("button", { name: "Use auto-detected" }));
-    await waitFor(() => expect(backend.customPaths).toEqual({}));
-    expect(screen.getByLabelText("gopls details")).toHaveTextContent("Missing");
+    await user.type(path, "/opt/go/bin/gopls");
+    expect(stagedFor("tools.gopls.path")).toBe("/opt/go/bin/gopls");
+    await user.clear(path);
+    expect(stagedFor("tools.gopls.path")).toBeNull();
+    // Picked with the file chooser.
+    backend.chosen = "/usr/local/bin/gopls";
+    await user.click(within(screen.getByLabelText("gopls details")).getByRole("button", { name: "Browse…" }));
+    expect(stagedFor("tools.gopls.path")).toBe("/usr/local/bin/gopls");
+    expect(path).toHaveValue("/usr/local/bin/gopls");
   });
 
   it("moves the selection with the arrow keys", async () => {
     const user = userEvent.setup();
-    render(<LanguageServersPage />);
+    renderPage();
     await screen.findByText("gopls");
     await user.click(listItem("rust-analyzer"));
     await user.keyboard("{ArrowDown}");
@@ -181,7 +192,7 @@ describe("LanguageServersPage", () => {
 
   it("filters to missing tools", async () => {
     const user = userEvent.setup();
-    render(<LanguageServersPage />);
+    renderPage();
     await screen.findByText("gopls");
     await user.click(screen.getByRole("radio", { name: /missing/i }));
     expect(screen.queryByText("rust-analyzer")).not.toBeInTheDocument();
@@ -193,7 +204,7 @@ describe("LanguageServersPage", () => {
 
   it("shows backend errors", async () => {
     vi.spyOn(backend, "list").mockRejectedValueOnce(new Error("boom"));
-    render(<LanguageServersPage />);
+    renderPage();
     expect(await screen.findByRole("alert")).toHaveTextContent("boom");
   });
 });

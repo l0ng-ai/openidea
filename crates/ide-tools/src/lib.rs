@@ -71,6 +71,10 @@ pub struct ToolInfo {
     pub homepage: Option<String>,
     /// Why the executable chosen in settings cannot be used (status is then `Missing`).
     pub custom_error: Option<String>,
+    /// A language server's arguments from its language definition.
+    pub default_args: Vec<String>,
+    /// A language server's `initializationOptions` from its language definition, as JSON text.
+    pub default_initialization_options: Option<String>,
 }
 
 /// Streamed install progress.
@@ -208,6 +212,8 @@ struct Usage {
     command: Option<String>,
     kind: Option<ToolKind>,
     install_hint: Option<String>,
+    args: Vec<String>,
+    initialization_options: Option<String>,
 }
 
 fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
@@ -241,6 +247,14 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
     for (plugin, host) in registry::PLUGIN_HOSTS {
         let languages = map.get(*host).map(|u| u.languages.clone()).unwrap_or_default();
         map.entry(plugin.to_string()).or_default().languages = languages;
+    }
+    // A server's defaults come from the first definition using it.
+    for s in langs.iter().flat_map(|l| &l.language_servers).rev() {
+        if let Some(u) = map.get_mut(&s.name) {
+            u.args = s.args.clone();
+            u.initialization_options =
+                s.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).map(|v| v.to_string());
+        }
     }
     map
 }
@@ -454,6 +468,8 @@ impl Tools {
                 install_hint,
                 homepage: None,
                 custom_error: None,
+                default_args: u.args.clone(),
+                default_initialization_options: u.initialization_options.clone(),
             })
             .map(|info| self.apply_custom(info, None));
         };
@@ -476,6 +492,8 @@ impl Tools {
             install_hint,
             homepage: Some(spec.homepage.to_string()),
             custom_error: None,
+            default_args: usage.map(|u| u.args.clone()).unwrap_or_default(),
+            default_initialization_options: usage.and_then(|u| u.initialization_options.clone()),
         })
         .map(|info| self.apply_custom(info, Some(spec)))
     }

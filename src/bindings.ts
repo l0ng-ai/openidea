@@ -28,11 +28,6 @@ export const commands = {
 	 */
 	settingsGetGlobal: () => __TAURI_INVOKE<Settings_Serialize>("settings_get_global"),
 	/**
-	 *  A key's value as written in one layer (the global or this project's file),
-	 *  without defaults or the other layer, as JSON text; `None` when that layer doesn't set it.
-	 */
-	settingsGetLayerValue: (scope: SettingsScope, key: string) => __TAURI_INVOKE<string | null>("settings_get_layer_value", { scope, key }),
-	/**
 	 *  `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 	 *  value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 	 *  re-reads its effective settings.
@@ -5202,6 +5197,10 @@ export type ToolInfo = {
 	homepage: string | null,
 	/**  Why the executable chosen in settings cannot be used (status is then `Missing`). */
 	customError: string | null,
+	/**  A language server's arguments from its language definition. */
+	defaultArgs: string[],
+	/**  A language server's `initializationOptions` from its language definition, as JSON text. */
+	defaultInitializationOptions: string | null,
 };
 
 export type ToolKind = "languageServer" | "debugger" | 
