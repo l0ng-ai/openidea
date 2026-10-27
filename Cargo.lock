@@ -4274,6 +4274,7 @@ dependencies = [
  "ide-language",
  "ide-run",
  "ide-vfs",
+ "ignore",
  "serde",
  "serde_json",
  "specta",

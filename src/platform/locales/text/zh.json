@@ -1357,7 +1357,7 @@
   "Passed as -Dmaven.repo.local.": "以 -Dmaven.repo.local 传入。",
   "Passed as -s (mirrors, servers, proxies).": "以 -s 传入（镜像、服务器、代理）。",
   "Passed to rustfmt when reformatting, e.g. --edition 2024": "重新格式化时传递给 rustfmt，例如 --edition 2024",
-  "Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx2g. A Lombok agent is added automatically when the project uses Lombok.": "传递给运行 jdtls 的 JVM (java.jdt.ls.vmargs)，例如 -Xmx2g。项目使用 Lombok 时会自动添加 Lombok 代理。",
+  "Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx2g. A Lombok agent is added automatically: the one installed in Language Servers, else, when the project uses Lombok (its build, an inherited parent POM or Gradle build, or its sources' imports), the newest from the Maven / Gradle caches.": "传递给运行 jdtls 的 JVM (java.jdt.ls.vmargs)，例如 -Xmx2g。会自动添加 Lombok 代理：优先使用在“语言服务器”中安装的版本；否则当项目使用 Lombok（构建文件、继承的父 POM 或 Gradle 构建、源码中的 import）时，使用 Maven / Gradle 缓存中最新的版本。",
   "Pop stash": "弹出储藏",
   "Preview Source": "预览源代码",
   "Reinstate index": "恢复索引",
