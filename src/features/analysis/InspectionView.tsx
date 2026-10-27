@@ -25,6 +25,7 @@ import {
   type TreeHandle,
   type TreeRowState,
   T,
+  selectableText,
 } from "@/ui";
 import {
   cancelInspection,
@@ -438,7 +439,7 @@ function ProblemDetails({ node, root }: { node: Node | null; root: string }) {
         <Icon name={sev} size={14} className={styles[`sev-${sev}`]} />
         <span>{p.d.source ? `${p.d.source}${p.d.code ? ` (${p.d.code})` : ""}` : <T>Language server</T>}</span>
       </div>
-      <p className={styles.detailsMessage}>{p.d.message}</p>
+      <p className={clsx(styles.detailsMessage, selectableText)}>{p.d.message}</p>
       <div className={styles.muted}>
         {relativeDir(root, p.path) ? `${relativeDir(root, p.path)}/` : ""}
         {basename(p.path)}:{p.d.range.start.line + 1}:{p.d.range.start.col + 1}

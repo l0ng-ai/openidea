@@ -5,11 +5,21 @@
  */
 import { EditorSelection } from "@codemirror/state";
 import { hoverTooltip, type EditorView } from "@codemirror/view";
-import { commands, isTauri, nextRequestId, type Hover, type Location, type Pos, type Range, type RequestId } from "@/platform/ipc";
+import {
+  commands,
+  isTauri,
+  nextRequestId,
+  type Hover,
+  type Location,
+  type Pos,
+  type Range,
+  type RequestId,
+} from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { diagnosticsAt, type PlacedDiagnostic } from "./diagnostics";
 import { isEmptyMarkup, languageForPath, renderMarkup } from "./markdown";
+import { selectableText } from "@/ui/selectableText";
 import { docOf, lspRequest, reportLspError } from "./lsp";
 import { offsetToPos, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
@@ -51,7 +61,13 @@ function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLEle
   for (const { diagnostic: d, from } of diags) {
     const row = document.createElement("div");
     row.className = `cm-lsp-diag cm-lsp-diag-${d.severity}`;
-    row.appendChild(iconNode(d.severity === "error" ? "error" : d.severity === "warning" ? "warning" : "info", 16, "cm-lsp-diag-icon"));
+    row.appendChild(
+      iconNode(
+        d.severity === "error" ? "error" : d.severity === "warning" ? "warning" : "info",
+        16,
+        "cm-lsp-diag-icon",
+      ),
+    );
     const msg = document.createElement("div");
     msg.className = "cm-lsp-diag-message";
     msg.textContent = d.message;
@@ -110,7 +126,7 @@ export function hoverExtension() {
         above: true,
         create: () => {
           const dom = document.createElement("div");
-          dom.className = "cm-lsp-hover";
+          dom.className = `cm-lsp-hover ${selectableText}`;
           if (diags.length) dom.appendChild(renderDiagnostics(view, diags));
           if (hover) dom.appendChild(renderMarkup(hover.contents, lang));
           return { dom };
@@ -141,7 +157,13 @@ function showDoc(view: EditorView, entry: DocEntry, at: number) {
     showInDocWindow(entry, view.themeClasses);
     return;
   }
-  openPopup({ kind: "doc", anchor: caretAnchor(view, at), entries: [entry], index: 0, themeClasses: view.themeClasses });
+  openPopup({
+    kind: "doc",
+    anchor: caretAnchor(view, at),
+    entries: [entry],
+    index: 0,
+    themeClasses: view.themeClasses,
+  });
 }
 
 /**
@@ -210,7 +232,10 @@ export function definitionSpan(
 
 async function declarationRange(loc: Location): Promise<Range | null> {
   try {
-    return await withDocument(loc.path, async (doc) => (await structure.structuralRanges(doc, loc.range.start)).declaration?.range ?? null);
+    return await withDocument(
+      loc.path,
+      async (doc) => (await structure.structuralRanges(doc, loc.range.start)).declaration?.range ?? null,
+    );
   } catch {
     return null;
   }
@@ -249,14 +274,20 @@ export async function quickDefinition(view: EditorView, kind: "definition" | "ty
       showHint(view, kind === "typeDefinition" ? "No type definition found" : "No definition found");
       return;
     }
-    const targets = (await Promise.all(locations.slice(0, MAX_TARGETS).map((l) => definitionTarget(l, doc.uiMode)))).filter(
-      (t): t is DefinitionTarget => !!t,
-    );
+    const targets = (
+      await Promise.all(locations.slice(0, MAX_TARGETS).map((l) => definitionTarget(l, doc.uiMode)))
+    ).filter((t): t is DefinitionTarget => !!t);
     if (!targets.length) {
       showHint(view, "Cannot read the definition's file");
       return;
     }
-    openPopup({ kind: "definition", anchor: caretAnchor(view, pos), targets, index: 0, themeClasses: view.themeClasses });
+    openPopup({
+      kind: "definition",
+      anchor: caretAnchor(view, pos),
+      targets,
+      index: 0,
+      themeClasses: view.themeClasses,
+    });
   } catch (e) {
     reportLspError(view, e, true);
   }

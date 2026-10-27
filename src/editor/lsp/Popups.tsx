@@ -14,6 +14,7 @@ import {
   SymbolBadge,
   fileIconName,
   fuzzyMatch,
+  selectableText,
   T,
 } from "@/ui";
 import { basename, relativePath, useProject } from "@/platform/project";
@@ -329,7 +330,7 @@ function DocView({ host, history, themeClasses }: { host: DocHost; history: DocH
       {entry && (
         <DomContent
           key={`${history.index}:${history.entries.length}`}
-          className={styles.docBody}
+          className={clsx(styles.docBody, selectableText)}
           build={() => renderMarkup(entry.markup, entry.language, docLinkHandler(host))}
         />
       )}
@@ -352,7 +353,13 @@ function DocView({ host, history, themeClasses }: { host: DocHost; history: DocH
         />
         <span className={styles.spacer} />
         {entry?.source && (
-          <IconButton icon="edit" size="small" title="Edit Source" shortcut="F4" onClick={() => void editDocSource(host)} />
+          <IconButton
+            icon="edit"
+            size="small"
+            title="Edit Source"
+            shortcut="F4"
+            onClick={() => void editDocSource(host)}
+          />
         )}
         {host === "popup" && (
           <IconButton
@@ -373,7 +380,8 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
   const scope = useRef<HTMLDivElement>(null);
   const opened = useRef(focusSeq);
   useEffect(() => {
-    if (focusSeq !== opened.current) scope.current?.querySelector<HTMLElement>("[data-lsp-doc]")?.focus({ preventScroll: true });
+    if (focusSeq !== opened.current)
+      scope.current?.querySelector<HTMLElement>("[data-lsp-doc]")?.focus({ preventScroll: true });
   }, [focusSeq]);
   return (
     <Popup
@@ -463,7 +471,7 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
         <div className={clsx(popup.themeClasses, styles.docScope)}>
           <DomContent
             key={popup.index}
-            className={styles.defBody}
+            className={clsx(styles.defBody, selectableText)}
             build={() => renderCode(target.text, target.language, "cm-lsp-code")}
           />
         </div>

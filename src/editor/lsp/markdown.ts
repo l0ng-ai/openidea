@@ -14,6 +14,7 @@ import type { Markup } from "@/bindings";
 import { maybeEditorService } from "@/workbench/contributions";
 import { isTauri } from "@/platform/ipc";
 import { isVirtualUri } from "@/platform/virtualDocs";
+import { selectableText } from "@/ui/selectableText";
 
 type Parser = typeof import("./markdownParser");
 
@@ -71,7 +72,10 @@ export function isEmptyMarkup(m: Markup | null | undefined): boolean {
 /**
  * The declaration line(s) of hover documentation, for the brief ⌘-hover info: the first fenced code block, else the first paragraph.
  */
-export function declarationSummary(m: Markup, maxLines = 6): { code: string; language: string | null } | { text: string } | null {
+export function declarationSummary(
+  m: Markup,
+  maxLines = 6,
+): { code: string; language: string | null } | { text: string } | null {
   if (m.kind === "markdown") {
     const fence = /^\s*(```|~~~)[ \t]*([\w+#.-]*)[^\n]*\n([\s\S]*?)\n\s*\1/m.exec(m.value);
     if (fence && fence[3]!.trim()) {
@@ -80,7 +84,10 @@ export function declarationSummary(m: Markup, maxLines = 6): { code: string; lan
       return { code, language: fence[2] || null };
     }
   }
-  const para = m.value.trim().split(/\n\s*\n/)[0]?.trim();
+  const para = m.value
+    .trim()
+    .split(/\n\s*\n/)[0]
+    ?.trim();
   if (!para) return null;
   return { text: para.length > 200 ? `${para.slice(0, 199)}…` : para };
 }
@@ -187,7 +194,10 @@ export function sourceLink(href: string): { path: string; line: number; col: num
 export function openDocLink(href: string) {
   const target = sourceLink(href);
   if (target) {
-    void maybeEditorService()?.openFile(target.path, { selection: { line: target.line, col: target.col }, focus: true });
+    void maybeEditorService()?.openFile(target.path, {
+      selection: { line: target.line, col: target.col },
+      focus: true,
+    });
   } else if (/^https?:\/\//.test(href) && isTauri()) {
     void import("@tauri-apps/plugin-opener").then((m) => m.openUrl(href)).catch(() => {});
   }
@@ -210,7 +220,7 @@ function linkClickHandler(onLink?: DocLinkHandler) {
 /** Renders markup into a `.cm-lsp-markdown` element. */
 export function renderMarkup(m: Markup, fallbackLanguage: string | null = null, onLink?: DocLinkHandler): HTMLElement {
   const dom = document.createElement("div");
-  dom.className = "cm-lsp-markdown";
+  dom.className = `cm-lsp-markdown ${selectableText}`;
   dom.innerHTML = markupToHtml(m);
   highlightBlocks(dom, fallbackLanguage);
   if (m.kind === "markdown" && !parser) {
@@ -228,7 +238,7 @@ export function renderMarkup(m: Markup, fallbackLanguage: string | null = null, 
 /** Renders a code snippet (e.g. a signature or definition) as highlighted mono text. */
 export function renderCode(text: string, language: string | null, className = "cm-lsp-code"): HTMLElement {
   const pre = document.createElement("pre");
-  pre.className = className;
+  pre.className = `${className} ${selectableText}`;
   const code = document.createElement("code");
   code.textContent = text;
   pre.appendChild(code);

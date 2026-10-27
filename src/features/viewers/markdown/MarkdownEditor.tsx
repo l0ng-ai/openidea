@@ -8,7 +8,7 @@ import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { IconButton } from "@/ui";
+import { IconButton, selectableText } from "@/ui";
 import { useLiveMarkdown } from "./live";
 import { modeOf, useMarkdownModes } from "./modes";
 import { ANCHOR_PREFIX, previewOffsetForLine, renderMarkdown, resolveLink, slugify } from "./render";
@@ -140,7 +140,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   return (
     <div
       ref={ref}
-      className={styles.preview}
+      className={clsx(styles.preview, selectableText)}
       tabIndex={-1}
       role="document"
       aria-label="Markdown preview"

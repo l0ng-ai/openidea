@@ -1,0 +1,6 @@
+/* Read-only content the user reads and copies (docs, previews, messages), as opposed to chrome. */
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: auto;
+}
