@@ -938,7 +938,7 @@ async fn godot_connects_to_the_editor_adapter() {
     let id = manager.start(godot_launch(&project), owner).await.unwrap();
     let launch = log.lock().iter().find(|m| m["command"] == "launch").cloned().unwrap();
     assert_eq!(launch["arguments"]["scene"], "main");
-    assert_eq!(launch["arguments"]["project"], json!(project));
+    assert_eq!(launch["arguments"]["project"], json!(std::fs::canonicalize(&project).unwrap()));
     assert!(log.lock().iter().any(|m| m["command"] == "configurationDone"));
     manager.stop(id).await.unwrap();
 }
@@ -973,6 +973,37 @@ async fn godot_starts_a_headless_editor_when_none_is_open() {
     let id = manager.start(godot_launch(&std::env::temp_dir()), owner).await.unwrap();
     assert!(log.lock().iter().any(|m| m["command"] == "launch"));
     manager.stop(id).await.unwrap();
+}
+
+/// Godot never stops at a breakpoint given through a symlinked path (it maps scripts
+/// to `res://` by its resolved project path): breakpoints and `project` go out resolved.
+#[cfg(unix)]
+#[tokio::test]
+async fn godot_gets_resolved_paths() {
+    let real = std::env::temp_dir().join(format!("openidea-godot-real-{}", std::process::id()));
+    let link = std::env::temp_dir().join(format!("openidea-godot-link-{}", std::process::id()));
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("player.gd"), "extends Node\n").unwrap();
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let real = std::fs::canonicalize(&real).unwrap();
+
+    let log: Log = Arc::default();
+    let (owner, _events) = recording_owner("main");
+    let manager = DebugManager::with_launcher(
+        godot_registry(1, "godot", &[]),
+        Arc::new(FakeLauncher { log: log.clone(), script: Script::default() }),
+    );
+    let bp = Breakpoint { line: 0, condition: None, hit_condition: None, log_message: None, enabled: true };
+    manager.set_breakpoints(link.join("player.gd"), vec![bp]).await.unwrap();
+    let id = manager.start(godot_launch(&link), owner).await.unwrap();
+    let sent = log.lock().iter().find(|m| m["command"] == "setBreakpoints").cloned().unwrap();
+    assert_eq!(sent["arguments"]["source"]["path"], json!(real.join("player.gd")));
+    let launch = log.lock().iter().find(|m| m["command"] == "launch").cloned().unwrap();
+    assert_eq!(launch["arguments"]["project"], json!(real));
+    manager.stop(id).await.unwrap();
+    std::fs::remove_file(&link).ok();
+    std::fs::remove_dir_all(&real).ok();
 }
 
 #[test]

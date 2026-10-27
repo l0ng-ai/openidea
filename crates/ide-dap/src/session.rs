@@ -51,8 +51,15 @@ pub(crate) struct Session {
     pub pending_restore: Mutex<PendingRestore>,
     /// Adapter breakpoint id → (file, index in the stored list).
     pub breakpoint_ids: Mutex<HashMap<i64, (PathBuf, usize)>>,
+    /// Resolved path → the path as the IDE knows it, for adapters given resolved paths.
+    resolved_paths: Mutex<HashMap<PathBuf, PathBuf>>,
     progress: Mutex<HashMap<String, TaskId>>,
 }
+
+/// Adapters that only match files by their resolved path: Godot maps a script to
+/// `res://` by prefix and silently never stops at a breakpoint set through a
+/// symlinked path (`/tmp/game` while the editor has `/private/tmp/game`).
+const RESOLVES_PATHS: &[&str] = &["godot"];
 
 impl Session {
     #[allow(clippy::too_many_arguments)]
@@ -86,12 +93,32 @@ impl Session {
             terminated: AtomicBool::new(false),
             pending_restore: Mutex::default(),
             breakpoint_ids: Mutex::new(HashMap::new()),
+            resolved_paths: Mutex::new(HashMap::new()),
             progress: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn emit(&self, event: DebugEvent) {
         self.owner.sink.emit(IdeEvent::Debug { session: self.id, event });
+    }
+
+    /// `path` as sent to the adapter (resolved for [`RESOLVES_PATHS`] adapters).
+    pub fn adapter_path(&self, path: &Path) -> PathBuf {
+        if !RESOLVES_PATHS.contains(&self.adapter.as_str()) {
+            return path.to_path_buf();
+        }
+        match std::fs::canonicalize(path) {
+            Ok(real) if real != path => {
+                self.resolved_paths.lock().insert(real.clone(), path.to_path_buf());
+                real
+            }
+            _ => path.to_path_buf(),
+        }
+    }
+
+    /// A path from the adapter as the IDE knows it (undoes [`Session::adapter_path`]).
+    pub fn client_path(&self, path: &str) -> Option<PathBuf> {
+        self.resolved_paths.lock().get(Path::new(path)).cloned()
     }
 
     pub fn supports(&self, cap: &str) -> bool {
@@ -135,7 +162,7 @@ impl Session {
             .request_timeout(
                 "setBreakpoints",
                 json!({
-                    "source": { "path": path, "name": name },
+                    "source": { "path": self.adapter_path(path), "name": name },
                     "breakpoints": source_bps,
                     "sourceModified": false,
                 }),
@@ -311,7 +338,11 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, body: 
                 s.emit(DebugEvent::BreakpointsChanged { path: path.into() });
             }
         }
-        "exited" => s.emit(DebugEvent::Exited { code: int("exitCode").unwrap_or(0) as i32 }),
+        // Godot repeats `exited` / `terminated` when the client disconnects afterwards.
+        "exited" if !s.terminated.load(Ordering::Acquire) => {
+            s.emit(DebugEvent::Exited { code: int("exitCode").unwrap_or(0) as i32 })
+        }
+        "exited" => {}
         "terminated" => {
             if !s.terminated.swap(true, Ordering::AcqRel) {
                 s.emit(DebugEvent::Terminated);
