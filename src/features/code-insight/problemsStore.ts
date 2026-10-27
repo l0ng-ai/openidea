@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import type { Diagnostic, Severity } from "@/bindings";
 import { onIdeEvent } from "@/platform/ipc";
+import { onLocalDiagnostics } from "@/platform/localDiagnostics";
 import {
   applyProfile,
   inspectionProfile,
@@ -51,6 +52,12 @@ export function fileDiagnostics(map: ProblemsMap, path: string): Diagnostic[] {
         a.range.start.col - b.range.start.col ||
         SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
     );
+}
+
+/** The producer (inspection) that reported `d`, one of `path`'s problems in `map`. */
+export function producerFor(map: ProblemsMap, path: string, d: Diagnostic): string | null {
+  for (const [source, items] of map.get(path) ?? []) if (items.includes(d)) return source;
+  return null;
 }
 
 export interface ProblemOrder {
@@ -130,11 +137,14 @@ export function clearProblems() {
 
 export function installProblemsEvents(): () => void {
   const off = onIdeEvent("diagnostics", (e) => applyDiagnosticsEvent(e.path, e.source, e.items));
+  // Typo, file references, SQL: inspections the editor runs itself.
+  const offLocal = onLocalDiagnostics(applyDiagnosticsEvent);
   const offProfile = subscribeInspectionProfile(() =>
     useProblems.setState((s) => ({ map: profiledProblems(s.raw, inspectionProfile()) })),
   );
   return () => {
     off();
+    offLocal();
     offProfile();
   };
 }

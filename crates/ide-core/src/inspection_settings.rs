@@ -64,6 +64,10 @@ pub struct InspectionOverride {
     pub enabled: Option<bool>,
     #[specta(optional)]
     pub severity: Option<InspectionLevel>,
+    /// The inspection's own options (Typo: `processCode`, `processLiterals`,
+    /// `processComments`); absent ones keep their defaults.
+    #[specta(optional)]
+    pub options: Option<BTreeMap<String, bool>>,
 }
 
 /// IDEA's highlighting levels.
@@ -101,5 +105,10 @@ mod tests {
         assert_eq!(s.ide_profiles["strict"].name, "Strict");
         assert_eq!(s.ide_profiles["strict"].overrides["lsp:ruff"].severity, Some(InspectionLevel::Error));
         assert!(serde_json::from_str::<InspectionSettings>(r#"{"default":{"x":{"severity":"loud"}}}"#).is_err());
+        let s: InspectionSettings =
+            serde_json::from_str(r#"{"default":{"builtin:spelling":{"options":{"processCode":false}}}}"#).unwrap();
+        assert!(!s.default["builtin:spelling"].options.as_ref().unwrap()["processCode"]);
+        let back: InspectionSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
     }
 }

@@ -4,6 +4,7 @@ import { emitLocalIdeEvent } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
 import { provideEditorService, type EditorService } from "@/workbench/contributions";
 import { activate } from "./index";
+import { setOsClipboardForTests } from "./clipboard";
 import { MemoryFs, setProjectFsForTests } from "./fs";
 import { MessagesHost } from "@/workbench/messages";
 import { FileRefactorDialogHost } from "./FileRefactorDialogs";
@@ -69,6 +70,29 @@ describe("ProjectView", () => {
     tree.focus();
     fireEvent.keyDown(tree, { key: "ArrowRight" });
     await waitFor(() => expect(rows()).toEqual(["acme/w/acme", "build", "src", "App.kt", "Util.kt", "README.md"]));
+  });
+
+  it("pastes the files Explorer copied into the selected folder, as copies", async () => {
+    // What Explorer leaves on the clipboard: a path outside the project.
+    fs.nodes.set("/elsewhere/Photo.png", { kind: "file", size: 3 });
+    setOsClipboardForTests({
+      files: async () => ["/elsewhere/Photo.png"],
+      hasFiles: async () => true,
+      setFiles: async () => {},
+    });
+    try {
+      const { tree, row, rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      fireEvent.mouseDown(row("src"));
+      tree.focus();
+      // ⌘ is the primary modifier here, as in the undo test below.
+      fireEvent.keyDown(tree, { key: "v", code: "KeyV", metaKey: true });
+      await waitFor(() => expect(fs.nodes.has("/w/acme/src/Photo.png")).toBe(true));
+      // A copy, not a move: the dropped-from path stays where it was.
+      expect(fs.nodes.has("/elsewhere/Photo.png")).toBe(true);
+    } finally {
+      setOsClipboardForTests(null);
+    }
   });
 
   it("opens files on double click and previews on single click only when enabled", async () => {

@@ -13,7 +13,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { ChangedFile, Commit } from "@/bindings";
+import type { ChangedFile, Commit, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import {
   EmptyState,
@@ -31,7 +31,7 @@ import {
   type MenuItem,
   T,
 } from "@/ui";
-import { commitFileDiffData, openDiff, withChain } from "./diffInput";
+import { commitFileDiffData, openDiff, revisionChangeDiffData, withChain } from "./diffInput";
 import { collapseLinear, computeGraph, hideLongEdges, laneColor, reachableFrom, type GraphRow } from "./graph";
 import {
   extendCommitSelection,
@@ -114,7 +114,7 @@ export function GitToolWindow() {
 function LogView() {
   const version = useVcs((s) => s.version);
   const commits = useGitLog((s) => s.commits);
-  const selected = useGitLog((s) => s.selected);
+  const selection = useGitLog((s) => s.selection);
   const root = useVcs((s) => s.root);
   const repo = useVcs((s) => s.repo);
   const lastRefs = useRef<string | null>(null);
@@ -151,7 +151,7 @@ function LogView() {
       </SplitPanel>
       <SplitHandle />
       <SplitPanel id="details" defaultSize="28%" minSize="15%">
-        <CommitDetails key={selected ?? "none"} commits={commits} />
+        <CommitDetails key={selection.join(" ") || "none"} commits={commits} />
       </SplitPanel>
     </SplitGroup>
   );
@@ -540,6 +540,9 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
       { kind: "action", action: "vcs.log.createPatch", arg: selection },
       { kind: "action", action: "vcs.log.cherryPick", arg: selection },
+      ...(selection.length === 2
+        ? [{ kind: "action", action: "vcs.log.compareVersions", arg: selection } satisfies MenuItem]
+        : []),
       { kind: "separator" },
       { kind: "action", action: "vcs.log.revert", arg: selection, label: "Revert Commits" },
       { kind: "separator" },
@@ -784,7 +787,10 @@ const CommitRow = memo(function CommitRow({
       <span className={styles.colSubject}>
         {graph && <GraphCell row={graph} head={head} />}
         {opts.refsOnLeft && refs}
-        <span className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)} title={c.message}>
+        <span
+          className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
+          title={c.message}
+        >
           {c.summary}
         </span>
         {!opts.refsOnLeft && refs}
@@ -883,24 +889,39 @@ export function RefLabels({
   );
 }
 
-function CommitDetails({ commits }: { commits: Commit[] }) {
+/**
+ * The selected commits' changes: one commit's files against its first parent, or, for several
+ * (IDEA), their combined changes with every selected commit listed below.
+ */
+export function CommitDetails({ commits }: { commits: Commit[] }) {
   const selected = useGitLog((s) => s.selected);
+  const selection = useGitLog((s) => s.selection);
+  // Newest first (log order).
+  const chosen = useMemo(() => {
+    const ids = new Set(selection);
+    return commits.filter((c) => ids.has(c.id));
+  }, [commits, selection]);
   const commit = selected ? commits.find((c) => c.id === selected) : undefined;
+  const many = chosen.length > 1;
+  const idsKey = many ? chosen.map((c) => c.id).join(" ") : (selected ?? "");
   const root = useVcs((s) => s.root) ?? "";
-  const [files, setFiles] = useState<ChangedFile[] | null>(null);
+  const [files, setFiles] = useState<(ChangedFile | RevisionChange)[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string> | null>(null);
 
   useEffect(() => {
-    if (!selected) return;
+    if (!idsKey) return;
+    const ids = idsKey.split(" ");
     let alive = true;
-    call(commands.vcsCommitFiles(currentRepo(), selected))
-      .then((f) => alive && setFiles(f))
-      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
+    const load =
+      ids.length > 1
+        ? call(commands.vcsCommitsChanges(currentRepo(), ids.reverse()))
+        : call(commands.vcsCommitFiles(currentRepo(), ids[0]!));
+    load.then((f) => alive && setFiles(f)).catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
     };
-  }, [selected]);
+  }, [idsKey]);
 
   const tree = useMemo(() => buildFileTree(files ?? [], (f) => relTo(root, f.path)), [files, root]);
   const allDirs = useMemo(() => dirKeys(tree), [tree]);
@@ -918,13 +939,11 @@ function CommitDetails({ commits }: { commits: Commit[] }) {
     const all = files ?? [f];
     void openDiff(
       withChain(
-        all.map((x) => commitFileDiffData(commit, x)),
+        all.map((x) => (many ? revisionChangeDiffData(x as RevisionChange) : commitFileDiffData(commit, x))),
         Math.max(0, all.indexOf(f)),
       ),
     );
   };
-  const [subject, ...bodyLines] = commit.message.replace(/\s+$/, "").split("\n");
-  const body = bodyLines.join("\n").replace(/^\n+/, "");
 
   return (
     <div className={styles.details}>
@@ -934,6 +953,7 @@ function CommitDetails({ commits }: { commits: Commit[] }) {
             <div className={styles.detailsBar} role="toolbar" aria-label="Changed files">
               <span className={styles.detailsCount}>
                 {files ? `${files.length} file${files.length === 1 ? "" : "s"}` : ""}
+                {many ? ` in ${chosen.length} commits` : ""}
               </span>
               <span className={styles.grow} />
               <IconButton
@@ -976,37 +996,52 @@ function CommitDetails({ commits }: { commits: Commit[] }) {
         <SplitHandle />
         <SplitPanel id="message" minSize="60px">
           <div className={styles.messageBox}>
-            <div className={styles.subjectLine}>
-              <IssueText text={subject ?? ""} />
-            </div>
-            {body && (
-              <div className={styles.fullMessage}>
-                <IssueText text={body} />
-              </div>
-            )}
-            <div className={styles.meta}>
-              <button
-                type="button"
-                className={clsx(styles.linkButton, styles.hash)}
-                title="Copy revision number"
-                onClick={() => void navigator.clipboard?.writeText(commit.id)}
-              >
-                {commit.shortId}
-              </button>{" "}
-              {commit.author} &lt;{commit.email}&gt;
-              {commit.timeMs ? ` on ${new Date(commit.timeMs).toLocaleString()}` : ""}
-            </div>
-            {commit.parents.length > 1 && (
-              <div className={styles.meta}>Merge of {commit.parents.map((p) => p.slice(0, 8)).join(", ")}</div>
-            )}
-            {commit.refs.length > 0 && (
-              <div className={styles.meta}>
-                <RefLabels refs={commit.refs} />
-              </div>
+            {many ? (
+              chosen.map((c) => <CommitMessage key={c.id} commit={c} compact />)
+            ) : (
+              <CommitMessage commit={commit} />
             )}
           </div>
         </SplitPanel>
       </SplitGroup>
+    </div>
+  );
+}
+
+/** A commit's message and metadata; `compact` (one of several selected): without the body. */
+function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: boolean }) {
+  const [subject, ...bodyLines] = commit.message.replace(/\s+$/, "").split("\n");
+  const body = compact ? "" : bodyLines.join("\n").replace(/^\n+/, "");
+  return (
+    <div className={clsx(compact && styles.commitEntry)}>
+      <div className={styles.subjectLine}>
+        <IssueText text={subject ?? ""} />
+      </div>
+      {body && (
+        <div className={styles.fullMessage}>
+          <IssueText text={body} />
+        </div>
+      )}
+      <div className={clsx(styles.meta, compact && styles.metaCompact)}>
+        <button
+          type="button"
+          className={clsx(styles.linkButton, styles.hash)}
+          title="Copy revision number"
+          onClick={() => void navigator.clipboard?.writeText(commit.id)}
+        >
+          {commit.shortId}
+        </button>{" "}
+        {commit.author} &lt;{commit.email}&gt;
+        {commit.timeMs ? ` on ${new Date(commit.timeMs).toLocaleString()}` : ""}
+      </div>
+      {commit.parents.length > 1 && (
+        <div className={styles.meta}>Merge of {commit.parents.map((p) => p.slice(0, 8)).join(", ")}</div>
+      )}
+      {commit.refs.length > 0 && (
+        <div className={styles.meta}>
+          <RefLabels refs={commit.refs} />
+        </div>
+      )}
     </div>
   );
 }

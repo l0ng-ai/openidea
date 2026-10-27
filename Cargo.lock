@@ -3990,6 +3990,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-clipboard"
+version = "0.1.14"
+
+[[package]]
 name = "ide-core"
 version = "0.1.14"
 dependencies = [
@@ -4306,6 +4310,7 @@ dependencies = [
  "ide-core",
  "parking_lot",
  "serde",
+ "serde_json",
  "specta",
  "spellbook",
  "tracing",
@@ -5858,6 +5863,7 @@ dependencies = [
  "dunce",
  "ide-analysis",
  "ide-build",
+ "ide-clipboard",
  "ide-core",
  "ide-coverage",
  "ide-dap",

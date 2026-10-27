@@ -97,6 +97,22 @@
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 0 0;
+  border: none;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+.options legend {
+  float: left;
+  width: 100%;
+  padding: 0 0 4px;
+  color: var(--fg-muted);
+}
 .levelSelect {
   min-width: 160px;
 }

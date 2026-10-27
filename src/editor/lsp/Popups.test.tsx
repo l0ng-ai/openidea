@@ -48,6 +48,39 @@ describe("list popup", () => {
     expect(useLspPopup.getState().popup).toBeNull();
   });
 
+  it("opens a row's → menu with the right arrow and runs its items", () => {
+    const disable = vi.fn();
+    const fix = vi.fn();
+    openPopup({
+      kind: "list",
+      anchor: { x: 0, y: 0 },
+      title: "Intentions",
+      items: [
+        {
+          id: "fix",
+          label: "Typo: Change to…",
+          run: fix,
+          submenu: [
+            { label: "Edit inspection profile setting", run: vi.fn() },
+            { label: "Disable inspection", run: disable },
+          ],
+        },
+      ],
+    });
+    render(<LspPopups />);
+    expect(screen.getByRole("button", { name: "Typo: Change to… options" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowRight" });
+    const menu = screen.getByRole("menu", { name: "Typo: Change to…" });
+    expect([...menu.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual([
+      "Edit inspection profile setting",
+      "Disable inspection",
+    ]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Disable inspection" }));
+    expect(disable).toHaveBeenCalledOnce();
+    expect(fix).not.toHaveBeenCalled();
+    expect(useLspPopup.getState().popup).toBeNull();
+  });
+
   it("reports the selected row and cleans up on close", () => {
     const onActive = [vi.fn(), vi.fn()];
     const onClose = vi.fn();

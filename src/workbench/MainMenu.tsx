@@ -2,9 +2,10 @@
  * Windows title bar: IDEA's main menu button. Clicking ☰ expands the menu bar
  * in place (File Edit View …) with File open; hovering another title switches
  * menus, ←/→ walk them, and closing the menu collapses the bar again. The
- * entries come from the same spec as the native menu (`menu_model`).
+ * entries come from the same spec as the native menu (`menu_model`). As in
+ * Windows apps and IDEA, pressing and releasing Alt alone opens it too.
  */
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { lookup, t } from "@/platform/i18n";
 import { commands, type MenuNode } from "@/platform/ipc";
@@ -38,6 +39,37 @@ export function menuItems(nodes: MenuNode[]): MenuItem[] {
   });
 }
 
+/**
+ * Calls `onAlt` when Alt is pressed and released with nothing else in between
+ * (no other key, no click): Alt+1, Alt+Enter or Alt+click never open the menu.
+ */
+export function onLoneAlt(target: Window, onAlt: () => void): () => void {
+  let armed = false;
+  const down = (e: globalThis.KeyboardEvent) => {
+    armed = e.key === "Alt" && !e.repeat && !e.ctrlKey && !e.shiftKey && !e.metaKey;
+  };
+  const up = (e: globalThis.KeyboardEvent) => {
+    const fire = armed && e.key === "Alt";
+    armed = false;
+    if (!fire) return;
+    e.preventDefault();
+    onAlt();
+  };
+  const cancel = () => {
+    armed = false;
+  };
+  target.addEventListener("keydown", down, true);
+  target.addEventListener("keyup", up, true);
+  target.addEventListener("pointerdown", cancel, true);
+  target.addEventListener("blur", cancel);
+  return () => {
+    target.removeEventListener("keydown", down, true);
+    target.removeEventListener("keyup", up, true);
+    target.removeEventListener("pointerdown", cancel, true);
+    target.removeEventListener("blur", cancel);
+  };
+}
+
 export function MainMenu({ onExpandedChange }: { onExpandedChange?: (expanded: boolean) => void }) {
   const [menus, setMenus] = useState<Submenu[] | null>(null);
   const [open, setOpen] = useState<number | null>(null);
@@ -65,6 +97,7 @@ export function MainMenu({ onExpandedChange }: { onExpandedChange?: (expanded: b
       else collapse();
     });
   };
+  useEffect(() => onLoneAlt(window, () => (menus ? collapse() : void expand())));
   const step = (delta: number) => {
     if (!menus || open === null) return;
     setOpen((open + delta + menus.length) % menus.length);

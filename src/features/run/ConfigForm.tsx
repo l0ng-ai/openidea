@@ -170,6 +170,8 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   }
 
   const compound = config.kind === COMPOUND;
+  // Compound and debug-only types (Remote JVM Debug) start no process of their own.
+  const noProcess = compound || !!type?.debugOnly;
   const params = compound ? {} : formParams(config, type);
   const update = (patch: Partial<RunConfig>) => onChange({ ...config, ...patch });
   const setParam = (key: string, value: string) => {
@@ -199,7 +201,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   // A terminal has no separate input file: the two options exclude each other.
   const blocked = (id: OptionId) =>
     (id === "emulateTerminal" && isShown("stdinFile")) || (id === "stdinFile" && !!config.emulateTerminal);
-  const menuItems: MenuItem[] = OPTION_GROUPS.filter((g) => !compound || !g.process).flatMap((g): MenuItem[] => [
+  const menuItems: MenuItem[] = OPTION_GROUPS.filter((g) => !noProcess || !g.process).flatMap((g): MenuItem[] => [
     { kind: "header", label: g.label },
     ...g.options
       .filter(
@@ -269,7 +271,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       "isTest",
     ] as const
   ).filter(
-    (id) => (!compound || id === "openToolWindow" || id === "focusToolWindow") && optionSet(config, id, openByDefault),
+    (id) => (!noProcess || id === "openToolWindow" || id === "focusToolWindow") && optionSet(config, id, openByDefault),
   );
 
   return (
@@ -332,7 +334,13 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         type.fields
           .filter((f) => f.visible?.(params) ?? true)
           .map((f) => (
-            <Field key={f.key} label={f.label} error={errors[f.key]} top={f.control === "textarea"}>
+            <Field
+              key={f.key}
+              label={f.label}
+              error={errors[f.key]}
+              hint={f.hint}
+              top={f.control === "textarea" || f.control === "output"}
+            >
               <TypeField
                 field={f}
                 value={params[f.key] ?? ""}
@@ -375,7 +383,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         </>
       )}
 
-      {!compound && (
+      {!noProcess && (
         <>
           {!type?.ownsWorkingDirectory && (
             <Field label="Working directory" error={errors.cwd}>
@@ -545,7 +553,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         </div>
       )}
 
-      {!compound && !template && (
+      {!noProcess && !template && (
         <div className={styles.editPreview}>
           <span className={styles.chooserMuted}>
             <T>Command line</T>
@@ -586,6 +594,7 @@ function TypeField({
 }) {
   const tx = useTx();
   const listId = `run-field-${field.key}`;
+  if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
     const options = [...(field.options ?? [])];
     if (value && !options.some((o) => o.value === value)) options.push({ value, label: value });
@@ -632,6 +641,39 @@ function TypeField({
         </datalist>
       )}
     </>
+  );
+}
+
+/** Read-only text the form computes (e.g. the JDWP agent for the remote JVM), with Copy. */
+function OutputField({ label, text }: { label: string; text: string }) {
+  const tx = useTx();
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard
+      ?.writeText(text)
+      .then(() => setCopied(true))
+      .catch(() => undefined);
+  };
+  return (
+    <div className={styles.inputWithButton}>
+      <textarea
+        className={styles.textarea}
+        aria-label={tx(label)}
+        readOnly
+        spellCheck={false}
+        value={text}
+        rows={Math.min(4, Math.max(1, Math.ceil(text.length / 72)))}
+        onFocus={(e) => e.currentTarget.select()}
+      />
+      <IconButton
+        icon={copied ? "check" : "copy"}
+        size="small"
+        iconSize={14}
+        title={copied ? "Copied" : "Copy"}
+        onClick={copy}
+        onBlur={() => setCopied(false)}
+      />
+    </div>
   );
 }
 

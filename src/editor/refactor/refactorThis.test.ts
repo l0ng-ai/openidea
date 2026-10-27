@@ -55,10 +55,6 @@ const { lspDoc } = await import("@/editor/lsp/lsp");
 const { inplaceRenameExtension, inplaceSession } = await import("@/editor/lsp/inplaceRename");
 const { temporaryHighlights } = await import("@/editor/lsp/tempHighlight");
 
-// jsdom has no layout; popups anchor at the caret.
-Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
-Range.prototype.getBoundingClientRect ??= () => new DOMRect();
-
 const action = (title: string, kind: string, disabledReason: string | null = null): CodeAction => ({
   title,
   kind,

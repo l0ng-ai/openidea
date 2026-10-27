@@ -7,10 +7,12 @@ import type { PluginInfo } from "@/bindings";
 import { _setActiveEditor } from "@/editor/api";
 import { executeAction, getAction } from "@/platform/actions";
 import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
+import { applyThemeAttributes, useThemeOverride } from "@/workbench/theme";
 import { createMemoryPluginsBackend, sampleCatalog, setPluginsBackend, type PluginsBackend } from "../backend";
 import {
   applyPluginTheme,
   applyTextToActiveEditor,
+  PLUGIN_THEME_STYLE_ID,
   handlePluginEvent,
   pluginActionId,
   pluginActions,
@@ -160,18 +162,38 @@ describe("store", () => {
 });
 
 describe("bridge events", () => {
-  it("applies theme tokens as CSS variables and removes them again", () => {
+  it("applies theme tokens as a stylesheet and removes it again", () => {
     const root = document.documentElement;
+    const sheet = () => document.getElementById(PLUGIN_THEME_STYLE_ID)?.textContent ?? null;
     applyPluginTheme({
       pluginId: "p",
       theme: { id: "t", name: "T", kind: "dark", tokens: { "--bg-app": "#002b36", "--evil": "red; x: y", bad: "1" } },
     });
-    expect(root.style.getPropertyValue("--bg-app")).toBe("#002b36");
-    expect(root.style.getPropertyValue("--evil")).toBe("");
+    expect(sheet()).toContain("--bg-app: #002b36;");
+    expect(sheet()).toContain("color-scheme: dark;");
+    expect(sheet()).not.toContain("evil");
+    expect(sheet()).not.toContain("bad");
     expect(root.dataset.pluginTheme).toBe("p/t");
     applyPluginTheme(null);
-    expect(root.style.getPropertyValue("--bg-app")).toBe("");
+    expect(sheet()).toBeNull();
     expect(root.dataset.pluginTheme).toBeUndefined();
+  });
+
+  it("switches the built-in base to the theme's kind and restores it", () => {
+    const root = document.documentElement;
+    useThemeOverride.setState({ theme: "dark-hc" });
+    applyThemeAttributes("dark-hc", root);
+    expect([root.dataset.theme, root.dataset.contrast]).toEqual(["dark", "high"]);
+    applyPluginTheme({ pluginId: "p", theme: { id: "l", name: "L", kind: "light", tokens: { "--accent": "#123456" } } });
+    expect([root.dataset.theme, root.dataset.contrast]).toEqual(["light", undefined]);
+    expect(root.dataset.pluginThemeKind).toBe("light");
+    // The appearance runtime re-applying the built-in theme keeps the plugin's base.
+    applyThemeAttributes("dark-hc", root);
+    expect(root.dataset.theme).toBe("light");
+    applyPluginTheme(null);
+    expect([root.dataset.theme, root.dataset.contrast]).toEqual(["dark", "high"]);
+    expect(root.dataset.pluginThemeKind).toBeUndefined();
+    useThemeOverride.setState({ theme: null });
   });
 
   it("inserts at the cursor and replaces selections", () => {

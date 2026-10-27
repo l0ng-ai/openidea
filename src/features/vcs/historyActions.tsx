@@ -28,6 +28,7 @@ import {
   inProgress,
   newTagOn,
   revertCommits,
+  showCompareVersions,
   showCompareWithLocal,
   showResetDialog,
   showTagDialog,
@@ -267,6 +268,21 @@ export function registerHistoryActions(): () => void {
       icon: "diff",
       when: VCS,
       run: withCommit(showCompareWithLocal),
+    },
+    {
+      id: "vcs.log.compareVersions",
+      title: "Compare Versions",
+      category: "Git Log",
+      icon: "diff",
+      when: VCS,
+      run: withCommits((cs) => {
+        if (cs.length !== 2) {
+          notifications().notify({ group: "vcs", level: "info", title: "Select two commits to compare" });
+          return;
+        }
+        // Newest first, as the log shows them.
+        showCompareVersions(cs[1]!, cs[0]!);
+      }),
     },
     {
       id: "vcs.log.resetToHere",

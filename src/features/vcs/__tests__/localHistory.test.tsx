@@ -19,10 +19,16 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     },
   };
 });
-vi.mock("../DiffEditor", () => ({ DiffEditor: () => <div data-testid="diff" /> }));
+vi.mock("../DiffEditor", () => ({
+  DiffEditor: ({ input }: { input: { data: { left: { label?: string }; right: { label?: string } } } }) => (
+    <div data-testid="diff">
+      {input.data.left.label} | {input.data.right.label}
+    </div>
+  ),
+}));
 
 import { useProject } from "@/platform/project";
-import { LocalHistoryEditor, localHistoryInput, snapshotsBefore } from "../LocalHistory";
+import { LocalHistoryEditor, localHistoryInput, revisionRange, snapshotsBefore } from "../LocalHistory";
 import { putLabel } from "../localHistoryActions";
 import { VcsDialogHost } from "../dialogs";
 import { MessagesHost } from "@/workbench/messages";
@@ -36,7 +42,14 @@ const snap = (path: string, t: number, label: string, c: string): HistoryEntry =
   size: 3,
   kind: "snapshot",
 });
-const label = (t: number, name: string): HistoryEntry => ({ id: "", path: "/p", timestampMs: t, label: name, size: 0, kind: "label" });
+const label = (t: number, name: string): HistoryEntry => ({
+  id: "",
+  path: "/p",
+  timestampMs: t,
+  label: name,
+  size: 0,
+  kind: "label",
+});
 
 beforeEach(() => {
   historyListDir.mockReset();
@@ -47,7 +60,12 @@ beforeEach(() => {
 
 describe("Local History", () => {
   it("finds each file's revision at a label", () => {
-    const entries = [snap("/p/a", 1, "Saved", "a"), snap("/p/a", 3, "Saved", "b"), snap("/p/b", 2, "Saved", "c"), label(4, "L")];
+    const entries = [
+      snap("/p/a", 1, "Saved", "a"),
+      snap("/p/a", 3, "Saved", "b"),
+      snap("/p/b", 2, "Saved", "c"),
+      label(4, "L"),
+    ];
     const at = snapshotsBefore(entries, 2.5);
     expect([...at.keys()].sort()).toEqual(["/p/a", "/p/b"]);
     expect(at.get("/p/a")!.id).toBe(id("a"));
@@ -91,6 +109,47 @@ describe("Local History", () => {
     fireEvent.click(within(list).getAllByRole("option")[1]!);
     expect(await screen.findByRole("button", { name: "Restore" })).toBeInTheDocument();
     expect(screen.getByTestId("diff")).toBeInTheDocument();
+  });
+
+  it("picks the oldest and newest of several selected revisions of one file", () => {
+    const entries = [snap("/p/a", 3, "C", "c"), label(2, "L"), snap("/p/a", 1, "B", "b"), snap("/p/b", 0, "X", "x")];
+    expect(revisionRange(entries, [2, 0, 1])).toMatchObject({ newer: { label: "C" }, older: { label: "B" } });
+    expect(revisionRange(entries, [0])).toBeNull();
+    expect(revisionRange(entries, [0, 1])).toBeNull();
+    // Revisions of different files have nothing to diff.
+    expect(revisionRange(entries, [0, 3])).toBeNull();
+  });
+
+  it("diffs two revisions selected with Shift- or Cmd-click", async () => {
+    const data: DirectoryHistory = {
+      entries: [
+        snap("/p/a.ts", 30, "Third", "c"),
+        snap("/p/a.ts", 20, "Second", "b"),
+        snap("/p/a.ts", 10, "First", "a"),
+      ],
+      deleted: [],
+    };
+    historyListDir.mockResolvedValue({ status: "ok", data });
+    render(<LocalHistoryEditor input={localHistoryInput("/p/a.ts")} />);
+    const list = await screen.findByRole("listbox", { name: "Revisions" });
+    const rows = () => within(list).getAllByRole("option");
+    const click = (i: number, mods: { shiftKey?: boolean; metaKey?: boolean } = {}) => {
+      fireEvent.mouseDown(rows()[i]!, { button: 0, ...mods });
+      fireEvent.click(rows()[i]!, mods);
+    };
+    expect(screen.getByTestId("diff")).toHaveTextContent(/Third \| Current/);
+
+    click(2, { shiftKey: true });
+    expect(rows().filter((r) => r.getAttribute("aria-selected") === "true")).toHaveLength(3);
+    expect(screen.getByTestId("diff")).toHaveTextContent(/First \| .*Third/);
+
+    click(1);
+    click(0, { metaKey: true });
+    expect(screen.getByTestId("diff")).toHaveTextContent(/Second \| .*Third/);
+
+    // Keyboard navigation goes back to a single revision.
+    fireEvent.keyDown(list, { key: "ArrowDown" });
+    expect(screen.getByTestId("diff")).toHaveTextContent(/Second \| Current/);
   });
 
   it("puts a label", async () => {

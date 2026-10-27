@@ -39,5 +39,9 @@ if (typeof window !== "undefined") {
       }) as MediaQueryList;
   }
   Element.prototype.scrollIntoView ??= function () {};
+  // No layout either: CodeMirror measures text ranges when it positions the caret,
+  // tooltips and line heights, sometimes in an animation frame after a test ends.
+  Range.prototype.getClientRects ??= () => Object.assign([], { item: () => null }) as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect ??= () => new DOMRect();
   Element.prototype.scrollTo ??= function () {} as Element["scrollTo"];
 }

@@ -597,14 +597,23 @@ async fn sessions_deliver_events_to_their_owner_only() {
 
 #[test]
 fn debug_server_is_taken_from_launch_arguments() {
+    let local = |port| Some(DebugServer { host: None, port });
+    let remote = |host: &str, port| Some(DebugServer { host: Some(host.into()), port });
     let mut args = json!({"name": "x", "debugServer": 4711, "mainClass": "a.B"});
-    assert_eq!(take_debug_server(&mut args).unwrap(), Some(4711));
+    assert_eq!(take_debug_server(&mut args).unwrap(), local(4711));
     assert!(args.get("debugServer").is_none());
     assert_eq!(args["mainClass"], "a.B");
-    assert_eq!(take_debug_server(&mut json!({"debugServer": "5005"})).unwrap(), Some(5005));
+    assert_eq!(take_debug_server(&mut json!({"debugServer": "5005"})).unwrap(), local(5005));
     assert_eq!(take_debug_server(&mut json!({"name": "x"})).unwrap(), None);
+    // A remote adapter: `dlv --headless --listen=:2345`, `debugpy --listen 0.0.0.0:5678`.
+    assert_eq!(take_debug_server(&mut json!({"debugServer": "build-box:2345"})).unwrap(), remote("build-box", 2345));
+    assert_eq!(take_debug_server(&mut json!({"debugServer": "10.0.0.7:5678"})).unwrap(), remote("10.0.0.7", 5678));
+    assert_eq!(take_debug_server(&mut json!({"debugServer": "[::1]:2345"})).unwrap(), remote("::1", 2345));
+    assert_eq!(take_debug_server(&mut json!({"debugServer": ":2345"})).unwrap(), local(2345));
     assert!(take_debug_server(&mut json!({"debugServer": 0})).is_err());
     assert!(take_debug_server(&mut json!({"debugServer": 70000})).is_err());
+    assert!(take_debug_server(&mut json!({"debugServer": "host:"})).is_err());
+    assert!(take_debug_server(&mut json!({"debugServer": "host:abc"})).is_err());
 }
 
 #[test]
@@ -694,6 +703,41 @@ async fn connects_to_running_debug_server_over_tcp() {
     manager.stop(id).await.unwrap();
     assert!(manager.sessions(None).is_empty());
     assert!(events.lock().iter().any(|e| matches!(e, IdeEvent::Debug { event: DebugEvent::Started { .. }, .. })));
+}
+
+/// Go Remote / Python remote: the adapter runs on another machine (`dlv --headless`,
+/// `debugpy --listen`); `debugServer: "host:port"` connects there instead of spawning one.
+#[tokio::test]
+async fn connects_to_remote_debug_server_by_host() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let log: Log = Arc::default();
+    let server_log = log.clone();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        fake_adapter(stream, server_log, Script::default()).await;
+    });
+    let (owner, _events) = recording_owner("main");
+    let manager = DebugManager::new(Arc::new(LanguageRegistry::from_configs(Vec::new())));
+    let config = LaunchConfig {
+        name: "Remote".into(),
+        adapter: "delve".into(),
+        request: "attach".into(),
+        program: None,
+        args: vec![],
+        cwd: Some(std::env::temp_dir().into()),
+        env: BTreeMap::new(),
+        extra_json: Some(
+            json!({"debugServer": format!("localhost:{port}"), "mode": "remote", "substitutePath": [{"from": "/src", "to": "/app"}]})
+                .to_string(),
+        ),
+    };
+    let id = manager.start(config, owner).await.unwrap();
+    let attach = log.lock().iter().find(|m| m["command"] == "attach").cloned().unwrap();
+    assert_eq!(attach["arguments"]["mode"], "remote");
+    assert_eq!(attach["arguments"]["substitutePath"][0]["to"], "/app");
+    assert!(attach["arguments"].get("debugServer").is_none(), "consumed by the client");
+    manager.stop(id).await.unwrap();
 }
 
 fn requests(h: &Harness, command: &str) -> Vec<Value> {

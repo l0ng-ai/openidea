@@ -243,6 +243,9 @@ export { runConfigTypes };
 
 export const isCompound = (c: Pick<RunConfig, "kind">) => c.kind === COMPOUND;
 
+/** Only Debug applies to `c` (Remote JVM Debug, Go Remote…): it attaches and launches no process. */
+export const isDebugOnly = (c: Pick<RunConfig, "kind">, type = typeFor(c.kind)) => !!type?.debugOnly;
+
 /**
  * The params the type form edits for `config`: its own, else derived from its command
  * line; null when the type can't reproduce that command line (edited as a plain command).
@@ -279,16 +282,22 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
 
 /** Whether "Emulate terminal in output console" applies to `config`. */
 export function terminalApplies(config: RunConfig, type = typeFor(config.kind)): boolean {
-  return config.kind !== COMPOUND && !config.isTest && type?.terminal !== false;
+  return config.kind !== COMPOUND && !config.isTest && type?.terminal !== false && !type?.debugOnly;
 }
 
-/** Required params that are empty, by key. */
+/** Required params that are empty and values the field rejects, by key. */
 export function missingParams(config: RunConfig, type = typeFor(config.kind)): Record<string, string> {
   const out: Record<string, string> = {};
   const params = formParams(config, type);
   if (!type || !params) return out;
   for (const f of type.fields) {
-    if (f.required && (f.visible?.(params) ?? true) && !params[f.key]?.trim()) out[f.key] = `${f.label} is required`;
+    if (f.control === "output" || !(f.visible?.(params) ?? true)) continue;
+    const value = params[f.key]?.trim() ?? "";
+    if (f.required && !value) out[f.key] = `${f.label} is required`;
+    else if (value && f.validate) {
+      const error = f.validate(value, params);
+      if (error) out[f.key] = error;
+    }
   }
   return out;
 }
@@ -327,7 +336,7 @@ export function blankTemplate(type: RunConfigTypeContribution): RunConfig {
       env: {},
       detected: false,
       isTest: false,
-      debugAdapter: null,
+      debugAdapter: type.debugAdapter ?? null,
     },
     { ...type.defaults },
     type,
@@ -363,5 +372,6 @@ export function newConfigOfType(
     }
   }
   const params = { ...type.defaults, ...(template?.params ?? {}) };
-  return withParams({ ...base, ...copied }, params, type);
+  const next = withParams({ ...base, ...copied }, params, type);
+  return type.debugAdapter ? { ...next, debugAdapter: type.debugAdapter } : next;
 }

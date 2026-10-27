@@ -172,6 +172,25 @@ export function setLevel(o: ProfileOverrides, id: string, level: InspectionLevel
   return withOverride(o, id, { severity: level });
 }
 
+/** Sets option `key` of inspection `id` (dropped again when back to its default). */
+export function setOption(o: ProfileOverrides, id: string, key: string, value: boolean): ProfileOverrides {
+  const fallback = BUILTIN_INSPECTIONS.find((b) => b.id === id)?.options?.find((x) => x.key === key)?.default ?? true;
+  const options: Record<string, boolean> = { ...o[id]?.options };
+  if (value === fallback) delete options[key];
+  else options[key] = value;
+  return withOverride(o, id, { options: Object.keys(options).length ? options : undefined });
+}
+
+/** Keys of `id`'s node and its ancestors in `nodes`, outermost first; null when absent. */
+export function pathToInspection(nodes: readonly InspectionNode[], id: string): string[] | null {
+  for (const n of nodes) {
+    if (n.id === id) return [n.key];
+    const below = pathToInspection(n.children, id);
+    if (below) return [n.key, ...below];
+  }
+  return null;
+}
+
 export const AS_REPORTED = "";
 
 export const LEVEL_OPTIONS = [
@@ -195,6 +214,9 @@ export const INSPECTION_KEYWORDS = [
   "delete profile",
   "spelling",
   "proofreading",
+  "process code",
+  "process literals",
+  "process comments",
   ...BUILTIN_INSPECTIONS.map((b) => b.name),
   ...INSPECTION_LEVELS.map((l) => l.label),
 ];

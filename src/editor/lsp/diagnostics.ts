@@ -10,6 +10,7 @@ import { EditorView, ViewPlugin } from "@codemirror/view";
 import { forEachDiagnostic, linter, setDiagnostics, type Diagnostic as LintDiagnostic } from "@codemirror/lint";
 import type { Diagnostic, Severity } from "@/bindings";
 import { onIdeEvent } from "@/platform/ipc";
+import { publishLocalDiagnostics } from "@/platform/localDiagnostics";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { rangeToOffsets } from "./positions";
 import { lspDoc } from "./lsp";
@@ -17,10 +18,12 @@ import { showHint } from "./hint";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
   applyProfile,
+  diagnosticInspection,
   inspectionProfile,
   isTypoStyled,
   noteDiagnosticCodes,
   subscribeInspectionProfile,
+  type InspectionRef,
 } from "@/platform/inspections";
 
 type Listener = () => void;
@@ -28,7 +31,15 @@ type Listener = () => void;
 const byPath = new Map<string, Map<string, Diagnostic[]>>();
 const listeners = new Map<string, Set<Listener>>();
 
+/** Diagnostics a UI-side inspection computed for `path` (shown in the editor and Problems). */
 export function setFileDiagnostics(path: string, source: string, items: Diagnostic[]) {
+  const had = byPath.get(path)?.has(source) ?? false;
+  storeDiagnostics(path, source, items);
+  // `server` names the producer for views that see the diagnostic alone (inspection controls).
+  if (items.length || had) publishLocalDiagnostics(path, source, items.map((d) => (d.server ? d : { ...d, server: source })));
+}
+
+function storeDiagnostics(path: string, source: string, items: Diagnostic[]) {
   let sources = byPath.get(path);
   if (!items.length) {
     if (!sources?.delete(source)) return;
@@ -49,6 +60,23 @@ export function diagnosticsFor(path: string): Diagnostic[] {
   return [...sources].flatMap(([source, items]) => applyProfile(profile, source, items));
 }
 
+/** Inspections reporting a problem at `pos` of `path` (profile applied), most severe first. */
+export function inspectionsAt(path: string, doc: Text, pos: number): InspectionRef[] {
+  const sources = byPath.get(path);
+  if (!sources) return [];
+  const profile = inspectionProfile();
+  const found: { ref: InspectionRef; rank: number }[] = [];
+  for (const [producer, items] of sources) {
+    for (const d of applyProfile(profile, producer, items)) {
+      const { from, to } = rangeToOffsets(doc, d.range);
+      if (pos < from || pos > to) continue;
+      const ref = diagnosticInspection(producer, d);
+      if (ref && !found.some((f) => f.ref.id === ref.id)) found.push({ ref, rank: SEVERITY_RANK[d.severity] });
+    }
+  }
+  return found.sort((a, b) => a.rank - b.rank).map((f) => f.ref);
+}
+
 export function subscribeDiagnostics(path: string, l: Listener): () => void {
   let set = listeners.get(path);
   if (!set) listeners.set(path, (set = new Set()));
@@ -60,7 +88,7 @@ export function subscribeDiagnostics(path: string, l: Listener): () => void {
 }
 
 export function installDiagnosticsEvents(): () => void {
-  const off = onIdeEvent("diagnostics", (e) => setFileDiagnostics(e.path, e.source, e.items));
+  const off = onIdeEvent("diagnostics", (e) => storeDiagnostics(e.path, e.source, e.items));
   // Another inspection profile (or edits to it) re-filters every open file.
   const offProfile = subscribeInspectionProfile(() => listeners.forEach((set) => set.forEach((l) => l())));
   return () => {

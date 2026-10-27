@@ -234,7 +234,8 @@ export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []
     else if (compoundCycle(config, all)) errors.compound = "A compound configuration can't include itself";
     else if (children.some((id) => !all.some((c) => c.id === id)))
       errors.compound = "Some configurations no longer exist";
-  } else if (!config.command.trim()) errors.command = "Command is required";
+  } else if (!config.command.trim() && !useRunConfigTypes.getState().types.get(config.kind)?.debugOnly)
+    errors.command = "Command is required";
   for (const t of config.beforeLaunch ?? []) {
     if (t.kind === "run" && (t.target === config.id || !all.some((c) => c.id === t.target)))
       errors.beforeLaunch = "A before launch task runs a missing configuration or this one";

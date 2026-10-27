@@ -7,6 +7,8 @@ import { useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { formatBinding, hasPrimaryModifier, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { basename, relativeDir, useProject } from "@/platform/project";
+import { diagnosticInspection, producerOf, type InspectionRef } from "@/platform/inspections";
+import { problemControls } from "@/platform/inspectionControls";
 import { editorService, useOccurrenceNavigator } from "@/workbench/contributions";
 import {
   EmptyState,
@@ -30,6 +32,7 @@ import {
   DEFAULT_PROBLEM_ORDER,
   countSeverities,
   fileDiagnostics,
+  producerFor,
   sortProblems,
   useProblems,
   type ProblemOrder,
@@ -108,6 +111,14 @@ const group = (s: Severity): "error" | "warning" | "info" => (s === "hint" ? "in
 type Node =
   | { kind: "file"; key: string; path: string; items: Diagnostic[] }
   | { kind: "diag"; key: string; path: string; d: Diagnostic };
+
+/** The inspection that reported `d` (for Disable inspection / Change Severity). */
+export function diagInspection(map: ProblemsMap, path: string, d: Diagnostic): InspectionRef | null {
+  return diagnosticInspection(producerFor(map, path, d) ?? producerOf(d), d);
+}
+
+const inspectionMenu = (inspection: InspectionRef | null): MenuItem[] =>
+  inspection ? [{ kind: "separator" }, ...problemControls(inspection)] : [];
 
 const plural = (n: number, word: string) => (n ? `${n} ${word}${n === 1 ? "" : "s"}` : "");
 
@@ -374,6 +385,7 @@ export function ProblemsView() {
             disabled: n.kind !== "diag",
             run: () => copy(n),
           },
+          ...inspectionMenu(n.kind === "diag" ? diagInspection(map, n.path, n.d) : null),
         ]);
       }}
       activateExpandable={false}

@@ -3,7 +3,7 @@
  * file under it (deleted ones included) — plus labels and system events
  * ("Before Git checkout"), with diff and revert.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { HistoryEntry } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { relativePath, useProject } from "@/platform/project";
@@ -38,6 +38,22 @@ export function snapshotsBefore(entries: readonly HistoryEntry[], at: number): M
   return out;
 }
 
+/**
+ * Several revisions selected (IDEA): the oldest and newest of them when they are snapshots of
+ * one file, to diff against each other. `entries` are newest first.
+ */
+export function revisionRange(
+  entries: readonly HistoryEntry[],
+  selected: Iterable<number>,
+): { older: HistoryEntry; newer: HistoryEntry } | null {
+  const picked = [...selected]
+    .sort((a, b) => a - b)
+    .map((i) => entries[i])
+    .filter((e): e is HistoryEntry => !!e && !isLabel(e));
+  if (picked.length < 2 || picked.some((e) => e.path !== picked[0]!.path)) return null;
+  return { newer: picked[0]!, older: picked[picked.length - 1]! };
+}
+
 export interface HistoryView {
   entries: HistoryEntry[];
   deleted: ReadonlySet<string>;
@@ -51,6 +67,11 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
   const [view, setView] = useState<HistoryView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [active, setActive] = useState(0);
+  // Rows selected besides the active one: Cmd/Ctrl-click adds, Shift-click extends from `anchor`.
+  const [extra, setExtra] = useState<ReadonlySet<number>>(() => new Set());
+  const anchor = useRef(0);
+  const previous = useRef(0);
+  const pointer = useRef(false);
 
   const load = useCallback(() => {
     call(commands.historyListDir(path))
@@ -58,6 +79,7 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
         const entries = [...h.entries].sort((a, b) => time(b) - time(a));
         const folder = entries.some((e) => !isLabel(e) && e.path !== path);
         setView({ entries, deleted: new Set(h.deleted), folder });
+        setExtra(new Set());
         setError(null);
       })
       .catch((e) => setError(errorMessage(e)));
@@ -122,11 +144,31 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
       />
     );
 
+  const rangeLabel = (e: HistoryEntry) => `${formatTime(e.timestampMs)} · ${e.label}`;
+  const range = extra.size ? revisionRange(entries, [active, ...extra]) : null;
+
   let detail;
   if (!current)
     detail = (
       <div className={styles.message}>
         <T>Select a revision</T>
+      </div>
+    );
+  else if (range)
+    detail = (
+      <DiffEditor
+        key={range.older.id + range.newer.id + range.newer.path}
+        input={diffInput({
+          path: range.newer.path,
+          left: { type: "history", id: range.older.id, label: rangeLabel(range.older) },
+          right: { type: "history", id: range.newer.id, label: rangeLabel(range.newer) },
+        })}
+      />
+    );
+  else if (extra.size)
+    detail = (
+      <div className={styles.message}>
+        <T>Select revisions of one file to compare them</T>
       </div>
     );
   else if (!isLabel(current)) detail = diffFor(current, !!view?.deleted.has(current.path));
@@ -145,7 +187,12 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
 
   return (
     <div className={styles.root}>
-      <div className={styles.sidebar}>
+      <div
+        className={styles.sidebar}
+        onMouseDownCapture={(e) => {
+          pointer.current = e.button === 0 && !!(e.target as Element).closest('[role="option"]');
+        }}
+      >
         <div className={styles.header}>
           <span className={styles.title}>
             <T>Local History</T>
@@ -165,8 +212,36 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
             items={entries}
             getKey={(e) => `${e.kind ?? "snapshot"}:${e.id}:${e.path}:${e.timestampMs ?? ""}`}
             activeIndex={Math.min(active, entries.length - 1)}
-            onActiveChange={setActive}
-            onActivate={(_e, i) => setActive(i)}
+            isSelected={(_e, i) => extra.has(i)}
+            onActiveChange={(i) => {
+              previous.current = active;
+              // Keyboard navigation selects one row; clicks are resolved in onActivate.
+              if (!pointer.current) {
+                anchor.current = i;
+                setExtra(new Set());
+              }
+              setActive(i);
+            }}
+            onActivate={(_e, i, ev) => {
+              if (!pointer.current) return setActive(i);
+              pointer.current = false;
+              setActive(i);
+              if (ev.shiftKey) {
+                const [from, to] = [Math.min(anchor.current, i), Math.max(anchor.current, i)];
+                setExtra(new Set(Array.from({ length: to - from + 1 }, (_, k) => from + k).filter((k) => k !== i)));
+              } else if (ev.metaKey || ev.ctrlKey) {
+                anchor.current = i;
+                setExtra((s) => {
+                  const next = new Set(s);
+                  if (next.has(i)) next.delete(i);
+                  else if (previous.current !== i) next.add(previous.current);
+                  return next;
+                });
+              } else {
+                anchor.current = i;
+                setExtra(new Set());
+              }
+            }}
             rowHeight={view.folder ? 52 : 38}
             aria-label="Revisions"
             className={styles.list}

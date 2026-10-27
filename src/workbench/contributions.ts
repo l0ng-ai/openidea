@@ -799,8 +799,11 @@ export interface RunConfigTypeField {
   /** Key in `RunConfig.params`. */
   key: string;
   label: string;
-  /** `checkbox` values are `"true"` or absent. */
-  control?: "text" | "textarea" | "select" | "checkbox";
+  /**
+   * `checkbox` values are `"true"` or absent. `output` is read-only text computed by
+   * `value` (not stored), with a Copy button (e.g. the JDWP agent for the remote JVM).
+   */
+  control?: "text" | "textarea" | "select" | "checkbox" | "output";
   mono?: boolean;
   placeholder?: string;
   options?: ReadonlyArray<{ value: string; label: string }>;
@@ -808,6 +811,12 @@ export interface RunConfigTypeField {
   suggestions?(configs: readonly RunConfig[], params: Readonly<Record<string, string>>): string[];
   required?: boolean;
   visible?(params: Readonly<Record<string, string>>): boolean;
+  /** An `output` field's text. */
+  value?(params: Readonly<Record<string, string>>): string;
+  /** Why a non-empty value is invalid, or null. */
+  validate?(value: string, params: Readonly<Record<string, string>>): string | null;
+  /** Shown under the control. */
+  hint?: string;
 }
 
 export interface RunConfigTypeContribution {
@@ -836,6 +845,13 @@ export interface RunConfigTypeContribution {
   terminal?: boolean;
   /** Adjusts what is launched right before it starts (e.g. the environment selecting a Docker daemon). */
   prepareLaunch?(config: RunConfig): Promise<RunConfig>;
+  /**
+   * Only Debug applies: the configuration attaches a debugger and launches no process
+   * (Remote JVM Debug, Go Remote). `commandLine` returns null.
+   */
+  debugOnly?: boolean;
+  /** `RunConfig.debugAdapter` of a new configuration. */
+  debugAdapter?: string;
 }
 
 export const useRunConfigTypes = create<{ types: Map<string, RunConfigTypeContribution> }>(() => ({ types: new Map() }));
