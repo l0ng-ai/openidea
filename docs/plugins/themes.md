@@ -294,7 +294,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-202 themeable tokens: 112 in the UI theme file, 90 in the editor colour scheme file.
+203 themeable tokens: 113 in the UI theme file, 90 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -342,6 +342,12 @@ a token.
 | `--accent` | `#3871e1` | `#3871e1` |
 | `--link` | `#71a1fe` | `#2f5eb9` |
 | `--link-hover` | `#92b7ff` | `#2e4d89` |
+
+### Charts (UI theme)
+
+| Token | Islands Dark | Islands Light |
+|---|---|---|
+| `--chart-series` | `#e07a7c` | `#d9686a` |
 
 ### Status (UI theme)
 

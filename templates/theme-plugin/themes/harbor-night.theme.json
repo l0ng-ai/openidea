@@ -42,6 +42,9 @@
     "--link": "#5cc8bd",
     "--link-hover": "#8adcd3",
 
+    // Charts
+    "--chart-series": "#e07a7c",
+
     // Status
     "--danger": "#f57e84",
     "--warning": "#d59637",
