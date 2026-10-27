@@ -29,13 +29,15 @@ const modeTracker = ViewPlugin.define((view) => {
   const cm = getCM(view);
   let state: VimModeState = { mode: cm?.state.vim?.insertMode ? "insert" : "normal", sub: null };
   const publish = () => useVimMode.setState(state);
+  // Not `view.hasFocus`: that also needs the window focused, and this editor stays the last focused one.
+  const focused = () => view.root.activeElement === view.contentDOM;
   const onModeChange = (e: { mode: string; subMode?: string }) => {
     state = { mode: e.mode, sub: e.subMode === "linewise" || e.subMode === "blockwise" ? e.subMode : null };
-    if (view.hasFocus) publish();
+    if (focused()) publish();
   };
   cm?.on("vim-mode-change", onModeChange);
   view.contentDOM.addEventListener("focus", publish);
-  if (view.hasFocus) publish();
+  if (focused()) publish();
   return {
     destroy() {
       cm?.off("vim-mode-change", onModeChange);
