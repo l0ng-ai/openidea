@@ -51,6 +51,9 @@ pub async fn java_resolve_launch(
         ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
     });
     info.java_exec = Some(java.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "java".to_owned()));
+    let exec = PathBuf::from(info.java_exec.as_deref().unwrap_or("java"));
+    let shorten = ide_run::java_cmdline::shortening_for(&exec, &info.class_paths, &info.module_paths, cfg!(windows));
+    info.shorten_command_line = Some(shorten.as_str().to_owned());
     if info.error_count > 0 {
         let vm_args = &settings.languages.java.jdtls_vm_args;
         let lombok = ide_sdk::lombok::lombok_agent(

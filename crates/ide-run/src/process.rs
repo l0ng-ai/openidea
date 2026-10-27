@@ -144,6 +144,44 @@ pub(crate) fn invocation(config: &RunConfig, cwd: &Path) -> Invocation {
     Invocation { program, args: config.args.clone(), raw_args: false, display }
 }
 
+/// "Shorten command line" for a `java` launch too long for the platform (see
+/// [`crate::java_cmdline`]): rewrites `inv` and returns the temporary file to delete on exit.
+fn shorten_java(inv: &mut Invocation, config: &RunConfig, cwd: &Path) -> IdeResult<TempFile> {
+    if inv.raw_args || !crate::java_cmdline::is_java_launcher(&inv.program) {
+        return Ok(TempFile(None));
+    }
+    let java = if inv.program.components().count() == 1 {
+        crate::which::find_executable(&inv.program.to_string_lossy(), &crate::wrap::search_path(config))
+            .unwrap_or_else(|| inv.program.clone())
+    } else {
+        inv.program.clone()
+    };
+    let dir = crate::java_cmdline::default_temp_dir();
+    let shortened = crate::java_cmdline::shorten(&java, &inv.args, cwd, cfg!(windows), &dir)
+        .map_err(|e| IdeError::internal(format!("cannot shorten the command line: {e}")))?;
+    let Some(s) = shortened else { return Ok(TempFile(None)) };
+    tracing::debug!(how = s.how.as_str(), file = %s.file.display(), "java command line shortened");
+    let mut display = quote(config.command.trim());
+    for a in &s.args {
+        display.push(' ');
+        display.push_str(&quote(a));
+    }
+    inv.args = s.args;
+    inv.display = display;
+    Ok(TempFile(Some(s.file)))
+}
+
+/// A launch's pathing jar / argfile, deleted when dropped (the process exited, or never started).
+struct TempFile(Option<PathBuf>);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+}
+
 /// `command` as one line for the platform shell: `/bin/sh -c`, or `cmd /D /S /C "…"`
 /// (`/S` strips exactly the outer quotes, so the line's own quoting survives).
 fn shell_invocation(command: &str, windows: bool, comspec: Option<String>) -> Invocation {
@@ -232,7 +270,7 @@ impl ProcessManager {
         if !cwd.is_dir() {
             return Err(IdeError::not_found(format!("working directory does not exist: {}", cwd.display())));
         }
-        let inv = invocation(config, &cwd);
+        let mut inv = invocation(config, &cwd);
         let extras = &config.extras;
         if extras.emulate_terminal && extras.stdin_file.is_some() {
             return Err(IdeError::invalid("input cannot be redirected from a file when emulating a terminal"));
@@ -248,8 +286,9 @@ impl ProcessManager {
             cwd: cwd.clone(),
             env: env.clone(),
         });
+        let temp = shorten_java(&mut inv, config, &cwd)?;
         if extras.emulate_terminal {
-            return self.start_pty(config, &inv, &cwd, &env, stop, options, sink, on_output);
+            return self.start_pty(config, &inv, &cwd, &env, stop, options, sink, on_output, temp);
         }
 
         let mut cmd = Command::new(&inv.program);
@@ -336,6 +375,7 @@ impl ProcessManager {
             .name(format!("openidea-run-wait-{}", id.0))
             .spawn(move || {
                 let status = child.wait();
+                drop(temp);
                 let _ = waiter_tx.send(Msg::Exited(Exit::Pipes(status)));
             })
             .map_err(|e| IdeError::internal(format!("failed to start waiter thread: {e}")))?;
@@ -356,6 +396,7 @@ impl ProcessManager {
         options: &StartOptions,
         sink: SharedSink,
         on_output: OutputFn,
+        temp: TempFile,
     ) -> IdeResult<RunInfo> {
         let pair = native_pty_system()
             .openpty(pty_size(DEFAULT_PTY.0, DEFAULT_PTY.1))
@@ -413,6 +454,7 @@ impl ProcessManager {
             .name(format!("openidea-run-wait-{}", id.0))
             .spawn(move || {
                 let status = child.wait();
+                drop(temp);
                 let _ = tx.send(Msg::Exited(Exit::Pty(status)));
             })
             .map_err(|e| IdeError::internal(format!("failed to start waiter thread: {e}")))?;

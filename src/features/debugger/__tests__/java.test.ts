@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 
 const invoked: Array<[string, unknown[]]> = [];
+let shortenCommandLine: string | null = null;
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   const ok = (data: unknown) => Promise.resolve({ status: "ok", data });
@@ -18,6 +19,7 @@ vi.mock("@/platform/ipc", async (orig) => {
           modulePaths: [],
           javaHome: "/jdk21",
           javaExec: "/jdk21/bin/java",
+          shortenCommandLine,
           errors: [],
           errorCount: 0,
           hints: [],
@@ -49,6 +51,7 @@ const app: RunConfig = {
 describe("Java debugging (java-debug through jdtls)", () => {
   beforeEach(() => {
     invoked.length = 0;
+    shortenCommandLine = null;
   });
 
   it("launches Application configs with the resolved classpath on jdtls' debug server", async () => {
@@ -68,7 +71,16 @@ describe("Java debugging (java-debug through jdtls)", () => {
       vmArgs: "-Xmx1g",
       args: '--port "8081 x"',
       console: "internalConsole",
+      shortenCommandLine: "none",
     });
+  });
+
+  it("lets java-debug shorten a classpath too long for the OS, as Run does", async () => {
+    for (const how of ["jarmanifest", "argfile"]) {
+      shortenCommandLine = how;
+      const l = await javaLaunchConfig(app, "/p");
+      expect(JSON.parse(l.extraJson!).shortenCommandLine).toBe(how);
+    }
   });
 
   it("attaches to a JDWP agent", async () => {
