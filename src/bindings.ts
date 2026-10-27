@@ -308,6 +308,8 @@ export const commands = {
 	vcsBlame: (path: string) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
+	/**  Combined changes of several commits, `commits` oldest first. */
+	vcsCommitsChanges: (repo: string | null, commits: string[]) => typedError<RevisionChange[], IdeError>(__TAURI_INVOKE("vcs_commits_changes", { repo, commits })),
 	vcsBranches: (repo: string | null) => typedError<Branch[], IdeError>(__TAURI_INVOKE("vcs_branches", { repo })),
 	vcsStashes: (repo: string | null) => typedError<Stash[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
 	vcsStage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage", { paths })),
@@ -3875,6 +3877,19 @@ export type RequestId = number;
 export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 
 export type ReviewEvent = "approve" | "requestChanges" | "comment";
+
+/**  A file changed across several commits: its content at `before` ↔ at `after`. */
+export type RevisionChange = {
+	/**  Repository-relative path after the change (before it, for a deletion). */
+	path: string,
+	kind: ChangeKind,
+	/**  Path at `before`, for a rename. */
+	oldPath: string | null,
+	/**  Commit holding the old content; `None` when the file was added. */
+	before: string | null,
+	/**  Commit holding the new content; `None` when the file was deleted. */
+	after: string | null,
+};
 
 export type RootKind = "source" | "test" | "resources" | "testResources" | "excluded";
 

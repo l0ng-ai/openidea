@@ -153,6 +153,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_blame,
         vcs::vcs_log,
         vcs::vcs_commit_files,
+        vcs::vcs_commits_changes,
         vcs::vcs_branches,
         vcs::vcs_stashes,
         vcs::vcs_stage,
