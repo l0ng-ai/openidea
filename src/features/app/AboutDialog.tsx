@@ -3,7 +3,8 @@ import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import { t as translate, useT } from "@/platform/i18n";
 import { commands, isTauri, type AppInfo, type BuildInfo } from "@/platform/ipc";
-import { Dialog, IconButton } from "@/ui";
+import clsx from "clsx";
+import { Dialog, IconButton, selectableText } from "@/ui";
 import logo from "../../../src-tauri/icons/128x128.png";
 import { buildInfo, guessOs } from "./host";
 import styles from "./app.module.css";
@@ -82,13 +83,13 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
       <div className={styles.about}>
         <img className={styles.logo} src={logo} alt="" width={64} height={64} />
         <div className={styles.aboutBody}>
-          <div className={styles.productName}>OpenIDEA {build?.version ?? ""}</div>
+          <div className={clsx(styles.productName, selectableText)}>OpenIDEA {build?.version ?? ""}</div>
           {build && (
-            <div className={styles.aboutLine}>
+            <div className={clsx(styles.aboutLine, selectableText)}>
               {t("app.about.build")} #{build.build} ({build.profile})
             </div>
           )}
-          <div className={styles.tagline}>{t("app.about.tagline")}</div>
+          <div className={clsx(styles.tagline, selectableText)}>{t("app.about.tagline")}</div>
           <dl className={styles.facts}>
             {rows
               .filter(([k]) => k !== t("app.about.version") && k !== t("app.about.build"))
@@ -116,12 +117,12 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
               </button>
             )}
           </div>
-          <div className={styles.license}>
+          <div className={clsx(styles.license, selectableText)}>
             {t("app.about.copyright")}
             <br />
             {t("app.about.license")}
           </div>
-          <div className={styles.disclaimer}>
+          <div className={clsx(styles.disclaimer, selectableText)}>
             {t("app.about.thirdParty")} {t("app.about.disclaimer")}
           </div>
         </div>
