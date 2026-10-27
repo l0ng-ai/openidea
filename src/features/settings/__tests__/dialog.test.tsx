@@ -130,7 +130,10 @@ describe("Settings dialog", () => {
 
   it("edits and saves independent custom font weights", async () => {
     const dialog = await openDialog("editor.font");
-    for (const [label, value] of [["Main font weight", "449"], ["Bold font weight", "650"]]) {
+    for (const [label, value] of [
+      ["Main font weight", "449"],
+      ["Bold font weight", "650"],
+    ]) {
       fireEvent.click(within(dialog).getByRole("button", { name: label }));
       fireEvent.click(screen.getByRole("option", { name: "Custom" }));
       fireEvent.change(within(dialog).getByLabelText(`${label} custom value`), { target: { value } });
