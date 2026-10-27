@@ -328,7 +328,11 @@ export const lspTheme = EditorView.theme({
     userSelect: "none",
   },
   // A part naming a declaration (⌘-click navigates there).
-  ".cm-lsp-inlay-part:hover": { textDecoration: "underline", textUnderlineOffset: "2px" },
+  ".cm-lsp-navigation-modifier .cm-lsp-inlay-part:hover": {
+    textDecoration: "underline",
+    textUnderlineOffset: "2px",
+    cursor: "pointer",
+  },
   // Inline completion: the suggestion as gray text at the caret.
   ".cm-inline-ghost": { color: "var(--fg-subtle)", whiteSpace: "pre" },
   ".cm-lsp-inlay-pl": { marginLeft: "4px" },

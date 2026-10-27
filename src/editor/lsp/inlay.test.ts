@@ -4,13 +4,16 @@ import { EditorView } from "@codemirror/view";
 import type { InlayHint } from "@/bindings";
 
 const openFile = vi.fn(async () => undefined);
+const gotoTargets = vi.fn(async () => undefined);
+vi.mock("./navigation", () => ({ gotoTargets }));
 vi.mock("@/workbench/contributions", async (orig) => {
   const actual = await orig<typeof import("@/workbench/contributions")>();
   return { ...actual, maybeEditorService: () => ({ openFile }) };
 });
 
-const { inlayDecorations, inlayMenuItems } = await import("./inlay");
+const { inlayDecorations, inlayExtension, inlayMenuItems } = await import("./inlay");
 const { usePlatform } = await import("@/platform/platformInfo");
+const { resetNavigationModifier } = await import("@/platform/navigationModifier");
 const { useContextMenuStore } = await import("@/ui");
 
 const hint: InlayHint = {
@@ -33,6 +36,7 @@ const hint: InlayHint = {
 const views: EditorView[] = [];
 afterEach(() => {
   views.splice(0).forEach((v) => v.destroy());
+  resetNavigationModifier();
   vi.clearAllMocks();
 });
 
@@ -70,5 +74,41 @@ describe("inlay hints", () => {
       "Inlay Hints Settings…",
     ]);
     expect((inlayMenuItems("parameter")[0] as { label: string }).label).toBe("Disable Parameter name hints");
+  });
+
+  it("uses type declaration navigation for a plain type hint after an identifier", () => {
+    usePlatform.setState({ os: "macos" });
+    const view = editorWith([{ ...hint, label: ": Foo", parts: [] }]);
+    const el = view.dom.querySelector<HTMLElement>(".cm-lsp-inlay")!;
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+    expect(gotoTargets).not.toHaveBeenCalled();
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, metaKey: true }));
+    expect(gotoTargets).toHaveBeenCalledWith(view, "typeDefinition", 4);
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
+  it("does not treat parameter hints or type hints away from an identifier as type links", () => {
+    const view = editorWith([
+      { ...hint, kind: "parameter", parts: [] },
+      { ...hint, position: { line: 0, col: 6 }, parts: [] },
+    ]);
+    expect(view.dom.querySelectorAll(".cm-lsp-inlay-part")).toHaveLength(0);
+  });
+
+  it.each([
+    { os: "macos", key: "Meta", modifier: "metaKey" },
+    { os: "windows", key: "Control", modifier: "ctrlKey" },
+  ] as const)("tracks the navigation modifier for inlay cursors on $os", ({ os, key, modifier }) => {
+    usePlatform.setState({ os });
+    const view = new EditorView({
+      state: EditorState.create({ doc: "let x = foo();", extensions: [inlayExtension()] }),
+      parent: document.body,
+    });
+    views.push(view);
+    expect(view.contentDOM.classList.contains("cm-lsp-navigation-modifier")).toBe(false);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key, [modifier]: true }));
+    expect(view.contentDOM.classList.contains("cm-lsp-navigation-modifier")).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keyup", { key }));
+    expect(view.contentDOM.classList.contains("cm-lsp-navigation-modifier")).toBe(false);
   });
 });
