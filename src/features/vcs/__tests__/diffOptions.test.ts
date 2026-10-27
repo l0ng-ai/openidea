@@ -69,6 +69,31 @@ describe("diff options", () => {
     expect(restored.toString()).toBe(a);
   });
 
+  it("keeps distant edits separate in a very long file", () => {
+    const lines = Array.from({ length: 50000 }, (_, i) => `const v${i} = ${i * 7};`);
+    const changed = [...lines];
+    for (let i = 49000; i > 0; i -= 2500) changed.splice(i, 1, `inserted ${i}`, `${changed[i]} // edited`);
+    const result = chunks(lines.join("\n"), changed.join("\n"), "none");
+    expect(result).toHaveLength(20);
+    expect(result.every((c) => c.toB - c.fromB < 60)).toBe(true);
+  });
+
+  it("matches unchanged lines between many small edits", () => {
+    const lines = Array.from({ length: 4000 }, (_, i) => `line ${i}`);
+    const a = lines.join("\n");
+    const b = lines.map((l, i) => (i % 2 ? `${l} changed` : l)).join("\n");
+    expect(chunks(a, b, "none")).toHaveLength(2000);
+    expect(chunks(a, b, "whitespace")).toHaveLength(2000);
+  });
+
+  it("handles empty documents", () => {
+    expect(chunks("", "", "none")).toHaveLength(0);
+    const [ins] = chunks("", "one\ntwo\n", "none");
+    expect(ins).toMatchObject({ fromA: 0, toA: 0, fromB: 0 });
+    const [del] = chunks("one\ntwo\n", "", "whitespace");
+    expect(del).toMatchObject({ fromA: 0, fromB: 0, toB: 0 });
+  });
+
   it("detects a missing final newline", () => {
     for (const [a, b] of [
       ["same\n", "same"],

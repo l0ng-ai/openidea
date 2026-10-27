@@ -119,6 +119,62 @@ function encoder() {
   };
 }
 
+/** Bounds the expensive diff search; larger inputs fall back to a cheaper, coarser match. */
+const DIFF_CONFIG = { scanLimit: 500 };
+
+/**
+ * Diff of encoded lines (one char per line). Lines that occur exactly once on
+ * each side anchor the match (patience diff), and only the gaps between the
+ * anchors get a regular diff, so distant edits in long files stay separate
+ * without a quadratic search.
+ */
+function diffLines(a: string, b: string): Change[] {
+  const seen = new Map<string, { inA: number; inB: number; at: number }>();
+  for (let i = 0; i < a.length; i++) {
+    const e = seen.get(a[i]!);
+    if (e) e.inA++;
+    else seen.set(a[i]!, { inA: 1, inB: 0, at: i });
+  }
+  for (const c of b) {
+    const e = seen.get(c);
+    if (e) e.inB++;
+  }
+  // Unique common lines as [indexA, indexB] in A order, then their longest increasing run in B.
+  const pairs: [number, number][] = [];
+  for (let j = 0; j < b.length; j++) {
+    const e = seen.get(b[j]!);
+    if (e && e.inA === 1 && e.inB === 1) pairs.push([e.at, j]);
+  }
+  pairs.sort((x, y) => x[0] - y[0]);
+  const tails: number[] = [];
+  const prev = new Array<number>(pairs.length);
+  for (let i = 0; i < pairs.length; i++) {
+    let lo = 0;
+    let hi = tails.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (pairs[tails[mid]!]![1] < pairs[i]![1]) lo = mid + 1;
+      else hi = mid;
+    }
+    prev[i] = lo > 0 ? tails[lo - 1]! : -1;
+    tails[lo] = i;
+  }
+  const anchors: [number, number][] = [];
+  for (let i = tails.length ? tails[tails.length - 1]! : -1; i >= 0; i = prev[i]!) anchors.push(pairs[i]!);
+  anchors.reverse().push([a.length, b.length]);
+  const out: Change[] = [];
+  let fromA = 0;
+  let fromB = 0;
+  for (const [toA, toB] of anchors) {
+    if (toA > fromA || toB > fromB)
+      for (const c of diff(a.slice(fromA, toA), b.slice(fromB, toB), DIFF_CONFIG))
+        out.push(new Change(c.fromA + fromA, c.toA + fromA, c.fromB + fromB, c.toB + fromB));
+    fromA = toA + 1;
+    fromB = toB + 1;
+  }
+  return out;
+}
+
 /**
  * Match lines first, then compare the contents of changed blocks for word
  * highlighting. The line keys also implement the whitespace policy.
@@ -132,17 +188,17 @@ export function whitespaceDiff(policy: IgnorePolicy): (a: string, b: string) => 
     const eb: string[] = [];
     for (const l of la) {
       const c = enc(l.key);
-      if (c === null) return diff(a, b, { scanLimit: 500 });
+      if (c === null) return diff(a, b, DIFF_CONFIG);
       ea.push(c);
     }
     for (const l of lb) {
       const c = enc(l.key);
-      if (c === null) return diff(a, b, { scanLimit: 500 });
+      if (c === null) return diff(a, b, DIFF_CONFIG);
       eb.push(c);
     }
     const out: Change[] = [];
     const at = (lines: Line[], i: number) => (i > 0 ? lines[i - 1]!.to : 0);
-    for (const c of diff(ea.join(""), eb.join(""), { scanLimit: 500 })) {
+    for (const c of diffLines(ea.join(""), eb.join(""))) {
       const fromA = c.toA > c.fromA ? la[c.fromA]!.from : at(la, c.fromA);
       const toA = c.toA > c.fromA ? la[c.toA - 1]!.to : fromA;
       const fromB = c.toB > c.fromB ? lb[c.fromB]!.from : at(lb, c.fromB);
@@ -151,7 +207,7 @@ export function whitespaceDiff(policy: IgnorePolicy): (a: string, b: string) => 
         out.push(new Change(fromA, toA, fromB, toB));
         continue;
       }
-      for (const inner of diff(a.slice(fromA, toA), b.slice(fromB, toB), { scanLimit: 500 }))
+      for (const inner of diff(a.slice(fromA, toA), b.slice(fromB, toB), DIFF_CONFIG))
         out.push(new Change(inner.fromA + fromA, inner.toA + fromA, inner.fromB + fromB, inner.toB + fromB));
     }
     return out;
