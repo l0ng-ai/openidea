@@ -25,13 +25,22 @@ import {
 } from "@codemirror/autocomplete";
 import { EditorSelection, Prec, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
-import { call, commands, isTauri, nextRequestId, type CompletionItem, type Markup, type RequestId } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  isTauri,
+  nextRequestId,
+  type CompletionItem,
+  type Markup,
+  type RequestId,
+} from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { completionSymbolKind, identifierEnd, toCmCompletion, triggerCharacter } from "./completionItems";
 import { lspSnippetToCm, snippetVariables } from "./snippet";
 import { docOf, isUnavailable, lspDoc, lspRequest, reportLspError } from "./lsp";
 import { offsetToPos, posToOffset, textEditsToChanges } from "./positions";
 import { isEmptyMarkup, renderCode, renderMarkup } from "./markdown";
+import { selectableText } from "@/ui/selectableText";
 import { iconNode } from "./iconMarkup";
 import { triggerSignatureHelp } from "./signature";
 import { serverBackoff } from "./availability";
@@ -101,7 +110,7 @@ function buildInfo(c: LspCompletion, delay: number): Promise<CompletionInfo> {
     const hasDoc = !isEmptyMarkup(item.documentation);
     if (!hasDoc && !item.detail) return null;
     const dom = document.createElement("div");
-    dom.className = "cm-lsp-completion-doc";
+    dom.className = `cm-lsp-completion-doc ${selectableText}`;
     if (item.detail) dom.appendChild(renderCode(item.detail, c.req.language, "cm-lsp-code cm-lsp-doc-signature"));
     if (hasDoc) dom.appendChild(renderMarkup(item.documentation!, c.req.language));
     return dom;
@@ -160,7 +169,8 @@ export function applyLspCompletion(
   const item = completion.resolved ?? completion.lsp;
   const state = view.state;
   const delta = to - req.pos;
-  const mapOld = (offset: number) => Math.max(0, Math.min(state.doc.length, offset < req.pos ? offset : offset + delta));
+  const mapOld = (offset: number) =>
+    Math.max(0, Math.min(state.doc.length, offset < req.pos ? offset : offset + delta));
 
   let start = from;
   let end = to;
@@ -190,7 +200,9 @@ export function applyLspCompletion(
     }
     snippet(lspSnippetToCm(item.insertText, snippetVariables(req.path)))(view, completion, start, end);
   } else {
-    const parens = editorPrefs().completion.insertParentheses ? callParens(item, state.doc.lineAt(start), start, end) : null;
+    const parens = editorPrefs().completion.insertParentheses
+      ? callParens(item, state.doc.lineAt(start), start, end)
+      : null;
     insertedParens = parens;
     const changes = state.changes([...extra, { from: start, to: end, insert: item.insertText + (parens ? "()" : "") }]);
     const caret = changes.mapPos(end, 1) - (parens === "inside" ? 1 : 0);
@@ -203,7 +215,8 @@ export function applyLspCompletion(
     });
   }
 
-  if (!completion.resolved && !item.additionalEdits.length && item.data != null) void applyLateEdits(view, completion, start);
+  if (!completion.resolved && !item.additionalEdits.length && item.data != null)
+    void applyLateEdits(view, completion, start);
   if (insertedParens === "inside" && !item.command) setTimeout(() => triggerSignatureHelp(view), 0);
   runCommand(view, item);
 }
@@ -240,7 +253,9 @@ export function callParens(
 async function applyLateEdits(view: EditorView, c: LspCompletion, insertedAt: number) {
   const item = await resolveItem(c.req.doc, c.lsp);
   if (!item.additionalEdits.length || !view.dom.isConnected) return;
-  const edits = textEditsToChanges(c.req.text, item.additionalEdits).filter((e) => e.to <= Math.min(insertedAt, c.req.pos));
+  const edits = textEditsToChanges(c.req.text, item.additionalEdits).filter(
+    (e) => e.to <= Math.min(insertedAt, c.req.pos),
+  );
   if (!edits.length) return;
   const limit = Math.max(...edits.map((e) => e.to));
   if (view.state.doc.sliceString(0, limit) !== c.req.text.sliceString(0, limit)) return;
@@ -259,7 +274,10 @@ function runCommand(view: EditorView, item: CompletionItem) {
   else if (!CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.")) {
     const doc = docOf(view);
     // Server commands (auto-import, postfix…); resulting edits come back as workspace/applyEdit.
-    if (doc) void lspRequest(() => commands.lspExecuteCommand(doc.doc, command)).catch((e: unknown) => reportLspError(view, e, false));
+    if (doc)
+      void lspRequest(() => commands.lspExecuteCommand(doc.doc, command)).catch((e: unknown) =>
+        reportLspError(view, e, false),
+      );
   }
 }
 
@@ -278,7 +296,10 @@ function cancelInflight() {
 
 /** Language-data completion sources (keywords etc.), used when no server answers. */
 async function fallback(ctx: CompletionContext): Promise<CompletionResult | null> {
-  const sources = ctx.state.languageDataAt<CompletionSource | readonly (string | Completion)[]>("autocomplete", ctx.pos);
+  const sources = ctx.state.languageDataAt<CompletionSource | readonly (string | Completion)[]>(
+    "autocomplete",
+    ctx.pos,
+  );
   for (const s of sources) {
     const source = typeof s === "function" ? s : completeFromList(s);
     const r = await source(ctx);
@@ -317,7 +338,9 @@ export function mergeResults(results: readonly CompletionResult[]): CompletionRe
   const [first] = results;
   if (!first || results.length === 1) return first ?? null;
   const same = results.filter((r) => r.from === first.from);
-  const validFor = same.every((r) => r.validFor instanceof RegExp && r.validFor.source === (first.validFor as RegExp | undefined)?.source)
+  const validFor = same.every(
+    (r) => r.validFor instanceof RegExp && r.validFor.source === (first.validFor as RegExp | undefined)?.source,
+  )
     ? first.validFor
     : undefined;
   return { from: first.from, to: first.to, options: same.flatMap((r) => r.options), validFor };
@@ -360,7 +383,9 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   const req: RequestContext = { doc: doc.doc, path: doc.path, language: doc.uiMode, pos: ctx.pos, text: ctx.state.doc };
   const prefs = editorPrefs().completion;
   const typed = word?.text ?? "";
-  const items = prefs.matchCase ? list.items.filter((it) => matchesCase(it.filterText ?? it.label, typed, prefs.caseSensitivity)) : list.items;
+  const items = prefs.matchCase
+    ? list.items.filter((it) => matchesCase(it.filterText ?? it.label, typed, prefs.caseSensitivity))
+    : list.items;
   return {
     from: word ? word.from : ctx.pos,
     options: items.map((item) => makeCompletion(item, req)),
@@ -396,7 +421,10 @@ export function sortAlphabetically(result: CompletionResult, typed: string): Com
     update: validFor
       ? (_cur, from, to, ctx) => {
           const text = ctx.state.sliceDoc(from, to);
-          const ok = typeof validFor === "function" ? validFor(text, from, to, ctx.state) : new RegExp(`^(?:${validFor.source})$`, validFor.flags).test(text);
+          const ok =
+            typeof validFor === "function"
+              ? validFor(text, from, to, ctx.state)
+              : new RegExp(`^(?:${validFor.source})$`, validFor.flags).test(text);
           return ok ? sortAlphabetically({ ...result, from }, text) : null;
         }
       : undefined,
@@ -455,7 +483,9 @@ function gated(source: CompletionSource): CompletionSource {
     if (only) return source === contributedSource ? only(ctx) : null;
     if (!ctx.explicit && (!editorPrefs().completion.autoPopup || inplaceRenameActive(ctx.state))) return null;
     if (!editorPrefs().completion.sortAlphabetically) return source(ctx);
-    return Promise.resolve(source(ctx)).then((r) => r && sortAlphabetically(r, ctx.state.sliceDoc(r.from, r.to ?? ctx.pos)));
+    return Promise.resolve(source(ctx)).then(
+      (r) => r && sortAlphabetically(r, ctx.state.sliceDoc(r.from, r.to ?? ctx.pos)),
+    );
   };
 }
 
@@ -478,7 +508,12 @@ const explicitPending = new WeakSet<EditorView>();
 const NAVIGATION_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown"]);
 
 /** Whether typing `ch` finishes the open lookup with its selected item. */
-export function commitsLookup(ch: string, focused: boolean, insertOnSpecialKeys: boolean, itemChars: readonly string[] = []): boolean {
+export function commitsLookup(
+  ch: string,
+  focused: boolean,
+  insertOnSpecialKeys: boolean,
+  itemChars: readonly string[] = [],
+): boolean {
   if (!focused && !insertOnSpecialKeys) return false;
   return COMMIT_CHARS.includes(ch) || itemChars.includes(ch);
 }
@@ -495,11 +530,15 @@ const lookupKeys = Prec.highest(
       const selected = selectedCompletion(view.state);
       if (!selected) return false;
       const itemChars = isLsp(selected) ? selected.lsp.commitCharacters : (selected.commitCharacters ?? []);
-      if (!commitsLookup(e.key, focusedLookups.has(view), editorPrefs().completion.insertOnSpecialKeys, itemChars)) return false;
+      if (!commitsLookup(e.key, focusedLookups.has(view), editorPrefs().completion.insertOnSpecialKeys, itemChars))
+        return false;
       if (!acceptCompletion(view)) return false;
       // A call snippet or inserted parentheses already opened the call: the typed one is consumed.
       const head = view.state.selection.main.head;
-      if (e.key === "(" && (view.state.sliceDoc(head - 1, head) === "(" || view.state.sliceDoc(head - 2, head) === "()")) {
+      if (
+        e.key === "(" &&
+        (view.state.sliceDoc(head - 1, head) === "(" || view.state.sliceDoc(head - 2, head) === "()")
+      ) {
         e.preventDefault();
         return true;
       }
@@ -526,7 +565,8 @@ const lookupTracker = ViewPlugin.fromClass(
         resetLookupDocs();
         if (explicitPending.has(view)) {
           explicitPending.delete(view);
-          if (prev === "pending" && !u.docChanged) queueMicrotask(() => showHint(view, "No suggestions", { timeout: 2000 }));
+          if (prev === "pending" && !u.docChanged)
+            queueMicrotask(() => showHint(view, "No suggestions", { timeout: 2000 }));
         }
       } else if (status === "active" && explicitPending.has(view)) {
         explicitPending.delete(view);
@@ -535,7 +575,12 @@ const lookupTracker = ViewPlugin.fromClass(
           const doc = u.state.doc;
           setTimeout(() => {
             const now = currentCompletions(view.state);
-            if (view.state.doc === doc && completionStatus(view.state) === "active" && now.length === 1 && now[0] === options[0])
+            if (
+              view.state.doc === doc &&
+              completionStatus(view.state) === "active" &&
+              now.length === 1 &&
+              now[0] === options[0]
+            )
               acceptCompletion(view);
           }, AUTO_INSERT_DELAY);
         }
@@ -583,7 +628,9 @@ function typeColumn(c: Completion): Node | null {
 async function toggleSortByName(view: EditorView) {
   const on = !editorPrefs().completion.sortAlphabetically;
   if (isTauri()) {
-    const settings = await call(commands.settingsSet("global", "editor.completion.sortAlphabetically", JSON.stringify(on)));
+    const settings = await call(
+      commands.settingsSet("global", "editor.completion.sortAlphabetically", JSON.stringify(on)),
+    );
     useProject.setState({ settings });
   }
   if (!view.dom.isConnected) return;
@@ -647,7 +694,9 @@ export function completionExtension() {
       optionClass: (c) => {
         // IDEA shows keywords in bold.
         const keyword = (isLsp(c) ? c.lsp.kind : c.type) === "keyword" ? " cm-lsp-keyword-option" : "";
-        return (isLsp(c) ? (c.lsp.deprecated ? "cm-lsp-option cm-lsp-deprecated-option" : "cm-lsp-option") : "") + keyword;
+        return (
+          (isLsp(c) ? (c.lsp.deprecated ? "cm-lsp-option cm-lsp-deprecated-option" : "cm-lsp-option") : "") + keyword
+        );
       },
       tooltipClass: () => "cm-lsp-completion",
     }),

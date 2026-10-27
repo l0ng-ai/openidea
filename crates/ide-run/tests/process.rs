@@ -379,3 +379,38 @@ fn stop_command_runs_first_with_the_run_environment() {
     assert!(h.root.path().join("stopped").exists(), "stop command did not run");
     assert!(text(&chunks, system).contains("touch \"$OPENIDEA_MARKER\""));
 }
+
+/// A `java` command line past the platform limit starts through a pathing jar
+/// (JDK 8) or an `@argfile` (JDK 9+), which is deleted once the JVM exits.
+#[test]
+fn long_java_classpath_is_shortened() {
+    let Some(home) = std::env::var_os("JAVA_HOME").map(PathBuf::from) else { return };
+    let (java, javac) = (home.join("bin/java"), home.join("bin/javac"));
+    if !javac.is_file() {
+        return;
+    }
+    let h = harness();
+    let classes = h.root.path().join("out classes");
+    std::fs::create_dir_all(classes.join("p")).unwrap();
+    let src = h.root.path().join("Main.java");
+    std::fs::write(&src, "package p; public class Main { public static void main(String[] a) { System.out.println(\"hello \" + a[0]); } }").unwrap();
+    let ok = std::process::Command::new(&javac).arg("-d").arg(&classes).arg(&src).status().unwrap().success();
+    assert!(ok, "javac failed");
+    let mut cp: Vec<String> = (0..3_000).map(|i| format!("/no/such/repository/lib-{i}/1.0/lib-{i}-1.0.jar")).collect();
+    cp.push(classes.to_string_lossy().into_owned());
+    let cp = cp.join(":");
+    assert!(cp.len() > ide_run::java_cmdline::UNIX_LIMIT);
+    let config = cfg("t:java", &java.to_string_lossy(), &["-cp", &cp, "p.Main", "world"]);
+    let (id, chunks) = start(&h, &config);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(30)), Some(0), "{}", text(&chunks, stderr));
+    assert_eq!(text(&chunks, stdout).trim(), "hello world");
+    let echo = text(&chunks, system);
+    let first = echo.lines().next().unwrap();
+    assert!(first.len() < 1_000, "{first}");
+    let file = first
+        .split(' ')
+        .map(|a| a.trim_matches('\'').trim_start_matches('@'))
+        .find(|a| a.contains("openidea-classpath"))
+        .unwrap_or_else(|| panic!("no pathing jar / argfile in {first}"));
+    assert!(!Path::new(file).exists(), "{file} not deleted");
+}
