@@ -461,3 +461,55 @@ fn no_ecosystem_libraries_without_manifests() {
     std::fs::create_dir_all(tmp.path().join("node_modules/react")).unwrap();
     assert!(crate::libraries::project_libraries(tmp.path(), &Settings::default(), &[]).is_empty());
 }
+
+/// Tools dir with vue-language-server and the given TypeScript files, plus a
+/// project; returns (tools, project).
+fn vue_setup(tmp: &Path, tools_ts: &str, project_ts: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let tools = tmp.join("tools/node_modules");
+    let project = tmp.join("app");
+    for (p, content) in [
+        (tools.join(".bin/vue-language-server"), ""),
+        (tools.join("@vue/language-server/package.json"), "{}"),
+        (tools.join("typescript/lib").join(tools_ts), ""),
+        (project.join("node_modules/typescript/lib").join(project_ts), ""),
+        (project.join("node_modules/typescript/lib/tsserver.js"), ""),
+    ] {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, content).unwrap();
+    }
+    (tools, project)
+}
+
+#[test]
+fn vue_language_server_gets_a_typescript_with_the_language_service_api() {
+    // Issue #25: `typescript@latest` (7.x) in the tools dir has no `ts.server`.
+    let s = Settings::default();
+    let cases = [
+        // (tools TypeScript, project TypeScript, expected --tsdk = project lib, launch error)
+        ("typescript.js", "typescript.js", false, false), // own TypeScript 5/6 works
+        ("tsc.js", "typescript.js", true, false),         // own TS 7: the project's
+        ("tsc.js", "tsc.js", false, true),                // nothing usable: clear error
+    ];
+    for (tools_ts, project_ts, uses_project, error) in cases {
+        let tmp = tempfile::tempdir().unwrap();
+        let (tools, project) = vue_setup(tmp.path(), tools_ts, project_ts);
+        let mut cfg = server("vue-language-server");
+        cfg.command = tools.join(".bin/vue-language-server").to_string_lossy().into_owned();
+        configure_server(&mut cfg, &project, &project, &s);
+        let tsdk = cfg.args.iter().find_map(|a| a.strip_prefix("--tsdk=")).map(std::path::PathBuf::from);
+        let project_lib = project.join("node_modules/typescript/lib");
+        assert_eq!(tsdk, uses_project.then_some(project_lib), "{tools_ts} / {project_ts}");
+        assert_eq!(cfg.launch_error.is_some(), error, "{tools_ts} / {project_ts}");
+    }
+
+    // A selected version wins over the server's own.
+    let tmp = tempfile::tempdir().unwrap();
+    let (tools, project) = vue_setup(tmp.path(), "typescript.js", "typescript.js");
+    let mut s = Settings::default();
+    s.languages.typescript.version = "workspace".into();
+    let mut cfg = server("vue-language-server");
+    cfg.command = tools.join(".bin/vue-language-server").to_string_lossy().into_owned();
+    configure_server(&mut cfg, &project, &project, &s);
+    let lib = project.join("node_modules/typescript/lib");
+    assert_eq!(cfg.args, [format!("--tsdk={}", lib.to_string_lossy())]);
+}
