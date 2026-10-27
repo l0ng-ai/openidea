@@ -4,13 +4,65 @@
  */
 import { HighlightStyle, LanguageDescription, syntaxHighlighting, type LanguageSupport } from "@codemirror/language";
 import { EditorState, type Extension } from "@codemirror/state";
-import { EditorView, drawSelection, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
+import {
+  Decoration,
+  EditorView,
+  ViewPlugin,
+  drawSelection,
+  highlightActiveLine,
+  keymap,
+  lineNumbers,
+} from "@codemirror/view";
+import { getChunks } from "@codemirror/merge";
 import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
 import { tags as t } from "@lezer/highlight";
 
+// Multi-line changes use a continuous background on both sides. Single-line
+// replacements retain inline highlighting for their changed words.
+const wholeChangedLines = ViewPlugin.fromClass(
+  class {
+    decorations;
+    constructor(view: EditorView) {
+      this.decorations = this.build(view);
+    }
+    update(update: import("@codemirror/view").ViewUpdate) {
+      if (
+        update.docChanged ||
+        update.viewportChanged ||
+        getChunks(update.startState)?.chunks !== getChunks(update.state)?.chunks
+      )
+        this.decorations = this.build(update.view);
+    }
+    build(view: EditorView) {
+      const info = getChunks(view.state);
+      const marks = [];
+      if (info && info.side !== "b" && info.side !== "a") return Decoration.none;
+      for (const chunk of info?.chunks ?? []) {
+        const isA = info!.side === "a";
+        const from = isA ? chunk.fromA : chunk.fromB;
+        const to = isA ? chunk.toA : chunk.toB;
+        if (from === to || from > view.state.doc.length) continue;
+        const otherEmpty = isA ? chunk.fromB === chunk.toB : chunk.fromA === chunk.toA;
+        const end = Math.min(to - 1, view.state.doc.length);
+        if (!otherEmpty && view.state.doc.lineAt(from).number === view.state.doc.lineAt(end).number) continue;
+        for (let line = view.state.doc.lineAt(from); line.from < to;) {
+          marks.push(Decoration.line({ class: "cm-diffWholeLine" }).range(line.from));
+          if (line.number === view.state.doc.lines) break;
+          line = view.state.doc.line(line.number + 1);
+        }
+      }
+      return Decoration.set(marks, true);
+    }
+  },
+  { decorations: (value) => value.decorations },
+);
+
 export const viewerHighlight = HighlightStyle.define([
-  { tag: [t.keyword, t.modifier, t.controlKeyword, t.operatorKeyword, t.definitionKeyword], color: "var(--syn-keyword)" },
+  {
+    tag: [t.keyword, t.modifier, t.controlKeyword, t.operatorKeyword, t.definitionKeyword],
+    color: "var(--syn-keyword)",
+  },
   { tag: [t.string, t.special(t.string), t.regexp, t.character], color: "var(--syn-string)" },
   { tag: [t.typeName, t.className, t.namespace, t.tagName], color: "var(--syn-type)" },
   { tag: [t.function(t.variableName), t.function(t.propertyName)], color: "var(--syn-function)" },
@@ -55,6 +107,16 @@ export const viewerTheme = EditorView.theme(
     "&.cm-merge-b .cm-changedLine, .cm-inlineChangedLine": {
       backgroundColor: "color-mix(in srgb, var(--gutter-added) 12%, transparent)",
     },
+    "&.cm-merge-a .cm-changedLine.cm-diffWholeLine": {
+      backgroundColor: "color-mix(in srgb, var(--danger) 26%, transparent)",
+    },
+    "&.cm-merge-b .cm-changedLine.cm-diffWholeLine": {
+      backgroundColor: "color-mix(in srgb, var(--success) 26%, transparent)",
+    },
+    "&.cm-merge-a .cm-diffWholeLine .cm-changedText, &.cm-merge-b .cm-diffWholeLine .cm-changedText": {
+      background: "transparent",
+    },
+    "&.cm-merge-b .cm-diffWholeLine .cm-insertedLine": { background: "transparent" },
     "&.cm-merge-a .cm-changedText, .cm-deletedChunk .cm-deletedText": {
       background: "color-mix(in srgb, var(--danger) 26%, transparent)",
     },
@@ -104,6 +166,7 @@ export function viewerBase(opts: { readOnly: boolean; lineNumbers?: boolean }): 
     keymap.of([...searchKeymap, ...defaultKeymap]),
     syntaxHighlighting(viewerHighlight),
     viewerTheme,
+    wholeChangedLines,
     EditorState.readOnly.of(opts.readOnly),
     EditorView.editable.of(!opts.readOnly),
   ];

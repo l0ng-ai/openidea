@@ -94,7 +94,7 @@ function splitLines(s: string, policy: IgnorePolicy): Line[] {
   for (;;) {
     const nl = s.indexOf("\n", from);
     const end = nl < 0 ? s.length : nl;
-    const key = lineKey(s.slice(from, end), policy);
+    const key = lineKey(s.slice(from, end), policy) + (policy === "none" && nl >= 0 ? "\n" : "");
     if (!(policy === "whitespaceAndLines" && key === "")) out.push({ from, to: nl < 0 ? s.length : nl + 1, key });
     if (nl < 0) return out;
     from = nl + 1;
@@ -120,12 +120,10 @@ function encoder() {
 }
 
 /**
- * Diff that ignores whitespace per `policy`: lines are matched by their
- * normalized text, then changed blocks get a precise character diff (for word
- * highlighting). Returns null when `policy` is "none" (use the default diff).
+ * Match lines first, then compare the contents of changed blocks for word
+ * highlighting. The line keys also implement the whitespace policy.
  */
-export function whitespaceDiff(policy: IgnorePolicy): ((a: string, b: string) => readonly Change[]) | null {
-  if (policy === "none") return null;
+export function whitespaceDiff(policy: IgnorePolicy): (a: string, b: string) => readonly Change[] {
   return (a, b) => {
     const la = splitLines(a, policy);
     const lb = splitLines(b, policy);
@@ -134,17 +132,17 @@ export function whitespaceDiff(policy: IgnorePolicy): ((a: string, b: string) =>
     const eb: string[] = [];
     for (const l of la) {
       const c = enc(l.key);
-      if (c === null) return diff(a, b);
+      if (c === null) return diff(a, b, { scanLimit: 500 });
       ea.push(c);
     }
     for (const l of lb) {
       const c = enc(l.key);
-      if (c === null) return diff(a, b);
+      if (c === null) return diff(a, b, { scanLimit: 500 });
       eb.push(c);
     }
     const out: Change[] = [];
     const at = (lines: Line[], i: number) => (i > 0 ? lines[i - 1]!.to : 0);
-    for (const c of diff(ea.join(""), eb.join(""))) {
+    for (const c of diff(ea.join(""), eb.join(""), { scanLimit: 500 })) {
       const fromA = c.toA > c.fromA ? la[c.fromA]!.from : at(la, c.fromA);
       const toA = c.toA > c.fromA ? la[c.toA - 1]!.to : fromA;
       const fromB = c.toB > c.fromB ? lb[c.fromB]!.from : at(lb, c.fromB);
@@ -153,7 +151,7 @@ export function whitespaceDiff(policy: IgnorePolicy): ((a: string, b: string) =>
         out.push(new Change(fromA, toA, fromB, toB));
         continue;
       }
-      for (const inner of diff(a.slice(fromA, toA), b.slice(fromB, toB)))
+      for (const inner of diff(a.slice(fromA, toA), b.slice(fromB, toB), { scanLimit: 500 }))
         out.push(new Change(inner.fromA + fromA, inner.toA + fromA, inner.fromB + fromB, inner.toB + fromB));
     }
     return out;
@@ -166,7 +164,9 @@ export function whitespaceDiff(policy: IgnorePolicy): ((a: string, b: string) =>
  */
 export function transferChunk(chunk: Chunk, source: "a" | "b", src: Text, dst: Text) {
   const [srcFrom, srcTo, dstFrom, dstTo] =
-    source === "a" ? [chunk.fromA, chunk.toA, chunk.fromB, chunk.toB] : [chunk.fromB, chunk.toB, chunk.fromA, chunk.toA];
+    source === "a"
+      ? [chunk.fromA, chunk.toA, chunk.fromB, chunk.toB]
+      : [chunk.fromB, chunk.toB, chunk.fromA, chunk.toA];
   let insert = src.sliceString(srcFrom, Math.max(srcFrom, srcTo - 1));
   if (srcFrom !== srcTo && dstTo <= dst.length) insert += "\n";
   return { from: dstFrom, to: Math.min(dst.length, dstTo), insert };

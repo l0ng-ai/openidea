@@ -216,7 +216,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
       });
     const collapseUnchanged = opts.collapse ? { margin: 3, minSize: 6 } : undefined;
     const override = whitespaceDiff(opts.ignore);
-    const diffConfig = override ? { override } : undefined;
+    const diffConfig = { override };
     const highlightChanges = opts.highlight === "words";
     const inclusion = includable ? inclusionGutter(path, textA) : [];
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
