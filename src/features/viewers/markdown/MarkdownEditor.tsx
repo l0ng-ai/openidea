@@ -9,6 +9,8 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
+  useSyncExternalStore,
   type CSSProperties,
   type MouseEvent,
   type ReactNode,
@@ -19,6 +21,7 @@ import { maybeEditorService } from "@/workbench/contributions";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { IconButton, selectableText } from "@/ui";
 import { useLiveMarkdown } from "./live";
+import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn, subscribeTheme, themeKey } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
 import { ANCHOR_PREFIX, previewOffsetForLine, renderMarkdown, resolveLink, slugify } from "./render";
 import styles from "./Markdown.module.css";
@@ -84,6 +87,22 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const deferred = useDeferredValue(text ?? "");
   const html = useMemo(() => renderMarkdown(deferred), [deferred]);
   const ref = useRef<HTMLDivElement>(null);
+  const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
+  const diagrams = useRef<Node[]>([]);
+  const [diagramsDrawn, setDiagramsDrawn] = useState(0);
+
+  // Mermaid diagrams: before paint, so cached ones don't flash their source.
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root || !hasMermaid(root)) return;
+    const pass = renderMermaidIn(root, diagrams.current);
+    let live = true;
+    if (pass.async) void pass.done.then(() => live && setDiagramsDrawn((n) => n + 1));
+    return () => {
+      live = false;
+      pass.cancel();
+    };
+  }, [html, theme]);
 
   // Images and code highlighting after each render.
   useEffect(() => {
@@ -108,6 +127,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       );
     });
     root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
+      if (code.closest(MERMAID_SELECTOR)) return;
       const lang = [...code.classList].find((c) => c.startsWith("language-"))?.slice("language-".length) ?? null;
       const src = (code.textContent ?? "").replace(/\n+$/, "");
       code.textContent = src;
@@ -127,7 +147,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       top: el.offsetTop,
     }));
     root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocks, topLine, root.scrollHeight);
-  }, [html, topLine, scrollSeq, sync]);
+  }, [html, topLine, scrollSeq, sync, diagramsDrawn]);
 
   const onClick = (e: MouseEvent) => {
     const a = (e.target as Element).closest("a");

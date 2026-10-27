@@ -188,3 +188,30 @@
 .preview :global(.tok-operator) {
   color: var(--syn-punct);
 }
+
+/* Mermaid diagrams: the source stays until the diagram is drawn, and next to an error. */
+.preview :global([data-mermaid]) {
+  margin: 0 0 1em;
+}
+.preview :global([data-mermaid] > pre) {
+  margin: 0;
+}
+.preview :global([data-mermaid-state="ok"] > pre) {
+  display: none;
+}
+.preview :global(.mermaid-output) {
+  overflow-x: auto;
+  text-align: center;
+}
+.preview :global([data-mermaid-state="error"] > .mermaid-output) {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  text-align: left;
+  white-space: pre-wrap;
+}

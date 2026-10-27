@@ -8,7 +8,7 @@ import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { call, commands, isTauri, type InlayHint } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
-import { isNavigationGesture } from "@/platform/navigationModifier";
+import { isNavigationGesture, navigationModifierHeld, onNavigationModifier } from "@/platform/navigationModifier";
 import { maybeEditorService } from "@/workbench/contributions";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { useProject } from "@/platform/project";
@@ -16,6 +16,7 @@ import { editorPrefs } from "@/platform/editorSettings";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
 import { offsetsToRange, posToOffset } from "./positions";
 import { onLspRefresh, serverBackoff } from "./availability";
+import { gotoTargets } from "./navigation";
 
 const KIND_LABEL: Record<InlayHint["kind"], string> = {
   type: "Type hints",
@@ -26,6 +27,13 @@ const KIND_LABEL: Record<InlayHint["kind"], string> = {
 async function setEditorSetting(key: string, value: unknown) {
   if (!isTauri()) return;
   useProject.setState({ settings: await call(commands.settingsSet("global", `editor.${key}`, JSON.stringify(value))) });
+}
+
+/** A type hint after an identifier can resolve that identifier's inferred type. */
+function typeHintOffset(view: EditorView, at: number): number | null {
+  if (at <= 0 || at > view.state.doc.length) return null;
+  const word = view.state.wordAt(at - 1);
+  return word?.to === at ? word.from : null;
 }
 
 /** Right-click on a hint: turn its kind off (IDEA's "Disable '…' hints"), or open the settings. */
@@ -81,6 +89,22 @@ class InlayWidget extends WidgetType {
         el.appendChild(span);
       }
     } else el.textContent = this.hint.label;
+    // A plain type hint (basedpyright's `: Series`) names no location: ⌘-click opens the preceding identifier's type.
+    if (
+      this.hint.kind === "type" &&
+      !parts.some((p) => p.location) &&
+      typeHintOffset(view, posToOffset(view.state.doc, this.hint.position)) !== null
+    ) {
+      el.classList.add("cm-lsp-inlay-part");
+      el.addEventListener("mousedown", (e) => {
+        if (e.button !== 0 || !isNavigationGesture(e)) return;
+        const offset = typeHintOffset(view, view.posAtDOM(el));
+        if (offset === null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        void gotoTargets(view, "typeDefinition", offset);
+      });
+    }
     if (this.hint.tooltip) el.title = this.hint.tooltip;
     el.setAttribute("aria-hidden", "true");
     el.addEventListener("contextmenu", (e) => {
@@ -131,8 +155,11 @@ const inlayPlugin = ViewPlugin.fromClass(
     private refresh = debounce(() => void this.run(), 400);
     private unsubscribe: () => void;
     private offReady: () => void;
+    private offModifier: () => void;
     constructor(private view: EditorView) {
       this.refresh();
+      view.contentDOM.classList.toggle("cm-lsp-navigation-modifier", navigationModifierHeld());
+      this.offModifier = onNavigationModifier((held) => view.contentDOM.classList.toggle("cm-lsp-navigation-modifier", held));
       this.unsubscribe = useProject.subscribe((s, prev) => {
         if (s.settings?.editor?.inlayHints !== prev.settings?.editor?.inlayHints || s.settings?.editor?.inlay !== prev.settings?.editor?.inlay)
           this.refresh();
@@ -167,6 +194,8 @@ const inlayPlugin = ViewPlugin.fromClass(
       this.refresh.cancel();
       this.unsubscribe();
       this.offReady();
+      this.offModifier();
+      this.view.contentDOM.classList.remove("cm-lsp-navigation-modifier");
     }
   },
 );

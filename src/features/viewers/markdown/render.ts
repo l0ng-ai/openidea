@@ -2,12 +2,25 @@
  * Markdown → sanitized HTML for the preview. Every top-level block is wrapped
  * in an element carrying its 0-based source line (`data-line`) for scroll
  * sync; images keep their source in `data-src` and are loaded by the preview
- * (local files through the backend, as the CSP blocks file URLs).
+ * (local files through the backend, as the CSP blocks file URLs). Mermaid
+ * blocks become `[data-mermaid]` placeholders, drawn by `./mermaid`.
  */
 import { Marked, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
 
-const marked = new Marked({ gfm: true, breaks: false });
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+const marked = new Marked({
+  gfm: true,
+  breaks: false,
+  renderer: {
+    code({ text, lang }) {
+      if (lang?.trim().split(/\s+/)[0]?.toLowerCase() !== "mermaid") return false;
+      return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
+    },
+  },
+});
 
 // Own instance: hooks must not leak into the hover / documentation renderer.
 let purifier: ReturnType<typeof DOMPurify> | null = null;
