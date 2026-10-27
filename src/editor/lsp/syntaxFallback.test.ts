@@ -35,9 +35,6 @@ const { startRename } = await import("./rename");
 const { lspDoc } = await import("./lsp");
 const { useLspPopup, closePopup } = await import("./popupStore");
 
-Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
-Range.prototype.getBoundingClientRect ??= () => new DOMRect();
-
 const r = (line: number, col: number, endCol: number): Range => ({ start: { line, col }, end: { line, col: endCol } });
 const node = (kind: string, range: Range, field: string | null = null): SyntaxNode => ({
   kind,

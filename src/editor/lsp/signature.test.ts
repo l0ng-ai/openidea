@@ -16,10 +16,6 @@ const { signatureExtension, acceptsParameter, argumentSpans, argumentStop, param
 );
 const { lspDoc } = await import("./lsp");
 
-// jsdom has no layout; CodeMirror measures text when the tooltip is positioned.
-Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
-Range.prototype.getBoundingClientRect ??= () => new DOMRect();
-
 const views: EditorView[] = [];
 afterEach(() => {
   views.splice(0).forEach((v) => v.destroy());
