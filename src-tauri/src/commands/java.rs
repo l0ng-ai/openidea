@@ -55,13 +55,15 @@ pub async fn java_resolve_launch(
     let shorten = ide_run::java_cmdline::shortening_for(&exec, &info.class_paths, &info.module_paths, cfg!(windows));
     info.shorten_command_line = Some(shorten.as_str().to_owned());
     if info.error_count > 0 {
-        let vm_args = &settings.languages.java.jdtls_vm_args;
-        let lombok = ide_sdk::lombok::lombok_agent(
-            &project.root,
-            ide_sdk::lombok::agent_in_args(vm_args.split_whitespace()),
-            ide_tools::managed_bundle(&state.data_dir, "lombok"),
-            ide_sdk::apply::maven_local_repository(&project.root, &settings),
-        );
+        let own = ide_sdk::lombok::agent_in_args(settings.languages.java.jdtls_vm_args.split_whitespace());
+        let managed = ide_tools::managed_bundle(&state.data_dir, "lombok");
+        let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings);
+        let root = project.root.clone();
+        // Detection may read the project's sources.
+        let lombok =
+            tauri::async_runtime::spawn_blocking(move || ide_sdk::lombok::lombok_agent(&root, own, managed, repo))
+                .await
+                .map_err(|e| IdeError::internal(e.to_string()))?;
         info.hints.extend(lombok.problem());
     }
     Ok(info)

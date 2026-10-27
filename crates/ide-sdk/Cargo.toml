@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 dunce.workspace = true
+ignore.workspace = true
 ide-core.workspace = true
 ide-language.workspace = true
 ide-run.workspace = true

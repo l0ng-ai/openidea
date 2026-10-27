@@ -64,7 +64,8 @@ pub fn agent_in_args<'a>(args: impl IntoIterator<Item = &'a str>) -> Option<Path
 }
 
 /// The Lombok agent for the project at `root`: the user's own (`own`, from the JVM
-/// options) wins, then `managed` (the IDE-installed jar), then the build caches
+/// options) wins, then `managed` (the IDE-installed jar, always attached: it is inert
+/// without Lombok on the classpath), then, for a project using Lombok, the build caches
 /// (`maven_repo`, the configured Maven local repository, else the default one).
 pub fn lombok_agent(
     root: &Path,
@@ -80,15 +81,16 @@ pub fn lombok_agent(
             .map(str::to_owned);
         return LombokAgent::Found { jar, version };
     }
-    if !uses_lombok(root) {
-        return LombokAgent::Unused;
-    }
     if let Some(jar) = managed {
         return LombokAgent::Found { jar, version: None };
     }
     let home = home_dir();
+    let maven_repo = maven_repo.or_else(|| maven_repository(home.as_deref()));
+    if !uses_lombok(root, maven_repo.as_deref()) {
+        return LombokAgent::Unused;
+    }
     let mut dirs = Vec::new();
-    if let Some(repo) = maven_repo.or_else(|| maven_repository(home.as_deref())) {
+    if let Some(repo) = maven_repo {
         dirs.push(repo.join("org").join("projectlombok").join("lombok"));
     }
     if let Some(gradle) =
@@ -102,11 +104,31 @@ pub fn lombok_agent(
     }
 }
 
-/// Build files under `root` (a few levels, for multi-module builds) mentioning Lombok.
-pub fn uses_lombok(root: &Path) -> bool {
-    const FILES: [&str; 4] = ["pom.xml", "build.gradle", "build.gradle.kts", "libs.versions.toml"];
-    const SKIP: [&str; 7] = ["target", "build", "node_modules", "out", "bin", "src", ".gradle"];
-    fn walk(dir: &Path, depth: usize) -> bool {
+/// Whether the project at `root` uses Lombok. It often arrives through inheritance the
+/// project's own build files don't show (a parent POM up the tree or only in the local
+/// repository `maven_repo`, an enclosing Gradle build, a convention plugin), so besides
+/// those this follows Maven `<parent>` chains, checks an enclosing Gradle build and, last,
+/// looks for Java sources importing Lombok, a signal independent of the build.
+pub fn uses_lombok(root: &Path, maven_repo: Option<&Path>) -> bool {
+    let mut poms = Vec::new();
+    build_files_mention_lombok(root, &mut poms)
+        || root.ancestors().skip(1).any(|d| d.join("lombok.config").is_file())
+        || parents_mention_lombok(&poms, maven_repo)
+        || enclosing_gradle_build_mentions_lombok(root)
+        || sources_import_lombok(root)
+}
+
+const BUILD_FILES: [&str; 4] = ["pom.xml", "build.gradle", "build.gradle.kts", "libs.versions.toml"];
+const OUTPUT_DIRS: [&str; 6] = ["target", "build", "node_modules", "out", "bin", ".gradle"];
+
+fn mentions_lombok(file: &Path) -> bool {
+    std::fs::read_to_string(file).is_ok_and(|t| t.contains("lombok"))
+}
+
+/// Build files under `root` (a few levels, for multi-module builds) mentioning Lombok;
+/// the POMs seen go to `poms`.
+fn build_files_mention_lombok(root: &Path, poms: &mut Vec<PathBuf>) -> bool {
+    fn walk(dir: &Path, depth: usize, poms: &mut Vec<PathBuf>) -> bool {
         if dir.join("lombok.config").is_file() {
             return true;
         }
@@ -117,19 +139,133 @@ pub fn uses_lombok(root: &Path) -> bool {
             let name = name.to_string_lossy();
             let Ok(ty) = e.file_type() else { continue };
             if ty.is_dir() {
-                if depth > 0 && !name.starts_with('.') && !SKIP.contains(&name.as_ref()) {
+                if depth > 0 && !name.starts_with('.') && name != "src" && !OUTPUT_DIRS.contains(&name.as_ref()) {
                     subdirs.push(e.path());
                 }
-            } else if FILES.contains(&name.as_ref())
-                && std::fs::read_to_string(e.path()).is_ok_and(|t| t.contains("lombok"))
-            {
-                return true;
+            } else if BUILD_FILES.contains(&name.as_ref()) {
+                if mentions_lombok(&e.path()) {
+                    return true;
+                }
+                if name == "pom.xml" {
+                    poms.push(e.path());
+                }
             }
         }
-        subdirs.iter().any(|d| walk(d, depth - 1))
+        subdirs.iter().any(|d| walk(d, depth - 1, poms))
     }
     // `gradle/libs.versions.toml` sits one level down, modules usually no deeper than three.
-    walk(root, 3)
+    walk(root, 3, poms)
+}
+
+/// Maven inherits dependencies along `<parent>`: whether an ancestor POM of `poms`
+/// mentions Lombok.
+fn parents_mention_lombok(poms: &[PathBuf], maven_repo: Option<&Path>) -> bool {
+    const MAX_HOPS: usize = 8;
+    let mut seen = std::collections::HashSet::new();
+    for pom in poms {
+        let Ok(mut text) = std::fs::read_to_string(pom) else { continue };
+        let mut current = pom.clone();
+        for _ in 0..MAX_HOPS {
+            let Some(parent) = parent_pom(&current, &text, maven_repo) else { break };
+            if !seen.insert(parent.clone()) {
+                break;
+            }
+            let Ok(parent_text) = std::fs::read_to_string(&parent) else { break };
+            if parent_text.contains("lombok") {
+                return true;
+            }
+            (current, text) = (parent, parent_text);
+        }
+    }
+    false
+}
+
+/// The parent of `pom` (content `text`) as Maven resolves it: the POM at `<relativePath>`
+/// (default `../pom.xml`, none when empty) if it is that parent, else
+/// `<groupId>/<artifactId>/<version>/<artifactId>-<version>.pom` in the local repository.
+fn parent_pom(pom: &Path, text: &str, maven_repo: Option<&Path>) -> Option<PathBuf> {
+    let text = strip_xml_comments(text);
+    let (block, _) = split_parent(&text)?;
+    let coord = |tag| crate::java::xml_value(block, tag).filter(|v| !v.is_empty());
+    let (group, artifact) = (coord("groupId")?, coord("artifactId")?);
+    let relative = if block.contains("<relativePath/>") || block.contains("<relativePath />") {
+        String::new()
+    } else {
+        crate::java::xml_value(block, "relativePath").unwrap_or_else(|| "../pom.xml".to_owned())
+    };
+    if !relative.is_empty() {
+        let mut local = pom.parent()?.join(relative.replace('\\', "/"));
+        if local.is_dir() {
+            local = local.join("pom.xml");
+        }
+        let is_parent = std::fs::read_to_string(&local)
+            .is_ok_and(|t| own_artifact_id(&strip_xml_comments(&t)).as_deref() == Some(artifact.as_str()));
+        if is_parent {
+            return Some(dunce::canonicalize(&local).unwrap_or(local));
+        }
+    }
+    let version = coord("version").filter(|v| !v.contains("${"))?;
+    let dir = group.split('.').fold(maven_repo?.to_path_buf(), |d, part| d.join(part));
+    let file = dir.join(&artifact).join(&version).join(format!("{artifact}-{version}.pom"));
+    file.is_file().then_some(file)
+}
+
+/// A POM's `<parent>…</parent>` element and the text without it.
+fn split_parent(text: &str) -> Option<(&str, String)> {
+    let start = text.find("<parent>")?;
+    let end = start + text[start..].find("</parent>")? + "</parent>".len();
+    Some((&text[start..end], format!("{}{}", &text[..start], &text[end..])))
+}
+
+/// A POM's own `<artifactId>`, not its parent's.
+fn own_artifact_id(text: &str) -> Option<String> {
+    match split_parent(text) {
+        Some((_, rest)) => crate::java::xml_value(&rest, "artifactId"),
+        None => crate::java::xml_value(text, "artifactId"),
+    }
+}
+
+/// A Gradle subproject opened on its own: the enclosing build (the nearest ancestor with
+/// `settings.gradle[.kts]`) may apply Lombok from its root build file or version catalog.
+fn enclosing_gradle_build_mentions_lombok(root: &Path) -> bool {
+    const MAX_LEVELS: usize = 4;
+    let settings = |d: &Path| d.join("settings.gradle").is_file() || d.join("settings.gradle.kts").is_file();
+    root.ancestors().skip(1).take(MAX_LEVELS).find(|d| settings(d)).is_some_and(|build| {
+        ["build.gradle", "build.gradle.kts", "gradle/libs.versions.toml"]
+            .iter()
+            .any(|f| mentions_lombok(&build.join(f)))
+    })
+}
+
+/// Java sources under `root` importing Lombok. Bounded (the heads of the first files),
+/// honouring ignore files and skipping build output.
+fn sources_import_lombok(root: &Path) -> bool {
+    use std::io::Read;
+    const MAX_ENTRIES: usize = 50_000;
+    const MAX_FILES: usize = 2000;
+    // Imports precede the first type, after at most a license header.
+    const HEAD: u64 = 8 * 1024;
+    let mut walker = ignore::WalkBuilder::new(root);
+    walker.require_git(false).follow_links(false).filter_entry(|e| {
+        e.depth() == 0
+            || !e.file_type().is_some_and(|t| t.is_dir())
+            || !OUTPUT_DIRS.contains(&e.file_name().to_string_lossy().as_ref())
+    });
+    let imports_lombok = |path: &Path| {
+        let mut head = Vec::new();
+        let read = std::fs::File::open(path).and_then(|f| f.take(HEAD).read_to_end(&mut head));
+        let head = String::from_utf8_lossy(&head);
+        read.is_ok()
+            && (head.contains("@lombok.")
+                || head.lines().any(|l| l.trim_start().starts_with("import ") && l.contains(" lombok.")))
+    };
+    walker
+        .build()
+        .take(MAX_ENTRIES)
+        .flatten()
+        .filter(|e| e.file_type().is_some_and(|t| t.is_file()) && e.path().extension().is_some_and(|x| x == "java"))
+        .take(MAX_FILES)
+        .any(|e| imports_lombok(e.path()))
 }
 
 /// `<localRepository>` of `~/.m2/settings.xml`, else `~/.m2/repository`.
@@ -203,18 +339,164 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         fs::write(root.join("pom.xml"), "<project><modules><module>api</module></modules></project>").unwrap();
-        assert!(!uses_lombok(root));
+        assert!(!uses_lombok(root, None));
         fs::create_dir_all(root.join("api/src/main")).unwrap();
         fs::write(root.join("api/src/main/pom.xml"), "<artifactId>lombok</artifactId>").unwrap();
-        assert!(!uses_lombok(root), "sources are not scanned");
+        assert!(!uses_lombok(root, None), "build files under src are not scanned");
         fs::write(root.join("api/pom.xml"), "<artifactId>lombok</artifactId>").unwrap();
-        assert!(uses_lombok(root));
+        assert!(uses_lombok(root, None));
 
         let gradle = tempfile::tempdir().unwrap();
         fs::create_dir_all(gradle.path().join("gradle")).unwrap();
         fs::write(gradle.path().join("gradle/libs.versions.toml"), "lombok = \"org.projectlombok:lombok:1.18.30\"")
             .unwrap();
-        assert!(uses_lombok(gradle.path()));
+        assert!(uses_lombok(gradle.path(), None));
+    }
+
+    const LOMBOK_DEP: &str = "<dependencies><dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></dependency></dependencies>";
+
+    fn pom(own: &str, parent: &str) -> String {
+        format!("<project><modelVersion>4.0.0</modelVersion>{parent}<artifactId>{own}</artifactId></project>")
+    }
+
+    fn parent(artifact: &str, extra: &str) -> String {
+        format!(
+            "<parent><groupId>com.acme</groupId><artifactId>{artifact}</artifactId><version>1.0</version>{extra}</parent>"
+        )
+    }
+
+    #[test]
+    fn parent_pom_only_in_the_local_repository() {
+        // #33: the module's parent was `mvn install`ed, its directory isn't on disk.
+        let tmp = tempfile::tempdir().unwrap();
+        let (module, repo) = (tmp.path().join("module-a"), tmp.path().join("m2"));
+        fs::create_dir_all(&module).unwrap();
+        fs::write(module.join("pom.xml"), pom("module-a", &parent("acme-parent", ""))).unwrap();
+        assert!(!uses_lombok(&module, Some(&repo)));
+        let dir = repo.join("com/acme/acme-parent/1.0");
+        fs::create_dir_all(&dir).unwrap();
+        // The dependency comes from the grandparent.
+        fs::write(dir.join("acme-parent-1.0.pom"), pom("acme-parent", &parent("acme-root", ""))).unwrap();
+        assert!(!uses_lombok(&module, Some(&repo)));
+        let root = repo.join("com/acme/acme-root/1.0");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("acme-root-1.0.pom"),
+            format!("<project><artifactId>acme-root</artifactId>{LOMBOK_DEP}</project>"),
+        )
+        .unwrap();
+        assert!(uses_lombok(&module, Some(&repo)));
+        assert!(!uses_lombok(&module, None), "no repository, no parent");
+        let agent = lombok_agent(&module, None, None, Some(repo.clone()));
+        assert_ne!(agent, LombokAgent::Unused, "missing, or a jar from the Gradle cache");
+    }
+
+    #[test]
+    fn parent_pom_via_relative_path_outside_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let module = project.join("modules/api");
+        fs::create_dir_all(&module).unwrap();
+        fs::create_dir_all(tmp.path().join("platform")).unwrap();
+        fs::write(
+            module.join("pom.xml"),
+            pom("api", &parent("platform", "<relativePath>../../../platform</relativePath>")),
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("platform/pom.xml"),
+            format!("<project><artifactId>platform</artifactId>{LOMBOK_DEP}</project>"),
+        )
+        .unwrap();
+        assert!(uses_lombok(&module, None));
+        assert!(uses_lombok(&project, None), "modules' parents are followed too");
+
+        // The default `../pom.xml`, but it is another project's POM: not the parent.
+        let other = tempfile::tempdir().unwrap();
+        let child = other.path().join("child");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(child.join("pom.xml"), pom("child", &parent("acme-parent", ""))).unwrap();
+        fs::write(
+            other.path().join("pom.xml"),
+            format!("<project><artifactId>unrelated</artifactId>{LOMBOK_DEP}</project>"),
+        )
+        .unwrap();
+        assert!(!uses_lombok(&child, None));
+        fs::write(
+            other.path().join("pom.xml"),
+            format!("<project><artifactId>acme-parent</artifactId>{LOMBOK_DEP}</project>"),
+        )
+        .unwrap();
+        assert!(uses_lombok(&child, None));
+        // An empty relativePath means: from the repository only.
+        fs::write(child.join("pom.xml"), pom("child", &parent("acme-parent", "<relativePath/>"))).unwrap();
+        assert!(!uses_lombok(&child, None));
+    }
+
+    #[test]
+    fn parent_cycles_terminate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a");
+        fs::create_dir_all(&a).unwrap();
+        fs::write(a.join("pom.xml"), pom("a", &parent("root", ""))).unwrap();
+        fs::write(tmp.path().join("pom.xml"), pom("root", &parent("root", "<relativePath>pom.xml</relativePath>")))
+            .unwrap();
+        assert!(!uses_lombok(&a, None));
+    }
+
+    #[test]
+    fn enclosing_gradle_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("services/billing");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("build.gradle.kts"), "plugins { java }").unwrap();
+        fs::write(tmp.path().join("settings.gradle.kts"), "include(\"services:billing\")").unwrap();
+        assert!(!uses_lombok(&sub, None));
+        fs::write(
+            tmp.path().join("build.gradle.kts"),
+            "subprojects { dependencies { \"compileOnly\"(\"org.projectlombok:lombok:1.18.36\") } }",
+        )
+        .unwrap();
+        assert!(uses_lombok(&sub, None));
+    }
+
+    #[test]
+    fn sources_importing_lombok() {
+        // E.g. a Gradle convention plugin in buildSrc/src or an included build adds it.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let pkg = root.join("app/src/main/java/com/acme");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(root.join("build.gradle"), "plugins { id 'acme.java-conventions' }").unwrap();
+        fs::write(pkg.join("Plain.java"), "package com.acme;\n\nimport java.util.List;\n\nclass Plain {}\n").unwrap();
+        assert!(!uses_lombok(root, None));
+        // Build output and ignored files don't count.
+        fs::create_dir_all(root.join("app/build/generated")).unwrap();
+        fs::write(root.join("app/build/generated/G.java"), "import lombok.Data;\n").unwrap();
+        fs::write(root.join(".ignore"), "vendor/\n").unwrap();
+        fs::create_dir_all(root.join("vendor")).unwrap();
+        fs::write(root.join("vendor/V.java"), "import lombok.Value;\n").unwrap();
+        assert!(!uses_lombok(root, None));
+        fs::write(
+            pkg.join("User.java"),
+            "/* License */\npackage com.acme;\n\nimport lombok.Data;\n\n@Data\nclass User {}\n",
+        )
+        .unwrap();
+        assert!(uses_lombok(root, None));
+        fs::write(pkg.join("User.java"), "package com.acme;\n\n@lombok.Getter\nclass User {}\n").unwrap();
+        assert!(uses_lombok(root, None));
+        fs::write(pkg.join("User.java"), "package com.acme;\nimport static lombok.AccessLevel.PRIVATE;\n").unwrap();
+        assert!(uses_lombok(root, None));
+    }
+
+    #[test]
+    fn the_installed_agent_applies_without_detection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("m2");
+        assert_eq!(lombok_agent(tmp.path(), None, None, Some(repo.clone())), LombokAgent::Unused);
+        let managed = lombok_agent(tmp.path(), None, Some("/managed/lombok.jar".into()), Some(repo));
+        assert_eq!(managed.jar(), Some(Path::new("/managed/lombok.jar")));
+        assert_eq!(managed.problem(), None);
     }
 
     #[test]
