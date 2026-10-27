@@ -351,10 +351,11 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-static": { fontStyle: "italic" },
   ".cm-sem-mutable": { textDecoration: "underline", textDecorationColor: "var(--fg-faint)", textUnderlineOffset: "3px" },
   ".cm-sem-deprecated": { textDecoration: "line-through" },
-  // Semantic highlighting: after the base classes so a parameter's colour gives way.
+  // Semantic highlighting: after the base classes so a parameter's colour gives way, and over the
+  // syntax highlighter's span inside.
   ...Object.fromEntries(
     Array.from({ length: RAINBOW_COLORS }, (_, i) => [
-      `.cm-sem-rainbow-${i + 1}`,
+      `.cm-sem-rainbow-${i + 1}, .cm-sem-rainbow-${i + 1} *`,
       {
         color: `var(--syn-rainbow-${i + 1})`,
         fontWeight: `var(--syn-rainbow-${i + 1}-bold, inherit)`,

@@ -159,10 +159,10 @@ export const openideaTheme = EditorView.theme({
     backgroundPosition: "6px 0",
   },
 
-  // Rainbow brackets (cm/rainbowBrackets.ts)
+  // Rainbow brackets (cm/rainbowBrackets.ts); `*` too: the syntax highlighter's span sits inside and would win.
   ...Object.fromEntries(
     Array.from({ length: BRACKET_COLORS }, (_, i) => [
-      `.cm-rainbow-bracket-${i + 1}`,
+      `.cm-rainbow-bracket-${i + 1}, .cm-rainbow-bracket-${i + 1} *`,
       {
         color: `var(--syn-bracket-${i + 1})`,
         fontWeight: `var(--syn-bracket-${i + 1}-bold, inherit)`,
@@ -170,7 +170,7 @@ export const openideaTheme = EditorView.theme({
       },
     ]),
   ),
-  ".cm-rainbow-bracket-unmatched": { color: "var(--syn-invalid)" },
+  ".cm-rainbow-bracket-unmatched, .cm-rainbow-bracket-unmatched *": { color: "var(--syn-invalid)" },
 
   // Whitespace rendering
   ".cm-highlightSpace": {
