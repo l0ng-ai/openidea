@@ -19,7 +19,7 @@ vi.mock("@/platform/ipc", async (orig) => {
   };
 });
 
-const { spellingExtension, spellingIntentions } = await import("./spelling");
+const { spellingExtension, spellingIntentions, isNamePart } = await import("./spelling");
 const { diagnosticsFor, toLintDiagnostics, diagnosticMarks } = await import("./diagnostics");
 const { lspDoc } = await import("./lsp");
 const { useProject } = await import("@/platform/project");
@@ -55,6 +55,11 @@ async function settle() {
 }
 
 describe("Typo inspection", () => {
+  it("renames a name part only to words that fit in an identifier", () => {
+    expect(["message", "menage", "Mesa", "ünïcode1"].every(isNamePart)).toBe(true);
+    expect(["me sage", "me-sage", "mes_age", ""].some(isNamePart)).toBe(false);
+  });
+
   it("reports typos at the Typo level and offers fixes at the caret", async () => {
     vi.useFakeTimers();
     useProject.setState({ project: { root: "/p" } as never, settings: {} as never });

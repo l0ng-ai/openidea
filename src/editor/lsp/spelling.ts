@@ -102,6 +102,11 @@ export function applyCorrection(view: EditorView, typo: PlacedTypo, replacement:
   replaceWord(view, typo, replacement);
 }
 
+/** Letters and digits only: what can replace one word of an identifier. */
+export function isNamePart(word: string): boolean {
+  return /^[\p{L}\p{N}]+$/u.test(word);
+}
+
 async function changeTo(view: EditorView, typo: PlacedTypo) {
   let suggestions: string[];
   try {
@@ -109,11 +114,13 @@ async function changeTo(view: EditorView, typo: PlacedTypo) {
   } catch {
     suggestions = [];
   }
+  const rename = typo.context === "code";
+  // A name part can only become another name part: "me sage" or "me-sage" would break the code.
+  if (rename) suggestions = suggestions.filter(isNamePart);
   if (!suggestions.length) {
     showHint(view, `No suggestions for '${typo.word}'`);
     return;
   }
-  const rename = typo.context === "code";
   openPopup({
     kind: "list",
     anchor: caretAnchor(view, typo.from),
