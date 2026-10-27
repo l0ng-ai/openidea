@@ -29,6 +29,9 @@ export interface AttributeDef {
   effect?: string;
   /** Syntax token: bold / italic / background / effect come from `--syn-<token>-*`. */
   token?: string;
+  /** A semantic modifier whose only configurable attribute is italic. */
+  italicOnly?: boolean;
+  defaultItalic?: boolean;
 }
 
 const syn = (id: string, name: string, path: string[], token: string): AttributeDef => ({
@@ -81,6 +84,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   syn("parameter", "Identifiers › Parameter", [LD], "param"),
   syn("constant", "Identifiers › Constant", [LD], "constant"),
   syn("field", "Identifiers › Instance field", [LD], "property"),
+  { id: "staticSymbol", name: "Identifiers › Static symbol", path: [LD], token: "static", italicOnly: true },
   syn("functionDeclaration", "Identifiers › Function declaration", [LD], "function"),
   syn("functionCall", "Identifiers › Function call", [LD], "function-call"),
   syn("predefined", "Identifiers › Predefined symbol", [LD], "builtin"),
@@ -98,6 +102,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
   ...[1, 2, 3].map((n) => syn(`bracket${n}`, `Rainbow brackets › Level ${n}`, [LD], `bracket-${n}`)),
 
   syn("pySelf", "Self parameter", ["Python"], "self"),
+  { id: "pyStaticSymbol", name: "Static symbol", path: ["Python"], token: "python-static", italicOnly: true, defaultItalic: false },
   syn("pyKeywordArg", "Keyword argument", ["Python"], "keyword-arg"),
   syn("pyDocstring", "Docstring", ["Python"], "docstring"),
   syn("pyBuiltin", "Built-in name", ["Python"], "predefined"),
