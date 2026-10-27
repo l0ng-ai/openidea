@@ -271,6 +271,8 @@ export const intellijMacos: Record<string, string[]> = {
   "view.zoomIn": ["Ctrl+Alt+="],
   "view.zoomOut": ["Ctrl+Alt+-"],
   "view.resetZoom": ["Ctrl+Alt+0"],
+  "editor.increaseFontSize": ["Alt+Shift+."],
+  "editor.decreaseFontSize": ["Alt+Shift+,"],
   // Diff viewer (after Debug: F7 / ⇧F7 / F4 there win while a diff is focused)
   "diff.nextDifference": ["F7"],
   "diff.prevDifference": ["Shift+F7"],
@@ -290,8 +292,6 @@ export const intellijMacos: Record<string, string[]> = {
   "image.actualSize": ["Meta+/"],
   "image.fitToWindow": [],
   "image.toggleChessboard": [],
-  "markdown.zoomIn": ["Meta+=", "Meta+Shift+="],
-  "markdown.zoomOut": ["Meta+-"],
   "markdown.editorOnly": [],
   "markdown.editorAndPreview": [],
   "markdown.previewOnly": [],

@@ -268,6 +268,8 @@ export const intellijWindows: Record<string, string[]> = {
   "view.zoomIn": ["Alt+Shift+="],
   "view.zoomOut": ["Alt+Shift+-"],
   "view.resetZoom": ["Alt+Shift+0"],
+  "editor.increaseFontSize": ["Alt+Shift+."],
+  "editor.decreaseFontSize": ["Alt+Shift+,"],
   // Diff viewer (after Debug: F7 / ⇧F7 / F4 there win while a diff is focused)
   "diff.nextDifference": ["F7"],
   "diff.prevDifference": ["Shift+F7"],
@@ -287,8 +289,6 @@ export const intellijWindows: Record<string, string[]> = {
   "image.actualSize": ["Ctrl+/"],
   "image.fitToWindow": [],
   "image.toggleChessboard": [],
-  "markdown.zoomIn": ["Ctrl+=", "Ctrl+Shift+="],
-  "markdown.zoomOut": ["Ctrl+-"],
   "markdown.editorOnly": [],
   "markdown.editorAndPreview": [],
   "markdown.previewOnly": [],

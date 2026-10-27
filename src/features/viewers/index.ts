@@ -4,8 +4,6 @@
  * editor providers consulted by `openFile`), and Markdown files get IDEA's
  * Editor / Editor and Preview / Preview layouts around the text editor.
  */
-import { activeEditor } from "@/editor/api";
-import { fontZoom, setFontZoom } from "@/editor/core/cm/prefs";
 import { registerActions, type Action } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
@@ -71,24 +69,7 @@ function markdownActions(): Action[] {
       if (typeof path === "string" && isMarkdownPath(path)) setMarkdownMode(path, m);
     },
   });
-  const zoom = (id: string, title: string, step: number): Action => ({
-    id,
-    title,
-    category: "Markdown",
-    when: "textEditorActive && editorLangId == markdown",
-    keyWhen: "editorFocus && !popupOpen",
-    run: () => {
-      const editor = activeEditor();
-      if (!editor || !isMarkdownPath(editor.ctx.path)) return;
-      const current = editor.view.state.field(fontZoom, false);
-      if (current === undefined) return;
-      const next = Math.max(-6, Math.min(36, current + step));
-      if (next !== current) editor.view.dispatch({ effects: setFontZoom.of(next) });
-    },
-  });
   return [
-    zoom("markdown.zoomIn", "Increase Font Size", 1),
-    zoom("markdown.zoomOut", "Decrease Font Size", -1),
     mode("markdown.editorOnly", "Editor Only", "editor", "edit"),
     mode("markdown.editorAndPreview", "Editor and Preview", "split", "split"),
     mode("markdown.previewOnly", "Preview Only", "preview", "eye"),
@@ -112,11 +93,7 @@ export function activate(): () => void {
         return wantsHexView(probe) ? binaryInput(path, probe) : null;
       },
     }),
-    registerTextEditorWrapper({
-      id: "viewers.markdown",
-      matches: isMarkdownPath,
-      component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor)),
-    }),
+    registerTextEditorWrapper({ id: "viewers.markdown", matches: isMarkdownPath, component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor)) }),
     registerMarkdownLiveSource(),
     registerActions([...imageActions(), ...markdownActions()]),
   ];

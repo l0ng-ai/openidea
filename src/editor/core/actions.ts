@@ -37,7 +37,7 @@ import { qualifiedReference } from "./copyReference";
 import { symbolChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
-import { fontZoom, setFontZoom } from "./cm/prefs";
+import { fontZoom, setFontZoom, stepFontZoom } from "./cm/prefs";
 import { useEditorRegistry } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
@@ -470,6 +470,22 @@ export function registerEditorActions(): () => void {
         for (const ed of useEditorRegistry.getState().editors)
           if (ed.view.state.field(fontZoom, false)) ed.view.dispatch({ effects: setFontZoom.of(0) });
       },
+    },
+    {
+      id: "editor.increaseFontSize",
+      title: "Increase Font Size",
+      category: "View",
+      keywords: ["zoom", "font size"],
+      when: EDITOR_WHEN,
+      run: withView((view) => stepFontZoom(view, 1)),
+    },
+    {
+      id: "editor.decreaseFontSize",
+      title: "Decrease Font Size",
+      category: "View",
+      keywords: ["zoom", "font size"],
+      when: EDITOR_WHEN,
+      run: withView((view) => stepFontZoom(view, -1)),
     },
     {
       id: "file.toggleReadOnly",

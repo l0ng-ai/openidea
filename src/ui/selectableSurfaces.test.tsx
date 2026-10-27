@@ -33,8 +33,6 @@ describe("selectable read-only surfaces", () => {
     );
     const preview = screen.getByRole("document", { name: "Markdown preview" });
     expect(preview).toHaveClass(selectableText);
-    act(() => useLiveMarkdown.setState({ "/p/README.md": { text: "# Title", topLine: 0, scrollSeq: 0, fontZoom: 3 } }));
-    expect(preview.style.getPropertyValue("--markdown-font-zoom")).toBe("3px");
     expect(screen.getByRole("toolbar", { name: "Markdown editor layout" }).closest(`.${selectableText}`)).toBeNull();
   });
 

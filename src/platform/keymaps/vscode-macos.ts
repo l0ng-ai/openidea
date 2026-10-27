@@ -266,6 +266,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "view.zoomIn": ["Meta+="],
   "view.zoomOut": ["Meta+-"],
   "view.resetZoom": [],
+  "editor.increaseFontSize": [],
+  "editor.decreaseFontSize": [],
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts
   "code.cyclicExpandWord": [],
   "code.cyclicExpandWordBackward": [],
@@ -279,8 +281,6 @@ export const vscodeMacos: Record<string, string[]> = {
   "image.actualSize": [],
   "image.fitToWindow": [],
   "image.toggleChessboard": [],
-  "markdown.zoomIn": ["Meta+=", "Meta+Shift+="],
-  "markdown.zoomOut": ["Meta+-"],
   "markdown.editorOnly": [],
   "markdown.editorAndPreview": ["Meta+K V"],
   "markdown.previewOnly": ["Meta+Shift+V"],

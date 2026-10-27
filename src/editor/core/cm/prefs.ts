@@ -343,8 +343,9 @@ export const setFontZoom = StateEffect.define<number>();
 export const fontZoom = StateField.define<number>({
   create: () => 0,
   update: (v, tr) => tr.effects.reduce((acc, e) => (e.is(setFontZoom) ? e.value : acc), v),
+  // Highest precedence: its style comes after the configured font size, which it scales.
   provide: (f) =>
-    Prec.lowest(
+    Prec.highest(
       EditorView.editorAttributes.compute([f], (s) => {
         const z = s.field(f);
         const attrs: Record<string, string> = {};
@@ -355,13 +356,19 @@ export const fontZoom = StateField.define<number>({
     ),
 });
 
+/** Steps an editor's font zoom by `delta` px, kept within -6..36. */
+export function stepFontZoom(view: EditorView, delta: number): void {
+  const z = view.state.field(fontZoom, false);
+  if (z === undefined) return;
+  const next = Math.max(-6, Math.min(36, z + delta));
+  if (next !== z) view.dispatch({ effects: setFontZoom.of(next) });
+}
+
 const wheelZoom = EditorView.domEventHandlers({
   wheel(e, view) {
     if (!e.metaKey && !e.ctrlKey) return false;
     e.preventDefault();
-    const z = view.state.field(fontZoom, false) ?? 0;
-    const next = Math.max(-6, Math.min(36, z + (e.deltaY < 0 ? 1 : -1)));
-    if (next !== z) view.dispatch({ effects: setFontZoom.of(next) });
+    stepFontZoom(view, e.deltaY < 0 ? 1 : -1);
     return true;
   },
 });
