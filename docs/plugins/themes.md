@@ -419,7 +419,7 @@ a token.
 | `--bg-text-search-result` | `#114957` | `#fcd47e` |
 | `--bg-text-search-result-current` | `#165e70` | `#f2bf57` |
 | `--bg-matched-brace` | `#43454a` | `#93d9d9` |
-| `--matched-brace-weight` | `700` | `normal` |
+| `--matched-brace-weight` | `var(--fw-code-bold)` | `inherit` |
 | `--bg-matched-tag` | `#3f4045` | `#c9ecec` |
 | `--bg-fold-placeholder` | `#393b40` | `#e9f5e6` |
 | `--fg-fold-placeholder` | `#868991` | `#414d41` |
