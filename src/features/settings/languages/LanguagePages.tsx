@@ -244,12 +244,12 @@ export function JavaPage() {
           directory
           browseTitle="Select JDK Home Directory"
           aria-label="Language server JDK"
-          hint="Runs jdtls only, like IDEA's JDK for importer; the project keeps compiling and running with the Project JDK. jdtls needs JDK 21 or newer (recent releases 25). The jdtls executable itself is set in Language Servers."
+          hint="Runs jdtls only, like IDEA's JDK for importer; the project keeps compiling and running with the Project JDK. jdtls needs JDK 21 or newer (recent releases 25); Download JDK… in the list fetches one. The jdtls executable itself is set in Language Servers."
         />
         <Row
           label="JVM options"
           htmlFor={id}
-          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx2g. A Lombok agent is added automatically when the project uses Lombok."
+          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx2g. A Lombok agent is added automatically: the one installed in Language Servers, else, when the project uses Lombok (its build, an inherited parent POM or Gradle build, or its sources' imports), the newest from the Maven / Gradle caches."
         >
           <Input
             id={id}

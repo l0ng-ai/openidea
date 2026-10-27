@@ -6,6 +6,7 @@
  * ones are read through `--editor-*` locals with fallbacks to the base tokens.
  */
 import { EditorView } from "@codemirror/view";
+import { BRACKET_COLORS } from "./rainbowBrackets";
 
 export const openideaTheme = EditorView.theme({
   "&": {
@@ -29,6 +30,7 @@ export const openideaTheme = EditorView.theme({
     // The workbench body uses the arrow cursor; the text area gets the I-beam (also past the last line).
     cursor: "text",
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     lineHeight: "var(--openidea-editor-line-height, var(--lh-code))",
     fontVariantLigatures: "none",
@@ -71,7 +73,7 @@ export const openideaTheme = EditorView.theme({
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
     backgroundColor: "var(--editor-brace)",
     color: "inherit",
-    fontWeight: "var(--matched-brace-weight, 700)",
+    fontWeight: "var(--matched-brace-weight, var(--fw-code-bold, 700))",
     borderRadius: "1px",
   },
   ".cm-matchingTag, &.cm-focused .cm-matchingTag": {
@@ -157,6 +159,19 @@ export const openideaTheme = EditorView.theme({
     backgroundPosition: "6px 0",
   },
 
+  // Rainbow brackets (cm/rainbowBrackets.ts); `*` too: the syntax highlighter's span sits inside and would win.
+  ...Object.fromEntries(
+    Array.from({ length: BRACKET_COLORS }, (_, i) => [
+      `.cm-rainbow-bracket-${i + 1}, .cm-rainbow-bracket-${i + 1} *`,
+      {
+        color: `var(--syn-bracket-${i + 1})`,
+        fontWeight: `var(--syn-bracket-${i + 1}-bold, inherit)`,
+        fontStyle: `var(--syn-bracket-${i + 1}-italic, inherit)`,
+      },
+    ]),
+  ),
+  ".cm-rainbow-bracket-unmatched, .cm-rainbow-bracket-unmatched *": { color: "var(--syn-invalid)" },
+
   // Whitespace rendering
   ".cm-highlightSpace": {
     backgroundImage: "radial-gradient(circle at 50% 55%, var(--fg-whitespace, var(--fg-faint)) 11%, transparent 12%)",
@@ -241,6 +256,7 @@ export const openideaTheme = EditorView.theme({
     borderBottom: "1px solid var(--editor-gutter-border)",
     boxShadow: "0 3px 6px -2px color-mix(in srgb, var(--fg-strong) 12%, transparent)",
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     lineHeight: "var(--openidea-editor-line-height, var(--lh-code))",
     overflow: "hidden",

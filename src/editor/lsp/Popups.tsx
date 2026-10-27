@@ -9,11 +9,13 @@ import {
   IconButton,
   Input,
   List,
+  MenuList,
   Popup,
   Select,
   SymbolBadge,
   fileIconName,
   fuzzyMatch,
+  selectableText,
   T,
 } from "@/ui";
 import { basename, relativePath, useProject } from "@/platform/project";
@@ -116,9 +118,25 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
     void item.run();
   };
 
+  // IDEA's right-arrow menu of a row (inspection options of a fix).
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [sub, setSub] = useState<{ item: ListPopupItem; anchor: Element } | null>(null);
+  const openSub = (item: ListPopupItem, row?: Element | null) => {
+    if (!item.submenu?.length || item.disabled || !bodyRef.current) return;
+    const anchor = row ?? bodyRef.current.querySelector('[role="option"][aria-selected="true"]') ?? bodyRef.current;
+    setSub({ item, anchor });
+  };
+  const closeSub = () => {
+    setSub(null);
+    bodyRef.current?.querySelector<HTMLElement>('[role="listbox"]')?.focus();
+  };
+
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (popup.numbered && !query && /^[1-9]$/.test(e.key)) {
+    if (e.key === "ArrowRight" && activeItem?.submenu?.length) {
+      e.preventDefault();
+      openSub(activeItem);
+    } else if (popup.numbered && !query && /^[1-9]$/.test(e.key)) {
       const item = popup.items[Number(e.key) - 1];
       e.preventDefault();
       if (item) activate(item);
@@ -178,7 +196,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
             />
           )}
         </div>
-        <div onKeyDown={onKeyDown} className={styles.listBody} style={{ height }}>
+        <div ref={bodyRef} onKeyDown={onKeyDown} className={styles.listBody} style={{ height }}>
           <List
             items={filtered}
             getKey={(r) => r.item.id}
@@ -206,6 +224,21 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                   <span className={styles.spacer} />
                   {item.detail && <span className={styles.detail}>{item.detail}</span>}
                   {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}
+                  {item.submenu?.length ? (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      className={styles.subArrow}
+                      aria-label={`${item.label} options`}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openSub(item, e.currentTarget.closest('[role="option"]'));
+                      }}
+                    >
+                      <Icon name="chevron-right" size={14} />
+                    </button>
+                  ) : null}
                 </div>
               );
             }}
@@ -213,6 +246,20 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
         </div>
       </div>
       {popup.preview && <ListPreviewPanel preview={shownPreview} />}
+      {sub?.item.submenu && (
+        <Popup
+          open
+          anchor={sub.anchor}
+          placement="right-start"
+          offset={2}
+          role="presentation"
+          autoFocus={false}
+          onClose={closeSub}
+          className={styles.subMenu}
+        >
+          <MenuList items={sub.item.submenu} aria-label={sub.item.label} onDone={closePopup} onCloseLevel={closeSub} />
+        </Popup>
+      )}
     </Popup>
   );
 }
@@ -329,7 +376,7 @@ function DocView({ host, history, themeClasses }: { host: DocHost; history: DocH
       {entry && (
         <DomContent
           key={`${history.index}:${history.entries.length}`}
-          className={styles.docBody}
+          className={clsx(styles.docBody, selectableText)}
           build={() => renderMarkup(entry.markup, entry.language, docLinkHandler(host))}
         />
       )}
@@ -352,7 +399,13 @@ function DocView({ host, history, themeClasses }: { host: DocHost; history: DocH
         />
         <span className={styles.spacer} />
         {entry?.source && (
-          <IconButton icon="edit" size="small" title="Edit Source" shortcut="F4" onClick={() => void editDocSource(host)} />
+          <IconButton
+            icon="edit"
+            size="small"
+            title="Edit Source"
+            shortcut="F4"
+            onClick={() => void editDocSource(host)}
+          />
         )}
         {host === "popup" && (
           <IconButton
@@ -373,7 +426,8 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
   const scope = useRef<HTMLDivElement>(null);
   const opened = useRef(focusSeq);
   useEffect(() => {
-    if (focusSeq !== opened.current) scope.current?.querySelector<HTMLElement>("[data-lsp-doc]")?.focus({ preventScroll: true });
+    if (focusSeq !== opened.current)
+      scope.current?.querySelector<HTMLElement>("[data-lsp-doc]")?.focus({ preventScroll: true });
   }, [focusSeq]);
   return (
     <Popup
@@ -463,7 +517,7 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
         <div className={clsx(popup.themeClasses, styles.docScope)}>
           <DomContent
             key={popup.index}
-            className={styles.defBody}
+            className={clsx(styles.defBody, selectableText)}
             build={() => renderCode(target.text, target.language, "cm-lsp-code")}
           />
         </div>

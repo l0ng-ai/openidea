@@ -18,6 +18,7 @@ const cmd = {
   syntaxIdentifiers: vi.fn((): R<unknown> => ok([])),
   syntaxErrors: vi.fn((): R<unknown> => ok({ errors: [], truncated: false })),
   findSymbols: vi.fn((): R<SymbolMatch[]> => ok([])),
+  applyWorkspaceEdit: vi.fn((): R<unknown> => ok(null)),
 };
 
 vi.mock("@/platform/ipc", async (orig) => {
@@ -31,12 +32,9 @@ provideEditorService({ openFile } as never);
 
 const fb = await import("./syntaxFallback");
 const { gotoTargets, navigationExtension, highlightUsages } = await import("./navigation");
-const { startRename } = await import("./rename");
+const { startRename, renameNamePart } = await import("./rename");
 const { lspDoc } = await import("./lsp");
 const { useLspPopup, closePopup } = await import("./popupStore");
-
-Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
-Range.prototype.getBoundingClientRect ??= () => new DOMRect();
 
 const r = (line: number, col: number, endCol: number): Range => ({ start: { line, col }, end: { line, col: endCol } });
 const node = (kind: string, range: Range, field: string | null = null): SyntaxNode => ({
@@ -346,6 +344,36 @@ describe("rename wiring", () => {
     await startRename(view);
     expect(useLspPopup.getState().popup).toBeNull();
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("only local variables");
+  });
+
+  describe("Typo: Rename to (issue #42)", () => {
+    it("renames the whole name through the server, references included", async () => {
+      cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 12)));
+      const edits = [r(0, 0, 12), r(1, 6, 18)].map((range) => ({ range, new_text: "message_count" }));
+      const edit = { files: [{ kind: "edit", path: "/p/a.ts", edits }] };
+      cmd.lspRename.mockReturnValueOnce(ok(edit));
+      const view = editor("mesage_count = 1\nprint(mesage_count)", "python", 0);
+      await renameNamePart(view, { from: 0, to: 6 }, "message");
+      expect(cmd.lspRename).toHaveBeenCalledWith(7, { line: 0, col: 0 }, "message_count");
+      expect(cmd.applyWorkspaceEdit).toHaveBeenCalledWith(edit);
+      // Nothing was replaced locally: the server's edit covers every reference.
+      expect(view.state.doc.toString()).toBe("mesage_count = 1\nprint(mesage_count)");
+    });
+
+    it("falls back to the syntax rename of a local, references included", async () => {
+      cmd.syntaxLocals.mockReturnValueOnce(ok(local({ name: "mesage", definition: r(0, 0, 6), references: [r(1, 6, 12)] })));
+      const view = editor("mesage = 'hello'\nprint(mesage)", "python", 0);
+      await renameNamePart(view, { from: 0, to: 6 }, "message");
+      expect(view.state.doc.toString()).toBe("message = 'hello'\nprint(message)");
+    });
+
+    it("changes nothing when the symbol can't be renamed safely", async () => {
+      cmd.syntaxLocals.mockReturnValueOnce(ok({ status: "notLocal", name: "mesage", range: r(0, 0, 6), reason: "topLevel" }));
+      const view = editor("mesage = 'hello'\nprint(mesage)", "python", 0);
+      await renameNamePart(view, { from: 0, to: 6 }, "message");
+      expect(view.state.doc.toString()).toBe("mesage = 'hello'\nprint(mesage)");
+      expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("Cannot rename safely");
+    });
   });
 
   it("respects a server refusal over valid code, but falls back over broken code", async () => {

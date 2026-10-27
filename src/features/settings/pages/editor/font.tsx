@@ -1,8 +1,13 @@
-/** Editor › Font: family (installed fonts, monospaced filter), size, line height, ligatures, fallback, editable preview. */
+/**
+ * Editor › Font: family (installed fonts, monospaced filter), size, line height,
+ * ligatures, Typography Settings (main / bold weight, fallback font), editable preview.
+ */
 import { useMemo, useState } from "react";
 import { Checkbox, type SelectOption, T } from "@/ui";
+import { monoFontFamily } from "@/platform/fonts";
 import { NumberInput, Row, SearchLabel, Select } from "../../components/Form";
 import { useLabelMatch, useSetting } from "../../components/context";
+import { FONT_WEIGHTS, fontWeightOf, fontWeightVars } from "@/platform/editorSettings";
 import { LIMITS } from "../../model/schema";
 import { editorPage } from "./kit";
 import styles from "./Editor.module.css";
@@ -130,6 +135,38 @@ function FallbackRow() {
   );
 }
 
+const WEIGHT_OPTIONS: SelectOption[] = FONT_WEIGHTS.map(([w, name]) => ({ value: String(w), label: name, detail: String(w) }));
+
+/**
+ * IDEA's Main / Bold font weight. IDEA lists the weights the family ships; the
+ * bundled JetBrains Mono is variable (100–900), and other families get the
+ * standard names (the WebView picks the nearest face or synthesises bold).
+ */
+function WeightRows() {
+  const [main, setMain] = useSetting<number>("editor.fontWeight");
+  const [bold, setBold] = useSetting<number>("editor.boldFontWeight");
+  return (
+    <>
+      <Row label="Main font weight">
+        <Select
+          value={String(fontWeightOf(main, 400))}
+          options={WEIGHT_OPTIONS}
+          onChange={(v) => setMain(Number(v))}
+          aria-label="Main font weight"
+        />
+      </Row>
+      <Row label="Bold font weight" hint="Used wherever the color scheme shows text in bold">
+        <Select
+          value={String(fontWeightOf(bold, 700))}
+          options={WEIGHT_OPTIONS}
+          onChange={(v) => setBold(Number(v))}
+          aria-label="Bold font weight"
+        />
+      </Row>
+    </>
+  );
+}
+
 const SAMPLE = `OpenIDEA is a full-featured IDE
 with a high level of usability and outstanding
 advanced code editing and refactoring support.
@@ -148,8 +185,10 @@ function Preview() {
   const [size] = useSetting<number>("editor.fontSize");
   const [line] = useSetting<number>("editor.lineHeight");
   const [ligatures] = useSetting<boolean>("editor.ligatures");
+  const [weight] = useSetting<number>("editor.fontWeight");
+  const [boldWeight] = useSetting<number>("editor.boldFontWeight");
   const [text, setText] = useState(SAMPLE);
-  const fam = `"${family.replace(/"/g, "")}"${fallback ? `, "${fallback.replace(/"/g, "")}"` : ""}, var(--font-mono)`;
+  const fam = monoFontFamily(family, fallback, "var(--font-mono)");
   return (
     <>
       <div className={styles.previewTitle}>
@@ -162,6 +201,7 @@ function Preview() {
         value={text}
         onChange={(e) => setText(e.target.value)}
         style={{
+          ...fontWeightVars(weight, boldWeight),
           fontFamily: fam,
           fontSize: `${size}px`,
           lineHeight: `${line}px`,
@@ -177,7 +217,7 @@ export const FONT_PAGE = editorPage({
   title: "Font",
   order: 22,
   projectScope: true,
-  keywords: ["typeface", "monospace", "ligatures", "font size", "line spacing"],
+  keywords: ["typeface", "monospace", "ligatures", "font size", "line spacing", "font weight", "bold"],
   sections: [
     {
       items: [
@@ -186,7 +226,13 @@ export const FONT_PAGE = editorPage({
         { t: "check", key: "editor.ligatures", label: "Enable ligatures" },
       ],
     },
-    { title: "Typography Settings", items: [{ t: "custom", label: "Fallback font", component: FallbackRow }] },
+    {
+      title: "Typography Settings",
+      items: [
+        { t: "custom", label: "Main font weight", keywords: ["Bold font weight"], component: WeightRows },
+        { t: "custom", label: "Fallback font", component: FallbackRow },
+      ],
+    },
   ],
   footer: Preview,
 });

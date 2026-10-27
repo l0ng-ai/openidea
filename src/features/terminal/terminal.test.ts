@@ -5,7 +5,7 @@ import { buildSearchDecorations } from "./theme";
 import { findTerminalLinks, resolvePath, trimUrl } from "./links";
 import { layoutPanes, nextTabName, removeFromLayout, splitLayout, tabFullTitle, tabTitle, trimMiddle, type TerminalTab } from "./store";
 import type { SessionSnapshot } from "./session";
-import { buildTheme, mix, parseColor, toHex, withFontExtras } from "./theme";
+import { buildTheme, mix, parseColor, terminalFont, toHex } from "./theme";
 
 describe("theme", () => {
   it("parses colour formats", () => {
@@ -208,19 +208,48 @@ describe("split layout", () => {
   });
 });
 
-describe("withFontExtras", () => {
-  const font = { family: '"JetBrains Mono", "Symbols Nerd Font", monospace', size: 10, lineHeight: 1 };
+describe("terminalFont", () => {
+  const BASE = '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace';
+  const t = { useEditorFont: true, fontFamily: "JetBrains Mono", fontSize: 10, lineHeight: 1, fallbackFontFamily: "", columnWidth: 1 };
+  const editor = { fontFamily: "JetBrains Mono", fontSize: 10, lineHeight: 12 };
+  const head = (family: string) => family.slice(0, family.indexOf('"Symbols Nerd Font Mono"'));
 
-  it("puts the fallback family right after the main one", () => {
-    expect(withFontExtras(font, { fallbackFontFamily: "PingFang SC", columnWidth: 1 }).family).toBe(
-      '"JetBrains Mono", "PingFang SC", "Symbols Nerd Font", monospace',
-    );
-    expect(withFontExtras(font, { fallbackFontFamily: "", columnWidth: 1 }).family).toBe(font.family);
+  it.each([
+    // #26: "Use editor font" with the default family must reach the bundled face, not the system monospace.
+    ["editor font, default family", t, editor, `"JetBrains Mono Variable", "JetBrains Mono", ${BASE.replace(", monospace", "")}, `],
+    ["editor font, no editor settings", t, undefined, `"JetBrains Mono Variable", "JetBrains Mono", ${BASE.replace(", monospace", "")}, `],
+    ["editor font, custom family", t, { ...editor, fontFamily: "Fira Code" }, `"Fira Code", ${BASE.replace(", monospace", "")}, `],
+    ["editor font, editor fallback", t, { ...editor, fallbackFont: "PingFang SC" }, `"JetBrains Mono Variable", "JetBrains Mono", "PingFang SC", ${BASE.replace(", monospace", "")}, `],
+    ["own font, default family", { ...t, useEditorFont: false }, editor, `"JetBrains Mono Variable", "JetBrains Mono", ${BASE.replace(", monospace", "")}, `],
+    ["own font, custom + fallback", { ...t, useEditorFont: false, fontFamily: "Hack", fallbackFontFamily: "PingFang SC" }, editor, `"Hack", "PingFang SC", ${BASE.replace(", monospace", "")}, `],
+  ])("%s resolves through the bundled stack", (_, settings, ed, expected) => {
+    const font = terminalFont(settings, ed, BASE);
+    expect(head(font.family)).toBe(expected);
+    expect(font.family.endsWith(", monospace")).toBe(true);
+    expect(font.family).not.toContain("var(");
+  });
+
+  it("prefers the terminal's fallback over the editor's", () => {
+    const font = terminalFont({ ...t, fallbackFontFamily: "Sarasa Mono SC" }, { ...editor, fallbackFont: "PingFang SC" }, BASE);
+    expect(font.family).toContain('"Sarasa Mono SC"');
+    expect(font.family).not.toContain("PingFang SC");
+  });
+
+  it("follows the editor's Typography Settings weights with Use editor font", () => {
+    const f = terminalFont(t, { ...editor, fontWeight: 300, boldFontWeight: 600 }, BASE);
+    expect([f.weight, f.boldWeight]).toEqual([300, 600]);
+    const d = terminalFont(t, editor, BASE);
+    expect([d.weight, d.boldWeight]).toEqual([400, 700]);
+  });
+
+  it("keeps regular / bold for the terminal's own font", () => {
+    const f = terminalFont({ ...t, useEditorFont: false }, { ...editor, fontWeight: 300, boldFontWeight: 600 }, BASE);
+    expect([f.weight, f.boldWeight]).toEqual([400, 700]);
   });
 
   it("turns the column width into letter spacing", () => {
-    expect(withFontExtras(font, { fallbackFontFamily: "", columnWidth: 1 }).letterSpacing).toBe(0);
-    expect(withFontExtras(font, { fallbackFontFamily: "", columnWidth: 1.5 }).letterSpacing).toBe(3);
+    expect(terminalFont({ ...t, useEditorFont: false }, editor, BASE).letterSpacing).toBe(0);
+    expect(terminalFont({ ...t, useEditorFont: false, columnWidth: 1.5 }, editor, BASE).letterSpacing).toBe(3);
   });
 });
 

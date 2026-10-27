@@ -2,7 +2,8 @@
 //! language servers, run configurations and terminals.
 
 use crate::discover::{project_venv_python, workspace_tsdk};
-use crate::exec::path_with;
+use crate::exec::{path_with, search_path};
+use crate::vue;
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
@@ -258,6 +259,17 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
             _ => {}
         }
     }
+    let vue_command = s.tool_path(vue::SERVER).and_then(|p| setting_path(root, p));
+    let vue_command = vue_command.as_deref().map_or(vue::SERVER.into(), Path::to_string_lossy);
+    if name == "vtsls"
+        && let Some(vue) = vue::server_package(&vue_command, &search_path())
+    {
+        let plugin = vue::tsserver_plugin(&vue);
+        merge_init_options(cfg, json!({ "vtsls": { "tsserver": { "globalPlugins": [plugin] } } }));
+    }
+    if name == vue::SERVER {
+        configure_vue_typescript(cfg, root, server_root, s);
+    }
 
     // Node-based servers (`#!/usr/bin/env node`) run on the selected Node.js.
     if let Some(dir) = node_dir(root, s) {
@@ -267,6 +279,26 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if !path_dirs.is_empty() {
         let dirs: Vec<&Path> = path_dirs.iter().map(PathBuf::as_path).collect();
         cfg.env.insert("PATH".into(), path_with(&dirs));
+    }
+}
+
+/// vue-language-server loads TypeScript as a library (`--tsdk`, else its own
+/// `require('typescript')`): the selected version, else its own, else the
+/// project's — whichever still has the language-service API.
+fn configure_vue_typescript(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
+    let selected = tsdk(server_root, s).or_else(|| tsdk(root, s)).filter(|l| vue::has_ts_api(l));
+    let package = vue::server_package(&cfg.command, &search_path());
+    let own = package.as_deref().and_then(vue::own_typescript);
+    let workspace = || workspace_tsdk(server_root).or_else(|| workspace_tsdk(root)).filter(|l| vue::has_ts_api(l));
+    let lib = match selected {
+        Some(lib) => Some(lib),
+        None if own.is_some() => None,
+        None => workspace(),
+    };
+    match lib {
+        Some(lib) => cfg.args.push(format!("--tsdk={}", lib.to_string_lossy())),
+        None if own.is_none() && package.is_some() => cfg.launch_error = Some(vue::missing_typescript_message()),
+        None => {}
     }
 }
 

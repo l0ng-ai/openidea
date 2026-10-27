@@ -1,5 +1,5 @@
 /** Diff editor inputs and helpers to open them. */
-import type { ChangedFile } from "@/bindings";
+import type { ChangedFile, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
@@ -131,8 +131,7 @@ export function workingDiffData(path: string, line?: number): DiffData {
       : st?.renamedFrom
         ? { type: "rev", rev: "HEAD", path: renamedFromPath(st) ?? undefined, label: `HEAD (${st.renamedFrom})` }
         : { type: "rev", rev: "HEAD" };
-  const right: DiffSide =
-    kind === "deleted" ? { type: "text", text: "", label: "(deleted)" } : { type: "worktree" };
+  const right: DiffSide = kind === "deleted" ? { type: "text", text: "", label: "(deleted)" } : { type: "worktree" };
   return { path, left, right, line };
 }
 
@@ -143,7 +142,10 @@ function joinRoot(rel: string): string {
 }
 
 /** Diff of one file changed by `commit` (first parent ↔ commit). */
-export function commitFileDiffData(commit: { id: string; shortId: string; parents: string[] }, file: ChangedFile): DiffData {
+export function commitFileDiffData(
+  commit: { id: string; shortId: string; parents: string[] },
+  file: ChangedFile,
+): DiffData {
   const path = joinRoot(file.path);
   const parent = commit.parents[0];
   const left: DiffSide =
@@ -159,6 +161,24 @@ export function commitFileDiffData(commit: { id: string; shortId: string; parent
     file.kind === "deleted"
       ? { type: "text", text: "", label: "(deleted)" }
       : { type: "rev", rev: commit.id, label: commit.shortId };
+  return { path, left, right };
+}
+
+/** Diff of one file of several commits' combined changes (`before` ↔ `after`). */
+export function revisionChangeDiffData(change: RevisionChange): DiffData {
+  const path = joinRoot(change.path);
+  const { before, after } = change;
+  const left: DiffSide = before
+    ? {
+        type: "rev",
+        rev: before,
+        path: change.oldPath ? joinRoot(change.oldPath) : undefined,
+        label: before.slice(0, 8),
+      }
+    : { type: "text", text: "", label: "(does not exist)" };
+  const right: DiffSide = after
+    ? { type: "rev", rev: after, label: after.slice(0, 8) }
+    : { type: "text", text: "", label: "(deleted)" };
   return { path, left, right };
 }
 

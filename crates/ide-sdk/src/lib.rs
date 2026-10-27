@@ -13,12 +13,13 @@ pub mod libraries;
 pub mod locate;
 pub mod lombok;
 pub mod python;
+mod vue;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 
-pub use discover::detect;
+pub use discover::{detect, jdk_sdk};
 pub use exec::search_path;
 
 /// What [`detect`] looks for.

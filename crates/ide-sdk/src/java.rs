@@ -49,9 +49,26 @@ fn children(dir: &Path) -> Vec<PathBuf> {
 const WINDOWS_VENDORS: &[&str] =
     &["Java", "Eclipse Adoptium", "Microsoft", "Zulu", "Amazon Corretto", "BellSoft", "Semeru", "OpenJDK"];
 
+/// Folders the IDE downloads JDKs into ([`add_jdk_root`]).
+static EXTRA_ROOTS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Scans the JDKs in `dir` (one per subfolder) too, e.g. where Download JDK puts them.
+pub fn add_jdk_root(dir: &Path) {
+    let mut roots = EXTRA_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
+    if !roots.iter().any(|r| r == dir) {
+        roots.push(dir.to_path_buf());
+    }
+}
+
+/// Whether `home` lies in a folder registered with [`add_jdk_root`].
+pub fn is_downloaded(home: &Path) -> bool {
+    let roots = EXTRA_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
+    roots.iter().any(|r| home.starts_with(r) || dunce::canonicalize(r).is_ok_and(|r| home.starts_with(r)))
+}
+
 /// JDK homes in the usual install locations (macOS `JavaVirtualMachines`,
 /// `/usr/lib/jvm`, SDKMAN, IDEA's `~/.jdks`, Homebrew, Windows vendor
-/// directories), `JAVA_HOME` first, then the `java` on `PATH`.
+/// directories, the IDE's downloads), `JAVA_HOME` first, then the `java` on `PATH`.
 fn scan() -> Vec<Jdk> {
     let mut homes: Vec<PathBuf> = Vec::new();
     if let Some(h) = std::env::var_os("JAVA_HOME") {
@@ -74,6 +91,7 @@ fn scan() -> Vec<Jdk> {
     if let Some(h) = &home {
         roots.extend([h.join("Library/Java/JavaVirtualMachines"), h.join(".jdks"), h.join(".sdkman/candidates/java")]);
     }
+    roots.extend(EXTRA_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned());
     if cfg!(windows) {
         let bases = ["ProgramFiles", "ProgramW6432", "LOCALAPPDATA"].into_iter().filter_map(|v| {
             let dir = PathBuf::from(std::env::var_os(v)?);
@@ -346,30 +364,49 @@ pub fn configure_jdtls(
 /// Where the JDK that runs jdtls is chosen, named as the settings dialog shows it.
 const SERVER_JDK_SETTING: &str = "Settings › Languages & Frameworks › Java › Language Server › JDK";
 
-fn missing_runtime_message(jdks: &[Jdk], min_java: u32) -> String {
+/// `found JDK 8, 17` / `no JDK was found`.
+fn found_jdks(jdks: &[Jdk]) -> String {
     let mut found: Vec<u32> = jdks.iter().map(|j| j.major).collect();
     found.sort_unstable();
     found.dedup();
-    let found = if found.is_empty() {
+    if found.is_empty() {
         "no JDK was found".to_owned()
     } else {
         let list: Vec<String> = found.iter().map(u32::to_string).collect();
         format!("found JDK {}", list.join(", "))
-    };
+    }
+}
+
+// The UI offers "Download JDK N" for messages saying "needs JDK N or newer".
+fn missing_runtime_message(jdks: &[Jdk], min_java: u32) -> String {
     format!(
-        "jdtls needs JDK {min_java} or newer to run ({found}). Pick one in {SERVER_JDK_SETTING} (it restarts \
-         automatically), or install a newer JDK and restart the server; the project can still target an older \
-         Java version."
+        "jdtls needs JDK {min_java} or newer to run ({}). Download JDK {min_java}, or pick an installed one in \
+         {SERVER_JDK_SETTING} (it restarts automatically); the project can still target an older Java version.",
+        found_jdks(jdks)
     )
 }
 
 fn server_jdk_too_old_message(jdk: &Jdk, min_java: u32) -> String {
     format!(
-        "The language server JDK ({}, JDK {}) is too old: jdtls needs JDK {min_java} or newer. Choose another \
-         one in {SERVER_JDK_SETTING}, or set it to Auto.",
+        "The language server JDK ({}, JDK {}) is too old: jdtls needs JDK {min_java} or newer. Download JDK \
+         {min_java}, choose another one in {SERVER_JDK_SETTING}, or set it to Auto.",
         jdk.home.display(),
         jdk.major
     )
+}
+
+/// Why a module targeting Java `release` can't be built or run with the installed
+/// JDKs (none is that new), or `None` when one is (or the release is unknown).
+pub fn missing_jdk_message(jdks: &[Jdk], release: Option<u32>) -> Option<String> {
+    let release = release?;
+    if jdks.iter().any(|j| j.major >= release) {
+        return None;
+    }
+    Some(format!(
+        "This project targets Java {release}: it needs JDK {release} or newer ({}). Download JDK {release}, or \
+         choose a Project JDK in Settings › Languages & Frameworks › Java.",
+        found_jdks(jdks)
+    ))
 }
 
 /// The `java` launcher of a JDK home.
@@ -595,6 +632,62 @@ mod tests {
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &mixed, None, None, 25, &[], None);
         let err = cfg.launch_error.unwrap();
         assert!(err.contains("JDK 25 or newer") && err.contains("found JDK 17, 21"), "{err}");
+        assert!(err.contains("Download JDK 25"), "offers the download: {err}");
+    }
+
+    #[test]
+    fn issue_49_jdtls_needs_25_with_8_17_21_installed() {
+        let jdtls = || -> LanguageServerConfig { toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap() };
+        let installed = [
+            Jdk { major: 21, home: PathBuf::from("/jdk21") },
+            Jdk { major: 17, home: PathBuf::from("/jdk17") },
+            Jdk { major: 8, home: PathBuf::from("/jdk8") },
+        ];
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &installed, None, None, 25, &[], None);
+        let err = cfg.launch_error.unwrap();
+        assert!(err.starts_with("jdtls needs JDK 25 or newer to run (found JDK 8, 17, 21)"), "{err}");
+        assert!(err.contains("Download JDK 25"), "{err}");
+
+        // Once a JDK 25 has been downloaded, Auto runs jdtls on it.
+        let downloaded =
+            [installed.as_slice(), &[Jdk { major: 25, home: PathBuf::from("/tools/jdks/temurin-25") }]].concat();
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &downloaded, None, None, 25, &[], None);
+        assert_eq!(cfg.launch_error, None);
+        assert_eq!(cfg.env["JAVA_HOME"], Path::new("/tools/jdks/temurin-25").to_string_lossy());
+    }
+
+    #[test]
+    fn missing_jdk_for_the_project_release() {
+        let jdks = [Jdk { major: 17, home: PathBuf::from("/jdk17") }, Jdk { major: 8, home: PathBuf::from("/jdk8") }];
+        assert_eq!(missing_jdk_message(&jdks, Some(17)), None);
+        assert_eq!(missing_jdk_message(&jdks, Some(11)), None);
+        assert_eq!(missing_jdk_message(&jdks, None), None);
+        let msg = missing_jdk_message(&jdks, Some(21)).unwrap();
+        assert!(msg.contains("needs JDK 21 or newer (found JDK 8, 17)") && msg.contains("Download JDK 21"), "{msg}");
+        assert!(missing_jdk_message(&[], Some(8)).unwrap().contains("no JDK was found"));
+    }
+
+    #[test]
+    fn downloaded_jdks_are_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("jdks/temurin-25.0.1");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("release"), "JAVA_VERSION=\"25.0.1\"\n").unwrap();
+        std::fs::write(home.join("bin").join(crate::exe("java")), "").unwrap();
+        // macOS bundles: <dir>/Contents/Home
+        let bundle = tmp.path().join("jdks/temurin-21.0.5/Contents/Home");
+        std::fs::create_dir_all(bundle.join("bin")).unwrap();
+        std::fs::write(bundle.join("release"), "JAVA_VERSION=\"21.0.5\"\n").unwrap();
+        std::fs::write(bundle.join("bin").join(crate::exe("java")), "").unwrap();
+        add_jdk_root(&tmp.path().join("jdks"));
+        let found = rescan_jdks();
+        let home = dunce::canonicalize(&home).unwrap();
+        let bundle = dunce::canonicalize(&bundle).unwrap();
+        assert!(found.iter().any(|j| j.home == home && j.major == 25), "{found:?}");
+        assert!(found.iter().any(|j| j.home == bundle && j.major == 21), "{found:?}");
+        assert!(is_downloaded(&home) && !is_downloaded(Path::new("/elsewhere")));
     }
 
     #[test]

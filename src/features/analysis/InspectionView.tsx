@@ -8,6 +8,8 @@ import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { basename, relativeDir, useProject } from "@/platform/project";
+import { diagnosticInspection, producerOf, type InspectionRef } from "@/platform/inspections";
+import { problemControls } from "@/platform/inspectionControls";
 import { editorService, useOccurrenceNavigator } from "@/workbench/contributions";
 import {
   Button,
@@ -25,6 +27,7 @@ import {
   type TreeHandle,
   type TreeRowState,
   T,
+  selectableText,
 } from "@/ui";
 import {
   cancelInspection,
@@ -176,6 +179,20 @@ export function buildInspectionNodes(groups: ReturnType<typeof groupInspection>,
 function nodeProblems(n: Node): InspectionProblem[] {
   return n.kind === "problem" ? [n.p] : n.children.flatMap(nodeProblems);
 }
+
+/** The one inspection all of the node's problems come from, or null. */
+function nodeInspection(n: Node): InspectionRef | null {
+  let found: InspectionRef | null = null;
+  for (const p of nodeProblems(n)) {
+    const ref = diagnosticInspection(producerOf(p.d), p.d);
+    if (!ref || (found && found.id !== ref.id)) return null;
+    found = ref;
+  }
+  return found;
+}
+
+const inspectionMenu = (inspection: InspectionRef | null): MenuItem[] =>
+  inspection ? [{ kind: "separator" }, ...problemControls(inspection)] : [];
 
 function open(p: InspectionProblem, focus = true): Promise<void> {
   return editorService().openFile(p.path, {
@@ -379,6 +396,8 @@ export function InspectionView() {
                       ]
                     : []),
                   { id: "exclude", label: isExcluded(n) ? "Include" : "Exclude", shortcut: "⌫", run: () => exclude(n) },
+                  // Exclude hides problems from these results; Disable Inspection turns the check off in the profile.
+                  ...inspectionMenu(nodeInspection(n)),
                 ]);
               }}
               activateExpandable={false}
@@ -438,7 +457,7 @@ function ProblemDetails({ node, root }: { node: Node | null; root: string }) {
         <Icon name={sev} size={14} className={styles[`sev-${sev}`]} />
         <span>{p.d.source ? `${p.d.source}${p.d.code ? ` (${p.d.code})` : ""}` : <T>Language server</T>}</span>
       </div>
-      <p className={styles.detailsMessage}>{p.d.message}</p>
+      <p className={clsx(styles.detailsMessage, selectableText)}>{p.d.message}</p>
       <div className={styles.muted}>
         {relativeDir(root, p.path) ? `${relativeDir(root, p.path)}/` : ""}
         {basename(p.path)}:{p.d.range.start.line + 1}:{p.d.range.start.col + 1}

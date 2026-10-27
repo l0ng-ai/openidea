@@ -42,6 +42,28 @@ pub(crate) fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel
     if let Some(g) = &mut model.gradle {
         g.env = java_env(jdk.as_ref(), g.java_version);
     }
+    // A failed sync of a project no installed JDK can build says so first (with a Download JDK action).
+    let missing = |release: Option<u32>| match jdk {
+        Some(_) => None,
+        None => ide_sdk::java::missing_jdk_message(&ide_sdk::java::installed_jdks(), release),
+    };
+    let explain = |error: &mut Option<String>, hint: Option<String>| {
+        if let (Some(e), Some(hint)) = (error.as_mut(), hint) {
+            *e = format!("{hint}\n{e}");
+        }
+    };
+    if let Some(m) = &mut model.maven
+        && m.sync_error.is_some()
+    {
+        let hint = m.projects.iter().find_map(|p| missing(p.java_version));
+        explain(&mut m.sync_error, hint);
+    }
+    if let Some(g) = &mut model.gradle
+        && g.sync_error.is_some()
+    {
+        let hint = missing(g.java_version);
+        explain(&mut g.sync_error, hint);
+    }
     model
 }
 

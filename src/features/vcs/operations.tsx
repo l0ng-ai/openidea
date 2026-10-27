@@ -9,7 +9,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, Icon, Input, List, Spinner, fileIconName, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
-import { openDiff } from "./diffInput";
+import { openDiff, type DiffSide } from "./diffInput";
 import { openDialog, promptText } from "./dialogs";
 import { KIND_COLOR, baseName, dirName } from "./model";
 import { runGitOperation, runOp } from "./ops";
@@ -399,36 +399,64 @@ export function showCompareWithLocal(commit: Commit) {
 
 /** Files that differ between `rev` (a commit or branch) and the working tree. */
 export function showDiffWithWorkingTree(rev: string, label = rev) {
-  openDialog((close) => <CompareWithLocalDialog rev={rev} label={label} onClose={close} />);
+  openDialog((close) => <ChangesBetweenDialog from={{ rev, label }} to={null} onClose={close} />);
 }
 
-function CompareWithLocalDialog({ rev, label, onClose }: { rev: string; label: string; onClose: () => void }) {
+/** IDEA's Compare Versions of two Git Log commits: files that differ between them, older first. */
+export function showCompareVersions(older: Commit, newer: Commit) {
+  openDialog((close) => (
+    <ChangesBetweenDialog
+      from={{ rev: older.id, label: short(older.id) }}
+      to={{ rev: newer.id, label: short(newer.id) }}
+      onClose={close}
+    />
+  ));
+}
+
+interface Revision {
+  rev: string;
+  label: string;
+}
+
+/** Files that differ between `from` and `to` (`null`: the working tree). */
+function ChangesBetweenDialog({ from, to, onClose }: { from: Revision; to: Revision | null; onClose: () => void }) {
   const root = useVcs((s) => s.root) ?? "";
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [active, setActive] = useState(0);
+  const fromRev = from.rev;
+  const toRev = to?.rev ?? null;
   useEffect(() => {
     let alive = true;
-    call(commands.vcsDiffWithWorktree(currentRepo(), rev))
+    const repo = currentRepo();
+    call(toRev ? commands.vcsDiffRevisions(repo, fromRev, toRev) : commands.vcsDiffWithWorktree(repo, fromRev))
       .then((f) => alive && setFiles(f))
       .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
     };
-  }, [rev]);
+  }, [fromRev, toRev]);
   const open = (f: ChangedFile) => {
     const repoRoot = currentRepoRoot() ?? root;
+    const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
     void openDiff({
       path: `${repoRoot}/${f.path}`,
-      left: { type: "rev", rev, label, path: f.oldPath ? `${repoRoot}/${f.oldPath}` : undefined },
-      right: { type: "worktree" },
+      left:
+        f.kind === "added" || f.kind === "untracked"
+          ? missing("(does not exist)")
+          : { type: "rev", rev: from.rev, label: from.label, path: f.oldPath ? `${repoRoot}/${f.oldPath}` : undefined },
+      right: !to
+        ? { type: "worktree" }
+        : f.kind === "deleted"
+          ? missing("(deleted)")
+          : { type: "rev", rev: to.rev, label: to.label },
     });
   };
   const current = files?.[active];
   return (
     <Dialog
       open
-      title={`Changes between ${label} and Local Working Tree`}
+      title={`Changes between ${from.label} and ${to ? to.label : "Local Working Tree"}`}
       onClose={onClose}
       width={620}
       buttons={[

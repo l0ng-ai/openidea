@@ -13,3 +13,6 @@ tracing.workspace = true
 spellbook = "0.4"
 serde.workspace = true
 specta.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -130,6 +130,7 @@
   color: var(--fg-strong);
 }
 .previewArea {
+  font-weight: var(--fw-code);
   width: 100%;
   min-height: 240px;
   resize: vertical;
@@ -142,9 +143,6 @@
   color: var(--fg-editor, var(--fg));
   white-space: pre;
   outline: none;
-}
-.previewArea:focus-visible {
-  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 /* Color Scheme page */
@@ -213,6 +211,7 @@
   background: var(--bg-editor, var(--bg-island));
   color: var(--fg-editor, var(--fg));
   font-family: var(--openidea-editor-font, var(--font-mono));
+  font-weight: var(--fw-code);
   font-size: var(--fs-code);
   line-height: var(--lh-code);
   overflow: auto;

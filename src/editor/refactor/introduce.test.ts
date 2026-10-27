@@ -120,10 +120,6 @@ const { clearLevelCache } = await import("./projectLevel");
 
 // --- editor ---------------------------------------------------------------------
 
-// jsdom has no layout; popups anchor at caret coordinates.
-Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
-Range.prototype.getBoundingClientRect ??= () => new DOMRect();
-
 let view: EditorView | null = null;
 
 function editor(doc: string, language: string, path: string, sel: { anchor: number; head?: number }) {

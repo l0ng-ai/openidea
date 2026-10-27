@@ -289,9 +289,18 @@ pub struct EditorSettings {
     pub color_scheme: String,
     /// Color Scheme edits: scheme id → attribute id → override.
     pub color_overrides: BTreeMap<String, BTreeMap<String, TextAttributesOverride>>,
+    /// Color Scheme › Language Defaults › Semantic highlighting: local variables and
+    /// parameters get a colour derived from their name (IDEA's rainbow identifiers).
+    pub semantic_highlighting: bool,
+    /// Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth.
+    pub rainbow_brackets: bool,
     pub ligatures: bool,
     /// Fallback font for glyphs the main font lacks; empty = none.
     pub fallback_font: String,
+    /// Typography Settings › Main font weight (CSS 100–900), as IDEA.
+    pub font_weight: u16,
+    /// Typography Settings › Bold font weight: wherever the editor renders bold.
+    pub bold_font_weight: u16,
     pub general: EditorGeneralSettings,
     pub appearance: EditorAppearanceSettings,
     pub breadcrumbs: BreadcrumbsSettings,
@@ -325,8 +334,12 @@ impl Default for EditorSettings {
             format_on_save: false,
             color_scheme: "theme-default".into(),
             color_overrides: BTreeMap::new(),
+            semantic_highlighting: false,
+            rainbow_brackets: false,
             ligatures: false,
             fallback_font: String::new(),
+            font_weight: 400,
+            bold_font_weight: 700,
             general: EditorGeneralSettings::default(),
             appearance: EditorAppearanceSettings::default(),
             breadcrumbs: BreadcrumbsSettings::default(),
@@ -563,6 +576,16 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_font_weights_default_to_regular_and_bold() {
+        let json = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(json["editor"]["fontWeight"], 400);
+        assert_eq!(json["editor"]["boldFontWeight"], 700);
+        let s: Settings = serde_json::from_str(r#"{"editor":{"fontWeight":300,"boldFontWeight":600}}"#).unwrap();
+        assert_eq!((s.editor.font_weight, s.editor.bold_font_weight), (300, 600));
+        assert_eq!(s.editor.font_size, 13.0);
+    }
 
     #[test]
     fn keymap_overrides_are_camel_case_and_default_empty() {

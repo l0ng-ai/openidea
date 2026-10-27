@@ -5,6 +5,15 @@
  * (+ expUI parents) and the Islands Dark / Light editor schemes; metrics are the
  * theme JSON values at 100% zoom. Components use only these variables.
  */
+/*
+ * Editor font weights (Settings › Editor › Font › Typography Settings; set on
+ * the root at runtime). Outside `:root` so scheme tokens such as
+ * `--matched-brace-weight` keep referring to them instead of a resolved value.
+ */
+html {
+  --fw-code: 400;
+  --fw-code-bold: 700;
+}
 :root {
   /* surfaces */
   --bg-app: #191a1c;
@@ -109,6 +118,14 @@
   --syn-markup-code: #6aab73;
   --syn-invalid: #f75464;
   --syn-inline-value: #868a91;
+  --syn-rainbow-1: #6fafbd;
+  --syn-rainbow-2: #d79b6e;
+  --syn-rainbow-3: #9fbf6b;
+  --syn-rainbow-4: #c98bc6;
+  --syn-rainbow-5: #8e9cf0;
+  --syn-bracket-1: #e8c25b;
+  --syn-bracket-2: #d78bd6;
+  --syn-bracket-3: #4ea7f0;
 
   /* editor (scheme colours) */
   --fg-editor: #bcbec4;
@@ -124,7 +141,7 @@
   --bg-text-search-result: #114957;
   --bg-text-search-result-current: #165e70;
   --bg-matched-brace: #43454a;
-  --matched-brace-weight: 700;
+  --matched-brace-weight: var(--fw-code-bold);
   --bg-matched-tag: #3f4045;
   --bg-fold-placeholder: #393b40;
   --fg-fold-placeholder: #868991;
@@ -387,6 +404,7 @@
   --fg-gutter: #aeb3c2;
   --fg-icon: #6c707e;
 
+  /* accent */
   --accent: #3871e1;
   --link: #2f5eb9;
   --link-hover: #2e4d89;
@@ -444,6 +462,14 @@
   --syn-markup-code: #067d17;
   --syn-invalid: #f50000;
   --syn-inline-value: #8c8c8c;
+  --syn-rainbow-1: #9b3b6a;
+  --syn-rainbow-2: #114d77;
+  --syn-rainbow-3: #9c6a2c;
+  --syn-rainbow-4: #005910;
+  --syn-rainbow-5: #bc5150;
+  --syn-bracket-1: #0431fa;
+  --syn-bracket-2: #319331;
+  --syn-bracket-3: #7b3814;
 
   /* editor */
   --fg-editor: #080808;
@@ -459,7 +485,7 @@
   --bg-text-search-result: #fcd47e;
   --bg-text-search-result-current: #f2bf57;
   --bg-matched-brace: #93d9d9;
-  --matched-brace-weight: normal;
+  --matched-brace-weight: inherit;
   --bg-matched-tag: #c9ecec;
   --bg-fold-placeholder: #e9f5e6;
   --fg-fold-placeholder: #414d41;
@@ -500,6 +526,7 @@
   --ansi-bright-cyan: #1b9ea3;
   --ansi-bright-white: #5f6269;
 
+  /* shadows and window controls */
   --shadow-popup: 0 6px 20px rgba(0, 0, 0, 0.12);
   --shadow-dialog: 0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 10px 24px rgba(0, 0, 0, 0.1), 0 24px 72px rgba(0, 0, 0, 0.2);
   --traffic-close: #ff5f57;
@@ -664,6 +691,14 @@
   --syn-markup-code: #8ccc94;
   --syn-invalid: #ff8a95;
   --syn-inline-value: #a5a8ae;
+  --syn-rainbow-1: #8fd0de;
+  --syn-rainbow-2: #f0b88a;
+  --syn-rainbow-3: #bedc8a;
+  --syn-rainbow-4: #e8a8e4;
+  --syn-rainbow-5: #b0bcff;
+  --syn-bracket-1: #ffd700;
+  --syn-bracket-2: #ee90ee;
+  --syn-bracket-3: #87cefa;
 
   --fg-editor: #e3e4e8;
   --caret: #ffffff;

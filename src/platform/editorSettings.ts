@@ -52,8 +52,15 @@ export function lineCommentStyleFor(prefs: EditorExtras, language: string | unde
 
 export const EDITOR_EXTRA_DEFAULTS = {
   colorOverrides: {} as Record<string, Record<string, TextAttributesOverride>>,
+  /** Color Scheme › Language Defaults › Semantic highlighting (rainbow locals / parameters). */
+  semanticHighlighting: false,
+  /** Color Scheme › Language Defaults › Rainbow brackets. */
+  rainbowBrackets: false,
   ligatures: false,
   fallbackFont: "",
+  /** Typography Settings › Main / Bold font weight (CSS weights, IDEA's Regular / Bold). */
+  fontWeight: 400,
+  boldFontWeight: 700,
   general: {
     wheelZoom: false,
     dragAndDrop: true,
@@ -185,8 +192,38 @@ export function coerceLike<T>(raw: unknown, def: T): T {
   return def;
 }
 
+/** IDEA's named font weights (Typography Settings). */
+export const FONT_WEIGHTS: ReadonlyArray<readonly [number, string]> = [
+  [100, "Thin"],
+  [200, "ExtraLight"],
+  [300, "Light"],
+  [400, "Regular"],
+  [500, "Medium"],
+  [600, "SemiBold"],
+  [700, "Bold"],
+  [800, "ExtraBold"],
+  [900, "Black"],
+];
+
+/** Nearest CSS weight step (100–900); `def` for anything that is not a number. */
+export function fontWeightOf(raw: unknown, def: number): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return def;
+  return Math.min(900, Math.max(100, Math.round(raw / 100) * 100));
+}
+
+/** `--fw-code` / `--fw-code-bold`: what editor-font text and its bold runs render with. */
+export function fontWeightVars(main: unknown, bold: unknown): Record<"--fw-code" | "--fw-code-bold", string> {
+  return {
+    "--fw-code": String(fontWeightOf(main, EDITOR_EXTRA_DEFAULTS.fontWeight)),
+    "--fw-code-bold": String(fontWeightOf(bold, EDITOR_EXTRA_DEFAULTS.boldFontWeight)),
+  };
+}
+
 export function validateEditorExtras(raw: unknown): EditorExtras {
-  return coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
+  const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
+  out.fontWeight = fontWeightOf(out.fontWeight, EDITOR_EXTRA_DEFAULTS.fontWeight);
+  out.boldFontWeight = fontWeightOf(out.boldFontWeight, EDITOR_EXTRA_DEFAULTS.boldFontWeight);
+  return out;
 }
 
 let cache: { raw: unknown; powerSave: boolean; value: EditorExtras } | null = null;

@@ -11,6 +11,7 @@ pub mod app;
 pub mod build;
 pub mod bytes;
 pub mod caches;
+pub mod clipboard;
 pub mod coverage;
 pub mod db;
 pub mod debug;
@@ -69,6 +70,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         fs::fs_delete,
         fs::fs_copy,
         fs::fs_read_text,
+        clipboard::clipboard_file_list,
+        clipboard::clipboard_has_files,
+        clipboard::clipboard_set_file_list,
         doc::doc_open,
         doc::doc_open_virtual,
         doc::doc_close,
@@ -153,6 +157,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_blame,
         vcs::vcs_log,
         vcs::vcs_commit_files,
+        vcs::vcs_commits_changes,
         vcs::vcs_branches,
         vcs::vcs_stashes,
         vcs::vcs_stage,
@@ -248,6 +253,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::tools_list,
         tools::tools_install,
         tools::tools_uninstall,
+        tools::jdk_download_vendors,
+        tools::jdk_download_releases,
+        tools::jdk_download_location,
+        tools::jdk_download,
         sdk::sdk_detect,
         sdk::sdk_python_effective,
         sdk::sdk_project_libraries,
@@ -286,6 +295,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_set_data_breakpoints,
         debug::debug_data_breakpoint_info,
         debug::debug_attachable_processes,
+        debug::debug_listen_for_jvm,
         debug::debug_redefine_classes,
         coverage::coverage_prepare,
         coverage::coverage_collect,

@@ -269,7 +269,7 @@ const INSTALL: Record<string, string> = {
   r: "Install R (`brew install r`) so that `Rscript` is on the PATH.",
   go: "Install Go from https://go.dev/dl (or `brew install go`).",
   rust: "Install Rust with rustup: https://rustup.rs",
-  java: "Install a JDK 11+ (`brew install openjdk`) so that `java` is on the PATH.",
+  java: "Install a JDK 11+ (`brew install openjdk`), or download one in Settings › Languages & Frameworks › Java (Project JDK › Download JDK…).",
   kotlin: "Install the Kotlin compiler (`brew install kotlin`, or https://kotlinlang.org/docs/command-line.html) so that `kotlinc` is on the PATH.",
   "kotlin-script": "Install Kotlin (`brew install kotlin`).",
   swift: "Install the Xcode command line tools (`xcode-select --install`).",

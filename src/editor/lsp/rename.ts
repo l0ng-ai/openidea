@@ -105,6 +105,61 @@ export async function startRename(view: EditorView) {
   });
 }
 
+/** `name` with `[at, at + length)` replaced. */
+export function spliceName(name: string, at: number, length: number, replacement: string): string {
+  return name.slice(0, at) + replacement + name.slice(at + length);
+}
+
+/**
+ * Replaces `part` of a declared name (a misspelt word of `checkpointer_pol`)
+ * through Rename, so every reference follows. Falls back to the syntax-based
+ * local rename; when neither can rename the symbol, says so and changes nothing
+ * (a lone text replacement would break the references).
+ */
+export async function renameNamePart(view: EditorView, part: Span, replacement: string) {
+  const doc = docOf(view);
+  if (!doc) return;
+  if (doc.readOnly) {
+    showHint(view, "The file is read-only");
+    return;
+  }
+  const word = view.state.sliceDoc(part.from, part.to);
+  await whenSynced(view);
+  if (view.state.sliceDoc(part.from, part.to) !== word) return;
+  const pos = offsetToPos(view.state.doc, part.from);
+  const refuse = (why: string) =>
+    showHint(view, `Cannot rename safely: ${why}. '${word}' was left unchanged`, { tone: "warning" });
+  const viaSyntax = async (): Promise<boolean> => {
+    const plan = await syntaxPlan(view, doc, pos);
+    if (!plan) return false;
+    const at = plan.occurrences
+      .map((o) => rangeToOffsets(view.state.doc, o.range))
+      .find((o) => o.from <= part.from && part.to <= o.to);
+    if (!at) return false;
+    await commitSyntaxRename(view, doc, plan, spliceName(plan.symbol.name, part.from - at.from, word.length, replacement));
+    return true;
+  };
+  let range;
+  try {
+    range = await lspRequest(() => commands.lspPrepareRename(doc.doc, pos));
+  } catch (e) {
+    if (isCancelled(e)) return;
+    if (!(await viaSyntax())) refuse("no language server can rename this symbol");
+    return;
+  }
+  if (!range) {
+    if (!(await viaSyntax())) refuse("this element can't be renamed");
+    return;
+  }
+  const { from, to } = rangeToOffsets(view.state.doc, range);
+  if (from > part.from || part.to > to) {
+    refuse("the word is not part of a renamable name");
+    return;
+  }
+  const oldName = view.state.sliceDoc(from, to);
+  await finishRename(view, doc, pos, oldName, spliceName(oldName, part.from - from, word.length, replacement));
+}
+
 /** This file's other occurrences of the symbol (document highlights with the same text). */
 async function linkedOccurrences(view: EditorView, doc: number, pos: Pos, primary: Span, name: string): Promise<Span[]> {
   let highlights;

@@ -205,6 +205,21 @@ pub struct ChangedFile {
     pub old_path: Option<String>,
 }
 
+/// A file changed across several commits: its content at `before` ↔ at `after`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RevisionChange {
+    /// Repository-relative path after the change (before it, for a deletion).
+    pub path: String,
+    pub kind: ChangeKind,
+    /// Path at `before`, for a rename.
+    pub old_path: Option<String>,
+    /// Commit holding the old content; `None` when the file was added.
+    pub before: Option<String>,
+    /// Commit holding the new content; `None` when the file was deleted.
+    pub after: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Stash {
@@ -545,6 +560,11 @@ impl Repo {
     /// Files changed by `commit` relative to its first parent (renames detected).
     pub fn commit_files(&self, commit: &str) -> IdeResult<Vec<ChangedFile>> {
         history::commit_files(self, commit)
+    }
+    /// Combined changes of several commits (oldest first): per file, before the first commit
+    /// that touched it ↔ after the last one (IDEA's multi-commit Git Log selection).
+    pub fn commits_changes(&self, commits: &[String]) -> IdeResult<Vec<RevisionChange>> {
+        history::commits_changes(self, commits)
     }
     /// Local and remote branches; the current branch first, then most recent first.
     pub fn branches(&self) -> IdeResult<Vec<Branch>> {

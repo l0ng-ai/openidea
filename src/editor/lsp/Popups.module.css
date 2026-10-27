@@ -65,6 +65,7 @@
   margin: 0;
   padding: 6px 0;
   font-family: var(--openidea-editor-font, var(--font-mono));
+  font-weight: var(--fw-code);
   font-size: var(--fs-small);
   color: var(--fg-editor);
 }
@@ -128,6 +129,28 @@
 }
 .spacer {
   flex: 1;
+}
+.subArrow {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: -4px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+}
+.subArrow:hover {
+  background-color: var(--bg-toolbar-hover);
+}
+.subMenu {
+  padding: 6px 0;
+  min-width: 200px;
+  max-width: 420px;
 }
 .detail {
   flex: 0 1 auto;

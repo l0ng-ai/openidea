@@ -72,9 +72,7 @@ export function useApplyTheme() {
   useEffect(() => {
     const root = document.documentElement;
     if (pending && root.dataset.theme) return;
-    root.dataset.theme = theme;
-    if (id === "dark-hc") root.dataset.contrast = "high";
-    else delete root.dataset.contrast;
+    applyThemeAttributes(id, root);
     // Each theme ships its own accent; only a deliberate choice overrides it.
     const custom = !!accent && ACCENT_RE.test(accent) && !THEME_ACCENTS.has(accent.toLowerCase());
     if (custom) root.style.setProperty("--accent", accent);
@@ -89,11 +87,27 @@ export function useApplyTheme() {
 }
 
 /**
+ * Sets `data-theme` / `data-contrast` for a built-in theme id. While a plugin
+ * theme is active (`data-plugin-theme-kind`), its light / dark base wins.
+ */
+export function applyThemeAttributes(id: "dark" | "light" | "dark-hc", root: HTMLElement = document.documentElement) {
+  const pluginKind = root.dataset.pluginThemeKind;
+  if (pluginKind === "light" || pluginKind === "dark") {
+    root.dataset.theme = pluginKind;
+    delete root.dataset.contrast;
+    return;
+  }
+  root.dataset.theme = id === "light" ? "light" : "dark";
+  if (id === "dark-hc") root.dataset.contrast = "high";
+  else delete root.dataset.contrast;
+}
+
+/**
  * Where a live resize outruns the page, the native window and the webview (WebView2's default
  * background) show their own colours; match both to the frame. The webview one is only set at
  * window creation otherwise, so a theme switched later left it light.
  */
-function syncWindowBackground() {
+export function syncWindowBackground() {
   if (!isTauri()) return;
   const color = getComputedStyle(document.documentElement).getPropertyValue("--bg-frame").trim();
   if (!color) return;

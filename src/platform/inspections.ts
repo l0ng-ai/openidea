@@ -19,6 +19,8 @@ export type ProfileLevel = "ide" | "project";
 export interface InspectionOverride {
   enabled?: boolean;
   severity?: InspectionLevel;
+  /** The inspection's own options (`BuiltinInspection.options`). */
+  options?: Readonly<Record<string, boolean>>;
 }
 
 export type ProfileOverrides = Readonly<Record<string, InspectionOverride>>;
@@ -73,7 +75,9 @@ function validateOverrides(raw: unknown): Record<string, InspectionOverride> {
     const entry: InspectionOverride = {};
     if (typeof o.enabled === "boolean") entry.enabled = o.enabled;
     if (typeof o.severity === "string" && LEVELS.has(o.severity)) entry.severity = o.severity as InspectionLevel;
-    if (id && (entry.enabled !== undefined || entry.severity !== undefined)) out[id] = entry;
+    const options = Object.entries(obj(o.options)).filter(([, v]) => typeof v === "boolean");
+    if (options.length) entry.options = Object.fromEntries(options) as Record<string, boolean>;
+    if (id && Object.keys(entry).length) out[id] = entry;
   }
   return out;
 }
@@ -195,6 +199,13 @@ export function newProfileKey(name: string, existing: CustomProfiles): string {
 
 // --- inspection identity -----------------------------------------------------
 
+/** A checkbox in the inspection's Options (Settings › Editor › Inspections). */
+export interface InspectionOptionSpec {
+  key: string;
+  label: string;
+  default: boolean;
+}
+
 export interface BuiltinInspection {
   id: string;
   /** Producer key the diagnostics arrive under. */
@@ -204,11 +215,19 @@ export interface BuiltinInspection {
   description: string;
   /** Highlighting level when the profile sets none (else as reported). */
   defaultLevel?: InspectionLevel;
+  options?: readonly InspectionOptionSpec[];
 }
 
 /** Producer key of the Typo inspection's diagnostics. */
 export const SPELLING_PRODUCER = "spelling";
 export const SPELLING_INSPECTION = "builtin:spelling";
+
+/** IDEA's Typo options: which parts of source files are checked (plain text always is). */
+export const SPELLING_OPTIONS = {
+  code: "processCode",
+  literals: "processLiterals",
+  comments: "processComments",
+} as const;
 
 /** Checks the IDE runs itself (not a language server). */
 export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
@@ -241,12 +260,39 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     name: "Typo",
     group: "Proofreading",
     description:
-      "Reports misspelt words in comments, string literals and the names declarations introduce (camelCase and snake_case parts checked separately), and in plain text and Markdown. Words can be saved to the project or application dictionary (Editor › Natural Languages › Spelling).",
+      "Reports misspelt words in comments, string literals and the names declarations introduce (camelCase and snake_case parts checked separately), and in plain text and Markdown. Agent nouns of known words (checkpointer) and, in names, two known words run together (filepath) are accepted. Words can be saved to the project or application dictionary (Editor › Natural Languages › Spelling). Correcting a name renames the symbol and its references.",
     defaultLevel: "typo",
+    options: [
+      { key: SPELLING_OPTIONS.code, label: "Process code", default: true },
+      { key: SPELLING_OPTIONS.literals, label: "Process literals", default: true },
+      { key: SPELLING_OPTIONS.comments, label: "Process comments", default: true },
+    ],
   },
 ];
 
 const BUILTIN_BY_PRODUCER = new Map(BUILTIN_INSPECTIONS.map((b) => [b.producer, b]));
+const BUILTIN_BY_ID = new Map(BUILTIN_INSPECTIONS.map((b) => [b.id, b]));
+
+/** Option `key` of inspection `id` under `profile` (its default when unset). */
+export function inspectionOption(profile: ProfileOverrides, id: string, key: string): boolean {
+  const value = profile[id]?.options?.[key];
+  if (typeof value === "boolean") return value;
+  return BUILTIN_BY_ID.get(id)?.options?.find((o) => o.key === key)?.default ?? true;
+}
+
+/** The inspection a diagnostic of `producer` belongs to: its code's own when it has one. */
+export interface InspectionRef {
+  id: string;
+  name: string;
+}
+
+export function diagnosticInspection(producer: string, d: Pick<Diagnostic, "code">): InspectionRef | null {
+  if (!producer) return null;
+  const builtin = BUILTIN_BY_PRODUCER.get(producer);
+  if (builtin) return { id: builtin.id, name: builtin.name };
+  const base = producerInspectionId(producer);
+  return d.code ? { id: codeInspectionId(base, d.code), name: `${producer} ${d.code}` } : { id: base, name: producer };
+}
 
 /** Inspection id of everything a producer reports. */
 export function producerInspectionId(producer: string): string {

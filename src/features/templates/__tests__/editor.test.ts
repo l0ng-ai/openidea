@@ -17,11 +17,6 @@ import { closeChooser, useChooser } from "../popup/store";
 
 const MODES: Record<string, string> = { typescript: "TypeScript", rust: "Rust", python: "Python", java: "Java" };
 
-// jsdom has no layout; CodeMirror measures ranges when scrolling the caret into view.
-const rects = () => Object.assign([], { item: () => null }) as unknown as DOMRectList;
-Range.prototype.getClientRects ??= rects;
-Range.prototype.getBoundingClientRect ??= () => new DOMRect();
-
 let view: EditorView | null = null;
 afterEach(() => {
   view?.destroy();

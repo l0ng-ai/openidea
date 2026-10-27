@@ -80,6 +80,15 @@ export const commands = {
 	 *  definition). Prefers the unsaved buffer when the file is open.
 	 */
 	fsReadText: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("fs_read_text", { path })),
+	/**  Absolute paths on the clipboard, empty when it holds no file list. */
+	clipboardFileList: () => typedError<string[], IdeError>(__TAURI_INVOKE("clipboard_file_list")),
+	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
+	clipboardHasFiles: () => __TAURI_INVOKE<boolean>("clipboard_has_files"),
+	/**
+	 *  Replaces the clipboard with `paths`, so Explorer can paste them. Best-effort:
+	 *  false when the clipboard stayed busy; the caller keeps working either way.
+	 */
+	clipboardSetFileList: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("clipboard_set_file_list", { paths })),
 	/**
 	 *  Opens a document. Async: reading and decoding a large file must not block
 	 *  the main thread (synchronous commands run on it).
@@ -213,9 +222,10 @@ export const commands = {
 	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError>(__TAURI_INVOKE("web_unresolved_references", { doc })),
 	/**
 	 *  Misspelt words in the comments, string literals and declared names of
-	 *  `doc` (all of its text for prose). Cancel with `cancel_request(request)`.
+	 *  `doc` that `scope` includes (all of its text for prose). Cancel with
+	 *  `cancel_request(request)`.
 	 */
-	spellCheck: (doc: DocId, request: RequestId) => typedError<Typo[], IdeError>(__TAURI_INVOKE("spell_check", { doc, request })),
+	spellCheck: (doc: DocId, scope: SpellScope, request: RequestId) => typedError<Typo[], IdeError>(__TAURI_INVOKE("spell_check", { doc, scope, request })),
 	/**  Replacements for a misspelt `word`, best first (Typo › Change to…). */
 	spellSuggest: (word: string) => typedError<string[], IdeError>(__TAURI_INVOKE("spell_suggest", { word })),
 	/**
@@ -308,6 +318,8 @@ export const commands = {
 	vcsBlame: (path: string) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
+	/**  Combined changes of several commits, `commits` oldest first. */
+	vcsCommitsChanges: (repo: string | null, commits: string[]) => typedError<RevisionChange[], IdeError>(__TAURI_INVOKE("vcs_commits_changes", { repo, commits })),
 	vcsBranches: (repo: string | null) => typedError<Branch[], IdeError>(__TAURI_INVOKE("vcs_branches", { repo })),
 	vcsStashes: (repo: string | null) => typedError<Stash[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
 	vcsStage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage", { paths })),
@@ -485,6 +497,19 @@ export const commands = {
 	toolsInstall: (name: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_install", { name, request, onEvent })),
 	/**  Removes a tool the IDE installed. */
 	toolsUninstall: (name: string) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_uninstall", { name })),
+	/**  JDK distributions Download JDK offers. */
+	jdkDownloadVendors: () => __TAURI_INVOKE<JdkVendor[]>("jdk_download_vendors"),
+	/**  Java versions `vendor` publishes; cancellable with `cancel_request(request)`. */
+	jdkDownloadReleases: (vendor: string, request: RequestId) => typedError<JdkReleases, IdeError>(__TAURI_INVOKE("jdk_download_releases", { vendor, request })),
+	/**  Where Download JDK puts JDKs unless told otherwise. */
+	jdkDownloadLocation: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("jdk_download_location")),
+	/**
+	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
+	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable
+	 *  with `cancel_request(request)`. The JDK is then detected like an installed one,
+	 *  and language servers waiting for a JDK (jdtls) start on it.
+	 */
+	jdkDownload: (vendor: string, version: number, location: string | null, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("jdk_download", { vendor, version, location, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
@@ -582,6 +607,11 @@ export const commands = {
 	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
 	/**  Attach to Process: the user's processes a debugger can attach to. */
 	debugAttachableProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_attachable_processes")),
+	/**
+	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
+	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
+	 */
+	debugListenForJvm: (request: RequestId, host: string, port: number) => typedError<number, IdeError>(__TAURI_INVOKE("debug_listen_for_jvm", { request, host, port })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
 	/**
@@ -2073,9 +2103,20 @@ export type EditorSettings_Deserialize = {
 	colorScheme?: string,
 	/**  Color Scheme edits: scheme id → attribute id → override. */
 	colorOverrides?: { [key in string]: { [key in string]: TextAttributesOverride_Deserialize } },
+	/**
+	 *  Color Scheme › Language Defaults › Semantic highlighting: local variables and
+	 *  parameters get a colour derived from their name (IDEA's rainbow identifiers).
+	 */
+	semanticHighlighting?: boolean,
+	/**  Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth. */
+	rainbowBrackets?: boolean,
 	ligatures?: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont?: string,
+	/**  Typography Settings › Main font weight (CSS 100–900), as IDEA. */
+	fontWeight?: number,
+	/**  Typography Settings › Bold font weight: wherever the editor renders bold. */
+	boldFontWeight?: number,
 	general?: EditorGeneralSettings,
 	appearance?: EditorAppearanceSettings,
 	breadcrumbs?: BreadcrumbsSettings,
@@ -2109,9 +2150,20 @@ export type EditorSettings_Serialize = {
 	colorScheme: string,
 	/**  Color Scheme edits: scheme id → attribute id → override. */
 	colorOverrides: { [key in string]: { [key in string]: TextAttributesOverride_Serialize } },
+	/**
+	 *  Color Scheme › Language Defaults › Semantic highlighting: local variables and
+	 *  parameters get a colour derived from their name (IDEA's rainbow identifiers).
+	 */
+	semanticHighlighting: boolean,
+	/**  Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth. */
+	rainbowBrackets: boolean,
 	ligatures: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont: string,
+	/**  Typography Settings › Main font weight (CSS 100–900), as IDEA. */
+	fontWeight: number,
+	/**  Typography Settings › Bold font weight: wherever the editor renders bold. */
+	boldFontWeight: number,
 	general: EditorGeneralSettings,
 	appearance: EditorAppearanceSettings,
 	breadcrumbs: BreadcrumbsSettings,
@@ -2808,6 +2860,11 @@ export type InspectionLevel = "error" | "warning" | "weakWarning" | "serverProbl
 export type InspectionOverride = {
 	enabled?: boolean | null,
 	severity?: InspectionLevel | null,
+	/**
+	 *  The inspection's own options (Typo: `processCode`, `processLiterals`,
+	 *  `processComments`); absent ones keep their defaults.
+	 */
+	options?: { [key in string]: boolean } | null,
 };
 
 export type InspectionSettings = {
@@ -2884,6 +2941,11 @@ export type JavaLaunchInfo = {
 	javaHome: IpcPath | null,
 	/**  The `java` launcher to use (filled in by the caller from the installed JDKs). */
 	javaExec: string | null,
+	/**
+	 *  How a launcher that builds the command line itself must shorten it (java-debug's
+	 *  `shortenCommandLine`: `none` | `jarmanifest` | `argfile`; filled in by the caller).
+	 */
+	shortenCommandLine: string | null,
 	/**  First compile errors of the workspace when the build had errors. */
 	errors: JavaCompileError[],
 	/**  All compile errors (`errors` is capped). */
@@ -2911,6 +2973,22 @@ export type JavaSettings = {
 	jdtlsVmArgs?: string,
 	/**  Build Tools › Maven. */
 	maven?: MavenSettings,
+};
+
+/**  Java versions a vendor publishes. */
+export type JdkReleases = {
+	/**  Feature versions, newest first. */
+	versions: number[],
+	/**  The long-term-support ones among them. */
+	lts: number[],
+	/**  The version offered first (the newest LTS). */
+	recommended: number,
+};
+
+/**  A JDK distribution the IDE can download. */
+export type JdkVendor = {
+	id: string,
+	name: string,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -3018,7 +3096,8 @@ export type LaunchConfig = {
 	 *  A `"cargo": {"args": [...], "filter": {"name", "kind"}}` entry builds with cargo
 	 *  and launches the produced executable; `"debugServer": <port>` connects to an
 	 *  adapter already listening on that local port (e.g. java-debug inside jdtls)
-	 *  instead of starting one.
+	 *  instead of starting one, `"debugServer": "host:port"` to one on another machine
+	 *  (`dlv --headless`, `debugpy --listen`).
 	 */
 	extraJson: string | null,
 };
@@ -3950,6 +4029,19 @@ export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 
 export type ReviewEvent = "approve" | "requestChanges" | "comment";
 
+/**  A file changed across several commits: its content at `before` ↔ at `after`. */
+export type RevisionChange = {
+	/**  Repository-relative path after the change (before it, for a deletion). */
+	path: string,
+	kind: ChangeKind,
+	/**  Path at `before`, for a rename. */
+	oldPath: string | null,
+	/**  Commit holding the old content; `None` when the file was added. */
+	before: string | null,
+	/**  Commit holding the new content; `None` when the file was deleted. */
+	after: string | null,
+};
+
 export type RootKind = "source" | "test" | "resources" | "testResources" | "excluded";
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
@@ -4387,6 +4479,16 @@ export type SourceFolder = {
 	detectedFrom: string | null,
 };
 
+/**
+ *  The Typo inspection's options (IDEA's "Process code / literals / comments");
+ *  plain text and Markdown are always checked.
+ */
+export type SpellScope = {
+	code?: boolean,
+	literals?: boolean,
+	comments?: boolean,
+};
+
 /**  Editor › Natural Languages › Spelling. */
 export type SpellingSettings = {
 	/**  Application-level dictionary: accepted words (IDE settings). */
@@ -4786,7 +4888,14 @@ export type Typo = {
 	/**  UTF-16 range of the word. */
 	range: Range,
 	word: string,
+	context: TypoContext,
 };
+
+/**
+ *  What a typo is part of: correcting one in `Code` (a declared name) must
+ *  rename the symbol; the others may replace the word in place.
+ */
+export type TypoContext = "code" | "literal" | "comment" | "prose";
 
 /**  What [`FileMoves::undo`] did. */
 export type UndoOutcome = {

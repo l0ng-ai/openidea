@@ -22,7 +22,7 @@ export const viewerHighlight = HighlightStyle.define([
   { tag: [t.propertyName], color: "var(--syn-property)" },
   { tag: [t.variableName], color: "var(--syn-variable)" },
   { tag: t.invalid, color: "var(--syn-invalid)" },
-  { tag: t.heading, fontWeight: "600", color: "var(--fg-strong)" },
+  { tag: t.heading, fontWeight: "var(--fw-code-bold, 700)", color: "var(--fg-strong)" },
   { tag: t.link, color: "var(--link)", textDecoration: "underline" },
 ]);
 
@@ -34,7 +34,7 @@ export const viewerTheme = EditorView.theme(
       color: "var(--fg)",
       fontSize: "var(--fs-code)",
     },
-    ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "var(--lh-code)" },
+    ".cm-scroller": { fontFamily: "var(--font-mono)", fontWeight: "var(--fw-code, 400)", lineHeight: "var(--lh-code)" },
     ".cm-content": { caretColor: "var(--accent)" },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)" },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {

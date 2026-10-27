@@ -5,12 +5,14 @@
  * chosen one is in effect for the project (editor highlighting, Problems,
  * Inspect Code).
  */
-import { useEffect, useId, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { commands, isTauri } from "@/platform/ipc";
 import {
+  BUILTIN_INSPECTIONS,
   copyProfileName,
   effectiveProfileId,
+  inspectionOption,
   listProfiles,
   overridesOf,
   profileLabel,
@@ -36,6 +38,7 @@ import {
   Tree,
   showContextMenu,
   type MenuItem,
+  type TreeHandle,
 } from "@/ui";
 import { useSetting } from "../../components/context";
 import { useSettingsDialog } from "../../model/staging";
@@ -51,7 +54,9 @@ import {
   deleteProfile,
   filterInspectionTree,
   isEnabled,
+  pathToInspection,
   setEnabled,
+  setOption,
   renameProfile,
   setLevel,
   withProfileOverrides,
@@ -136,6 +141,28 @@ function InspectionsPage() {
   const filtering = !!query.trim();
   const expanded = useMemo(() => (filtering ? expandableKeys(roots) : expandedKeys), [filtering, roots, expandedKeys]);
   const [selected, setSelected] = useState<InspectionNode | null>(null);
+
+  // Opened as `editor.inspections#<id>` (Edit inspection profile setting): select that inspection.
+  const focus = useSettingsDialog((s) => s.focus);
+  const treeRef = useRef<TreeHandle | null>(null);
+  const reveal = useRef<string | null>(null);
+  useEffect(() => {
+    const path = focus ? pathToInspection(tree, focus) : null;
+    if (!path) return;
+    // Expand first; the effect below selects the row once it is rendered.
+    const frame = requestAnimationFrame(() => {
+      reveal.current = path[path.length - 1]!;
+      setQuery("");
+      setExpandedKeys((prev) => new Set([...prev, ...path.slice(0, -1)]));
+      useSettingsDialog.setState({ focus: null });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focus, tree]);
+  useEffect(() => {
+    if (!reveal.current) return;
+    treeRef.current?.reveal(reveal.current);
+    reveal.current = null;
+  }, [expanded]);
 
   const profiles = listProfiles(settings, projectAvailable);
   const profileOptions = profiles.map((p) => ({
@@ -249,6 +276,7 @@ function InspectionsPage() {
         >
           <Tree<InspectionNode>
             aria-label="Inspections"
+            handleRef={treeRef}
             roots={roots}
             getKey={(n) => n.key}
             getLabel={(n) => n.name}
@@ -434,7 +462,37 @@ function Details({
           />
         </div>
       )}
+      {id && <InspectionOptions id={id} overrides={overrides} onChange={onChange} />}
     </div>
+  );
+}
+
+/** The inspection's own options (Typo: Process code / literals / comments). */
+function InspectionOptions({
+  id,
+  overrides,
+  onChange,
+}: {
+  id: string;
+  overrides: ProfileOverrides;
+  onChange: (o: ProfileOverrides) => void;
+}) {
+  const specs = BUILTIN_INSPECTIONS.find((b) => b.id === id)?.options;
+  if (!specs?.length) return null;
+  return (
+    <fieldset className={styles.options} disabled={!isEnabled(overrides, id)}>
+      <legend>
+        <T>Options</T>
+      </legend>
+      {specs.map((o) => (
+        <Checkbox
+          key={o.key}
+          label={o.label}
+          checked={inspectionOption(overrides, id, o.key)}
+          onChange={(on) => onChange(setOption(overrides, id, o.key, on))}
+        />
+      ))}
+    </fieldset>
   );
 }
 

@@ -1,6 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("./WindowControls", () => ({ WindowControls: () => null }));
 import { fireEvent, render, screen } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
+import { usePlatform } from "@/platform/platformInfo";
 import { useThemeOverride } from "./theme";
 import { customizeToolbarItems, gearMenuItems, TitleBar } from "./TitleBar";
 
@@ -44,11 +47,15 @@ describe("title bar gear menu", () => {
     const items = customizeToolbarItems(
       { left: ["project", "vcs.branch"], right: ["action:navigate.searchEverywhere"] },
       ["run.widget"],
-      new Map([["run.widget", { id: "run.widget", align: "right", priority: 1, component: () => null, title: "Run Widget" }]]),
+      new Map([
+        ["run.widget", { id: "run.widget", align: "right", priority: 1, component: () => null, title: "Run Widget" }],
+      ]),
       (id) => toggled.push(id),
       () => void reset++,
     );
-    const rows = items.filter((i): i is { id: string; label: string; checked: boolean; run: () => void } => "checked" in i);
+    const rows = items.filter(
+      (i): i is { id: string; label: string; checked: boolean; run: () => void } => "checked" in i,
+    );
     expect(rows.map((r) => [r.label, r.checked])).toEqual([
       ["Project Widget", true],
       ["VCS Widget", true],
@@ -73,5 +80,26 @@ describe("title bar gear menu", () => {
     fireEvent.click(screen.getByText("Theme"));
     fireEvent.click(await screen.findByText("High Contrast"));
     expect(useThemeOverride.getState().theme).toBe("dark-hc");
+  });
+});
+
+describe("title bar in Distraction Free Mode (bare)", () => {
+  // The main menu is the way back out of a view mode that hides the toolbar:
+  // the title bar's ☰ where the window is frameless (Windows), the OS menu bar elsewhere.
+  it.each([
+    { os: "windows", overlayTitleBar: false, framelessTitleBar: true, mainMenu: true },
+    { os: "macos", overlayTitleBar: true, framelessTitleBar: false, mainMenu: false },
+    { os: "linux", overlayTitleBar: false, framelessTitleBar: false, mainMenu: false },
+  ])("$os: keeps the main menu button where there is no native menu bar", ({ mainMenu, ...platform }) => {
+    const saved = usePlatform.getState();
+    usePlatform.setState(platform);
+    try {
+      const { container } = render(<TitleBar bare />);
+      expect(container.querySelector("header[data-titlebar='bare']")).not.toBeNull();
+      expect(screen.queryByRole("button", { name: "IDE and Project Settings" })).toBeNull();
+      expect(!!screen.queryByRole("button", { name: "Main Menu" })).toBe(mainMenu);
+    } finally {
+      usePlatform.setState(saved);
+    }
   });
 });

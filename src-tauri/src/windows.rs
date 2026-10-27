@@ -240,6 +240,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     let window = WebviewWindowBuilder::from_config(app, &config)
         .and_then(|b| b.build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
+    apply_zoom(app, &window);
     // "Sync with OS" needs the OS mode, known once the window exists.
     if let Some(a) = appearance.filter(|a| a.sync_with_os || a.theme == "system")
         && window.theme().is_ok_and(|t| t == Theme::Dark)
@@ -247,6 +248,17 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         let _ = window.set_background_color(Some(frame_color(&a, true)));
     }
     Ok(window)
+}
+
+/// Sets the saved IDE zoom before the page loads; applied later by the frontend,
+/// it would visibly scale up the splash.
+fn apply_zoom(app: &AppHandle, window: &WebviewWindow) {
+    let Some(zoom) = app.try_state::<AppState>().map(|s| s.global_settings.effective().appearance.zoom) else {
+        return;
+    };
+    if zoom != 100 {
+        let _ = window.set_zoom(f64::from(zoom) / 100.0);
+    }
 }
 
 /// The first window (`create: false` in tauri.conf.json so it can take the theme's colour).
@@ -414,6 +426,7 @@ pub fn open_settings_window(
         .and_then(|b| b.parent(&parent))
         .and_then(|b| b.build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
+    apply_zoom(app, &window);
     // window-state restores the remembered size; the position always follows the parent.
     if let (Ok(pos), Ok(size), Ok(own), Ok(scale)) =
         (parent.outer_position(), parent.outer_size(), window.outer_size(), parent.scale_factor())

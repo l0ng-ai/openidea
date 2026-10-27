@@ -81,3 +81,25 @@ describe("profiledProblems", () => {
     expect(fileDiagnostics(profiledProblems(raw, {}), "/b")).toHaveLength(1);
   });
 });
+
+describe("local inspections (issue #42)", () => {
+  it("reach Problems and clear there too, with their inspection known", async () => {
+    const { installProblemsEvents, producerFor } = await import("./problemsStore");
+    const { setFileDiagnostics } = await import("@/editor/lsp/diagnostics");
+    const { diagnosticInspection } = await import("@/platform/inspections");
+    clearProblems();
+    const off = installProblemsEvents();
+    try {
+      setFileDiagnostics("/p/a.py", "spelling", [{ ...d(0, "info"), message: "Typo: In word 'mesage'", source: "Spelling" }]);
+      const [typo] = fileDiagnostics(useProblems.getState().map, "/p/a.py");
+      expect(typo).toMatchObject({ message: "Typo: In word 'mesage'", typo: true });
+      const producer = producerFor(useProblems.getState().map, "/p/a.py", typo!);
+      expect(producer).toBe("spelling");
+      expect(diagnosticInspection(producer!, typo!)?.id).toBe("builtin:spelling");
+      setFileDiagnostics("/p/a.py", "spelling", []);
+      expect(useProblems.getState().map.size).toBe(0);
+    } finally {
+      off();
+    }
+  });
+});

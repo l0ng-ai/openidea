@@ -20,7 +20,9 @@ mod sandbox;
 mod theme;
 mod types;
 
-pub use manifest::{API_VERSION, CommandDecl, Contributions, FileDecl, MANIFEST_FILE, Permission, PluginManifest};
+pub use manifest::{
+    API_VERSION, CommandDecl, Contributions, FileDecl, MANIFEST_FILE, Permission, PluginManifest, ThemeDecl,
+};
 pub use sandbox::resolve_in_root;
 pub use theme::{ThemeDef, ThemeKind};
 pub use types::*;
@@ -627,7 +629,10 @@ fn static_contributions(dir: &Path, m: &PluginManifest) -> Result<Registrations,
         regs.add_language(cfg);
     }
     for f in &m.contributes.themes {
-        let theme = ThemeDef::parse(&read(&f.path)?).map_err(|e| format!("{}: {e}", f.path.display()))?;
+        let mut theme = ThemeDef::parse(&read(&f.path)?).map_err(|e| format!("{}: {e}", f.path.display()))?;
+        if let Some(scheme) = &f.editor_scheme {
+            theme.merge_editor_scheme(&read(scheme)?).map_err(|e| format!("{}: {e}", scheme.display()))?;
+        }
         regs.add_theme(theme);
     }
     Ok(regs)

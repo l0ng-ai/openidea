@@ -59,6 +59,7 @@ import {
   openRenameDialog,
   openSelection,
   paste,
+  refreshOsClipboard,
   targetFolder,
 } from "./operations";
 import { isInside, nameOf, parentOf, splitExtension, tildify } from "./paths";
@@ -502,6 +503,15 @@ export function ProjectView() {
       disposed = true;
       unlisten?.();
     };
+  }, []);
+
+  // Files copied in Explorer keep Paste usable: the OS clipboard can change
+  // while this window is in the background, so re-ask whenever it comes back.
+  useEffect(() => {
+    void refreshOsClipboard();
+    const refresh = () => void refreshOsClipboard();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
   }, []);
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {

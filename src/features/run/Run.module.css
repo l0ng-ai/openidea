@@ -109,6 +109,7 @@
   position: relative;
   padding: 4px 0;
   font-family: var(--font-mono);
+  font-weight: var(--fw-code);
   font-size: var(--fs-code);
   color: var(--fg);
   background: var(--bg-app);

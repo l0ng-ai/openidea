@@ -1,0 +1,8 @@
+[package]
+name = "ide-clipboard"
+description = "The OS clipboard's file list (Explorer <-> project view): Windows CF_HDROP read/write, no window or message loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

@@ -6,8 +6,10 @@ import type { RunConfig } from "@/platform/ipc";
 import {
   provideNotificationService,
   provideToolWindowService,
+  registerRunConfigType,
   registerToolWindow,
   runConfigTypes,
+  type RunConfigTypeContribution,
   type ToolWindowService,
 } from "@/workbench/contributions";
 import { typeRows } from "./AddConfigPopup";
@@ -16,7 +18,7 @@ import { buildRows } from "./ConfigChooser";
 import { compoundChildren, compoundCycle, formatEnv, parseEnv, validateConfig } from "./configs";
 import { EditConfigsOverlay, moveConfig, treeRows } from "./EditConfigsDialog";
 import { pasteRows } from "./EnvDialog";
-import { CURRENT_FILE, resetRuns, selectConfig, sessionsOf, startCompound, useRun } from "./store";
+import { CURRENT_FILE, resetRuns, selectConfig, sessionsOf, startCompound, startRun, useRun } from "./store";
 import {
   BUILTIN_TYPES,
   formParams,
@@ -291,6 +293,53 @@ describe("Run/Debug Configurations tree", () => {
     fireEvent.click(screen.getByRole("button", { name: /Modify options/ }));
     fireEvent.click(await screen.findByText("Redirect input"));
     expect(screen.getByLabelText("Redirect input from")).toBeTruthy();
+  });
+});
+
+describe("debug-only types (Remote JVM Debug)", () => {
+  const remote: RunConfigTypeContribution = {
+    id: "test-remote",
+    label: "Test Remote",
+    icon: "debug",
+    defaults: { port: "5005" },
+    debugOnly: true,
+    debugAdapter: "java-debug",
+    fields: [
+      { key: "port", label: "Port", validate: (v) => (/^\d+$/.test(v) ? null : "Port must be a number") },
+      { key: "agent", label: "Agent", control: "output", value: (p) => `address=*:${p.port ?? ""}` },
+    ],
+    commandLine: () => null,
+  };
+  let dispose: () => void;
+  beforeEach(() => {
+    dispose = registerRunConfigType(remote);
+  });
+  afterEach(() => dispose());
+
+  it("edit only their fields; output fields follow the form", async () => {
+    useRun.setState({ configs: [], loaded: true, editorOpen: true });
+    render(<EditConfigsOverlay />);
+    fireEvent.click(screen.getByRole("button", { name: "Add New Configuration" }));
+    fireEvent.click(await screen.findByText("Test Remote"));
+    expect((screen.getByLabelText("Agent") as HTMLTextAreaElement).value).toBe("address=*:5005");
+    fireEvent.change(screen.getByLabelText("Port"), { target: { value: "6006" } });
+    expect((screen.getByLabelText("Agent") as HTMLTextAreaElement).value).toBe("address=*:6006");
+    expect((screen.getByLabelText("Agent") as HTMLTextAreaElement).readOnly).toBe(true);
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+    // No process: no working directory, environment, debug adapter or command line.
+    expect(screen.queryByLabelText("Working directory")).toBeNull();
+    expect(screen.queryByLabelText("Debug adapter")).toBeNull();
+    expect(screen.queryByText("Command line")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Port"), { target: { value: "x" } });
+    expect(screen.getByRole("alert").textContent).toBe("Port must be a number");
+  });
+
+  it("are valid without a command, get the type's adapter and are not run", async () => {
+    const c = newConfigOfType(remote, []);
+    expect(c.debugAdapter).toBe("java-debug");
+    expect(validateConfig(c, [c])).toEqual({});
+    expect(await startRun(c)).toBeNull();
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "'Unnamed' can only be debugged" }));
   });
 });
 

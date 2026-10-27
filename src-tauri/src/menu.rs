@@ -630,6 +630,8 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("db.showToolWindow", "Database"),
             act("db.newDataSource", "New Data Source…"),
             act("db.openConsole", "Open Query Console"),
+            SEP,
+            act("vim.toggle", "Vim"),
         ],
     ));
 
@@ -1432,6 +1434,7 @@ mod tests {
                 "code.quickDefinition",
                 "code.quickTypeDefinition",
                 "localHistory.recentChanges",
+                "vim.toggle",
                 "editor.resetFontSize",
                 "diff.compareWithClipboard",
                 "view.quickSwitchScheme",

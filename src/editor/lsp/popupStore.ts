@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import type { EditorView } from "@codemirror/view";
 import type { Location, Markup } from "@/bindings";
+import type { MenuItem } from "@/ui";
 import type { WorkspaceEditSummary } from "./workspaceEdit";
 
 export interface PopupPoint {
@@ -24,6 +25,8 @@ export interface ListPopupItem {
   disabled?: string | null;
   shortcut?: string;
   run: () => void | Promise<void>;
+  /** IDEA's right-arrow menu of the row (inspection options of a fix). */
+  submenu?: MenuItem[];
   /** Called when the row becomes the selected one (e.g. highlight what it would act on). */
   onActive?: () => void;
 }

@@ -6,10 +6,11 @@
 import type { Extension } from "@codemirror/state";
 import { hoverTooltip, type EditorView } from "@codemirror/view";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { navigationModifierHeld } from "@/platform/navigationModifier";
 import { activeSession, evaluate } from "../state";
 import { inlineValue } from "../values";
 import { tx } from "@/platform/i18n";
-import { iconMarkup } from "@/ui";
+import { iconMarkup, selectableText } from "@/ui";
 import { mountValueTree } from "../ui/ValueHintTree";
 import styles from "./editor.module.css";
 
@@ -40,7 +41,8 @@ export function valueTooltip(): Extension {
   return hoverTooltip(
     async (view, pos) => {
       const dbg = workflowSettings().debugger;
-      if (!dbg.valueTooltip) return null;
+      // ⌘/Ctrl-hover shows the navigation info instead (closed on press by the LSP hover).
+      if (!dbg.valueTooltip || navigationModifierHeld()) return null;
       const session = activeSession();
       if (!session || session.status !== "paused") return null;
       const expr = expressionAt(view, pos);
@@ -53,13 +55,14 @@ export function valueTooltip(): Extension {
       } catch {
         return null;
       }
+      if (navigationModifierHeld()) return null;
       return {
         pos: expr.from,
         end: expr.to,
         above: true,
         create: () => {
           const dom = document.createElement("div");
-          dom.className = styles.valueTooltip!;
+          dom.className = `${styles.valueTooltip} ${selectableText}`;
           let tree: { unmount(): void } | null = null;
           if (value.variablesReference > 0) {
             // IDEA's value hint: the "+" expands the object into a variables tree in place.
@@ -73,7 +76,7 @@ export function valueTooltip(): Extension {
             expand.addEventListener("click", () => {
               if (tree) return;
               expand.remove();
-              dom.classList.add(styles.valueTooltipTree!);
+              dom.classList.replace(selectableText, styles.valueTooltipTree!);
               dom.replaceChildren();
               tree = mountValueTree(dom, expr.text, value, session.id);
             });

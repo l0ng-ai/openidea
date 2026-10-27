@@ -1,21 +1,32 @@
 /**
  * Proofreading › Typo: misspelt words of comments, strings and declared names
  * (the backend extracts and checks them off the UI thread), reported as
- * diagnostics of the `spelling` producer at the Typo level, with the quick
- * fixes "Change to…" and "Save 'word' to project / application dictionary".
+ * diagnostics of the `spelling` producer at the Typo level. Quick fixes:
+ * "Change to…" (comments, literals, text: the word in place) or "Rename to…"
+ * (a declared name: through Rename, so references follow), "Save 'word' to
+ * project / application dictionary", and the inspection's options (→).
  */
 import { StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { whenSynced } from "@/editor/api";
 import { call, commands, isCancelled, isTauri, nextRequestId, type RequestId } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { inspectionProfile, SPELLING_INSPECTION, SPELLING_PRODUCER } from "@/platform/inspections";
-import type { Settings } from "@/bindings";
+import {
+  inspectionOption,
+  inspectionProfile,
+  SPELLING_INSPECTION,
+  SPELLING_OPTIONS,
+  SPELLING_PRODUCER,
+} from "@/platform/inspections";
+import { intentionControls } from "@/platform/inspectionControls";
+import type { Settings, SpellScope, TypoContext } from "@/bindings";
+import type { MenuItem } from "@/ui";
 import { setFileDiagnostics } from "./diagnostics";
 import { docOf } from "./lsp";
 import { rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
+import { renameNamePart } from "./rename";
 
 const CHECK_DELAY = 800;
 
@@ -23,6 +34,7 @@ interface PlacedTypo {
   from: number;
   to: number;
   word: string;
+  context: TypoContext;
 }
 
 const setTypos = StateEffect.define<readonly PlacedTypo[]>();
@@ -40,6 +52,13 @@ const typosField = StateField.define<readonly PlacedTypo[]>({
 });
 
 const spellingEnabled = () => inspectionProfile()[SPELLING_INSPECTION]?.enabled !== false;
+
+/** What the Typo inspection's options (profile in effect) have checked. */
+export function spellScope(): SpellScope {
+  const profile = inspectionProfile();
+  const on = (key: string) => inspectionOption(profile, SPELLING_INSPECTION, key);
+  return { code: on(SPELLING_OPTIONS.code), literals: on(SPELLING_OPTIONS.literals), comments: on(SPELLING_OPTIONS.comments) };
+}
 
 const spellingOf = (s: Settings | null) => s?.spelling;
 
@@ -74,6 +93,20 @@ function replaceWord(view: EditorView, typo: PlacedTypo, replacement: string) {
   });
 }
 
+/**
+ * The correction: a declared name is renamed with its references (IDEA's
+ * "Typo: Rename to"); words of comments, literals and text change in place.
+ */
+export function applyCorrection(view: EditorView, typo: PlacedTypo, replacement: string): void | Promise<void> {
+  if (typo.context === "code") return renameNamePart(view, typo, replacement);
+  replaceWord(view, typo, replacement);
+}
+
+/** Letters and digits only: what can replace one word of an identifier. */
+export function isNamePart(word: string): boolean {
+  return /^[\p{L}\p{N}]+$/u.test(word);
+}
+
 async function changeTo(view: EditorView, typo: PlacedTypo) {
   let suggestions: string[];
   try {
@@ -81,6 +114,9 @@ async function changeTo(view: EditorView, typo: PlacedTypo) {
   } catch {
     suggestions = [];
   }
+  const rename = typo.context === "code";
+  // A name part can only become another name part: "me sage" or "me-sage" would break the code.
+  if (rename) suggestions = suggestions.filter(isNamePart);
   if (!suggestions.length) {
     showHint(view, `No suggestions for '${typo.word}'`);
     return;
@@ -88,8 +124,8 @@ async function changeTo(view: EditorView, typo: PlacedTypo) {
   openPopup({
     kind: "list",
     anchor: caretAnchor(view, typo.from),
-    title: `Change '${typo.word}' to`,
-    items: suggestions.map((s, i) => ({ id: `${i}`, label: s, run: () => replaceWord(view, typo, s) })),
+    title: `${rename ? "Rename" : "Change"} '${typo.word}' to`,
+    items: suggestions.map((s, i) => ({ id: `${i}`, label: s, run: () => applyCorrection(view, typo, s) })),
   });
 }
 
@@ -101,8 +137,7 @@ export function spellingIntentions(view: EditorView): ListPopupItem[] {
   const typo = typoAt(view.state, sel.head);
   if (!typo) return [];
   const hasProject = !!useProject.getState().project;
-  return [
-    { id: "spelling.change", label: "Typo: Change to…", icon: "bulb-fix", emphasis: true, run: () => changeTo(view, typo) },
+  const saves: ListPopupItem[] = [
     ...(hasProject
       ? [
           {
@@ -119,6 +154,22 @@ export function spellingIntentions(view: EditorView): ListPopupItem[] {
       icon: "bulb-fix",
       run: () => saveToDictionary(typo.word, "ide"),
     },
+  ];
+  const submenu: MenuItem[] = [
+    ...saves.map((s) => ({ id: s.id, label: s.label, verbatim: true, run: () => void s.run() })),
+    { kind: "separator" },
+    ...intentionControls({ id: SPELLING_INSPECTION, name: "Typo" }),
+  ];
+  return [
+    {
+      id: "spelling.change",
+      label: typo.context === "code" ? "Typo: Rename to…" : "Typo: Change to…",
+      icon: "bulb-fix",
+      emphasis: true,
+      run: () => changeTo(view, typo),
+      submenu,
+    },
+    ...saves.map((s) => ({ ...s, submenu })),
   ];
 }
 
@@ -150,7 +201,7 @@ export function spellingExtension(): Extension {
       try {
         await whenSynced(view);
         if (mine !== seq) return;
-        const typos = await call(commands.spellCheck(doc.doc, id));
+        const typos = await call(commands.spellCheck(doc.doc, spellScope(), id));
         if (mine !== seq) return;
         const text = view.state.doc;
         setFileDiagnostics(
@@ -164,7 +215,7 @@ export function spellingExtension(): Extension {
             code: null,
           })),
         );
-        const placed = typos.map((t) => ({ ...rangeToOffsets(text, t.range), word: t.word }));
+        const placed = typos.map((t) => ({ ...rangeToOffsets(text, t.range), word: t.word, context: t.context }));
         view.dispatch({ effects: setTypos.of(placed) });
       } catch (e) {
         if (!isCancelled(e)) console.debug("[spelling]", e);
@@ -177,10 +228,11 @@ export function spellingExtension(): Extension {
       timer = setTimeout(() => void run(), delay);
     };
     schedule(200);
-    let lastConfig = JSON.stringify([spellingOf(useProject.getState().settings), spellingEnabled()]);
+    const config = (s: Settings | null) => JSON.stringify([spellingOf(s), spellingEnabled(), spellScope()]);
+    let lastConfig = config(useProject.getState().settings);
     const offSettings = useProject.subscribe((s, prev) => {
-      if (s.settings === prev.settings) return;
-      const next = JSON.stringify([spellingOf(s.settings), spellingEnabled()]);
+      if (s.settings === prev.settings && s.project === prev.project) return;
+      const next = config(s.settings);
       if (next === lastConfig) return;
       lastConfig = next;
       schedule(0);

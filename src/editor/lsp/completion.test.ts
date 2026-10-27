@@ -239,10 +239,6 @@ describe("lookup commit characters", () => {
 });
 
 describe("explicit completion", () => {
-  // jsdom has no layout; CodeMirror measures text when the tooltip is positioned.
-  Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
-  Range.prototype.getBoundingClientRect ??= () => new DOMRect();
-
   function editor(labels: string[]) {
     const source: CompletionSource = (ctx) => {
       const word = ctx.matchBefore(/\w*/);

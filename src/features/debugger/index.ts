@@ -8,7 +8,12 @@ import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { valueTooltip } from "./editor/valueTooltip";
 import { registerEditorContribution } from "@/editor/api";
-import { registerMenuGroup, registerOverlay, registerToolWindow } from "@/workbench/contributions";
+import {
+  registerMenuGroup,
+  registerOverlay,
+  registerRunConfigType,
+  registerToolWindow,
+} from "@/workbench/contributions";
 import { registerDebugActions } from "./actions";
 import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
@@ -19,6 +24,7 @@ import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
 import { onHotCodeReplace } from "./hotswap";
 import { handleDebugEvent, isLive, loadWatches, publishContext, resetSessions, stopSession, useDebug } from "./state";
 import { DebuggerOverlays } from "./ui/Overlays";
+import { REMOTE_TYPES } from "./remote";
 
 export function activate(): () => void {
   loadWatches();
@@ -28,6 +34,8 @@ export function activate(): () => void {
   loadSpecialBreakpoints(useProject.getState().project?.root ?? null);
   const disposers = [
     registerDebugActions(),
+    // Remote JVM Debug, Go Remote, …: Run/Debug Configurations › Add New Configuration.
+    ...REMOTE_TYPES.map(registerRunConfigType),
     registerToolWindow({
       id: "debug",
       title: "Debug",

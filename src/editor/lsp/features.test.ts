@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Text } from "@codemirror/state";
 import type { CodeAction } from "@/bindings";
-import { semanticRanges } from "./semantic";
+import { RAINBOW_COLORS, rainbowIndex, semanticRanges } from "./semantic";
 import { lineErrorsAwayFromCaret, sortCodeActions } from "./intentions";
 import { splitSignature } from "./signature";
 import { dedupeLocations, usagesStatusText } from "./navigation";
@@ -25,6 +25,66 @@ describe("semanticRanges", () => {
       { from: 21, to: 24, className: "cm-sem-function cm-sem-deprecated" },
       { from: 34, to: 37, className: "cm-sem-constant" },
     ]);
+  });
+});
+
+describe("semantic highlighting (rainbow identifiers)", () => {
+  // fn f(total: u32, self) { let count = total; static S; obj.field; count }
+  const doc = Text.of(["fn f(total, self) { let count = total; S; obj.field; count + total }"]);
+  const tokens = {
+    tokenTypes: ["variable", "parameter", "property", "selfParameter"],
+    tokenModifiers: ["static", "declaration"],
+    data: [
+      [0, 5, 5, 1, 0b10], // total (parameter declaration)
+      [0, 12, 4, 3, 0], // self
+      [0, 24, 5, 0, 0b10], // count
+      [0, 32, 5, 1, 0], // total
+      [0, 39, 1, 0, 0b01], // S (static)
+      [0, 42, 3, 0, 0], // obj
+      [0, 46, 5, 2, 0], // field
+      [0, 53, 5, 0, 0], // count
+      [0, 61, 5, 1, 0], // total
+    ].flat(),
+  };
+  const rainbow = (r: { className: string }) => /cm-sem-rainbow-(\d)/.exec(r.className)?.[1] ?? null;
+
+  it("hashes names to a stable palette index", () => {
+    expect(rainbowIndex("count")).toBe(rainbowIndex("count"));
+    const all = ["a", "b", "count", "total", "index", "value", "name", "item", "result", "i", "j", "k"].map(rainbowIndex);
+    for (const n of all) expect(n >= 1 && n <= RAINBOW_COLORS).toBe(true);
+    expect(new Set(all).size).toBeGreaterThan(2);
+  });
+
+  it("colours locals and parameters by name, only when enabled", () => {
+    expect(semanticRanges(doc, tokens).some((r) => rainbow(r))).toBe(false);
+    const ranges = semanticRanges(doc, tokens, true);
+    const byText = new Map<string, Set<string | null>>();
+    for (const r of ranges) {
+      const name = doc.sliceString(r.from, r.to);
+      byText.set(name, (byText.get(name) ?? new Set()).add(rainbow(r)));
+    }
+    expect(byText.get("total")).toEqual(new Set([String(rainbowIndex("total"))]));
+    expect(byText.get("count")).toEqual(new Set([String(rainbowIndex("count"))]));
+    expect(byText.get("obj")).toEqual(new Set([String(rainbowIndex("obj"))]));
+    // Parameters keep their own class too; self, statics and fields get no rainbow colour.
+    expect(ranges.find((r) => r.from === 5)!.className).toBe(`cm-sem-parameter cm-sem-declaration cm-sem-rainbow-${rainbowIndex("total")}`);
+    expect(byText.get("self")).toEqual(new Set([null]));
+    expect(byText.get("S")).toEqual(new Set([null]));
+    expect(byText.get("field")).toEqual(new Set([null]));
+  });
+
+  it("leaves module-level variables plain when the server marks locals", () => {
+    const ts = Text.of(["let top = 1; function f(p) { let x = top + p; }"]);
+    const r = semanticRanges(
+      ts,
+      {
+        tokenTypes: ["variable", "parameter"],
+        tokenModifiers: ["declaration", "local"],
+        data: [0, 4, 3, 0, 0b01, 0, 24, 1, 1, 0b11, 0, 33, 1, 0, 0b11, 0, 37, 3, 0, 0, 0, 43, 1, 1, 0b10],
+      },
+      true,
+    );
+    expect(r.filter((x) => x.className.includes("rainbow")).map((x) => ts.sliceString(x.from, x.to))).toEqual(["p", "x", "p"]);
   });
 });
 

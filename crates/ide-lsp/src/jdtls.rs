@@ -74,6 +74,9 @@ pub struct JavaLaunchInfo {
     pub java_home: Option<ide_core::IpcPath>,
     /// The `java` launcher to use (filled in by the caller from the installed JDKs).
     pub java_exec: Option<String>,
+    /// How a launcher that builds the command line itself must shorten it (java-debug's
+    /// `shortenCommandLine`: `none` | `jarmanifest` | `argfile`; filled in by the caller).
+    pub shorten_command_line: Option<String>,
     /// First compile errors of the workspace when the build had errors.
     pub errors: Vec<JavaCompileError>,
     /// All compile errors (`errors` is capped).
@@ -273,6 +276,7 @@ impl LspManager {
             module_paths: cp.module_paths,
             java_home: java_home.map(Into::into),
             java_exec: None,
+            shorten_command_line: None,
             errors,
             error_count,
             hints: Vec::new(),

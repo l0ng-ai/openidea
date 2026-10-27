@@ -10,6 +10,7 @@
 //! [`tools_bin_dirs`] on the process `PATH` at startup.
 
 pub mod archive;
+pub mod jdk;
 pub mod platform;
 mod process;
 pub mod registry;
@@ -89,6 +90,14 @@ struct Manifest {
 }
 
 const MANIFEST: &str = ".openidea-tool.json";
+
+/// `typescript@<7` → `typescript`, `@vue/language-server` unchanged.
+fn npm_name(spec: &str) -> &str {
+    match spec[1..].find('@') {
+        Some(i) => &spec[..i + 1],
+        None => spec,
+    }
+}
 
 pub fn tools_dir(app_data: &Path) -> PathBuf {
     app_data.join("tools")
@@ -349,6 +358,17 @@ impl Tools {
         json.get("version")?.as_str().map(String::from)
     }
 
+    /// Whether an installed npm tool other than `tool` also installs `package`.
+    fn npm_dependency_in_use(&self, tool: &str, package: &str) -> bool {
+        TOOLS.iter().any(|t| match t.method {
+            Method::Npm { packages } if t.name != tool => {
+                packages.iter().skip(1).any(|p| npm_name(p) == package)
+                    && self.npm_package_version(npm_name(packages[0])).is_some()
+            }
+            _ => false,
+        })
+    }
+
     fn query_version(&self, spec: &ToolSpec, found: &Path) -> Option<String> {
         let (cmd, args) = spec.version?;
         let sibling = found.parent().and_then(|d| self.exe_in(d, cmd));
@@ -518,7 +538,7 @@ impl Tools {
                 let managed = managed_bin_dir(&self.root, spec, self.platform).and_then(|d| self.exe_in(&d, main));
                 if let Some(path) = managed {
                     let version = match spec.method {
-                        Method::Npm { packages } => self.npm_package_version(packages[0]),
+                        Method::Npm { packages } => self.npm_package_version(npm_name(packages[0])),
                         _ => self.manifest(spec.name).and_then(|m| m.version),
                     }
                     .or_else(|| self.query_version(spec, &path));
@@ -644,7 +664,7 @@ impl Tools {
         let (manager, pnpm) = self.npm_manager()?;
         self.ensure_package_json()?;
         let mut c = self.command(manager);
-        let specs = packages.iter().map(|p| format!("{p}@latest"));
+        let specs = packages.iter().map(|p| if npm_name(p) == *p { format!("{p}@latest") } else { p.to_string() });
         if pnpm {
             c.arg("add").arg("--dir").arg(&self.root).args(specs);
         } else {
@@ -929,33 +949,7 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
-        let archive = staging.join(&dl.name);
-        http.download(&dl.url, &archive, dl.size, cancel, emit)?;
-        let expected = match (&dl.sha256, &dl.checksum_url) {
-            (Some(h), _) => Some(h.clone()),
-            (None, Some(url)) => match http.get_text(url, cancel) {
-                Ok(text) => sources::parse_checksum(&text, &dl.name),
-                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-                Err(_) => None,
-            },
-            (None, None) => None,
-        };
-        match expected {
-            Some(expected) => {
-                let actual = sources::sha256_file(&archive)?;
-                if actual != expected {
-                    return Err(IdeError::new(
-                        ErrorKind::Io,
-                        format!("checksum mismatch for {}: expected {expected}, got {actual}", dl.name),
-                    ));
-                }
-                emit(InstallEvent::Line { text: "Checksum verified (SHA-256)".into() });
-            }
-            None => emit(InstallEvent::Line { text: "No checksum published; skipping verification".into() }),
-        }
-        if cancel.is_cancelled() {
-            return Err(IdeError::cancelled());
-        }
+        let archive = fetch_verified(http, dl, staging, cancel, emit)?;
         emit(InstallEvent::Line { text: "Extracting…".into() });
         let pkg = staging.join("pkg");
         let kind = archive::ArchiveKind::from_name(&dl.name);
@@ -999,11 +993,8 @@ impl Tools {
                 archive::link_executable(&bin, main, &target)?;
             }
         }
-        #[cfg(target_os = "macos")]
-        {
-            // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
-            let _ = Command::new("xattr").args(["-dr", "com.apple.quarantine"]).arg(&final_dir).output();
-        }
+        // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
+        clear_quarantine(&final_dir);
         self.write_manifest(spec.name, &Manifest { version: Some(dl.version.clone()), source: Some(dl.url.clone()) })
     }
 
@@ -1038,12 +1029,19 @@ impl Tools {
             }
             Method::Npm { packages } => {
                 if self.root.join("node_modules").exists() {
+                    // Shared dependencies (`typescript`) stay while another installed tool needs them.
+                    let packages: Vec<&str> = packages
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, p)| *i == 0 || !self.npm_dependency_in_use(spec.name, npm_name(p)))
+                        .map(|(_, p)| npm_name(p))
+                        .collect();
                     let (manager, pnpm) = self.npm_manager()?;
                     let mut c = self.command(manager);
                     if pnpm {
-                        c.arg("remove").arg("--dir").arg(&self.root).args(packages);
+                        c.arg("remove").arg("--dir").arg(&self.root).args(&packages);
                     } else {
-                        c.args(["uninstall", "--no-fund", "--no-audit", "--prefix"]).arg(&self.root).args(packages);
+                        c.args(["uninstall", "--no-fund", "--no-audit", "--prefix"]).arg(&self.root).args(&packages);
                     }
                     c.current_dir(&self.root);
                     run_streamed(c, &cancel, &quiet)?;
@@ -1063,6 +1061,55 @@ impl Tools {
         }
         self.info(name, langs)
     }
+}
+
+/// Downloads `dl` into `staging` and checks its SHA-256 when one is published;
+/// returns the downloaded file.
+fn fetch_verified(
+    http: &Http,
+    dl: &sources::Download,
+    staging: &Path,
+    cancel: &CancellationToken,
+    emit: Emit,
+) -> IdeResult<PathBuf> {
+    let archive = staging.join(&dl.name);
+    http.download(&dl.url, &archive, dl.size, cancel, emit)?;
+    let expected = match (&dl.sha256, &dl.checksum_url) {
+        (Some(h), _) => Some(h.clone()),
+        (None, Some(url)) => match http.get_text(url, cancel) {
+            Ok(text) => sources::parse_checksum(&text, &dl.name),
+            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+            Err(_) => None,
+        },
+        (None, None) => None,
+    };
+    match expected {
+        Some(expected) => {
+            let actual = sources::sha256_file(&archive)?;
+            if actual != expected {
+                return Err(IdeError::new(
+                    ErrorKind::Io,
+                    format!("checksum mismatch for {}: expected {expected}, got {actual}", dl.name),
+                ));
+            }
+            emit(InstallEvent::Line { text: "Checksum verified (SHA-256)".into() });
+        }
+        None => emit(InstallEvent::Line { text: "No checksum published; skipping verification".into() }),
+    }
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    Ok(archive)
+}
+
+/// Removes the quarantine flag archives may carry, so macOS runs what was unpacked.
+fn clear_quarantine(dir: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("xattr").args(["-dr", "com.apple.quarantine"]).arg(dir).output();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = dir;
 }
 
 #[cfg(test)]

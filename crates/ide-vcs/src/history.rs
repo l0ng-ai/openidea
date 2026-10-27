@@ -1,7 +1,7 @@
 //! Commit history (topological walk) and per-commit changed files via gitoxide.
 
 use crate::repo::{gx, resolve, to_string};
-use crate::{ChangeKind, ChangedFile, Commit, LogOrder, LogQuery, Repo};
+use crate::{ChangeKind, ChangedFile, Commit, LogOrder, LogQuery, Repo, RevisionChange};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use ide_core::{IdeError, IdeResult};
@@ -423,11 +423,24 @@ fn path_entry(
 
 pub(crate) fn commit_files(r: &Repo, rev: &str) -> IdeResult<Vec<ChangedFile>> {
     let repo = r.gix()?;
-    let id = resolve(&repo, rev)?;
+    Ok(first_parent_changes(&repo, rev)?.files)
+}
+
+struct CommitChanges {
+    id: ObjectId,
+    parent: Option<ObjectId>,
+    files: Vec<ChangedFile>,
+}
+
+/// Files changed by `rev` relative to its first parent (renames detected), sorted by path.
+fn first_parent_changes(repo: &gix::Repository, rev: &str) -> IdeResult<CommitChanges> {
+    let id = resolve(repo, rev)?;
     let commit = repo.find_object(id).map_err(gx)?.peel_to_commit().map_err(gx)?;
+    let id = commit.id;
+    let parent = commit.parent_ids().next().map(|p| p.detach());
     let new_tree = commit.tree().map_err(gx)?;
-    let old_tree = match commit.parent_ids().next() {
-        Some(p) => Some(repo.find_commit(p.detach()).map_err(gx)?.tree().map_err(gx)?),
+    let old_tree = match parent {
+        Some(p) => Some(repo.find_commit(p).map_err(gx)?.tree().map_err(gx)?),
         None => None,
     };
     let mut opts = gix::diff::Options::default();
@@ -455,6 +468,68 @@ pub(crate) fn commit_files(r: &Repo, rev: &str) -> IdeResult<Vec<ChangedFile>> {
         };
         out.push(file);
     }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(CommitChanges { id, parent, files: out })
+}
+
+/// One file's change accumulated over several commits.
+struct Merged {
+    /// Commit before the first change and the file's path there; `None` when it was added.
+    before: Option<(String, String)>,
+    /// Commit of the last change; `None` when it was deleted.
+    after: Option<String>,
+    path: String,
+}
+
+/// Combined changes of `commits` (oldest first), merged like IDEA merges a multi-commit Git
+/// Log selection: per file, the state before the first selected commit that touched it ↔
+/// after the last one, following renames. Files added and then deleted drop out.
+pub(crate) fn commits_changes(r: &Repo, commits: &[String]) -> IdeResult<Vec<RevisionChange>> {
+    let repo = r.gix()?;
+    let mut merged: Vec<Merged> = Vec::new();
+    let mut seen = HashSet::new();
+    for rev in commits {
+        let c = first_parent_changes(&repo, rev)?;
+        if !seen.insert(c.id) {
+            continue;
+        }
+        let id = c.id.to_string();
+        for f in c.files {
+            let from = match f.kind {
+                ChangeKind::Renamed => f.old_path.as_deref().unwrap_or(&f.path),
+                _ => &f.path,
+            };
+            // A live entry at the path this change starts from, else a deleted one being re-added.
+            let existing = merged
+                .iter()
+                .position(|m| m.after.is_some() && m.path == from)
+                .or_else(|| merged.iter().position(|m| m.after.is_none() && m.path == f.path));
+            let i = existing.unwrap_or_else(|| {
+                let before = match (f.kind, c.parent) {
+                    (ChangeKind::Added, _) | (_, None) => None,
+                    (_, Some(p)) => Some((p.to_string(), from.to_owned())),
+                };
+                merged.push(Merged { before, after: None, path: f.path.clone() });
+                merged.len() - 1
+            });
+            let entry = &mut merged[i];
+            entry.after = (f.kind != ChangeKind::Deleted).then(|| id.clone());
+            entry.path = f.path;
+        }
+    }
+    let mut out: Vec<RevisionChange> = merged
+        .into_iter()
+        .filter_map(|m| {
+            let (kind, path, old_path) = match (&m.before, &m.after) {
+                (None, None) => return None,
+                (None, Some(_)) => (ChangeKind::Added, m.path, None),
+                (Some((_, old)), None) => (ChangeKind::Deleted, old.clone(), None),
+                (Some((_, old)), Some(_)) if *old != m.path => (ChangeKind::Renamed, m.path, Some(old.clone())),
+                (Some(_), Some(_)) => (ChangeKind::Modified, m.path, None),
+            };
+            Some(RevisionChange { path, kind, old_path, before: m.before.map(|(rev, _)| rev), after: m.after })
+        })
+        .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }

@@ -264,6 +264,22 @@ pub async fn debug_attachable_processes() -> IdeResult<Vec<attach::AttachablePro
         .map_err(|e| ide_core::IdeError::internal(format!("listing processes failed: {e}")))?
 }
 
+/// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
+/// JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_listen_for_jvm(
+    state: State<'_, AppState>,
+    request: ide_core::RequestId,
+    host: String,
+    port: u16,
+) -> IdeResult<u16> {
+    let token = state.begin_request(request);
+    let result = jdwp::listen_for_jvm(&host, port, token).await;
+    state.end_request(request);
+    result
+}
+
 /// HotSwap (Reload Changed Classes) in a java-debug session.
 #[tauri::command]
 #[specta::specta]

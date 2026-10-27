@@ -543,6 +543,67 @@ fn commit_files_kinds() {
     assert!(repo.commit_files("HEAD").unwrap().len() == 4);
 }
 
+/// IDEA's multi-commit Git Log selection: per file, before the first commit touching it ↔
+/// after the last one, contiguous or not.
+#[test]
+fn commits_changes_merge_selected_commits() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "a0\n");
+    fx.write("b.txt", "b0\n");
+    fx.write("gone.txt", "g\n");
+    fx.write("move.txt", "a fairly long line of content\nanother line\nand a third\n");
+    let c0 = fx.commit_all("c0");
+    fx.write("a.txt", "a1\n");
+    fx.write("tmp.txt", "t\n");
+    let c1 = fx.commit_all("c1");
+    fx.write("b.txt", "b2\n");
+    fx.git(&["mv", "move.txt", "moved.txt"]);
+    let c2 = fx.commit_all("c2");
+    fx.write("a.txt", "a3\n");
+    std::fs::remove_file(fx.path("tmp.txt")).unwrap();
+    std::fs::remove_file(fx.path("gone.txt")).unwrap();
+    std::fs::create_dir(fx.path("dir")).unwrap();
+    fx.git(&["mv", "moved.txt", "dir/final.txt"]);
+    let c3 = fx.commit_all("c3");
+    let repo = fx.repo();
+    let changes = |ids: &[&String]| {
+        let ids: Vec<String> = ids.iter().map(|s| (*s).clone()).collect();
+        // Sorted by path.
+        repo.commits_changes(&ids)
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.path, c.kind, c.old_path, c.before, c.after))
+            .collect::<Vec<_>>()
+    };
+    let s = |x: &String| Some(x.clone());
+
+    // Contiguous c1..c3: tmp.txt added then deleted drops out; the rename chain collapses.
+    assert_eq!(
+        changes(&[&c1, &c2, &c3]),
+        vec![
+            ("a.txt".into(), ChangeKind::Modified, None, s(&c0), s(&c3)),
+            ("b.txt".into(), ChangeKind::Modified, None, s(&c1), s(&c2)),
+            ("dir/final.txt".into(), ChangeKind::Renamed, Some("move.txt".into()), s(&c1), s(&c3)),
+            ("gone.txt".into(), ChangeKind::Deleted, None, s(&c2), None),
+        ]
+    );
+    // Non-contiguous c1 + c3: each file from before its first selected change.
+    assert_eq!(
+        changes(&[&c1, &c3]),
+        vec![
+            ("a.txt".into(), ChangeKind::Modified, None, s(&c0), s(&c3)),
+            ("dir/final.txt".into(), ChangeKind::Renamed, Some("moved.txt".into()), s(&c2), s(&c3)),
+            ("gone.txt".into(), ChangeKind::Deleted, None, s(&c2), None),
+        ]
+    );
+    // The root commit has no parent: everything is added; a duplicate id counts once.
+    let root = changes(&[&c0, &c0]);
+    assert_eq!(root.len(), 4);
+    assert!(root.iter().all(|c| c.1 == ChangeKind::Added && c.3.is_none() && c.4 == s(&c0)));
+    // A single commit matches its own changed files.
+    assert_eq!(changes(&[&c2]).len(), repo.commit_files(&c2).unwrap().len());
+}
+
 #[test]
 fn file_at_revisions_and_index() {
     let fx = Fixture::new();
