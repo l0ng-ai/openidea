@@ -9,7 +9,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { activeSession, evaluate } from "../state";
 import { inlineValue } from "../values";
 import { tx } from "@/platform/i18n";
-import { iconMarkup } from "@/ui";
+import { iconMarkup, selectableText } from "@/ui";
 import { mountValueTree } from "../ui/ValueHintTree";
 import styles from "./editor.module.css";
 
@@ -59,7 +59,7 @@ export function valueTooltip(): Extension {
         above: true,
         create: () => {
           const dom = document.createElement("div");
-          dom.className = styles.valueTooltip!;
+          dom.className = `${styles.valueTooltip} ${selectableText}`;
           let tree: { unmount(): void } | null = null;
           if (value.variablesReference > 0) {
             // IDEA's value hint: the "+" expands the object into a variables tree in place.
@@ -73,7 +73,7 @@ export function valueTooltip(): Extension {
             expand.addEventListener("click", () => {
               if (tree) return;
               expand.remove();
-              dom.classList.add(styles.valueTooltipTree!);
+              dom.classList.replace(selectableText, styles.valueTooltipTree!);
               dom.replaceChildren();
               tree = mountValueTree(dom, expr.text, value, session.id);
             });

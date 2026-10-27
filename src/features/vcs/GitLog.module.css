@@ -326,6 +326,14 @@
   color: var(--fg-subtle);
   line-height: 1.5;
 }
+.commitEntry + .commitEntry {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.metaCompact {
+  margin-top: 2px;
+}
 .meta .refs {
   margin-left: 0;
   max-width: none;
@@ -366,7 +374,7 @@
   font-size: var(--fs-small);
   line-height: 18px;
   -webkit-user-select: text;
-cursor: text;
+  cursor: text;
   -webkit-user-select: text;
   user-select: text;
 }

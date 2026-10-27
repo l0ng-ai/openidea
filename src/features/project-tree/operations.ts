@@ -7,6 +7,7 @@ import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { ask, confirmChecked } from "@/workbench/messages";
+import { osClipboard } from "./clipboard";
 import { runFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
 import { projectFs } from "./fs";
@@ -455,17 +456,36 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
 
 export function copySelection(cut: boolean) {
   const paths = topLevelPaths(selectedNodes().filter((n) => (cut ? mutable(n) : !n.root && !n.group)));
-  if (paths.length) setClipboard({ paths, cut });
+  if (!paths.length) return;
+  setClipboard({ paths, cut });
+  // Hand the files to the OS too, so Explorer can paste them (as IDEA does).
+  void osClipboard().setFiles(paths);
+}
+
+/** Files on the OS clipboard, cached: `canPaste` runs while a menu renders. */
+let osHasFiles = false;
+
+/** Keeps Paste enabled for what Explorer copied; called when the window gains focus. */
+export async function refreshOsClipboard() {
+  osHasFiles = await osClipboard().hasFiles();
 }
 
 export function canPaste(): boolean {
-  return !!get().clipboard?.paths.length;
+  return !!get().clipboard?.paths.length || osHasFiles;
 }
 
-/** Paste: cut items go through the Move dialog, copied ones through the Copy dialog (IDEA). */
+/**
+ * Paste: cut items go through the Move dialog, copied ones through the Copy
+ * dialog (IDEA). Files copied in Explorer paste as copies.
+ */
 export async function paste(target = targetFolder()) {
   const { clipboard } = get();
-  if (!clipboard || !target || isReadOnlyPath(target)) return;
+  if (!target || isReadOnlyPath(target)) return;
+  const external = await osClipboard().files();
+  // The last copy is the one the user expects to paste, so another app's files
+  // win over ours — unless they are the copy we handed to the OS ourselves.
+  if (external.length && !sameFiles(external, clipboard?.paths)) return pasteFromOsClipboard(external, target);
+  if (!clipboard?.paths.length) return;
   const isDir = (p: string) => get().listings.has(p) || currentModel().byKey.get(currentModel().keyOfPath.get(p) ?? p)?.dir === true;
   const single = clipboard.paths.length === 1 && isDir(clipboard.paths[0]!);
   if (!clipboard.cut) return openCopyDialogFor(clipboard.paths, target, single);
@@ -474,6 +494,19 @@ export async function paste(target = targetFolder()) {
   openMoveDialogFor(paths, target, single, () => {
     if (get().clipboard === clipboard) setClipboard(null);
   });
+}
+
+/** Pasting from Explorer copies, whatever the source: never a move or a refactoring. */
+async function pasteFromOsClipboard(paths: string[], target: string) {
+  osHasFiles = true;
+  await transfer(paths, target, "copy");
+}
+
+/** The same files, as the clipboard keeps them (`/`-separated, any order). */
+function sameFiles(files: string[], paths: string[] | undefined): boolean {
+  if (!paths || files.length !== paths.length) return false;
+  const key = (list: string[]) => list.map((p) => (caseInsensitive ? p.toLowerCase() : p)).sort().join("\n");
+  return key(files) === key(paths);
 }
 
 function openCopyDialogFor(paths: string[], target: string, dir?: boolean) {

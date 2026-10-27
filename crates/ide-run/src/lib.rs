@@ -3,6 +3,7 @@
 mod config;
 mod detect;
 pub mod envfile;
+pub mod java_cmdline;
 pub mod junit;
 mod process;
 mod utf8;

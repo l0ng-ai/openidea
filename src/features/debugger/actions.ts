@@ -1,6 +1,6 @@
 /** Debugger actions (ids match `keymaps/intellij-macos.ts`). */
 import { registerActions, type Action } from "@/platform/actions";
-import { call, commands, isTauri, type RunConfig, type RunId } from "@/platform/ipc";
+import { call, commands, isCancelled, isTauri, nextRequestId, type RunConfig, type RunId } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { activeEditor } from "@/editor/api";
 import { maybeEditorService, notifications, toolWindowService } from "@/workbench/contributions";
@@ -18,6 +18,7 @@ import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
 import { reloadChangedClasses } from "./hotswap";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
+import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
 import {
   activeSession,
   isLive,
@@ -142,6 +143,52 @@ function evaluateSeed(): string {
   return expressionAt(ed.view, sel.head)?.text ?? "";
 }
 
+/**
+ * Remote JVM Debug in listen mode: the IDE listens and the remote JVM connects; java-debug
+ * then attaches through a loopback relay. Null when cancelled.
+ */
+async function listenForJvm(name: string, host: string, port: number): Promise<number | null> {
+  const request = nextRequestId();
+  const key = `debug.listen.${request}`;
+  notifications().notify({
+    group: "run",
+    level: "info",
+    key,
+    sticky: true,
+    title: `'${name}': listening for the remote JVM on port ${port}`,
+    body: `Start the remote JVM with -agentlib:jdwp=transport=dt_socket,server=n,address=${host}:${port},suspend=y`,
+    actions: [{ label: "Cancel", run: () => void commands.cancelRequest(request) }],
+  });
+  try {
+    return await call(commands.debugListenForJvm(request, host, port));
+  } catch (e) {
+    if (isCancelled(e)) return null;
+    throw e;
+  } finally {
+    notifications().expire?.(key);
+  }
+}
+
+/** Remote JVM Debug, Go Remote, Python / Node.js remote: attach over host:port. */
+async function startRemote(config: RunConfig, root: string) {
+  if (config.kind === REMOTE_JVM) {
+    const t = remoteJvmTarget(config);
+    let hostName = t.host;
+    let port = t.port;
+    if (t.mode === "listen") {
+      const relay = await listenForJvm(config.name, t.host, t.port);
+      if (relay == null) return;
+      [hostName, port] = ["127.0.0.1", relay];
+    }
+    const launch = await javaAttachConfig({ name: config.name, module: t.module, hostName, port }, root);
+    // A listen relay accepts one debugger: rerunning listens again through the configuration.
+    await startSession(launch, { rerunnable: t.mode === "attach" });
+    return;
+  }
+  const launch = remoteAttachConfig(config, root);
+  if (launch) await startSession(launch);
+}
+
 async function startConfig(arg: unknown) {
   const root = useProject.getState().project?.root;
   if (!root) return;
@@ -166,6 +213,10 @@ async function startConfig(arg: unknown) {
       return;
     }
     config = configs[0]!;
+  }
+  if (isRemoteConfig(config)) {
+    await startRemote(config, root);
+    return;
   }
   if (isJavaDebuggable(config)) {
     await maybeEditorService()

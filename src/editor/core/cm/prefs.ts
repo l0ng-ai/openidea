@@ -280,12 +280,14 @@ export function richTextHtml(view: EditorView, from: number, to: number): string
   const styleOf = new Map<string, string>();
   const probe = document.createElement("span");
   view.contentDOM.appendChild(probe);
+  // Bold = heavier than the editor's main weight (Typography Settings).
+  const regular = Number(getComputedStyle(view.contentDOM).fontWeight) || 400;
   const resolve = (cls: string) => {
     let s = styleOf.get(cls);
     if (s === undefined) {
       probe.className = cls;
       const cs = getComputedStyle(probe);
-      s = `color:${cs.color};${cs.fontStyle !== "normal" ? `font-style:${cs.fontStyle};` : ""}${Number(cs.fontWeight) >= 600 ? "font-weight:bold;" : ""}`;
+      s = `color:${cs.color};${cs.fontStyle !== "normal" ? `font-style:${cs.fontStyle};` : ""}${Number(cs.fontWeight) > regular ? "font-weight:bold;" : ""}`;
       styleOf.set(cls, s);
     }
     return s;

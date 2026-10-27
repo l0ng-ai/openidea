@@ -243,6 +243,42 @@ fn contribution_only_plugins() {
 }
 
 #[test]
+fn theme_template_installs_with_its_editor_scheme() {
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&repo().join("templates/theme-plugin")).unwrap();
+    assert_eq!(info.status, PluginStatus::Static);
+    assert!(!info.has_code);
+    assert_eq!(info.themes[0].id, "harbor-night");
+    assert_eq!(info.themes[0].kind, ThemeKind::Dark);
+    // The scheme file is copied with the package and merged over the UI tokens.
+    assert!(f.plugins_dir.join("theme-harbor-night/themes/harbor-night.scheme.json").is_file());
+    let active = f.host.set_theme(Some(("theme-harbor-night", "harbor-night"))).unwrap().unwrap();
+    let tokens = &active.theme.tokens;
+    assert!(
+        tokens.contains_key("--bg-app") && tokens.contains_key("--syn-keyword") && tokens.contains_key("--ansi-red")
+    );
+    assert!(tokens.len() > 150);
+}
+
+#[test]
+fn theme_with_broken_editor_scheme_fails_to_load() {
+    let f = fixture(Limits::default());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("t")).unwrap();
+    std::fs::write(
+        dir.path().join("plugin.toml"),
+        "id = \"bad-scheme\"\nname = \"B\"\nversion = \"1.0.0\"\nopenidea-api = \"0.1\"\n\
+         [[contributes.themes]]\npath = \"t/a.json\"\neditor-scheme = \"t/a.scheme.json\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("t/a.json"), r##"{"id":"a","name":"A","kind":"light","tokens":{}}"##).unwrap();
+    std::fs::write(dir.path().join("t/a.scheme.json"), "{\n  \"tokens\": { \"--caret\": \"url(x)\" }\n}").unwrap();
+    let info = f.host.install_from_dir(dir.path()).unwrap();
+    assert_eq!(info.status, PluginStatus::Failed);
+    assert!(info.error.unwrap_or_default().contains("a.scheme.json"));
+}
+
+#[test]
 fn state_persists_across_restarts() {
     let f = fixture(Limits::default());
     f.host.install_from_dir(&sample("hello")).unwrap();

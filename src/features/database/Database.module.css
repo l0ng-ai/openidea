@@ -335,6 +335,7 @@
 }
 .paramInput {
   font-family: var(--openidea-editor-font, var(--font-mono));
+  font-weight: var(--fw-code);
 }
 .formRow {
   display: flex;
@@ -479,6 +480,7 @@
 :global(.cm-openidea-db-doc) {
   margin: 0;
   font-family: var(--openidea-editor-font, var(--font-mono));
+  font-weight: var(--fw-code);
   font-size: var(--fs-code);
   color: var(--fg-editor, var(--fg-strong));
   white-space: pre;
@@ -498,6 +500,7 @@
   overflow: auto;
   padding: 4px 8px;
   font-family: var(--openidea-editor-font, var(--font-mono));
+  font-weight: var(--fw-code);
   font-size: var(--fs-code);
   line-height: 1.5;
   color: var(--fg-editor, var(--fg-strong));
@@ -648,6 +651,7 @@
   max-height: 220px;
   overflow: auto;
   font-family: var(--openidea-editor-font, var(--font-mono));
+  font-weight: var(--fw-code);
   font-size: var(--fs-small);
   line-height: 1.5;
   white-space: pre;

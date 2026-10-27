@@ -4,13 +4,7 @@ import { operationActions } from "../BranchWidget";
 import { controlLabel, inProgress, operationControls, operationTitle, validateTagName } from "../operations";
 import { suggestedPatchName } from "../patches";
 import { commitMenu } from "../GitLog";
-import {
-  extendCommitSelection,
-  selectCommit,
-  selectedCommits,
-  toggleCommitSelection,
-  useGitLog,
-} from "../logStore";
+import { extendCommitSelection, selectCommit, selectedCommits, toggleCommitSelection, useGitLog } from "../logStore";
 
 const commit = (summary: string, id = "0123456789abcdef0123456789abcdef01234567"): Commit => ({
   id,
@@ -89,8 +83,7 @@ describe("Git Log commit actions", () => {
     const local = commit("Local", "1".repeat(40));
     const pushed = commit("Pushed", "2".repeat(40));
     useGitLog.setState({ outgoing: new Set([local.id]) });
-    const disabled = (c: Commit) =>
-      commitMenu(c).flatMap((i) => (i.kind === "action" && i.disabled ? [i.action] : []));
+    const disabled = (c: Commit) => commitMenu(c).flatMap((i) => (i.kind === "action" && i.disabled ? [i.action] : []));
     expect(disabled(local)).not.toContain("vcs.log.editMessage");
     expect(disabled(pushed)).toEqual(
       expect.arrayContaining([
@@ -108,15 +101,20 @@ describe("Git Log commit actions", () => {
   it("offers the multi-commit actions for a multiple selection", () => {
     const a = commit("A", "a".repeat(40));
     const b = commit("B", "b".repeat(40));
-    const ids = commitMenu(a, [a, b]).flatMap((i) => (i.kind === "action" ? [i.action] : []));
-    expect(ids).toEqual([
+    const c = commit("C", "c".repeat(40));
+    const ids = (sel: Commit[]) => commitMenu(a, sel).flatMap((i) => (i.kind === "action" ? [i.action] : []));
+    expect(ids([a, b])).toEqual([
       "vcs.log.copyRevision",
       "vcs.log.createPatch",
       "vcs.log.cherryPick",
+      "vcs.log.compareVersions",
       "vcs.log.revert",
       "vcs.log.squashCommits",
       "vcs.log.dropCommit",
     ]);
+    // Compare Versions needs exactly two commits (IDEA).
+    expect(ids([a, b, c])).not.toContain("vcs.log.compareVersions");
+    expect(ids([a, b, c])).toContain("vcs.log.cherryPick");
   });
 
   it("extends and toggles the log selection", () => {

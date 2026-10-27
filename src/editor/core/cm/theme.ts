@@ -29,6 +29,7 @@ export const openideaTheme = EditorView.theme({
     // The workbench body uses the arrow cursor; the text area gets the I-beam (also past the last line).
     cursor: "text",
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     lineHeight: "var(--openidea-editor-line-height, var(--lh-code))",
     fontVariantLigatures: "none",
@@ -71,7 +72,7 @@ export const openideaTheme = EditorView.theme({
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
     backgroundColor: "var(--editor-brace)",
     color: "inherit",
-    fontWeight: "var(--matched-brace-weight, 700)",
+    fontWeight: "var(--matched-brace-weight, var(--fw-code-bold, 700))",
     borderRadius: "1px",
   },
   ".cm-matchingTag, &.cm-focused .cm-matchingTag": {
@@ -241,6 +242,7 @@ export const openideaTheme = EditorView.theme({
     borderBottom: "1px solid var(--editor-gutter-border)",
     boxShadow: "0 3px 6px -2px color-mix(in srgb, var(--fg-strong) 12%, transparent)",
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     lineHeight: "var(--openidea-editor-line-height, var(--lh-code))",
     overflow: "hidden",

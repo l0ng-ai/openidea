@@ -179,6 +179,7 @@ describe("java compile errors", () => {
     modulePaths: [],
     javaHome: null,
     javaExec: null,
+    shortenCommandLine: null,
   };
 
   it("lists the first errors, counts the rest and adds hints", () => {
@@ -204,6 +205,7 @@ describe("java command lines", () => {
     modulePaths: [],
     javaHome: "/jdk21",
     javaExec: "/jdk21/bin/java",
+    shortenCommandLine: "none",
     errors: [],
     errorCount: 0,
     hints: [],

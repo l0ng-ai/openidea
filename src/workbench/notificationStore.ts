@@ -34,6 +34,7 @@ export const NOTIFICATION_GROUPS: ReadonlyArray<{ id: string; title: string }> =
   { id: "search", title: "Find in Files" },
   { id: "plugins", title: "Plugins" },
   { id: "updates", title: "IDE Updates" },
+  { id: "distractionFree", title: "Distraction Free Mode" },
 ];
 
 export type NotificationDisplay = "balloon" | "sticky" | "none";

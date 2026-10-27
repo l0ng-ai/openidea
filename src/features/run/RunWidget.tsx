@@ -8,6 +8,7 @@ import { shortcutLabel } from "@/platform/keymap";
 import { runExecutors, useRunExecutors } from "@/workbench/contributions";
 import { configIcon } from "./configs";
 import { CURRENT_FILE, rerunSession, sessionsOf, startRun, stopSession, useRun } from "./store";
+import { isDebugOnly } from "./types";
 import styles from "./Run.module.css";
 
 /** Title bar: configuration chooser, Run / Debug, and Rerun / Stop while running. */
@@ -19,6 +20,8 @@ export function RunWidget() {
   const chooserOpen = useRun((s) => s.chooserOpen);
   const selected = configs.find((c) => c.id === selectedId);
   const currentFile = selectedId === CURRENT_FILE;
+  // Remote JVM Debug and the like: only Debug applies, as in IDEA.
+  const debugOnly = !!selected && isDebugOnly(selected);
   const running = sessions.filter((s) => s.status === "running" || s.status === "starting");
   // A compound is running while any of its configurations is; Stop stops them all.
   const compoundRunning = selected?.kind === "compound" ? sessionsOf(selected, running) : [];
@@ -149,9 +152,17 @@ export function RunWidget() {
               size="large"
               iconSize={18}
               className={clsx(styles.widgetButton, styles.widgetRun)}
-              title={selected ? `Run '${selected.name}'` : currentFile ? "Run Current File" : "Run"}
+              title={
+                selected
+                  ? debugOnly
+                    ? `'${selected.name}' can only be debugged`
+                    : `Run '${selected.name}'`
+                  : currentFile
+                    ? "Run Current File"
+                    : "Run"
+              }
               shortcut={shortcutLabel("run.run")}
-              disabled={!selected && !currentFile}
+              disabled={(!selected && !currentFile) || debugOnly}
               onClick={() => void executeAction("run.run")}
             />
             <IconButton

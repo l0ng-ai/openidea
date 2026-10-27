@@ -179,8 +179,14 @@ never affected.
 
 Tokens are the CSS variables of `src/styles/tokens.css` (`--bg-*`, `--fg-*`,
 `--border*`, `--accent`, `--syn-*`, `--vcs-*`, `--gutter-*`, …). Unlisted tokens
-keep the built-in values. Values must be plain CSS values (no `url()`, `;`,
-braces). Pick a theme in Settings › Plugins › *Apply*.
+keep the values of the built-in base named by `kind`. Values must be plain CSS
+values (no `url()`, `;`, braces); `//` and `/* */` comments are allowed. A
+manifest theme entry may add `editor-scheme = "themes/x.scheme.json"` (editor
+colours, merged over the theme). Pick a theme in Settings › Plugins › *Apply*.
+
+Start from [`templates/theme-plugin`](../templates/theme-plugin); the full guide,
+token reference and IntelliJ / VS Code porting tables are in
+[`docs/plugins/themes.md`](../docs/plugins/themes.md).
 
 ## 4. Languages
 

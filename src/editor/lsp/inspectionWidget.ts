@@ -14,13 +14,16 @@ interface Counts {
   error: number;
   warning: number;
   info: number;
+  /** Typo level (Proofreading), counted apart from weak warnings as in IDEA. */
+  typo: number;
 }
 
-function countsOf(view: EditorView): Counts {
-  const c: Counts = { error: 0, warning: 0, info: 0 };
+export function countsOf(view: EditorView): Counts {
+  const c: Counts = { error: 0, warning: 0, info: 0, typo: 0 };
   forEachDiagnostic(view.state, (d) => {
     if (d.markClass?.includes("cm-lsp-unnecessary")) return;
-    if (d.severity === "error") c.error++;
+    if (d.markClass?.includes("cm-lsp-typo")) c.typo++;
+    else if (d.severity === "error") c.error++;
     else if (d.severity === "warning") c.warning++;
     else if (d.severity === "info") c.info++;
   });
@@ -57,7 +60,7 @@ class InspectionWidget {
 
   private render() {
     const c = countsOf(this.view);
-    const key = `${c.error}/${c.warning}/${c.info}`;
+    const key = `${c.error}/${c.warning}/${c.info}/${c.typo}`;
     if (key === this.key) return;
     this.key = key;
     const open = () => {
@@ -67,9 +70,11 @@ class InspectionWidget {
         // no Problems tool window registered
       }
     };
-    const total = c.error + c.warning + c.info;
+    const total = c.error + c.warning + c.info + c.typo;
     const summary = button(
-      total ? `${c.error} errors, ${c.warning} warnings, ${c.info} weak warnings — open Problems` : "No problems found",
+      total
+        ? `${c.error} errors, ${c.warning} warnings, ${c.info} weak warnings, ${c.typo} typos — open Problems`
+        : "No problems found",
       open,
     );
     summary.classList.add("cm-openidea-inspection-summary");
@@ -85,6 +90,7 @@ class InspectionWidget {
     add(c.error, "error", "cm-openidea-inspection-error");
     add(c.warning, "warning", "cm-openidea-inspection-warning");
     add(c.info, "warning", "cm-openidea-inspection-weak");
+    add(c.typo, "info", "cm-openidea-inspection-typo");
     const children: HTMLElement[] = [summary];
     if (total) {
       const prev = button(`Previous Highlighted Error${shortcutLabel("navigate.prevError") ? ` (${shortcutLabel("navigate.prevError")})` : ""}`, () => {
@@ -149,6 +155,7 @@ const inspectionTheme = EditorView.theme({
   ".cm-openidea-inspection-error .cm-openidea-icon": { color: "var(--danger)" },
   ".cm-openidea-inspection-warning .cm-openidea-icon": { color: "var(--warning)" },
   ".cm-openidea-inspection-weak .cm-openidea-icon": { color: "var(--fg-weak-warning, var(--fg-faint))" },
+  ".cm-openidea-inspection-typo .cm-openidea-icon": { color: "var(--success)" },
   ".cm-openidea-inspection-ok": { color: "var(--success)" },
 });
 

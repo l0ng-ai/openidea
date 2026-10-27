@@ -25,7 +25,7 @@ import { useProject } from "@/platform/project";
 import { useKeymap } from "@/platform/keymap";
 import { ContextMenuHost } from "@/ui";
 import { DEFAULT_SETTINGS, setAt } from "../model/schema";
-import { useSettingsDialog } from "../model/staging";
+import { stage, useSettingsDialog } from "../model/staging";
 import { SettingsDialog } from "../dialog/SettingsDialog";
 import { activate } from "..";
 import { MessagesHost } from "@/workbench/messages";
@@ -105,6 +105,27 @@ describe("Settings dialog", () => {
     expect(settingsGet).toHaveBeenCalled();
     expect(useProject.getState().settings?.editor?.softWrap).toBe(false);
     expect(within(dialog).getByRole("button", { name: "Apply" })).toBeDisabled();
+  });
+
+  it("Typography Settings weights preview live and apply as editor settings", async () => {
+    const dialog = await openDialog("editor.font");
+    expect(within(dialog).getByRole("button", { name: "Main font weight" })).toHaveTextContent("Regular");
+    expect(within(dialog).getByRole("button", { name: "Bold font weight" })).toHaveTextContent("Bold");
+    act(() => {
+      stage("editor.font", "global", "editor.fontWeight", 300);
+      stage("editor.font", "global", "editor.boldFontWeight", 600);
+    });
+    expect(within(dialog).getByRole("button", { name: "Main font weight" })).toHaveTextContent("Light");
+    const preview = within(dialog).getByLabelText("Font preview");
+    expect(preview.style.getPropertyValue("--fw-code")).toBe("300");
+    expect(preview.style.getPropertyValue("--fw-code-bold")).toBe("600");
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Apply" }));
+    });
+    expect(settingsSet.mock.calls).toEqual([
+      ["global", "editor.boldFontWeight", "600"],
+      ["global", "editor.fontWeight", "300"],
+    ]);
   });
 
   it("Cancel discards staged edits", async () => {

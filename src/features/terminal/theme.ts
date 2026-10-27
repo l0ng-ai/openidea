@@ -4,7 +4,9 @@
  * tokens (PyCharm's console colours per theme); when a theme lacks them it is
  * derived from the status + syntax tokens.
  */
-import type { ITheme } from "@xterm/xterm";
+import type { ITheme, Terminal } from "@xterm/xterm";
+import { fontWeightOf } from "@/platform/editorSettings";
+import { BUNDLED_MONO_FAMILY, fontsLoaded, monoFontFamily, monoStack } from "@/platform/fonts";
 
 export type Rgba = [number, number, number, number];
 
@@ -177,56 +179,91 @@ const NERD_FONT_FALLBACKS = [
   .map((f) => `"${f}"`)
   .join(", ");
 
-export function readTerminalFont(): { family: string; size: number; lineHeight: number } {
-  const style = getComputedStyle(document.documentElement);
-  const base = style.getPropertyValue("--font-mono").trim() || "'JetBrains Mono', monospace";
-  // Prompt themes (powerlevel10k, starship) use Nerd Font private-use glyphs;
-  // list common installs so per-glyph fallback finds them.
-  const family = `${base}, ${NERD_FONT_FALLBACKS}`;
-  const size = parseFloat(style.getPropertyValue("--fs-code")) || 13;
-  const lh = parseFloat(style.getPropertyValue("--lh-code")) || 21;
-  // xterm's lineHeight is a multiplier of the cell height (≈ 1.2 × font size); aim for the editor's line height.
-  return { family, size, lineHeight: Math.max(1, Math.round((lh / (size * 1.2)) * 100) / 100) };
+export interface TerminalFontSettings {
+  useEditorFont: boolean;
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+  fallbackFontFamily: string;
+  columnWidth: number;
+}
+
+export interface EditorFont {
+  fontFamily?: string;
+  fontSize?: number;
+  lineHeight?: number;
+  fallbackFont?: string;
+  fontWeight?: number;
+  boldFontWeight?: number;
+}
+
+export interface TerminalFont {
+  family: string;
+  size: number;
+  lineHeight: number;
+  letterSpacing: number;
+  /** xterm `fontWeight` / `fontWeightBold`. */
+  weight: number;
+  boldWeight: number;
 }
 
 /**
- * Font from Settings › Tools › Terminal: the editor font (Editor › Font) or the
- * terminal's own family / size / line height (a multiple of the cell height).
+ * Prompt themes (powerlevel10k, starship) use Nerd Font private-use glyphs; list
+ * common installs before the generic family so per-glyph fallback finds them.
  */
-export function terminalFont(
-  t: { useEditorFont: boolean; fontFamily: string; fontSize: number; lineHeight: number },
-  editor: { fontFamily?: string; fontSize?: number; lineHeight?: number } | undefined,
-): { family: string; size: number; lineHeight: number } {
+function withNerdFonts(family: string): string {
+  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${NERD_FONT_FALLBACKS}, monospace`;
+}
+
+function cssNumber(name: string): number {
+  if (typeof document === "undefined") return NaN;
+  return parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+}
+
+/**
+ * Font from Settings › Tools › Terminal: the editor font (Editor › Font, with its
+ * fallback and Typography Settings weights) or the terminal's own family / size / line height (a multiple of the
+ * cell height). The family resolves like the editor's (`monoFontFamily`), so the
+ * bundled JetBrains Mono is used where it isn't installed; `base` is the resolved
+ * `--font-mono` stack, since xterm measures on a canvas and can't use `var()`.
+ * The column width (a multiple of the cell width) becomes xterm's letter spacing,
+ * from the ≈ 0.6 em advance of monospace fonts.
+ */
+export function terminalFont(t: TerminalFontSettings, editor: EditorFont | undefined, base = monoStack()): TerminalFont {
+  let family: string, fallback: string, size: number, lineHeight: number;
+  let weight = 400,
+    boldWeight = 700;
   if (!t.useEditorFont) {
-    return { family: `"${t.fontFamily.replace(/"/g, "")}", ${NERD_FONT_FALLBACKS}, monospace`, size: t.fontSize, lineHeight: t.lineHeight };
+    family = t.fontFamily;
+    fallback = t.fallbackFontFamily;
+    size = t.fontSize;
+    lineHeight = t.lineHeight;
+  } else {
+    family = editor?.fontFamily || BUNDLED_MONO_FAMILY;
+    fallback = t.fallbackFontFamily.trim() || editor?.fallbackFont || "";
+    size = editor?.fontSize || cssNumber("--fs-code") || 13;
+    const lh = editor?.lineHeight ?? (editor?.fontSize ? size * 1.6 : cssNumber("--lh-code") || 21);
+    // xterm's lineHeight is a multiplier of the cell height (≈ 1.2 × font size); aim for the editor's line height.
+    lineHeight = Math.max(1, Math.round((lh / (size * 1.2)) * 100) / 100);
+    weight = fontWeightOf(editor?.fontWeight, weight);
+    boldWeight = fontWeightOf(editor?.boldFontWeight, boldWeight);
   }
-  if (!editor?.fontFamily || !editor.fontSize) return readTerminalFont();
-  const size = editor.fontSize;
-  const lh = editor.lineHeight ?? size * 1.6;
-  return {
-    family: `"${editor.fontFamily.replace(/"/g, "")}", ${NERD_FONT_FALLBACKS}, monospace`,
-    size,
-    lineHeight: Math.max(1, Math.round((lh / (size * 1.2)) * 100) / 100),
-  };
+  const letterSpacing = Math.round((t.columnWidth - 1) * size * 0.6 * 10) / 10;
+  return { family: withNerdFonts(monoFontFamily(family, fallback, base)), size, lineHeight, letterSpacing, weight, boldWeight };
 }
 
 /**
- * Settings › Tools › Terminal extras over `terminalFont`: the fallback family
- * goes right after the main one, and the column width (a multiple of the cell
- * width) becomes xterm's letter spacing, from the ≈ 0.6 em advance of
- * monospace fonts.
+ * xterm measures its cell once per font change; a webfont still loading (the
+ * bundled JetBrains Mono on first open) leaves cells sized for the swap font.
+ * Re-measures once the faces load (unless `alive()` turned false), then calls `after` (refit).
  */
-export function withFontExtras(
-  font: { family: string; size: number; lineHeight: number },
-  t: { fallbackFontFamily: string; columnWidth: number },
-): { family: string; size: number; lineHeight: number; letterSpacing: number } {
-  const fallback = t.fallbackFontFamily.replace(/"/g, "").trim();
-  const comma = font.family.indexOf(",");
-  const family = !fallback
-    ? font.family
-    : comma < 0
-      ? `${font.family}, "${fallback}"`
-      : `${font.family.slice(0, comma)}, "${fallback}"${font.family.slice(comma)}`;
-  const letterSpacing = Math.round((t.columnWidth - 1) * font.size * 0.6 * 10) / 10;
-  return { ...font, family, letterSpacing };
+export function remeasureWhenFontsLoad(term: Terminal, font: TerminalFont, alive: () => boolean, after: () => void) {
+  void fontsLoaded(font.family, font.size).then(() => {
+    if (!alive()) return;
+    const o = term.options;
+    if (o.fontFamily !== font.family) return;
+    o.fontFamily = "monospace";
+    o.fontFamily = font.family;
+    after();
+  });
 }

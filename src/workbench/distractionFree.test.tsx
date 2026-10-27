@@ -5,8 +5,12 @@ import { getContext } from "@/platform/context";
 import { bindingsFor, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { registerStatusItem, registerToolWindow } from "./contributions";
+import { clearNotifications, useNotifications } from "./notificationStore";
+import { notificationActions } from "./Notifications";
 import {
   DISTRACTION_FREE_ACTION,
+  DISTRACTION_FREE_HINT_KEY,
+  distractionFreeHint,
   distractionFreeWidth,
   installDistractionFree,
   isDistractionFree,
@@ -127,6 +131,62 @@ describe("distraction free mode", () => {
     setDistractionFree(false);
   });
 
+  describe("exit hint", () => {
+    const hint = () => useNotifications.getState().items.find((n) => n.key === DISTRACTION_FREE_HINT_KEY);
+    beforeEach(() => clearNotifications());
+
+    it("tells how to leave the mode on entering, with an Exit action, and expires on exit", () => {
+      setDistractionFree(true);
+      expect(hint()?.balloon).toBe(true);
+      expect(hint()?.body).toBe(distractionFreeHint());
+      expect(distractionFreeHint()).toContain("View | Appearance | Exit Distraction Free Mode");
+      // Unbound toggle (IntelliJ keymap): Find Action with its shortcut is the keyboard way out.
+      expect(distractionFreeHint()).toMatch(/Find Action \(.+\)/);
+      hint()!
+        .actions!.find((a) => a.label === "Exit Distraction Free Mode")!
+        .run();
+      expect(isDistractionFree()).toBe(false);
+      expect(hint()?.balloon ?? false).toBe(false);
+    });
+
+    it("names the toggle's own shortcut when it has one", () => {
+      useKeymap.setState({ overrides: { [DISTRACTION_FREE_ACTION]: ["Ctrl+Alt+Z"] } });
+      expect(distractionFreeHint()).not.toContain("Find Action");
+    });
+
+    it("shows again after a restart in the mode, once the project frame loads", () => {
+      setDistractionFree(true);
+      clearNotifications();
+      useDistractionFree.setState({ active: false });
+      resetToolWindowLayout();
+      disposers.push(installDistractionFree());
+      expect(isDistractionFree()).toBe(true);
+      expect(hint()).toBeUndefined();
+      loadToolWindowLayout("/work/df");
+      expect(hint()?.balloon).toBe(true);
+    });
+
+    it("offers Don't Show Again once, scoped to its own notification group", () => {
+      setDistractionFree(true);
+      const labels = notificationActions(hint()!).map((a) => a.label);
+      expect(labels.filter((l) => l === "Don't Show Again")).toHaveLength(1);
+      expect(hint()!.group).toBe("distractionFree");
+    });
+
+    it("stays off once its group shows no popup", () => {
+      const settings = useProject.getState().settings;
+      useProject.setState({
+        settings: { ...settings, notifications: { groups: { distractionFree: { display: "none" } } } } as never,
+      });
+      try {
+        setDistractionFree(true);
+        expect(hint()?.balloon ?? false).toBe(false);
+      } finally {
+        useProject.setState({ settings });
+      }
+    });
+  });
+
   it("clamps the text width setting", () => {
     expect(distractionFreeWidth(undefined)).toBe(80);
     expect(distractionFreeWidth(100.4)).toBe(100);
@@ -138,7 +198,9 @@ describe("distraction free mode", () => {
 describe("distraction free shell", () => {
   it("hides stripes, status bar and main toolbar contents, keeping the drag region", async () => {
     const { Workbench } = await import("./Workbench");
-    disposers.push(registerStatusItem({ id: "t.status", align: "left", priority: 0, component: () => <span>status-x</span> }));
+    disposers.push(
+      registerStatusItem({ id: "t.status", align: "left", priority: 0, component: () => <span>status-x</span> }),
+    );
     act(() => useProject.setState({ project: { root: "/work/df", name: "df-demo", isGit: false, settings: {} } }));
     const { unmount } = render(<Workbench />);
     expect(await screen.findByText("df-demo")).toBeInTheDocument();

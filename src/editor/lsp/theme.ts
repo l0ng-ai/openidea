@@ -33,11 +33,13 @@ const markdown = {
   ".cm-lsp-markdown a:hover": { color: "var(--link-hover)", textDecoration: "underline" },
   ".cm-lsp-markdown code": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--fs-small)",
     color: "var(--fg-emphasis)",
   },
   ".cm-lsp-markdown pre, .cm-lsp-code": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--fs-ui)",
     lineHeight: "1.5",
     margin: "6px 0",
@@ -71,11 +73,13 @@ export const lspTheme = EditorView.theme({
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion": {
     ...tooltipSurface,
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--fs-code)",
     overflow: "hidden",
   },
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
     minWidth: "420px",
     maxWidth: "min(720px, 80vw)",
     maxHeight: "calc(var(--h-list-row) * 11 + 8px)",
@@ -123,7 +127,7 @@ export const lspTheme = EditorView.theme({
   },
   ".cm-lsp-completion .cm-completionMatchedText": {
     textDecoration: "none",
-    fontWeight: "700",
+    fontWeight: "var(--fw-code-bold, 700)",
     color: "var(--fg-completion-match, var(--link))",
   },
   // A server's label detail (`(a: string)`) hugs the name; template descriptions keep the gap.
@@ -138,7 +142,7 @@ export const lspTheme = EditorView.theme({
     overflow: "hidden",
     textOverflow: "ellipsis",
   },
-  ".cm-lsp-completion .cm-lsp-keyword-option .cm-completionLabel": { fontWeight: "700" },
+  ".cm-lsp-completion .cm-lsp-keyword-option .cm-completionLabel": { fontWeight: "var(--fw-code-bold, 700)" },
   ".cm-lsp-completion .cm-lsp-deprecated-option .cm-completionLabel": {
     textDecoration: "line-through",
     color: "var(--fg-muted)",
@@ -211,6 +215,7 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-link-button:hover": { color: "var(--link-hover)", textDecoration: "underline" },
   ".cm-lsp-signature": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--fs-code)",
     padding: "6px 10px",
     maxWidth: "640px",
@@ -223,7 +228,7 @@ export const lspTheme = EditorView.theme({
     padding: "0 10px",
   },
   ".cm-lsp-signature-disabled": { opacity: "0.55" },
-  ".cm-lsp-signature b": { fontWeight: "700", color: "var(--fg-strong)" },
+  ".cm-lsp-signature b": { fontWeight: "var(--fw-code-bold, 700)", color: "var(--fg-strong)" },
   ".cm-lsp-signature-doc": {
     borderTop: "1px solid var(--border-popup)",
     marginTop: "6px",
@@ -286,6 +291,7 @@ export const lspTheme = EditorView.theme({
     margin: "0 -8px 4px",
     padding: "0",
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--fs-ui)",
     color: "var(--fg)",
   },
@@ -339,7 +345,7 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-property": { color: "var(--syn-property)" },
   ".cm-sem-parameter": { color: "var(--syn-param, var(--syn-variable))" },
   ".cm-sem-self": { color: "var(--syn-self, var(--syn-keyword))" },
-  ".cm-sem-keyword": { color: "var(--syn-keyword)" },
+  ".cm-sem-keyword": { color: "var(--syn-keyword)", fontWeight: "var(--syn-keyword-bold, inherit)" },
   ".cm-sem-builtin:not(.cm-sem-function)": { color: "var(--syn-builtin, inherit)" },
   ".cm-sem-static": { fontStyle: "italic" },
   ".cm-sem-mutable": { textDecoration: "underline", textDecorationColor: "var(--fg-faint)", textUnderlineOffset: "3px" },

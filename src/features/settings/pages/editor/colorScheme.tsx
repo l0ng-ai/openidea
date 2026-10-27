@@ -6,10 +6,11 @@
  */
 import { useMemo, useState, type CSSProperties } from "react";
 import { Button, Checkbox, Input, Tree, type SelectOption, T } from "@/ui";
-import type { TextAttributesOverride } from "@/platform/editorSettings";
+import { fontWeightVars, type TextAttributesOverride } from "@/platform/editorSettings";
 import {
   ATTRIBUTES,
   SCHEMES,
+  boldWeight,
   effectiveScheme,
   schemeTokens,
   type AttributeDef,
@@ -72,7 +73,7 @@ function previewVars(id: SchemeId, o: Record<string, TextAttributesOverride> | u
     if (ov.foreground && attr.fg) vars[attr.fg] = ov.foreground;
     if (ov.background && attr.bg) vars[attr.bg] = ov.background;
     if (attr.token) {
-      if (ov.bold !== undefined) vars[`--syn-${attr.token}-bold`] = ov.bold ? "700" : "400";
+      if (ov.bold !== undefined) vars[`--syn-${attr.token}-bold`] = boldWeight(ov.bold);
       if (ov.italic !== undefined) vars[`--syn-${attr.token}-italic`] = ov.italic ? "italic" : "normal";
       if (ov.background) vars[`--syn-${attr.token}-bg`] = ov.background;
       if (ov.effect && ov.effect !== "none")
@@ -255,11 +256,16 @@ function ColorRow({
 function ColorSchemePage() {
   const [scheme, setScheme] = useSetting<string>("editor.colorScheme");
   const [overrides, setOverrides] = useSetting<Overrides>("editor.colorOverrides");
+  const [weight] = useSetting<number>("editor.fontWeight");
+  const [boldFontWeight] = useSetting<number>("editor.boldFontWeight");
   const [selected, setSelected] = useState<string>("keyword");
   const id = effectiveScheme(scheme);
   const mine = overrides?.[id];
   const attr = ATTRIBUTES.find((a) => a.id === selected);
-  const vars = useMemo(() => previewVars(id, mine), [id, mine]);
+  const vars = useMemo(
+    () => ({ ...previewVars(id, mine), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
+    [id, mine, weight, boldFontWeight],
+  );
   const update = (attrId: string, v: TextAttributesOverride | undefined) => {
     const next: Overrides = { ...(overrides ?? {}) };
     const forScheme = { ...(next[id] ?? {}) };

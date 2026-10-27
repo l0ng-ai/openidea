@@ -64,7 +64,7 @@ pub struct Contributions {
     #[serde(default)]
     pub languages: Vec<FileDecl>,
     #[serde(default)]
-    pub themes: Vec<FileDecl>,
+    pub themes: Vec<ThemeDecl>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -81,6 +81,16 @@ pub struct CommandDecl {
 #[serde(deny_unknown_fields)]
 pub struct FileDecl {
     pub path: PathBuf,
+}
+
+/// A contributed theme: the UI theme file plus an optional editor colour scheme
+/// whose tokens are merged over it (IntelliJ's `.theme.json` + `.icls`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ThemeDecl {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub editor_scheme: Option<PathBuf>,
 }
 
 impl PluginManifest {
@@ -123,8 +133,9 @@ impl PluginManifest {
                 return Err(format!("command {:?} has an empty title", c.id));
             }
         }
-        for f in self.contributes.languages.iter().chain(&self.contributes.themes) {
-            check_relative(&f.path, "contributes path")?;
+        let theme_files = self.contributes.themes.iter().flat_map(|t| std::iter::once(&t.path).chain(&t.editor_scheme));
+        for path in self.contributes.languages.iter().map(|f| &f.path).chain(theme_files) {
+            check_relative(path, "contributes path")?;
         }
         Ok(())
     }
@@ -133,7 +144,10 @@ impl PluginManifest {
     pub fn files(&self) -> Vec<&Path> {
         let mut files: Vec<&Path> = self.wasm.iter().map(PathBuf::as_path).collect();
         files.extend(self.contributes.languages.iter().map(|f| f.path.as_path()));
-        files.extend(self.contributes.themes.iter().map(|f| f.path.as_path()));
+        for t in &self.contributes.themes {
+            files.push(t.path.as_path());
+            files.extend(t.editor_scheme.as_deref());
+        }
         files
     }
 
@@ -202,6 +216,7 @@ mod tests {
 
         [[contributes.themes]]
         path = "themes/dark.json"
+        editor-scheme = "themes/dark.scheme.json"
     "#;
 
     #[test]
@@ -210,7 +225,10 @@ mod tests {
         assert_eq!(m.id, "hello");
         assert_eq!(m.permissions, vec![Permission::ProjectRead, Permission::EditorWrite]);
         assert_eq!(m.contributes.commands[0].category.as_deref(), Some("Hello"));
-        assert_eq!(m.files(), vec![Path::new("dist/plugin.wasm"), Path::new("themes/dark.json")]);
+        assert_eq!(
+            m.files(),
+            vec![Path::new("dist/plugin.wasm"), Path::new("themes/dark.json"), Path::new("themes/dark.scheme.json")]
+        );
         assert!(m.has(Permission::EditorWrite) && !m.has(Permission::EditorRead));
     }
 
@@ -242,6 +260,8 @@ mod tests {
         assert!(err(&base(dup, "ok", "0.1")).contains("duplicate command"));
         let traversal = "[[contributes.languages]]\npath = \"a/../../x.toml\"";
         assert!(err(&base(traversal, "ok", "0.1")).contains("relative path"));
+        let scheme_escape = "[[contributes.themes]]\npath = \"t.json\"\neditor-scheme = \"../s.json\"";
+        assert!(err(&base(scheme_escape, "ok", "0.1")).contains("relative path"));
         assert!(err("id = \"ok\"\nname = \"N\"\nversion = \"1.0\"\nopenidea-api = \"0.1\"").contains("version"));
         assert!(err("id = \"ok\"\nname = \" \"\nversion = \"1.0.0\"\nopenidea-api = \"0.1\"").contains("name"));
     }

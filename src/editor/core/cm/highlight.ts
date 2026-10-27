@@ -46,10 +46,10 @@ export const openideaHighlightStyle = HighlightStyle.define([
   token([t.punctuation, t.bracket, t.separator, t.operator, t.derefOperator], "punct"),
   token(t.invalid, "invalid"),
   // Markup (Markdown, docs)
-  token(t.heading, "markup-heading", { bold: "600" }),
+  token(t.heading, "markup-heading", { bold: "var(--fw-code-bold, 700)" }),
   token(t.processingInstruction, "keyword"),
   { tag: t.emphasis, fontStyle: "italic" },
-  { tag: t.strong, fontWeight: "600" },
+  { tag: t.strong, fontWeight: "var(--fw-code-bold, 700)" },
   { tag: t.strikethrough, textDecoration: "line-through" },
   // Markdown, as IntelliJ: link destination like a static method, rules like markers.
   token(t.url, "function", { italic: "italic" }),

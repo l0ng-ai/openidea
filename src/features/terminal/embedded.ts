@@ -11,8 +11,8 @@ import type { EmbeddedTerminal, EmbeddedTerminalOptions } from "@/workbench/cont
 import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { findTerminalLinks } from "./links";
-import { openExternal, openFileLink } from "./session";
-import { readTerminalTheme, terminalFont, withFontExtras } from "./theme";
+import { fontFor, openExternal, openFileLink } from "./session";
+import { readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
 
 const live = new Set<Terminal>();
 
@@ -24,14 +24,14 @@ export function applyThemeToEmbedded() {
 
 export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminalOptions): EmbeddedTerminal {
   const settings = workflowSettings().terminal;
-  const editor = useProject.getState().settings?.editor as
-    { fontFamily?: string; fontSize?: number; lineHeight?: number } | undefined;
-  const font = withFontExtras(terminalFont(settings, editor), settings);
+  const font = fontFor(settings);
   const term = new Terminal({
     fontFamily: font.family,
     fontSize: font.size,
     lineHeight: font.lineHeight,
     letterSpacing: font.letterSpacing,
+    fontWeight: font.weight,
+    fontWeightBold: font.boldWeight,
     cursorBlink: settings.cursorBlink,
     cursorWidth: 2,
     cursorInactiveStyle: "outline",
@@ -89,6 +89,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const observer = new ResizeObserver(scheduleFit);
   observer.observe(host);
   scheduleFit();
+  remeasureWhenFontsLoad(term, font, () => live.has(term), scheduleFit);
   // The owner learns the initial size even when it matches xterm's default.
   queueMicrotask(() => opts.onResize(term.cols, term.rows));
 

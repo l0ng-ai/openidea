@@ -21,6 +21,8 @@ export interface StagedChange {
 export interface SettingsDialogState {
   open: boolean;
   pageId: string;
+  /** What the page should select when opened as `page#focus` (an inspection id). */
+  focus: string | null;
   query: string;
   /** Effective settings when the dialog opened / last applied. */
   base: ValidSettings;
@@ -40,6 +42,7 @@ export const DEFAULT_PAGE = "appearance";
 export const useSettingsDialog = create<SettingsDialogState>(() => ({
   open: false,
   pageId: DEFAULT_PAGE,
+  focus: null,
   query: "",
   base: validateSettings(undefined),
   globalBase: validateSettings(undefined),
@@ -52,12 +55,20 @@ export const useSettingsDialog = create<SettingsDialogState>(() => ({
 
 const stageKey = (scope: Scope, key: string) => `${scope}|${key}`;
 
+/** `page#focus` → the page and what to select on it. */
+export function splitPageTarget(target: string): { pageId: string; focus: string | null } {
+  const i = target.indexOf("#");
+  return i < 0 ? { pageId: target, focus: null } : { pageId: target.slice(0, i), focus: target.slice(i + 1) || null };
+}
+
 export function openSettings(pageId?: string, opts: { newProjects?: boolean } = {}) {
   const s = useSettingsDialog.getState();
   const base = validateSettings(useProject.getState().settings);
+  const target = pageId ? splitPageTarget(pageId) : { pageId: s.pageId, focus: null };
   useSettingsDialog.setState({
     open: true,
-    pageId: pageId ?? s.pageId,
+    pageId: target.pageId,
+    focus: target.focus,
     query: "",
     base,
     globalBase: base,
@@ -95,8 +106,9 @@ export function closeSettings() {
   useSettingsDialog.setState({ open: false, staged: {}, error: null, saving: false });
 }
 
+/** Shows `pageId` (`page#focus` also selects `focus` on it). */
 export function selectPage(pageId: string) {
-  useSettingsDialog.setState({ pageId });
+  useSettingsDialog.setState(splitPageTarget(pageId));
 }
 
 export function setQuery(query: string) {

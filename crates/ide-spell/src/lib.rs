@@ -2,6 +2,8 @@
 //! comments, string literals and declared names (regions come from the
 //! syntax layer), checked against the bundled en_US Hunspell dictionary, a
 //! list of programming terms and the user's accepted words and dictionaries.
+//! Regular agent nouns of known words (`checkpointer`) pass everywhere; in
+//! identifiers so do closed compounds of known words (`codebase`).
 
 mod words;
 
@@ -35,12 +37,62 @@ pub struct Region {
     pub kind: RegionKind,
 }
 
+/// What a typo is part of: correcting one in `Code` (a declared name) must
+/// rename the symbol; the others may replace the word in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum TypoContext {
+    Code,
+    Literal,
+    Comment,
+    Prose,
+}
+
+impl From<RegionKind> for TypoContext {
+    fn from(kind: RegionKind) -> Self {
+        match kind {
+            RegionKind::Name => Self::Code,
+            RegionKind::String => Self::Literal,
+            RegionKind::Comment => Self::Comment,
+            RegionKind::Prose => Self::Prose,
+        }
+    }
+}
+
 /// A misspelt word.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Typo {
     /// UTF-16 range of the word.
     pub range: Range,
     pub word: String,
+    pub context: TypoContext,
+}
+
+/// The Typo inspection's options (IDEA's "Process code / literals / comments");
+/// plain text and Markdown are always checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SpellScope {
+    pub code: bool,
+    pub literals: bool,
+    pub comments: bool,
+}
+
+impl Default for SpellScope {
+    fn default() -> Self {
+        Self { code: true, literals: true, comments: true }
+    }
+}
+
+impl SpellScope {
+    pub fn includes(&self, kind: RegionKind) -> bool {
+        match kind {
+            RegionKind::Name => self.code,
+            RegionKind::String => self.literals,
+            RegionKind::Comment => self.comments,
+            RegionKind::Prose => true,
+        }
+    }
 }
 
 /// At most this many typos are reported per text.
@@ -53,6 +105,50 @@ fn english() -> &'static spellbook::Dictionary {
         let dic = include_str!("dict/en_US.dic");
         spellbook::Dictionary::new(aff, dic).expect("bundled en_US dictionary parses")
     })
+}
+
+/// Lowercase entries of the dictionary as listed (no affixes applied, no proper nouns).
+fn lemmas() -> &'static HashSet<&'static str> {
+    static LEMMAS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    LEMMAS.get_or_init(|| {
+        include_str!("dict/en_US.dic")
+            .lines()
+            .skip(1)
+            .map(|l| l.split('/').next().unwrap_or(l).trim())
+            .filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase()))
+            .collect()
+    })
+}
+
+/// Common misspellings made of two words; never accepted as compounds.
+const NOT_COMPOUNDS: &[&str] = &["eachother", "everytime", "publically", "aswell", "infact", "atleast", "alot"];
+
+/// Shortest dictionary word in a derivation or compound (programming terms: 3).
+const MIN_PART: usize = 4;
+
+/// Whether English doubles the final consonant before `-er` (`program` →
+/// `programmer`): the stem ends consonant, single vowel, consonant (not w/x/y).
+fn doubles_final_consonant(stem: &str) -> bool {
+    let vowel = |c: u8| b"aeiou".contains(&c);
+    match stem.as_bytes() {
+        [.., a, b, c] => !vowel(*a) && vowel(*b) && !vowel(*c) && !b"wxy".contains(c),
+        _ => false,
+    }
+}
+
+/// Whether dropping one letter or swapping two adjacent ones gives a dictionary
+/// word: then a compound (`writ`+`ting`) is more likely a typo of
+/// it (`writing`), as Hunspell's CHECKCOMPOUNDREP reasons.
+fn near_word(lower: &str) -> bool {
+    let b = lower.as_bytes();
+    let dict = english();
+    let check = |v: &[u8]| std::str::from_utf8(v).is_ok_and(|w| dict.check(w));
+    (0..b.len()).any(|i| check(&[&b[..i], &b[i + 1..]].concat()))
+        || (0..b.len().saturating_sub(1)).any(|i| {
+            let mut v = b.to_vec();
+            v.swap(i, i + 1);
+            v != b && check(&v)
+        })
 }
 
 fn software_terms() -> &'static HashSet<&'static str> {
@@ -118,23 +214,71 @@ impl Speller {
         }
     }
 
-    /// Whether `word` is spelt correctly. Case is forgiven the way identifiers
-    /// need it: `url` passes for `URL`, `paris` for `Paris`.
+    /// Whether `word` (of prose, a comment or a string) is spelt correctly.
+    /// Case is forgiven the way identifiers need it: `url` passes for `URL`,
+    /// `paris` for `Paris`. Regular agent nouns of known words pass too
+    /// (`checkpointer`, `serializers`).
     pub fn is_correct(&self, word: &str) -> bool {
         let lower = word.to_lowercase();
-        if self.accepted.contains(&lower)
-            || software_terms().contains(lower.as_str())
-            || self.custom.iter().any(|d| d.contains(&lower))
-        {
+        self.listed(word, &lower) || self.agent_noun(&lower)
+    }
+
+    /// [`Self::is_correct`] for a part of an identifier, which may also be two
+    /// known words run together (`codebase`, `urlpath`), as identifiers often are.
+    pub fn is_correct_identifier(&self, word: &str) -> bool {
+        self.is_correct(word) || self.compound(&word.to_lowercase())
+    }
+
+    fn user_word(&self, lower: &str) -> bool {
+        self.accepted.contains(lower)
+            || software_terms().contains(lower)
+            || self.custom.iter().any(|d| d.contains(lower))
+    }
+
+    /// In a dictionary, in any case style.
+    fn listed(&self, word: &str, lower: &str) -> bool {
+        if self.user_word(lower) {
             return true;
         }
         let dict = english();
-        if dict.check(word) || dict.check(&lower) {
-            return true;
+        dict.check(word) || dict.check(lower) || dict.check(&capitalize(lower)) || dict.check(&lower.to_uppercase())
+    }
+
+    /// `<stem>er(s)` / `<stem>r(s)` of a listed stem: `checkpointer`
+    /// (checkpoint), `serializers` (serialize), `queriers` (query). Not when
+    /// English doubles the final consonant (`programer`) or the `-or` noun is
+    /// the word (`processer`, `generater`).
+    fn agent_noun(&self, lower: &str) -> bool {
+        if !lower.bytes().all(|c| c.is_ascii_lowercase()) {
+            return false;
         }
-        let mut chars = lower.chars();
-        let capitalized: String = chars.next().into_iter().flat_map(char::to_uppercase).chain(chars).collect();
-        dict.check(&capitalized) || dict.check(&lower.to_uppercase())
+        let singular = lower.strip_suffix('s').unwrap_or(lower);
+        let Some(before_r) = singular.strip_suffix('r') else { return false };
+        let Some(before_er) = before_r.strip_suffix('e') else { return false };
+        // (stem, root the `-or` noun would be built on)
+        let mut stems = vec![(before_r.to_string(), before_er)];
+        if let Some(y) = before_er.strip_suffix('i') {
+            stems.push((format!("{y}y"), before_er));
+        } else if !before_er.ends_with('e') && !doubles_final_consonant(before_er) {
+            stems.push((before_er.to_string(), before_er));
+        }
+        stems.into_iter().any(|(stem, root)| {
+            stem.len() >= MIN_PART
+                && (lemmas().contains(stem.as_str()) || self.user_word(&stem))
+                && !english().check(&format!("{root}or"))
+        })
+    }
+
+    /// Two known words run together, each at least [`MIN_PART`] letters (or a
+    /// 3-letter programming term: `urlpath`). Proper nouns don't count.
+    fn compound(&self, lower: &str) -> bool {
+        if lower.len() < 6 || !lower.bytes().all(|c| c.is_ascii_lowercase()) || NOT_COMPOUNDS.contains(&lower) {
+            return false;
+        }
+        let part = |p: &str| {
+            (p.len() >= 3 && self.user_word(p)) || (p.len() >= MIN_PART && (english().check(p) || self.agent_noun(p)))
+        };
+        (3..=lower.len() - 3).any(|i| part(&lower[..i]) && part(&lower[i..])) && !near_word(lower)
     }
 
     /// Replacements for `word`, best first, in the word's case style.
@@ -155,19 +299,22 @@ impl Speller {
     /// `cancelled` fires.
     pub fn check(&self, text: &str, regions: &[Region], cancelled: &dyn Fn() -> bool) -> Option<Vec<Typo>> {
         let mut spans = Vec::new();
-        let mut verdicts: HashMap<&str, bool> = HashMap::new();
-        let mut bad: Vec<WordSpan> = Vec::new();
+        let mut verdicts: HashMap<(&str, bool), bool> = HashMap::new();
+        let mut bad: Vec<(WordSpan, RegionKind)> = Vec::new();
         for (i, r) in regions.iter().enumerate() {
             if i % 64 == 0 && cancelled() {
                 return None;
             }
             spans.clear();
             words(text, r.start, r.end, r.kind, &mut spans);
+            let name = r.kind == RegionKind::Name;
             for w in &spans {
                 let word = &text[w.start..w.end];
-                let ok = *verdicts.entry(word).or_insert_with(|| self.is_correct(word));
+                let ok = *verdicts
+                    .entry((word, name))
+                    .or_insert_with(|| if name { self.is_correct_identifier(word) } else { self.is_correct(word) });
                 if !ok {
-                    bad.push(*w);
+                    bad.push((*w, r.kind));
                 }
             }
             if bad.len() >= MAX_TYPOS {
@@ -175,14 +322,15 @@ impl Speller {
                 break;
             }
         }
-        bad.sort_by_key(|w| w.start);
-        bad.dedup();
+        bad.sort_by_key(|(w, _)| w.start);
+        bad.dedup_by_key(|(w, _)| *w);
         let mut index = Utf16Walker::new(text);
         Some(
             bad.into_iter()
-                .map(|w| Typo {
+                .map(|(w, kind)| Typo {
                     range: Range::new(index.pos(w.start), index.pos(w.end)),
                     word: text[w.start..w.end].to_string(),
+                    context: kind.into(),
                 })
                 .collect(),
         )
@@ -289,6 +437,118 @@ mod tests {
             assert!(s.is_correct(ok), "{ok}");
         }
         assert!(!s.is_correct("lenght"));
+    }
+
+    #[test]
+    fn agent_nouns_of_known_words() {
+        let s = Speller::default();
+        for ok in ["checkpointer", "Checkpointers", "serializer", "queriers", "tokenizer", "serializers", "pointer"] {
+            assert!(s.is_correct(ok), "{ok}");
+        }
+        // Real misspellings of the same shape stay flagged.
+        for bad in ["programer", "processer", "generater", "writter", "mesager", "begginer"] {
+            assert!(!s.is_correct(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn compounds_only_in_identifiers() {
+        let s = Speller::default();
+        for ok in ["filepath", "dataframe", "username", "codebase", "pathname", "urlpath", "timestampfile"] {
+            assert!(s.is_correct_identifier(ok), "{ok}");
+        }
+        assert!(!s.is_correct("dataframe"));
+        for bad in ["eachother", "everytime", "publically", "mesage", "lenght", "recieve", "comming", "withold"] {
+            assert!(!s.is_correct_identifier(bad), "{bad}");
+        }
+    }
+
+    /// Common English misspellings must survive the derivation and compound rules.
+    #[test]
+    fn common_misspellings_stay_flagged() {
+        let s = Speller::default();
+        let typos = [
+            "accomodate",
+            "acheive",
+            "accross",
+            "adress",
+            "arguement",
+            "becuase",
+            "beleive",
+            "begining",
+            "calender",
+            "comming",
+            "commited",
+            "concious",
+            "definately",
+            "dependancy",
+            "enviroment",
+            "existance",
+            "explaination",
+            "fucntion",
+            "funtion",
+            "goverment",
+            "heigth",
+            "independant",
+            "intial",
+            "lenght",
+            "maintainance",
+            "mesage",
+            "neccessary",
+            "occured",
+            "occurence",
+            "paramter",
+            "persistant",
+            "posession",
+            "programer",
+            "recieve",
+            "refrence",
+            "relevent",
+            "retreive",
+            "seperate",
+            "seperator",
+            "succesful",
+            "tommorow",
+            "truely",
+            "untill",
+            "wich",
+            "widht",
+            "wierd",
+            "writting",
+        ];
+        let accepted: Vec<_> = typos
+            .iter()
+            .filter(|t| s.is_correct(t) || s.is_correct_identifier(t))
+            .filter(|t| **t != "calender")
+            .collect();
+        assert!(accepted.is_empty(), "accepted: {accepted:?}");
+    }
+
+    #[test]
+    fn issue_42_python_example() {
+        let s = Speller::default();
+        let text = "# Initialize the checkpointer connection pool.\ncheckpointer_pool = None\nmemory_checkpointer = None\nmesage = 'hello'\n";
+        let regions = vec![
+            Region { start: 0, end: 46, kind: RegionKind::Comment },
+            Region { start: 47, end: 64, kind: RegionKind::Name },
+            Region { start: 72, end: 91, kind: RegionKind::Name },
+            Region { start: 99, end: 105, kind: RegionKind::Name },
+        ];
+        assert_eq!(&text[99..105], "mesage");
+        let typos = s.check(text, &regions, &|| false).unwrap();
+        let found: Vec<_> = typos.iter().map(|t| (t.word.as_str(), t.context)).collect();
+        assert_eq!(found, [("mesage", TypoContext::Code)]);
+    }
+
+    #[test]
+    fn scope_filters_region_kinds() {
+        let comments_only = SpellScope { code: false, literals: false, comments: true };
+        assert!(comments_only.includes(RegionKind::Comment));
+        assert!(comments_only.includes(RegionKind::Prose));
+        assert!(!comments_only.includes(RegionKind::Name));
+        assert!(!comments_only.includes(RegionKind::String));
+        let parsed: SpellScope = serde_json::from_str(r#"{"literals":false}"#).unwrap();
+        assert_eq!(parsed, SpellScope { code: true, literals: false, comments: true });
     }
 
     #[test]

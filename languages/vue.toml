@@ -10,4 +10,14 @@ name = "vue-language-server"
 command = "vue-language-server"
 args = ["--stdio"]
 root-markers = ["package.json", "vite.config.ts", "vite.config.js", "nuxt.config.ts", "tsconfig.json"]
-install-hint = "npm i -g @vue/language-server (TypeScript support also needs @vue/typescript-plugin in vtsls)"
+install-hint = "npm i -g @vue/language-server typescript@\"<7\""
+
+# Hybrid mode: TypeScript in `.vue` files comes from tsserver with
+# `@vue/typescript-plugin` (configured by the settings hook); vue-language-server
+# reaches it through `tsserver/request`, which the client forwards to vtsls.
+[[language-servers]]
+name = "vtsls"
+command = "vtsls"
+args = ["--stdio"]
+root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
+install-hint = "npm i -g @vtsls/language-server"

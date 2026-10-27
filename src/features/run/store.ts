@@ -417,6 +417,18 @@ export async function startRun(
     await startCompound(config, options.chain);
     return null;
   }
+  // IDEA offers only Debug for Remote JVM Debug and the like: there is nothing to run.
+  if (typeFor(config.kind)?.debugOnly && !options.launch) {
+    notifications().notify({
+      group: "run",
+      level: "info",
+      key: "run.debugOnly",
+      title: `'${config.name}' can only be debugged`,
+      body: "It attaches the debugger to a process started elsewhere.",
+      actions: [{ label: "Debug", run: () => void executeAction("run.debugConfig", config.id) }],
+    });
+    return null;
+  }
   if (!options.launch && !options.prepared && !(await prepareLaunch(config, options.chain))) return null;
   const state = useRun.getState();
   const busy = (s: RunSession) => s.status === "running" || s.status === "starting";

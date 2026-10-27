@@ -22,3 +22,4 @@ export * from "./BarButton";
 export * from "./AppLogo";
 export { lazyComponent, prefetchLazyComponents } from "./lazy";
 export { T } from "./T";
+export { selectableText, copyMenuFor, copyText } from "./selectableText";

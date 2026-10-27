@@ -214,6 +214,11 @@ export function schemeValue(id: SchemeId, cssVar: string): string | undefined {
   return schemeTokens(id).get(cssVar);
 }
 
+/** An explicit Bold / regular attribute: the editor's configured bold or main weight. */
+export function boldWeight(bold: boolean): string {
+  return bold ? "var(--fw-code-bold, 700)" : "var(--fw-code, 400)";
+}
+
 const EFFECT_CSS: Record<string, (c: string) => string> = {
   underline: (c) => `underline ${c}`,
   wave: (c) => `underline wavy ${c}`,
@@ -237,7 +242,7 @@ export function overrideDeclarations(overrides: Record<string, TextAttributesOve
     }
     if (attr.token) {
       const t = attr.token;
-      if (o.bold !== undefined) out.push([`--syn-${t}-bold`, o.bold ? "700" : "400"]);
+      if (o.bold !== undefined) out.push([`--syn-${t}-bold`, boldWeight(o.bold)]);
       if (o.italic !== undefined) {
         out.push([`--syn-${t}-italic`, o.italic ? "italic" : "normal"]);
         if (t === "comment") out.push(["--syn-comment-style", o.italic ? "italic" : "normal"]);

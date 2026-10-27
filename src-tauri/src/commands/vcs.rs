@@ -121,6 +121,19 @@ pub async fn vcs_commit_files(
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.commit_files(&commit))).await
 }
 
+/// Combined changes of several commits, `commits` oldest first.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_commits_changes(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    commits: Vec<String>,
+) -> IdeResult<Vec<RevisionChange>> {
+    let project = state.project(window.label())?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.commits_changes(&commits))).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_branches(window: Window, state: State<'_, AppState>, repo: Option<PathBuf>) -> IdeResult<Vec<Branch>> {
