@@ -26,6 +26,12 @@ describe("semanticRanges", () => {
       { from: 34, to: 37, className: "cm-sem-constant" },
     ]);
   });
+
+  it("applies the Python-specific static style without changing other languages", () => {
+    const input = { tokenTypes: ["property"], tokenModifiers: ["static"], data: [0, 0, 5, 0, 1] };
+    expect(semanticRanges(doc, input, false, "python")[0]?.className).toBe("cm-sem-property cm-sem-static cm-sem-python-static");
+    expect(semanticRanges(doc, input, false, "java")[0]?.className).toBe("cm-sem-property cm-sem-static");
+  });
 });
 
 describe("semantic highlighting (rainbow identifiers)", () => {
