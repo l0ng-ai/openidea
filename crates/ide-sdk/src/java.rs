@@ -343,6 +343,9 @@ pub fn configure_jdtls(
     }
 }
 
+/// Where the JDK that runs jdtls is chosen, named as the settings dialog shows it.
+const SERVER_JDK_SETTING: &str = "Settings › Languages & Frameworks › Java › Language Server › JDK";
+
 fn missing_runtime_message(jdks: &[Jdk], min_java: u32) -> String {
     let mut found: Vec<u32> = jdks.iter().map(|j| j.major).collect();
     found.sort_unstable();
@@ -354,15 +357,16 @@ fn missing_runtime_message(jdks: &[Jdk], min_java: u32) -> String {
         format!("found JDK {}", list.join(", "))
     };
     format!(
-        "jdtls needs JDK {min_java} or newer to run ({found}). Install one (or point JAVA_HOME at it) and \
-         restart the server; the project can still target an older Java version."
+        "jdtls needs JDK {min_java} or newer to run ({found}). Pick one in {SERVER_JDK_SETTING} (it restarts \
+         automatically), or install a newer JDK and restart the server; the project can still target an older \
+         Java version."
     )
 }
 
 fn server_jdk_too_old_message(jdk: &Jdk, min_java: u32) -> String {
     format!(
         "The language server JDK ({}, JDK {}) is too old: jdtls needs JDK {min_java} or newer. Choose another \
-         one in Settings › Languages & Frameworks › Java, or set it to Auto.",
+         one in {SERVER_JDK_SETTING}, or set it to Auto.",
         jdk.home.display(),
         jdk.major
     )
@@ -570,6 +574,8 @@ mod tests {
         assert!(!cfg.env.contains_key("JAVA_HOME"));
         let err = cfg.launch_error.unwrap();
         assert!(err.contains("JDK 21 or newer") && err.contains("found JDK 8, 17"), "{err}");
+        // The user cannot be sent to JAVA_HOME alone: the language server JDK is a setting.
+        assert!(err.contains(SERVER_JDK_SETTING) && !err.contains("point JAVA_HOME at it"), "{err}");
 
         let mut cfg = jdtls();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], None);
@@ -633,6 +639,7 @@ mod tests {
         assert!(!cfg.env.contains_key("JAVA_HOME"));
         let err = cfg.launch_error.unwrap();
         assert!(err.contains("/jdk21") && err.contains("JDK 25 or newer"), "{err}");
+        assert!(err.contains(SERVER_JDK_SETTING), "both messages point at the same setting: {err}");
     }
 
     #[test]
