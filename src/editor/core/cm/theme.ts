@@ -72,7 +72,7 @@ export const openideaTheme = EditorView.theme({
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
     backgroundColor: "var(--editor-brace)",
     color: "inherit",
-    fontWeight: "var(--matched-brace-weight, 700)",
+    fontWeight: "var(--matched-brace-weight, var(--fw-code-bold, 700))",
     borderRadius: "1px",
   },
   ".cm-matchingTag, &.cm-focused .cm-matchingTag": {

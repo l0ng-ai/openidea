@@ -5,6 +5,7 @@
  * derived from the status + syntax tokens.
  */
 import type { ITheme } from "@xterm/xterm";
+import { fontWeightOf } from "@/platform/editorSettings";
 
 export type Rgba = [number, number, number, number];
 
@@ -189,24 +190,47 @@ export function readTerminalFont(): { family: string; size: number; lineHeight: 
   return { family, size, lineHeight: Math.max(1, Math.round((lh / (size * 1.2)) * 100) / 100) };
 }
 
+export interface TerminalFont {
+  family: string;
+  size: number;
+  lineHeight: number;
+  /** xterm `fontWeight` / `fontWeightBold`. */
+  weight: number;
+  boldWeight: number;
+}
+
+/** The editor settings the terminal font can follow. */
+export type EditorFontSettings =
+  | { fontFamily?: string; fontSize?: number; lineHeight?: number; fontWeight?: number; boldFontWeight?: number }
+  | undefined;
+
 /**
- * Font from Settings › Tools › Terminal: the editor font (Editor › Font) or the
- * terminal's own family / size / line height (a multiple of the cell height).
+ * Font from Settings › Tools › Terminal: the editor font (Editor › Font, with its
+ * Typography Settings weights) or the terminal's own family / size / line height
+ * (a multiple of the cell height).
  */
 export function terminalFont(
   t: { useEditorFont: boolean; fontFamily: string; fontSize: number; lineHeight: number },
-  editor: { fontFamily?: string; fontSize?: number; lineHeight?: number } | undefined,
-): { family: string; size: number; lineHeight: number } {
+  editor: EditorFontSettings,
+): TerminalFont {
   if (!t.useEditorFont) {
-    return { family: `"${t.fontFamily.replace(/"/g, "")}", ${NERD_FONT_FALLBACKS}, monospace`, size: t.fontSize, lineHeight: t.lineHeight };
+    return {
+      family: `"${t.fontFamily.replace(/"/g, "")}", ${NERD_FONT_FALLBACKS}, monospace`,
+      size: t.fontSize,
+      lineHeight: t.lineHeight,
+      weight: 400,
+      boldWeight: 700,
+    };
   }
-  if (!editor?.fontFamily || !editor.fontSize) return readTerminalFont();
+  const weights = { weight: fontWeightOf(editor?.fontWeight, 400), boldWeight: fontWeightOf(editor?.boldFontWeight, 700) };
+  if (!editor?.fontFamily || !editor.fontSize) return { ...readTerminalFont(), ...weights };
   const size = editor.fontSize;
   const lh = editor.lineHeight ?? size * 1.6;
   return {
     family: `"${editor.fontFamily.replace(/"/g, "")}", ${NERD_FONT_FALLBACKS}, monospace`,
     size,
     lineHeight: Math.max(1, Math.round((lh / (size * 1.2)) * 100) / 100),
+    ...weights,
   };
 }
 
@@ -216,10 +240,10 @@ export function terminalFont(
  * width) becomes xterm's letter spacing, from the ≈ 0.6 em advance of
  * monospace fonts.
  */
-export function withFontExtras(
-  font: { family: string; size: number; lineHeight: number },
+export function withFontExtras<F extends { family: string; size: number }>(
+  font: F,
   t: { fallbackFontFamily: string; columnWidth: number },
-): { family: string; size: number; lineHeight: number; letterSpacing: number } {
+): F & { letterSpacing: number } {
   const fallback = t.fallbackFontFamily.replace(/"/g, "").trim();
   const comma = font.family.indexOf(",");
   const family = !fallback

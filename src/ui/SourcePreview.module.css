@@ -7,6 +7,7 @@
   overflow: auto;
   background: var(--bg-app);
   font-family: var(--font-mono);
+  font-weight: var(--fw-code);
   font-size: var(--fs-ui);
   line-height: 19px;
   color: var(--fg);

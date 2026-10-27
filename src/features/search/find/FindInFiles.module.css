@@ -108,6 +108,7 @@
   flex-direction: column;
   padding: 2px 0;
   font-family: var(--font-mono);
+  font-weight: var(--fw-code);
 }
 .results > * {
   flex: 1;

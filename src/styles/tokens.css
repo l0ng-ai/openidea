@@ -5,6 +5,15 @@
  * (+ expUI parents) and the Islands Dark / Light editor schemes; metrics are the
  * theme JSON values at 100% zoom. Components use only these variables.
  */
+/*
+ * Editor font weights (Settings › Editor › Font › Typography Settings; set on
+ * the root at runtime). Outside `:root` so scheme tokens such as
+ * `--matched-brace-weight` keep referring to them instead of a resolved value.
+ */
+html {
+  --fw-code: 400;
+  --fw-code-bold: 700;
+}
 :root {
   /* surfaces */
   --bg-app: #191a1c;
@@ -76,7 +85,6 @@
 
   /* syntax (Islands Dark scheme) */
   --syn-keyword: #cf8e6d;
-  --syn-keyword-bold: initial;
   --syn-string: #6aab73;
   --syn-type: #bcbec4;
   --syn-function: #56a8f5;
@@ -122,7 +130,7 @@
   --bg-text-search-result: #114957;
   --bg-text-search-result-current: #165e70;
   --bg-matched-brace: #43454a;
-  --matched-brace-weight: 700;
+  --matched-brace-weight: var(--fw-code-bold);
   --bg-matched-tag: #3f4045;
   --bg-fold-placeholder: #393b40;
   --fg-fold-placeholder: #868991;
@@ -172,7 +180,6 @@
   --fs-small: 12px;
   --fs-tiny: 11px;
   --fs-code: 13px;
-  --fw-code: 400;
   --fs-input-large: 15px;
   --lh-code: 22px;
 
@@ -410,10 +417,7 @@
   --gutter-deleted: #767a8a;
 
   /* syntax (Light scheme + Default / Python defaults) */
-  /* WebView weight compensation, calibrated against IDEA's JetBrains Mono rendering. */
-  --fw-code: 450;
   --syn-keyword: #0033b3;
-  --syn-keyword-bold: 550;
   --syn-string: #067d17;
   --syn-type: #000000;
   --syn-function: #00627a;

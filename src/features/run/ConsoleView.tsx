@@ -28,7 +28,7 @@ function spanStyle(s: SpanStyle): CSSProperties | undefined {
   return {
     color: s.fg,
     background: s.bg,
-    fontWeight: s.bold ? 600 : undefined,
+    fontWeight: s.bold ? "var(--fw-code-bold, 700)" : undefined,
     opacity: s.dim ? 0.6 : undefined,
     fontStyle: s.italic ? "italic" : undefined,
     textDecoration: deco || undefined,

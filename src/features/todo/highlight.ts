@@ -83,7 +83,7 @@ export function todoDecorations(view: EditorView, settings: TodoSettings): Decor
 
 const theme = EditorView.baseTheme({
   ".cm-openidea-todo, .cm-openidea-todo *": { color: "var(--todo-color) !important", fontStyle: "italic" },
-  ".cm-openidea-todo-keyword, .cm-openidea-todo-keyword *": { fontWeight: "600", fontStyle: "normal" },
+  ".cm-openidea-todo-keyword, .cm-openidea-todo-keyword *": { fontWeight: "var(--fw-code-bold, 700)", fontStyle: "normal" },
 });
 
 export function todoEditorExtension(ctx: EditorDocContext): Extension {

@@ -12,7 +12,7 @@ import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { findTerminalLinks } from "./links";
 import { openExternal, openFileLink } from "./session";
-import { readTerminalTheme, terminalFont, withFontExtras } from "./theme";
+import { readTerminalTheme, terminalFont, withFontExtras, type EditorFontSettings } from "./theme";
 
 const live = new Set<Terminal>();
 
@@ -24,14 +24,15 @@ export function applyThemeToEmbedded() {
 
 export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminalOptions): EmbeddedTerminal {
   const settings = workflowSettings().terminal;
-  const editor = useProject.getState().settings?.editor as
-    { fontFamily?: string; fontSize?: number; lineHeight?: number } | undefined;
+  const editor = useProject.getState().settings?.editor as EditorFontSettings;
   const font = withFontExtras(terminalFont(settings, editor), settings);
   const term = new Terminal({
     fontFamily: font.family,
     fontSize: font.size,
     lineHeight: font.lineHeight,
     letterSpacing: font.letterSpacing,
+    fontWeight: font.weight,
+    fontWeightBold: font.boldWeight,
     cursorBlink: settings.cursorBlink,
     cursorWidth: 2,
     cursorInactiveStyle: "outline",

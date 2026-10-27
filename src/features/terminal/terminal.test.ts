@@ -5,7 +5,7 @@ import { buildSearchDecorations } from "./theme";
 import { findTerminalLinks, resolvePath, trimUrl } from "./links";
 import { layoutPanes, nextTabName, removeFromLayout, splitLayout, tabFullTitle, tabTitle, trimMiddle, type TerminalTab } from "./store";
 import type { SessionSnapshot } from "./session";
-import { buildTheme, mix, parseColor, toHex, withFontExtras } from "./theme";
+import { buildTheme, mix, parseColor, terminalFont, toHex, withFontExtras } from "./theme";
 
 describe("theme", () => {
   it("parses colour formats", () => {
@@ -221,6 +221,23 @@ describe("withFontExtras", () => {
   it("turns the column width into letter spacing", () => {
     expect(withFontExtras(font, { fallbackFontFamily: "", columnWidth: 1 }).letterSpacing).toBe(0);
     expect(withFontExtras(font, { fallbackFontFamily: "", columnWidth: 1.5 }).letterSpacing).toBe(3);
+  });
+});
+
+describe("terminalFont", () => {
+  const own = { useEditorFont: false, fontFamily: "Menlo", fontSize: 12, lineHeight: 1.2 };
+  const editor = { fontFamily: "JetBrains Mono", fontSize: 13, lineHeight: 22, fontWeight: 300, boldFontWeight: 600 };
+
+  it("follows the editor's Typography Settings weights with Use editor font", () => {
+    const f = terminalFont({ ...own, useEditorFont: true }, editor);
+    expect([f.weight, f.boldWeight]).toEqual([300, 600]);
+    const d = terminalFont({ ...own, useEditorFont: true }, { ...editor, fontWeight: undefined, boldFontWeight: undefined });
+    expect([d.weight, d.boldWeight]).toEqual([400, 700]);
+  });
+
+  it("keeps regular / bold for the terminal's own font", () => {
+    const f = terminalFont(own, editor);
+    expect([f.weight, f.boldWeight]).toEqual([400, 700]);
   });
 });
 

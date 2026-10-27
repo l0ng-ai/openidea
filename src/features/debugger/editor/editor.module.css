@@ -139,6 +139,7 @@
   max-width: 520px;
   padding: 4px 8px;
   font-family: var(--font-mono);
+  font-weight: var(--fw-code);
   font-size: var(--fs-code);
   white-space: pre-wrap;
   word-break: break-word;

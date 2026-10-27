@@ -2002,6 +2002,10 @@ export type EditorSettings_Deserialize = {
 	ligatures?: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont?: string,
+	/**  Typography Settings › Main font weight (CSS 100–900), as IDEA. */
+	fontWeight?: number,
+	/**  Typography Settings › Bold font weight: wherever the editor renders bold. */
+	boldFontWeight?: number,
 	general?: EditorGeneralSettings,
 	appearance?: EditorAppearanceSettings,
 	breadcrumbs?: BreadcrumbsSettings,
@@ -2038,6 +2042,10 @@ export type EditorSettings_Serialize = {
 	ligatures: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont: string,
+	/**  Typography Settings › Main font weight (CSS 100–900), as IDEA. */
+	fontWeight: number,
+	/**  Typography Settings › Bold font weight: wherever the editor renders bold. */
+	boldFontWeight: number,
 	general: EditorGeneralSettings,
 	appearance: EditorAppearanceSettings,
 	breadcrumbs: BreadcrumbsSettings,

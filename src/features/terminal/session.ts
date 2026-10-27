@@ -14,7 +14,7 @@ import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { splitCommandLine } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
-import { readSearchDecorations, readTerminalTheme, terminalFont, withFontExtras } from "./theme";
+import { readSearchDecorations, readTerminalTheme, terminalFont, withFontExtras, type EditorFontSettings } from "./theme";
 
 export interface TerminalSearchOptions {
   caseSensitive: boolean;
@@ -78,7 +78,7 @@ function beep() {
 }
 
 function fontFor(t: TerminalSettingsValid) {
-  const e = useProject.getState().settings?.editor as { fontFamily?: string; fontSize?: number; lineHeight?: number } | undefined;
+  const e = useProject.getState().settings?.editor as EditorFontSettings;
   return withFontExtras(terminalFont(t, e), t);
 }
 
@@ -169,6 +169,8 @@ export class TerminalSession {
       fontSize: font.size,
       lineHeight: font.lineHeight,
       letterSpacing: font.letterSpacing,
+      fontWeight: font.weight,
+      fontWeightBold: font.boldWeight,
       cursorBlink: settings.cursorBlink,
       cursorStyle: CURSOR[settings.cursorShape],
       cursorWidth: 2,
@@ -241,6 +243,8 @@ export class TerminalSession {
     if (o.fontSize !== font.size) o.fontSize = font.size;
     if (o.lineHeight !== font.lineHeight) o.lineHeight = font.lineHeight;
     if (o.letterSpacing !== font.letterSpacing) o.letterSpacing = font.letterSpacing;
+    if (o.fontWeight !== font.weight) o.fontWeight = font.weight;
+    if (o.fontWeightBold !== font.boldWeight) o.fontWeightBold = font.boldWeight;
     o.cursorStyle = CURSOR[t.cursorShape];
     o.cursorBlink = t.cursorBlink;
     o.macOptionIsMeta = t.optionAsMeta;
