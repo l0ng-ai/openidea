@@ -108,8 +108,8 @@
   text-align: left;
 }
 .rowMain:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: none;
+  background: var(--bg-hover);
 }
 .rowName {
   flex: none;

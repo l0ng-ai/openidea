@@ -94,7 +94,28 @@ a:hover {
   color: var(--link-hover);
 }
 
+/* Focus rings mark controls only, as in IDEA: lists, trees, tables, menus, popups and other
+   focusable containers show focus through their selected row instead of a frame. */
 :focus-visible {
+  outline: none;
+}
+:is(
+  button,
+  a[href],
+  input,
+  select,
+  textarea,
+  summary,
+  [role="button"],
+  [role="link"],
+  [role="checkbox"],
+  [role="radio"],
+  [role="switch"],
+  [role="tab"],
+  [role="combobox"],
+  [role="slider"],
+  [role="spinbutton"]
+):focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }

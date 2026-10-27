@@ -144,9 +144,6 @@
   white-space: pre;
   outline: none;
 }
-.previewArea:focus-visible {
-  box-shadow: inset 0 0 0 1px var(--accent);
-}
 
 /* Color Scheme page */
 .schemeRow {

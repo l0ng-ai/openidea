@@ -96,9 +96,8 @@
 .table tbody tr.selected:hover {
   background: var(--bg-list-selected);
 }
-.table tbody tr:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
+.table tbody tr:focus-visible:not(.selected) {
+  background: var(--bg-hover);
 }
 .versionCell {
   color: var(--fg-secondary);
