@@ -12,7 +12,8 @@
           "public.shell-script",
           "public.json",
           "public.xml",
-          "public.yaml"
+          "public.yaml",
+          "public.python-script"
         ],
         "role": "Editor",
         "rank": "Alternate"
@@ -22,6 +23,17 @@
         "ext": [
           "rs",
           "go",
+          "py",
+          "pyi",
+          "pyw",
+          "cjs",
+          "scss",
+          "less",
+          "rst",
+          "tex",
+          "ps1",
+          "bat",
+          "fish",
           "kt",
           "kts",
           "gradle",
