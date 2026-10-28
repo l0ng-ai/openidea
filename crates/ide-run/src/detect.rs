@@ -1,4 +1,5 @@
-//! Run configuration detection from build files found at the project root.
+//! Run configuration detection from build files at the project root, or from the
+//! builds nested in a folder that holds several repositories.
 //!
 //! Detection never fails: unreadable or malformed files simply contribute nothing.
 
@@ -461,22 +462,89 @@ fn applies_application_plugin(text: &str) -> bool {
     })
 }
 
+/// How deep a build is looked for when the project root has none (a folder holding
+/// several repositories: `backend/pom.xml`, `apps/server/settings.gradle`).
+const NESTED_BUILD_DEPTH: usize = 3;
+
+/// The builds marked by any of `markers`: the root itself, else the shallowest marked
+/// folder of each branch, up to [`NESTED_BUILD_DEPTH`] levels down.
+fn build_dirs(root: &Path, markers: &[&str]) -> Vec<PathBuf> {
+    let marked = |d: &Path| markers.iter().any(|m| d.join(m).is_file());
+    if marked(root) {
+        return vec![root.to_path_buf()];
+    }
+    let mut out = Vec::new();
+    let mut level = vec![root.to_path_buf()];
+    for _ in 0..NESTED_BUILD_DEPTH {
+        let mut next = Vec::new();
+        for sub in level.iter().flat_map(|d| subdirs(d)).filter(|d| !d.ends_with("src") && !d.ends_with("out")) {
+            if marked(&sub) {
+                out.push(sub);
+            } else {
+                next.push(sub);
+            }
+        }
+        level = next;
+    }
+    out.sort();
+    out
+}
+
+/// Ids, names and working directory of the configurations of a build nested in
+/// `rel` (`None`: the build at the project root).
+struct Scope(Option<String>);
+
+impl Scope {
+    fn new(root: &Path, dir: &Path) -> Self {
+        Self((dir != root).then(|| relative(root, dir).to_string_lossy().replace('\\', "/")))
+    }
+    fn id(&self, base: &str) -> String {
+        match &self.0 {
+            Some(l) => format!("{base}:{l}"),
+            None => base.to_owned(),
+        }
+    }
+    fn name(&self, base: &str) -> String {
+        match &self.0 {
+            Some(l) => format!("{l}: {base}"),
+            None => base.to_owned(),
+        }
+    }
+    fn cwd(&self) -> Option<PathBuf> {
+        self.0.as_ref().map(PathBuf::from)
+    }
+}
+
+const GRADLE_SETTINGS: &[&str] = &["settings.gradle.kts", "settings.gradle"];
+const GRADLE_BUILDS: &[&str] = &["build.gradle.kts", "build.gradle"];
+
 fn detect_gradle(root: &Path, out: &mut Vec<RunConfig>) {
-    let names = ["build.gradle.kts", "build.gradle"];
-    let has_settings = first_existing(root, &["settings.gradle.kts", "settings.gradle"]).is_some();
-    let text = match collect_texts(root, &names) {
+    let markers: Vec<&str> = GRADLE_SETTINGS.iter().chain(GRADLE_BUILDS).copied().collect();
+    for dir in build_dirs(root, &markers) {
+        detect_gradle_build(root, &dir, out);
+    }
+}
+
+fn detect_gradle_build(root: &Path, dir: &Path, out: &mut Vec<RunConfig>) {
+    let has_settings = first_existing(dir, GRADLE_SETTINGS).is_some();
+    let text = match collect_texts(dir, GRADLE_BUILDS) {
         Some(t) => t,
-        None if has_settings => collect_texts_from_subdirs(root, &names),
+        None if has_settings => collect_texts_from_subdirs(dir, GRADLE_BUILDS),
         None => return,
     };
-    let cmd = wrapper(root, "gradlew", "gradlew.bat", "gradle");
-    out.push(config("gradle:build", "gradle build", "gradle", &cmd, &["build"]));
-    out.push(config("gradle:test", "gradle test", "gradle", &cmd, &["test"]).test());
+    let scope = Scope::new(root, dir);
+    let cmd = wrapper(dir, "gradlew", "gradlew.bat", "gradle");
+    let gradle = |id: &str, task: &str| {
+        config(scope.id(id), scope.name(&format!("gradle {task}")), "gradle", &cmd, &[task]).in_dir(scope.cwd())
+    };
+    spring_boot_apps(root, dir, out);
+    out.push(gradle("gradle:build", "build"));
+    out.push(gradle("gradle:test", "test").test());
     if applies_application_plugin(&text) {
-        out.push(config("gradle:run", "gradle run", "gradle", &cmd, &["run"]));
+        out.push(gradle("gradle:run", "run"));
     }
     if text.contains("org.springframework.boot") {
-        out.push(config("gradle:bootRun", "gradle bootRun", "gradle", &cmd, &["bootRun"]));
+        out.push(gradle("gradle:bootRun", "bootRun"));
     }
 }
 
@@ -494,13 +562,168 @@ fn collect_texts_from_subdirs(root: &Path, names: &[&str]) -> String {
 }
 
 fn detect_maven(root: &Path, out: &mut Vec<RunConfig>) {
-    let Some(text) = collect_texts(root, &["pom.xml"]) else { return };
-    let cmd = wrapper(root, "mvnw", "mvnw.cmd", "mvn");
-    out.push(config("maven:package", "mvn package", "maven", &cmd, &["package"]));
-    out.push(config("maven:test", "mvn test", "maven", &cmd, &["test"]).test());
-    if text.contains("spring-boot-maven-plugin") {
-        out.push(config("maven:spring-boot:run", "mvn spring-boot:run", "maven", &cmd, &["spring-boot:run"]));
+    for dir in build_dirs(root, &["pom.xml"]) {
+        detect_maven_build(root, &dir, out);
     }
+}
+
+fn detect_maven_build(root: &Path, dir: &Path, out: &mut Vec<RunConfig>) {
+    let Some(text) = collect_texts(dir, &["pom.xml"]) else { return };
+    let scope = Scope::new(root, dir);
+    let cmd = wrapper(dir, "mvnw", "mvnw.cmd", "mvn");
+    let maven = |id: &str, goal: &str| {
+        config(scope.id(id), scope.name(&format!("mvn {goal}")), "maven", &cmd, &[goal]).in_dir(scope.cwd())
+    };
+    spring_boot_apps(root, dir, out);
+    out.push(maven("maven:package", "package"));
+    out.push(maven("maven:test", "test").test());
+    if text.contains("spring-boot-maven-plugin") {
+        out.push(maven("maven:spring-boot:run", "spring-boot:run"));
+    }
+}
+
+// ---------------------------------------------------------------- spring boot
+
+/// Source files read per build when looking for `@SpringBootApplication` classes.
+const SPRING_SCAN_FILES: usize = 400;
+
+/// "Spring Boot" configurations for the `@SpringBootApplication` main classes of the
+/// modules of the build in `build` that apply the Spring Boot plugin:
+/// `java -cp ${classpath} <class>` in the module, the classpath resolved at launch.
+fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
+    let mut budget = SPRING_SCAN_FILES;
+    let mut modules = vec![build.to_path_buf()];
+    let mut level = vec![build.to_path_buf()];
+    for _ in 0..NESTED_BUILD_DEPTH {
+        level = level.iter().flat_map(|d| subdirs(d)).filter(|d| !d.ends_with("src")).collect();
+        modules.extend(level.iter().cloned());
+    }
+    for module in modules {
+        if budget == 0 {
+            break;
+        }
+        if !applies_spring_boot(&module) {
+            continue;
+        }
+        let module_rel = (module != root).then(|| relative(root, &module).to_string_lossy().replace('\\', "/"));
+        for class in spring_boot_classes(&module, &mut budget) {
+            let simple = class.rsplit(['.', '$']).next().unwrap_or(&class).to_owned();
+            let id = match &module_rel {
+                Some(m) => format!("application:{m}:{class}"),
+                None => format!("application:{class}"),
+            };
+            out.push(
+                config(id, simple, "spring-boot", "java", &["-cp", "${classpath}", &class])
+                    .in_dir(module_rel.as_ref().map(PathBuf::from))
+                    .debug("java-debug"),
+            );
+        }
+    }
+}
+
+/// The module's own build applies the Spring Boot plugin, and it has main sources.
+fn applies_spring_boot(module: &Path) -> bool {
+    if !["java", "kotlin"].iter().any(|l| module.join("src/main").join(l).is_dir()) {
+        return false;
+    }
+    if let Some(pom) = read(&module.join("pom.xml")) {
+        return pom.contains("spring-boot-maven-plugin") && !pom.contains("<packaging>pom</packaging>");
+    }
+    GRADLE_BUILDS.iter().filter_map(|n| read(&module.join(n))).any(|text| {
+        text.lines().any(|l| {
+            let l = l.split("//").next().unwrap_or_default();
+            // The plugin id (`id("org.springframework.boot")`), not a dependency (`org.springframework.boot:…`).
+            ["org.springframework.boot\"", "org.springframework.boot'"].iter().any(|p| l.contains(p))
+                && !l.contains("apply false")
+        })
+    })
+}
+
+/// Binary names of the `@SpringBootApplication` classes with a `main` under
+/// `src/main/{java,kotlin}`, from the shallowest packages that declare one (the
+/// application class sits in the root package of the code it scans).
+fn spring_boot_classes(module: &Path, budget: &mut usize) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut level: Vec<PathBuf> =
+        ["java", "kotlin"].iter().map(|l| module.join("src/main").join(l)).filter(|d| d.is_dir()).collect();
+    while !level.is_empty() && found.is_empty() && *budget > 0 {
+        let mut next = Vec::new();
+        for dir in &level {
+            let Ok(entries) = fs::read_dir(dir) else { continue };
+            let mut files = Vec::new();
+            for e in entries.filter_map(Result::ok) {
+                let path = e.path();
+                match e.file_type() {
+                    Ok(t) if t.is_dir() => next.push(path),
+                    Ok(t) if t.is_file() && path.extension().is_some_and(|x| x == "java" || x == "kt") => {
+                        files.push(path)
+                    }
+                    _ => {}
+                }
+            }
+            files.sort();
+            for file in files {
+                if *budget == 0 {
+                    break;
+                }
+                *budget -= 1;
+                if fs::metadata(&file).is_ok_and(|m| m.len() > 256 * 1024) {
+                    continue;
+                }
+                if let Some(class) = read(&file).and_then(|src| spring_boot_class(&src, &file)) {
+                    found.push(class);
+                }
+            }
+        }
+        next.sort();
+        level = next;
+    }
+    found
+}
+
+/// The class to launch for a source file declaring a `@SpringBootApplication` with a `main`.
+pub(crate) fn spring_boot_class(src: &str, file: &Path) -> Option<String> {
+    let code: Vec<&str> = src.lines().map(|l| l.split("//").next().unwrap_or_default()).collect();
+    let code = code.join("\n");
+    let at = code.find("@SpringBootApplication")?;
+    let package = code
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("package "))
+        .map(|p| p.trim_end_matches(';').trim().to_owned())
+        .filter(|p| !p.is_empty());
+    let qualify = |name: &str| match &package {
+        Some(p) => format!("{p}.{name}"),
+        None => name.to_owned(),
+    };
+    if file.extension().is_some_and(|x| x == "kt") {
+        // A top-level `fun main` compiles into the file facade (`AppKt`, or `@file:JvmName`).
+        if code.lines().any(|l| l.starts_with("fun main(")) {
+            let jvm_name = code
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("@file:JvmName(")?.split('"').nth(1).map(str::to_owned));
+            let facade = jvm_name.unwrap_or_else(|| {
+                let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let mut chars = stem.chars();
+                let upper: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+                format!("{upper}Kt")
+            });
+            return Some(qualify(&facade));
+        }
+        if !code.contains("fun main(") {
+            return None;
+        }
+    } else if !code.contains("void main(") {
+        return None;
+    }
+    let name: String = code[at..]
+        .split_whitespace()
+        .skip_while(|t| *t != "class")
+        .nth(1)?
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+        .collect();
+    (!name.is_empty()).then(|| qualify(&name))
 }
 
 // ---------------------------------------------------------------- go

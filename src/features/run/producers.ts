@@ -515,16 +515,22 @@ const hasCMain = (content?: string) => content === undefined || /^\s*(?:int|void
 /** A top-level `fun main` (with or without `args`, `suspend` allowed). */
 const hasKotlinMain = (content?: string) => content === undefined || /^(?:suspend\s+)?fun\s+main\s*\(/m.test(content);
 
-/** The Cargo configs whose package contains the file, if any. */
-function cargoOwner(rel: string, configs: readonly RunConfig[]): RunConfig[] {
+/**
+ * The configs of the given build tools whose build contains the file (working
+ * directory at or above it): a build nested in a folder of repositories owns only its files.
+ */
+function buildOwners(rel: string, configs: readonly RunConfig[], kinds: readonly string[]): RunConfig[] {
   return configs.filter((c) => {
-    if (c.kind !== "cargo") return false;
+    if (!kinds.includes(c.kind)) return false;
     const cwd = (c.cwd ?? "").replace(/^\.\/?/, "").replace(/\/+$/, "");
     return !cwd || rel.startsWith(cwd + "/");
   });
 }
 
-const hasBuildTool = (configs: readonly RunConfig[], kinds: string[]) => configs.some((c) => kinds.includes(c.kind));
+const cargoOwner = (rel: string, configs: readonly RunConfig[]) => buildOwners(rel, configs, ["cargo"]);
+const hasBuildTool = (rel: string, configs: readonly RunConfig[], kinds: readonly string[]) =>
+  buildOwners(rel, configs, kinds).length > 0;
+const JVM_BUILDS = ["maven", "gradle"];
 
 /**
  * A Godot scene: `godot --path <project> res://<scene>` in the Godot project holding it
@@ -589,12 +595,12 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
       const main = contextConfig(rel, configs, input.content);
       return main ? { name: main.name, scope: "file", config: main } : null;
     }
-    if (lang === "go" && hasBuildTool(configs, ["go"])) {
+    if (lang === "go" && hasBuildTool(rel, configs, ["go"])) {
       if (!hasGoMain(input.content)) return null;
       const main = contextConfig(rel, configs, input.content ?? "package main");
       if (main) return { name: main.name, scope: "file", config: main };
     }
-    if (/\.(java|kt)$/.test(rel) && hasBuildTool(configs, ["maven", "gradle"])) {
+    if (/\.(java|kt)$/.test(rel) && hasBuildTool(rel, configs, JVM_BUILDS)) {
       if (input.content === undefined) return null;
       const targets = detectRunTargets(input.content, rel).filter((t) => t.className);
       const target = targets.find((t) => t.kind === "main") ?? targets.find((t) => t.kind === "suite");
@@ -796,7 +802,7 @@ function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget)
   const rel = s.idPath;
   if (target.kind === "main") {
     // Java / Kotlin main classes in a Maven / Gradle project: an Application configuration.
-    if (target.className && s.inProject && hasBuildTool(input.configs, ["maven", "gradle"])) {
+    if (target.className && s.inProject && hasBuildTool(rel, input.configs, JVM_BUILDS)) {
       const config = applicationConfig({ className: target.className, spring: target.spring }, rel, input.configs);
       return { name: config.name, scope: "element", config };
     }
