@@ -23,6 +23,7 @@ import {
   terminalFont,
   type EditorFont,
   type TerminalFontSettings,
+  MIN_CONTRAST_RATIO,
 } from "./theme";
 
 export interface TerminalSearchOptions {
@@ -46,6 +47,8 @@ export interface SessionSnapshot {
   title: string;
   /** Window title set by the running program (OSC 0/2), null when unset or blank. */
   appTitle: string | null;
+  /** A command is running (shell integration's OSC 133 C … D), or the session runs a non-shell program. */
+  commandRunning: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
 }
@@ -177,7 +180,14 @@ export class TerminalSession {
   constructor(opts: SessionOptions) {
     this.opts = opts;
     this.key = opts.key;
-    this.snapshot = { status: "idle", exitCode: null, title: "Local", appTitle: null, cwd: opts.cwd };
+    this.snapshot = {
+      status: "idle",
+      exitCode: null,
+      title: "Local",
+      appTitle: null,
+      commandRunning: false,
+      cwd: opts.cwd,
+    };
     this.host = document.createElement("div");
     this.host.className = "openidea-terminal-host";
     this.host.dataset.terminalSession = opts.key;
@@ -203,7 +213,7 @@ export class TerminalSession {
       macOptionClickForcesSelection: true,
       rightClickSelectsWord: false,
       drawBoldTextInBrightColors: false,
-      minimumContrastRatio: 1,
+      minimumContrastRatio: MIN_CONTRAST_RATIO,
       smoothScrollDuration: 0,
       // Same width as the IDE's scrollbars (global.css); the slider is styled there too (Terminal.module.css).
       overviewRuler: { width: 10 },
@@ -228,6 +238,11 @@ export class TerminalSession {
         } catch {
           /* ignore malformed */
         }
+        return true;
+      }),
+      // OSC 133 (shell integration): C = a command starts, D = it finished.
+      this.term.parser.registerOscHandler(133, (data) => {
+        if (data === "C" || data.startsWith("D")) this.update({ commandRunning: data === "C" });
         return true;
       }),
       this.term.registerLinkProvider({
@@ -373,7 +388,8 @@ export class TerminalSession {
   async start() {
     if (this.disposed || this.snapshot.status === "starting" || this.snapshot.status === "running") return;
     const generation = ++this.generation;
-    this.update({ status: "starting", exitCode: null, appTitle: null });
+    const custom = this.opts.command;
+    this.update({ status: "starting", exitCode: null, appTitle: null, commandRunning: !!custom && !custom.shell });
     if (!isTauri()) {
       this.term.writeln("\x1b[2mTerminal is unavailable outside the desktop app.\x1b[0m");
       this.update({ status: "error" });
@@ -389,7 +405,6 @@ export class TerminalSession {
     try {
       const t = workflowSettings().terminal;
       const [shellPath, ...shellArgs] = splitCommandLine(t.shellPath);
-      const custom = this.opts.command;
       const shell = custom ? custom.program : shellPath;
       const args = custom ? custom.args : shellArgs;
       const info = await call(

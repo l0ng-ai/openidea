@@ -103,19 +103,25 @@ export function trimMiddle(text: string, max: number): string {
 
 const APP_TITLE_MAX = 30;
 
+/** The title the program in the tab's active pane set, while a command runs (at the prompt it is the shell's own). */
+function appTitle(tab: TerminalTab, sessions?: Record<string, SessionSnapshot>): string | null {
+  const s = sessions?.[tab.activePane];
+  return s?.commandRunning ? s.appTitle : null;
+}
+
 /**
- * The tab's label, as in IDEA: a name the user gave it, else the title the
- * program in its active pane set (OSC 0/2, middle-trimmed), else the default name.
+ * The tab's label: a name the user gave it, else the title the running command
+ * set (OSC 0/2, middle-trimmed), else the default name.
  */
 export function tabTitle(tab: TerminalTab, sessions?: Record<string, SessionSnapshot>): string {
   if (tab.customName) return tab.customName;
-  const app = sessions?.[tab.activePane]?.appTitle;
+  const app = appTitle(tab, sessions);
   return app ? trimMiddle(app, APP_TITLE_MAX) : tab.name;
 }
 
 /** Untrimmed title for the tab's tooltip. */
 export function tabFullTitle(tab: TerminalTab, sessions?: Record<string, SessionSnapshot>): string {
-  return tab.customName ?? sessions?.[tab.activePane]?.appTitle ?? tab.name;
+  return tab.customName ?? appTitle(tab, sessions) ?? tab.name;
 }
 
 /** Settings › Terminal › Start directory, resolved against the project root. */
