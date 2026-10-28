@@ -4,7 +4,8 @@
  */
 import { registerOverlay, registerStatusItem } from "@/workbench/contributions";
 import { AboutOverlay } from "./AboutDialog";
-import { appActions, checkForUpdatesOnStartup, updateActions } from "./appActions";
+import { appActions, updateActions } from "./appActions";
+import { checkForUpdatesOnStartup } from "./updates";
 import { installCloseGuard } from "./closeGuard";
 import { InvalidateCachesOverlay, registerInvalidateCachesActions } from "./InvalidateCaches";
 import { buildInfo } from "./host";
