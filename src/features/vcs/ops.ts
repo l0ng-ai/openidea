@@ -5,6 +5,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import type { GitOperation, RemoteOp } from "@/bindings";
+import { tx } from "@/platform/i18n";
 import { call, commands, emitLocalIdeEvent, isCancelled, nextRequestId } from "@/platform/ipc";
 import { editorsFor } from "@/editor/api";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
@@ -150,7 +151,8 @@ export async function runRemote(
     notifications().notify({ group: "vcs", level: "warning", title: "Another remote operation is in progress" });
     return false;
   }
-  const [progressTitle, doneTitle] = REMOTE_TITLE[op.op];
+  const [progressText, doneTitle] = REMOTE_TITLE[op.op];
+  const progressTitle = tx(progressText);
   const request = nextRequestId();
   const taskId = 900_000 + request;
   activeRemote = request;
@@ -320,15 +322,16 @@ export async function runGitOperation(op: GitOperation, opts: GitOperationOption
   const request = nextRequestId();
   const taskId = 900_000 + request;
   activeRemote = request;
-  useVcs.setState({ remoteBusy: opts.progress });
+  const progress = tx(opts.progress);
+  useVcs.setState({ remoteBusy: progress });
   const task = (message: string | null, done: boolean) =>
-    emitLocalIdeEvent({ type: "task", id: taskId, title: opts.progress, message, fraction: done ? 1 : null, done });
+    emitLocalIdeEvent({ type: "task", id: taskId, title: progress, message, fraction: done ? 1 : null, done });
   task(null, false);
   notifications().notify({
     group: "vcs",
     level: "info",
     key: "vcs.operation",
-    title: `${opts.progress}…`,
+    title: `${progress}…`,
     sticky: true,
     actions: [{ label: "Cancel", run: cancelRemote }],
   });

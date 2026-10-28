@@ -171,7 +171,7 @@ export function StructureView() {
     return error ? (
       <EmptyState title="Structure unavailable">{error}</EmptyState>
     ) : (
-      <div className={styles.loading}>{loading ? "Loading…" : null}</div>
+      <div className={styles.loading}>{loading ? tx("Loading…") : null}</div>
     );
   }
 
@@ -491,7 +491,7 @@ function FileStructureDialog() {
           onActivate={(n) => choose(n)}
           rowHeight={POPUP_ROW}
           indent={16}
-          empty={<span className={styles.popupEmpty}>{!path ? tx("Open a file first") : loading && !items ? "Loading…" : "No symbols"}</span>}
+          empty={<span className={styles.popupEmpty}>{!path ? tx("Open a file first") : loading && !items ? tx("Loading…") : tx("No symbols")}</span>}
           renderNode={(n, s) => {
             const matched = filter.matches.get(n.key);
             return <SymbolRow node={n} indices={matched} selected={s.selected} dim={!!query.trim() && !matched} />;

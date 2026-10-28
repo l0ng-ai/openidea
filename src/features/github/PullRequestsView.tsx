@@ -160,7 +160,7 @@ function ListRow({ pr }: { pr: PullRequestSummary }) {
         <StateBadge pr={pr} />
       </div>
       <div className={styles.listMeta}>
-        #{pr.number} by {pr.author} · {relativeTime(pr.updatedAt)}
+        #{pr.number} {tx`by ${pr.author}`} · {relativeTime(pr.updatedAt)}
         {decision ? ` · ${decision}` : ""}
         {pr.labels.length ? ` · ${pr.labels.map((l) => l.name).join(", ")}` : ""}
       </div>
@@ -486,7 +486,7 @@ function Details() {
         <div className={styles.metaRow}>
           <StateBadge pr={s} />
           <span>
-            #{s.number} by <strong>{s.author}</strong> · {s.baseRef} ← {s.headRef}
+            #{s.number} {tx`by ${s.author}`} · {s.baseRef} ← {s.headRef}
           </span>
           {reviewDecisionLabel(s.reviewDecision) && (
             <span className={styles.dim}>· {reviewDecisionLabel(s.reviewDecision)}</span>

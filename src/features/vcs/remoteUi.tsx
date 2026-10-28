@@ -425,7 +425,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
             rowHeight={22}
             aria-label="Outgoing commits"
             className={styles.boxList}
-            empty={<span>{upstream ? tx("Everything is up to date") : "No commits"}</span>}
+            empty={<span>{upstream ? tx("Everything is up to date") : tx("No commits")}</span>}
             renderItem={(c) => (
               <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
                 <span className={styles.commitHash}>{c.shortId}</span>

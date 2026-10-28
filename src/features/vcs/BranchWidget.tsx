@@ -45,7 +45,7 @@ export const showBranchesPopup = () => useBranchesPopup.setState({ open: true })
 export function headLabel(branch: { head: string | null; headCommit: string | null } | null): string {
   if (!branch) return "";
   if (branch.head) return branch.head;
-  return branch.headCommit ? branch.headCommit.slice(0, 8) : "No commits";
+  return branch.headCommit ? branch.headCommit.slice(0, 8) : tx("No commits");
 }
 
 /** The current repository (see `currentRepoFor`): the widget and the popup show the same one. */
@@ -71,18 +71,24 @@ export function BranchWidget() {
   const branch: BranchInfo = other
     ? { head: other.head, headCommit: other.headCommit, upstream: null, ahead: 0, behind: 0, operation: otherOp }
     : selected;
-  const op = branch.operation ? ` (${branch.operation})` : "";
-  const sync = [
-    branch.behind > 0 ? `${branch.behind} incoming` : "",
-    branch.ahead > 0 ? `${branch.ahead} outgoing` : "",
-  ].filter(Boolean);
-  const tooltip =
-    (repo ? `Repository: ${repo}\n` : "") +
-    (branch.upstream
-      ? `Git branch: ${headLabel(branch)}${op}\nTracking ${branch.upstream}`
-      : `Git branch: ${headLabel(branch)}${op}`) +
-    (count > 1 && !repo ? `\nIn all ${count} repositories` : "") +
-    (sync.length ? `\n${sync.join(", ")} commits` : "");
+  const head = branch.operation ? `${headLabel(branch)} (${branch.operation})` : headLabel(branch);
+  const sync =
+    branch.behind > 0 && branch.ahead > 0
+      ? tx`${branch.behind} incoming, ${branch.ahead} outgoing commits`
+      : branch.behind > 0
+        ? tx`${branch.behind} incoming commits`
+        : branch.ahead > 0
+          ? tx`${branch.ahead} outgoing commits`
+          : "";
+  const tooltip = [
+    repo ? tx`Repository: ${repo}` : "",
+    tx`Git branch: ${head}`,
+    branch.upstream ? tx`Tracking ${branch.upstream}` : "",
+    count > 1 && !repo ? tx`In all ${count} repositories` : "",
+    sync,
+  ]
+    .filter(Boolean)
+    .join("\n");
   return (
     <>
       <BarButton
@@ -341,7 +347,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
           rowHeight={ROW_HEIGHT}
           aria-label="Branches"
           className={styles.list}
-          empty={<span className={styles.empty}>{loaded ? tx("No matching branches") : "Loading…"}</span>}
+          empty={<span className={styles.empty}>{loaded ? tx("No matching branches") : tx("Loading…")}</span>}
           renderItem={(r) => <BranchRowView row={r} />}
         />
       </div>
@@ -746,7 +752,7 @@ function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "act
         <button
           type="button"
           className={clsx(styles.star, row.favorite && styles.starOn)}
-          aria-label={row.favorite ? "Remove from Favorites" : "Add to Favorites"}
+          aria-label={row.favorite ? tx("Remove from Favorites") : tx("Add to Favorites")}
           aria-pressed={row.favorite}
           tabIndex={-1}
           onMouseDown={(e) => e.preventDefault()}

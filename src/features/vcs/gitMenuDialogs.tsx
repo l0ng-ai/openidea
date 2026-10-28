@@ -596,7 +596,7 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
               <span className={styles.fileName}>{w.branch ?? (w.head ? w.head.slice(0, 8) : <T>(bare)</T>)}</span>
               <span className={clsx(styles.fileDir, styles.mono)}>{w.path}</span>
               {(w.main || w.locked || w.prunable) && (
-                <span className={styles.fileDir}>{w.main ? "main" : w.locked ? "locked" : "prunable"}</span>
+                <span className={styles.fileDir}>{w.main ? "main" : w.locked ? tx("locked") : tx("prunable")}</span>
               )}
             </button>
           ))}

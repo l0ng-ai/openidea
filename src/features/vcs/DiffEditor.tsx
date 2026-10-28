@@ -592,10 +592,12 @@ export function DiffEditor({ input }: { input: EditorInput }) {
             : chunkInfo.count === 0
               ? identical
                 ? tx("Contents are identical")
-                : "No differences"
+                : tx("No differences")
               : chunkInfo.current >= 0
-                ? `${chunkInfo.current + 1} of ${chunkInfo.count} differences`
-                : `${chunkInfo.count} difference${chunkInfo.count === 1 ? "" : "s"}`}
+                ? tx`${chunkInfo.current + 1} of ${chunkInfo.count} differences`
+                : chunkInfo.count === 1
+                  ? tx`${chunkInfo.count} difference`
+                  : tx`${chunkInfo.count} differences`}
         </span>
       </div>
       {opts.mode === "split" ? (
@@ -608,7 +610,9 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           </span>
           <span className={styles.label} title={sideLabel(right)}>
             {sideLabel(right)}
-            {editableB && <span className={styles.badge}>{left.type === "rev" ? tx("working copy") : "editable"}</span>}
+            {editableB && (
+              <span className={styles.badge}>{left.type === "rev" ? tx("working copy") : tx("editable")}</span>
+            )}
           </span>
         </div>
       ) : (

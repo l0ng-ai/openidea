@@ -293,7 +293,7 @@ function ModifyTableDialog(props: ModifyProps) {
       width={440}
       buttons={[{ label: "Cancel", role: "cancel" }]}
     >
-      <div className={styles.dialogText}>{details?.status === "error" ? details.message : "Loading…"}</div>
+      <div className={styles.dialogText}>{details?.status === "error" ? details.message : tx("Loading…")}</div>
     </Dialog>
   );
 }

@@ -31,20 +31,35 @@ const OP_NOUN: Record<InProgress, string> = {
   am: "Patch Application",
 };
 
+const IN_PROGRESS: Record<InProgress, string> = {
+  rebase: "Rebase in progress",
+  merge: "Merge in progress",
+  "cherry-pick": "Cherry-pick in progress",
+  revert: "Revert in progress",
+  am: "Patch application in progress",
+};
+
 export function inProgress(op: string | null | undefined = useVcs.getState().branch?.operation): InProgress | null {
   return op === "rebase" || op === "merge" || op === "cherry-pick" || op === "revert" || op === "am" ? op : null;
 }
 
 /** "Rebasing main", "Merging", "Cherry-picking"… for the branch widget and banner. */
 export function operationTitle(op: InProgress, head: string | null): string {
-  const verb = {
-    rebase: "Rebasing",
-    merge: "Merging",
-    "cherry-pick": "Cherry-picking",
-    revert: "Reverting",
-    am: "Applying patches",
+  if (!head)
+    return {
+      rebase: tx("Rebasing"),
+      merge: tx("Merging"),
+      "cherry-pick": tx("Cherry-picking"),
+      revert: tx("Reverting"),
+      am: tx("Applying patches"),
+    }[op];
+  return {
+    rebase: tx`Rebasing ${head}`,
+    merge: tx`Merging ${head}`,
+    "cherry-pick": tx`Cherry-picking ${head}`,
+    revert: tx`Reverting ${head}`,
+    am: tx`Applying patches to ${head}`,
   }[op];
-  return head ? `${verb} ${head}` : verb;
 }
 
 /** What a stopped operation offers, in IDEA's order. A merge is concluded by committing. */
@@ -106,16 +121,39 @@ export async function controlOperation(control: "continue" | "skip" | "abort", e
     void executeAction("vcs.resolveConflicts");
     return;
   }
-  const noun = OP_NOUN[op];
   const progress = {
-    continue: `Continuing ${noun.toLowerCase()}`,
+    continue: {
+      rebase: "Continuing rebase",
+      merge: "Continuing merge",
+      "cherry-pick": "Continuing cherry-pick",
+      revert: "Continuing revert",
+      am: "Continuing patch application",
+    }[op],
     skip: "Skipping commit",
-    abort: `Aborting ${noun.toLowerCase()}`,
+    abort: {
+      rebase: "Aborting rebase",
+      merge: "Aborting merge",
+      "cherry-pick": "Aborting cherry-pick",
+      revert: "Aborting revert",
+      am: "Aborting patch application",
+    }[op],
   }[control];
   const success = {
-    continue: `${noun} continued`,
+    continue: {
+      rebase: "Rebase continued",
+      merge: "Merge continued",
+      "cherry-pick": "Cherry-pick continued",
+      revert: "Revert continued",
+      am: "Patch application continued",
+    }[op],
     skip: "Commit skipped",
-    abort: `${noun} aborted`,
+    abort: {
+      rebase: "Rebase aborted",
+      merge: "Merge aborted",
+      "cherry-pick": "Cherry-pick aborted",
+      revert: "Revert aborted",
+      am: "Patch application aborted",
+    }[op],
   }[control];
   await runGitOperation(
     { op: control },
@@ -138,12 +176,12 @@ export function OperationBanner() {
   const op = inProgress(branch?.operation);
   if (!op) return null;
   return (
-    <div className={styles.banner} role="status" aria-label={`${OP_NOUN[op]} in progress`}>
+    <div className={styles.banner} role="status" aria-label={tx(IN_PROGRESS[op])}>
       <Icon name={conflicts ? "warning" : "branch"} size={14} />
       <span className={styles.bannerText}>
         {operationTitle(op, branch?.head ?? null)}
         {conflicts
-          ? ` · ${conflicts} conflict${conflicts === 1 ? "" : "s"}`
+          ? ` · ${conflicts === 1 ? tx`${conflicts} conflict` : tx`${conflicts} conflicts`}`
           : op === "merge"
             ? tx(" · commit to conclude")
             : ""}

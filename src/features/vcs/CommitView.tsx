@@ -38,7 +38,7 @@ import {
 } from "./changes";
 import { applyStash, commitChanges, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
-import { useChangelists, withListDefaults } from "./changelists";
+import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
 import { messageHistory, setAmend, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
 import { openDiff, withChain, workingDiffData } from "./diffInput";
@@ -53,6 +53,11 @@ import styles from "./CommitView.module.css";
 const CHANGES_MIME = "application/x-openidea-changes";
 
 /** "Commit" / "Shelf" / "Stash" content tabs; they stand in for the tool window title. */
+/** Shown text of a node: group names are translated, except the names of user change lists. */
+function nodeText(n: ChangeNode): string {
+  return n.type === "group" && (!n.changelist || n.label === DEFAULT_LIST_NAME) ? tx(n.label) : n.label;
+}
+
 export function CommitTabs() {
   const available = useVcs((s) => s.available);
   const tab = useCommit((s) => s.tab);
@@ -373,7 +378,7 @@ function ChangesPanel() {
               handleRef={treeRef}
               roots={roots}
               getKey={(n) => n.key}
-              getLabel={(n) => n.label}
+              getLabel={nodeText}
               getChildren={(n) => n.children}
               isExpandable={(n) => n.type !== "file"}
               expanded={expanded}
@@ -421,9 +426,9 @@ function ChangesPanel() {
                       n.type === "group" && n.changelist && !n.active && styles.inactiveList,
                     )}
                     style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
-                    title={n.type === "file" && n.kind ? KIND_LABEL[n.kind] : undefined}
+                    title={n.type === "file" && n.kind ? tx(KIND_LABEL[n.kind]) : undefined}
                   >
-                    {n.type === "group" && !n.changelist ? tx(n.label) : n.label}
+                    {nodeText(n)}
                   </span>
                 );
                 // Pointer-driven (HTML5 drag and drop never reaches the Tauri webview):
@@ -765,7 +770,7 @@ function StashesPanel() {
         rowHeight={22}
         aria-label="Stashes"
         className={styles.stashList}
-        empty={<span className={styles.empty}>{loaded ? "No stashes" : "Loading…"}</span>}
+        empty={<span className={styles.empty}>{loaded ? tx("No stashes") : tx("Loading…")}</span>}
         onActivate={(s, _i, e) => {
           if (e.type === "click" && (e as MouseEvent).detail < 2) return;
           void applyStash(s.index, false);

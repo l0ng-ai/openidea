@@ -257,7 +257,9 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
               <span
                 className={styles.fileRow}
                 style={{ flex: 1, padding: 0 }}
-                title={f.applies ? "Applies cleanly" : "Does not apply cleanly: a 3-way merge will be attempted"}
+                title={
+                  f.applies ? tx("Applies cleanly") : tx("Does not apply cleanly: a 3-way merge will be attempted")
+                }
               >
                 <Icon name={fileIconName(baseName(f.path))} size={14} />
                 <span
@@ -269,9 +271,9 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
                 >
                   {baseName(f.path)}
                 </span>
-                <span className={styles.fileDir}>{f.oldPath ? `from ${f.oldPath}` : dirName(f.path)}</span>
+                <span className={styles.fileDir}>{f.oldPath ? tx`from ${f.oldPath}` : dirName(f.path)}</span>
                 <span className={styles.grow} />
-                <span className={styles.commitMeta}>{f.binary ? "binary" : `+${f.added} −${f.removed}`}</span>
+                <span className={styles.commitMeta}>{f.binary ? tx("binary") : `+${f.added} −${f.removed}`}</span>
                 {!f.applies && <Icon name="warning" size={14} label="Does not apply cleanly" />}
               </span>
             )}

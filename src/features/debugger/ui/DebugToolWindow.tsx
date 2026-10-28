@@ -276,7 +276,9 @@ function FramesPane({ session }: { session: DebugSession }) {
         }
         onBlur={() => blurDebugView("frames")}
       >
-        {!paused && <div className={styles.note}>{session.status === "terminated" ? tx("Finished") : "Running…"}</div>}
+        {!paused && (
+          <div className={styles.note}>{session.status === "terminated" ? tx("Finished") : tx("Running…")}</div>
+        )}
         {items.map((item) =>
           item.kind === "hidden" ? (
             <button

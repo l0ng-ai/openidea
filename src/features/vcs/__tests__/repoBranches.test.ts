@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Branch } from "@/bindings";
+import { useI18n } from "@/platform/i18n";
 import {
   buildMultiRepoRows,
   commonBranches,
@@ -192,6 +193,18 @@ describe("buildMultiRepoRows", () => {
     expect(summary(buildMultiRepoRows({ ...input, branches: partial, query: "" })).at(-1)).toBe(
       "repo ology-gateway [dev] c3",
     );
+  });
+
+  it("matches and shows actions and groups in the UI language", () => {
+    const texts = { "Update Project…": "更新项目…", "Common Local Branches": "公共本地分支" };
+    useI18n.setState({ texts });
+    try {
+      const rows = buildMultiRepoRows({ ...input, query: "更新" });
+      expect(rows.map((r) => (r.type === "action" ? r.matches : null))).toEqual([[0, 1]]);
+      expect(summary(buildMultiRepoRows({ ...input, query: "" }))).toContain("v 公共本地分支");
+    } finally {
+      useI18n.setState({ texts: {} });
+    }
   });
 });
 

@@ -196,7 +196,6 @@ const UNTRANSLATED = new Set<string>([
   "info",
   "languageServer",
   "process",
-  "read-only",
   "Running processes requires the desktop app.\n",
   "text",
 ]);

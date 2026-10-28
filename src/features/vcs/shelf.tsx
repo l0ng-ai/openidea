@@ -355,7 +355,7 @@ export function ShelfPanel() {
           }}
           onContextMenu={(node, _sel, e: MouseEvent) => node && showContextMenu(e, shelfMenu(node.entry))}
           aria-label="Shelved changes"
-          empty={<span className={viewStyles.empty}>{loaded ? tx("No shelved changes") : "Loading…"}</span>}
+          empty={<span className={viewStyles.empty}>{loaded ? tx("No shelved changes") : tx("Loading…")}</span>}
           renderNode={(n) =>
             n.file ? (
               <>

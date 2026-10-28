@@ -1,6 +1,7 @@
 /** Get from VCS: clone a repository into a new folder and open it as a project. */
 import { useEffect, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
+import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { openProject } from "@/platform/project";
 import { Button, Dialog, Input, ProgressBar, T } from "@/ui";
@@ -207,7 +208,7 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
         {busy && (
           <div className={styles.cloneProgress} aria-live="polite">
             <ProgressBar value={progress.fraction} aria-label="Clone progress" />
-            <span className={styles.hint}>{progress.line || "Cloning…"}</span>
+            <span className={styles.hint}>{progress.line || tx("Cloning…")}</span>
           </div>
         )}
         {error && <div className={styles.error}>{error}</div>}

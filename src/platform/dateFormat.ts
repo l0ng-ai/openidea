@@ -4,6 +4,7 @@
  * "Use pretty formatting" (Today / Yesterday / N min ago). Used by the Git
  * log, Local History, commit details and blame.
  */
+import { tx } from "./i18n";
 import { useProject } from "./project";
 
 export interface DateFormatOptions {
@@ -69,11 +70,11 @@ export function formatTimestamp(ms: number, now = Date.now(), o: DateFormatOptio
   if (o.pretty) {
     const diff = now - ms;
     const min = 60_000;
-    if (diff >= 0 && diff < min) return "Moments ago";
-    if (diff >= 0 && diff < 60 * min) return `${Math.floor(diff / min)} min ago`;
+    if (diff >= 0 && diff < min) return tx("Moments ago");
+    if (diff >= 0 && diff < 60 * min) return tx`${Math.floor(diff / min)} min ago`;
     const today = new Date(now);
-    if (d.toDateString() === today.toDateString()) return `Today ${formatClock(d, o)}`;
-    if (d.toDateString() === new Date(now - 86_400_000).toDateString()) return `Yesterday ${formatClock(d, o)}`;
+    if (d.toDateString() === today.toDateString()) return tx`Today ${formatClock(d, o)}`;
+    if (d.toDateString() === new Date(now - 86_400_000).toDateString()) return tx`Yesterday ${formatClock(d, o)}`;
     return formatDay(d, o);
   }
   return `${formatDay(d, o)} ${formatClock(d, o)}`;

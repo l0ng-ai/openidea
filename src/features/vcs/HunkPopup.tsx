@@ -146,12 +146,8 @@ function HunkPopupView({ state }: { state: PopupState }) {
           }}
         />
         <span className={styles.title}>
-          {KIND_TITLE[hunk.kind]}
-          {index >= 0 && all.length > 1 && (
-            <span className={styles.counter}>
-              {index + 1} of {all.length}
-            </span>
-          )}
+          {tx(KIND_TITLE[hunk.kind])}
+          {index >= 0 && all.length > 1 && <span className={styles.counter}>{tx`${index + 1} of ${all.length}`}</span>}
         </span>
         <IconButton icon="close" title="Close" size="small" onClick={closeHunkPopup} />
       </div>

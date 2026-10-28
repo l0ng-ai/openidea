@@ -317,7 +317,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         </Button>
         <IconButton icon="refresh" title="Reload from Disk" size="small" onClick={() => void load()} />
         <span className={clsx(styles.status, !left && styles.statusDone)}>
-          {left ? `${left} conflict${left === 1 ? "" : "s"} left` : tx("All conflicts resolved")}
+          {left === 1 ? tx`${left} conflict left` : left ? tx`${left} conflicts left` : tx("All conflicts resolved")}
         </span>
         <Button size="small" variant="primary" onClick={() => void apply()}>
           <T>Apply</T>

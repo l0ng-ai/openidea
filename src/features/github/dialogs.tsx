@@ -189,7 +189,7 @@ function ReviewDialog(props: {
         <textarea
           data-autofocus
           aria-label={tx("Review comment")}
-          placeholder={needsBody ? "Leave a comment (required)" : "Leave a comment (optional)"}
+          placeholder={needsBody ? tx("Leave a comment (required)") : tx("Leave a comment (optional)")}
           className={styles.textarea}
           rows={8}
           value={body}

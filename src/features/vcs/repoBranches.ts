@@ -1,5 +1,6 @@
 /** Branches popup model for a project with several repositories (pure). */
 import type { Branch } from "@/bindings";
+import { tx } from "@/platform/i18n";
 import { fuzzyMatch } from "@/ui/match";
 import { rootOf } from "./model";
 import { isFavoriteBranch, MAX_RECENT, sortLocal, sortRemote, type PopupAction } from "./branches";
@@ -23,7 +24,7 @@ export function repoColorIndex(index: number): number {
 /** Display name of a repository's HEAD: its branch, else the short commit. */
 export function repoHeadLabel(r: Pick<RepoEntry, "head" | "headCommit">): string {
   if (r.head) return r.head;
-  return r.headCommit ? r.headCommit.slice(0, 8) : "No commits";
+  return r.headCommit ? r.headCommit.slice(0, 8) : tx("No commits");
 }
 
 /**
@@ -167,7 +168,7 @@ export function buildMultiRepoRows({
 
   const actionRows: RepoRow[] = [];
   for (const a of actions) {
-    const m = match(a.label);
+    const m = match(tx(a.label));
     if (m !== false) actionRows.push({ type: "action", key: `action:${a.id}`, action: a, matches: m });
   }
   blocks.push(actionRows);
@@ -225,7 +226,7 @@ export function buildMultiRepoRows({
         ? []
         : [{ type: "common", key: `common:${b.name}`, branch: b, label: b.name, depth: 1, matches: m }];
     });
-    group(groups, "common:local", "Common Local Branches", 0, local);
+    group(groups, "common:local", tx("Common Local Branches"), 0, local);
     const byRemote = new Map<string, CommonBranch[]>();
     for (const b of common.remote) {
       const remote = b.name.slice(0, Math.max(0, b.name.indexOf("/")));
@@ -243,7 +244,7 @@ export function buildMultiRepoRows({
       });
       group(remote, `common:folder:${name}`, name, 1, leaves);
     }
-    group(groups, "common:remote", "Common Remote Branches", 0, remote);
+    group(groups, "common:remote", tx("Common Remote Branches"), 0, remote);
   } else if (currentRepo) {
     const list = branches[currentRepo.root] ?? [];
     const local = sortLocal(list, favorites);
@@ -255,12 +256,12 @@ export function buildMultiRepoRows({
           .filter((b): b is Branch => !!b && !b.current)
           .slice(0, MAX_RECENT);
     const name = currentRepo.name;
-    group(groups, "repo:recent", `Recent Branches in ${name}`, 0, branchRows(currentRepo, recentList, "recent", 1));
-    group(groups, "repo:local", `Local Branches in ${name}`, 0, branchRows(currentRepo, local, "local", 1));
+    group(groups, "repo:recent", tx`Recent Branches in ${name}`, 0, branchRows(currentRepo, recentList, "recent", 1));
+    group(groups, "repo:local", tx`Local Branches in ${name}`, 0, branchRows(currentRepo, local, "local", 1));
     group(
       groups,
       "repo:remote",
-      `Remote Branches in ${name}`,
+      tx`Remote Branches in ${name}`,
       0,
       branchRows(currentRepo, sortRemote(list, favorites), "remote", 1),
     );
@@ -272,7 +273,7 @@ export function buildMultiRepoRows({
           ? []
           : [{ type: "tag", key: `tag:${currentRepo.root}:${t}`, repo: currentRepo, tag: t, depth: 1, matches: m }];
       });
-    group(groups, "repo:tags", `Tags in ${name}`, 0, tagRows);
+    group(groups, "repo:tags", tx`Tags in ${name}`, 0, tagRows);
   }
   blocks.push(groups);
 
