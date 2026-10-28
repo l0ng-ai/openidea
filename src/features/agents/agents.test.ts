@@ -233,4 +233,11 @@ describe("agents model", () => {
     expect(html).not.toContain("onerror");
     expect(html).not.toContain("<script");
   });
+
+  it("gives the text of a list item with a nested list its own block", () => {
+    const html = markdownHtml("- **parent** text:\n  - child\n- plain");
+    expect(html).toContain("<li><div><strong>parent</strong> text:</div><ul>");
+    expect(html).toContain("<li>child</li>");
+    expect(html).toContain("<li>plain</li>");
+  });
 });
