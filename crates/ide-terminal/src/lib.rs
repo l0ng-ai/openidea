@@ -97,6 +97,12 @@ impl TerminalManager {
         let mut cmd = CommandBuilder::new(&shell);
         cmd.args(&args);
         cmd.cwd(resolve_cwd(&options.cwd));
+        for (k, v) in ide_core::process::host_env_fixes() {
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            }
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }

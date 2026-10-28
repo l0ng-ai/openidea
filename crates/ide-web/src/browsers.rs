@@ -96,16 +96,44 @@ pub fn open(url: &str, id: Option<&str>) -> IdeResult<()> {
     if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://")) {
         return Err(IdeError::invalid(format!("not a web URL: {url}")));
     }
-    let result = match id {
-        None => open::that_detached(url),
+    let app = match id {
+        None => None,
         Some(id) => {
             let known =
                 KNOWN.iter().find(|k| k.id == id).ok_or_else(|| IdeError::invalid(format!("unknown browser: {id}")))?;
-            let app = locate(known).ok_or_else(|| IdeError::unavailable(format!("{} is not installed", known.name)))?;
-            open::with_detached(url, app.to_string_lossy().as_ref())
+            Some(locate(known).ok_or_else(|| IdeError::unavailable(format!("{} is not installed", known.name)))?)
         }
     };
+    #[cfg(target_os = "linux")]
+    let result = spawn_with_host_env(match &app {
+        None => open::commands(url),
+        Some(app) => vec![open::with_command(url, app.to_string_lossy())],
+    });
+    #[cfg(not(target_os = "linux"))]
+    let result = match &app {
+        None => open::that_detached(url),
+        Some(app) => open::with_detached(url, app.to_string_lossy().as_ref()),
+    };
     result.map_err(|e| IdeError::unavailable(format!("cannot open the browser: {e}")))
+}
+
+/// Starts the first launcher that runs (`xdg-open`, `gio`, ...), with the host's environment
+/// rather than an AppImage's, and reaps it in the background.
+#[cfg(target_os = "linux")]
+fn spawn_with_host_env(commands: Vec<std::process::Command>) -> std::io::Result<()> {
+    use std::process::Stdio;
+    let mut last_err = None;
+    for mut cmd in commands {
+        ide_core::process::prepare(&mut cmd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+                return Ok(());
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("no launcher available")))
 }
 
 #[cfg(test)]

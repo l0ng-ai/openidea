@@ -72,7 +72,7 @@ pub fn git_version(executable: Option<&Path>) -> IdeResult<String> {
     };
     let mut cmd = Command::new(&exe);
     cmd.arg("--version").stdin(Stdio::null()).env("LC_ALL", "C");
-    ide_core::process::no_window(&mut cmd);
+    ide_core::process::prepare(&mut cmd);
     let out = cmd.output().map_err(|e| IdeError::unavailable(format!("cannot run {}: {e}", exe.display())))?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if !out.status.success() || !text.starts_with("git version") {
@@ -106,7 +106,7 @@ pub(crate) fn command(root: &Path) -> IdeResult<Command> {
     for (k, v) in ASKPASS.read().unwrap_or_else(|e| e.into_inner()).iter() {
         cmd.env(k, v);
     }
-    ide_core::process::no_window(&mut cmd);
+    ide_core::process::prepare(&mut cmd);
     Ok(cmd)
 }
 

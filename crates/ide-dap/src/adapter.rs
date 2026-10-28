@@ -257,7 +257,7 @@ pub async fn prepare_debugpy(spec: &mut AdapterSpec) -> IdeResult<()> {
         return Ok(()); // Reported as a missing adapter when it is started.
     };
     let mut probe = Command::new(&python);
-    ide_core::process::no_window(probe.as_std_mut());
+    ide_core::process::prepare(probe.as_std_mut());
     let probe = probe
         .args(["-c", "import debugpy.adapter"])
         .current_dir(&spec.cwd)
@@ -396,7 +396,7 @@ impl AdapterLauncher for ProcessLauncher {
                 None => args,
             };
             let mut cmd = Command::new(&binary);
-            ide_core::process::no_window(cmd.as_std_mut());
+            ide_core::process::prepare(cmd.as_std_mut());
             cmd.args(&args)
                 .envs(spec.env.iter().map(|(k, v)| (k, v)))
                 .current_dir(&spec.cwd)

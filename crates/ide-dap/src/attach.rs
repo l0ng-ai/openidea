@@ -170,7 +170,7 @@ pub fn is_go_binary(exe: &str) -> bool {
 pub fn list_processes() -> IdeResult<Vec<RawProcess>> {
     use std::collections::HashMap;
     let ps = |fields: &str| -> IdeResult<String> {
-        let out = std::process::Command::new("ps")
+        let out = ide_core::process::prepare(&mut std::process::Command::new("ps"))
             .args(["-x", "-ww", "-o", fields])
             .output()
             .map_err(|e| IdeError::unavailable(format!("cannot list processes: {e}")))?;
@@ -212,7 +212,9 @@ pub const NODE_INSPECTOR_PORT: u16 = 9229;
 /// picker does) and waits until it listens. Returns the inspector port.
 #[cfg(unix)]
 pub async fn enable_node_inspector(pid: u32) -> IdeResult<u16> {
-    let status = tokio::process::Command::new("kill")
+    let mut kill = tokio::process::Command::new("kill");
+    ide_core::process::prepare(kill.as_std_mut());
+    let status = kill
         .args(["-USR1", &pid.to_string()])
         .status()
         .await

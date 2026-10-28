@@ -25,7 +25,7 @@ fn prepare(cmd: &mut Command) {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    ide_core::process::no_window(cmd);
+    ide_core::process::prepare(cmd);
 }
 
 fn spawn(cmd: &mut Command) -> IdeResult<Child> {

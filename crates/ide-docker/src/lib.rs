@@ -69,7 +69,7 @@ pub fn docker_executable() -> Option<PathBuf> {
 pub fn run_env(ep: &DockerEndpoint) -> std::collections::BTreeMap<String, String> {
     let mut env = ep.env_vars();
     if let Some(dir) = docker_executable().as_deref().and_then(Path::parent) {
-        let current = std::env::var_os("PATH").unwrap_or_default();
+        let current = ide_core::process::host_var_os("PATH").unwrap_or_default();
         let mut dirs: Vec<PathBuf> = vec![dir.to_path_buf()];
         dirs.extend(std::env::split_paths(&current).filter(|d| d != dir));
         if let Ok(path) = std::env::join_paths(dirs) {

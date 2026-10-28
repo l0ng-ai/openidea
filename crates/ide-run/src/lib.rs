@@ -209,7 +209,7 @@ pub fn save_templates(root: &Path, templates: &[RunConfig]) -> IdeResult<()> {
 
 /// The environment runs inherit (unless "Include system environment variables" is off).
 pub fn system_env() -> BTreeMap<String, String> {
-    std::env::vars().collect()
+    ide_core::process::host_vars().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect()
 }
 
 /// Path of the user run configuration file for `root`.

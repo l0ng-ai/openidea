@@ -79,7 +79,7 @@ fn read_login_env(timeout: std::time::Duration) -> Option<Vec<(OsString, OsStrin
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     const MARK: &str = "__OPENIDEA_ENV__";
-    let mut child = Command::new(&shell)
+    let mut child = ide_core::process::prepare(&mut Command::new(&shell))
         .args(["-ilc", &format!("printf '{MARK}'; /usr/bin/env -0; printf '{MARK}'")])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

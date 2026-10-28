@@ -355,7 +355,7 @@ impl Peer {
     ) -> std::io::Result<Self> {
         use std::process::Stdio;
         let mut cmd = tokio::process::Command::new(command);
-        ide_core::process::no_window(cmd.as_std_mut());
+        ide_core::process::prepare(cmd.as_std_mut());
         cmd.args(args)
             .current_dir(cwd)
             .envs(ide_core::process::shell_env())

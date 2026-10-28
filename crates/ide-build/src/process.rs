@@ -52,7 +52,7 @@ pub(crate) fn run(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    ide_core::process::no_window(&mut command);
+    ide_core::process::prepare(&mut command);
     let mut child = command.spawn().map_err(|e| IdeError::unavailable(format!("cannot start {program}: {e}")))?;
     let (tx, rx) = mpsc::channel::<(Stream, String)>();
     let pump = |stream: Box<dyn Read + Send>, kind: Stream, tx: mpsc::Sender<(Stream, String)>| {

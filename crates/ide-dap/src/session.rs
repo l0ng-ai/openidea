@@ -421,7 +421,7 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
         return Err("runInTerminal without args".into());
     };
     let mut cmd = tokio::process::Command::new(program);
-    ide_core::process::no_window(cmd.as_std_mut());
+    ide_core::process::prepare(cmd.as_std_mut());
     cmd.args(rest)
         .envs(ide_core::process::shell_env())
         .stdin(Stdio::null())

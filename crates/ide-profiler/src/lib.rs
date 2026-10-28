@@ -161,7 +161,7 @@ pub fn collect(spec: &ProfileSpec) -> IdeResult<Profile> {
             if !data.is_file() {
                 return Err(nothing_recorded("perf wrote no data"));
             }
-            let out = ide_core::process::no_window(&mut Command::new(perf))
+            let out = ide_core::process::prepare(&mut Command::new(perf))
                 .args(["script", "-i"])
                 .arg(data.as_ref() as &Path)
                 .current_dir(cwd)

@@ -407,6 +407,12 @@ impl ProcessManager {
         if env.clear {
             cmd.env_clear();
         } else {
+            for (k, v) in ide_core::process::host_env_fixes() {
+                match v {
+                    Some(v) => cmd.env(k, v),
+                    None => cmd.env_remove(k),
+                }
+            }
             for (k, v) in ide_core::process::shell_env() {
                 cmd.env(k, v);
             }
@@ -602,7 +608,7 @@ fn launch_env(root: &Path, config: &RunConfig) -> IdeResult<LaunchEnv> {
         BTreeMap::new()
     } else {
         let base: BTreeMap<String, String> =
-            if extras.include_system_env { std::env::vars().collect() } else { BTreeMap::new() };
+            if extras.include_system_env { crate::system_env() } else { BTreeMap::new() };
         let paths: Vec<PathBuf> = extras.env_files.iter().map(|f| resolve_cwd(root, Some(Path::new(f)))).collect();
         crate::envfile::load(&paths, &base).map_err(|e| IdeError::not_found(format!("cannot read .env file: {e}")))?
     };
@@ -620,7 +626,7 @@ fn apply_env(cmd: &mut Command, env: &LaunchEnv) {
     if env.clear {
         cmd.env_clear();
     } else {
-        cmd.envs(ide_core::process::shell_env());
+        ide_core::process::host_env(cmd).envs(ide_core::process::shell_env());
     }
     cmd.envs(&env.vars);
 }
@@ -631,6 +637,7 @@ fn run_stop_command(stop: &StopCommand, output: &OutputFn) {
     output(OutputChunk::System { text: format!("{}\n", stop.line) });
     let inv = shell_invocation(&stop.line, cfg!(windows), std::env::var("COMSPEC").ok());
     let mut cmd = Command::new(&inv.program);
+    ide_core::process::prepare(&mut cmd);
     if inv.raw_args {
         add_raw_args(&mut cmd, &inv.args);
     } else {
@@ -638,7 +645,6 @@ fn run_stop_command(stop: &StopCommand, output: &OutputFn) {
     }
     cmd.current_dir(&stop.cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
     apply_env(&mut cmd, &stop.env);
-    ide_core::process::no_window(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {

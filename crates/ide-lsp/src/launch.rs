@@ -116,7 +116,7 @@ fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> Option<PathBuf> {
     if !is_proxy || command.contains('/') {
         return Some(binary);
     }
-    let works = ide_core::process::no_window(&mut std::process::Command::new(&binary))
+    let works = ide_core::process::prepare(&mut std::process::Command::new(&binary))
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -190,7 +190,7 @@ fn login_shell_path() -> Option<OsString> {
     use std::time::{Duration, Instant};
     let shell = std::env::var_os("SHELL")?;
     const MARK: &str = "__OPENIDEA_PATH__";
-    let mut child = Command::new(shell)
+    let mut child = ide_core::process::prepare(&mut Command::new(shell))
         .args(["-l", "-c", &format!("printf '{MARK}%s{MARK}' \"$PATH\"")])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

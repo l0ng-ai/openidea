@@ -165,7 +165,7 @@ pub fn extend_process_path(app_data: &Path) {
 /// `PATH` plus the usual per-user tool locations (GUI apps on macOS start with a minimal `PATH`).
 pub fn default_search_path() -> OsString {
     let mut dirs: Vec<PathBuf> =
-        std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+        ide_core::process::host_var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) {
         for rel in [".cargo/bin", ".local/bin", "go/bin", ".bun/bin", ".volta/bin", ".npm-global/bin", "Library/pnpm"] {
             dirs.push(home.join(rel));
@@ -343,7 +343,7 @@ impl Tools {
 
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut cmd = Command::new(program);
-        ide_core::process::no_window(&mut cmd).env("PATH", &self.child_path);
+        ide_core::process::prepare(&mut cmd).env("PATH", &self.child_path);
         cmd
     }
 

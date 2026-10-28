@@ -59,7 +59,7 @@ pub(crate) fn query_in(
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
-    let mut child = ide_core::process::no_window(&mut cmd)
+    let mut child = ide_core::process::prepare(&mut cmd)
         .args(args)
         .env("PATH", search_path())
         .envs(env.iter().copied())
@@ -112,7 +112,7 @@ pub(crate) fn stream(
     on_line: &dyn Fn(String),
 ) -> IdeResult<String> {
     let mut cmd = Command::new(program);
-    ide_core::process::no_window(&mut cmd);
+    ide_core::process::prepare(&mut cmd);
     cmd.args(args).env("PATH", search_path()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.envs(env.iter().map(|(k, v)| (k, v)));
     if let Some(cwd) = cwd {
