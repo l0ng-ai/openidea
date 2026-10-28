@@ -34,15 +34,21 @@ export function stagedFor(key: string): unknown {
   return useTestForm.getState().staged.findLast(([k]) => k === key)?.[1];
 }
 
-export function TestSettingsForm({ children }: { children: ReactNode }) {
+export function TestSettingsForm({
+  children,
+  scope = "global",
+}: {
+  children: ReactNode;
+  scope?: SettingsForm["scope"];
+}) {
   const form = useMemo<SettingsForm>(
     () => ({
-      scope: "global",
+      scope,
       useValue: (key) => useTestForm((s) => getAt(s.values, key)),
       set: (key, value) =>
         useTestForm.setState((s) => ({ values: putAt(s.values, key, value), staged: [...s.staged, [key, value]] })),
     }),
-    [],
+    [scope],
   );
   return <SettingsFormContext.Provider value={form}>{children}</SettingsFormContext.Provider>;
 }

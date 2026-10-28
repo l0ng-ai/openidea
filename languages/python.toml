@@ -32,6 +32,14 @@ args = ["--stdio"]
 root-markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"]
 install-hint = "npm i -g pyright (or: pip install pyright)"
 
+[[language-servers]]
+name = "ty"
+fallback = true
+command = "ty"
+args = ["server"]
+root-markers = ["ty.toml", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"]
+install-hint = "uv tool install ty (or: pip install ty)"
+
 [debugger]
 adapter = "debugpy"
 command = "python3"

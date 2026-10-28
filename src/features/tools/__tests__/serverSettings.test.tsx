@@ -73,6 +73,46 @@ describe("Language Servers page settings", () => {
 
   afterEach(() => setToolsBackend(null));
 
+  it("selects exactly one Python analyzer and restores automatic fallback without writing defaults", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const picker = screen.getByRole("button", { name: "Python language server" });
+    expect(picker).toHaveTextContent("Automatic");
+    await user.click(picker);
+    await user.click(screen.getByRole("option", { name: "ty" }));
+    expect(stagedFor("languageServers.basedpyright.enabled")).toBe(false);
+    expect(stagedFor("languageServers.pyright.enabled")).toBe(false);
+    expect(stagedFor("languageServers.ty.enabled")).toBeNull();
+    expect(picker).toHaveTextContent("ty");
+    await user.click(picker);
+    await user.click(screen.getByRole("option", { name: /Automatic/ }));
+    for (const name of ["basedpyright", "pyright", "ty"]) {
+      expect(stagedFor(`languageServers.${name}.enabled`)).toBeNull();
+      expect(useTestForm.getState().values).not.toHaveProperty(`languageServers.${name}.enabled`);
+    }
+  });
+
+  it("spells out the chosen Python analyzer in project settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <TestSettingsForm scope="project">
+        <LanguageServersPage />
+      </TestSettingsForm>,
+    );
+    const picker = screen.getByRole("button", { name: "Python language server" });
+    await user.click(picker);
+    await user.click(screen.getByRole("option", { name: "Pyright" }));
+    expect(stagedFor("languageServers.basedpyright.enabled")).toBe(false);
+    expect(stagedFor("languageServers.pyright.enabled")).toBe(true);
+    expect(stagedFor("languageServers.ty.enabled")).toBe(false);
+    expect(picker).toHaveTextContent("Pyright");
+    await user.click(picker);
+    await user.click(screen.getByRole("option", { name: /Automatic/ }));
+    for (const name of ["basedpyright", "pyright", "ty"]) {
+      expect(stagedFor(`languageServers.${name}.enabled`)).toBe(true);
+    }
+  });
+
   it("stages startup options, showing the defaults they replace", async () => {
     const user = userEvent.setup();
     renderPage();

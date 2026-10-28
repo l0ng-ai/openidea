@@ -4,7 +4,7 @@ import type { Branch } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
-import { Button, Select, T, type SelectOption } from "@/ui";
+import { Button, Icon, Select, T, type SelectOption } from "@/ui";
 import { Composer } from "./Composer";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
@@ -107,6 +107,17 @@ export function HomeEditor() {
             ]}
             onChange={(isolation) => updateDraft({ isolation })}
           />
+          {draft.isolation === "local" && current && (
+            <>
+              <span className={styles.note}>
+                <T>on</T>
+              </span>
+              <span className={styles.branch}>
+                <Icon name="branch" size={14} />
+                {current}
+              </span>
+            </>
+          )}
           {draft.isolation === "worktree" && branches.length > 0 && (
             <>
               <span className={styles.note}>
