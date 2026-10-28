@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { FIT_INTERVAL_MS, PROCESS_RESIZE_DELAY_MS, fitScheduler, settledResize } from "./fit";
 import { isAllowedIdeShortcut, terminalKeyAction } from "./keys";
 import { matchCounter } from "./FindBar";
 import { buildSearchDecorations } from "./theme";
@@ -277,5 +278,40 @@ describe("terminal tab titles", () => {
   it("elides the middle", () => {
     expect(trimMiddle("abcdefghij", 5)).toBe("ab…ij");
     expect(trimMiddle("abc", 5)).toBe("abc");
+  });
+});
+
+describe("fit scheduling", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("refits at most once per interval while resizing, and once after it stops", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn();
+    const f = fitScheduler(fit);
+    f.schedule();
+    vi.advanceTimersToNextFrame();
+    expect(fit).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 6; i++) {
+      f.schedule();
+      vi.advanceTimersByTime(16);
+    }
+    expect(fit).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(FIT_INTERVAL_MS);
+    expect(fit).toHaveBeenCalledTimes(2);
+    f.schedule();
+    f.cancel();
+    vi.advanceTimersByTime(FIT_INTERVAL_MS * 2);
+    expect(fit).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports only the size the terminal settles on", () => {
+    vi.useFakeTimers();
+    const report = vi.fn();
+    const r = settledResize(report);
+    r.resized(80, 20);
+    vi.advanceTimersByTime(PROCESS_RESIZE_DELAY_MS / 2);
+    r.resized(80, 24);
+    vi.advanceTimersByTime(PROCESS_RESIZE_DELAY_MS);
+    expect(report).toHaveBeenCalledExactlyOnceWith(80, 24);
   });
 });

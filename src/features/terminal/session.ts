@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { editorService, notifications } from "@/workbench/contributions";
+import { fitScheduler, settledResize } from "./fit";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { splitCommandLine } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
@@ -158,8 +159,8 @@ export class TerminalSession {
   private disposed = false;
   private disposables: IDisposable[] = [];
   private resizeObserver: ResizeObserver | null = null;
-  private fitRaf = 0;
-  private fitTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly fitter = fitScheduler(() => this.doFit());
+  private readonly ptyResize = settledResize((cols, rows) => this.resizePty(cols, rows));
   private inputRaf = 0;
   private pendingInput = "";
   private lastSize = { cols: 0, rows: 0 };
@@ -326,17 +327,7 @@ export class TerminalSession {
   }
 
   private scheduleFit() {
-    if (this.fitRaf) return;
-    const run = () => {
-      if (!this.fitRaf) return;
-      cancelAnimationFrame(this.fitRaf);
-      clearTimeout(this.fitTimer);
-      this.fitRaf = 0;
-      this.doFit();
-    };
-    this.fitRaf = requestAnimationFrame(run);
-    // WebKit pauses rAF in background windows; don't leave the shell unstarted until the window is shown.
-    this.fitTimer = setTimeout(run, 100);
+    this.fitter.schedule();
   }
 
   private doFit() {
@@ -347,10 +338,16 @@ export class TerminalSession {
     if (dims.cols !== this.term.cols || dims.rows !== this.term.rows) this.term.resize(dims.cols, dims.rows);
     if (this.snapshot.status === "idle") {
       void this.start();
-    } else if (this.ptyId !== null && (this.lastSize.cols !== dims.cols || this.lastSize.rows !== dims.rows)) {
-      this.lastSize = { cols: dims.cols, rows: dims.rows };
-      void commands.termResize(this.ptyId, dims.cols, dims.rows);
+    } else if (this.ptyId !== null) {
+      this.ptyResize.resized(dims.cols, dims.rows);
     }
+  }
+
+  private resizePty(cols: number, rows: number) {
+    if (this.disposed || this.ptyId === null) return;
+    if (this.lastSize.cols === cols && this.lastSize.rows === rows) return;
+    this.lastSize = { cols, rows };
+    void commands.termResize(this.ptyId, cols, rows);
   }
 
   /** Spawns the PTY with the current size. */
@@ -519,8 +516,8 @@ export class TerminalSession {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    cancelAnimationFrame(this.fitRaf);
-    clearTimeout(this.fitTimer);
+    this.fitter.cancel();
+    this.ptyResize.cancel();
     cancelAnimationFrame(this.inputRaf);
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
