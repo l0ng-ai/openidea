@@ -1093,6 +1093,20 @@ export class EditorController implements SlotHost {
     this.apply((s) => closeKey(s, key));
   }
 
+  activeInput(): EditorInput | null {
+    return this.activeTabOf()?.input ?? null;
+  }
+
+  onActiveInputChange(fn: (input: EditorInput | null) => void): () => void {
+    let prev = this.activeInput()?.key;
+    return useTabs.subscribe(() => {
+      const input = this.activeInput();
+      if (input?.key === prev) return;
+      prev = input?.key;
+      fn(input);
+    });
+  }
+
   activePath(): string | null {
     return this.activeSlot?.model.path ?? this.activeTabOf()?.input.path ?? null;
   }

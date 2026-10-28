@@ -409,6 +409,10 @@ export interface EditorService {
   openPaths?(): string[];
   /** Every open tab, files or not, most recently active first (Switcher). */
   openTabs?(): OpenEditorTab[];
+  /** Input of the active tab (any kind), if any. */
+  activeInput?(): EditorInput | null;
+  /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
+  onActiveInputChange?(fn: (input: EditorInput | null) => void): () => void;
   /** Closes every tab showing `path`. */
   closePath?(path: string): void;
   /** Closes the tab of the input with this `key` (e.g. a merge editor once applied). */
