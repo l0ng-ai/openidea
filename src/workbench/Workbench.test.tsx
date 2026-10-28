@@ -279,8 +279,13 @@ describe("tool window split areas", () => {
     loadToolWindowLayout("/split");
     const { container, unmount } = render(<ToolWindowLayout editor={<div>editor</div>} />);
     const splitter = container.querySelector('[data-split-handle="left"]')!;
+    const grow = (slot: string) => container.querySelector<HTMLElement>(`[data-slot="${slot}"]`)!.style.flexGrow;
     expect(splitter).toHaveAttribute("hidden");
+    act(() => showToolWindow("project"));
+    // Alone, the area fills its side whatever the stored ratio.
+    expect(grow("left")).toBe("1");
     act(() => showToolWindow("structure"));
+    expect(Number(grow("left")) + Number(grow("left-split"))).toBeCloseTo(1);
     expect(screen.getByText("tree")).toBeVisible();
     expect(screen.getByText("members")).toBeInTheDocument();
     expect(splitter).not.toHaveAttribute("hidden");
