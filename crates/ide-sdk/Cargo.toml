@@ -17,6 +17,7 @@ serde_json.workspace = true
 specta.workspace = true
 toml.workspace = true
 tracing.workspace = true
+which = "8"
 zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

@@ -34,6 +34,20 @@ describe("semanticRanges", () => {
     );
     expect(semanticRanges(doc, input, false, "java")[0]?.className).toBe("cm-sem-property cm-sem-static");
   });
+
+  it("ignores type and modifier names that only exist on Object.prototype", () => {
+    const input = {
+      tokenTypes: ["method", "toString"],
+      tokenModifiers: ["valueOf"],
+      data: [0, 0, 3, 0, 1, 0, 4, 3, 1, 1],
+    };
+    expect(semanticRanges(doc, input)).toEqual([{ from: 0, to: 3, className: "cm-sem-function" }]);
+  });
+
+  it("colours a constructor (jdtls: class + `constructor`) as a function", () => {
+    const input = { tokenTypes: ["class"], tokenModifiers: ["constructor", "declaration"], data: [0, 0, 3, 0, 0b11] };
+    expect(semanticRanges(doc, input)[0]?.className).toBe("cm-sem-function cm-sem-declaration");
+  });
 });
 
 describe("semantic highlighting (rainbow identifiers)", () => {

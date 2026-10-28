@@ -23,6 +23,7 @@ import {
   hideToolWindow,
   jumpToLastToolWindow,
   lastUsedToolWindow,
+  resizeActiveToolWindow,
   useToolWindowLayout,
   toggleMaximizeToolWindow,
 } from "./store";
@@ -242,6 +243,16 @@ export function installToolWindowActions(): () => void {
         if (id) toggleMaximizeToolWindow(id);
       },
     },
+    ...(["left", "right", "up", "down"] as const).map((dir): Action => ({
+      id: `toolwindow.resize${dir[0]!.toUpperCase()}${dir.slice(1)}`,
+      title: { left: "Stretch to Left", right: "Stretch to Right", up: "Stretch to Top", down: "Stretch to Bottom" }[
+        dir
+      ],
+      category: "Window",
+      keywords: ["resize tool window", "tool window size"],
+      when: "toolWindowFocus",
+      run: () => resizeActiveToolWindow(dir),
+    })),
   ]);
 
   return () => {

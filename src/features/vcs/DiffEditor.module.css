@@ -61,6 +61,29 @@
   font-size: var(--fs-tiny);
   line-height: 15px;
 }
+/* The editor's find bar, over the side it searches (side-by-side) or the whole viewer. */
+.findRow {
+  flex: none;
+  display: flex;
+  background: var(--bg-editor-inline, var(--bg-elev));
+  border-bottom: 1px solid var(--border-editor-tabs, var(--border));
+}
+.findRow > div {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none;
+}
+.findRowSplit > div {
+  flex: 0 0 50%;
+  border-right: 1px solid var(--border);
+}
+.findRowRight {
+  justify-content: flex-end;
+}
+.findRowRight > div {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
 .message {
   flex: 1;
   display: flex;

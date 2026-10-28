@@ -185,10 +185,11 @@ function mainConfigFor(relPath: string, configs: RunConfig[]): RunConfig | null 
     return derived(base, relPath, { args: ["run", target], name: `go run ${target}`, isTest: false });
   }
   if (/\.(kt|java)$/.test(relPath)) {
-    return (
-      configs.find((c) => c.id === "gradle:bootRun" || c.id === "gradle:run" || c.id === "maven:spring-boot:run") ??
-      null
+    // The build containing the file (builds nested in a folder of repositories carry a `:<dir>` suffix).
+    const runs = configs.filter((c) =>
+      ["gradle:bootRun", "gradle:run", "maven:spring-boot:run"].some((id) => c.id === id || c.id.startsWith(`${id}:`)),
     );
+    return closest(runs, relPath) ?? null;
   }
   return null;
 }

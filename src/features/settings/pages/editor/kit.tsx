@@ -8,6 +8,7 @@
 import { createContext, useContext, useId, type ComponentType, type ReactNode } from "react";
 import clsx from "clsx";
 import { Checkbox, Input, type SelectOption } from "@/ui";
+import { tx } from "@/platform/i18n";
 import { NumberInput, Row, SearchLabel, Section, Select } from "../../components/Form";
 import { useLabelMatch, useSetting } from "../../components/context";
 import type { PageSpec } from "../spec";
@@ -130,7 +131,7 @@ function InlineSelect({
       {disabled ? (
         <Input
           className={styles.inlineText}
-          value={inline.options.find((o) => o.value === value)?.label ?? value}
+          value={tx(inline.options.find((o) => o.value === value)?.label ?? value)}
           disabled
           readOnly
           aria-label={label}
@@ -175,7 +176,7 @@ function SelectItem({ item }: { item: Extract<Item, { t: "select" }> }) {
       {disabled ? (
         <Input
           className={styles.inlineText}
-          value={item.options.find((o) => o.value === value)?.label ?? value}
+          value={tx(item.options.find((o) => o.value === value)?.label ?? value)}
           disabled
           readOnly
           aria-label={item.label}

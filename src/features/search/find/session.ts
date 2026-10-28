@@ -145,6 +145,8 @@ export interface MatchRow {
   line: number;
   /** Preview text (leading whitespace trimmed). */
   text: string;
+  /** Column of `text` in the real line. */
+  textCol: number;
   /** Highlight ranges within `text`. */
   ranges: Array<[number, number]>;
   /** First match column in the real line. */
@@ -172,6 +174,7 @@ export function matchRows(files: readonly FileMatches[]): MatchRow[] {
         relPath: f.relPath,
         line: m.line,
         text,
+        textCol: lead + m.textOffset,
         ranges,
         col: first[0] + m.textOffset,
         endCol: first[1] + m.textOffset,

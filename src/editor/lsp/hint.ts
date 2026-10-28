@@ -10,7 +10,8 @@ import { txTemplate } from "@/platform/i18n";
 
 interface Hint {
   pos: number;
-  content: string | (() => HTMLElement);
+  /** Text, or DOM built when shown (with `destroy` when it holds e.g. a React root). */
+  content: string | (() => HTMLElement | { dom: HTMLElement; destroy: () => void });
   tone: "info" | "error" | "warning";
 }
 
@@ -34,9 +35,17 @@ const hintField = StateField.define<Hint | null>({
               const dom = document.createElement("div");
               dom.className = `cm-lsp-hint cm-lsp-hint-${h.tone}`;
               dom.setAttribute("role", "status");
-              if (typeof h.content === "string") dom.textContent = txTemplate(h.content);
-              else dom.appendChild(h.content());
-              return { dom };
+              if (typeof h.content === "string") {
+                dom.textContent = txTemplate(h.content);
+                return { dom };
+              }
+              const built = h.content();
+              if (built instanceof HTMLElement) {
+                dom.appendChild(built);
+                return { dom };
+              }
+              dom.appendChild(built.dom);
+              return { dom, destroy: built.destroy };
             },
           }
         : null,

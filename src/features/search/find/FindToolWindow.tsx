@@ -65,6 +65,8 @@ type Node =
       col: number;
       endCol: number;
       text: string;
+      /** Column of `text` in the real line. */
+      textCol: number;
       ranges: Array<[number, number]>;
       starts: Array<{ line: number; col: number }>;
     };
@@ -95,6 +97,7 @@ export function buildFindTree(files: readonly FileMatches[], groupByDirectory = 
         col: first[0] + m.textOffset,
         endCol: first[1] + m.textOffset,
         text,
+        textCol: lead + m.textOffset,
         ranges: m.ranges
           .map(([s, e]) => [Math.max(0, s - lead), Math.min(text.length, e - lead)] as [number, number])
           .filter(([s, e]) => e > s),
@@ -531,6 +534,7 @@ function FindNodeContent({ node, state, tab }: { node: Node; state: TreeRowState
             <MatchText
               text={node.text}
               ranges={node.ranges}
+              source={{ path: node.path, line: node.line, col: node.textCol }}
               active={state.selected}
               replacement={tab.replacement}
               query={tab.query}

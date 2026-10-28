@@ -513,6 +513,30 @@ export function setToolWindowSize(anchor: ToolWindowAnchor, px: number) {
   update({ sizes: { ...s.sizes, [anchor]: v } });
 }
 
+export type ResizeDirection = "left" | "right" | "up" | "down";
+
+/** Pixels per Resize Tool Window step. */
+export const RESIZE_STEP = 24;
+
+/** Size change of a window docked at `anchor` for an arrow: moving its inner edge outwards grows it. */
+export function resizeDelta(anchor: ToolWindowAnchor, dir: ResizeDirection): number {
+  const grow = { left: "right", right: "left", bottom: "up" } as const;
+  const shrink = { left: "left", right: "right", bottom: "down" } as const;
+  return dir === grow[anchor] ? RESIZE_STEP : dir === shrink[anchor] ? -RESIZE_STEP : 0;
+}
+
+/** Window › Resize Tool Window: moves the inner edge of the active tool window by one step. */
+export function resizeActiveToolWindow(dir: ResizeDirection) {
+  const s = useToolWindowLayout.getState();
+  const id = s.focused ?? s.lastActive;
+  const anchor = id && isToolWindowVisible(id) ? anchorOf(id) : undefined;
+  if (!anchor) return;
+  const delta = resizeDelta(anchor, dir);
+  if (!delta) return;
+  const room = (anchor === "bottom" ? window.innerHeight : window.innerWidth) - 160;
+  setToolWindowSize(anchor, Math.min(room, s.sizes[anchor] + delta));
+}
+
 /** Share of `anchor`'s side given to its primary area when both areas show. */
 export function setToolWindowSplit(anchor: ToolWindowAnchor, ratio: number) {
   const s = useToolWindowLayout.getState();

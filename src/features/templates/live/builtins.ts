@@ -319,6 +319,41 @@ const surround = [
       },
     ],
   ),
+  ...group(
+    "Surround",
+    "surround.java",
+    ["java"],
+    [
+      {
+        abbrev: "C",
+        id: "callable",
+        description: "Surround with Callable",
+        body: "java.util.concurrent.Callable<$RET$> callable = new java.util.concurrent.Callable<$RET$>() {\n\tpublic $RET$ call() throws Exception {\n\t\t$SELECTION$\n\t\t$END$\n\t}\n};",
+        variables: [v("RET", undefined, '"Object"')],
+      },
+      {
+        abbrev: "RL",
+        id: "readLock",
+        description: "Surround with ReadWriteLock.readLock",
+        body: "$LOCK$.readLock().lock();\ntry {\n\t$SELECTION$\n} finally {\n\t$LOCK$.readLock().unlock();\n}$END$",
+        variables: [v("LOCK")],
+      },
+      {
+        abbrev: "WL",
+        id: "writeLock",
+        description: "Surround with ReadWriteLock.writeLock",
+        body: "$LOCK$.writeLock().lock();\ntry {\n\t$SELECTION$\n} finally {\n\t$LOCK$.writeLock().unlock();\n}$END$",
+        variables: [v("LOCK")],
+      },
+      {
+        abbrev: "I",
+        id: "iterate",
+        description: "Iterate Iterable or array",
+        body: "for ($ELEMENT_TYPE$ $VAR$ : $SELECTION$) {\n\t$END$\n}",
+        variables: [v("ELEMENT_TYPE", undefined, '"var"'), v("VAR", "suggestVariableName()", '"item"')],
+      },
+    ],
+  ),
 ];
 
 /*

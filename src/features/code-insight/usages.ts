@@ -1,6 +1,7 @@
 /** Find Usages (⌥F7 → "usages" tool window) and Show Usages (⌥⌘F7 → popup). */
 import { create } from "zustand";
 import type { Location, ReferencesIncomplete, RequestId } from "@/bindings";
+import { clearLineTokens } from "@/editor/lineTokens";
 import { commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import { toolWindowService } from "@/workbench/contributions";
 import {
@@ -57,12 +58,12 @@ export function usageCount(groups: readonly UsageGroup[]): number {
 }
 
 /** Trims leading whitespace of a preview line, shifting the match range accordingly. */
-export function trimPreview(u: Usage): { text: string; from: number; to: number } {
+export function trimPreview(u: Usage): { text: string; textCol: number; from: number; to: number } {
   const lead = u.text.length - u.text.trimStart().length;
   const text = u.text.trim();
   const from = Math.max(0, u.col - lead);
   const to = Math.max(from, Math.min(text.length, u.endCol - lead));
-  return { text, from, to };
+  return { text, textCol: lead, from, to };
 }
 
 export interface UsageSearch {
@@ -170,6 +171,8 @@ export function incompleteNote(reason: ReferencesIncomplete, word: string | null
  * Cancel with `commands.cancelRequest(request)`.
  */
 export async function fetchUsages(c: CaretContext, request: RequestId = nextRequestId()): Promise<FetchedUsages> {
+  // Usage lines are read afresh: so are the files their syntax colours come from.
+  clearLineTokens();
   let locs: Location[];
   let note: string | null = null;
   try {
@@ -259,6 +262,7 @@ export async function showUsageResults(arg: unknown) {
   const base = { id, symbol, rerun: null };
   openUsageTab({ ...base, loading: true, groups: [], error: null, note: null });
   toolWindowService().show("usages");
+  clearLineTokens();
   const files = await readManyFileLines(locs.map((l) => l.path));
   replaceUsageTab(id, { ...base, loading: false, groups: groupUsages(locs, files), error: null, note: null });
 }

@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { EditorState, StateEffect, StateField, type Range, type Text } from "@codemirror/state";
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import { codePreviewExtensions } from "@/editor/api";
+import { tokenSpans, useLineTokens, type LineSource } from "@/editor/lineTokens";
 import type { SearchQuery } from "@/platform/ipc";
 import { previewReplacement } from "./session";
 import { loadPreviewText } from "./preview";
@@ -11,7 +12,10 @@ import styles from "./parts.module.css";
 import { T } from "@/ui";
 import { tx } from "@/platform/i18n";
 
-/** A result line with matches highlighted; in replace mode shows `old → new` inline. */
+/**
+ * A result line with matches highlighted; in replace mode shows `old → new`
+ * inline. With `source`, syntax-coloured with the whole file as context.
+ */
 export function MatchText({
   text,
   ranges,
@@ -19,6 +23,7 @@ export function MatchText({
   replacement,
   query,
   preserveCase = false,
+  source,
 }: {
   text: string;
   ranges: ReadonlyArray<readonly [number, number]>;
@@ -26,12 +31,14 @@ export function MatchText({
   replacement?: string | null;
   query?: Pick<SearchQuery, "pattern" | "isRegex" | "caseSensitive"> | null;
   preserveCase?: boolean;
+  source?: LineSource;
 }) {
+  const tokens = useLineTokens(source, text);
   const parts: ReactNode[] = [];
   let pos = 0;
   ranges.forEach(([s, e], i) => {
     if (s < pos) return;
-    if (s > pos) parts.push(text.slice(pos, s));
+    if (s > pos) parts.push(...tokenSpans(text, pos, s, tokens, `g${i}:`));
     const matched = text.slice(s, e);
     if (replacement != null && query) {
       parts.push(
@@ -45,14 +52,14 @@ export function MatchText({
     } else {
       parts.push(
         <mark key={i} className={clsx(styles.match, active && styles.matchActive)}>
-          {matched}
+          {tokenSpans(text, s, e, tokens, "")}
         </mark>,
       );
     }
     pos = e;
   });
-  if (pos < text.length) parts.push(text.slice(pos));
-  return <span className={styles.text}>{parts}</span>;
+  if (pos < text.length) parts.push(...tokenSpans(text, pos, text.length, tokens, "end:"));
+  return <span className={clsx(styles.text, styles.code)}>{parts}</span>;
 }
 
 const WINDOW = 300;

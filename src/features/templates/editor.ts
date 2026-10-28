@@ -398,7 +398,12 @@ export const CONFIGURE_TEMPLATES_KEY = "\u0000configure";
  * surrounders (mnemonics 1–9, 0, A–Z), then the `$SELECTION$` live templates
  * and "Configure Live Templates…".
  */
-export function surroundWith(view: EditorView, target?: { from: number; to: number } | null) {
+export function surroundWith(
+  view: EditorView,
+  target?: { from: number; to: number } | null,
+  /** Surround with Live Template (⌥⌘J): only the `$SELECTION$` templates. */
+  templatesOnly = false,
+) {
   const state = view.state;
   const { language } = state.facet(templateDoc);
   const templates = applicableTemplates(liveTemplates(), language).filter((t) => usesSelection(t.body));
@@ -420,12 +425,12 @@ export function surroundWith(view: EditorView, target?: { from: number; to: numb
   const last = state.doc.lineAt(to);
   const lines = !selected || (from === first.from + indent.length && !state.sliceDoc(to, last.to).trim());
   const inline = selected && first.number === last.number && !!selection.trim();
-  const surrounders = surroundersFor(language, { lines, inline });
+  const surrounders = templatesOnly ? [] : surroundersFor(language, { lines, inline });
   const entries = surroundEntries(surrounders, templates);
   const byId = new Map<string, Surrounder | LiveTemplate>([...surrounders, ...templates].map((x) => [x.id, x]));
   const items: ChooserItem[] = [];
   for (const e of entries) {
-    if (e.kind === "template" && !items.some((i) => i.section))
+    if (e.kind === "template" && !templatesOnly && !items.some((i) => i.section))
       items.push({ key: "\u0000templates", label: "Live templates", section: true });
     const x = byId.get(e.id)!;
     items.push(
@@ -445,10 +450,10 @@ export function surroundWith(view: EditorView, target?: { from: number; to: numb
     items.push({ key: CONFIGURE_TEMPLATES_KEY, label: "Configure Live Templates…" });
   }
   showChooser({
-    title: "Surround With",
+    title: templatesOnly ? "Surround with Live Template" : "Surround With",
     anchor: caretAnchor(view),
     mnemonics: true,
-    emptyText: "Nothing to surround with here",
+    emptyText: templatesOnly ? "No live templates to surround with" : "Nothing to surround with here",
     items,
     onPick: (item) => {
       view.focus();

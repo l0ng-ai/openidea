@@ -11,6 +11,7 @@ import {
   highlightSpecialChars,
   keymap,
   lineNumbers,
+  tooltips,
 } from "@codemirror/view";
 import {
   bracketMatching,
@@ -301,8 +302,20 @@ export interface SetupOptions {
   extra?: Extension;
 }
 
+/**
+ * Tooltips (hints, docs, completion) stay below the editor's top edge: one
+ * above the first lines flips below them instead of hiding under the tabs.
+ */
+const tooltipSpace = tooltips({
+  tooltipSpace: (view) => {
+    const top = view.scrollDOM.getBoundingClientRect().top;
+    return { top, left: 0, right: window.innerWidth, bottom: window.innerHeight };
+  },
+});
+
 export function baseExtensions(o: SetupOptions): Extension {
   return [
+    tooltipSpace,
     compartments.font.of(fontExtension(o.settings)),
     openideaTheme,
     compartments.lineNumbers.of(lineNumbersExtension(o.settings)),

@@ -304,3 +304,18 @@ export function gotoDiagnostic(view: EditorView, dir: 1 | -1): boolean {
   });
   return true;
 }
+
+/** ⌘F1 Show Error Description: the problems at the caret, worst first. */
+export function showErrorDescription(view: EditorView): boolean {
+  const at = diagnosticsAt(view, view.state.selection.main.head);
+  if (!at.length) {
+    showHint(view, "No problems at the caret");
+    return false;
+  }
+  const worst = at[0]!.diagnostic.severity;
+  showHint(view, [...new Set(at.map((p) => p.diagnostic.message))].join("\n"), {
+    tone: worst === "error" ? "error" : worst === "warning" ? "warning" : "info",
+    timeout: 10000,
+  });
+  return true;
+}

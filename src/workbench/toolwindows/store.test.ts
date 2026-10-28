@@ -15,6 +15,8 @@ import {
   loadToolWindowLayout,
   moveToolWindow,
   installToolWindowLayoutSync,
+  resizeActiveToolWindow,
+  RESIZE_STEP,
   resetToolWindowPlacements,
   setToolWindowSplit,
   slotOfId,
@@ -94,6 +96,23 @@ describe("tool window semantics", () => {
     hideActiveToolWindow();
     expect(isToolWindowVisible("terminal")).toBe(false);
     expect(isToolWindowVisible("project")).toBe(true);
+  });
+
+  it("resizes the active window by moving its inner edge", () => {
+    showToolWindow("terminal");
+    setFocusedToolWindow("terminal");
+    const before = useToolWindowLayout.getState().sizes.bottom;
+    resizeActiveToolWindow("up");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(before + RESIZE_STEP);
+    resizeActiveToolWindow("down");
+    resizeActiveToolWindow("down");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(before - RESIZE_STEP);
+    resizeActiveToolWindow("left");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(before - RESIZE_STEP);
+    setFocusedToolWindow("project");
+    const left = useToolWindowLayout.getState().sizes.left;
+    resizeActiveToolWindow("right");
+    expect(useToolWindowLayout.getState().sizes.left).toBe(left + RESIZE_STEP);
   });
 
   it("ignores unknown ids and hiding a window that isn't visible", () => {

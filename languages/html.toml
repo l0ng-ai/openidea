@@ -7,6 +7,16 @@ indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "HTML"
 tree-sitter = "html"
 
+# Angular projects only: component templates. First, so that hover, rename and
+# document symbols of templates come from it rather than plain HTML.
+[[language-servers]]
+name = "angular-language-server"
+command = "ngserver"
+args = ["--stdio", "--includeCompletionsWithSnippetText", "--includeAutomaticOptionalChainCompletions"]
+root-markers = ["angular.json", "node_modules/@angular/core"]
+require-root-marker = true
+install-hint = "npm i -g @angular/language-server"
+
 [[language-servers]]
 name = "vscode-html-language-server"
 command = "vscode-html-language-server"

@@ -298,6 +298,75 @@ describe("single-file producers (scratches)", () => {
     expect(p.config!.args.at(-1)).toBe("demo.Hi");
   });
 
+  describe("Java / Kotlin mains in a build nested in a folder of repositories", () => {
+    // RuoYi-Vue-Plus (Maven) next to plus-ui (npm), opened together.
+    const boot =
+      "package org.dromara;\n\nimport org.springframework.boot.SpringApplication;\n\n@SpringBootApplication\n" +
+      "public class DromaraApplication {\n  public static void main(String[] args) {\n" +
+      "    SpringApplication.run(DromaraApplication.class, args);\n  }\n}\n";
+    const nested = (kind: "maven" | "gradle", dir: string) => [
+      cfg({ id: "npm:plus-ui:dev", kind: "npm", command: "npm", args: ["run", "dev"], cwd: "plus-ui" }),
+      cfg({ id: `${kind}:test:${dir}`, kind, args: ["test"], cwd: dir, isTest: true }),
+    ];
+    const at = (path: string, configs: RunConfig[], content = boot, line = 6): ContextInput => ({
+      path: `${ROOT}/${path}`,
+      root: ROOT,
+      configs,
+      content,
+      line,
+    });
+    const cases = [
+      {
+        kind: "maven",
+        dir: "RuoYi-Vue-Plus",
+        file: "RuoYi-Vue-Plus/ruoyi-admin/src/main/java/org/dromara/DromaraApplication.java",
+      },
+      {
+        kind: "gradle",
+        dir: "services/api",
+        file: "services/api/app/src/main/java/org/dromara/DromaraApplication.java",
+      },
+    ] as const;
+    for (const { kind, dir, file } of cases) {
+      it(`${kind}: the Spring Boot application in its module, from the gutter and from the file`, () => {
+        const module = file.slice(0, file.indexOf("/src/"));
+        for (const p of [
+          produceContext(at(file, nested(kind, dir)), ALL),
+          produceFile(at(file, nested(kind, dir)), ALL),
+        ]) {
+          expect(p!.config).toMatchObject({
+            id: `application:${module}:org.dromara.DromaraApplication`,
+            kind: "spring-boot",
+            name: "DromaraApplication",
+            command: "java",
+            cwd: module,
+          });
+          expect(p!.config!.args).toEqual(["-cp", "${classpath}", "org.dromara.DromaraApplication"]);
+        }
+      });
+    }
+
+    it("a file outside every build still runs as a single source file", () => {
+      const src = "public class Hi {\n  public static void main(String[] args) {}\n}\n";
+      const p = produceContext(at("scripts/Hi.java", nested("maven", "RuoYi-Vue-Plus"), src, 1), ALL)!;
+      expect(p.config).toMatchObject({ kind: "java-file", args: ["scripts/Hi.java"] });
+    });
+
+    it("Kotlin and test classes use the build that contains them", () => {
+      const kt = "package demo\n\nfun main() {\n  println(1)\n}\n";
+      const p = produceContext(at("backend/app/src/main/kotlin/demo/App.kt", nested("gradle", "backend"), kt, 3), ALL)!;
+      expect(p.config).toMatchObject({ kind: "application", cwd: "backend/app" });
+      expect(p.config!.args.at(-1)).toBe("demo.AppKt");
+      const test = "package demo;\nclass AppTest {\n  @Test\n  void works() {\n  }\n}\n";
+      const t = produceContext(
+        at("backend/app/src/test/java/demo/AppTest.java", nested("gradle", "backend"), test, 4),
+        ALL,
+      )!;
+      expect(t.config).toMatchObject({ kind: "gradle", cwd: "backend" });
+      expect(t.config!.args).toEqual(["test", "--tests", "demo.AppTest.works"]);
+    });
+  });
+
   it("C / C++: compile with debug info into the compile directory", () => {
     const c = produceContext(scratch("a.c", "int main(void) { return 0; }"), ALL)!;
     expect(c.config!.command).toMatch(

@@ -664,6 +664,36 @@ pub fn workspace_edit(conv: &Conv, e: lsp::WorkspaceEdit) -> WorkspaceEdit {
     WorkspaceEdit { files }
 }
 
+/// Adds the changes of `extra`, another server's edit for the same request, to
+/// `edit` where they leave its own alone: what only the other server sees
+/// (Angular templates next to vtsls's TypeScript).
+pub fn merge_workspace_edit(edit: &mut WorkspaceEdit, extra: WorkspaceEdit) {
+    let overlap =
+        |a: &TextEdit, b: &TextEdit| a.range == b.range || (a.range.start < b.range.end && b.range.start < a.range.end);
+    for file in extra.files {
+        let FileEdit::Edit { path, edits } = file else {
+            if !edit.files.contains(&file) {
+                edit.files.push(file);
+            }
+            continue;
+        };
+        let own = edit.files.iter_mut().find_map(|f| match f {
+            FileEdit::Edit { path: p, edits } if *p == path => Some(edits),
+            _ => None,
+        });
+        match own {
+            Some(own) => {
+                let added: Vec<TextEdit> = edits.into_iter().filter(|e| !own.iter().any(|o| overlap(o, e))).collect();
+                if !added.is_empty() {
+                    own.extend(added);
+                    own.sort_by_key(|e| e.range.start);
+                }
+            }
+            None => edit.files.push(FileEdit::Edit { path, edits }),
+        }
+    }
+}
+
 // ---------------------------------------------------------------- navigation
 
 pub fn goto_response(conv: &Conv, r: lsp::GotoDefinitionResponse) -> Vec<Location> {
@@ -989,6 +1019,33 @@ pub fn ranges_overlap(a: lsp::Range, b: lsp::Range) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn merged_rename_edits_keep_the_first_servers_ones() {
+        let edit = |l: u32, c: u32, text: &str| TextEdit {
+            range: Range::new(Pos::new(l, c), Pos::new(l, c + 5)),
+            new_text: text.into(),
+        };
+        let file = |p: &str, edits: Vec<TextEdit>| FileEdit::Edit { path: PathBuf::from(p).into(), edits };
+        // vtsls renames a shorthand property with an alias; the Angular server
+        // renames it plainly and adds the template.
+        let mut merged =
+            WorkspaceEdit { files: vec![file("/a.ts", vec![edit(3, 2, "items: entries"), edit(9, 4, "entries")])] };
+        let angular = WorkspaceEdit {
+            files: vec![
+                file("/a.ts", vec![edit(9, 4, "entries"), edit(3, 2, "entries"), edit(1, 14, "entries")]),
+                file("/a.html", vec![edit(0, 7, "entries")]),
+            ],
+        };
+        merge_workspace_edit(&mut merged, angular);
+        assert_eq!(
+            merged.files,
+            [
+                file("/a.ts", vec![edit(1, 14, "entries"), edit(3, 2, "items: entries"), edit(9, 4, "entries")]),
+                file("/a.html", vec![edit(0, 7, "entries")]),
+            ]
+        );
+    }
 
     #[test]
     fn snippet_text_takes_placeholder_defaults() {

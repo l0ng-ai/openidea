@@ -27,7 +27,7 @@ describe("usages", () => {
     ]);
     expect(usageCount(groups)).toBe(3);
     expect(groups[0]!.usages[0]!.text).toBe("");
-    expect(trimPreview(groups[1]!.usages[1]!)).toEqual({ text: "const x = foo();", from: 10, to: 13 });
+    expect(trimPreview(groups[1]!.usages[1]!)).toEqual({ text: "const x = foo();", textCol: 2, from: 10, to: 13 });
   });
 });
 

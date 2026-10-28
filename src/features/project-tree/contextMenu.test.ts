@@ -105,7 +105,7 @@ describe("project view context menu", () => {
       "-",
       "Compare With…",
     ]);
-    expect(sub(items, "Refactor")).toEqual(["Rename…", "Move File…", "-", "Safe Delete…"]);
+    expect(sub(items, "Refactor")).toEqual(["Rename…", "Move File…", "Copy File…", "-", "Safe Delete…"]);
     expect(sub(items, "Open In")).toEqual([revealLabel(), "Terminal"]);
     expect(sub(items, "Git")?.slice(0, 4)).toEqual(["Commit File…", "Add", "-", "Annotate with Git Blame"]);
   });

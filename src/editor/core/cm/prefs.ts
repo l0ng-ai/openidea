@@ -451,11 +451,58 @@ export interface PrefsOptions {
   commentStyle?: LineCommentStyle;
 }
 
+function caretOnScreen(view: EditorView, pos: number): boolean {
+  const c = view.coordsAtPos(pos);
+  if (!c) return false;
+  const r = view.scrollDOM.getBoundingClientRect();
+  return c.top >= r.top && c.bottom <= r.bottom;
+}
+
+/**
+ * Use smooth caret movement. The cursor layer reuses its caret elements, so a
+ * CSS transition on their position animates a move (VS Code's
+ * `cursorSmoothCaretAnimation: "explicit"`). Only moves of the selection
+ * alone glide; typing, edits, a changed number of carets, layout changes and
+ * moves that scroll the editor put the caret in place at once.
+ */
+const caretGlide = ViewPlugin.fromClass(
+  class {
+    on = false;
+    constructor(readonly view: EditorView) {}
+    update(u: ViewUpdate) {
+      const from = u.startState.selection;
+      const to = u.state.selection;
+      if (!u.selectionSet || u.docChanged || u.geometryChanged || from.ranges.length !== to.ranges.length) {
+        this.set(false);
+        return;
+      }
+      // Measured before the editor scrolls the new caret into view.
+      u.view.requestMeasure({
+        key: this,
+        read: (view) => caretOnScreen(view, from.main.head) && caretOnScreen(view, to.main.head),
+        write: (on) => this.set(on),
+      });
+    }
+    set(on: boolean) {
+      if (on === this.on) return;
+      this.on = on;
+      this.view.scrollDOM.querySelector(":scope > .cm-cursorLayer")?.classList.toggle("cm-openidea-caretGlide", on);
+    }
+  },
+);
+
 export function caretExtension(prefs: EditorExtras): Extension {
   const a = prefs.appearance;
+  const classes = [
+    a.blockCaret && "cm-openidea-blockCaret",
+    a.smoothCaretBlinking && "cm-openidea-smoothCaretBlink",
+    a.smoothCaretMovement && `cm-openidea-caretMotion-${a.caretMovementStyle === "gliding" ? "gliding" : "snappy"}`,
+  ].filter(Boolean);
   return [
+    // Before drawSelection: its measure request must run before the cursor layer redraws.
+    a.smoothCaretMovement ? caretGlide : [],
     drawSelection({ cursorBlinkRate: a.caretBlinking ? Math.max(100, Math.min(5000, a.caretBlinkPeriod)) * 2 : 0 }),
-    a.blockCaret ? EditorView.editorAttributes.of({ class: "cm-openidea-blockCaret" }) : [],
+    classes.length ? EditorView.editorAttributes.of({ class: classes.join(" ") }) : [],
   ];
 }
 

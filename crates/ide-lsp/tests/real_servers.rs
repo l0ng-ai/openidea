@@ -69,6 +69,7 @@ async fn missing_binary_is_reported_with_install_hint() {
         args: vec![],
         env: Default::default(),
         root_markers: vec![],
+        require_root_marker: false,
         initialization_options: None,
         settings: None,
         install_hint: Some("npm i -g nope-ls".into()),
@@ -237,6 +238,7 @@ async fn typescript_language_server_end_to_end() {
         args: vec!["--stdio".into()],
         env: Default::default(),
         root_markers: vec!["tsconfig.json".into()],
+        require_root_marker: false,
         initialization_options: None,
         settings: None,
         install_hint: None,
@@ -281,6 +283,7 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
         args: vec!["--stdio".into()],
         env: Default::default(),
         root_markers: vec!["package.json".into()],
+        require_root_marker: false,
         initialization_options: init.map(|v| toml::Value::try_from(v).unwrap()),
         settings: None,
         install_hint: None,
@@ -345,4 +348,115 @@ async fn vue_hybrid_mode_end_to_end() {
         assert!(!crashed, "{:?}", last_status(&events, "vue-language-server"));
         tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
     }
+}
+
+const NG_APP_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-root',\n  templateUrl: './app.html',\n})\nexport class App {\n  title = 'demo';\n}\n";
+const NG_APP_HTML: &str = "<h1>{{ title }}</h1>\n<p>{{ missing }}</p>\n";
+const NG_INLINE_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-inline',\n  template: `<b>{{ count }}</b>`,\n})\nexport class Inline {\n  count = 1;\n}\n";
+
+/// The lines `edit` changes in `path`, in order.
+fn edited_lines(edit: &ide_core::WorkspaceEdit, path: &Path) -> Vec<u32> {
+    let mut lines: Vec<u32> = edit
+        .files
+        .iter()
+        .filter_map(|f| match f {
+            ide_core::FileEdit::Edit { path: p, edits } if p.to_path_buf() == path => {
+                Some(edits.iter().map(|e| e.range.start.line))
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    lines.sort();
+    lines
+}
+
+/// The Angular Language Server next to vtsls, in an external and an inline
+/// template. Set `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i
+/// @angular/language-server @vtsls/language-server @angular/core @angular/common
+/// @angular/compiler rxjs`; the project is created inside it, so that it
+/// resolves `@angular/core`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @angular/language-server, @vtsls/language-server and @angular/core (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn angular_language_server_end_to_end() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir_in(&tools).unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(root.join("angular.json"), "{\"version\":1,\"projects\":{}}").unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        "{\"compilerOptions\":{\"strict\":true},\"angularCompilerOptions\":{\"strictTemplates\":true},\"include\":[\"src/**/*.ts\"]}",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src/app")).unwrap();
+    let app_ts = root.join("src/app/app.ts");
+    let app_html = root.join("src/app/app.html");
+    let inline_ts = root.join("src/app/inline.ts");
+    for (path, text) in [(&app_ts, NG_APP_TS), (&app_html, NG_APP_HTML), (&inline_ts, NG_INLINE_TS)] {
+        std::fs::write(path, text).unwrap();
+    }
+
+    // The built-in definitions, with vtsls and the Angular server, and the probe
+    // locations the settings hook adds.
+    let builtin = LanguageRegistry::load(None).unwrap();
+    let probes = tools.join("node_modules/@angular/language-server").to_string_lossy().into_owned();
+    let languages = ["typescript", "html"].map(|id| {
+        let mut cfg = builtin.get(&LanguageId::new(id)).unwrap();
+        cfg.language_servers.retain(|s| s.name == "angular-language-server" || s.name == "vtsls");
+        for server in &mut cfg.language_servers {
+            let bin = if server.name == "vtsls" { "vtsls" } else { "ngserver" };
+            server.command = tools.join("node_modules/.bin").join(bin).to_string_lossy().into_owned();
+        }
+        let server = cfg.language_servers.iter_mut().find(|s| s.name == "angular-language-server").unwrap();
+        server.args.extend(["--ngProbeLocations".into(), probes.clone(), "--tsProbeLocations".into(), probes.clone()]);
+        cfg
+    });
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(languages.to_vec()));
+    let (html, ts, inline) = (DocId::next(), DocId::next(), DocId::next());
+    mgr.did_open(ts, &app_ts, &LanguageId::new("typescript"), 1, NG_APP_TS);
+    mgr.did_open(html, &app_html, &LanguageId::new("html"), 1, NG_APP_HTML);
+    mgr.did_open(inline, &inline_ts, &LanguageId::new("typescript"), 1, NG_INLINE_TS);
+
+    // `title` in `{{ title }}`.
+    let hover = retry("hover", Duration::from_secs(90), || {
+        let mgr = mgr.clone();
+        async move { mgr.hover(html, Pos::new(0, 8), Default::default()).await.ok().flatten() }
+    })
+    .await;
+    assert!(hover.contents.value.contains("title"), "{}", hover.contents.value);
+    let defs = mgr.goto(html, Pos::new(0, 8), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].path, app_ts);
+    assert_eq!(defs[0].range.start.line, 7);
+
+    // `missing` is no member of `App`.
+    retry("template diagnostics", Duration::from_secs(60), || {
+        let found = events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Diagnostics { path, items, .. } if path == &app_html && !items.is_empty()));
+        async move { found.then_some(()) }
+    })
+    .await;
+
+    // `count` in the inline template, which vtsls can't rename: renamed there
+    // and in the class.
+    let count = Pos::new(4, 20);
+    let range = mgr.prepare_rename(inline, count).await.unwrap();
+    assert_eq!(range, Some(Range::new(Pos::new(4, 19), Pos::new(4, 24))));
+    let edit = mgr.rename(inline, count, "total".into()).await.unwrap();
+    assert_eq!(edited_lines(&edit, &inline_ts), [4, 7], "{edit:?}");
+
+    // `title` in the class, which both servers rename: vtsls's edit and the
+    // template's from the Angular server.
+    let title = Pos::new(7, 3);
+    let edit = mgr.rename(ts, title, "heading".into()).await.unwrap();
+    assert_eq!((edited_lines(&edit, &app_ts), edited_lines(&edit, &app_html)), (vec![7], vec![0]), "{edit:?}");
+    // Its usage in the template, the declaration left out, from either file.
+    for (doc, pos) in [(ts, title), (html, Pos::new(0, 8))] {
+        let refs = mgr.references(doc, pos, false, false, Default::default()).await.unwrap();
+        let found: Vec<(std::path::PathBuf, u32)> =
+            refs.locations.iter().map(|l| (l.path.to_path_buf(), l.range.start.line)).collect();
+        assert_eq!(found, [(app_html.clone(), 0)]);
+    }
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }

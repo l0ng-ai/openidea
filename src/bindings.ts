@@ -2447,7 +2447,13 @@ export type EditorAppearanceSettings = {
 	caretBlinking?: boolean,
 	/**  Blink period in ms. */
 	caretBlinkPeriod?: number,
+	/**  Fade the caret in and out instead of toggling it; rounds its corners. */
+	smoothCaretBlinking?: boolean,
 	blockCaret?: boolean,
+	/**  Animate the caret between positions when it is moved. */
+	smoothCaretMovement?: boolean,
+	/**  Smooth caret movement curve: `snappy` | `gliding`. */
+	caretMovementStyle?: string,
 	lineNumbers?: boolean,
 	methodSeparators?: boolean,
 	/**  Sub-options of `editor.showWhitespace`. */

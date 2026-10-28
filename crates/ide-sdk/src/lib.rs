@@ -5,6 +5,7 @@
 //! - applying the selected toolchains from settings to language-server launch
 //!   configs, run configurations and new terminal sessions ([`apply`]).
 
+mod angular;
 pub mod apply;
 mod discover;
 mod exec;
@@ -14,6 +15,7 @@ pub mod jdtls;
 pub mod libraries;
 pub mod locate;
 pub mod lombok;
+mod npm;
 pub mod python;
 mod vue;
 

@@ -1,9 +1,9 @@
 /** Diff viewer editor tab (side-by-side / unified) built on @codemirror/merge. */
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { EditorView, keymap } from "@codemirror/view";
-import { Text, type Extension } from "@codemirror/state";
+import { Prec, Text, type Extension } from "@codemirror/state";
 import { history, historyKeymap } from "@codemirror/commands";
 import {
   MergeView,
@@ -15,9 +15,11 @@ import {
   Chunk,
 } from "@codemirror/merge";
 import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
+import { setFindOpen } from "@/editor/core/cm/find";
+import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
 import { setContext } from "@/platform/context";
 import { call, commands } from "@/platform/ipc";
-import { shortcutLabel } from "@/platform/keymap";
+import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { IconButton, Select, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
@@ -112,6 +114,15 @@ async function attachSide(side: DiffSide, path: string): Promise<DocumentAttachm
 
 const editableExtensions = (): Extension => [history(), keymap.of(historyKeymap)];
 
+type Side = "a" | "b";
+type ViewUpdateFn = (u: { docChanged: boolean; selectionSet: boolean }) => void;
+
+/** Whether `e` is one of the strokes bound to `actionId`. */
+function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
+  const stroke = strokeOf(e.nativeEvent);
+  return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
+}
+
 export function DiffEditor({ input }: { input: EditorInput }) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
@@ -126,7 +137,9 @@ export function DiffEditor({ input }: { input: EditorInput }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewsRef = useRef<Views | null>(null);
   const staticsRef = useRef(statics);
-  const focusedSide = useRef<"a" | "b">("b");
+  const focusedSide = useRef<Side>("b");
+  /** Bumped when the views are rebuilt, so the find bar re-applies its query. */
+  const [viewsGen, setViewsGen] = useState(0);
   const version = useVcs((s) => s.version);
   const leftKey = sideKey(left);
   const rightKey = sideKey(right);
@@ -230,6 +243,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     const listener = EditorView.updateListener.of((u) => {
       if (u.selectionSet || u.docChanged) updateChunkInfo();
     });
+    const findWatch = (s: Side) => EditorView.updateListener.of((u) => findWatchers.current[s].forEach((fn) => fn(u)));
     const focusTracker = (side: "a" | "b") =>
       EditorView.domEventHandlers({
         focus: () => {
@@ -242,7 +256,9 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     const highlightChanges = opts.highlight === "words";
     const inclusion = includable ? inclusionGutter(path, textA) : [];
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
-      viewerBase({ readOnly: !editable }),
+      viewerBase({ readOnly: !editable, findBar: true }),
+      // Esc closes the find bar before it collapses the selection (a found match); open popups go first.
+      Prec.high(keymap.of([{ key: "Escape", run: () => findEscape.current() }])),
       lang,
       att?.extension ?? [],
       editable ? [editableExtensions(), embeddedEditorExtensions(path)] : [],
@@ -262,6 +278,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           extensions: [
             side(attached.a, editableA, "left"),
             focusTracker("a"),
+            findWatch("a"),
             editableA ? hoverRevert((_v, i) => merge && applyChunk(merge, i, "b")) : [],
           ],
         },
@@ -271,6 +288,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
             side(attached.b, editableB, "right"),
             listener,
             focusTracker("b"),
+            findWatch("b"),
             inclusion,
             editableB ? hoverRevert((_v, i) => merge && applyChunk(merge, i, "a")) : [],
           ],
@@ -295,6 +313,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           side(attached.b, editableB, "right"),
           listener,
           focusTracker("b"),
+          findWatch("b"),
           inclusion,
           unifiedMergeView({
             original: textA,
@@ -323,6 +342,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
       if (scrollTop != null) requestAnimationFrame(() => (view.scrollDOM.scrollTop = scrollTop));
     }
     viewsRef.current = views;
+    setViewsGen((g) => g + 1);
     requestAnimationFrame(updateChunkInfo);
   }, [
     attached,
@@ -507,6 +527,65 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     }
   };
 
+  // Find (⌘F / ⌘R / ⌘G): the editor's find bar over the focused side.
+  const [find, setFind] = useState<{ side: Side; replace: boolean; seq: number } | null>(null);
+  const findWatchers = useRef<Record<Side, Set<ViewUpdateFn>>>({ a: new Set(), b: new Set() });
+  const findEscape = useRef<() => boolean>(() => false);
+  /** The side the bar searches (the last one, once closed: closing clears its highlights). */
+  const findSide = useRef<Side>("b");
+  const findOpen = useRef(false);
+  const findId = useId();
+  const viewOf = (s: Side) => (s === "a" && viewsRef.current?.a) || viewsRef.current?.b || null;
+  const findTarget = useMemo<FindTarget>(() => {
+    const sideOf = (): Side => (findSide.current === "a" && viewsRef.current?.a ? "a" : "b");
+    return {
+      id: `diff:${findId}`,
+      view: () => (sideOf() === "a" ? viewsRef.current?.a : viewsRef.current?.b) ?? null,
+      watch(fn) {
+        const set = findWatchers.current[sideOf()];
+        set.add(fn);
+        return () => void set.delete(fn);
+      },
+      isOpen: () => findOpen.current,
+    };
+  }, [findId]);
+  const editableSide = (s: Side) => (s === "a" ? editableA : editableB);
+
+  const openFind = (replace: boolean) => {
+    const views = viewsRef.current;
+    if (!views) return;
+    const s: Side = focusedSide.current === "a" && views.a ? "a" : "b";
+    if (findOpen.current && findSide.current !== s)
+      viewOf(findSide.current)?.dispatch({ effects: setFindOpen.of(false) });
+    findSide.current = s;
+    findOpen.current = true;
+    const withReplace = replace && editableSide(s);
+    seedFind(findTarget, withReplace);
+    setFind((f) => ({ side: s, replace: withReplace, seq: (f?.seq ?? 0) + 1 }));
+  };
+  const closeFind = () => {
+    findOpen.current = false;
+    setFind(null);
+    viewOf(findSide.current)?.focus();
+  };
+  findEscape.current = () => {
+    if (!findOpen.current) return false;
+    closeFind();
+    return true;
+  };
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.defaultPrevented) return;
+    if (isStrokeOf(e, "find.inFile")) openFind(false);
+    else if (isStrokeOf(e, "find.replaceInFile")) openFind(true);
+    else if (isStrokeOf(e, "find.next") || isStrokeOf(e, "find.previous")) {
+      if (!findOpen.current) findSide.current = focusedSide.current;
+      if (!searchAgain(findTarget, isStrokeOf(e, "find.next"))) openFind(false);
+    } else if (e.key === "Escape" && findOpen.current) closeFind();
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   const nav = useRef<DiffNavigator>({ next: () => step(1), prev: () => step(-1), jumpToSource });
   useEffect(() => {
     nav.current = { next: () => step(1), prev: () => step(-1), jumpToSource };
@@ -531,6 +610,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
   return (
     <div
       className={styles.root}
+      onKeyDown={onKeyDown}
       onFocusCapture={() => {
         setFocusedDiffNavigator(nav.current);
         setContext("diffEditorFocus", true);
@@ -671,6 +751,24 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           <span className={styles.label}>
             {sideLabel(left)} → {sideLabel(right)}
           </span>
+        </div>
+      )}
+      {find && ready && (
+        <div
+          className={clsx(
+            styles.findRow,
+            opts.mode === "split" && styles.findRowSplit,
+            opts.mode === "split" && find.side === "b" && styles.findRowRight,
+          )}
+        >
+          <FindPanel
+            target={findTarget}
+            version={`${viewsGen}:${find.side}`}
+            replace={find.replace}
+            seq={find.seq}
+            onReplaceShown={editableSide(find.side) ? (replace) => setFind((f) => f && { ...f, replace }) : undefined}
+            onClose={closeFind}
+          />
         </div>
       )}
       {error ? (
