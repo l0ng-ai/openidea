@@ -327,8 +327,31 @@ pub fn mark_updates(paths: &RegistryPaths, providers: &mut [AgentProvider]) {
     }
 }
 
-fn fetch(paths: &RegistryPaths, cancel: &CancellationToken) -> IdeResult<String> {
+/// HTTPS only, redirects included. Tests serve downloads over `file://`.
+fn http() -> IdeResult<Http> {
     let http = Http::new(&ide_tools::default_search_path())?;
+    Ok(if cfg!(test) { http } else { http.https_only() })
+}
+
+fn check_url(url: &str) -> IdeResult<()> {
+    if url.starts_with("https://") || (cfg!(test) && url.starts_with("file://")) {
+        Ok(())
+    } else {
+        Err(IdeError::new(ErrorKind::Protocol, format!("refusing to download {url}: only HTTPS downloads are allowed")))
+    }
+}
+
+/// An npm / uv package spec from the registry, which must not read as an option.
+fn check_spec(spec: &str) -> IdeResult<()> {
+    if spec.is_empty() || spec.starts_with('-') || spec.chars().any(char::is_whitespace) {
+        Err(IdeError::new(ErrorKind::Protocol, format!("unsupported package `{spec}`")))
+    } else {
+        Ok(())
+    }
+}
+
+fn fetch(paths: &RegistryPaths, cancel: &CancellationToken) -> IdeResult<String> {
+    let http = http()?;
     let text = http.get_text_limited(REGISTRY_URL, Some(MAX_REGISTRY_BYTES), cancel)?;
     parse(&text)?;
     if let Err(e) = write_atomic(&paths.cache_file, text.as_bytes()) {
@@ -445,13 +468,18 @@ fn command_path(cmd: &str) -> IdeResult<Vec<String>> {
 
 fn install_binary(b: &Binary, dir: &Path, cancel: &CancellationToken, emit: Emit) -> IdeResult<PathBuf> {
     let segments = command_path(&b.cmd)?;
+    check_url(&b.archive)?;
     let url_path = b.archive.split(['?', '#']).next().unwrap_or_default();
-    let name = url_path.rsplit('/').next().filter(|n| !n.is_empty() && !n.contains('\\')).unwrap_or("download");
+    let name = url_path
+        .rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty() && *n != "." && *n != ".." && !n.contains('\\'))
+        .unwrap_or("download");
     let downloads = dir.join(".download");
     fs::create_dir_all(&downloads)?;
     let file = downloads.join(name);
     emit(InstallEvent::Line { text: format!("Downloading {}", b.archive) });
-    Http::new(&ide_tools::default_search_path())?.download(&b.archive, &file, None, cancel, emit)?;
+    http()?.download(&b.archive, &file, None, cancel, emit)?;
     match &b.sha256 {
         Some(expected) => {
             verify_sha256(&file, expected)?;
@@ -516,6 +544,7 @@ fn install_npm(
         Some(v) if !v.is_empty() => p.package.clone(),
         _ => format!("{name}@{}", entry.version),
     };
+    check_spec(&spec)?;
     let npm = which::which("npm").map_err(|_| IdeError::unavailable(format!("npm is required to install {name}")))?;
     let mut cmd = Command::new(npm);
     cmd.arg("install").arg("--prefix").arg(dir).args(["--no-audit", "--no-fund"]).arg(&spec).current_dir(dir);
@@ -557,6 +586,7 @@ fn install_uv(
         Some(v) if !v.is_empty() => p.package.clone(),
         _ => format!("{name}=={}", entry.version),
     };
+    check_spec(&spec)?;
     let uv = which::which("uv").map_err(|_| IdeError::unavailable(format!("uv is required to install {name}")))?;
     let bin = dir.join("bin");
     let mut cmd = Command::new(uv);
@@ -782,6 +812,12 @@ mod tests {
         assert!(command_path("../x").is_err());
         assert!(command_path("/usr/bin/x").is_err());
         assert!(command_path("C:/x").is_err());
+        assert!(check_spec("cline@3.0.74").is_ok());
+        assert!(check_spec("--prefix=/").is_err());
+        assert!(check_spec("a b").is_err());
+        assert!(check_url("https://x/a.tar.gz").is_ok());
+        assert!(check_url("http://x/a.tar.gz").is_err());
+        assert!(check_url("ftp://x/a").is_err());
     }
 
     #[test]

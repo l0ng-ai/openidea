@@ -150,19 +150,29 @@ fn strip_ansi(s: &str) -> String {
 /// mainstream Linux), so the IDE carries no TLS stack of its own.
 pub struct Http {
     curl: std::path::PathBuf,
+    https_only: bool,
 }
 
 impl Http {
     pub fn new(search_path: &std::ffi::OsStr) -> IdeResult<Self> {
         let curl = which::which_in("curl", Some(search_path), ".")
             .map_err(|_| IdeError::unavailable("`curl` is required to download tools"))?;
-        Ok(Self { curl })
+        Ok(Self { curl, https_only: false })
+    }
+
+    /// Refuses every protocol but HTTPS, redirects included.
+    pub fn https_only(mut self) -> Self {
+        self.https_only = true;
+        self
     }
 
     fn base(&self, url: &str) -> Command {
         let mut cmd = Command::new(&self.curl);
         ide_core::process::prepare(&mut cmd);
         cmd.args(["-fsSL", "--retry", "2", "--connect-timeout", "20", "-A", "openidea"]);
+        if self.https_only {
+            cmd.args(["--proto", "=https", "--proto-redir", "=https"]);
+        }
         if url.starts_with("https://api.github.com/")
             && let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN"))
             && !token.is_empty()

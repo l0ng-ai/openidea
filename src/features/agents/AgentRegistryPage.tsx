@@ -259,6 +259,8 @@ function AgentRow({
 }
 
 function ExternalLink({ url, label }: { url: string; label: string }) {
+  // Links come from the registry: web pages only.
+  if (!/^https?:\/\//i.test(url)) return null;
   return (
     <button type="button" className={styles.link} title={url} onClick={() => void openExternalUrl(url)}>
       <T>{label}</T>
