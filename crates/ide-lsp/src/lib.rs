@@ -1931,7 +1931,7 @@ impl LspManager {
             tracing::info!("{}: shadowed by an enabled server, stopping", s.name);
             self.stop_instance(s, true).await;
         }
-        self.servers.lock().retain(|s| !detached.iter().any(|d| d.id == s.id));
+        self.forget(&detached);
     }
 
     /// Stops and forgets the servers that none of their languages uses any more.
@@ -1949,9 +1949,17 @@ impl LspManager {
             self.stop_instance(s, true).await;
         }
         let gone = |s: &Arc<Server>| unlisted.iter().any(|u| u.id == s.id);
-        self.servers.lock().retain(|s| !gone(s));
         for d in self.docs.lock().values_mut() {
             d.servers.retain(|a| !gone(&a.server));
+        }
+        self.forget(&unlisted);
+    }
+
+    /// Drops stopped servers from the list and tells the UI they are gone.
+    fn forget(&self, gone: &[Arc<Server>]) {
+        self.servers.lock().retain(|s| !gone.iter().any(|g| g.id == s.id));
+        for s in gone {
+            self.sink.emit(ide_core::IdeEvent::LanguageServerRemoved { server: s.id });
         }
     }
 

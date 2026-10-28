@@ -3089,6 +3089,11 @@ export type IdeEvent =
 /**  Git status / branch information should be refreshed. */
 { type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; status: ServerStatus; message: string | null } | 
 /**
+ *  A stopped language server left the project's list (disabled in settings, or a
+ *  fallback that a preferred server took over from again).
+ */
+{ type: "languageServerRemoved"; server: ServerId } | 
+/**
  *  A language server asked clients to re-request one kind of data for its
  *  open documents (`workspace/inlayHint/refresh`, …), e.g. after indexing.
  */

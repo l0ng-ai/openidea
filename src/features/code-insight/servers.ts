@@ -1,4 +1,4 @@
-/** Language server status: `lsp_servers` snapshot + `languageServer` events. */
+/** Language server status: `lsp_servers` snapshot + `languageServer` / `languageServerRemoved` events. */
 import { getAction } from "@/platform/actions";
 import { create } from "zustand";
 import type { ServerId, ServerInfo, ServerStatus } from "@/bindings";
@@ -26,6 +26,8 @@ const notifiedMissing = new Set<string>();
 /** Event count at each server's latest event, so a snapshot taken earlier doesn't undo it. */
 let eventSeq = 0;
 const lastEvent = new Map<ServerId, number>();
+/** Event count when each server left the list, so an older snapshot doesn't bring it back. */
+const removedAt = new Map<ServerId, number>();
 
 function notifyMissing(e: ServerEntry) {
   if (notifiedMissing.has(e.name)) return;
@@ -66,6 +68,7 @@ export async function refreshServers() {
     const prev = useServers.getState().servers;
     const map = new Map<ServerId, ServerEntry>();
     for (const s of list) {
+      if ((removedAt.get(s.id) ?? 0) > since) continue;
       const p = prev.get(s.id);
       const newer = p && (lastEvent.get(s.id) ?? 0) > since;
       map.set(s.id, {
@@ -104,6 +107,16 @@ export function installServerEvents(): () => void {
     upsertServer({ id: e.server, name: e.name, status: e.status, message: e.message });
     if (!known) void refreshServers();
   });
+  const offRemoved = onIdeEvent("languageServerRemoved", (e) => {
+    removedAt.set(e.server, ++eventSeq);
+    lastEvent.delete(e.server);
+    if (!useServers.getState().servers.has(e.server)) return;
+    useServers.setState((s) => {
+      const servers = new Map(s.servers);
+      servers.delete(e.server);
+      return { servers };
+    });
+  });
   let root = useProject.getState().project?.root ?? null;
   void refreshServers();
   const unsub = useProject.subscribe((s) => {
@@ -115,6 +128,7 @@ export function installServerEvents(): () => void {
   });
   return () => {
     off();
+    offRemoved();
     unsub();
   };
 }
@@ -148,7 +162,9 @@ export function serversSummary(servers: readonly ServerEntry[]): { text: string;
   );
   const busy = servers.filter((s) => s.status === "starting" || s.status === "busy");
   const tone = bad.length ? "error" : busy.length ? "busy" : servers.some((s) => s.status === "ready") ? "ok" : "idle";
-  const names = [...new Set(servers.map((s) => s.name))];
+  // A stopped server (one a preferred server took over from) isn't worth naming next to running ones.
+  const active = servers.filter((s) => s.status !== "stopped");
+  const names = [...new Set((active.length ? active : servers).map((s) => s.name))];
   const text = names.length === 1 ? names[0]! : `${names[0]} +${names.length - 1}`;
   return { text, tone };
 }

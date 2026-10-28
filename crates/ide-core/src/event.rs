@@ -67,6 +67,11 @@ pub enum IdeEvent {
         status: ServerStatus,
         message: Option<String>,
     },
+    /// A stopped language server left the project's list (disabled in settings, or a
+    /// fallback that a preferred server took over from again).
+    LanguageServerRemoved {
+        server: ServerId,
+    },
     /// A language server asked clients to re-request one kind of data for its
     /// open documents (`workspace/inlayHint/refresh`, …), e.g. after indexing.
     LspRefresh {

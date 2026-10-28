@@ -1,7 +1,7 @@
 //! Protocol tests against in-memory mock language servers.
 
 use ide_core::event::ServerStatus;
-use ide_core::{DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, Severity, WorkspaceEdit};
+use ide_core::{DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit};
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
 use ide_lsp::types::*;
@@ -9,7 +9,7 @@ use ide_lsp::{LaunchError, Launcher, LspManager};
 use ide_text::AppliedChange;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -273,6 +273,22 @@ impl Harness {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Whether every instance of `name` was reported as removed from the server list.
+    fn removed(&self, name: &str) -> bool {
+        let events = self.events.lock();
+        let ids: HashSet<ServerId> = events
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::LanguageServer { server, name: n, .. } if n == name => Some(*server),
+                _ => None,
+            })
+            .collect();
+        !ids.is_empty()
+            && ids.iter().all(|id| {
+                events.iter().any(|e| matches!(e, IdeEvent::LanguageServerRemoved { server } if server == id))
+            })
     }
 
     async fn wait_status(&self, name: &str, status: ServerStatus) {
@@ -847,6 +863,8 @@ async fn settings_changes_reach_servers_without_restarts() {
     h.mgr.reconfigure().await;
     assert_eq!(h.mgr.servers().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["mock"]);
     assert_eq!(h.statuses("extra").last(), Some(&ServerStatus::Stopped));
+    assert!(h.removed("extra"));
+    assert!(!h.removed("mock"));
     disabled.lock().clear();
     h.mgr.reconfigure().await;
     h.wait_status("extra", ServerStatus::Ready).await;
@@ -899,6 +917,7 @@ async fn a_fallback_leaves_when_the_preferred_server_is_enabled_again() {
     h.wait_status("alt", ServerStatus::Ready).await;
     eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
     assert_eq!(h.mgr.servers().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["alt"]);
+    assert!(h.removed("main"));
 
     // Enabled again: the fallback closes the document and stops.
     disabled.lock().clear();
@@ -907,6 +926,7 @@ async fn a_fallback_leaves_when_the_preferred_server_is_enabled_again() {
     eventually(|| h.launcher.state("main").docs.lock().contains_key(&uri)).await;
     assert!(!h.launcher.state("alt").notified("textDocument/didClose").is_empty());
     assert_eq!(h.statuses("alt").last(), Some(&ServerStatus::Stopped));
+    assert!(h.removed("alt"));
     assert_eq!(h.mgr.servers().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["main"]);
     assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
     assert_eq!(h.launcher.state("alt").requested("textDocument/hover").len(), 0);
