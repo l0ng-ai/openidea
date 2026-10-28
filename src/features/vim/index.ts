@@ -77,7 +77,14 @@ export function activate(): () => void {
     syncVimSettingsFromStorage(),
     registerKeyClaim(vimKeyClaim(() => useVimSettings.getState())),
     activateSettingsPages(),
-    registerStatusItem({ id: "vim.mode", align: "right", priority: 45, component: VimStatus, title: "Vim" }),
+    registerStatusItem({
+      id: "vim.mode",
+      align: "right",
+      priority: 45,
+      component: VimStatus,
+      title: "Vim",
+      lightEdit: true,
+    }),
     registerActions([
       {
         id: "vim.toggle",

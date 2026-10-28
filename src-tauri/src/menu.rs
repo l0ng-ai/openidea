@@ -207,6 +207,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("file.new", "New…"),
         act("file.newScratchFile", "New Scratch File…"),
         act("file.openProject", "Open…"),
+        act("file.openFile", "Open File…"),
         act("file.openInNewWindow", "Open in New Window…"),
         sub(
             "openRecent",
@@ -1213,6 +1214,7 @@ mod tests {
                 "app.about",
                 "app.quit",
                 "file.openProject",
+                "file.openFile",
                 "file.openInNewWindow",
                 "file.closeProject",
                 "file.save",

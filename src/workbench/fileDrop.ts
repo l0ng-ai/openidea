@@ -1,7 +1,7 @@
 /**
- * Files dropped from the OS onto the project window open in the editor, one
- * tab each; a dropped folder opens as a project (the "Open project in" policy
- * applies). Regions marked with `OWNS_FILE_DROP` (Project view, prompt box)
+ * Files dropped from the OS onto the project (or LightEdit) window open in the
+ * editor, one tab each; a dropped folder opens as a project (the "Open project in"
+ * policy applies). Regions marked with `OWNS_FILE_DROP` (Project view, prompt box)
  * handle their drops themselves.
  */
 import { executeAction } from "@/platform/actions";
@@ -39,14 +39,15 @@ const defaultDeps: FileDropDeps = {
   openProject: async (path) => void (await executeAction("file.openProjectPath", path)),
 };
 
-/** Handles one drop; null when it is left to another handler (no local project: the Welcome screen). */
+/** Handles one drop; null when it is left to another handler (no local project or LightEdit: the Welcome screen). */
 export function handleFileDrop(
   paths: readonly string[],
   x: number,
   y: number,
   deps: FileDropDeps = defaultDeps,
 ): Promise<void> | null {
-  if (!paths.length || !useProject.getState().project || isRemoteWindow() || dropOwnedAt(x, y)) return null;
+  const { project, lightEdit } = useProject.getState();
+  if (!paths.length || !(project || lightEdit) || isRemoteWindow() || dropOwnedAt(x, y)) return null;
   return openDropped(paths, deps);
 }
 

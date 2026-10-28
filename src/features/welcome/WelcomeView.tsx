@@ -84,7 +84,10 @@ function NavItem({
   );
 }
 
-/** Folders dropped from the OS open as a project (Tauri drag-drop events carry real paths). */
+/**
+ * Paths dropped from the OS (Tauri drag-drop events carry real paths): a folder opens
+ * as a project, files open in LightEdit.
+ */
 function useFolderDrop(): boolean {
   const [over, setOver] = useState(false);
   useEffect(() => {
@@ -97,8 +100,9 @@ function useFolderDrop(): boolean {
           const p = event.payload;
           if (p.type === "enter" || p.type === "over") return setOver(true);
           setOver(false);
-          if (p.type === "drop" && p.paths[0] && !useProject.getState().project)
-            void executeAction("file.openProjectPath", p.paths[0]);
+          const { project, lightEdit } = useProject.getState();
+          if (p.type === "drop" && p.paths.length && !project && !lightEdit)
+            void executeAction("file.openPaths", p.paths);
         })
         .then((u) => {
           if (disposed) u();
@@ -194,7 +198,7 @@ export function WelcomeView() {
         {dropping && (
           <div className={styles.dropOverlay} aria-hidden>
             <Icon name="folder-open" size={20} />
-            <T>Drop a folder to open it as a project</T>
+            <T>Drop a folder to open it as a project, or files to edit them</T>
           </div>
         )}
       </section>

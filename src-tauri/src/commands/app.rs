@@ -61,6 +61,22 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
     Ok(info)
 }
 
+/// Edits the loose file `path` in this window without a project (LightEdit);
+/// a window already in LightEdit keeps its files. Returns the effective (global) settings.
+#[tauri::command]
+#[specta::specta]
+pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Settings> {
+    let app = window.app_handle().clone();
+    let label = window.label().to_owned();
+    if app.state::<AppState>().project(&label).is_ok_and(|p| !p.light) {
+        crate::windows::close_settings_window(&app, &label);
+    }
+    let project = tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().open_light(&label, &path))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))??;
+    Ok(project.settings.effective())
+}
+
 fn project_info(project: &crate::state::Project) -> ProjectInfo {
     ide_host::ops::project::info(project)
 }
@@ -200,7 +216,7 @@ pub fn project_roots(window: Window, state: State<'_, AppState>) -> IdeResult<id
 #[tauri::command]
 #[specta::specta]
 pub fn project_current(window: Window, state: State<'_, AppState>) -> Option<ProjectInfo> {
-    state.project(window.label()).ok().map(|p| project_info(&p))
+    state.project(window.label()).ok().filter(|p| !p.light).map(|p| project_info(&p))
 }
 
 #[tauri::command]

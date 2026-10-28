@@ -99,9 +99,9 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   try {
     const ctx = await commands.windowCloseContext();
     const s = useProject.getState();
-    // Closing the last project window closes its project and shows the welcome screen
-    // (to open another one); closing the welcome screen, or quitting, closes the window.
-    if (!ctx.quitting && ctx.windows <= 1 && s.project) {
+    // Closing the last project (or LightEdit) window closes its project and shows the welcome
+    // screen (to open another one); closing the welcome screen, or quitting, closes the window.
+    if (!ctx.quitting && ctx.windows <= 1 && (s.project || s.lightEdit)) {
       if (await confirmLeave(deps)) await closeProject();
       return false;
     }
@@ -148,7 +148,7 @@ export function installCloseGuard(deps: CloseDeps = defaultDeps): () => void {
       else dirtyDocs.delete(e.doc);
     }),
     useProject.subscribe((s, prev) => {
-      if (s.project?.root !== prev.project?.root) dirtyDocs.clear();
+      if (s.project?.root !== prev.project?.root || s.lightEdit !== prev.lightEdit) dirtyDocs.clear();
     }),
     provideLeaveProjectGuard(() => confirmLeave(deps)),
   ];

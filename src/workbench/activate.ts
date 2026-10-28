@@ -43,11 +43,12 @@ export function activateWorkbench(): () => void {
   // Synchronous so the frame's first render after opening already has the project's layout.
   const onProject = (root: string | null) => {
     setContext("projectOpen", root !== null);
+    setContext("lightEdit", useProject.getState().lightEdit);
     if (root !== null) loadToolWindowLayout(root);
   };
   onProject(useProject.getState().project?.root ?? null);
   const unsubProject = useProject.subscribe((s, prev) => {
-    if (s.project?.root === prev.project?.root) return;
+    if (s.project?.root === prev.project?.root && s.lightEdit === prev.lightEdit) return;
     // The previous project's notifications (and their actions) no longer apply.
     if (prev.project) clearNotifications();
     onProject(s.project?.root ?? null);
@@ -65,8 +66,8 @@ export function activateWorkbench(): () => void {
     installBrowserGuards(),
     installFileDrop(),
     registerOverlay({ id: "workbench.customizeToolbar", component: MainToolbarDialogHost }),
-    registerStatusItem({ id: "workbench.tasks", align: "right", priority: 0, component: TaskStatus }),
-    registerStatusItem({ id: "workbench.info", align: "left", priority: 5, component: StatusInfo }),
+    registerStatusItem({ id: "workbench.tasks", align: "right", priority: 0, component: TaskStatus, lightEdit: true }),
+    registerStatusItem({ id: "workbench.info", align: "left", priority: 5, component: StatusInfo, lightEdit: true }),
     registerToolWindow({
       id: NOTIFICATIONS_TOOL_WINDOW,
       title: "Notifications",

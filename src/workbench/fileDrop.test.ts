@@ -91,4 +91,12 @@ describe("files dropped from the OS", () => {
     expect(handleFileDrop(["/a.ts"], 1, 1, d)).toBeNull();
     expect(handleFileDrop([], 1, 1, d)).toBeNull();
   });
+
+  it("opens drops on a LightEdit window as more tabs there; a folder still opens as a project", async () => {
+    const { d, calls } = deps(["/work/app"]);
+    useProject.setState({ project: null, lightEdit: true } as never);
+    await handleFileDrop(["/x/b.txt", "/work/app"], 1, 1, d);
+    expect(calls).toEqual(["file /x/b.txt (focus)", "project /work/app"]);
+    useProject.setState({ lightEdit: false } as never);
+  });
 });

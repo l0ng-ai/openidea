@@ -127,13 +127,18 @@ impl Shared {
 
     // ---------------------------------------------------------------- thread
 
-    pub(crate) fn run(&self) {
+    /// `scan`: load the persisted index and scan the roots before serving updates.
+    pub(crate) fn run(&self, scan: bool) {
         {
             let mut q = self.queue.lock();
             q.busy = true;
         }
-        self.load_persisted();
-        self.full_scan();
+        if scan {
+            self.load_persisted();
+            self.full_scan();
+        } else {
+            self.indexing.store(false, Ordering::SeqCst);
+        }
         {
             let mut q = self.queue.lock();
             q.busy = false;

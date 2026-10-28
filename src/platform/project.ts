@@ -8,9 +8,16 @@ interface ProjectState {
   /** Effective settings (project-layered when a project is open). */
   settings: Settings | null;
   opening: boolean;
+  /** LightEdit: this window edits loose files without a project (`project` stays null). */
+  lightEdit: boolean;
 }
 
-export const useProject = create<ProjectState>(() => ({ project: null, settings: null, opening: false }));
+export const useProject = create<ProjectState>(() => ({
+  project: null,
+  settings: null,
+  opening: false,
+  lightEdit: false,
+}));
 
 let leaveGuard: (() => Promise<boolean>) | null = null;
 
@@ -24,7 +31,8 @@ export function provideLeaveProjectGuard(guard: () => Promise<boolean>): () => v
 
 /** False when the user chose to stay (another project in place, Close Project). */
 export function confirmLeaveProject(): Promise<boolean> {
-  return useProject.getState().project && leaveGuard ? leaveGuard() : Promise.resolve(true);
+  const s = useProject.getState();
+  return (s.project || s.lightEdit) && leaveGuard ? leaveGuard() : Promise.resolve(true);
 }
 
 let startupLaunch: Promise<void> | null = null;
@@ -43,16 +51,22 @@ export async function openProject(path: string): Promise<ProjectInfo> {
   useProject.setState({ opening: true });
   try {
     const project = await call(commands.openProject(path));
-    useProject.setState({ project, settings: project.settings });
+    useProject.setState({ project, settings: project.settings, lightEdit: false });
     return project;
   } finally {
     useProject.setState({ opening: false });
   }
 }
 
+/** Switches this window to LightEdit for the loose file `path` (kept when already in LightEdit). */
+export async function openLightEdit(path: string): Promise<void> {
+  const settings = await call(commands.lightEditOpen(path));
+  useProject.setState({ project: null, settings, lightEdit: true });
+}
+
 export async function closeProject() {
   await commands.closeProject();
-  useProject.setState({ project: null });
+  useProject.setState({ project: null, lightEdit: false });
 }
 
 export async function loadSettings() {

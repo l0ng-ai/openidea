@@ -23,10 +23,14 @@ export function orderStatusItems(items: Iterable<StatusItemContribution>) {
   return { left, right };
 }
 
-export function StatusBar() {
+/** `lightEdit`: a LightEdit window's bar, with the items that apply there only. */
+export function StatusBar({ lightEdit = false }: { lightEdit?: boolean }) {
   const map = useContributions((s) => s.statusItems);
   const overrides = useStatusWidgetOverrides();
-  const { left, right } = useMemo(() => orderStatusItems(map.values()), [map]);
+  const { left, right } = useMemo(
+    () => orderStatusItems([...map.values()].filter((i) => !lightEdit || i.lightEdit)),
+    [map, lightEdit],
+  );
   const visible = (i: StatusItemContribution) => isStatusItemVisible(i, overrides);
   const render = (item: StatusItemContribution) => {
     const C = item.component;

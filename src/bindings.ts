@@ -11,6 +11,11 @@ export const commands = {
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
+	/**
+	 *  Edits the loose file `path` in this window without a project (LightEdit);
+	 *  a window already in LightEdit keeps its files. Returns the effective (global) settings.
+	 */
+	lightEditOpen: (path: string) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("light_edit_open", { path })),
 	/**  The project open in this window (a settings window: its parent's), if any. */
 	projectCurrent: () => __TAURI_INVOKE<{
 	root: IpcPath,
@@ -578,8 +583,15 @@ export const commands = {
 	/**
 	 *  Opens `path` in a new window (`new_window`) or tells the caller to open it
 	 *  itself (`current`). A project already open in some window is focused instead.
+	 *  `files` then open in that project's editor.
 	 */
-	windowOpenProject: (path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow })),
+	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
+	/**
+	 *  Loose `files` opened from a window without a local project: handed to the LightEdit
+	 *  window when another one exists (`focused`), opened in a new one from a remote project
+	 *  window (`opened`), else `current` (the caller opens them in LightEdit itself).
+	 */
+	windowOpenFiles: (files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_files", { files })),
 	/**
 	 *  [`window_open_project`] for folder `path` on the host of SSH configuration
 	 *  `ssh_config` (Remote Development); a new window connects itself.
@@ -600,6 +612,11 @@ export const commands = {
 	windowTakeLaunch: () => __TAURI_INVOKE<{
 	/**  Project folder to open. */
 	project: IpcPath | null,
+	/**
+	 *  Files to open in the editor: in `project` once it is open, else in this
+	 *  window's project or (without one) in LightEdit.
+	 */
+	files: IpcPath[],
 	/**  Remote project to open (Remote Development). */
 	remote: RemoteLaunch | null,
 	/**  Settings windows: the page to show. */
@@ -3544,6 +3561,11 @@ export type LanguagesSettings = {
 export type Launch = {
 	/**  Project folder to open. */
 	project: IpcPath | null,
+	/**
+	 *  Files to open in the editor: in `project` once it is open, else in this
+	 *  window's project or (without one) in LightEdit.
+	 */
+	files: IpcPath[],
 	/**  Remote project to open (Remote Development). */
 	remote: RemoteLaunch | null,
 	/**  Settings windows: the page to show. */

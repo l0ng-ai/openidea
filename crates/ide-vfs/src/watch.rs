@@ -32,6 +32,8 @@ pub enum WatchMode {
     /// One non-recursive watch per directory, skipping excluded and ignored
     /// directories; new directories are picked up as they appear.
     PerDirectory,
+    /// The root's own entries only (loose files edited outside a project).
+    Flat,
 }
 
 impl Default for WatchMode {
@@ -81,7 +83,8 @@ impl Watcher {
             on_change(batch);
         };
         let inner = match mode {
-            WatchMode::Recursive => Self::start_recursive(root, filter, emit),
+            WatchMode::Recursive => Self::start_recursive(root, filter, emit, RecursiveMode::Recursive),
+            WatchMode::Flat => Self::start_recursive(root, filter, emit, RecursiveMode::NonRecursive),
             WatchMode::PerDirectory => Self::start_per_directory(root, filter, emit),
         }?;
         Ok(Self { inner, excludes: shared })
@@ -94,7 +97,7 @@ impl Watcher {
         *self.excludes.write() = ExcludeMatcher::new(excludes);
     }
 
-    /// Number of OS-level watches (1 in recursive mode).
+    /// Number of OS-level watches (1 in recursive and flat mode).
     pub fn watch_count(&self) -> usize {
         match &self.inner {
             Inner::Recursive(_) => 1,
@@ -106,6 +109,7 @@ impl Watcher {
         root: PathBuf,
         filter: EventFilter,
         emit: impl Fn(&FsBatch) + Send + 'static,
+        recursive: RecursiveMode,
     ) -> IdeResult<Inner> {
         // No file-id cache: building it walks and stats the whole tree before `watch` returns,
         // which made opening large projects block for seconds. Renames arrive as remove + create.
@@ -125,9 +129,7 @@ impl Watcher {
         let mut debouncer =
             new_debouncer_opt::<_, RecommendedWatcher, _>(DEBOUNCE, None, handler, NoCache, notify::Config::default())
                 .map_err(|e| io_error(format!("cannot start file watcher: {e}")))?;
-        debouncer
-            .watch(&root, RecursiveMode::Recursive)
-            .map_err(|e| io_error(format!("cannot watch {}: {e}", root.display())))?;
+        debouncer.watch(&root, recursive).map_err(|e| io_error(format!("cannot watch {}: {e}", root.display())))?;
         Ok(Inner::Recursive(debouncer))
     }
 
@@ -786,5 +788,31 @@ mod tests {
         std::fs::write(root.join("src/after-drop.txt"), "x").unwrap();
         std::thread::sleep(Duration::from_millis(400));
         assert_eq!(batches.lock().len(), n, "no events after drop");
+    }
+
+    #[test]
+    fn flat_mode_reports_the_roots_own_entries_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let batches: Arc<Mutex<Vec<FsBatch>>> = Arc::default();
+        let sink: SharedSink = Arc::new(|_e: IdeEvent| {});
+        let watcher = {
+            let batches = batches.clone();
+            Watcher::start_with(
+                &root,
+                Vec::new(),
+                sink,
+                Box::new(move |b| batches.lock().push(b.clone())),
+                WatchMode::Flat,
+            )
+            .unwrap()
+        };
+        assert_eq!(watcher.watch_count(), 1);
+        std::fs::write(root.join("sub/deep.txt"), "x").unwrap();
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        assert!(wait_for(&batches, |b| all_paths(b).contains(&root.join("a.txt"))), "{:?}", batches.lock());
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!all_paths(&batches.lock()).contains(&root.join("sub/deep.txt")));
     }
 }

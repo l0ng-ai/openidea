@@ -138,6 +138,12 @@ impl AppState {
         Ok(project)
     }
 
+    /// Opens `window` for editing the loose file `file` (LightEdit); not a recent project.
+    pub fn open_light(&self, window: &str, file: &Path) -> IdeResult<Arc<Project>> {
+        self.remote_dev.disconnect(window);
+        self.host.open_light(window, file)
+    }
+
     pub fn close_project(&self, window: &str) {
         self.remote_dev.disconnect(window);
         self.host.close_project(window);

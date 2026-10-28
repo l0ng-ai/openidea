@@ -11,10 +11,25 @@ use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
+/// `files` then open in that project's editor.
 #[tauri::command]
 #[specta::specta]
-pub async fn window_open_project(app: AppHandle, path: PathBuf, new_window: bool) -> IdeResult<OpenOutcome> {
-    windows::open_project_window(&app, &path, new_window)
+pub async fn window_open_project(
+    app: AppHandle,
+    path: PathBuf,
+    new_window: bool,
+    files: Vec<PathBuf>,
+) -> IdeResult<OpenOutcome> {
+    windows::open_project_window(&app, &path, new_window, files)
+}
+
+/// Loose `files` opened from a window without a local project: handed to the LightEdit
+/// window when another one exists (`focused`), opened in a new one from a remote project
+/// window (`opened`), else `current` (the caller opens them in LightEdit itself).
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_files(app: AppHandle, window: WebviewWindow, files: Vec<PathBuf>) -> IdeResult<OpenOutcome> {
+    windows::open_files_window(&app, window.label(), files)
 }
 
 /// [`window_open_project`] for folder `path` on the host of SSH configuration
@@ -94,7 +109,7 @@ pub fn window_open_projects(
     Ok(windows::project_window_labels(&app)
         .into_iter()
         .filter_map(|label| {
-            let project = state.project(&label).ok()?;
+            let project = state.project(&label).ok().filter(|p| !p.light)?;
             Some(OpenProject {
                 name: project.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 root: project.root.clone(),

@@ -8,6 +8,9 @@ pub async fn open(host: &Host, window: &str, path: PathBuf) -> IdeResult<Documen
     host.blocking(move || {
         let info = project.documents.open(&path)?;
         project.index.mark_recent(&path);
+        if let Some(dir) = path.parent().filter(|_| project.light) {
+            project.watch_light_dir(dir);
+        }
         Ok(info)
     })
     .await

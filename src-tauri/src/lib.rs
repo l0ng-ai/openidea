@@ -82,7 +82,7 @@ pub fn run() {
             if let Ok(cwd) = std::env::current_dir()
                 && let Some(path) = windows::cli_path(&std::env::args().collect::<Vec<_>>(), &cwd)
             {
-                windows.set_launch("main", windows::Launch { project: Some(path.into()), ..Default::default() });
+                windows.set_launch("main", windows::path_launch(path));
             }
             let menu_state = menu::MenuState::default();
             menu::install(app.handle(), &menu_state, &state.recent.list());

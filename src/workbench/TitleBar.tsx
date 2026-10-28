@@ -258,16 +258,19 @@ function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, Ti
  * 40px main toolbar. macOS: native traffic lights overlay its left edge.
  * Windows: the window is frameless, so the bar carries IDEA's main menu (☰) and
  * the caption buttons. `dialog`: a dialog window's bar (Settings), close button only.
+ * `lightEdit`: a LightEdit window's bar, its title and the menu but no toolbar widgets.
  */
 export function TitleBar({
   minimal = false,
   bare = false,
   dialog = false,
+  lightEdit = false,
   title,
 }: {
   minimal?: boolean;
   bare?: boolean;
   dialog?: boolean;
+  lightEdit?: boolean;
   title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
@@ -290,12 +293,13 @@ export function TitleBar({
       </header>
     );
   const entry = (id: string) => <ToolbarEntry key={id} id={id} items={map} />;
+  const toolbar = !minimal && !lightEdit;
   return (
     <header
       className={clsx(className, minimal && styles.minimal, dialog && styles.dialogBar)}
       data-tauri-drag-region
       onContextMenu={(e) => {
-        if (minimal || e.defaultPrevented) return;
+        if (!toolbar || e.defaultPrevented) return;
         e.preventDefault();
         showContextMenu(e, menu);
       }}
@@ -306,11 +310,11 @@ export function TitleBar({
           {typeof title === "string" ? <T>{title}</T> : title}
         </span>
       )}
-      {!minimal && !menuExpanded && shown.left.map(entry)}
+      {toolbar && !menuExpanded && shown.left.map(entry)}
       <div className={styles.drag} data-tauri-drag-region />
       {!minimal && (
         <>
-          {shown.right.map(entry)}
+          {toolbar && shown.right.map(entry)}
           <div className={styles.tools}>
             <GearButton customize={menu} />
           </div>

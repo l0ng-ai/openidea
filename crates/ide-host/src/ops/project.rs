@@ -38,7 +38,7 @@ pub async fn open(host: &Arc<Host>, window: &str, path: &Path) -> IdeResult<Arc<
 }
 
 pub fn current(host: &Host, window: &str) -> Option<ProjectInfo> {
-    host.project(window).ok().map(|p| info(&p))
+    host.project(window).ok().filter(|p| !p.light).map(|p| info(&p))
 }
 
 /// Effective settings for the window's project, or global settings without one.
@@ -75,7 +75,8 @@ pub fn set_settings(
     let value: serde_json::Value =
         serde_json::from_str(value).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
     let current = host.project(window).ok();
-    let project_scope = matches!(scope, SettingsScope::Project) && current.is_some();
+    // A LightEdit window has no project layer: its values are global.
+    let project_scope = matches!(scope, SettingsScope::Project) && current.as_ref().is_some_and(|p| !p.light);
     let settings = match &current {
         Some(p) if project_scope => p.settings.set(scope, key, value)?,
         Some(p) => {
@@ -90,7 +91,7 @@ pub fn set_settings(
     // A global value reaches every other open project too.
     if !project_scope {
         for project in host.projects() {
-            if current.as_ref().is_some_and(|c| c.root == project.root) {
+            if current.as_ref().is_some_and(|c| Arc::ptr_eq(c, &project)) {
                 continue;
             }
             let effective = project.settings.reload();

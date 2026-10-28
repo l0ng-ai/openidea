@@ -217,6 +217,7 @@ export class EditorController implements SlotHost {
     tabOptions.activateOnClose = editorPrefs().tabs.activateOnClose as typeof tabOptions.activateOnClose;
     let prevSettings = useProject.getState().settings;
     let prevRoot = useProject.getState().project?.root ?? null;
+    let prevLight = useProject.getState().lightEdit;
     this.disposers.push(
       useProject.subscribe((s) => {
         if (s.settings !== prevSettings) {
@@ -226,8 +227,10 @@ export class EditorController implements SlotHost {
           this.manager.applySettings();
         }
         const root = s.project?.root ?? null;
-        if (root !== prevRoot) {
+        // Entering or leaving LightEdit replaces the backend's documents too.
+        if (root !== prevRoot || s.lightEdit !== prevLight) {
           prevRoot = root;
+          prevLight = s.lightEdit;
           this.saveSession();
           this.sessionRoot = null;
           this.closeEverything();

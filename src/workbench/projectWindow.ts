@@ -12,12 +12,13 @@ export function openPolicy(): "ask" | "new" | "same" {
 }
 
 /**
- * The window to open project `name` in: this one when it has no project, else
+ * The window to open project `name` in: this one when it has no project (or LightEdit session), else
  * per "Open project in", asking when set to (and remembering "Don't ask again").
  * `null`: cancelled.
  */
 export async function chooseProjectWindow(name: string): Promise<"new" | "same" | null> {
-  if (!useProject.getState().project) return "same";
+  const { project, lightEdit } = useProject.getState();
+  if (!project && !lightEdit) return "same";
   const mode = openPolicy();
   if (mode !== "ask") return mode;
   const r = await ask({

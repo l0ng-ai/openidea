@@ -38,6 +38,9 @@ const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
 pub struct Launch {
     /// Project folder to open.
     pub project: Option<ide_core::IpcPath>,
+    /// Files to open in the editor: in `project` once it is open, else in this
+    /// window's project or (without one) in LightEdit.
+    pub files: Vec<ide_core::IpcPath>,
     /// Remote project to open (Remote Development).
     pub remote: Option<RemoteLaunch>,
     /// Settings windows: the page to show.
@@ -189,8 +192,24 @@ pub fn find_project_window(app: &AppHandle, root: &Path) -> Option<WebviewWindow
     let state = app.try_state::<AppState>()?;
     app.webview_windows().into_iter().filter(|(label, _)| !is_settings_window(label)).find_map(|(label, w)| {
         let project = state.project(&label).ok()?;
-        (project.root == root).then_some(w)
+        (project.root == root && !project.light).then_some(w)
     })
+}
+
+/// The window editing loose files (LightEdit), if any: more files open there.
+pub fn find_light_window(app: &AppHandle) -> Option<WebviewWindow> {
+    let state = app.try_state::<AppState>()?;
+    let windows = app.webview_windows();
+    let labels = sorted_labels(windows.keys().map(String::as_str).filter(|l| !is_settings_window(l)));
+    labels.into_iter().find(|l| state.project(l).is_ok_and(|p| p.light)).and_then(|l| windows.get(&l).cloned())
+}
+
+/// Hands `files` to the already loaded `window` (its frontend takes them on [`LAUNCH_EVENT`]) and focuses it.
+fn send_files(app: &AppHandle, window: &WebviewWindow, files: Vec<PathBuf>) {
+    let launch = Launch { files: files.into_iter().map(Into::into).collect(), ..Default::default() };
+    app.state::<WindowsState>().set_launch(window.label(), launch);
+    let _ = app.emit_to(window.label(), LAUNCH_EVENT, ());
+    focus(window);
 }
 
 fn has_project(app: &AppHandle, label: &str) -> bool {
@@ -282,8 +301,15 @@ pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
 
 /// Creates a new project window; `project` is opened by its frontend on load.
 pub fn create_window(app: &AppHandle, project: Option<PathBuf>) -> IdeResult<WebviewWindow> {
-    let title = project.as_deref().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned());
-    create_window_for(app, title, Launch { project: project.map(Into::into), ..Default::default() })
+    create_window_with(app, project, Vec::new())
+}
+
+/// [`create_window`] that also opens `files` (without `project`: in LightEdit).
+fn create_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) -> IdeResult<WebviewWindow> {
+    let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
+    let title = title.map(|n| n.to_string_lossy().into_owned());
+    let files = files.into_iter().map(Into::into).collect();
+    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() })
 }
 
 fn create_window_for(app: &AppHandle, title: Option<String>, launch: Launch) -> IdeResult<WebviewWindow> {
@@ -313,9 +339,13 @@ fn create_window_for(app: &AppHandle, title: Option<String>, launch: Launch) -> 
 /// `create_window` off the event-loop thread (building a window from a
 /// main-thread callback can deadlock on Windows).
 pub fn spawn_window(app: &AppHandle, project: Option<PathBuf>) {
+    spawn_window_with(app, project, Vec::new());
+}
+
+fn spawn_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = create_window(&app, project) {
+        if let Err(e) = create_window_with(&app, project, files) {
             tracing::warn!("cannot open window: {}", e.message);
         }
     });
@@ -333,17 +363,43 @@ pub enum OpenOutcome {
     Current,
 }
 
-pub fn open_project_window(app: &AppHandle, path: &Path, new_window: bool) -> IdeResult<OpenOutcome> {
+/// Opens folder `path` as a project and then `files` in its editor; see [`OpenOutcome`]
+/// (`Current`: the caller opens both itself).
+pub fn open_project_window(
+    app: &AppHandle,
+    path: &Path,
+    new_window: bool,
+    files: Vec<PathBuf>,
+) -> IdeResult<OpenOutcome> {
     let root = dunce::canonicalize(path).map_err(|e| IdeError::not_found(format!("{}: {e}", path.display())))?;
     tracing::info!("open_project_window {} new_window={new_window}", root.display());
     if let Some(w) = find_project_window(app, &root) {
-        focus(&w);
+        if files.is_empty() {
+            focus(&w);
+        } else {
+            send_files(app, &w, files);
+        }
         return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
     }
     if !new_window {
         return Ok(OpenOutcome::Current);
     }
-    let window = create_window(app, Some(root))?;
+    let window = create_window_with(app, Some(root), files)?;
+    Ok(OpenOutcome::Opened { label: window.label().to_owned() })
+}
+
+/// Loose local `files` asked for by a window without a local project: they join
+/// the LightEdit window when another one has it open; a window busy with a (remote)
+/// project gets a new LightEdit window; else the caller opens them itself (`Current`).
+pub fn open_files_window(app: &AppHandle, caller: &str, files: Vec<PathBuf>) -> IdeResult<OpenOutcome> {
+    if let Some(w) = find_light_window(app).filter(|w| w.label() != caller) {
+        send_files(app, &w, files);
+        return Ok(OpenOutcome::Focused { label: w.label().to_owned() });
+    }
+    if !has_project(app, caller) {
+        return Ok(OpenOutcome::Current);
+    }
+    let window = create_window_with(app, None, files)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -366,19 +422,24 @@ pub fn open_remote_window(app: &AppHandle, ssh_config: &str, path: &str, new_win
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
-/// Opens `path` from the command line / a second instance: focuses the window
-/// that has it, else reuses a window without a project, else makes a new one.
+/// Opens `path` from the command line / a second instance: a folder focuses the
+/// window that has it, a file joins the LightEdit window; else a window without
+/// a project is reused, else a new one is made.
 pub fn open_path(app: &AppHandle, path: &Path) {
-    let root = match dunce::canonicalize(path) {
-        Ok(r) if r.is_dir() => r,
-        Ok(r) => r.parent().map(Path::to_path_buf).unwrap_or(r),
+    let path = match dunce::canonicalize(path) {
+        Ok(p) => p,
         Err(e) => {
             tracing::warn!("cannot open {}: {e}", path.display());
             return;
         }
     };
-    if let Some(w) = find_project_window(app, &root) {
+    let is_dir = path.is_dir();
+    if is_dir && let Some(w) = find_project_window(app, &path) {
         focus(&w);
+        return;
+    }
+    if !is_dir && let Some(w) = find_light_window(app) {
+        send_files(app, &w, vec![path]);
         return;
     }
     let free = target_window(app)
@@ -387,14 +448,26 @@ pub fn open_path(app: &AppHandle, path: &Path) {
         .or_else(|| {
             app.webview_windows().into_values().find(|w| !is_settings_window(w.label()) && !has_project(app, w.label()))
         });
+    let launch = path_launch(path);
     match free {
         Some(w) => {
-            app.state::<WindowsState>()
-                .set_launch(w.label(), Launch { project: Some(root.into()), ..Default::default() });
+            app.state::<WindowsState>().set_launch(w.label(), launch);
             let _ = app.emit_to(w.label(), LAUNCH_EVENT, ());
             focus(&w);
         }
-        None => spawn_window(app, Some(root)),
+        None => {
+            let files = launch.files.into_iter().map(ide_core::IpcPath::into_path_buf).collect();
+            spawn_window_with(app, launch.project.map(ide_core::IpcPath::into_path_buf), files)
+        }
+    }
+}
+
+/// What a window opens for a command-line path: a folder as its project, a file in LightEdit.
+pub fn path_launch(path: PathBuf) -> Launch {
+    if path.is_dir() {
+        Launch { project: Some(path.into()), ..Default::default() }
+    } else {
+        Launch { files: vec![path.into()], ..Default::default() }
     }
 }
 
@@ -566,6 +639,15 @@ mod tests {
         assert_eq!(cli_path(&s(&["openidea", "/abs/p"]), cwd), Some(PathBuf::from("/abs/p")));
         assert_eq!(cli_path(&s(&["openidea"]), cwd), None);
         assert_eq!(cli_path(&s(&["openidea", "-psn_0_123"]), cwd), None);
+    }
+
+    #[test]
+    fn command_line_folders_open_as_projects_and_files_in_light_edit() {
+        let dir = std::env::temp_dir();
+        assert_eq!(path_launch(dir.clone()).project, Some(dir.into()));
+        let file = std::env::current_exe().unwrap();
+        let launch = path_launch(file.clone());
+        assert_eq!((launch.project, launch.files), (None, vec![file.into()]));
     }
 
     #[test]

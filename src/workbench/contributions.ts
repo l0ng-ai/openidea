@@ -86,6 +86,8 @@ export interface StatusItemContribution {
   title?: string;
   /** Shown until the user decides otherwise (default true). */
   defaultVisible?: boolean;
+  /** Also shown in a LightEdit window (editor tabs only), whose status bar has only such items. */
+  lightEdit?: boolean;
 }
 
 /** Title bar widget (VCS branch, run configuration, run/debug buttons…). */

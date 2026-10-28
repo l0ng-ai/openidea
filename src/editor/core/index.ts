@@ -75,6 +75,7 @@ export function activate(): void | (() => void) {
       priority: 20,
       component: CaretStatus,
       title: "Line:Column Number",
+      lightEdit: true,
     }),
     registerStatusItem({
       id: "editor.lineEnding",
@@ -82,6 +83,7 @@ export function activate(): void | (() => void) {
       priority: 30,
       component: LineEndingStatus,
       title: "Line Separator",
+      lightEdit: true,
     }),
     registerStatusItem({
       id: "editor.encoding",
@@ -89,6 +91,7 @@ export function activate(): void | (() => void) {
       priority: 40,
       component: EncodingStatus,
       title: "File Encoding",
+      lightEdit: true,
     }),
     registerStatusItem({
       id: "editor.indent",
@@ -96,6 +99,7 @@ export function activate(): void | (() => void) {
       priority: 50,
       component: IndentStatus,
       title: "Indentation",
+      lightEdit: true,
     }),
     registerStatusItem({
       id: "editor.readOnly",
@@ -103,6 +107,7 @@ export function activate(): void | (() => void) {
       priority: 55,
       component: ReadOnlyStatus,
       title: "Read-only Attribute",
+      lightEdit: true,
     }),
   ];
   return () => {
