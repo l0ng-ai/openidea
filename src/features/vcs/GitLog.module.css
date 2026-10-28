@@ -405,3 +405,47 @@
   color: var(--link-hover);
   text-decoration: underline;
 }
+
+.branchFilterPopup {
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.branchFilterSearch {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.branchFilterList {
+  overflow-y: auto;
+  max-height: 320px;
+  padding: 4px;
+}
+.branchFilterOption,
+.branchFilterMore {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: var(--radius-small);
+}
+.branchFilterOption span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.branchFilterOption[data-active="true"],
+.branchFilterMore:hover {
+  background: var(--bg-toolbar-selected);
+}
+.branchFilterEmpty {
+  padding: 8px;
+  color: var(--fg-muted);
+}
+.branchFilterMore {
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}

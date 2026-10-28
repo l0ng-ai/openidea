@@ -1,5 +1,6 @@
 /** Git tool window: Log (graph, filters, commit details) and Console tabs. */
 import { IssueText } from "./issueLinks";
+import { BranchFilterPopup } from "./BranchFilterPopup";
 import {
   memo,
   useCallback,
@@ -325,7 +326,12 @@ function FilterButton({
         {!value && <Icon name="chevron-down" size={12} className={styles.filterChevron} />}
       </button>
       {value && (
-        <button type="button" className={styles.filterClear} aria-label={tx`Clear ${tx(label)} filter`} onClick={onClear}>
+        <button
+          type="button"
+          className={styles.filterClear}
+          aria-label={tx`Clear ${tx(label)} filter`}
+          onClick={onClear}
+        >
           <Icon name="close" size={12} />
         </button>
       )}
@@ -339,6 +345,7 @@ function FilterBar() {
   const branches = useVcs((s) => s.branches);
   const root = useVcs((s) => s.root);
   const [text, setText] = useState(filters.text);
+  const [branchAnchor, setBranchAnchor] = useState<HTMLElement | null>(null);
 
   // Keep the field in sync when filters change elsewhere (Show History, reveal).
   const [seen, setSeen] = useState(filters);
@@ -353,37 +360,18 @@ function FilterBar() {
     return () => clearTimeout(t);
   }, [text, filters.text]);
 
-  const only = (list: readonly string[], v: string) => list.length === 1 && list[0] === v;
   const branchNames = () => branches.filter((b) => !b.name.endsWith("/HEAD")).map((b) => b.name);
 
-  const openBranch = (e: ReactMouseEvent<HTMLElement>) =>
-    menuBelow(e, [
-      {
-        label: "HEAD (Current Branch)",
-        checked: only(filters.branches, "HEAD"),
-        run: () => setLogFilters({ branches: ["HEAD"] }),
-      },
-      { kind: "separator" },
-      ...branchNames().map((name) => ({
-        label: name,
-        icon: "branch",
-        checked: filters.branches.includes(name),
-        run: () => setLogFilters({ branches: [name] }),
-      })),
-      { kind: "separator" },
-      {
-        label: "Select…",
-        run: async () => {
-          const r = await chooseMany({
-            title: "Filter by Branch",
-            options: ["HEAD", ...branchNames()],
-            initial: filters.branches,
-            customLabel: "Other revisions (comma-separated):",
-          });
-          if (r) setLogFilters({ branches: r });
-        },
-      },
-    ]);
+  const selectBranches = async () => {
+    setBranchAnchor(null);
+    const r = await chooseMany({
+      title: "Filter by Branch",
+      options: ["HEAD", ...branchNames()],
+      initial: filters.branches,
+      customLabel: "Other revisions (comma-separated):",
+    });
+    if (r) setLogFilters({ branches: r });
+  };
 
   const openUser = (e: ReactMouseEvent<HTMLElement>) => {
     const authors = [...new Set(commits.map((c) => c.author))].sort((a, b) => a.localeCompare(b)).slice(0, 30);
@@ -470,9 +458,22 @@ function FilterBar() {
       <FilterButton
         label="Branch"
         value={filters.branches.join(", ") || null}
-        onOpen={openBranch}
+        onOpen={(e) => setBranchAnchor(e.currentTarget)}
         onClear={() => setLogFilters({ branches: [] })}
       />
+      {branchAnchor && (
+        <BranchFilterPopup
+          anchor={branchAnchor}
+          branches={branchNames()}
+          selected={filters.branches}
+          onClose={() => setBranchAnchor(null)}
+          onSelect={(branch) => {
+            setLogFilters({ branches: [branch] });
+            setBranchAnchor(null);
+          }}
+          onSelectMany={() => void selectBranches()}
+        />
+      )}
       <FilterButton
         label="User"
         value={filters.authors.join(", ") || null}
