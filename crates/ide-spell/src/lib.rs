@@ -364,7 +364,8 @@ impl Speller {
     /// Whether the letter run `w` was split from is a known term as a whole:
     /// `IntelliJ` (`Intelli` + `J`), `PostgreSQL` (`Postgre` + `SQL`).
     fn known_run(&self, text: &str, w: &WordSpan) -> bool {
-        let start = text[..w.start].rfind(|c: char| !c.is_alphabetic()).map_or(0, |i| i + 1);
+        let start =
+            text[..w.start].char_indices().rev().find(|(_, c)| !c.is_alphabetic()).map_or(0, |(i, c)| i + c.len_utf8());
         let end = text[w.end..].find(|c: char| !c.is_alphabetic()).map_or(text.len(), |i| w.end + i);
         (start, end) != (w.start, w.end) && self.user_word(&text[start..end].to_lowercase())
     }
@@ -502,6 +503,14 @@ mod tests {
         let words: Vec<_> = typos.iter().map(|t| t.word.as_str()).collect();
         assert_eq!(words, ["Recieve", "mesage"]);
         assert_eq!(typos[0].range, Range::new(Pos::new(0, 3), Pos::new(0, 10)));
+    }
+
+    #[test]
+    fn misspellings_after_unicode_punctuation_do_not_panic() {
+        let text = "// 状态：Recieve and 【mesage】 😀writting";
+        let typos = Speller::default().check(text, &whole(text, RegionKind::Comment), &|| false).unwrap();
+        let words: Vec<_> = typos.iter().map(|t| t.word.as_str()).collect();
+        assert_eq!(words, ["Recieve", "mesage", "writting"]);
     }
 
     #[test]
