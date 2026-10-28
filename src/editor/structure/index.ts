@@ -164,10 +164,12 @@ export async function withFallback<T>(
       value = await lsp();
     } catch (e) {
       if (isCancelled(e) || !when.has(lspFailure(e))) throw e;
+      // oxlint-disable-next-line react-hooks/rules-of-hooks -- a plain async helper, not a hook
       const fb = await useFallback();
       if (fb) return fb;
       throw e;
     }
+    // oxlint-disable-next-line react-hooks/rules-of-hooks -- a plain async helper, not a hook
     if (when.has("empty") && isEmpty(value)) return (await useFallback()) ?? { value, source: "lsp" };
     return { value, source: "lsp" };
   })();

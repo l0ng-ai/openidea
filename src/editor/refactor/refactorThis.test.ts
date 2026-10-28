@@ -192,7 +192,7 @@ describe("Refactor This", () => {
 
   it("cancels a superseded query and drops answers after the caret moved", async () => {
     let release: (r: Result) => void = () => {};
-    query = (request) => new Promise((r) => (release = r)).then((x) => (void request, x as Result));
+    query = (_request) => new Promise((r) => (release = r)).then((x) => x as Result);
     const v = editor();
     const first = refactorThis(v, vi.fn());
     await new Promise((r) => setTimeout(r, 0));

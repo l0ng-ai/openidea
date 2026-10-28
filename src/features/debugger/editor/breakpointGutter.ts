@@ -141,7 +141,7 @@ export function breakpointGutter(ctx: EditorDocContext): Extension {
       // IDEA tints the whole line of an active breakpoint.
       EditorView.decorations.from(f, (markers) => {
         const lines: Array<ReturnType<Decoration["range"]>> = [];
-        for (let it = markers.iter(); it.value; it.next())
+        for (const it = markers.iter(); it.value; it.next())
           if (!DISABLED_LOOKS.has(it.value.look)) lines.push(bpLine.range(it.from));
         return Decoration.set(lines);
       }),

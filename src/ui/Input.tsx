@@ -132,7 +132,9 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
     }, 0);
   };
   const commands = useRef<FieldCommands>({});
+  // oxlint-disable-next-line react/refs -- latest-callback ref, read only from event handlers
   commands.current.newLine = multiline ? insertNewLine : undefined;
+  // oxlint-disable-next-line react/refs
   commands.current.history = onHistory;
   const { onKeyDown, onFocus, onBlur, ...fieldProps } = rest;
   const keyDown = (e: KeyboardEvent<HTMLInputElement>) => {

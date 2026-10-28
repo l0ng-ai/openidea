@@ -34,6 +34,15 @@
   padding: 0 2px;
   font-size: var(--fs-small);
 }
+/* The current branch, read-only: same height and colour as the pickers beside it. */
+.branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--h-control);
+  padding: 0 6px;
+  color: var(--fg-secondary);
+}
 .project {
   margin-right: 6px;
   color: var(--fg-muted);

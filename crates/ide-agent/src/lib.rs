@@ -21,7 +21,7 @@ use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
@@ -152,6 +152,9 @@ struct TaskFile {
     /// Settings the user chose, re-applied to every new or reloaded session.
     #[serde(default)]
     wanted: Vec<AgentConfigChoice>,
+    /// In the project's own checkout: files already changed when the task started.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    before: BTreeMap<String, worktree::Stamp>,
 }
 
 struct TaskState {
@@ -159,6 +162,7 @@ struct TaskState {
     session_id: Option<String>,
     timeline: Timeline,
     wanted: Vec<AgentConfigChoice>,
+    before: Arc<BTreeMap<String, worktree::Stamp>>,
     /// A turn is running or about to (prompts arriving now are queued).
     busy: bool,
 }
@@ -310,18 +314,20 @@ impl AgentManager {
         let prompt = clean(req.prompt).ok_or_else(|| IdeError::invalid("describe the task first"))?;
         let title = title_of(&prompt);
         let root = self.shared.paths.project_root.clone();
-        let (cwd, branch, base, base_commit) = match req.isolation {
+        let (cwd, branch, base, base_commit, before) = match req.isolation {
             Isolation::Worktree => {
                 let dir = self.shared.paths.worktrees_dir.clone();
                 let (t, b) = (title.clone(), req.base.clone());
                 let c = blocking(move || worktree::create(&root, &dir, &t, b.as_deref())).await?;
-                (c.path, Some(c.branch), Some(c.base), Some(c.base_commit))
+                (c.path, Some(c.branch), Some(c.base), Some(c.base_commit), BTreeMap::new())
             }
             Isolation::Local => {
                 let r = root.clone();
-                let head = blocking(move || worktree::head_of(&r)).await.ok();
+                let (head, before) =
+                    blocking(move || Ok((worktree::head_of(&r).ok(), worktree::snapshot(&r).unwrap_or_default())))
+                        .await?;
                 let (base, commit) = head.unzip();
-                (root, None, base, commit)
+                (root, None, base, commit, before)
             }
         };
         // Until the session reports its own, show what the agent offered last time with the choices applied.
@@ -351,7 +357,7 @@ impl AgentManager {
             usage: None,
             queue: Vec::new(),
         };
-        let file = TaskFile { task: task.clone(), session_id: None, entries: Vec::new(), wanted: req.config };
+        let file = TaskFile { task: task.clone(), session_id: None, entries: Vec::new(), wanted: req.config, before };
         let handle = Task::restore(file, self.shared.clone());
         handle.state.lock().busy = true;
         self.tasks.write().insert(task.id.clone(), handle.clone());
@@ -529,8 +535,10 @@ impl AgentManager {
 
     /// Files the task changed since it started.
     pub async fn changes(&self, id: &str) -> IdeResult<Vec<AgentChange>> {
-        let (cwd, base) = self.task(id)?.cwd_and_base();
-        blocking(move || worktree::changes(&cwd, &base)).await
+        let task = self.task(id)?;
+        let (cwd, base) = task.cwd_and_base();
+        let before = task.state.lock().before.clone();
+        blocking(move || Ok(worktree::without_untouched(worktree::changes(&cwd, &base)?, &before))).await
     }
 
     /// Content of `path` (in the task's directory) when the task started.
@@ -560,6 +568,7 @@ impl Task {
                 session_id: file.session_id,
                 timeline,
                 wanted: file.wanted,
+                before: Arc::new(file.before),
                 busy: false,
             }),
             live: Mutex::new(None),
@@ -616,6 +625,7 @@ impl Task {
                 session_id: s.session_id.clone(),
                 entries: s.timeline.entries.clone(),
                 wanted: s.wanted.clone(),
+                before: (*s.before).clone(),
             })
         };
         let path = self.shared.paths.store_dir.join(format!("{}.json", self.id));
