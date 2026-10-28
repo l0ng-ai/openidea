@@ -258,6 +258,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "angular-language-server",
+        display: "Angular Language Server",
+        kind: LanguageServer,
+        commands: &["ngserver"],
+        // Brings the TypeScript and `@angular/language-service` it loads.
+        method: Method::Npm { packages: &["@angular/language-server"] },
+        version: V,
+        homepage: "https://angular.dev/tools/language-service",
+        needs: &[],
+    },
+    ToolSpec {
         name: "graphql-lsp",
         display: "GraphQL Language Server",
         kind: LanguageServer,

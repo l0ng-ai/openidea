@@ -69,6 +69,10 @@ pub struct LanguageServerConfig {
     /// Files whose presence marks a workspace root, e.g. `Cargo.toml`.
     #[serde(default)]
     pub root_markers: Vec<String>,
+    /// Serve only files below a root marker, not the whole project: a framework's
+    /// server (Angular) next to the language's own one.
+    #[serde(default)]
+    pub require_root_marker: bool,
     /// JSON passed as `initializationOptions`.
     #[serde(default)]
     pub initialization_options: Option<toml::Value>,

@@ -1,6 +1,7 @@
 //! Vue Language Server (Volar 3): the TypeScript it loads as a library, and the
 //! `@vue/typescript-plugin` that vtsls' tsserver hosts for it (hybrid mode).
 
+use crate::npm::{find_command, package_dir};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -12,38 +13,6 @@ const PLUGIN: &str = "@vue/typescript-plugin";
 /// TypeScript 7, the native port, ships only `tsc`.
 pub(crate) fn has_ts_api(lib: &Path) -> bool {
     lib.join("typescript.js").is_file()
-}
-
-/// `command` as given (a path) or found on `path`, npm shims included.
-fn find_command(command: &str, path: &OsStr) -> Option<PathBuf> {
-    let p = Path::new(command);
-    if p.is_absolute() {
-        return p.is_file().then(|| p.to_path_buf());
-    }
-    let exts: &[&str] = if cfg!(windows) { &[".cmd", ".exe", ""] } else { &[""] };
-    std::env::split_paths(path)
-        .flat_map(|d| exts.iter().map(move |e| d.join(format!("{command}{e}"))))
-        .find(|c| c.is_file())
-}
-
-/// The npm package an executable comes from: next to a `node_modules/.bin` shim
-/// (the IDE's tools dir, a project), a Windows global shim (`%APPDATA%\npm`), a
-/// Unix global `<prefix>/bin` or a symlink into the package.
-fn package_dir(bin: &Path, package: &str) -> Option<PathBuf> {
-    let dir = bin.parent()?;
-    let mut candidates = vec![dir.join("node_modules").join(package)];
-    if dir.file_name() == Some(OsStr::new(".bin"))
-        && let Some(node_modules) = dir.parent()
-    {
-        candidates.push(node_modules.join(package));
-    }
-    if let Ok(real) = dunce::canonicalize(bin) {
-        candidates.extend(real.ancestors().filter(|a| a.ends_with(package)).map(Path::to_path_buf));
-    }
-    if let Some(prefix) = dir.parent() {
-        candidates.push(prefix.join("lib").join("node_modules").join(package));
-    }
-    candidates.into_iter().find(|c| c.join("package.json").is_file())
 }
 
 /// `@vue/language-server`'s directory for the `vue-language-server` command.

@@ -14,8 +14,14 @@ pub fn search_path() -> OsString {
     let mut dirs: Vec<PathBuf> =
         std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     if let Some(home) = crate::home_dir() {
-        for rel in [".cargo/bin", ".local/bin", "go/bin", ".pyenv/shims", ".volta/bin"] {
+        for rel in [".cargo/bin", ".local/bin", "go/bin", ".pyenv/shims", ".bun/bin", ".npm-global/bin", ".volta/bin"] {
             dirs.push(home.join(rel));
+        }
+        // nvm: newest installed node's bin, as language servers are launched.
+        if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
+            let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path().join("bin")).collect();
+            versions.sort();
+            dirs.extend(versions.into_iter().rev());
         }
     }
     for d in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {

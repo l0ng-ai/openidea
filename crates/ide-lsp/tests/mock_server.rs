@@ -202,6 +202,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         args: vec![],
         env: Default::default(),
         root_markers: vec!["mock.toml".into()],
+        require_root_marker: false,
         initialization_options: Some(toml::Value::Table(toml::toml! { flag = true nested = { deep = 1 } })),
         settings: None,
         install_hint: Some(format!("install {name}")),
@@ -222,6 +223,16 @@ fn harness_with_fallbacks(servers: &[(&str, Value)], fallbacks: &[&str]) -> Harn
 }
 
 fn harness_for(lang_id: &str, ext: &str, servers: &[(&str, Value)], fallbacks: &[&str]) -> Harness {
+    harness_configured(lang_id, ext, servers, |cfg| cfg.fallback = fallbacks.contains(&cfg.name.as_str()))
+}
+
+/// `adjust` changes each server's configuration.
+fn harness_configured(
+    lang_id: &str,
+    ext: &str,
+    servers: &[(&str, Value)],
+    adjust: impl Fn(&mut LanguageServerConfig),
+) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let lang = LanguageConfig {
@@ -237,7 +248,11 @@ fn harness_for(lang_id: &str, ext: &str, servers: &[(&str, Value)], fallbacks: &
         tree_sitter: None,
         language_servers: servers
             .iter()
-            .map(|(n, _)| LanguageServerConfig { fallback: fallbacks.contains(n), ..server_cfg(n) })
+            .map(|(n, _)| {
+                let mut cfg = server_cfg(n);
+                adjust(&mut cfg);
+                cfg
+            })
             .collect(),
         debugger: None,
     };
@@ -714,6 +729,28 @@ async fn progress_tasks_and_busy_status() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn angular_project_loading_shows_as_progress() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    peer.notify("angular/projectLoadingStart", Value::Null).unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    peer.notify("angular/projectLoadingFinish", Value::Null).unwrap();
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let tasks: Vec<(String, bool)> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Task { title, done, .. } => Some((title.clone(), *done)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tasks, [("Loading Angular project".into(), false), ("Loading Angular project".into(), true)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn crash_restarts_and_reopens_documents() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "one");
@@ -897,6 +934,45 @@ async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_server_requiring_a_root_marker_serves_only_files_below_one() {
+    // `framework` next to `main` (one instance for the whole project), like the
+    // Angular server next to vtsls.
+    let servers = [("main", incremental_caps()), ("framework", incremental_caps())];
+    let h = harness_configured("mock", "mk", &servers, |cfg| match cfg.name.as_str() {
+        "framework" => cfg.require_root_marker = true,
+        _ => cfg.root_markers.clear(),
+    });
+    for dir in ["plain", "app"] {
+        std::fs::create_dir_all(h.root.join(dir)).unwrap();
+    }
+    std::fs::write(h.root.join("app/mock.toml"), "").unwrap();
+    let (_, plain) = h.open("plain/a.mk", "x");
+    h.wait_status("main", ServerStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.statuses("framework").is_empty());
+
+    let (_, app) = h.open("app/b.mk", "y");
+    h.wait_status("framework", ServerStatus::Ready).await;
+    let framework = h.launcher.state("framework");
+    eventually(|| framework.docs.lock().contains_key(&uri_of(&app))).await;
+    assert!(!framework.docs.lock().contains_key(&uri_of(&plain)));
+    eventually(|| h.launcher.state("main").docs.lock().len() == 2).await;
+
+    // It stands in for no other server: with `ghost` missing, its fallback serves too.
+    let servers = [("ghost", json!({})), ("framework", incremental_caps()), ("alt", incremental_caps())];
+    let h = harness_configured("mock", "mk", &servers, |cfg| match cfg.name.as_str() {
+        "framework" => cfg.require_root_marker = true,
+        "alt" => cfg.fallback = true,
+        _ => {}
+    });
+    h.launcher.state("ghost").missing.store(true, Ordering::SeqCst);
+    std::fs::write(h.root.join("mock.toml"), "").unwrap();
+    h.open("a.mk", "x");
+    h.wait_status("framework", ServerStatus::Ready).await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_fallback_leaves_when_the_preferred_server_is_enabled_again() {
     let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
     let disabled: Arc<Mutex<Vec<String>>> = Default::default();
@@ -1042,6 +1118,128 @@ async fn navigation_rename_format_and_decorations() {
 
     // No documentSymbolProvider → None so callers fall back to tree-sitter.
     assert_eq!(h.mgr.document_symbols(doc).await.unwrap(), None);
+}
+
+/// The edits of `edit` in `path`, by range.
+fn edits_in(edit: &WorkspaceEdit, path: &Path) -> Vec<(Range, String)> {
+    edit.files
+        .iter()
+        .filter_map(|f| match f {
+            FileEdit::Edit { path: p, edits } if p.to_path_buf() == path => {
+                Some(edits.iter().map(|e| (e.range, e.new_text.clone())))
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rename_merges_the_servers_that_can_rename_there() {
+    // `ts` can't rename inside a template string (its `prepareRename` is null), `ng` can.
+    let h = harness(&[("ts", incremental_caps()), ("ng", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "template: `{{ title }}`\ntitle = 1\n");
+    h.wait_status("ts", ServerStatus::Ready).await;
+    h.wait_status("ng", ServerStatus::Ready).await;
+    let html = h.root.join("a.html");
+    let (uri, html_uri) = (uri_of(&path), uri_of(&html));
+    let r = |l: u32, c0: u32, c1: u32| json!({"start":{"line":l,"character":c0},"end":{"line":l,"character":c1}});
+    let ng = h.launcher.state("ng");
+    ng.respond("textDocument/prepareRename", json!({ "range": r(0, 14, 19), "placeholder": "title" }));
+    ng.respond(
+        "textDocument/rename",
+        json!({ "changes": {
+            uri.clone(): [{ "range": r(0, 14, 19), "newText": "heading" }, { "range": r(1, 0, 5), "newText": "heading" }],
+            html_uri: [{ "range": r(0, 3, 8), "newText": "heading" }],
+        } }),
+    );
+
+    assert_eq!(h.mgr.prepare_rename(doc, Pos::new(0, 15)).await.unwrap(), Some(rng(0, 14, 0, 19)));
+    let edit = h.mgr.rename(doc, Pos::new(0, 15), "heading".into()).await.unwrap();
+    assert_eq!(edits_in(&edit, &path).len(), 2);
+    assert!(h.launcher.state("ts").requested("textDocument/rename").is_empty());
+
+    // Both can rename the declaration: `ng` adds what `ts` doesn't see, and
+    // `ts`'s own edits win where both change the same text.
+    let ts = h.launcher.state("ts");
+    ts.respond("textDocument/prepareRename", json!({ "range": r(1, 0, 5), "placeholder": "title" }));
+    ts.respond(
+        "textDocument/rename",
+        json!({ "changes": { uri: [{ "range": r(1, 0, 5), "newText": "heading: x" }] } }),
+    );
+    let edit = h.mgr.rename(doc, Pos::new(1, 2), "heading".into()).await.unwrap();
+    assert_eq!(edits_in(&edit, &path), [(rng(0, 14, 0, 19), "heading".into()), (rng(1, 0, 1, 5), "heading: x".into())]);
+    assert_eq!(edits_in(&edit, &html), [(rng(0, 3, 0, 8), "heading".into())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn angular_server_is_asked_about_typescript_only_in_component_templates() {
+    let servers = [("vtsls", incremental_caps()), ("angular-language-server", incremental_caps())];
+    let h = harness_for("typescript", "ts", &servers, &[]);
+    let (doc, _) = h.open("a.ts", "@Component({ template: '<p>{{ title }}</p>' })\nclass A { title = 1; }\n");
+    h.wait_status("vtsls", ServerStatus::Ready).await;
+    h.wait_status("angular-language-server", ServerStatus::Ready).await;
+    let ng = h.launcher.state("angular-language-server");
+    let asked = |method: &str| ng.requested(method).len();
+    let mgr = &h.mgr;
+    let ask = |pos: Pos| async move {
+        mgr.completion(doc, pos, None, Default::default()).await.unwrap();
+        mgr.hover(doc, pos, Default::default()).await.unwrap();
+        mgr.goto(doc, pos, GotoKind::Definition).await.unwrap();
+    };
+
+    // In the class: vtsls alone, though it has no answer.
+    ask(Pos::new(1, 12)).await;
+    assert_eq!(
+        (asked("textDocument/completion"), asked("textDocument/hover"), asked("textDocument/definition")),
+        (0, 0, 0)
+    );
+    // In the template: the Angular server too.
+    ask(Pos::new(0, 31)).await;
+    assert_eq!(
+        (asked("textDocument/completion"), asked("textDocument/hover"), asked("textDocument/definition")),
+        (1, 1, 1)
+    );
+
+    // Inlay hints only where Angular is imported.
+    let lines = rng(0, 0, 2, 0);
+    h.mgr.inlay_hints(doc, lines).await.unwrap();
+    assert_eq!(asked("textDocument/inlayHint"), 0);
+    let (doc, _) = h.open("b.ts", "import { Component } from '@angular/core';\n");
+    h.mgr.inlay_hints(doc, lines).await.unwrap();
+    assert_eq!(asked("textDocument/inlayHint"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn angular_references_leave_out_the_declaration_unless_asked() {
+    let servers = [("vtsls", incremental_caps()), ("angular-language-server", incremental_caps())];
+    let h = harness_for("typescript", "ts", &servers, &[]);
+    let (doc, path) = h.open("a.ts", "class A { title = 1; }\n");
+    h.wait_status("vtsls", ServerStatus::Ready).await;
+    h.wait_status("angular-language-server", ServerStatus::Ready).await;
+    let html = h.root.join("a.html");
+    let declaration =
+        json!({ "uri": uri_of(&path), "range": {"start":{"line":0,"character":10},"end":{"line":0,"character":15}} });
+    let usage =
+        json!({ "uri": uri_of(&html), "range": {"start":{"line":0,"character":3},"end":{"line":0,"character":8}} });
+    // Like ngserver, it lists the declaration whatever `includeDeclaration` says;
+    // vtsls knows where it is.
+    let ng = h.launcher.state("angular-language-server");
+    ng.respond("textDocument/references", json!([declaration, usage]));
+    let vtsls = h.launcher.state("vtsls");
+    vtsls.respond("textDocument/definition", json!([declaration]));
+
+    let mgr = &h.mgr;
+    let found = |include_declaration: bool| async move {
+        let refs = mgr.references(doc, Pos::new(0, 11), include_declaration, false, Default::default()).await;
+        let mut v: Vec<(PathBuf, Range)> =
+            refs.unwrap().locations.iter().map(|l| (l.path.to_path_buf(), l.range)).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(found(false).await, [(html.clone(), rng(0, 3, 0, 8))]);
+    assert_eq!(found(true).await, [(html, rng(0, 3, 0, 8)), (path, rng(0, 10, 0, 15))]);
+    assert_eq!(vtsls.requested("textDocument/definition").len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

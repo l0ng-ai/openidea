@@ -6,6 +6,7 @@
 //! IDE coordinates (UTF-16, 0-based) and returns IDE types from [`types`],
 //! never `lsp-types`, so the IPC surface stays stable.
 
+mod angular;
 mod caps;
 mod convert;
 mod file_ops;
@@ -125,6 +126,7 @@ impl Target {
 struct DocSnap {
     path: PathBuf,
     uri: lsp::Uri,
+    language: LanguageId,
     text: Arc<DocText>,
     servers: Vec<Arc<Server>>,
 }
@@ -141,6 +143,12 @@ impl DocSnap {
     }
     fn pos_params(&self, t: &Target, pos: Pos) -> Value {
         json!({ "textDocument": self.ident(), "position": self.position(t, pos) })
+    }
+    /// Whether `t` is asked about `pos`: the Angular server not about the
+    /// TypeScript outside a component's template and styles (see [`angular`]).
+    fn asks(&self, t: &Target, pos: Pos) -> bool {
+        t.server.name != angular::SERVER
+            || angular::serves_position(self.language.as_str(), self.text.as_str(), self.text.byte_offset(pos))
     }
 }
 
@@ -306,7 +314,8 @@ impl LspManager {
     }
 
     /// The servers serving `path`: every regular one, and each `fallback` one
-    /// only while all servers listed before it are missing.
+    /// only while all servers listed before it are missing. One that requires a
+    /// root marker serves only files below one, and stands in for no other.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
         let mut out = Vec::new();
         let mut available_before = false;
@@ -314,8 +323,11 @@ impl LspManager {
             if sc.fallback && available_before {
                 continue;
             }
+            if sc.require_root_marker && launch::marked_root(&self.project_root, path, &sc.root_markers).is_none() {
+                continue;
+            }
             let server = self.server_for(sc, language, path);
-            available_before |= server.status() != ide_core::event::ServerStatus::Missing;
+            available_before |= !sc.require_root_marker && server.status() != ide_core::event::ServerStatus::Missing;
             out.push(server);
         }
         out
@@ -343,22 +355,24 @@ impl LspManager {
             let mut docs = self.docs.lock();
             for (id, servers) in wanted {
                 let Some(d) = docs.get_mut(&id) else { continue };
-                for server in servers {
+                for server in &servers {
                     if d.servers.iter().any(|a| a.server.id == server.id) {
                         continue;
                     }
                     let mut attached = Attached { server: server.clone(), opened_gen: None };
                     if let Some(run) = server.running() {
                         if run.caps.read().open_close {
-                            user_did_open(&server, &run, &d.path, &d.uri, d.did_open_params());
+                            user_did_open(server, &run, &d.path, &d.uri, d.did_open_params());
                         }
                         attached.opened_gen = Some(run.generation);
                     }
                     d.servers.push(attached);
                     if !start.iter().any(|s: &Arc<Server>| s.id == server.id) {
-                        start.push(server);
+                        start.push(server.clone());
                     }
                 }
+                // In definition order: the first server answers hover, rename and symbols.
+                d.servers.sort_by_key(|a| servers.iter().position(|s| s.id == a.server.id).unwrap_or(usize::MAX));
             }
         }
         for server in &start {
@@ -781,6 +795,7 @@ impl LspManager {
         Ok(DocSnap {
             path: d.path.clone(),
             uri: d.uri.clone(),
+            language: d.language.clone(),
             text: d.text.clone(),
             servers: d.servers.iter().map(|a| a.server.clone()).collect(),
         })
@@ -837,7 +852,7 @@ impl LspManager {
         cancel: CancellationToken,
     ) -> IdeResult<CompletionList> {
         let (snap, targets) = self.doc_targets(doc, "completion", |c| c.has("completionProvider")).await?;
-        let requests = targets.iter().map(|t| {
+        let requests = targets.iter().filter(|t| snap.asks(t, pos)).map(|t| {
             let context = match &trigger {
                 Some(ch) if t.caps().completion_triggers().contains(ch) => {
                     json!({ "triggerKind": 2, "triggerCharacter": ch })
@@ -924,7 +939,7 @@ impl LspManager {
     pub async fn hover(&self, doc: DocId, pos: Pos, cancel: CancellationToken) -> IdeResult<Option<Hover>> {
         let (snap, targets) = self.doc_targets(doc, "hover", |c| c.has("hoverProvider")).await?;
         let mut out = Outcome::new();
-        for t in &targets {
+        for t in targets.iter().filter(|t| snap.asks(t, pos)) {
             let r: IdeResult<Option<lsp::Hover>> =
                 self.call(t, "textDocument/hover", snap.pos_params(t, pos), Some(&cancel), DEFAULT_TIMEOUT).await;
             match r {
@@ -945,7 +960,7 @@ impl LspManager {
     pub async fn signature_help(&self, doc: DocId, pos: Pos) -> IdeResult<Option<SignatureHelp>> {
         let (snap, targets) = self.doc_targets(doc, "signature help", |c| c.has("signatureHelpProvider")).await?;
         let mut out = Outcome::new();
-        for t in &targets {
+        for t in targets.iter().filter(|t| snap.asks(t, pos)) {
             let mut params = snap.pos_params(t, pos);
             params["context"] = json!({ "triggerKind": 1, "isRetrigger": false });
             match self
@@ -1007,7 +1022,7 @@ impl LspManager {
         cancel: Option<&CancellationToken>,
     ) -> IdeResult<Vec<Location>> {
         let mut out = Outcome::new();
-        for t in targets {
+        for t in targets.iter().filter(|t| snap.asks(t, pos)) {
             match self
                 .call::<_, Option<lsp::GotoDefinitionResponse>>(
                     t,
@@ -1049,6 +1064,9 @@ impl LspManager {
         let requests = targets.iter().map(|t| {
             let (snap, cancel) = (&snap, &cancel);
             async move {
+                // The Angular server searches the file's own project only: more open
+                // files don't widen it.
+                let angular = t.server.name == angular::SERVER;
                 let query = || async move {
                     let mut params = snap.pos_params(t, pos);
                     params["context"] = json!({ "includeDeclaration": include_declaration });
@@ -1059,7 +1077,7 @@ impl LspManager {
                 };
                 let files =
                     |v: &Vec<Location>| v.iter().filter(|l| l.uri.is_none()).map(|l| l.path.to_path_buf()).collect();
-                let result = if project_wide {
+                let result = if project_wide && !angular {
                     self.widened(snap, t, pos, cancel, query, files).await
                 } else {
                     query().await.map(|first| {
@@ -1070,12 +1088,25 @@ impl LspManager {
                 (t, result)
             }
         });
+        // The Angular server lists the declaration even when not asked to: the one
+        // the definition at `pos` points to is taken out of its answer.
+        let declarations = async {
+            if include_declaration || !targets.iter().any(|t| t.server.name == angular::SERVER) {
+                return Vec::new();
+            }
+            let defining = self.ready_targets(&snap.servers, |c| c.has("definitionProvider")).await;
+            self.goto_in(&snap, &defining, "textDocument/definition", pos, Some(&cancel)).await.unwrap_or_default()
+        };
+        let (results, declarations) = futures::join!(join_all(requests), declarations);
         let mut out = Outcome::new();
-        for (t, r) in join_all(requests).await {
+        for (t, r) in results {
             match r {
                 Ok(w) => {
                     let acc = out.value.get_or_insert_with(References::default);
-                    let locs: Vec<Location> = w.first.into_iter().chain(w.second.into_iter().flatten()).collect();
+                    let mut locs: Vec<Location> = w.first.into_iter().chain(w.second.into_iter().flatten()).collect();
+                    if t.server.name == angular::SERVER {
+                        locs.retain(|l| !declarations.contains(l));
+                    }
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     acc.locations.extend(locs);
                     acc.incomplete = acc.incomplete.or(w.incomplete);
@@ -1296,7 +1327,19 @@ impl LspManager {
 
     pub async fn prepare_rename(&self, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
         let (snap, targets) = self.doc_targets(doc, "rename", |c| c.has("renameProvider")).await?;
-        let t = &targets[0];
+        let mut out = Outcome::new();
+        for t in &targets {
+            match self.prepare_rename_on(&snap, t, pos).await {
+                Ok(Some(range)) => return Ok(Some(range)),
+                Ok(None) => out.value = Some(None),
+                Err(e) => out.fail(e),
+            }
+        }
+        out.finish(None)
+    }
+
+    /// What `t` renames at `pos`; one without `prepareRename` renames the word there.
+    async fn prepare_rename_on(&self, snap: &DocSnap, t: &Target, pos: Pos) -> IdeResult<Option<Range>> {
         if !t.caps().has_sub("renameProvider", "prepareProvider") {
             return Ok(snap.text.word_range_at(pos));
         }
@@ -1319,15 +1362,50 @@ impl LspManager {
 
     /// Renames across the project: like [`Self::references`], files outside the
     /// server's analysis scope that mention the name are opened for the request.
+    /// Every server that can rename there does: the Angular server adds the
+    /// templates to vtsls's edit, whose own edits win where both change the same text.
     pub async fn rename(&self, doc: DocId, pos: Pos, new_name: String) -> IdeResult<WorkspaceEdit> {
         let (snap, targets) = self.doc_targets(doc, "rename", |c| c.has("renameProvider")).await?;
-        let t = &targets[0];
+        let renaming = self.rename_targets(&snap, &targets, pos).await;
+        let edits = join_all(renaming.into_iter().map(|t| self.rename_on(&snap, t, pos, &new_name))).await;
+        let mut out = Outcome::new();
+        for edit in edits {
+            match edit {
+                Ok(edit) => match &mut out.value {
+                    Some(merged) => convert::merge_workspace_edit(merged, edit),
+                    None => out.value = Some(edit),
+                },
+                Err(e) => out.fail(e),
+            }
+        }
+        out.finish(WorkspaceEdit::default())
+    }
+
+    /// The servers that can rename at `pos`, the first one when none can (a
+    /// single one is asked without `prepareRename`).
+    async fn rename_targets<'t>(&self, snap: &DocSnap, targets: &'t [Target], pos: Pos) -> Vec<&'t Target> {
+        if targets.len() > 1 {
+            let prepared = join_all(targets.iter().map(|t| self.prepare_rename_on(snap, t, pos))).await;
+            let able: Vec<&Target> =
+                targets.iter().zip(prepared).filter(|(_, r)| matches!(r, Ok(Some(_)))).map(|(t, _)| t).collect();
+            if !able.is_empty() {
+                return able;
+            }
+        }
+        vec![&targets[0]]
+    }
+
+    async fn rename_on(&self, snap: &DocSnap, t: &Target, pos: Pos, new_name: &str) -> IdeResult<WorkspaceEdit> {
         let query = || async {
             let mut params = snap.pos_params(t, pos);
             params["newName"] = json!(new_name);
             let r: Option<lsp::WorkspaceEdit> = self.call(t, "textDocument/rename", params, None, LONG_TIMEOUT).await?;
             Ok(r.map(|e| convert::workspace_edit(&self.conv(t.enc()), e)).unwrap_or_default())
         };
+        // The Angular server renames in the file's own project only, whatever is open.
+        if t.server.name == angular::SERVER {
+            return query().await;
+        }
         let files = |e: &WorkspaceEdit| {
             e.files
                 .iter()
@@ -1337,7 +1415,7 @@ impl LspManager {
                 })
                 .collect()
         };
-        let w = self.widened(&snap, t, pos, &CancellationToken::new(), query, files).await?;
+        let w = self.widened(snap, t, pos, &CancellationToken::new(), query, files).await?;
         // The second edit covers the first: its files stay analysed.
         Ok(w.second.unwrap_or(w.first))
     }
@@ -1488,7 +1566,8 @@ impl LspManager {
 
     pub async fn inlay_hints(&self, doc: DocId, range: Range) -> IdeResult<Vec<InlayHint>> {
         let (snap, targets) = self.doc_targets(doc, "inlay hints", |c| c.has("inlayHintProvider")).await?;
-        let requests = targets.iter().map(|t| {
+        let angular = angular::serves_inlay_hints(snap.language.as_str(), snap.text.as_str());
+        let requests = targets.iter().filter(|t| angular || t.server.name != angular::SERVER).map(|t| {
             let params = json!({ "textDocument": snap.ident(), "range": snap.range(t, range) });
             async move {
                 (
