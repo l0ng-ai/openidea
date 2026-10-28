@@ -469,7 +469,7 @@ fn pending_holds(launch: Option<&Launch>) -> Holds {
 pub enum OpenStep {
     /// The window already has the folder open.
     Focus(String),
-    /// Files join this (LightEdit) window.
+    /// Files open in this window: in its project, or join its LightEdit session.
     Files(String, Vec<PathBuf>),
     /// A free window opens this.
     Launch(String, Launch),
@@ -477,10 +477,17 @@ pub enum OpenStep {
     New(Option<PathBuf>, Vec<PathBuf>),
 }
 
+/// Where a file inside a project goes: a window with it open, or the step opening it.
+enum ProjectTarget {
+    Window(String),
+    Step(usize),
+}
+
 /// Routes canonical `paths` (with whether each is a folder) over `windows` (the preferred
 /// free one first). A folder focuses the window that has it open, else takes a free window,
-/// else a new one; files all join the LightEdit window, else a free window or a new one
-/// switches to LightEdit for them.
+/// else a new one. A file inside a local project being opened (the deepest root if nested)
+/// opens in that project's window; the others all join the LightEdit window, else a free
+/// window or a new one switches to LightEdit for them.
 pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Vec<OpenStep> {
     let mut free = windows.iter().filter(|(_, h)| *h == Holds::Nothing).map(|(l, _)| l.clone());
     let (mut dirs, mut files) = (Vec::new(), Vec::new());
@@ -491,20 +498,49 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
         }
     }
     let mut steps = Vec::new();
+    let mut roots: Vec<(PathBuf, ProjectTarget)> = windows
+        .iter()
+        .filter_map(|(label, h)| match h {
+            Holds::Project(root) => Some((root.clone(), ProjectTarget::Window(label.clone()))),
+            _ => None,
+        })
+        .collect();
     for dir in dirs {
-        let open = windows.iter().find(|(_, h)| matches!(h, Holds::Project(root) if *root == dir));
-        steps.push(match (open, free.next()) {
-            (Some((label, _)), _) => OpenStep::Focus(label.clone()),
-            (None, Some(label)) => OpenStep::Launch(label, path_launch_of(Some(dir), Vec::new())),
-            (None, None) => OpenStep::New(Some(dir), Vec::new()),
+        if let Some((label, _)) = windows.iter().find(|(_, h)| matches!(h, Holds::Project(root) if *root == dir)) {
+            steps.push(OpenStep::Focus(label.clone()));
+            continue;
+        }
+        roots.push((dir.clone(), ProjectTarget::Step(steps.len())));
+        steps.push(match free.next() {
+            Some(label) => OpenStep::Launch(label, path_launch_of(Some(dir), Vec::new())),
+            None => OpenStep::New(Some(dir), Vec::new()),
         });
     }
-    if !files.is_empty() {
+    let mut in_windows: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    let mut loose = Vec::new();
+    for file in files {
+        let deepest =
+            roots.iter().filter(|(root, _)| file.starts_with(root)).max_by_key(|(root, _)| root.components().count());
+        match deepest.map(|(_, target)| target) {
+            Some(ProjectTarget::Window(label)) => match in_windows.iter_mut().find(|(l, _)| l == label) {
+                Some((_, list)) => list.push(file),
+                None => in_windows.push((label.clone(), vec![file])),
+            },
+            Some(ProjectTarget::Step(i)) => match &mut steps[*i] {
+                OpenStep::Launch(_, launch) => launch.files.push(file.into()),
+                OpenStep::New(_, list) => list.push(file),
+                OpenStep::Focus(_) | OpenStep::Files(..) => unreachable!("folders opened by the plan launch or open"),
+            },
+            None => loose.push(file),
+        }
+    }
+    steps.extend(in_windows.into_iter().map(|(label, files)| OpenStep::Files(label, files)));
+    if !loose.is_empty() {
         let light = windows.iter().find(|(_, h)| *h == Holds::LightEdit).map(|(l, _)| l.clone());
         steps.push(match (light, free.next()) {
-            (Some(label), _) => OpenStep::Files(label, files),
-            (None, Some(label)) => OpenStep::Launch(label, path_launch_of(None, files)),
-            (None, None) => OpenStep::New(None, files),
+            (Some(label), _) => OpenStep::Files(label, loose),
+            (None, Some(label)) => OpenStep::Launch(label, path_launch_of(None, loose)),
+            (None, None) => OpenStep::New(None, loose),
         });
     }
     steps
@@ -819,11 +855,59 @@ mod tests {
     }
 
     #[test]
-    fn files_opened_while_running_join_the_light_edit_window() {
-        let windows = [w("main", Holds::Project(p("/proj"))), w("project-1", Holds::LightEdit)];
-        // Even a file inside an open project: like a second instance, loose files go to LightEdit.
-        let steps = plan_open(vec![(p("/proj/src/a.rs"), false), (p("/x/b.txt"), false)], &windows);
-        assert_eq!(steps, [OpenStep::Files("project-1".into(), vec![p("/proj/src/a.rs"), p("/x/b.txt")])]);
+    fn files_inside_an_open_project_open_in_its_window_and_the_others_in_light_edit() {
+        let windows = [
+            w("main", Holds::Project(p("/proj"))),
+            w("project-1", Holds::LightEdit),
+            w("project-2", Holds::Project(p("/proj/sub"))),
+        ];
+        let steps = plan_open(
+            vec![
+                (p("/proj/src/a.rs"), false),
+                (p("/x/b.txt"), false),
+                (p("/proj/sub/c.rs"), false),
+                (p("/projects/d.rs"), false),
+                (p("/proj/e.rs"), false),
+            ],
+            &windows,
+        );
+        assert_eq!(
+            steps,
+            [
+                OpenStep::Files("main".into(), vec![p("/proj/src/a.rs"), p("/proj/e.rs")]),
+                // The deepest root wins.
+                OpenStep::Files("project-2".into(), vec![p("/proj/sub/c.rs")]),
+                // `/projects` is not inside `/proj`.
+                OpenStep::Files("project-1".into(), vec![p("/x/b.txt"), p("/projects/d.rs")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn files_inside_a_folder_being_opened_open_in_its_project() {
+        let opening = path_launch_of(Some(p("/a")), Vec::new());
+        let windows = [w("main", pending_holds(Some(&opening))), w("project-1", Holds::Nothing)];
+        let steps = plan_open(vec![(p("/a/x.rs"), false), (p("/b"), true), (p("/b/y.rs"), false)], &windows);
+        assert_eq!(
+            steps,
+            [
+                OpenStep::Launch("project-1".into(), path_launch_of(Some(p("/b")), vec![p("/b/y.rs")])),
+                OpenStep::Files("main".into(), vec![p("/a/x.rs")]),
+            ]
+        );
+        assert_eq!(
+            plan_open(vec![(p("/c"), true), (p("/c/z.rs"), false)], &[]),
+            [OpenStep::New(Some(p("/c")), vec![p("/c/z.rs")])]
+        );
+    }
+
+    #[test]
+    fn remote_projects_do_not_take_local_files() {
+        let windows = [w("main", Holds::Other), w("project-1", Holds::LightEdit)];
+        assert_eq!(
+            plan_open(vec![(p("/home/me/a.rs"), false)], &windows),
+            [OpenStep::Files("project-1".into(), vec![p("/home/me/a.rs")])]
+        );
     }
 
     #[test]
