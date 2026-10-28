@@ -124,9 +124,9 @@ describe("agent composer", () => {
       "eye",
       "lock",
     ]);
-    expect(usageLabel({ used: 24_000, size: 200_000, cost: 0.4, currency: "USD" })).toEqual({
+    expect(usageLabel({ used: 24_000, size: 200_000 })).toEqual({
       short: "12%",
-      detail: "24k / 200k tokens · $0.40",
+      detail: "24k / 200k tokens",
     });
     expect(imageFromDataUrl("data:image/png;base64,AAA", "a.png")).toEqual({ mimeType: "image/png", data: "AAA", name: "a.png" });
     expect(imageFromDataUrl("data:text/plain;base64,AAA")).toBeNull();
@@ -135,7 +135,7 @@ describe("agent composer", () => {
 
 describe("usage meters", () => {
   it("formats token counts", () => {
-    expect(usageLabel({ used: 83_100, size: 1_000_000, cost: null, currency: null }).detail).toBe("83.1k / 1M tokens");
+    expect(usageLabel({ used: 83_100, size: 1_000_000 }).detail).toBe("83.1k / 1M tokens");
   });
 
   it("adds up the time spent on turns", () => {

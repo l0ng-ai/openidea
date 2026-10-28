@@ -1112,9 +1112,6 @@ export type AgentUsage = {
 	used: number,
 	/**  Size of the context window. */
 	size: number,
-	/**  Session cost so far. */
-	cost: number | null,
-	currency: string | null,
 };
 
 export type AppInfo = {

@@ -104,17 +104,10 @@ pub(crate) fn commands_of(update: &Value) -> Vec<AgentCommand> {
         .collect()
 }
 
-/// `usage_update`: `{ used, size, cost?: { amount, currency } }`. An update without a cost
-/// keeps the last one (Claude also sends one for its rate limits, without the cost).
-pub(crate) fn usage_of(update: &Value, prev: Option<AgentUsage>) -> Option<AgentUsage> {
+/// `usage_update`: `{ used, size }`.
+pub(crate) fn usage_of(update: &Value) -> Option<AgentUsage> {
     let tokens = |key: &str| update.get(key)?.as_f64().map(|n| n.clamp(0.0, f64::from(u32::MAX)) as u32);
-    let (Some(used), Some(size)) = (tokens("used"), tokens("size").filter(|s| *s > 0)) else { return prev };
-    let (cost, currency) = match (update.pointer("/cost/amount").and_then(Value::as_f64), prev) {
-        (Some(cost), _) => (Some(cost), update.pointer("/cost/currency").and_then(Value::as_str).map(str::to_owned)),
-        (None, Some(p)) => (p.cost, p.currency),
-        (None, None) => (None, None),
-    };
-    Some(AgentUsage { used, size, cost, currency })
+    Some(AgentUsage { used: tokens("used")?, size: tokens("size").filter(|s| *s > 0)? })
 }
 
 fn legacy(
@@ -217,16 +210,8 @@ mod tests {
         ]}));
         assert_eq!(cmds[0].hint.as_deref(), Some("what to review"));
         assert_eq!((cmds[1].name.as_str(), cmds[1].hint.as_ref()), ("init", None));
-        let u = usage_of(&json!({"used": 1200, "size": 200000, "cost": {"amount": 0.42, "currency": "USD"}}), None)
-            .unwrap();
-        assert_eq!((u.used, u.cost, u.currency.as_deref()), (1200, Some(0.42), Some("USD")));
-        assert!(usage_of(&json!({"used": 1, "size": 0}), None).is_none());
-    }
-
-    #[test]
-    fn usage_without_a_cost_keeps_the_last_one() {
-        let u = usage_of(&json!({"used": 100, "size": 1000, "cost": {"amount": 1.5, "currency": "USD"}}), None);
-        let u = usage_of(&json!({"used": 200, "size": 1000, "_meta": {"_claude/rateLimit": {}}}), u).unwrap();
-        assert_eq!((u.used, u.cost, u.currency.as_deref()), (200, Some(1.5), Some("USD")));
+        let u = usage_of(&json!({"used": 1200, "size": 200000, "cost": {"amount": 0.42, "currency": "USD"}})).unwrap();
+        assert_eq!((u.used, u.size), (1200, 200000));
+        assert!(usage_of(&json!({"used": 1, "size": 0})).is_none());
     }
 }

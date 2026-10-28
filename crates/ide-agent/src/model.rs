@@ -114,9 +114,6 @@ pub struct AgentUsage {
     pub used: u32,
     /// Size of the context window.
     pub size: u32,
-    /// Session cost so far.
-    pub cost: Option<f64>,
-    pub currency: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

@@ -3697,7 +3697,7 @@
   "Delete “{title}”? Its branch {branch} is kept.": "是否删除“{title}”？其分支 {branch} 将保留。",
   "Delete “{title}”? Files it changed are kept.": "是否删除“{title}”？它更改的文件将保留。",
   "{name} is over 5 MB.": "{name} 超过 5 MB。",
-  "{used} / {size} tokens{cost}": "{used} / {size} 个令牌{cost}",
+  "{used} / {size} tokens": "{used} / {size} 个令牌",
   "Replace in {path}:{line}": "在 {path}:{line} 中替换",
   "Clean up {count} files?": "是否清理 {count} 个文件？",
   "Leave empty to use the folder name ({folder}).": "留空则使用文件夹名称（{folder}）。",

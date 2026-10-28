@@ -131,8 +131,7 @@ export function nextValue(option: AgentConfigOption, current = option.current): 
 /** "12%" of the context window and a tooltip with the numbers. */
 export function usageLabel(u: AgentUsage): { short: string; detail: string } {
   const pct = Math.min(100, Math.round((u.used / u.size) * 100));
-  const cost = u.cost != null ? ` · ${costLabel(u)}` : "";
-  return { short: `${pct}%`, detail: tx`${tokens(u.used)} / ${tokens(u.size)} tokens${cost}` };
+  return { short: `${pct}%`, detail: tx`${tokens(u.used)} / ${tokens(u.size)} tokens` };
 }
 
 /** `850`, `83.1k`, `1M`. */
@@ -140,12 +139,6 @@ function tokens(n: number): string {
   if (n >= 1_000_000) return `${+(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1000) return `${+(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k`;
   return `${Math.round(n)}`;
-}
-
-/** Session cost (`$4.23`), when the agent reports one. */
-function costLabel(u: AgentUsage): string | null {
-  if (u.cost == null) return null;
-  return `${u.currency === "USD" || !u.currency ? "$" : `${u.currency} `}${u.cost.toFixed(2)}`;
 }
 
 /** Time the agent spent on the task's turns; a running one counts up to `now` (`null` when idle). */

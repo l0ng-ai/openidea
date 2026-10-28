@@ -172,7 +172,6 @@ function Header({ task, entries, head }: { task: AgentTask; entries: AgentEntry[
   );
 }
 
-/** Context window use: "12%", the numbers (and cost) in the tooltip. */
 /** Context use (when the agent reports it) and the time spent on the task. */
 function Meters({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const tx = useTx();
@@ -188,6 +187,7 @@ function Meters({ task, entries }: { task: AgentTask; entries: AgentEntry[] | nu
   );
 }
 
+/** Context window use: "12%", the numbers in the tooltip. */
 function Usage({ usage }: { usage: AgentUsage }) {
   const label = usageLabel(usage);
   return (
