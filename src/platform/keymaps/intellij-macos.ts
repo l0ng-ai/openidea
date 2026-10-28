@@ -123,6 +123,7 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.codeBlockEnd": ["Meta+Alt+]"],
   "editor.codeBlockStartWithSelection": ["Meta+Alt+Shift+["],
   "editor.codeBlockEndWithSelection": ["Meta+Alt+Shift+]"],
+  "editor.contextInfo": ["Ctrl+Shift+Q"],
   "navigate.customRegion": ["Meta+Alt+."],
   "code.expandToLevel1": ["Meta+* 1"],
   "code.expandToLevel2": ["Meta+* 2"],
@@ -281,6 +282,7 @@ export const intellijMacos: Record<string, string[]> = {
   "debug.jumpToSource": ["F4", "Meta+Down"],
   "debug.evaluate": ["Alt+F8"],
   "debug.quickEvaluate": ["Meta+Alt+F8"],
+  "debug.browseConsoleHistory": ["Meta+Alt+E"],
 
   // VCS
   "vcs.operations": ["Ctrl+V"],
@@ -320,6 +322,7 @@ export const intellijMacos: Record<string, string[]> = {
   "diff.applyRightSide": ["Ctrl+Meta+Left"],
   "diff.nextFile": ["Ctrl+Shift+Right"],
   "diff.prevFile": ["Ctrl+Shift+Left"],
+  "diff.showSettings": ["Meta+Shift+D"],
   // After Show Diff: ⌘D is Compare With… in the project view.
   "project.compareWith": ["Meta+D"],
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts

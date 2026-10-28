@@ -31,6 +31,7 @@ import {
   switcherToolWindows,
   type RecentFileItem,
 } from "./model";
+import { showSearchEverywhere } from "../everywhere/store";
 import { cycleSwitcher, hideRecentPopup, showRecentPopup, useRecentPopup } from "./store";
 import styles from "./RecentPopups.module.css";
 import { tx } from "@/platform/i18n";
@@ -174,7 +175,11 @@ function RecentFilesDialog() {
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      if (effectiveColumn === "files") openFile(files[fIndex], e.shiftKey);
+      if (effectiveColumn === "files" && !files[fIndex] && query.trim()) {
+        // Nothing recent matches: carry the text over to Go to File.
+        const text = query.trim();
+        afterClose(() => showSearchEverywhere("files", { query: text }));
+      } else if (effectiveColumn === "files") openFile(files[fIndex], e.shiftKey);
       else openTool(tools[tIndex]?.tw);
       return;
     }

@@ -398,6 +398,9 @@
   "menu.editor.closeAllTabs": "Close All Tabs",
   "menu.editor.reopenClosedTab": "Reopen Closed Tab",
   "menu.editor.moveToOppositeGroup": "Move to Opposite Group",
+  "menu.editor.openInOppositeGroup": "Open in Opposite Group",
+  "menu.editor.changeSplitOrientation": "Change Splitter Orientation",
+  "menu.editor.unsplitAll": "Unsplit All",
   "menu.navigate.showFilePath": "File Path",
   "menu.navigate.customRegion": "Custom Folding…",
   "menu.code.showErrorDescription": "Error Description",
@@ -431,6 +434,7 @@
   "menu.code.expandAllToLevel4": "4",
   "menu.code.expandToLevel5": "5",
   "menu.code.expandAllToLevel5": "5",
+  "menu.editor.contextInfo": "Context Info",
   "run.services.configurationCount": "{count} configurations",
   "search.bookmarks.count": "{count, plural, one {# bookmark} other {# bookmarks}}",
   "settings.zoom.hint": "Change with {zoomIn} or {zoomOut}. Set to 100% with {reset}"

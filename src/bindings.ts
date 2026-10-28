@@ -2233,7 +2233,11 @@ export type DebuggerSettings = {
 	focusAppOnBreakpoint?: boolean,
 	hideOnTermination?: boolean,
 	breakpointsAnyFile?: boolean,
+	/**  While suspended, hovering the start of a line shows a Run to Cursor button. */
+	runToCursorInlay?: boolean,
 	inlineValues?: boolean,
+	/**  Data Views: list variables by name instead of the adapter's order. */
+	sortValues?: boolean,
 	valueTooltip?: boolean,
 	valueTooltipDelay?: number,
 	/**  Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`). */

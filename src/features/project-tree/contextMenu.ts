@@ -20,6 +20,7 @@ import {
   findFileUsages,
   folderOf,
   openCopyDialog,
+  openFile,
   openMoveDialog,
   openRenameDialog,
   paste,
@@ -196,8 +197,15 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     { kind: "separator" },
   );
 
-  // Find Usages / Find in Files… / Replace in Files…
+  // Jump to Source / Find Usages / Find in Files… / Replace in Files…
   push(
+    files.length > 0 && {
+      id: "jumpToSource",
+      label: "Jump to Source",
+      icon: "edit",
+      shortcut: keyLabel("project.open"),
+      run: () => files.forEach((f) => void openFile(f.path)),
+    },
     inProject &&
       singleFile && {
         id: "findUsages",

@@ -218,9 +218,11 @@ impl ProjectIndex {
         self.shared.enqueue(Job::SaveRecent);
     }
 
-    /// Recently opened files, most recent first.
+    /// Recently opened files, most recent first; files deleted since (also while
+    /// the IDE was closed) are left out. Virtual documents are always listed.
     pub fn recent_files(&self) -> Vec<PathBuf> {
-        self.shared.recent.lock().clone()
+        let recent = self.shared.recent.lock().clone();
+        recent.into_iter().filter(|p| p.to_str().is_some_and(ide_core::text::is_virtual_uri) || p.exists()).collect()
     }
 
     /// Blocks until the initial scan and every queued update has been applied

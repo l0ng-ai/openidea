@@ -179,6 +179,19 @@ fn symbol_ranking_is_idea_like() {
 }
 
 #[test]
+fn recent_files_skip_deleted_files_but_keep_virtual_documents() {
+    let fx = sample();
+    let idx = fx.open();
+    let app = fx.root.join("web/app.py");
+    let virt = PathBuf::from("jdt://contents/rt.jar/java.lang/String.class");
+    idx.mark_recent(&app);
+    idx.mark_recent(&virt);
+    assert_eq!(idx.recent_files(), vec![virt.clone(), app.clone()]);
+    std::fs::remove_file(&app).unwrap();
+    assert_eq!(idx.recent_files(), vec![virt]);
+}
+
+#[test]
 fn persistence_skips_unchanged_files_on_reopen() {
     let fx = sample();
     {

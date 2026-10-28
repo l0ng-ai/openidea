@@ -20,6 +20,7 @@ import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
 import { loadSpecialBreakpoints } from "./breakpoints/special";
 import { breakpointGutter } from "./editor/breakpointGutter";
 import { executionPoint } from "./editor/execution";
+import { runToCursorInlay } from "./editor/runToCursor";
 import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
 import { onHotCodeReplace } from "./hotswap";
 import { handleDebugEvent, isLive, loadWatches, publishContext, resetSessions, stopSession, useDebug } from "./state";
@@ -59,7 +60,13 @@ export function activate(): () => void {
     registerEditorContribution({
       id: "debugger",
       order: 60,
-      extensions: (ctx) => [breakpointGutter(ctx), executionPoint(ctx), valueTooltip(), smartStepTargets(ctx)],
+      extensions: (ctx) => [
+        breakpointGutter(ctx),
+        executionPoint(ctx),
+        runToCursorInlay(ctx),
+        valueTooltip(),
+        smartStepTargets(ctx),
+      ],
     }),
     installSmartStepPicking(),
     onIdeEvent("debug", (e) => {

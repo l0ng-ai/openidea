@@ -9,7 +9,8 @@ import { addFieldWatchpoint } from "../breakpoints/special";
 import { methodAt } from "../breakpoints/symbols";
 import { activeSession, addWatch, removeWatch, revealFrame, sessionSupports, setVariableValue } from "../state";
 import { blurDebugView, focusDebugView } from "./focusedView";
-import { classifyValue } from "../values";
+import { classifyValue, sortVariables } from "../values";
+import { workflowSettings } from "@/platform/workflowSettings";
 import styles from "./VariablesView.module.css";
 
 export type VarRoot =
@@ -196,7 +197,8 @@ export function VariablesView({
       loading.current.add(tag);
       let list: VarNode[];
       try {
-        const vars = await call(commands.debugVariables(session, node.reference));
+        const raw = await call(commands.debugVariables(session, node.reference));
+        const vars = workflowSettings().debugger.sortValues ? sortVariables(raw) : raw;
         const seen = new Map<string, number>();
         list = vars.map((v) => {
           const n = (seen.get(v.name) ?? 0) + 1;

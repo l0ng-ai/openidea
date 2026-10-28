@@ -36,6 +36,7 @@ import {
   SECTION_TITLES,
   TABS,
   buildRows,
+  groupJump,
   isSectionRow,
   parseCommand,
   stableIndex,
@@ -337,6 +338,18 @@ function SearchEverywhereDialog() {
       e.preventDefault();
       browseHistory(e.key === "ArrowUp" ? 1 : -1);
       return;
+    }
+    const groupKey =
+      e.key === "PageDown" ||
+      e.key === "PageUp" ||
+      (hasPrimaryModifier(e) && (e.key === "ArrowDown" || e.key === "ArrowUp"));
+    if (groupKey) {
+      const jump = groupJump(rows, active, e.key === "PageDown" || e.key === "ArrowDown" ? 1 : -1);
+      if (jump !== null) {
+        e.preventDefault();
+        select(jump);
+        return;
+      }
     }
     if (!["ArrowDown", "ArrowUp", "PageDown", "PageUp"].includes(e.key)) return;
     const next = listNavigate(e.key, { items: rows, active, isSection: isSectionRow, wrap: true, pageSize: 10 });

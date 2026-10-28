@@ -8,6 +8,8 @@ export interface DiffNavigator {
   applyChange(source: "a" | "b"): boolean;
   /** Open the next / previous file of the diff chain (changes of a commit or change list). */
   file(dir: 1 | -1): void;
+  /** The viewer's settings as a popup menu (⇧⌘D). */
+  showSettings(): void;
 }
 
 let focused: DiffNavigator | null = null;

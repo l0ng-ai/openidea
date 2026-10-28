@@ -398,6 +398,9 @@
   "menu.editor.closeAllTabs": "关闭所有标签页",
   "menu.editor.reopenClosedTab": "重新打开已关闭的标签页",
   "menu.editor.moveToOppositeGroup": "移动到另一组",
+  "menu.editor.openInOppositeGroup": "在相对组中打开",
+  "menu.editor.changeSplitOrientation": "更改拆分方向",
+  "menu.editor.unsplitAll": "全部取消拆分",
   "menu.navigate.showFilePath": "文件路径",
   "menu.navigate.customRegion": "自定义折叠…",
   "menu.code.showErrorDescription": "错误描述",
@@ -431,6 +434,7 @@
   "menu.code.expandAllToLevel4": "4",
   "menu.code.expandToLevel5": "5",
   "menu.code.expandAllToLevel5": "5",
+  "menu.editor.contextInfo": "上下文信息",
   "run.services.configurationCount": "{count} 个配置",
   "search.bookmarks.count": "{count} 个书签",
   "settings.zoom.hint": "使用 {zoomIn} 或 {zoomOut} 更改，使用 {reset} 重置为 100%"

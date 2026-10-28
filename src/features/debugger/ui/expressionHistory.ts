@@ -1,10 +1,10 @@
 /**
  * Per-project history of expressions typed into the debugger (breakpoint
- * conditions, Evaluate), most recent first, as IDEA keeps them.
+ * conditions, Evaluate, the debug console), most recent first, as IDEA keeps them.
  */
 import { useProject } from "@/platform/project";
 
-export type HistoryKind = "condition" | "evaluate";
+export type HistoryKind = "condition" | "evaluate" | "console";
 
 const PREFIX = "openidea.debugger.history.";
 const MAX = 50;
@@ -35,4 +35,17 @@ export function pushHistory(kind: HistoryKind, expression: string) {
   } catch {
     // Storage unavailable: no history.
   }
+}
+
+/** Browse History (⌥⌘E) of the focused debug console input, while one has focus. */
+let browseConsoleHistory: (() => void) | null = null;
+
+export function setConsoleHistoryBrowser(fn: (() => void) | null) {
+  browseConsoleHistory = fn;
+}
+
+export function browseFocusedConsoleHistory(): boolean {
+  if (!browseConsoleHistory) return false;
+  browseConsoleHistory();
+  return true;
 }

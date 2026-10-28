@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyValue, identifiersIn, inlineValue } from "../values";
+import { classifyValue, identifiersIn, inlineValue, sortVariables } from "../values";
 import { inlineValuesFor } from "../editor/execution";
 import { frameLabel, groupFrames, isLibraryFrame } from "../frames";
 import type { StackFrame } from "@/platform/ipc";
@@ -91,5 +91,21 @@ describe("frames", () => {
   it("labels frames with 1-based lines", () => {
     expect(frameLabel(frame(1, "/proj/a.py", null, 21))).toBe("f1:22");
     expect(frameLabel(frame(1, null))).toBe("f1");
+  });
+});
+
+describe("sortVariables", () => {
+  const names = (vs: { name: string }[]) => vs.map((v) => v.name);
+  it("sorts by name, case-insensitively and with numbers compared numerically", () => {
+    expect(names(sortVariables([{ name: "b" }, { name: "item10" }, { name: "A" }, { name: "item2" }]))).toEqual([
+      "A",
+      "b",
+      "item2",
+      "item10",
+    ]);
+  });
+  it("keeps array elements in index order", () => {
+    const items = [{ name: "[0]" }, { name: "[1]" }, { name: "[10]" }, { name: "[2]" }];
+    expect(names(sortVariables(items))).toEqual(["[0]", "[1]", "[10]", "[2]"]);
   });
 });

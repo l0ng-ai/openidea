@@ -53,3 +53,14 @@ export function identifiersIn(text: string): string[] {
   }
   return out;
 }
+
+const INDEX = /^\[?\d+\]?$/;
+
+/**
+ * Data Views › "Sort values alphabetically": children by name (numbers in
+ * names compared numerically). Array / list elements keep their index order.
+ */
+export function sortVariables<T extends { name: string }>(vars: readonly T[]): T[] {
+  if (vars.every((v) => INDEX.test(v.name))) return [...vars];
+  return [...vars].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+}

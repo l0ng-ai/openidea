@@ -31,6 +31,7 @@ import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
 import { usePlatform } from "@/platform/platformInfo";
 import {
   activateTab,
+  changeSplitOrientation,
   closeAll,
   closeKey,
   closeOthers,
@@ -57,6 +58,7 @@ import {
   splitPane,
   tabOptions,
   togglePin,
+  unsplitAll,
   type SplitEdge,
   type Tab,
   type TabsState,
@@ -913,6 +915,10 @@ export class EditorController implements SlotHost {
     };
     this.apply((s) => closeUnmodified(s, paneId, modified));
   }
+  closeReadOnly(paneId: string) {
+    const writable = (t: Tab) => !t.input.path || !useDocMeta.getState()[t.input.path]?.readOnly;
+    this.apply((s) => closeUnmodified(s, paneId, writable));
+  }
   /** Reload from Disk: re-reads the open, unmodified documents of `paths`. */
   async reloadFromDisk(paths: string[]) {
     for (const path of paths) {
@@ -1008,6 +1014,30 @@ export class EditorController implements SlotHost {
 
   unsplit(paneId: string) {
     this.apply((s) => removePane(s, paneId));
+  }
+  unsplitAll(paneId: string) {
+    this.apply((s) => unsplitAll(s, paneId));
+    this.focus();
+  }
+  changeSplitOrientation(paneId: string) {
+    this.apply((s) => changeSplitOrientation(s, paneId));
+  }
+  /** IDEA "Open in Opposite Group": the tab stays and a copy opens next door (or in a new split). */
+  openInOpposite(paneId: string, tabId: string) {
+    const s = useTabs.getState();
+    const tab = s.panes[paneId]?.tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+    const target = neighbourPane(s, paneId);
+    if (!target) {
+      this.activate(paneId, tabId, false);
+      return this.split(paneId, "row");
+    }
+    const r = openTab(s, target, tab.input);
+    useTabs.setState(r.state, true);
+    void this.ensureSlot(r.tabId, { from: this.slots.get(tabId) }).then((slot) => {
+      if (slot?.view) slot.focus();
+      else if (slot) slot.wantsFocus = true;
+    });
   }
 
   closeActiveTab() {
@@ -1163,8 +1193,12 @@ export class EditorController implements SlotHost {
       ...(tabs.some((t) => t.pinned)
         ? ([{ label: "Close All but Pinned", run: () => this.closeAll(paneId, true) }] as MenuItem[])
         : []),
+      ...(tabs.some((t) => !t.pinned && !!t.input.path && useDocMeta.getState()[t.input.path]?.readOnly)
+        ? ([{ label: "Close All Read-Only Tabs", run: () => this.closeReadOnly(paneId) }] as MenuItem[])
+        : []),
       { kind: "separator" },
       { label: tab.pinned ? "Unpin Tab" : "Pin Tab", icon: "pin", run: () => this.togglePin(paneId, tab.id) },
+      ...(tab.preview ? ([{ label: "Keep Tab Open", run: () => this.keepTab(paneId, tab.id) }] as MenuItem[]) : []),
       { kind: "separator" },
       { label: "Split and Move Right", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "right") },
       { label: "Split and Move Down", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "bottom") },
@@ -1183,7 +1217,10 @@ export class EditorController implements SlotHost {
       ...(split
         ? ([
             { label: "Move to Opposite Group", run: () => this.moveToOpposite(paneId, tab.id) },
+            { label: "Open in Opposite Group", run: () => this.openInOpposite(paneId, tab.id) },
+            { label: "Change Splitter Orientation", run: () => this.changeSplitOrientation(paneId) },
             { label: "Unsplit", run: () => this.unsplit(paneId) },
+            { label: "Unsplit All", run: () => this.unsplitAll(paneId) },
           ] as MenuItem[])
         : []),
       { kind: "separator" },

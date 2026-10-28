@@ -185,3 +185,25 @@
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
+
+/* Inlay Run to Cursor button, left of a hovered line's text. */
+.runToCursor {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-small);
+  background: var(--bg-popup);
+  box-shadow: var(--shadow-tooltip);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.runToCursor:hover {
+  background: var(--bg-hover);
+}

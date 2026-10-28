@@ -453,6 +453,25 @@ export function buildRows(
 
 export const isSectionRow = (r: SeRow) => r.kind === "section";
 
+/**
+ * Next / Previous Group (PageDown / PageUp, ⌘↓ / ⌘↑): the first item of the
+ * next section, or of the current (then previous) one; null without sections.
+ */
+export function groupJump(rows: readonly SeRow[], active: number, dir: 1 | -1): number | null {
+  // Groups start where the section changes (the All tab may show no header rows).
+  const starts: number[] = [];
+  let last: string | null = null;
+  rows.forEach((r, i) => {
+    if (isSectionRow(r) || r.kind === "command" || !("section" in r)) return;
+    if (r.section !== last) starts.push(i);
+    last = r.section;
+  });
+  if (starts.length < 2) return null;
+  if (dir === 1) return starts.find((s) => s > active) ?? starts[starts.length - 1]!;
+  const current = [...starts].reverse().find((s) => s <= active) ?? starts[0]!;
+  return current < active ? current : ([...starts].reverse().find((s) => s < active) ?? starts[0]!);
+}
+
 // ---------------------------------------------------------------------------
 // "/" commands
 

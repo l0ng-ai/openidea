@@ -84,6 +84,7 @@ describe("project view context menu", () => {
       "Copy Path/Reference…",
       "Paste",
       "-",
+      "Jump to Source",
       "Find Usages",
       "Find in Files…",
       "Replace in Files…",

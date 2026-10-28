@@ -126,6 +126,15 @@ export function registerCompareActions(): () => void {
       run: () => focusedDiffNavigator()?.prev(),
     },
     {
+      id: "diff.showSettings",
+      title: "Diff Settings",
+      category: "Diff",
+      icon: "settings",
+      keywords: ["ignore whitespace", "highlighting", "side-by-side", "unified"],
+      when: "diffEditorFocus",
+      run: () => focusedDiffNavigator()?.showSettings(),
+    },
+    {
       id: "diff.nextFile",
       title: "Compare Next File",
       category: "Diff",

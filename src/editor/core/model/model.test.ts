@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  changeSplitOrientation,
   closeAll,
   closeKey,
   closeOthers,
@@ -19,6 +20,7 @@ import {
   splitPane,
   tabOptions,
   togglePin,
+  unsplitAll,
   type TabsState,
 } from "./tabs";
 import { NavigationHistory } from "./navHistory";
@@ -166,6 +168,29 @@ describe("tab model", () => {
     s = closeTab(s, first, s.panes[first]!.tabs[0]!.id);
     expect(paneIds(s)).toEqual([split.paneId]);
     expect(s.layout).toEqual({ kind: "pane", paneId: split.paneId });
+  });
+
+  it("flips the orientation of a split and unsplits everything", () => {
+    let s = open(initialTabsState(), "a");
+    const first = s.activePane;
+    const right = splitPane(s, first, "row");
+    const below = splitPane(right.state, right.paneId, "column");
+    s = below.state;
+    const dirs = (st: TabsState) =>
+      st.layout.kind === "split"
+        ? [st.layout.dir, ...st.layout.children.map((c) => (c.kind === "split" ? c.dir : "pane"))]
+        : [];
+    expect(dirs(s)).toEqual(["row", "pane", "column"]);
+    // The nested split turns side by side and merges into the outer row.
+    s = changeSplitOrientation(s, below.paneId);
+    expect(dirs(s)).toEqual(["row", "pane", "pane", "pane"]);
+    s = changeSplitOrientation(s, first);
+    expect(dirs(s)).toEqual(["column", "pane", "pane", "pane"]);
+    expect(changeSplitOrientation(open(initialTabsState(), "x"), "nope").layout.kind).toBe("pane");
+    s = unsplitAll(s, right.paneId);
+    expect(paneIds(s)).toEqual([right.paneId]);
+    expect(s.activePane).toBe(right.paneId);
+    expect(labels(s)).toEqual(["a"]);
   });
 
   it("closes a key everywhere and cycles tabs", () => {

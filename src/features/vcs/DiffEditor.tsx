@@ -21,7 +21,7 @@ import { setContext } from "@/platform/context";
 import { call, commands } from "@/platform/ipc";
 import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
-import { IconButton, Select, Spinner, T } from "@/ui";
+import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { languageFor, viewerBase } from "./cm";
 import { applyChunk, arrowControls, chunkAt, hoverRevert } from "./diffControls";
@@ -602,9 +602,70 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     const neighbour = chainNeighbour(data, dir);
     if (neighbour) void openDiff(neighbour, { preview: true });
   };
-  const nav = useRef<DiffNavigator>({ next: () => step(1), prev: () => step(-1), jumpToSource, applyChange, file });
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const showSettings = () => {
+    const r = toolbarRef.current?.getBoundingClientRect();
+    showContextMenu({ x: r ? r.left + 8 : 120, y: r ? r.bottom : 120 }, [
+      { kind: "header", label: "Viewer" },
+      {
+        id: "split",
+        label: "Side-by-side Viewer",
+        checked: opts.mode === "split",
+        run: () => setOpts({ mode: "split" }),
+      },
+      {
+        id: "unified",
+        label: "Unified Viewer",
+        checked: opts.mode === "unified",
+        run: () => setOpts({ mode: "unified" }),
+      },
+      { kind: "separator" },
+      {
+        id: "ignore",
+        label: "Ignore Whitespace",
+        submenu: IGNORE_OPTIONS.map((o) => ({
+          id: o.value,
+          label: o.label,
+          checked: opts.ignore === o.value,
+          run: () => setOpts({ ignore: o.value }),
+        })),
+      },
+      {
+        id: "highlight",
+        label: "Highlighting",
+        submenu: HIGHLIGHT_OPTIONS.map((o) => ({
+          id: o.value,
+          label: o.label,
+          checked: opts.highlight === o.value,
+          run: () => setOpts({ highlight: o.value }),
+        })),
+      },
+      { kind: "separator" },
+      {
+        id: "collapse",
+        label: "Collapse Unchanged Fragments",
+        checked: opts.collapse,
+        run: () => setOpts({ collapse: !opts.collapse }),
+      },
+      {
+        id: "sync",
+        label: "Synchronize Scrolling",
+        checked: opts.syncScroll,
+        disabled: opts.mode !== "split",
+        run: () => setOpts({ syncScroll: !opts.syncScroll }),
+      },
+    ]);
+  };
+  const nav = useRef<DiffNavigator>({
+    next: () => step(1),
+    prev: () => step(-1),
+    jumpToSource,
+    applyChange,
+    file,
+    showSettings,
+  });
   useEffect(() => {
-    nav.current = { next: () => step(1), prev: () => step(-1), jumpToSource, applyChange, file };
+    nav.current = { next: () => step(1), prev: () => step(-1), jumpToSource, applyChange, file, showSettings };
   });
 
   useEffect(
@@ -638,7 +699,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         }
       }}
     >
-      <div className={styles.toolbar} role="toolbar" aria-label={tx("Diff")}>
+      <div ref={toolbarRef} className={styles.toolbar} role="toolbar" aria-label={tx("Diff")}>
         <IconButton
           icon="arrow-up"
           title="Previous Difference"

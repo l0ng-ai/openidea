@@ -437,6 +437,30 @@ export function removePane(s: TabsState, paneId: string): TabsState {
   return { ...s, layout, panes, activePane };
 }
 
+/** Flips the split that directly holds `paneId` between side by side and stacked. */
+export function changeSplitOrientation(s: TabsState, paneId: string): TabsState {
+  let changed = false;
+  const flipped = mapLayout(s.layout, (n) => {
+    if (n.kind !== "split" || !n.children.some((c) => c.kind === "pane" && c.paneId === paneId)) return n;
+    changed = true;
+    const dir = n.dir === "row" ? "column" : "row";
+    return { ...n, dir, children: n.children.flatMap((c) => (c.kind === "split" && c.dir === dir ? c.children : [c])) };
+  })!;
+  // The parent flattens a flipped split that now runs its way; the flipped one absorbs its children.
+  return changed ? { ...s, layout: flipped } : s;
+}
+
+/** Removes every pane except `keepPane`. */
+export function unsplitAll(s: TabsState, keepPane: string): TabsState {
+  if (!s.panes[keepPane]) return s;
+  return {
+    ...s,
+    layout: { kind: "pane", paneId: keepPane },
+    panes: { [keepPane]: s.panes[keepPane] },
+    activePane: keepPane,
+  };
+}
+
 /** The pane right of / below `paneId`, if any (for "open to the side"). */
 export function neighbourPane(s: TabsState, paneId: string): string | null {
   const order = paneIds(s);

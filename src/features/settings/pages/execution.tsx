@@ -149,6 +149,11 @@ export const EXECUTION_PAGES: PageSpec[] = [
             label: "Allow placing breakpoints in any file",
             hint: "Otherwise line breakpoints can only be set in files of languages that have a debugger.",
           },
+          {
+            kind: "toggle",
+            key: "debugger.runToCursorInlay",
+            label: "Show inlay Run to Cursor popup",
+          },
         ],
       },
     ],
@@ -168,6 +173,7 @@ export const EXECUTION_PAGES: PageSpec[] = [
             label: "Show values inline",
             hint: "Values of local variables are shown after the lines that use them while suspended.",
           },
+          { kind: "toggle", key: "debugger.sortValues", label: "Sort values alphabetically" },
           {
             kind: "toggle",
             key: "debugger.valueTooltip",

@@ -215,7 +215,11 @@ pub struct DebuggerSettings {
     pub focus_app_on_breakpoint: bool,
     pub hide_on_termination: bool,
     pub breakpoints_any_file: bool,
+    /// While suspended, hovering the start of a line shows a Run to Cursor button.
+    pub run_to_cursor_inlay: bool,
     pub inline_values: bool,
+    /// Data Views: list variables by name instead of the adapter's order.
+    pub sort_values: bool,
     pub value_tooltip: bool,
     pub value_tooltip_delay: u32,
     /// Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`).
@@ -230,7 +234,9 @@ impl Default for DebuggerSettings {
             focus_app_on_breakpoint: false,
             hide_on_termination: false,
             breakpoints_any_file: false,
+            run_to_cursor_inlay: true,
             inline_values: true,
+            sort_values: false,
             value_tooltip: true,
             value_tooltip_delay: 700,
             skip_library_code: true,

@@ -52,6 +52,7 @@ import {
 } from "./cm/folding";
 import { reverseLines, sortLines } from "./cm/lines";
 import { customRegions } from "./cm/regions";
+import { enclosingHeaders } from "./cm/stickyScroll";
 import { moveElementLeft, moveElementRight } from "./cm/moveElement";
 import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
 import {
@@ -328,6 +329,18 @@ function completeCurrentStatement(view: EditorView, slot: EditorSlot) {
   });
 }
 
+/**
+ * View › Context Info (⌃⇧Q / Alt+Q): the declaration lines around the caret
+ * (class, method, block headers), most useful when they are scrolled away.
+ */
+function showContextInfo(view: EditorView) {
+  const state = view.state;
+  const line = state.doc.lineAt(state.selection.main.head).number;
+  const headers = enclosingHeaders(state, line);
+  const text = headers.map((n) => state.doc.line(n).text.trimEnd()).join("\n");
+  void executeAction("editor.showHint", { text: text || "No context information here" });
+}
+
 /** Navigate › Custom Folding (⌥⌘.): the file's custom regions; picking one moves the caret to it. */
 function showCustomRegions(view: EditorView) {
   const regions = customRegions(view.state.doc);
@@ -574,6 +587,10 @@ export function registerEditorActions(): () => void {
         category: "Editor Actions",
       },
     ),
+    text("editor.contextInfo", "Context Info", (v) => showContextInfo(v), {
+      category: "View",
+      keywords: ["enclosing method", "enclosing class", "where am I"],
+    }),
     text("navigate.customRegion", "Custom Folding…", (v) => showCustomRegions(v), {
       category: "Navigate",
       keywords: ["region", "editor-fold", "go to region"],
@@ -765,6 +782,8 @@ export function registerEditorActions(): () => void {
       category: "Navigate",
       keywords: ["breadcrumbs"],
       when: "projectOpen",
+      // ⌘↑ / ⌘↓ inside a popup (Search Everywhere's previous / next group) stay with it.
+      keyWhen: "!popupOpen",
       run: () => {
         if (activeSlot()) return openNavBarPopup();
         // No editor: the status bar breadcrumbs (StatusItems › Breadcrumbs) take focus.
@@ -884,6 +903,30 @@ export function registerEditorActions(): () => void {
       category: "Window",
       when: "editorSplit",
       run: () => ctrl.unsplit(useTabs.getState().activePane),
+    },
+    {
+      id: "editor.unsplitAll",
+      title: "Unsplit All",
+      category: "Window",
+      when: "editorSplit",
+      run: () => ctrl.unsplitAll(useTabs.getState().activePane),
+    },
+    {
+      id: "editor.changeSplitOrientation",
+      title: "Change Splitter Orientation",
+      category: "Window",
+      when: "editorSplit",
+      run: () => ctrl.changeSplitOrientation(useTabs.getState().activePane),
+    },
+    {
+      id: "editor.openInOppositeGroup",
+      title: "Open in Opposite Group",
+      category: "Window",
+      when: TABS_WHEN,
+      run: () => {
+        const t = activePaneTab();
+        if (t) ctrl.openInOpposite(t.paneId, t.tabId);
+      },
     },
     {
       id: "editor.copyPath",
