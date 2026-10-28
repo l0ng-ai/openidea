@@ -337,23 +337,27 @@ export function LanguageServersPage() {
         )}
       </p>
       <div className={styles.pythonAnalyzer}>
-        <span>
-          <T>Python language server</T>
-        </span>
-        <Select
-          aria-label="Python language server"
-          value={selectedPythonAnalyzer(servers)}
-          options={PYTHON_ANALYZER_OPTIONS}
-          onChange={(selected) => {
-            if (selected === "custom") return;
-            for (const name of PYTHON_ANALYZERS) {
-              form.set(serverKey(name, "enabled"), selected === "auto" || selected === name);
-            }
-          }}
-        />
-        <span className={styles.intro}>
+        <div className={styles.pythonAnalyzerRow}>
+          <span>
+            <T>Python language server</T>
+          </span>
+          <Select
+            aria-label="Python language server"
+            value={selectedPythonAnalyzer(servers)}
+            options={PYTHON_ANALYZER_OPTIONS}
+            onChange={(selected) => {
+              if (selected === "custom") return;
+              for (const name of PYTHON_ANALYZERS) {
+                const on = selected === "auto" || selected === name;
+                // Same as each server's own checkbox: on is the default, so only a project spells it out.
+                form.set(serverKey(name, "enabled"), on ? (form.scope === "project" ? true : null) : false);
+              }
+            }}
+          />
+        </div>
+        <p className={styles.pythonAnalyzerHint}>
           <T>Only one of these built-in Python analyzers runs at a time.</T>
-        </span>
+        </p>
       </div>
       {error && (
         <div className={styles.error} role="alert">

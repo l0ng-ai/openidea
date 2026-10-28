@@ -88,6 +88,7 @@ const UNTRANSLATED = new Set<string>([
   // Products, tools and formats
   "Amazon Aurora MySQL",
   "Amazon Redshift",
+  "basedpyright",
   "Cargo Check",
   "Clippy",
   "CockroachDB",
@@ -123,6 +124,7 @@ const UNTRANSLATED = new Set<string>([
   "npm",
   "OpenIDEA",
   "PostgreSQL",
+  "Pyright",
   "Rust",
   "Rustfmt",
   "SingleStore",
@@ -131,6 +133,7 @@ const UNTRANSLATED = new Set<string>([
   "TiDB",
   "TimescaleDB",
   "TSV",
+  "ty",
   "TypeScript",
   "Vim",
   "YugabyteDB",

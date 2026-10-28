@@ -4472,5 +4472,9 @@
   "Renamed": "已重命名",
   "Unversioned": "未跟踪",
   "Merge conflict": "合并冲突",
-  "by {author}": "由 {author} 创建"
+  "by {author}": "由 {author} 创建",
+  "Automatic (first available)": "自动（第一个可用的）",
+  "Custom combination": "自定义组合",
+  "Python language server": "Python 语言服务器",
+  "Only one of these built-in Python analyzers runs at a time.": "这些内置 Python 分析器同一时间只运行一个。"
 }
