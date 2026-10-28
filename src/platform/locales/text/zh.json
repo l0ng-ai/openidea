@@ -3216,6 +3216,7 @@
   "away from your changes": "不影响你的改动",
   "edits your files directly": "直接修改你的文件",
   "from": "基于",
+  "on": "位于",
   "Models and modes appear after this agent's first task.": "这个 agent 跑完第一个任务后会显示模型和模式。",
   "Queue a message for when the agent is done (⌘↵ sends it now)": "排队一条消息，agent 做完后发送（⌘↵ 立即发送）",
   "Couldn't send the message": "消息发送失败",
