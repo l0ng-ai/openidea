@@ -464,7 +464,7 @@ function FilterBar() {
       {branchAnchor && (
         <BranchFilterPopup
           anchor={branchAnchor}
-          branches={branchNames()}
+          branches={branches}
           selected={filters.branches}
           onClose={() => setBranchAnchor(null)}
           onSelect={(branch) => {
