@@ -121,7 +121,8 @@ mod tests {
         let _ = std::thread::Builder::new().name("worker".into()).spawn(|| panic!("boom")).unwrap().join();
         std::panic::set_hook(default);
         let record = record.lock().unwrap().clone();
-        assert!(record.contains("ERROR panic: thread 'worker' panicked at src-tauri/src/logging.rs:"), "{record}");
+        let location = format!("ERROR panic: thread 'worker' panicked at {}:", file!());
+        assert!(record.contains(&location), "{record}");
         assert!(record.contains("boom"), "{record}");
         append(&dir, &record).unwrap();
         let log = std::fs::read_to_string(dir.join("openidea.2026-01-01.log")).unwrap();
