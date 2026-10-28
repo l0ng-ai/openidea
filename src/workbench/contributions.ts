@@ -146,6 +146,8 @@ export interface ServiceTreeItem {
   detail?: string;
   /** Greyed label (stopped, not running). */
   dim?: boolean;
+  /** Expanded the first time the node appears. */
+  expanded?: boolean;
   /** Undefined for leaves. */
   children?: ServiceTreeItem[];
 }

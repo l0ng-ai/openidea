@@ -37,6 +37,7 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { startedPort } from "./serverPort";
 import { tx } from "@/platform/i18n";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
@@ -59,6 +60,8 @@ export interface RunSession {
   baseConfig?: RunConfig;
   /** "Emulate terminal in output console": the output is a terminal. */
   terminal?: boolean;
+  /** The HTTP port the application's embedded web server reported it started on. */
+  httpPort?: number;
 }
 
 interface SessionRuntime {
@@ -181,6 +184,7 @@ export async function loadConfigs(): Promise<void> {
 export function defaultSelection(configs: readonly RunConfig[]): RunConfig | undefined {
   const score = (c: RunConfig) => {
     if (c.isTest) return 1;
+    if (c.kind === "spring-boot") return 4;
     const s = `${c.id} ${c.name}`.toLowerCase();
     if (/bootrun|spring-boot:run|:run\b|run:|\bdev\b|\bstart\b|\bserve\b|runserver/.test(s)) return 3;
     if (/build|package|lint|check|format|clean/.test(s)) return 0;
@@ -475,7 +479,13 @@ export async function startRun(
     await Promise.all(others.map((s) => stopSession(s.id)));
     session ??= others[0];
   }
-  if (session && busy(session)) await stopSession(session.id);
+  const stopping = others.map((s) => s.id);
+  if (session && busy(session)) {
+    await stopSession(session.id);
+    stopping.push(session.id);
+  }
+  // The new process starts once the old one is gone (it may still hold a port or a lock).
+  await waitForExit(stopping);
   session ??= state.sessions.find((s) => s.config.id === config.id && !busy(s));
 
   try {
@@ -502,6 +512,7 @@ export async function startRun(
       endedAt: null,
       stdinClosed: false,
       stopped: false,
+      httpPort: undefined,
     };
     const updated = session;
     useRun.setState((s) => ({
@@ -529,6 +540,11 @@ export async function startRun(
   const rt = runtimes.get(sessionId)!;
   const generation = rt.generation;
   if (options.onLine) rt.lineListeners.push(options.onLine);
+  rt.lineListeners.push((line) => {
+    const port = startedPort(line);
+    if (port !== null && runtimes.get(sessionId)?.generation === generation && getSession(sessionId)?.httpPort !== port)
+      patchSession(sessionId, { httpPort: port });
+  });
   rt.onExit = options.onExit;
   try {
     if (config.focusToolWindow) toolWindowService().show("run", true);
@@ -731,7 +747,7 @@ export function testReportEvents(reports: readonly TestCaseReport[]): TestEvent[
 
 function notifyExit(sessionId: string, code: number | null) {
   const session = getSession(sessionId);
-  if (!session || code === 0 || code === null) return;
+  if (!session || session.stopped || code === 0 || code === null) return;
   let visible = true;
   try {
     visible = toolWindowService().isVisible("run");
@@ -784,6 +800,27 @@ export async function stopSession(sessionId: string): Promise<void> {
       body: e instanceof Error ? e.message : String(e),
     });
   }
+}
+
+/** Resolves once the given sessions' processes exited (or after `timeoutMs`). */
+function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): Promise<void> {
+  const live = () =>
+    sessionIds.some((id) => {
+      const s = getSession(id);
+      return !!s && s.runId !== null && s.status === "running";
+    });
+  if (!live()) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    const unsubscribe = useRun.subscribe(() => {
+      if (!live()) done();
+    });
+  });
 }
 
 export function rerunSession(sessionId: string) {

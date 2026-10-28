@@ -42,7 +42,7 @@ function sessionIcon(s: RunSession): string {
   return s.config.isTest ? "check" : "run";
 }
 
-function SessionPanel({ session }: { session: RunSession }) {
+export function SessionPanel({ session }: { session: RunSession }) {
   const version = useRun((s) => s.versions[session.id] ?? 0);
   const rt = runtime(session.id);
   const [follow, setFollow] = useState(true);

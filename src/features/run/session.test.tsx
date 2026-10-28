@@ -13,7 +13,7 @@ import { ConsoleModel } from "./console";
 import { ConsoleView, type ConsoleInput } from "./ConsoleView";
 import { buildRows, mnemonics } from "./ConfigChooser";
 import { activate } from "./index";
-import { closeSessionTab, resetRuns, startRun, useRun, type RunSession } from "./store";
+import { closeSessionTab, resetRuns, runtime, startRun, useRun, type RunSession } from "./store";
 
 const confirm = vi.hoisted(() => vi.fn(async () => true));
 const confirmTerminate = vi.hoisted(() => vi.fn(async () => true));
@@ -88,6 +88,33 @@ describe("single-instance runs", () => {
     await startRun(app);
     expect(confirm).not.toHaveBeenCalled();
     expect(useRun.getState().sessions).toHaveLength(2);
+  });
+});
+
+describe("restart", () => {
+  it("starts the new process only after the old one exited", async () => {
+    const app = config("app");
+    useRun.setState({ sessions: [running("run1", app, 7)] });
+    let restarted = false;
+    const rerun = startRun(app, "run1").then(() => (restarted = true));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(restarted).toBe(false);
+    expect(useRun.getState().sessions[0]!.stopped).toBe(true);
+    // The exit event of the old process.
+    useRun.setState((s) => ({ sessions: s.sessions.map((x) => ({ ...x, status: "finished" as const })) }));
+    await rerun;
+    expect(useRun.getState().sessions.map((s) => [s.id, s.runId])).toEqual([["run1", null]]);
+  });
+});
+
+describe("HTTP port", () => {
+  it("is taken from the web server's started line and cleared on rerun", async () => {
+    const app = config("app", { kind: "spring-boot" });
+    const session = (await startRun(app))!;
+    runtime(session.id)!.console.append({ kind: "stdout", text: "Tomcat started on port 8085 (http)\n" });
+    expect(useRun.getState().sessions[0]!.httpPort).toBe(8085);
+    await startRun(app, session.id);
+    expect(useRun.getState().sessions[0]!.httpPort).toBeUndefined();
   });
 });
 

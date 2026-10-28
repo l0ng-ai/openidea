@@ -185,6 +185,39 @@ fn maven_projects() {
 }
 
 #[test]
+fn spring_boot_applications() {
+    let pom = "<project><parent><groupId>org.springframework.boot</groupId></parent></project>";
+    let app = "package com.example.demo;\n\n@SpringBootApplication\npublic class DemoApplication {\n  \
+               public static void main(String[] args) { SpringApplication.run(DemoApplication.class, args); }\n}\n";
+    let dir = project(&[
+        ("pom.xml", pom),
+        ("src/main/java/com/example/demo/DemoApplication.java", app),
+        ("src/main/java/com/example/demo/Other.java", "package com.example.demo;\nclass Other {}\n"),
+        ("src/test/java/com/example/demo/TestApp.java", app),
+        ("api/build.gradle.kts", "plugins { id(\"org.springframework.boot\") }"),
+        (
+            "api/src/main/kotlin/io/api/ApiApplication.kt",
+            "package io.api\n\n@SpringBootApplication\nclass ApiApplication\n\nfun main(args: Array<String>) {}\n",
+        ),
+        ("plain/pom.xml", "<project/>"),
+        ("plain/src/main/java/Main.java", app),
+    ]);
+    let c = detect(dir.path());
+    let spring: Vec<&RunConfig> = c.iter().filter(|c| c.kind == "spring-boot").collect();
+    assert_eq!(
+        spring.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        ["application:com.example.demo.DemoApplication", "application:api:io.api.ApiApplicationKt"]
+    );
+    let demo = spring[0];
+    assert_eq!(demo.name, "DemoApplication");
+    assert_eq!(cmdline(demo), "java -cp ${classpath} com.example.demo.DemoApplication");
+    assert_eq!(demo.cwd, None);
+    assert_eq!(demo.debug_adapter.as_deref(), Some("java-debug"));
+    assert_eq!(spring[1].name, "ApiApplication");
+    assert_eq!(spring[1].cwd.as_deref(), Some(Path::new("api")));
+}
+
+#[test]
 fn go_projects() {
     let dir = project(&[
         ("go.mod", "module example.com/x\n"),

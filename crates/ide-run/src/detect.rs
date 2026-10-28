@@ -15,6 +15,7 @@ pub(crate) fn detect(root: &Path) -> Vec<RunConfig> {
     detect_cargo(root, &mut out);
     detect_gradle(root, &mut out);
     detect_maven(root, &mut out);
+    detect_spring_boot(root, &mut out);
     detect_go(root, &mut out);
     detect_python(root, &mut out);
     detect_make(root, &mut out);
@@ -501,6 +502,93 @@ fn detect_maven(root: &Path, out: &mut Vec<RunConfig>) {
     if text.contains("spring-boot-maven-plugin") {
         out.push(config("maven:spring-boot:run", "mvn spring-boot:run", "maven", &cmd, &["spring-boot:run"]));
     }
+}
+
+// ---------------------------------------------------------------- spring boot
+
+/// Upper bound on the source files read per module while looking for `@SpringBootApplication`.
+const SPRING_SCAN_LIMIT: usize = 4000;
+
+/// A "Spring Boot" configuration per `@SpringBootApplication` main class of a
+/// Maven / Gradle module (the root or one level below) that uses Spring Boot.
+/// Ids match the configurations the editor gutter creates for the same class.
+fn detect_spring_boot(root: &Path, out: &mut Vec<RunConfig>) {
+    const BUILD_FILES: [&str; 3] = ["pom.xml", "build.gradle.kts", "build.gradle"];
+    let uses_boot = |dir: &Path| {
+        BUILD_FILES.iter().filter_map(|n| read(&dir.join(n))).any(|t| t.contains("org.springframework.boot"))
+    };
+    let modules = std::iter::once(root.to_path_buf()).chain(subdirs(root));
+    for dir in modules.filter(|d| uses_boot(d)) {
+        let module = relative(root, &dir);
+        let module = module.to_string_lossy().replace('\\', "/");
+        let module = if module.is_empty() || module == "." { String::new() } else { module };
+        let mut found = Vec::new();
+        let mut budget = SPRING_SCAN_LIMIT;
+        for lang in ["java", "kotlin"] {
+            scan_spring_mains(&dir.join("src/main").join(lang), &mut budget, &mut found);
+        }
+        found.sort();
+        for (class, name) in found {
+            let id = if module.is_empty() {
+                format!("application:{class}")
+            } else {
+                format!("application:{module}:{class}")
+            };
+            let cwd = (!module.is_empty()).then(|| PathBuf::from(&module));
+            out.push(
+                config(id, name, "spring-boot", "java", &["-cp", "${classpath}", &class])
+                    .debug("java-debug")
+                    .in_dir(cwd),
+            );
+        }
+    }
+}
+
+/// Collects (binary class name, file name) of the Spring Boot main classes under `dir`.
+fn scan_spring_mains(dir: &Path, budget: &mut usize, found: &mut Vec<(String, String)>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        if *budget == 0 {
+            return;
+        }
+        let path = e.path();
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
+            scan_spring_mains(&path, budget, found);
+            continue;
+        }
+        let ext = path.extension().and_then(|x| x.to_str()).unwrap_or_default();
+        if ext != "java" && ext != "kt" {
+            continue;
+        }
+        *budget -= 1;
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        if let Some(class) = read(&path).and_then(|text| spring_main_class(&text, stem, ext == "kt")) {
+            found.push((class, stem.to_owned()));
+        }
+    }
+}
+
+/// The binary name of the main class a source file with `@SpringBootApplication` declares, if any.
+fn spring_main_class(text: &str, stem: &str, kotlin: bool) -> Option<String> {
+    if !text.contains("@SpringBootApplication") {
+        return None;
+    }
+    let has_main = if kotlin { text.contains("fun main(") } else { text.contains("void main(") };
+    if !has_main {
+        return None;
+    }
+    let package = text.lines().map(str::trim).find_map(|l| {
+        let rest = l.strip_prefix("package ")?;
+        Some(rest.trim_end_matches(';').trim().to_owned())
+    });
+    // Kotlin's top-level `main` compiles into `<File>Kt`.
+    let class = if kotlin && !text.contains("companion object") { format!("{stem}Kt") } else { stem.to_owned() };
+    Some(match package {
+        Some(p) if !p.is_empty() => format!("{p}.{class}"),
+        _ => class,
+    })
 }
 
 // ---------------------------------------------------------------- go

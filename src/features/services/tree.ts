@@ -22,8 +22,24 @@ export const useServicesTree = create<TreeState>(() => ({
   expanded: new Set(["docker:default", "docker:default:group:containers"]),
 }));
 
+/** Keys of nodes asking to start expanded that were shown once (collapsing them then sticks). */
+const seenExpanded = new Set<string>();
+
 export function setProviderRoots(provider: string, items: ServiceTreeItem[]) {
-  useServicesTree.setState((s) => (s.roots[provider] === items ? s : { roots: { ...s.roots, [provider]: items } }));
+  useServicesTree.setState((s) => {
+    if (s.roots[provider] === items) return s;
+    const fresh: string[] = [];
+    const visit = (i: ServiceTreeItem) => {
+      if (i.expanded && !seenExpanded.has(i.key)) {
+        seenExpanded.add(i.key);
+        fresh.push(i.key);
+      }
+      i.children?.forEach(visit);
+    };
+    items.forEach(visit);
+    const roots = { ...s.roots, [provider]: items };
+    return fresh.length ? { roots, expanded: new Set([...s.expanded, ...fresh]) } : { roots };
+  });
 }
 
 export function clearProviderRoots(provider: string) {
