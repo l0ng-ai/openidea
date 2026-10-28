@@ -3,7 +3,9 @@
 use crate::model::AgentChange;
 use ide_core::{IdeError, IdeResult, IpcPath};
 use ide_vcs::{ChangeKind, Repo};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 pub(crate) struct Created {
     pub path: PathBuf,
@@ -72,6 +74,25 @@ pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
     }
     out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(out)
+}
+
+/// Size and modification time of a file, `None` once it is gone.
+pub(crate) type Stamp = Option<(u64, u128)>;
+
+fn stamp(path: &Path) -> Stamp {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    Some((meta.len(), modified))
+}
+
+/// The files already changed in `cwd` against `HEAD`, stamped so later edits to them show.
+pub(crate) fn snapshot(cwd: &Path) -> IdeResult<BTreeMap<String, Stamp>> {
+    Ok(changes(cwd, "HEAD")?.into_iter().map(|c| (c.rel_path, stamp(&c.path))).collect())
+}
+
+/// Drops the changes that were there before the task and haven't been touched since.
+pub(crate) fn without_untouched(changes: Vec<AgentChange>, before: &BTreeMap<String, Stamp>) -> Vec<AgentChange> {
+    changes.into_iter().filter(|c| before.get(&c.rel_path).is_none_or(|s| *s != stamp(&c.path))).collect()
 }
 
 pub(crate) fn file_at(cwd: &Path, path: &Path, rev: &str) -> IdeResult<Option<String>> {
@@ -147,6 +168,17 @@ mod tests {
         assert_eq!(summary, [("a.txt", ChangeKind::Modified, 2, 1), ("new.txt", ChangeKind::Added, 2, 0)]);
         let base_text = file_at(&created.path, &created.path.join("a.txt"), &created.base_commit).unwrap();
         assert_eq!(base_text.as_deref(), Some("one\ntwo\n"));
+
+        // Changes already in the checkout drop out until they are edited again.
+        let before = snapshot(&created.path).unwrap();
+        std::fs::write(created.path.join("b.txt"), "b\n").unwrap();
+        let rels = |c: Vec<AgentChange>| c.into_iter().map(|c| c.rel_path).collect::<Vec<_>>();
+        let after = changes(&created.path, "HEAD").unwrap();
+        assert_eq!(rels(without_untouched(after, &before)), ["b.txt"]);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(created.path.join("new.txt"), "x\ny\nz\n").unwrap();
+        let after = changes(&created.path, "HEAD").unwrap();
+        assert_eq!(rels(without_untouched(after, &before)), ["b.txt", "new.txt"]);
 
         // A second task with the same title gets its own worktree.
         assert_eq!(create(&repo, &tmp.path().join("wt"), "Edit A", None).unwrap().branch, "agent/edit-a-2");
