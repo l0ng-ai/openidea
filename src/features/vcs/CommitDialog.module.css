@@ -1,0 +1,20 @@
+.body {
+  height: min(620px, 70vh);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin: -4px 0 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  overflow: hidden;
+}
+.split {
+  flex: 1;
+  min-height: 0;
+}
+.options {
+  height: 100%;
+  overflow: auto;
+  padding: 4px 16px 12px;
+  border-left: 1px solid var(--border);
+}

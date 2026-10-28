@@ -8,11 +8,13 @@ import { create } from "zustand";
 import type { ApplyOutcome, FileStatus, ShelvedChangeList } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { Checkbox, Dialog, Icon, IconButton, Input, Select, Tree, fileIconName, showContextMenu, T } from "@/ui";
-import { notifications, toolWindowService } from "@/workbench/contributions";
+import { notifications } from "@/workbench/contributions";
 import { groupOf } from "./changes";
 import { activeList, listOf, moveFiles, relOf, updateChangelists, useChangelists } from "./changelists";
 import { useCommit } from "./commitStore";
+import { showLocalChanges } from "./commitUi";
 import { confirmDialog, openDialog, promptText } from "./dialogs";
 import { KIND_COLOR, baseName, dirName, effectiveKind, fileCount, formatTime, relTo, stripSlash } from "./model";
 import { errorMessage, logConsole, runOp, saveAll } from "./ops";
@@ -35,8 +37,7 @@ export async function loadShelves(): Promise<ShelvedChangeList[]> {
 }
 
 export function showShelf() {
-  useCommit.setState({ tab: "shelf" });
-  toolWindowService().show("commit", true);
+  showLocalChanges("shelf");
   void loadShelves().catch(() => undefined);
 }
 
@@ -195,7 +196,7 @@ export function unshelve(entry: ShelvedChangeList) {
 function UnshelveDialog({ entry, onClose }: { entry: ShelvedChangeList; onClose: () => void }) {
   const lists = useChangelists((s) => s.state);
   const [target, setTarget] = useState(lists.active);
-  const [remove, setRemove] = useState(true);
+  const [remove, setRemove] = useState(() => workflowSettings().vcs.shelf.removeApplied);
   const root = useVcs((s) => s.root) ?? "";
   const run = async () => {
     onClose();

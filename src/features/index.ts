@@ -9,7 +9,7 @@ import { activate as welcome } from "./welcome";
 import { activate as projectTree } from "./project-tree";
 import { activate as search } from "./search";
 import { activate as codeInsight } from "./code-insight";
-import { activate as vcs } from "./vcs";
+import { activate as vcs, activateSettingsPages as vcsPages } from "./vcs";
 import { activate as terminal } from "./terminal";
 import { activate as run } from "./run";
 import { activate as runAnything } from "./run-anything";
@@ -111,6 +111,7 @@ export function activateSettingsWindowFeatures(parent: string): () => void {
     ["plugins", pluginsPages],
     ["tools", toolsPages],
     ["vim", vimPages],
+    ["vcs", vcsPages],
   ];
   const disposers: Array<() => void> = [];
   for (const [name, activate] of pages) {

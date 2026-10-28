@@ -140,6 +140,9 @@ export const intellijMacos: Record<string, string[]> = {
   "refactor.extractConstant": ["Meta+Alt+C"],
   "refactor.extractField": ["Meta+Alt+F"],
   "refactor.extractParameter": ["Meta+Alt+P"],
+  // Git.CreateNewBranch shares Inline's key in IDEA. Listed first, so Inline wins in a text
+  // editor; New Branch runs where Inline is disabled (tool windows) and in the Branches popup.
+  "vcs.newBranch": ["Meta+Alt+N"],
   "refactor.inline": ["Meta+Alt+N"],
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Meta+Delete"],

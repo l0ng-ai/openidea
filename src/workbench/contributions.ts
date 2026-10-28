@@ -612,7 +612,8 @@ export interface SettingsPageContribution {
   order?: number;
   /** Extra words matched by the settings search. */
   keywords?: string[];
-  component: ComponentType;
+  /** Omitted: the page lists links to its sub-pages. */
+  component?: ComponentType;
   /** The page edits settings that a project can override (Global / This project switch). */
   projectScope?: boolean;
 }

@@ -141,6 +141,8 @@ export const intellijWindows: Record<string, string[]> = {
   "refactor.extractConstant": ["Ctrl+Alt+C"],
   "refactor.extractField": ["Ctrl+Alt+F"],
   "refactor.extractParameter": ["Ctrl+Alt+P"],
+  // Git.CreateNewBranch shares Inline's key (see intellij-macos).
+  "vcs.newBranch": ["Ctrl+Alt+N"],
   "refactor.inline": ["Ctrl+Alt+N"],
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Alt+Delete"],

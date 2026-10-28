@@ -29,6 +29,16 @@ function matching(paths: readonly string[], kind: "untracked" | "deleted"): stri
   return [...out];
 }
 
+/** Saves a "Don't ask again" answer to the global settings. */
+export async function rememberSetting(key: string, value: unknown) {
+  try {
+    await call(commands.settingsSet("global", key, JSON.stringify(value)));
+    await loadSettings();
+  } catch {
+    // keep asking
+  }
+}
+
 async function confirmFiles(op: FileOperation["kind"], files: string[]): Promise<{ ok: boolean; remember: boolean }> {
   const root = useVcs.getState().root ?? "";
   const add = op === "created";
@@ -63,12 +73,7 @@ async function handle(op: FileOperation) {
     const { ok, remember } = await confirmFiles(op.kind, files);
     if (remember) {
       const key = op.kind === "created" ? "vcs.confirmation.onCreate" : "vcs.confirmation.onDelete";
-      try {
-        await call(commands.settingsSet("global", key, JSON.stringify(ok ? "silently" : "never")));
-        await loadSettings();
-      } catch {
-        // keep asking
-      }
+      await rememberSetting(key, ok ? "silently" : "never");
     }
     if (!ok) return;
   }

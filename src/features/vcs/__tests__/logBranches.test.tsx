@@ -134,7 +134,7 @@ describe("Git Log branches pane", () => {
   it("leaves Cmd/Ctrl+C in the branch search field alone", async () => {
     render(<BranchesPanel />);
     fireEvent.mouseDown(screen.getByText("feature"));
-    fireEvent.keyDown(screen.getByLabelText("Filter branches"), { key: "c", ...cmd() });
+    fireEvent.keyDown(screen.getByLabelText("Filter branches and tags"), { key: "c", ...cmd() });
     await Promise.resolve();
     expect(writeText).not.toHaveBeenCalled();
   });

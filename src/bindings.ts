@@ -1658,6 +1658,13 @@ export type CommitOptions = {
 
 /**  Version Control › Commit: commit checks and commit-message inspections. */
 export type CommitSettings = {
+	/**
+	 *  Commit from the Commit tool window; off = Local Changes in the Git tool
+	 *  window and a Commit dialog.
+	 */
+	nonModal?: boolean,
+	/**  Start with an empty message instead of the last one / the changelist's. */
+	clearInitialMessage?: boolean,
 	analyzeCode?: boolean,
 	checkTodo?: boolean,
 	reformat?: boolean,
@@ -2931,6 +2938,17 @@ export type GitSettings = {
 	protectedBranches?: string,
 	/**  Initial state of Commit Options › Sign-off Commit. */
 	signOff?: boolean,
+	/**  Ask before committing files larger than `large_file_mb`. */
+	warnLargeFiles?: boolean,
+	largeFileMb?: number,
+	/**  Ask before committing names that are invalid on Windows or differ only in case. */
+	warnBadFileNames?: boolean,
+	/**  Commit and Push opens the Push dialog; otherwise it pushes right away. */
+	showPushDialog?: boolean,
+	/**  With `show_push_dialog`: only for commits to protected branches. */
+	pushDialogOnlyProtected?: boolean,
+	/**  Stashes and shelves share one tab. */
+	combineStashAndShelf?: boolean,
 };
 
 export type GoSettings = {
@@ -5059,6 +5077,12 @@ export type Settings_Serialize = {
 
 export type Severity = "error" | "warning" | "info" | "hint";
 
+/**  Version Control › Shelf. */
+export type ShelfSettings = {
+	/**  Initial state of Unshelve's "Remove successfully applied files from the shelf". */
+	removeApplied?: boolean,
+};
+
 /**  A change list on the shelf. */
 export type ShelvedChangeList = {
 	/**  Folder name under the shelf directory. */
@@ -5631,10 +5655,16 @@ export type Variable = {
 	evaluateName: string | null,
 };
 
-/**  Version Control › Confirmation. Values: `ask` | `silently` | `never`. */
+/**  Version Control › Confirmation. */
 export type VcsConfirmationSettings = {
+	/**  `ask` | `silently` | `never`. */
 	onCreate?: string,
 	onDelete?: string,
+	/**  Update Project opens its options dialog first. */
+	showUpdateOptions?: boolean,
+	confirmDropCommits?: boolean,
+	/**  After a patch is saved: `ask` | `no` | `reveal` (show it in the file manager). */
+	onPatchCreated?: string,
 };
 
 /**  A repository of the project (IDEA's VCS root). */
@@ -5659,6 +5689,7 @@ export type VcsSettings = {
 	git?: GitSettings,
 	commit?: CommitSettings,
 	confirmation?: VcsConfirmationSettings,
+	shelf?: ShelfSettings,
 	/**  Issue Navigation: commit-message patterns turned into links. */
 	issueNavigation?: IssueLink[],
 };

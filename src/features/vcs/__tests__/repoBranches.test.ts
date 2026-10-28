@@ -5,10 +5,8 @@ import {
   buildMultiRepoRows,
   commonBranches,
   currentRepoFor,
-  DEFAULT_EXPANDED,
   repoColorIndex,
   repoHeadLabel,
-  toggleExpanded,
   widgetShowsRepo,
   type RepoEntry,
   type RepoRow,
@@ -132,7 +130,7 @@ describe("commonBranches", () => {
 });
 
 describe("buildMultiRepoRows", () => {
-  const input = { repos, branches, actions, expanded: new Set(DEFAULT_EXPANDED) };
+  const input = { repos, branches, actions, expanded: new Map<string, boolean>() };
 
   it("lists actions, repositories with their branch, then the common groups", () => {
     expect(summary(buildMultiRepoRows({ ...input, query: "" }))).toEqual([
@@ -151,7 +149,10 @@ describe("buildMultiRepoRows", () => {
   });
 
   it("groups common remote branches by remote when expanded", () => {
-    const expanded = toggleExpanded(toggleExpanded(new Set(), "common:remote"), "common:folder:origin");
+    const expanded = new Map([
+      ["common:local", false],
+      ["common:remote", true],
+    ]);
     expect(summary(buildMultiRepoRows({ ...input, expanded, query: "" })).slice(-6)).toEqual([
       "---",
       "> Common Local Branches",
@@ -163,7 +164,7 @@ describe("buildMultiRepoRows", () => {
   });
 
   it("filters repositories and branches, expands every group and lists each repository's own matches", () => {
-    expect(summary(buildMultiRepoRows({ ...input, expanded: new Set(), query: "dev" }))).toEqual([
+    expect(summary(buildMultiRepoRows({ ...input, expanded: new Map(), query: "dev" }))).toEqual([
       "v Common Local Branches",
       "  dev (current)",
       "v Common Remote Branches",
@@ -224,7 +225,7 @@ describe("buildMultiRepoRows with repositories on different branches", () => {
     repos: diverged,
     branches: own,
     actions: [],
-    expanded: new Set(DEFAULT_EXPANDED),
+    expanded: new Map<string, boolean>(),
     recent: ["dev", "release/1.0", "gone"],
     tags: ["v1.2", "v1.10"],
   };
@@ -235,18 +236,47 @@ describe("buildMultiRepoRows with repositories on different branches", () => {
       "repo ology-dependencies [dev] c2",
       "repo ology-gateway [dev] c3",
       "---",
-      "> Recent Branches in ology-collect",
-      "v Local Branches in ology-collect",
-      "  ology-collect:release/1.0",
-      "  ology-collect:main",
+      "v Recent Branches in ology-collect",
       "  ology-collect:dev",
+      "> Local Branches in ology-collect",
       "> Remote Branches in ology-collect",
       "> Tags in ology-collect",
     ]);
   });
 
+  it("groups the current repository's branches by prefix, opening the current branch's folder", () => {
+    const expanded = new Map([["repo:local", true]]);
+    const rows = summary(buildMultiRepoRows({ ...input, expanded, current: "/p/ology-collect", query: "" }));
+    expect(rows.slice(6, 11)).toEqual([
+      "v Local Branches in ology-collect",
+      "  ology-collect:main",
+      "  v release",
+      "    ology-collect:release/1.0",
+      "  ology-collect:dev",
+    ]);
+    const flat = summary(
+      buildMultiRepoRows({
+        ...input,
+        expanded,
+        groupByPrefix: false,
+        showRecent: false,
+        current: "/p/ology-collect",
+        query: "",
+      }),
+    );
+    expect(flat.slice(4, 8)).toEqual([
+      "v Local Branches in ology-collect",
+      "  ology-collect:release/1.0",
+      "  ology-collect:main",
+      "  ology-collect:dev",
+    ]);
+  });
+
   it("falls back to the first repository and expands the matching lists on search", () => {
-    const expanded = new Set(["repo:tags", "repo:recent"]);
+    const expanded = new Map([
+      ["repo:tags", true],
+      ["repo:recent", true],
+    ]);
     const rows = summary(buildMultiRepoRows({ ...input, expanded, current: "/elsewhere", query: "" }));
     expect(rows.slice(4)).toEqual([
       "v Recent Branches in ology-collect",

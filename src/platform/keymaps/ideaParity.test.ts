@@ -19,6 +19,9 @@ describe("IDEA keymap parity", () => {
     ["code.quickDocumentation", ["F1", "Ctrl+J"], ["Ctrl+Q"]],
     // Git.Branches: the macOS keymaps remove ⇧⌘` (it cycles windows there).
     ["vcs.branches", [], ["Ctrl+Shift+`"]],
+    // Git.CreateNewBranch shares Inline's shortcut.
+    ["vcs.newBranch", ["Meta+Alt+N"], ["Ctrl+Alt+N"]],
+    ["refactor.inline", ["Meta+Alt+N"], ["Ctrl+Alt+N"]],
     ["debug.resume", ["Meta+Alt+R", "F9"], ["F9"]],
     ["code.quickDefinition", ["Alt+Space", "Meta+Y"], ["Ctrl+Shift+I"]],
     ["editor.copyPath", ["Meta+Shift+C"], ["Ctrl+Shift+C"]],
@@ -76,5 +79,7 @@ describe("IDEA keymap parity", () => {
     order(km, "debug.setValue", "vcs.changelist.edit");
     order(km, "find.replaceInFile", "find.rerun");
     order(km, "find.inFile", "vcs.log.goToRef");
+    // Inline (text editor only) wins over New Branch.
+    order(km, "vcs.newBranch", "refactor.inline");
   });
 });

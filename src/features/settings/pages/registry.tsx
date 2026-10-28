@@ -49,7 +49,7 @@ export function optionLabels(id: string): string[] {
 }
 
 function toContribution(spec: PageSpec): SettingsPageContribution {
-  const component = spec.component ?? (() => <OptionsPage spec={spec} />);
+  const component = spec.component ?? (spec.sections ? () => <OptionsPage spec={spec} /> : undefined);
   return { id: spec.id, title: spec.title, group: spec.group, order: spec.order, keywords: spec.keywords, component };
 }
 

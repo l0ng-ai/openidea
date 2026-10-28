@@ -7,7 +7,8 @@ import { notifications } from "@/workbench/contributions";
 import { commitRepos, groupOf, planCommit, renamedFromPath } from "./changes";
 import { useChangelists, withListDefaults } from "./changelists";
 import { runCommitChecks } from "./commitChecks";
-import { forgetAmendDraft, rememberMessage, useCommit } from "./commitStore";
+import { forgetAmendDraft, keepMessageAfterCommit, rememberMessage, useCommit } from "./commitStore";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { confirmDialog, openDialog } from "./dialogs";
 import { hunkKeys } from "./hunks";
 import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, rootOf, stripSlash } from "./model";
@@ -97,7 +98,8 @@ export async function commitChanges(): Promise<string | undefined> {
   if (id !== undefined) {
     rememberMessage(message);
     forgetAmendDraft();
-    useCommit.setState({ message: "", amend: false, checks: new Map(), excludedHunks: new Map(), checkProblems: [] });
+    useCommit.setState({ amend: false, checks: new Map(), excludedHunks: new Map(), checkProblems: [] });
+    keepMessageAfterCommit(message, workflowSettings().vcs.commit.clearInitialMessage);
   }
   return id;
 }

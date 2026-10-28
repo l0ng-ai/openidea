@@ -3,7 +3,7 @@
  * and patches (ids are bound in keymaps/intellij-macos.ts where IDEA binds them).
  */
 import type { Commit } from "@/bindings";
-import { getContext, setContext } from "@/platform/context";
+import { setContext } from "@/platform/context";
 import { call, commands } from "@/platform/ipc";
 import { notifications, toolWindowService } from "@/workbench/contributions";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
@@ -19,7 +19,9 @@ import {
   showMoveToChangelist,
 } from "./changelistsUi";
 import { useChangelists } from "./changelists";
+import { commitWindowFocused } from "./actions";
 import { useCommit } from "./commitStore";
+import { openCommit } from "./commitUi";
 import { goToChild, goToParent, goToRef, selectedCommits, useGitLog } from "./logStore";
 import { chooseRevision } from "./RevisionChooser";
 import {
@@ -101,12 +103,12 @@ function withCommit(fn: (c: Commit) => unknown) {
   };
 }
 
-/** Paths an action on changes refers to: argument, else the Commit tool window selection. */
+/** Paths an action on changes refers to: argument, else the change tree's selection (Commit window or Git › Local Changes). */
 function changePaths(arg: unknown): string[] | undefined {
   if (Array.isArray(arg)) return arg.filter((x): x is string => typeof x === "string");
   if (typeof arg === "string") return [arg];
   const sel = useCommit.getState().selection;
-  return getContext().activeToolWindow === "commit" && sel.length ? sel : undefined;
+  return commitWindowFocused() && sel.length ? sel : undefined;
 }
 
 /** A change list id: argument, else the list of the Commit tool window selection. */
@@ -145,21 +147,21 @@ export function registerHistoryActions(): () => void {
       id: "vcs.rebase.continue",
       title: "Continue Rebase",
       category: "Git",
-      when: VCS,
+      when: "vcsAvailable && vcsOperation == rebase",
       run: () => void controlOperation("continue", "rebase"),
     },
     {
       id: "vcs.rebase.abort",
       title: "Abort Rebase",
       category: "Git",
-      when: VCS,
+      when: "vcsAvailable && vcsOperation == rebase",
       run: () => void controlOperation("abort", "rebase"),
     },
     {
       id: "vcs.rebase.skip",
       title: "Skip Commit",
       category: "Git",
-      when: VCS,
+      when: "vcsAvailable && vcsOperation == rebase",
       keywords: ["rebase"],
       run: () => void controlOperation("skip", "rebase"),
     },
@@ -167,7 +169,7 @@ export function registerHistoryActions(): () => void {
       id: "vcs.merge.abort",
       title: "Abort Merge",
       category: "Git",
-      when: VCS,
+      when: "vcsAvailable && vcsOperation == merge",
       run: () => void controlOperation("abort", "merge"),
     },
     {
@@ -467,7 +469,7 @@ export function registerHistoryActions(): () => void {
       when: VCS,
       run: ({ arg }) => {
         commitChangelist(listArg(arg) ?? useChangelists.getState().state.active);
-        toolWindowService().show("commit", true);
+        openCommit();
       },
     },
 

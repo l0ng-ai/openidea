@@ -1,7 +1,8 @@
 /**
  * Version Control pages (IDEA layout): Version Control, Commit, Confirmation,
- * Directory Mappings, Git, Issue Navigation. Behaviour lives in the vcs
- * feature, which reads `vcs.*` through `platform/workflowSettings`.
+ * Directory Mappings, Issue Navigation, Shelf, Git (the vcs feature adds Log).
+ * Behaviour lives in the vcs feature, which reads `vcs.*` through
+ * `platform/workflowSettings`.
  */
 import { useEffect, useId, useState } from "react";
 import { call, commands, isTauri } from "@/platform/ipc";
@@ -138,6 +139,40 @@ function ProtectedBranchesRow() {
   );
 }
 
+function LargeFilesRow() {
+  return (
+    <ToggleNumber
+      toggleKey="vcs.git.warnLargeFiles"
+      numberKey="vcs.git.largeFileMb"
+      label="Warn when committing files larger than"
+      unit="MB"
+      {...L.largeFileMb}
+    />
+  );
+}
+
+function PushDialogRows() {
+  const [show] = useSetting<boolean>("vcs.git.showPushDialog");
+  return (
+    <>
+      <BoundToggle k="vcs.git.showPushDialog" label="Show Push dialog for Commit and Push" />
+      <Indented>
+        <BoundToggle
+          k="vcs.git.pushDialogOnlyProtected"
+          label="Show Push dialog only when committing to protected branches"
+          disabled={!show}
+        />
+      </Indented>
+    </>
+  );
+}
+
+const PATCH_CREATED: SelectOption[] = [
+  { value: "ask", label: "Ask" },
+  { value: "no", label: "No" },
+  { value: "reveal", label: "Show in Finder" },
+];
+
 const INCOMING: SelectOption[] = [
   { value: "auto", label: "Auto" },
   { value: "always", label: "Always" },
@@ -266,42 +301,24 @@ function IssuePresets() {
 }
 
 export const VCS_PAGES: PageSpec[] = [
-  {
-    id: "vcs",
-    title: "Version Control",
-    order: 300,
-    projectScope: true,
-    keywords: ["git", "vcs", "history"],
-    sections: [
-      {
-        options: [
-          {
-            kind: "toggle",
-            key: "vcs.showDirtyDirectories",
-            label: "Show directories with changed descendants",
-            hint: "Folders containing modified files are coloured in the Project tool window.",
-          },
-          { kind: "custom", label: "Limit history to", keywords: ["rows", "file history"], component: HistoryLimitRow },
-        ],
-      },
-    ],
-  },
+  // No sections: the page links to its sub-pages.
+  { id: "vcs", title: "Version Control", order: 300, keywords: ["git", "vcs", "history"] },
   {
     id: "vcs.commit",
     title: "Commit",
     order: 1,
     projectScope: true,
-    keywords: ["commit checks", "commit message"],
+    keywords: ["commit checks", "commit message", "modal commit", "commit dialog"],
     sections: [
       {
-        title: "Commit Checks",
         options: [
           {
-            kind: "custom",
-            label: "Analyze code",
-            keywords: ["Check TODO", "Reformat code", "Optimize imports", "Cleanup", "before commit"],
-            component: CommitChecks,
+            kind: "toggle",
+            key: "vcs.commit.nonModal",
+            label: "Use non-modal commit interface",
+            hint: "When off, Local Changes and Stash are tabs of the Git tool window and Commit opens a dialog.",
           },
+          { kind: "toggle", key: "vcs.commit.clearInitialMessage", label: "Clear initial commit message" },
         ],
       },
       {
@@ -316,6 +333,17 @@ export const VCS_PAGES: PageSpec[] = [
           },
         ],
       },
+      {
+        title: "Commit Checks",
+        options: [
+          {
+            kind: "custom",
+            label: "Analyze code",
+            keywords: ["Check TODO", "Reformat code", "Optimize imports", "Cleanup", "before commit"],
+            component: CommitChecks,
+          },
+        ],
+      },
     ],
   },
   {
@@ -326,7 +354,7 @@ export const VCS_PAGES: PageSpec[] = [
     keywords: ["add to git", "remove from git", "ask"],
     sections: [
       {
-        title: "Files",
+        title: "Confirmation",
         options: [
           {
             kind: "custom",
@@ -360,6 +388,30 @@ export const VCS_PAGES: PageSpec[] = [
               />
             ),
           },
+          { kind: "toggle", key: "vcs.confirmation.showUpdateOptions", label: "Show options before Update" },
+          {
+            kind: "toggle",
+            key: "vcs.confirmation.confirmDropCommits",
+            label: "Ask for confirmation to drop commits",
+            hint: "Applicable to Git",
+          },
+        ],
+      },
+      {
+        title: "Changes",
+        options: [
+          {
+            kind: "toggle",
+            key: "vcs.showDirtyDirectories",
+            label: "Highlight directories that contain modified files in the Project tree",
+          },
+          {
+            kind: "select",
+            key: "vcs.confirmation.onPatchCreated",
+            label: "When patch is created",
+            options: PATCH_CREATED,
+          },
+          { kind: "custom", label: "Limit history to", keywords: ["rows", "file history"], component: HistoryLimitRow },
         ],
       },
     ],
@@ -376,7 +428,7 @@ export const VCS_PAGES: PageSpec[] = [
   {
     id: "vcs.git",
     title: "Git",
-    order: 4,
+    order: 8,
     projectScope: true,
     keywords: ["git", "executable", "push", "pull", "update"],
     sections: [
@@ -405,6 +457,17 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Sign-off commit",
             hint: "Adds a Signed-off-by trailer by default; it can still be switched per commit in Commit Options.",
           },
+          {
+            kind: "custom",
+            label: "Warn when committing files larger than",
+            keywords: ["MB"],
+            component: LargeFilesRow,
+          },
+          {
+            kind: "toggle",
+            key: "vcs.git.warnBadFileNames",
+            label: "Warn when committing files with names that might cause issues on other systems",
+          },
         ],
       },
       {
@@ -414,6 +477,12 @@ export const VCS_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "vcs.git.autoUpdateOnPushRejected",
             label: "Auto-update if push of the current branch was rejected",
+          },
+          {
+            kind: "custom",
+            label: "Show Push dialog for Commit and Push",
+            keywords: ["Show Push dialog only when committing to protected branches"],
+            component: PushDialogRows,
           },
           { kind: "custom", label: "Protected branches", keywords: ["force push"], component: ProtectedBranchesRow },
         ],
@@ -448,6 +517,30 @@ export const VCS_PAGES: PageSpec[] = [
                 hint="Fetches remotes in the background so incoming commits show in the Branches popup. Auto stops after an authentication failure."
               />
             ),
+          },
+        ],
+      },
+      {
+        title: "Stash",
+        options: [
+          { kind: "toggle", key: "vcs.git.combineStashAndShelf", label: "Combine stashes and shelves in one tab" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "vcs.shelf",
+    title: "Shelf",
+    order: 7,
+    projectScope: true,
+    keywords: ["shelve", "unshelve"],
+    sections: [
+      {
+        options: [
+          {
+            kind: "toggle",
+            key: "vcs.shelf.removeApplied",
+            label: "Remove successfully applied files from the shelf",
           },
         ],
       },

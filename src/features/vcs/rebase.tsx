@@ -6,9 +6,11 @@ import { useState } from "react";
 import type { Commit, RebaseAction, RebaseEntry } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Dialog, IconButton, Select, T } from "@/ui";
-import { toolWindowService } from "@/workbench/contributions";
-import { showError } from "@/workbench/messages";
+import { workflowSettings } from "@/platform/workflowSettings";
+import { ask, showError } from "@/workbench/messages";
 import { useCommit } from "./commitStore";
+import { openCommit } from "./commitUi";
+import { rememberSetting } from "./confirmations";
 import { confirmDialog, openDialog } from "./dialogs";
 import { conflictsInstead, inProgress } from "./operations";
 import { runGitOperation, runOp, saveAll } from "./ops";
@@ -146,12 +148,10 @@ export async function dropCommits(commits: Commit[]) {
   const ids = new Set(commits.map((c) => c.id));
   if (range.commits.every((c) => ids.has(c.id)) && !range.base)
     return refuse("Cannot drop commits", "At least one commit of the branch must be kept");
-  const ok = await confirmDialog({
-    title: "Drop Commits",
-    message: tx`Drop ${commits.length} commits from the current branch? Their changes are removed.`,
-    okLabel: "Drop",
-    danger: true,
-  });
+  const ok = await confirmDrop(
+    "Drop Commits",
+    tx`Drop ${commits.length} commits from the current branch? Their changes are removed.`,
+  );
   if (!ok) return;
   const plan = range.commits.map((c) => ({
     commit: c.id,
@@ -166,14 +166,27 @@ async function dropCommit(commit: Commit) {
   if (!range) return;
   if (range.commits.length === 1 && !range.base)
     return refuse("Cannot drop commit", "It is the only commit of the branch");
-  const ok = await confirmDialog({
-    title: "Drop Commit",
-    message: tx`Drop commit ${short(commit.id)} “${commit.summary}” from the current branch? Its changes are removed.`,
-    okLabel: "Drop",
-    danger: true,
-  });
+  const ok = await confirmDrop(
+    "Drop Commit",
+    tx`Drop commit ${short(commit.id)} “${commit.summary}” from the current branch? Its changes are removed.`,
+  );
   if (!ok) return;
   await runRebase(range.base, singleCommitPlan(range, commit.id, "drop"), `Dropped commit ${short(commit.id)}`);
+}
+
+/** Settings › Version Control › Confirmation › Ask for confirmation to drop commits, with "Don't ask again". */
+async function confirmDrop(title: string, body: string): Promise<boolean> {
+  if (!workflowSettings().vcs.confirmation.confirmDropCommits) return true;
+  const r = await ask({
+    title,
+    body,
+    icon: "warning",
+    checkbox: "Don't ask again",
+    buttons: [{ id: "drop", label: "Drop", primary: true }],
+  });
+  if (r.button !== "drop") return false;
+  if (r.checked) await rememberSetting("vcs.confirmation.confirmDropCommits", false);
+  return true;
 }
 
 /** The range from the oldest of `commits`, when all of them are on the current branch. */
@@ -207,11 +220,11 @@ export async function squashCommits(commits: Commit[]) {
 
 /**
  * Fixup… / Squash Into…: prepares a `fixup!` / `squash!` commit of the local changes
- * for `target` in the Commit tool window; the next interactive rebase autosquashes it.
+ * for `target` in the commit interface; the next interactive rebase autosquashes it.
  */
 export function prepareFixup(target: Commit, kind: "fixup" | "squash") {
   useCommit.setState({ message: `${kind}! ${target.summary}` });
-  toolWindowService().show("commit", true);
+  openCommit();
 }
 
 /** Interactively Rebase from Here…: IDEA's rebase dialog for `target..HEAD`. */

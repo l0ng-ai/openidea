@@ -26,8 +26,21 @@ import {
 import { showCompareBranches } from "./CompareBranches";
 import { showDiffWithWorkingTree } from "./operations";
 import type { CommonBranch } from "./repoBranches";
-import { focusRepo } from "./store";
+import { runRemote, saveAll } from "./ops";
+import { focusRepo, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
+
+/** `git pull <remote> <branch>` into the current branch (`origin/feat/x` → origin, feat/x). */
+async function pullInto(remoteBranch: string, rebase: boolean) {
+  const i = remoteBranch.indexOf("/");
+  if (i <= 0) return;
+  const current = useVcs.getState().branch?.head ?? "HEAD";
+  await saveAll();
+  await runRemote(
+    { op: "pullFrom", remote: remoteBranch.slice(0, i), branches: [remoteBranch.slice(i + 1)], rebase, options: {} },
+    `${current} ← ${remoteBranch}`,
+  );
+}
 
 export function branchMenu(b: Branch, current: string | null, done: () => void = () => {}): MenuItem[] {
   const run = (fn: () => unknown) => () => {
@@ -71,6 +84,11 @@ export function branchMenu(b: Branch, current: string | null, done: () => void =
     { label: tx`Rebase '${cur}' onto '${b.name}'`, run: run(() => rebaseOnto(b.name)) },
     { label: tx`Merge '${b.name}' into '${cur}'`, run: run(() => mergeIntoCurrent(b.name)) },
   ];
+  if (b.remote)
+    items.push(
+      { label: tx`Pull into '${cur}' Using Rebase`, run: run(() => pullInto(b.name, true)) },
+      { label: tx`Pull into '${cur}' Using Merge`, run: run(() => pullInto(b.name, false)) },
+    );
   if (!b.remote)
     items.push(
       { kind: "separator" },

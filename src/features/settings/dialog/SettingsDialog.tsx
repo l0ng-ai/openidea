@@ -64,6 +64,7 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
   "Build, Execution, Deployment": "Configure build tools, run configurations, debugger and deployment.",
   "Languages & Frameworks": "Configure language servers, interpreters, SDKs and framework support.",
   Tools: "Configure external tools, terminal, database and other integrations.",
+  "Version Control": "Configure the settings related to version control used in your project",
 };
 
 function GroupPage({ node }: { node: PageNode }) {

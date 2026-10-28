@@ -140,6 +140,30 @@ export function forgetAmendDraft() {
   amendData = null;
 }
 
+/** The message a commit left in the field (not typed since). */
+let keptMessage: string | null = null;
+
+/**
+ * The message field after a commit, as IDEA's: the committed message stays for the
+ * next commit unless Settings › Version Control › Commit › "Clear initial commit
+ * message" is on.
+ */
+export function messageAfterCommit(committed: string, clear: boolean): string {
+  return clear ? "" : committed.trim();
+}
+
+export function keepMessageAfterCommit(committed: string, clear: boolean) {
+  const message = messageAfterCommit(committed, clear);
+  keptMessage = message || null;
+  useCommit.setState({ message });
+}
+
+/** The field holds nothing the user typed: empty, or what the last commit left there. */
+function messageReplaceable(): boolean {
+  const m = useCommit.getState().message.trim();
+  return !m || m === keptMessage;
+}
+
 /** Operations whose commit message git prepares in `.git/MERGE_MSG`. */
 const PREPARED_MESSAGE_OPS = new Set(["merge", "cherry-pick", "revert"]);
 
@@ -153,16 +177,16 @@ export function preparedMessageText(raw: string): string {
 }
 
 /**
- * Like IDEA, pre-fills an empty commit message with the message git prepared
- * for a merge / cherry-pick / revert that stopped (e.g. on conflicts).
+ * Like IDEA, pre-fills the commit message (unless something was typed) with the
+ * message git prepared for a merge / cherry-pick / revert that stopped (e.g. on conflicts).
  */
 export function installPreparedMessage(): () => void {
   const load = async () => {
     const root = useVcs.getState().root;
-    if (!root || useCommit.getState().message.trim()) return;
+    if (!root || !messageReplaceable()) return;
     try {
       const text = preparedMessageText(await call(commands.fsReadText(`${root}/.git/MERGE_MSG`)));
-      if (text && !useCommit.getState().message.trim()) useCommit.setState({ message: text });
+      if (text && messageReplaceable()) useCommit.setState({ message: text });
     } catch {
       // No prepared message (or `.git` is a worktree file): leave the field empty.
     }
@@ -173,6 +197,7 @@ export function installPreparedMessage(): () => void {
     if (s.root !== prev.root) {
       // Another repository: nothing typed or ticked for the previous one carries over (Amend least of all).
       amendData = null;
+      keptMessage = null;
       useCommit.setState({
         message: "",
         amend: false,

@@ -13,8 +13,24 @@ import { allRepos, lastRemoteFailure, runRemote, saveAll } from "./ops";
 import { currentRepo, refreshNow, repoName, useVcs } from "./store";
 import styles from "./common.module.css";
 
+/** Update Project…: the options dialog, or (Confirmation › Show options before Update off) the default method right away. */
 export function showUpdateDialog() {
+  const { vcs } = workflowSettings();
+  if (!vcs.confirmation.showUpdateOptions) return void updateProject(vcs.git.updateMethod === "rebase");
   openDialog((close) => <UpdateDialog onClose={close} />);
+}
+
+async function updateProject(rebase: boolean) {
+  await saveAll();
+  const branch = useVcs.getState().branch;
+  const repos = allRepos();
+  const detail =
+    repos.length > 1
+      ? `${repos.length} repositories`
+      : branch?.upstream
+        ? `${branch.head} ← ${branch.upstream}`
+        : undefined;
+  await runRemote({ op: "pull", rebase }, detail, repos);
 }
 
 function UpdateDialog({ onClose }: { onClose: () => void }) {
@@ -23,15 +39,7 @@ function UpdateDialog({ onClose }: { onClose: () => void }) {
   const [rebase, setRebase] = useState(() => workflowSettings().vcs.git.updateMethod === "rebase");
   const run = async () => {
     onClose();
-    await saveAll();
-    const repos = allRepos();
-    const detail =
-      repos.length > 1
-        ? `${repos.length} repositories`
-        : branch?.upstream
-          ? `${branch.head} ← ${branch.upstream}`
-          : undefined;
-    await runRemote({ op: "pull", rebase }, detail, repos);
+    await updateProject(rebase);
   };
   return (
     <Dialog

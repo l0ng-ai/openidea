@@ -543,6 +543,26 @@ export function showNewWorktree(onCreated?: () => void) {
 }
 
 function WorktreesDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <Dialog
+      open
+      title="Worktrees"
+      onClose={onClose}
+      width={620}
+      buttons={[{ label: "Close", role: "default", autoFocus: true, onClick: onClose }]}
+    >
+      <WorktreesPanel className={styles.form} />
+    </Dialog>
+  );
+}
+
+/**
+ * The worktrees of the current repository with New / Remove / Open: the Worktrees
+ * dialog's content and the Git tool window's Worktrees tab. `listClassName` replaces
+ * the dialog's bordered list box.
+ */
+export function WorktreesPanel({ className, listClassName }: { className?: string; listClassName?: string }) {
+  const repo = useVcs((s) => s.repo);
   const [list, setList] = useState<Worktree[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -555,7 +575,7 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
       .catch((e) => setError(errorMessage(e)));
   useEffect(() => {
     void reload();
-  }, []);
+  }, [repo]);
   const current = list.find((w) => w.path === selected);
 
   const remove = async () => {
@@ -586,58 +606,51 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Dialog
-      open
-      title="Worktrees"
-      onClose={onClose}
-      width={620}
-      buttons={[{ label: "Close", role: "default", autoFocus: true, onClick: onClose }]}
-    >
-      <div className={styles.form}>
-        <div className={styles.manageBar} role="toolbar" aria-label={tx("Worktrees")}>
-          <IconButton
-            icon="plus"
-            title="New Worktree…"
-            size="small"
-            onClick={() => showNewWorktree(() => void reload())}
-          />
-          <IconButton
-            icon="minus"
-            title="Remove Worktree"
-            size="small"
-            disabled={!current || current.main}
-            onClick={() => void remove()}
-          />
-          <IconButton
-            icon="folder"
-            title="Open in New Window"
-            size="small"
-            disabled={!current}
-            onClick={() => current && void executeAction("file.openProjectPath", current.path)}
-          />
-        </div>
-        <div className={styles.choiceList} role="listbox" aria-label={tx("Worktrees")}>
-          {list.map((w) => (
-            <button
-              key={w.path}
-              type="button"
-              role="option"
-              aria-selected={w.path === selected}
-              className={clsx(styles.manageRow, w.path === selected && styles.manageRowSelected)}
-              onClick={() => setSelected(w.path)}
-              onDoubleClick={() => void executeAction("file.openProjectPath", w.path)}
-            >
-              <span className={styles.fileName}>{w.branch ?? (w.head ? w.head.slice(0, 8) : <T>(bare)</T>)}</span>
-              <span className={clsx(styles.fileDir, styles.mono)}>{w.path}</span>
-              {(w.main || w.locked || w.prunable) && (
-                <span className={styles.fileDir}>{w.main ? "main" : w.locked ? tx("locked") : tx("prunable")}</span>
-              )}
-            </button>
-          ))}
-        </div>
-        {error && <div className={styles.error}>{error}</div>}
+    <div className={className}>
+      <div className={styles.manageBar} role="toolbar" aria-label={tx("Worktrees")}>
+        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
+        <IconButton
+          icon="plus"
+          title="New Worktree…"
+          size="small"
+          onClick={() => showNewWorktree(() => void reload())}
+        />
+        <IconButton
+          icon="minus"
+          title="Remove Worktree"
+          size="small"
+          disabled={!current || current.main}
+          onClick={() => void remove()}
+        />
+        <IconButton
+          icon="folder"
+          title="Open in New Window"
+          size="small"
+          disabled={!current}
+          onClick={() => current && void executeAction("file.openProjectPath", current.path)}
+        />
       </div>
-    </Dialog>
+      <div className={listClassName ?? styles.choiceList} role="listbox" aria-label={tx("Worktrees")}>
+        {list.map((w) => (
+          <button
+            key={w.path}
+            type="button"
+            role="option"
+            aria-selected={w.path === selected}
+            className={clsx(styles.manageRow, w.path === selected && styles.manageRowSelected)}
+            onClick={() => setSelected(w.path)}
+            onDoubleClick={() => void executeAction("file.openProjectPath", w.path)}
+          >
+            <span className={styles.fileName}>{w.branch ?? (w.head ? w.head.slice(0, 8) : <T>(bare)</T>)}</span>
+            <span className={clsx(styles.fileDir, styles.mono)}>{w.path}</span>
+            {(w.main || w.locked || w.prunable) && (
+              <span className={styles.fileDir}>{w.main ? "main" : w.locked ? tx("locked") : tx("prunable")}</span>
+            )}
+          </button>
+        ))}
+      </div>
+      {error && <div className={styles.error}>{error}</div>}
+    </div>
   );
 }
 

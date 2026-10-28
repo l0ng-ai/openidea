@@ -114,9 +114,21 @@
 }
 .syncSmall {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: var(--fs-tiny);
+}
+.syncSmall + .syncSmall {
+  margin-left: -4px;
+}
+.incoming {
+  color: var(--accent);
+}
+.outgoing {
+  color: var(--success);
 }
 .upstream {
   flex: 0 4 auto;

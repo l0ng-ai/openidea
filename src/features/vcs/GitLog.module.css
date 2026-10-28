@@ -28,8 +28,22 @@
 .branches {
   height: 100%;
   display: flex;
-  flex-direction: column;
   min-width: 0;
+}
+.branchesTools {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 2px;
+  border-right: 1px solid var(--border);
+}
+.branchesMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 .branchesBar,
 .filters,
@@ -471,4 +485,18 @@
 }
 .branchFilterMore:hover {
   background: var(--bg-tree-hover);
+}
+/* Worktrees tab. */
+.worktrees {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 6px;
+}
+.worktreeList {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }

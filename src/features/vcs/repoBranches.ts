@@ -3,7 +3,19 @@ import type { Branch } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { fuzzyMatch } from "@/ui/match";
 import { rootOf } from "./model";
-import { isFavoriteBranch, MAX_RECENT, sortLocal, sortRemote, type PopupAction } from "./branches";
+import {
+  actionRows,
+  defaultFolderOpen,
+  isFavoriteBranch,
+  prefixTreeRows,
+  recentLocal,
+  sortLocal,
+  sortRemote,
+  sortTags,
+  type BranchTreeOptions,
+  type PopupAction,
+  type PrefixItem,
+} from "./branches";
 
 export interface RepoEntry {
   root: string;
@@ -95,13 +107,13 @@ export type RepoRow =
   | { type: "section"; key: string; label: string }
   | { type: "action"; key: string; action: PopupAction; matches: number[] | null }
   | { type: "repo"; key: string; repo: RepoEntry; color: number; matches: number[] | null }
-  /** Collapsible group (common branches, or one of the current repository's lists) or remote folder. */
+  /** Collapsible group (common branches, or one of the current repository's lists) or prefix / remote folder. */
   | { type: "group"; key: string; label: string; expanded: boolean; depth: number }
   | {
       type: "common";
       key: string;
       branch: CommonBranch;
-      /** Shown name: remote branches without their remote (it is the folder). */
+      /** Shown name: the last segment inside a folder. */
       label: string;
       depth: number;
       matches: number[] | null;
@@ -113,26 +125,21 @@ export type RepoRow =
       repo: RepoEntry;
       branch: Branch;
       group: BranchGroupKind;
+      label: string;
       depth: number;
       matches: number[] | null;
       favorite: boolean;
     }
   | { type: "tag"; key: string; repo: RepoEntry; tag: string; depth: number; matches: number[] | null };
 
-/**
- * Initially expanded groups: the common local branches, and the current repository's
- * local branches (switching a repository's branch stays one click away).
- */
-export const DEFAULT_EXPANDED: readonly string[] = ["common:local", "repo:local"];
-
-export interface MultiRepoInput {
+export interface MultiRepoInput extends Omit<BranchTreeOptions, "expanded"> {
   repos: readonly RepoEntry[];
   /** Root → its branches (missing while loading). */
   branches: Readonly<Record<string, readonly Branch[]>>;
   query: string;
   actions: readonly PopupAction[];
-  /** Expanded group / folder keys (`common:local`, `repo:remote`, `common:folder:origin`…). */
-  expanded: ReadonlySet<string>;
+  /** Groups / folders the user expanded or collapsed (`common:local`, `repo:remote`, `repo:folder:local:feat`…). */
+  expanded: ReadonlyMap<string, boolean>;
   favorites?: readonly string[] | null;
   /** The current repository (of the active file), whose lists are shown when the repositories' branches differ. */
   current?: string | null;
@@ -147,8 +154,9 @@ export interface MultiRepoInput {
  * each with its current branch and opening its own branches; then, when they are all
  * on the same branch, the branches common to all of them (acting on all of them),
  * otherwise the current repository's recent, local and remote branches and tags, in
- * collapsible groups. A query filters actions, repositories (by name) and branches,
- * expands every group, and adds the other repositories' matching branches.
+ * collapsible groups (Recent open, Local open only without Recent). A query filters
+ * actions, repositories (by name) and branches, expands every group, and adds the
+ * other repositories' matching branches.
  */
 export function buildMultiRepoRows({
   repos,
@@ -160,18 +168,16 @@ export function buildMultiRepoRows({
   current = null,
   recent = [],
   tags = [],
+  groupByPrefix = true,
+  showRecent = true,
+  showTags = true,
 }: MultiRepoInput): RepoRow[] {
   const q = query.trim();
   const match = (text: string): number[] | null | false => (q ? (fuzzyMatch(text, q) ?? false) : null);
-  const open = (key: string) => !!q || expanded.has(key);
+  const open = (key: string, byDefault: boolean) => !!q || (expanded.get(key) ?? byDefault);
   const blocks: RepoRow[][] = [];
 
-  const actionRows: RepoRow[] = [];
-  for (const a of actions) {
-    const m = match(tx(a.label));
-    if (m !== false) actionRows.push({ type: "action", key: `action:${a.id}`, action: a, matches: m });
-  }
-  blocks.push(actionRows);
+  blocks.push(actionRows(actions, match, !q));
 
   const repoRows: RepoRow[] = [];
   repos.forEach((repo, i) => {
@@ -182,30 +188,92 @@ export function buildMultiRepoRows({
   blocks.push(repoRows);
 
   /** A group row followed (when expanded) by its children; nothing when it has none. */
-  const group = (out: RepoRow[], key: string, label: string, depth: number, children: RepoRow[]) => {
+  const group = (out: RepoRow[], key: string, label: string, children: RepoRow[], byDefault: boolean) => {
     if (!children.length) return;
-    const expandedNow = open(key);
-    out.push({ type: "group", key, label, expanded: expandedNow, depth });
+    const expandedNow = open(key, byDefault);
+    out.push({ type: "group", key, label, expanded: expandedNow, depth: 0 });
     if (expandedNow) out.push(...children);
   };
-  const branchRows = (repo: RepoEntry, list: readonly Branch[], kind: BranchGroupKind, depth: number) =>
-    list.flatMap((b): RepoRow[] => {
+  const folder = (r: { key: string; label: string; depth: number; expanded: boolean }): RepoRow => ({
+    type: "group",
+    key: r.key,
+    label: r.label,
+    expanded: r.expanded,
+    depth: r.depth,
+  });
+  const branchRows = (
+    repo: RepoEntry,
+    list: readonly Branch[],
+    kind: BranchGroupKind,
+    depth: number,
+    grouped = groupByPrefix,
+  ): RepoRow[] => {
+    const items = list.flatMap((b): PrefixItem<Branch>[] => {
       const m = match(b.name);
-      if (m === false) return [];
-      const key = `branch:${repo.root}:${kind}:${b.name}`;
-      return [
-        {
-          type: "branch",
-          key,
-          repo,
-          branch: b,
-          group: kind,
-          depth,
-          matches: m,
-          favorite: isFavoriteBranch(b, favorites),
-        },
-      ];
+      return m === false
+        ? []
+        : [{ item: b, name: b.name, matches: m, pinned: b.current || isFavoriteBranch(b, favorites) }];
     });
+    return prefixTreeRows(items, {
+      keyPrefix: `repo:folder:${kind}:`,
+      depth,
+      grouped,
+      isOpen: (k, path, inner) =>
+        open(
+          k,
+          defaultFolderOpen(
+            kind,
+            path,
+            inner.some((i) => i.item.current),
+          ),
+        ),
+    }).map((r): RepoRow =>
+      r.type === "folder"
+        ? folder(r)
+        : {
+            type: "branch",
+            key: `branch:${repo.root}:${kind}:${r.item.name}`,
+            repo,
+            branch: r.item,
+            group: kind,
+            label: r.label,
+            depth: r.depth,
+            matches: r.matches,
+            favorite: isFavoriteBranch(r.item, favorites),
+          },
+    );
+  };
+  const commonRows = (list: readonly CommonBranch[], kind: "local" | "remote"): RepoRow[] => {
+    const items = list.flatMap((b): PrefixItem<CommonBranch>[] => {
+      const m = match(b.name);
+      return m === false ? [] : [{ item: b, name: b.name, matches: m, pinned: b.current || b.favorite }];
+    });
+    return prefixTreeRows(items, {
+      keyPrefix: `common:folder:${kind}:`,
+      depth: 1,
+      grouped: groupByPrefix,
+      isOpen: (k, path, inner) =>
+        open(
+          k,
+          defaultFolderOpen(
+            kind,
+            path,
+            inner.some((i) => i.item.current),
+          ),
+        ),
+    }).map((r): RepoRow =>
+      r.type === "folder"
+        ? folder(r)
+        : {
+            type: "common",
+            key: `common:${r.item.name}`,
+            branch: r.item,
+            label: r.label,
+            depth: r.depth,
+            matches: r.matches,
+          },
+    );
+  };
 
   const shared = !widgetShowsRepo(repos);
   const groups: RepoRow[] = [];
@@ -220,60 +288,38 @@ export function buildMultiRepoRows({
         )
       : { local: [], remote: [] };
     shown = new Set([...common.local, ...common.remote].map((b) => `${b.remote}:${b.name}`));
-    const local = common.local.flatMap((b): RepoRow[] => {
-      const m = match(b.name);
-      return m === false
-        ? []
-        : [{ type: "common", key: `common:${b.name}`, branch: b, label: b.name, depth: 1, matches: m }];
-    });
-    group(groups, "common:local", tx("Common Local Branches"), 0, local);
-    const byRemote = new Map<string, CommonBranch[]>();
-    for (const b of common.remote) {
-      const remote = b.name.slice(0, Math.max(0, b.name.indexOf("/")));
-      byRemote.set(remote, [...(byRemote.get(remote) ?? []), b]);
-    }
-    const remote: RepoRow[] = [];
-    for (const [name, items] of byRemote) {
-      const leaves = items.flatMap((b): RepoRow[] => {
-        const m = match(b.name);
-        if (m === false) return [];
-        // Highlights are of the full name: shift them onto the shown part.
-        const part = m && m.map((i) => i - name.length - 1).filter((i) => i >= 0);
-        const label = b.name.slice(name.length + 1);
-        return [{ type: "common", key: `common:${b.name}`, branch: b, label, depth: 2, matches: part }];
-      });
-      group(remote, `common:folder:${name}`, name, 1, leaves);
-    }
-    group(groups, "common:remote", tx("Common Remote Branches"), 0, remote);
+    group(groups, "common:local", tx("Common Local Branches"), commonRows(common.local, "local"), true);
+    group(groups, "common:remote", tx("Common Remote Branches"), commonRows(common.remote, "remote"), false);
   } else if (currentRepo) {
     const list = branches[currentRepo.root] ?? [];
     const local = sortLocal(list, favorites);
-    const byName = new Map(local.map((b) => [b.name, b]));
-    const recentList = q
-      ? []
-      : recent
-          .map((n) => byName.get(n))
-          .filter((b): b is Branch => !!b && !b.current)
-          .slice(0, MAX_RECENT);
+    const recentList = q || !showRecent ? [] : recentLocal(local, recent);
     const name = currentRepo.name;
-    group(groups, "repo:recent", tx`Recent Branches in ${name}`, 0, branchRows(currentRepo, recentList, "recent", 1));
-    group(groups, "repo:local", tx`Local Branches in ${name}`, 0, branchRows(currentRepo, local, "local", 1));
+    const recentRows = branchRows(currentRepo, recentList, "recent", 1);
+    group(groups, "repo:recent", tx`Recent Branches in ${name}`, recentRows, true);
+    group(
+      groups,
+      "repo:local",
+      tx`Local Branches in ${name}`,
+      branchRows(currentRepo, local, "local", 1),
+      !recentRows.length,
+    );
     group(
       groups,
       "repo:remote",
       tx`Remote Branches in ${name}`,
-      0,
       branchRows(currentRepo, sortRemote(list, favorites), "remote", 1),
+      false,
     );
-    const tagRows = [...tags]
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
-      .flatMap((t): RepoRow[] => {
+    if (showTags) {
+      const tagRows = sortTags(tags).flatMap((t): RepoRow[] => {
         const m = match(t);
         return m === false
           ? []
           : [{ type: "tag", key: `tag:${currentRepo.root}:${t}`, repo: currentRepo, tag: t, depth: 1, matches: m }];
       });
-    group(groups, "repo:tags", tx`Tags in ${name}`, 0, tagRows);
+      group(groups, "repo:tags", tx`Tags in ${name}`, tagRows, false);
+    }
   }
   blocks.push(groups);
 
@@ -283,8 +329,8 @@ export function buildMultiRepoRows({
       const list = branches[repo.root] ?? [];
       const own = (l: Branch[]) => l.filter((b) => !shown.has(`${b.remote}:${b.name}`));
       const rows = [
-        ...branchRows(repo, own(sortLocal(list, favorites)), "local", 0),
-        ...branchRows(repo, own(sortRemote(list, favorites)), "remote", 0),
+        ...branchRows(repo, own(sortLocal(list, favorites)), "local", 0, false),
+        ...branchRows(repo, own(sortRemote(list, favorites)), "remote", 0, false),
       ];
       if (rows.length) blocks.push([{ type: "section", key: `section:${repo.root}`, label: repo.name }, ...rows]);
     }
@@ -298,11 +344,4 @@ export function buildMultiRepoRows({
     rows.push(...block);
   }
   return rows;
-}
-
-/** Toggles a group / folder key. */
-export function toggleExpanded(expanded: ReadonlySet<string>, key: string): Set<string> {
-  const next = new Set(expanded);
-  if (!next.delete(key)) next.add(key);
-  return next;
 }

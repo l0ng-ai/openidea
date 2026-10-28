@@ -46,12 +46,28 @@ interface LogState {
   selection: string[];
   /** Commits of HEAD not on its upstream (`@{u}..HEAD`); null without an upstream. */
   outgoing: Set<string> | null;
-  tab: "log" | "console";
+  /** Content tab of the Git tool window (a `GitTab`, or the id of a log tab). */
+  tab: string;
+  /** Closable log tabs (History: file, Log: branch) next to the main Log. */
+  logTabs: LogTab[];
+  /** The log tab whose commits / filters / selection the store holds ("log" or a `logTabs` id). */
+  shownLog: string;
   /** Bumped to ask the list to scroll the selection into view. */
   revealTick: number;
   /** The current user (`user.email`, else `user.name`), for View Options › Highlight › My Commits. */
   user: string | null;
   generation: number;
+}
+
+/** Fixed content tabs of the Git tool window. */
+export type GitTab = "changes" | "shelf" | "stashes" | "log" | "console" | "worktrees";
+
+/** A log tab of its own (IDEA's "History: file" / "Log: branch" tabs): its own filters and view. */
+export interface LogTab {
+  id: string;
+  kind: "history" | "branch";
+  /** What it shows (the file path or the branch); opening the same again selects the tab. */
+  target: string;
 }
 
 export const PAGE = 300;
@@ -120,6 +136,8 @@ const initialLog = (): Omit<LogState, "generation"> => ({
   selection: [],
   outgoing: null,
   tab: "log",
+  logTabs: [],
+  shownLog: "log",
   revealTick: 0,
   user: null,
 });
@@ -127,6 +145,82 @@ const initialLog = (): Omit<LogState, "generation"> => ({
 export const useGitLog = create<LogState>(() => ({ ...initialLog(), generation: 0 }));
 
 let loadPromise: Promise<void> | null = null;
+
+/** What a log tab shows: the store fields swapped in and out when another log tab is selected. */
+type LogView = Pick<
+  LogState,
+  "filters" | "commits" | "rows" | "graph" | "loading" | "done" | "error" | "selected" | "selection" | "revealTick"
+>;
+
+function freshView(filters: LogFilters): LogView {
+  const { commits, rows, graph, loading, done, error, selected, selection, revealTick } = initialLog();
+  return { filters, commits, rows, graph, loading, done, error, selected, selection, revealTick };
+}
+
+/** Views of the log tabs not shown now. */
+const parked = new Map<string, LogView>();
+
+function currentView(): LogView {
+  const { filters, commits, rows, graph, done, error, selected, selection, revealTick } = useGitLog.getState();
+  // A page still loading is dropped (the generation changes): loaded again when shown.
+  return { filters, commits, rows, graph, loading: false, done, error, selected, selection, revealTick };
+}
+
+export const isLogTab = (id: string, tabs: readonly LogTab[] = useGitLog.getState().logTabs) =>
+  id === "log" || tabs.some((t) => t.id === id);
+
+/** Puts the view of log tab `id` into the store, parking the one shown. */
+function showLogView(id: string) {
+  const s = useGitLog.getState();
+  if (s.shownLog === id) return;
+  parked.set(s.shownLog, currentView());
+  const view = parked.get(id) ?? freshView(emptyFilters());
+  parked.delete(id);
+  loadPromise = null;
+  useGitLog.setState({ ...view, shownLog: id, generation: s.generation + 1 });
+  if (!view.commits.length) void reloadLog();
+}
+
+/** Selects a content tab of the Git tool window; a log tab brings its own filters and commits. */
+export function selectGitTab(id: string) {
+  if (isLogTab(id)) showLogView(id);
+  useGitLog.setState({ tab: id });
+}
+
+let tabSeq = 0;
+
+/**
+ * Opens (or selects) a log tab of its own, leaving the main Log and its filters as
+ * they are: Show History for a file, Show Git Log for a branch.
+ */
+export function openLogTab(kind: LogTab["kind"], target: string): string {
+  const existing = useGitLog.getState().logTabs.find((t) => t.kind === kind && t.target === target);
+  if (existing) {
+    selectGitTab(existing.id);
+    return existing.id;
+  }
+  const id = `${kind}:${++tabSeq}`;
+  const filters = { ...emptyFilters(), ...(kind === "history" ? { path: target } : { branches: [target] }) };
+  parked.set(id, freshView(filters));
+  useGitLog.setState((s) => ({ logTabs: [...s.logTabs, { id, kind, target }] }));
+  selectGitTab(id);
+  // History of a file in another repository: that repository's log.
+  const repo = kind === "history" ? repoOf(target) : null;
+  if (repo && repo !== currentRepo()) void selectRepo(repo);
+  return id;
+}
+
+/** Closes a log tab; when it was shown, the main Log comes back. */
+export function closeLogTab(id: string) {
+  const s = useGitLog.getState();
+  if (!s.logTabs.some((t) => t.id === id)) return;
+  if (s.shownLog === id) showLogView("log");
+  parked.delete(id);
+  useGitLog.setState((l) => ({
+    logTabs: l.logTabs.filter((t) => t.id !== id),
+    tab: l.tab === id ? "log" : l.tab,
+  }));
+}
 
 /**
  * Another project (the window switched projects): forget its commits, filters, selection
@@ -136,9 +230,16 @@ export function installGitLog(): () => void {
   return useVcs.subscribe((s, prev) => {
     if (s.root !== prev.root) {
       loadPromise = null;
-      useGitLog.setState((l) => ({ ...initialLog(), tab: l.tab, generation: l.generation + 1 }));
+      parked.clear();
+      useGitLog.setState((l) => ({
+        ...initialLog(),
+        tab: isLogTab(l.tab, l.logTabs) ? "log" : l.tab,
+        generation: l.generation + 1,
+      }));
       clearConsole();
     } else if (s.repo !== prev.repo && prev.repo !== null) {
+      // The parked log tabs load again when shown.
+      for (const [id, view] of parked) parked.set(id, freshView(view.filters));
       const l = useGitLog.getState();
       if (l.generation === 0 && !l.filters.path) return;
       const { path } = useGitLog.getState().filters;
@@ -317,7 +418,7 @@ const MAX_SEARCH_PAGES = 30;
 
 /** Selects `id` in the log, clearing filters and paging until it is loaded. */
 export async function revealCommit(id: string) {
-  useGitLog.setState({ tab: "log" });
+  selectGitTab("log");
   const f = useGitLog.getState().filters;
   const filtered = hasFilters(f);
   const find = () => useGitLog.getState().commits.find((c) => c.id === id || c.id.startsWith(id));
@@ -387,7 +488,8 @@ export async function goToRef(rev: string): Promise<boolean> {
     id = undefined;
   }
   if (!id) return false;
-  useGitLog.setState({ tab: "log" });
+  const tab = useGitLog.getState().tab;
+  selectGitTab(isLogTab(tab) ? tab : "log");
   const find = () => useGitLog.getState().commits.some((c) => c.id === id);
   if (!useGitLog.getState().commits.length) await reloadLog();
   for (let i = 0; i < MAX_SEARCH_PAGES && !find() && !useGitLog.getState().done; i++) await loadMore();

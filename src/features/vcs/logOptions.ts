@@ -22,6 +22,10 @@ export interface LogOptions {
   highlightMine: boolean;
   highlightMerges: boolean;
   highlightCurrentBranch: boolean;
+  /** The Branches pane on the left of the log. */
+  showBranches: boolean;
+  /** Changed files grouped by directory (else a flat list). */
+  groupByDirectory: boolean;
 }
 
 /** IDEA's defaults. */
@@ -41,6 +45,8 @@ export const DEFAULT_LOG_OPTIONS: LogOptions = {
   highlightMine: true,
   highlightMerges: true,
   highlightCurrentBranch: true,
+  showBranches: true,
+  groupByDirectory: true,
 };
 
 /** Options that change which commits the backend returns (a reload is needed). */
@@ -68,6 +74,12 @@ function load(): LogOptions {
 }
 
 export const useLogOptions = create<LogOptions>(() => load());
+
+// Settings › Version Control › Log edits them from the Settings window too.
+if (typeof window !== "undefined")
+  window.addEventListener("storage", (e) => {
+    if (e.key === KEY) useLogOptions.setState(load());
+  });
 
 export const logOptions = () => useLogOptions.getState();
 

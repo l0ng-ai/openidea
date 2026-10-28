@@ -9,22 +9,150 @@ export interface PopupAction {
   icon?: string;
   /** Action argument passed to `executeAction`. */
   arg?: unknown;
+  /** A separator goes between actions of different groups (Update / Commit / Push | New Branch / Checkout…). */
+  group?: string;
 }
 
 export type BranchGroup = "recent" | "local" | "remote";
 
 export type BranchRow =
+  /** Section header; an empty label draws a separator. */
   | { type: "section"; key: string; label: string }
   | { type: "action"; key: string; action: PopupAction; matches: number[] | null }
+  /** Collapsible node: Recent / Local / Remote / Tags (depth 0) or a prefix folder (`feat`). */
+  | { type: "group"; key: string; label: string; expanded: boolean; depth: number }
   | {
       type: "branch";
       key: string;
       branch: Branch;
       group: BranchGroup;
+      /** Shown name: the last segment inside a prefix folder. */
+      label: string;
+      depth: number;
       matches: number[] | null;
       favorite: boolean;
     }
-  | { type: "tag"; key: string; tag: string; matches: number[] | null };
+  | { type: "tag"; key: string; tag: string; depth: number; matches: number[] | null };
+
+/** Branches popup options (the popup's gear menu). */
+export interface BranchTreeOptions {
+  /** Groups and folders the user expanded (true) or collapsed (false); the others use their defaults. */
+  expanded?: ReadonlyMap<string, boolean>;
+  /** `feat/x` under a `feat` folder; remote branches under their remote. */
+  groupByPrefix?: boolean;
+  showRecent?: boolean;
+  showTags?: boolean;
+}
+
+/** Copy of `expanded` with `key` set to `open`. */
+export function withExpanded(expanded: ReadonlyMap<string, boolean>, key: string, open: boolean): Map<string, boolean> {
+  return new Map(expanded).set(key, open);
+}
+
+export interface PrefixItem<T> {
+  item: T;
+  /** Full name, split into folders at `/`. */
+  name: string;
+  /** Highlighted characters of `name`. */
+  matches: number[] | null;
+  /** Listed before the folders of its level (current branch, favorites). */
+  pinned: boolean;
+}
+
+/** A row of a prefix tree: a folder, or an item shown by the rest of its name. */
+export type PrefixRow<T> =
+  | { type: "folder"; key: string; label: string; depth: number; expanded: boolean }
+  | { type: "leaf"; item: T; label: string; depth: number; matches: number[] | null };
+
+/**
+ * Rows of `items` grouped by name prefix (`feat/x` → feat › x), as in IDEA's Branches popup:
+ * at each level pinned items, then folders by name, then the other items in their order.
+ * `isOpen(key, path, items)` decides whether the folder `key` (prefix `path`) shows its items.
+ * Ungrouped: the items as they are, by full name.
+ */
+export function prefixTreeRows<T>(
+  items: readonly PrefixItem<T>[],
+  opts: {
+    keyPrefix: string;
+    depth: number;
+    grouped: boolean;
+    isOpen: (key: string, path: string, items: readonly PrefixItem<T>[]) => boolean;
+  },
+): PrefixRow<T>[] {
+  if (!opts.grouped)
+    return items.map((i) => ({ type: "leaf", item: i.item, label: i.name, depth: opts.depth, matches: i.matches }));
+  interface Entry {
+    it: PrefixItem<T>;
+    rest: string;
+    offset: number;
+  }
+  const level = (list: readonly Entry[], path: string, depth: number): PrefixRow<T>[] => {
+    const folders = new Map<string, Entry[]>();
+    const leaves: Entry[] = [];
+    for (const e of list) {
+      const i = e.rest.indexOf("/");
+      if (i > 0 && i < e.rest.length - 1) {
+        const seg = e.rest.slice(0, i);
+        const inner = folders.get(seg) ?? [];
+        folders.set(seg, inner);
+        inner.push({ it: e.it, rest: e.rest.slice(i + 1), offset: e.offset + i + 1 });
+      } else leaves.push(e);
+    }
+    const leaf = (e: Entry): PrefixRow<T> => ({
+      type: "leaf",
+      item: e.it.item,
+      label: e.rest,
+      depth,
+      // Highlights are of the full name: shift them onto the shown part.
+      matches: e.it.matches && e.it.matches.map((m) => m - e.offset).filter((m) => m >= 0),
+    });
+    const out = leaves.filter((e) => e.it.pinned).map(leaf);
+    for (const [seg, inner] of [...folders].sort(([a], [b]) => a.localeCompare(b))) {
+      const folderPath = `${path}${seg}`;
+      const key = `${opts.keyPrefix}${folderPath}`;
+      const expanded = opts.isOpen(
+        key,
+        folderPath,
+        inner.map((e) => e.it),
+      );
+      out.push({ type: "folder", key, label: seg, depth, expanded });
+      if (expanded) out.push(...level(inner, `${folderPath}/`, depth + 1));
+    }
+    out.push(...leaves.filter((e) => !e.it.pinned).map(leaf));
+    return out;
+  };
+  return level(
+    items.map((it) => ({ it, rest: it.name, offset: 0 })),
+    "",
+    opts.depth,
+  );
+}
+
+/** Default expansion of a prefix folder: in Recent, a remote (`origin`), or holding the current branch. */
+export function defaultFolderOpen(group: BranchGroup, path: string, hasCurrent: boolean): boolean {
+  return group === "recent" || (group === "remote" && !path.includes("/")) || hasCurrent;
+}
+
+type ActionRow = Extract<BranchRow, { type: "section" | "action" }>;
+
+/** Action rows; with `separators`, a separator between actions of different groups. */
+export function actionRows(
+  actions: readonly PopupAction[],
+  match: (text: string) => number[] | null | false,
+  separators: boolean,
+): ActionRow[] {
+  const rows: ActionRow[] = [];
+  let last: string | undefined;
+  for (const a of actions) {
+    const m = match(tx(a.label));
+    if (m === false) continue;
+    if (separators && rows.length && a.group !== last)
+      rows.push({ type: "section", key: `separator:action:${a.id}`, label: "" });
+    last = a.group;
+    rows.push({ type: "action", key: `action:${a.id}`, action: a, matches: m });
+  }
+  return rows;
+}
 
 /** Current branch first, then favorites, then the rest; by name within each. */
 function byRank(favorites: readonly string[] | null) {
@@ -48,11 +176,27 @@ export function shortRemoteName(name: string): string {
 
 export const MAX_RECENT = 5;
 
+/** Recently checked-out local branches other than the current one, newest first. */
+export function recentLocal(local: readonly Branch[], recent: readonly string[]): Branch[] {
+  const byName = new Map(local.map((b) => [b.name, b]));
+  return recent
+    .map((n) => byName.get(n))
+    .filter((b): b is Branch => !!b && !b.current)
+    .slice(0, MAX_RECENT);
+}
+
+/** Tags, newest version first. */
+export const sortTags = (tags: readonly string[]) =>
+  [...tags].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+
 /**
- * Rows for the Branches popup. Without a query: actions, Recent (recently
- * checked-out local branches other than the current one), Local, Remote, Tags.
- * With a query: matching actions, branches and tags; the Recent group is dropped
- * so each branch appears once. Favorites (★) come right after the current branch.
+ * Rows for the Branches popup: actions (separated by group), then the collapsible
+ * Recent (recently checked-out local branches other than the current one), Local,
+ * Remote and Tags groups. Recent is open by default, Local only without Recent,
+ * Remote and Tags closed; `options.expanded` holds the user's choices. Names are
+ * grouped by prefix into folders unless `groupByPrefix` is off. With a query:
+ * matching actions, branches and tags with every group open; the Recent group is
+ * dropped so each branch appears once. Favorites (★) come right after the current branch.
  */
 export function buildBranchRows(
   branches: readonly Branch[],
@@ -61,55 +205,79 @@ export function buildBranchRows(
   actions: readonly PopupAction[],
   favorites: readonly string[] | null = null,
   tags: readonly string[] = [],
+  options: BranchTreeOptions = {},
 ): BranchRow[] {
-  const rows: BranchRow[] = [];
+  const { expanded = new Map<string, boolean>(), groupByPrefix = true, showRecent = true, showTags = true } = options;
   const q = query.trim();
   const match = (text: string): number[] | null | false => {
     if (!q) return null;
     return fuzzyMatch(text, q) ?? false;
   };
+  const open = (key: string, byDefault: boolean) => !!q || (expanded.get(key) ?? byDefault);
+  const rows: BranchRow[] = actionRows(actions, match, !q);
 
-  for (const a of actions) {
-    const m = match(tx(a.label));
-    if (m === false) continue;
-    rows.push({ type: "action", key: `action:${a.id}`, action: a, matches: m });
-  }
-
-  const local = sortLocal(branches, favorites);
-  const pushGroup = (group: BranchGroup, label: string, list: readonly Branch[]) => {
-    const items: BranchRow[] = [];
-    for (const b of list) {
+  const tree: BranchRow[] = [];
+  const pushGroup = (group: BranchGroup, label: string, list: readonly Branch[], byDefault: boolean) => {
+    const items = list.flatMap((b): PrefixItem<Branch>[] => {
       const m = match(b.name);
-      if (m === false) continue;
-      items.push({
-        type: "branch",
-        key: `${group}:${b.name}`,
-        branch: b,
-        group,
-        matches: m,
-        favorite: isFavoriteBranch(b, favorites),
-      });
-    }
+      return m === false
+        ? []
+        : [{ item: b, name: b.name, matches: m, pinned: b.current || isFavoriteBranch(b, favorites) }];
+    });
     if (!items.length) return;
-    rows.push({ type: "section", key: `section:${group}`, label }, ...items);
+    const key = `group:${group}`;
+    const expandedNow = open(key, byDefault);
+    tree.push({ type: "group", key, label, expanded: expandedNow, depth: 0 });
+    if (!expandedNow) return;
+    const children = prefixTreeRows(items, {
+      keyPrefix: `folder:${group}:`,
+      depth: 1,
+      grouped: groupByPrefix,
+      isOpen: (k, path, inner) =>
+        open(
+          k,
+          defaultFolderOpen(
+            group,
+            path,
+            inner.some((i) => i.item.current),
+          ),
+        ),
+    });
+    for (const r of children)
+      tree.push(
+        r.type === "folder"
+          ? { type: "group", key: r.key, label: r.label, expanded: r.expanded, depth: r.depth }
+          : {
+              type: "branch",
+              key: `${group}:${r.item.name}`,
+              branch: r.item,
+              group,
+              label: r.label,
+              depth: r.depth,
+              matches: r.matches,
+              favorite: isFavoriteBranch(r.item, favorites),
+            },
+      );
   };
 
-  if (!q) {
-    const byName = new Map(local.map((b) => [b.name, b]));
-    const rec = recent
-      .map((n) => byName.get(n))
-      .filter((b): b is Branch => !!b && !b.current)
-      .slice(0, MAX_RECENT);
-    pushGroup("recent", "Recent", rec);
+  const local = sortLocal(branches, favorites);
+  const rec = q || !showRecent ? [] : recentLocal(local, recent);
+  pushGroup("recent", "Recent", rec, true);
+  pushGroup("local", "Local", local, !rec.length);
+  pushGroup("remote", "Remote", sortRemote(branches, favorites), false);
+  if (showTags) {
+    const tagRows = sortTags(tags).flatMap((t): BranchRow[] => {
+      const m = match(t);
+      return m === false ? [] : [{ type: "tag", key: `tag:${t}`, tag: t, depth: 1, matches: m }];
+    });
+    if (tagRows.length) {
+      const expandedNow = open("group:tags", false);
+      tree.push({ type: "group", key: "group:tags", label: "Tags", expanded: expandedNow, depth: 0 });
+      if (expandedNow) tree.push(...tagRows);
+    }
   }
-  pushGroup("local", "Local", local);
-  pushGroup("remote", "Remote", sortRemote(branches, favorites));
-  const tagRows: BranchRow[] = [];
-  for (const t of [...tags].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))) {
-    const m = match(t);
-    if (m !== false) tagRows.push({ type: "tag", key: `tag:${t}`, tag: t, matches: m });
-  }
-  if (tagRows.length) rows.push({ type: "section", key: "section:tags", label: "Tags" }, ...tagRows);
+  if (tree.length && rows.length) rows.push({ type: "section", key: "separator:tree", label: "" });
+  rows.push(...tree);
   return rows;
 }
 
@@ -129,8 +297,8 @@ export function isFavoriteBranch(b: Pick<Branch, "name" | "remote">, stored: rea
 export interface BranchTreeNode {
   key: string;
   label: string;
-  kind: "head" | "group" | "remote" | "folder" | "branch";
-  /** Branch name for `branch` / `head` (`HEAD`). */
+  kind: "head" | "group" | "remote" | "folder" | "branch" | "tag";
+  /** Branch name for `branch` / `head` (`HEAD`), tag name for `tag`. */
   ref: string | null;
   branch?: Branch;
   favorite?: boolean;
@@ -138,11 +306,15 @@ export interface BranchTreeNode {
 }
 
 /**
- * Git Log Branches pane: HEAD, Local and Remote › <remote>. Names with `/` are
+ * Git Log Branches pane: HEAD, Local, Remote › <remote> and Tags. Names with `/` are
  * grouped into folders (`feat/x` → feat › x); at each level the current branch and
- * favorites come first, then folders, then the other branches.
+ * favorites come first, then folders, then the other branches. Tags: newest version first.
  */
-export function buildBranchTree(branches: readonly Branch[], favorites: readonly string[] | null): BranchTreeNode[] {
+export function buildBranchTree(
+  branches: readonly Branch[],
+  favorites: readonly string[] | null,
+  tags: readonly string[] = [],
+): BranchTreeNode[] {
   const level = (list: { b: Branch; rest: string }[], keyPrefix: string): BranchTreeNode[] => {
     const folders = new Map<string, { b: Branch; rest: string }[]>();
     const leaves: BranchTreeNode[] = [];
@@ -211,6 +383,16 @@ export function buildBranchTree(branches: readonly Branch[], favorites: readonly
         ),
       })),
     });
+  if (tags.length)
+    out.push({
+      key: "g:tags",
+      label: "Tags",
+      kind: "group",
+      ref: null,
+      children: [...tags]
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+        .map((t): BranchTreeNode => ({ key: `t:${t}`, label: t, kind: "tag", ref: t })),
+    });
   return out;
 }
 
@@ -227,13 +409,13 @@ export function branchFolderKeys(nodes: readonly BranchTreeNode[], name: string)
   return walk(nodes) ?? [];
 }
 
-/** Branches pane search: keeps branches whose full name contains `query` (case-insensitive) and their folders. */
+/** Branches pane search: keeps branches and tags whose full name contains `query` (case-insensitive) and their folders. */
 export function filterBranchTree(nodes: readonly BranchTreeNode[], query: string): BranchTreeNode[] {
   const q = query.trim().toLowerCase();
   if (!q) return [...nodes];
   return nodes.flatMap((n): BranchTreeNode[] => {
     if (n.kind === "head") return [];
-    if (n.kind === "branch") return n.ref?.toLowerCase().includes(q) ? [n] : [];
+    if (n.kind === "branch" || n.kind === "tag") return n.ref?.toLowerCase().includes(q) ? [n] : [];
     const children = filterBranchTree(n.children ?? [], q);
     return children.length ? [{ ...n, children }] : [];
   });

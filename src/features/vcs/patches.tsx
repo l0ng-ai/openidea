@@ -3,7 +3,10 @@ import { useEffect, useState } from "react";
 import type { Commit, FileStatus, PatchFile, PatchSource } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, List, Spinner, fileIconName, T } from "@/ui";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
+import { ask } from "@/workbench/messages";
+import { rememberSetting } from "./confirmations";
 import { openDialog } from "./dialogs";
 import { KIND_COLOR, baseName, dirName, stripSlash } from "./model";
 import { errorMessage, logConsole, runOp, saveAll } from "./ops";
@@ -53,6 +56,24 @@ async function browseSave(current: string): Promise<string | null> {
   }
 }
 
+/** Settings › Version Control › Confirmation › When patch is created: ask / no / show in Finder. */
+async function afterPatchSaved(path: string) {
+  const mode = workflowSettings().vcs.confirmation.onPatchCreated;
+  if (mode === "no") return;
+  if (mode === "ask") {
+    const r = await ask({
+      title: "Create Patch",
+      body: tx("Patch file created successfully. Show it in Finder?"),
+      checkbox: "Don't ask again",
+      buttons: [{ id: "show", label: "Show", primary: true }],
+    });
+    const show = r.button === "show";
+    if (r.checked) await rememberSetting("vcs.confirmation.onPatchCreated", show ? "reveal" : "no");
+    if (!show) return;
+  }
+  void import("@tauri-apps/plugin-opener").then((m) => m.revealItemInDir(path)).catch(() => undefined);
+}
+
 function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: () => void }) {
   const root = useVcs((s) => s.root) ?? "";
   const listName = useChangelists((s) => activeList(s.state).name);
@@ -79,15 +100,17 @@ function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: 
             commits: [...origin.commits].sort((a, b) => (a.timeMs ?? 0) - (b.timeMs ?? 0)).map((c) => c.id),
             reverse,
           };
-    await runOp(
+    const done = await runOp(
       "Create patch",
       async () => {
         const patch = await call(commands.vcsCreatePatch(source));
         if (toFile) await call(commands.vcsWritePatch(file.trim(), patch));
         else await navigator.clipboard.writeText(patch);
+        return true;
       },
       { success: toFile ? `Patch saved to ${baseName(file.trim())}` : "Patch copied to the clipboard", refresh: false },
     );
+    if (done && toFile) await afterPatchSaved(file.trim());
   };
   return (
     <Dialog

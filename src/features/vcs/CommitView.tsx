@@ -1,4 +1,7 @@
-/** Commit tool window: change list with inclusion checkboxes, message, stashes. */
+/**
+ * Commit tool window: change list with inclusion checkboxes, message, stashes. Its
+ * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
+ */
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { tx } from "@/platform/i18n";
@@ -22,6 +25,7 @@ import {
   showContextMenu,
   startPointerDrag,
   type MenuItem,
+  type TabItem,
   type TreeHandle,
   T,
 } from "@/ui";
@@ -41,6 +45,8 @@ import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
 import { messageHistory, setAmend, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
+import { pushAfterCommit } from "./commitUi";
+import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { openDiff, withChain, workingDiffData } from "./diffInput";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
@@ -52,68 +58,85 @@ import styles from "./CommitView.module.css";
 /** MIME type of changed files dragged between change lists (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
 
-/** "Commit" / "Shelf" / "Stash" content tabs; they stand in for the tool window title. */
 /** Shown text of a node: group names are translated, except the names of user change lists. */
 function nodeText(n: ChangeNode): string {
   return n.type === "group" && (!n.changelist || n.label === DEFAULT_LIST_NAME) ? tx(n.label) : n.label;
 }
 
-export function CommitTabs() {
-  const available = useVcs((s) => s.available);
-  const tab = useCommit((s) => s.tab);
+/** Content tabs as `Tabs` items, with their counts. */
+export function tabItems(tabs: readonly ContentTab[]): TabItem[] {
+  return tabs.map((t) => ({
+    id: t.id,
+    label: t.label,
+    // `Tabs` treats a missing flag as closable once it has `onClose`.
+    closable: !!t.closable,
+    trailing: t.count ? <span className={styles.count}>{t.count}</span> : undefined,
+  }));
+}
+
+/** Shelf and stash counts for the tabs (loads the shelves once VCS is available). */
+export function useStashTabCounts(available: boolean) {
   const stashCount = useVcs((s) => s.stashes.length);
   const shelfCount = useShelf((s) => s.shelves.length);
   useEffect(() => {
     if (available) void loadShelves().catch(() => undefined);
   }, [available]);
+  return { stashCount, shelfCount };
+}
+
+/** "Commit" / "Shelf" / "Stash" content tabs; they stand in for the tool window title. */
+export function CommitTabs() {
+  const available = useVcs((s) => s.available);
+  const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
+  const tab = useCommit((s) => s.tab);
+  const counts = useStashTabCounts(available);
   return (
     <Tabs
       variant="compact"
       className={styles.tabs}
-      activeId={tab}
+      activeId={stashTabOf(tab, combine)}
       onSelect={(id) => useCommit.setState({ tab: id as CommitTab })}
       aria-label="Commit"
-      items={[
+      items={tabItems([
         { id: "changes", label: "Commit" },
-        ...(!available
-          ? []
-          : shelfCount || tab === "shelf"
-            ? [
-                {
-                  id: "shelf",
-                  label: "Shelf",
-                  trailing: shelfCount ? <span className={styles.count}>{shelfCount}</span> : undefined,
-                },
-              ]
-            : []),
-        ...(available
-          ? [
-              {
-                id: "stashes",
-                label: "Stash",
-                trailing: stashCount ? <span className={styles.count}>{stashCount}</span> : undefined,
-              },
-            ]
-          : []),
-      ]}
+        ...(available ? stashTabs({ combine, tab, ...counts }) : []),
+      ])}
     />
   );
 }
 
 export function CommitToolWindow() {
   const available = useVcs((s) => s.available);
-  const tab = useCommit((s) => s.tab);
+  const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
+  const tab = stashTabOf(
+    useCommit((s) => s.tab),
+    combine,
+  );
   if (!available)
     return (
       <EmptyState icon="commit" title="Version control is not configured">
         <T>Open a Git repository to commit changes.</T>
       </EmptyState>
     );
-  return (
-    <div className={styles.root}>
-      {tab === "changes" ? <ChangesPanel /> : tab === "shelf" ? <ShelfPanel /> : <StashesPanel />}
-    </div>
-  );
+  return <div className={styles.root}>{tab === "changes" ? <ChangesPanel /> : <StashContent tab={tab} />}</div>;
+}
+
+/** The Shelf, Stash or combined "Stashes and Shelves" tab. */
+export function StashContent({ tab }: { tab: CommitTab }) {
+  const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
+  if (combine)
+    return (
+      <SplitGroup orientation="vertical" className={styles.split}>
+        <SplitPanel defaultSize="50%" minSize="80px">
+          <StashesPanel />
+        </SplitPanel>
+        <SplitHandle />
+        <SplitPanel defaultSize="50%" minSize="80px">
+          <ShelfPanel />
+        </SplitPanel>
+      </SplitGroup>
+    );
+  return tab === "shelf" ? <ShelfPanel /> : <StashesPanel />;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,13 +267,50 @@ function CheckMark({
   );
 }
 
+/** Inclusion state of every change (user overrides over the change list defaults). */
+function useCommitChecks() {
+  const status = useVcs((s) => s.status);
+  const root = useVcs((s) => s.root) ?? "";
+  const userChecks = useCommit((s) => s.checks);
+  const lists = useChangelists((s) => s.state);
+  return useMemo(() => withListDefaults(status, root, lists, userChecks), [status, root, lists, userChecks]);
+}
+
+/** Number of changes the commit would include. */
+export function useIncludedCount(): number {
+  const status = useVcs((s) => s.status);
+  const checks = useCommitChecks();
+  return useMemo(() => planCommit(status, checks).included.length, [status, checks]);
+}
+
+/** The Commit tool window's Commit tab: changes with inclusion checkboxes above the message. */
 function ChangesPanel() {
+  const included = useIncludedCount();
+  return (
+    <SplitGroup orientation="vertical" className={styles.split}>
+      <SplitPanel defaultSize="62%" minSize="20%">
+        <ChangesTree mode="commit" />
+      </SplitPanel>
+      <SplitHandle />
+      <SplitPanel defaultSize="38%" minSize="120px">
+        <CommitPanel included={included} />
+      </SplitPanel>
+    </SplitGroup>
+  );
+}
+
+/**
+ * The change tree with its toolbar. `commit`: the Commit tool window's (inclusion
+ * checkboxes); `local`: the Git tool window's Local Changes tab of the modal commit
+ * interface (no checkboxes, a Commit… button); `dialog`: the Commit dialog's.
+ */
+export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
-  const userChecks = useCommit((s) => s.checks);
   const lists = useChangelists((s) => s.state);
-  const checks = useMemo(() => withListDefaults(status, root, lists, userChecks), [status, root, lists, userChecks]);
+  const checks = useCommitChecks();
+  const checkboxes = mode !== "local";
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   // IDEA starts with Unversioned Files collapsed.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["group:unversioned"]));
@@ -314,196 +374,186 @@ function ChangesPanel() {
 
   const selectedNodes = () => [...selected].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
 
-  const plan = useMemo(() => planCommit(status, checks), [status, checks]);
-
   return (
-    <SplitGroup orientation="vertical" className={styles.split}>
-      <SplitPanel defaultSize="62%" minSize="20%">
-        <div className={styles.changes}>
-          <div className={styles.toolbar} role="toolbar" aria-label={tx("Changes")}>
-            <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
-            <IconButton icon="undo" action="vcs.rollback" size="small" />
-            <IconButton icon="git-pull" action="vcs.update" size="small" />
-            <IconButton
-              ref={viewRef}
-              icon="eye"
-              title="View Options"
-              size="small"
-              aria-haspopup="menu"
-              onClick={() =>
-                viewRef.current &&
-                showContextMenu(bottomLeft(viewRef.current), [
-                  { kind: "header", label: "Group By" },
-                  { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
-                ])
-              }
-            />
-            <span className={styles.sep} />
-            <IconButton icon="locate" title="Select Opened File" size="small" onClick={selectOpened} />
-            <IconButton icon="expand-all" title="Expand All" size="small" onClick={() => setCollapsed(new Set())} />
-            <IconButton
-              icon="collapse-all"
-              title="Collapse All"
-              size="small"
-              onClick={() =>
-                setCollapsed(new Set([...byKey.values()].filter((n) => n.type !== "file").map((n) => n.key)))
-              }
-            />
-          </div>
-          <OperationBanner />
-          <div
-            className={styles.treeWrap}
-            onKeyDownCapture={(e) => {
-              if (e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
-                e.preventDefault();
-                e.stopPropagation();
-                toggle(selectedNodes());
-              } else if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey) {
-                const group = selectedNodes().find((x) => x.type === "group" && x.changelist);
-                if (group?.changelist) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  void executeAction("vcs.changelist.delete", group.changelist);
-                }
-              } else if (e.key === "F4") {
-                const n = selectedNodes().find((x) => x.type === "file");
-                if (n?.path) {
-                  e.preventDefault();
-                  void editorService().openFile(n.path, { focus: true });
-                }
-              }
-            }}
-          >
-            <Tree<ChangeNode>
-              handleRef={treeRef}
-              roots={roots}
-              getKey={(n) => n.key}
-              getLabel={nodeText}
-              getChildren={(n) => n.children}
-              isExpandable={(n) => n.type !== "file"}
-              expanded={expanded}
-              onExpandedChange={(_next, node, open) =>
-                setCollapsed((c) => {
-                  const s = new Set(c);
-                  if (open) s.delete(node.key);
-                  else s.add(node.key);
-                  return s;
-                })
-              }
-              selected={selected}
-              onSelectionChange={(sel) => {
-                setSelected(sel);
-                const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
-                useCommit.setState({
-                  selection: filesOf(nodes).map((f) => f.path),
-                  selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
-                });
-              }}
-              onActivate={(n) => openNode(n, roots)}
-              onContextMenu={(node, sel, e: MouseEvent) => {
-                if (!node) return;
-                if (node.type === "group" && node.changelist) {
-                  const paths = node.files.map((f) => stripSlash(f.path));
-                  showContextMenu(e, listMenu(node.changelist, !!node.active, paths));
-                  return;
-                }
-                const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
-                showContextMenu(e, nodeMenu(nodes.length ? nodes : [node]));
-              }}
-              aria-label="Changes"
-              empty={
-                <span className={styles.empty}>
-                  <T>No local changes</T>
-                </span>
-              }
-              renderNode={(n, st) => {
-                const agg = aggregateCheck(n.files, checks);
-                const label = (
-                  <span
-                    className={clsx(
-                      styles.label,
-                      n.type === "group" && styles.groupLabel,
-                      n.type === "group" && n.changelist && !n.active && styles.inactiveList,
-                    )}
-                    style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
-                    title={n.type === "file" && n.kind ? tx(KIND_LABEL[n.kind]) : undefined}
-                  >
-                    {nodeText(n)}
+    <div className={styles.changes}>
+      <div className={styles.toolbar} role="toolbar" aria-label={tx("Changes")}>
+        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
+        {mode === "local" && <IconButton icon="commit" action="vcs.commit" size="small" />}
+        <IconButton icon="undo" action="vcs.rollback" size="small" />
+        {mode !== "dialog" && <IconButton icon="git-pull" action="vcs.update" size="small" />}
+        <IconButton
+          ref={viewRef}
+          icon="eye"
+          title="View Options"
+          size="small"
+          aria-haspopup="menu"
+          onClick={() =>
+            viewRef.current &&
+            showContextMenu(bottomLeft(viewRef.current), [
+              { kind: "header", label: "Group By" },
+              { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+            ])
+          }
+        />
+        <span className={styles.sep} />
+        {mode !== "dialog" && (
+          <IconButton icon="locate" title="Select Opened File" size="small" onClick={selectOpened} />
+        )}
+        <IconButton icon="expand-all" title="Expand All" size="small" onClick={() => setCollapsed(new Set())} />
+        <IconButton
+          icon="collapse-all"
+          title="Collapse All"
+          size="small"
+          onClick={() => setCollapsed(new Set([...byKey.values()].filter((n) => n.type !== "file").map((n) => n.key)))}
+        />
+      </div>
+      {mode !== "dialog" && <OperationBanner />}
+      <div
+        className={styles.treeWrap}
+        onKeyDownCapture={(e) => {
+          if (checkboxes && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggle(selectedNodes());
+          } else if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey) {
+            const group = selectedNodes().find((x) => x.type === "group" && x.changelist);
+            if (group?.changelist) {
+              e.preventDefault();
+              e.stopPropagation();
+              void executeAction("vcs.changelist.delete", group.changelist);
+            }
+          } else if (e.key === "F4") {
+            const n = selectedNodes().find((x) => x.type === "file");
+            if (n?.path) {
+              e.preventDefault();
+              void editorService().openFile(n.path, { focus: true });
+            }
+          }
+        }}
+      >
+        <Tree<ChangeNode>
+          handleRef={treeRef}
+          roots={roots}
+          getKey={(n) => n.key}
+          getLabel={nodeText}
+          getChildren={(n) => n.children}
+          isExpandable={(n) => n.type !== "file"}
+          expanded={expanded}
+          onExpandedChange={(_next, node, open) =>
+            setCollapsed((c) => {
+              const s = new Set(c);
+              if (open) s.delete(node.key);
+              else s.add(node.key);
+              return s;
+            })
+          }
+          selected={selected}
+          onSelectionChange={(sel) => {
+            setSelected(sel);
+            const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
+            useCommit.setState({
+              selection: filesOf(nodes).map((f) => f.path),
+              selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
+            });
+          }}
+          onActivate={(n) => openNode(n, roots)}
+          onContextMenu={(node, sel, e: MouseEvent) => {
+            if (!node) return;
+            if (node.type === "group" && node.changelist) {
+              const paths = node.files.map((f) => stripSlash(f.path));
+              showContextMenu(e, listMenu(node.changelist, !!node.active, paths));
+              return;
+            }
+            const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
+            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node]));
+          }}
+          aria-label="Changes"
+          empty={
+            <span className={styles.empty}>
+              <T>No local changes</T>
+            </span>
+          }
+          renderNode={(n, st) => {
+            const agg = aggregateCheck(n.files, checks);
+            const label = (
+              <span
+                className={clsx(
+                  styles.label,
+                  n.type === "group" && styles.groupLabel,
+                  n.type === "group" && n.changelist && !n.active && styles.inactiveList,
+                )}
+                style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
+                title={n.type === "file" && n.kind ? tx(KIND_LABEL[n.kind]) : undefined}
+              >
+                {nodeText(n)}
+              </span>
+            );
+            // Pointer-driven (HTML5 drag and drop never reaches the Tauri webview):
+            // files and folders drag; any row takes them into its changelist.
+            const list = n.changelist;
+            const dnd =
+              list === undefined
+                ? {}
+                : {
+                    ref: (el: HTMLSpanElement | null) =>
+                      el
+                        ? registerDropTarget(el, {
+                            accepts: (type) => type === CHANGES_MIME,
+                            over: () => setDropTarget(list),
+                            leave: () => setDropTarget(null),
+                            drop: (data) => {
+                              setDropTarget(null);
+                              moveToChangelist(data.payload.split("\n"), list);
+                            },
+                          })
+                        : undefined,
+                    ...(n.type !== "group" && {
+                      onPointerDown: (e: PointerEvent<HTMLSpanElement>) => {
+                        const paths =
+                          selected.has(n.key) && selected.size > 1
+                            ? filesOf(selectedNodes()).map((f) => f.path)
+                            : n.files.map((f) => f.path);
+                        startPointerDrag(e, e.currentTarget, {
+                          type: CHANGES_MIME,
+                          payload: paths.map(stripSlash).join("\n"),
+                        });
+                      },
+                    }),
+                  };
+            return (
+              <span
+                className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}
+                {...dnd}
+              >
+                {checkboxes && (
+                  <CheckMark
+                    checked={agg.checked}
+                    indeterminate={agg.indeterminate}
+                    label={tx`Include ${n.label} in commit`}
+                    onToggle={() => toggle(selected.has(n.key) && selected.size > 1 ? selectedNodes() : [n])}
+                  />
+                )}
+                {n.type === "group" ? null : (
+                  <Icon
+                    name={n.type === "dir" ? (st.expanded ? "folder-open" : "folder") : fileIconName(n.label)}
+                    size={16}
+                    className={styles.icon}
+                  />
+                )}
+                {label}
+                {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
+                {n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
+                  <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
+                    <T>partial</T>
                   </span>
-                );
-                // Pointer-driven (HTML5 drag and drop never reaches the Tauri webview):
-                // files and folders drag; any row takes them into its changelist.
-                const list = n.changelist;
-                const dnd =
-                  list === undefined
-                    ? {}
-                    : {
-                        ref: (el: HTMLSpanElement | null) =>
-                          el
-                            ? registerDropTarget(el, {
-                                accepts: (type) => type === CHANGES_MIME,
-                                over: () => setDropTarget(list),
-                                leave: () => setDropTarget(null),
-                                drop: (data) => {
-                                  setDropTarget(null);
-                                  moveToChangelist(data.payload.split("\n"), list);
-                                },
-                              })
-                            : undefined,
-                        ...(n.type !== "group" && {
-                          onPointerDown: (e: PointerEvent<HTMLSpanElement>) => {
-                            const paths =
-                              selected.has(n.key) && selected.size > 1
-                                ? filesOf(selectedNodes()).map((f) => f.path)
-                                : n.files.map((f) => f.path);
-                            startPointerDrag(e, e.currentTarget, {
-                              type: CHANGES_MIME,
-                              payload: paths.map(stripSlash).join("\n"),
-                            });
-                          },
-                        }),
-                      };
-                return (
-                  <span
-                    className={clsx(
-                      styles.nodeRow,
-                      n.type === "group" && dropTarget === n.changelist && styles.dropTarget,
-                    )}
-                    {...dnd}
-                  >
-                    <CheckMark
-                      checked={agg.checked}
-                      indeterminate={agg.indeterminate}
-                      label={tx`Include ${n.label} in commit`}
-                      onToggle={() => toggle(selected.has(n.key) && selected.size > 1 ? selectedNodes() : [n])}
-                    />
-                    {n.type === "group" ? null : (
-                      <Icon
-                        name={n.type === "dir" ? (st.expanded ? "folder-open" : "folder") : fileIconName(n.label)}
-                        size={16}
-                        className={styles.icon}
-                      />
-                    )}
-                    {label}
-                    {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
-                    {n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
-                      <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
-                        <T>partial</T>
-                      </span>
-                    )}
-                    {n.detail && <span className={styles.detail}>{n.detail}</span>}
-                  </span>
-                );
-              }}
-            />
-          </div>
-        </div>
-      </SplitPanel>
-      <SplitHandle />
-      <SplitPanel defaultSize="38%" minSize="120px">
-        <CommitMessage included={plan.included.length} />
-      </SplitPanel>
-    </SplitGroup>
+                )}
+                {n.detail && <span className={styles.detail}>{n.detail}</span>}
+              </span>
+            );
+          }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -543,21 +593,63 @@ export function wrapAtMargin(text: string, caret: number, limit: number): { text
   return { text: `${text.slice(0, at)}\n${text.slice(at + 1)}`, caret };
 }
 
-function CommitMessage({ included }: { included: number }) {
+export interface CommitRunner {
+  busy: boolean;
+  /** Commit was asked for without a message: reported at the field. */
+  emptyError: boolean;
+  clearEmptyError: () => void;
+  /** Whether the Commit buttons are enabled. */
+  canCommit: boolean;
+  run: (push: boolean) => Promise<void>;
+}
+
+/**
+ * Commit / Commit and Push… of the Commit tool window and the Commit dialog: the
+ * shared pipeline (`commitChanges`), then the push. `onCommitted` runs after a commit.
+ */
+export function useCommitRunner(included: number, onCommitted?: () => void): CommitRunner {
+  const amend = useCommit((s) => s.amend);
+  const merging = useVcs((s) => s.branch?.operation === "merge");
+  const [emptyError, setEmptyError] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const run = async (push: boolean) => {
+    if (busy) return;
+    // IDEA keeps Commit enabled and reports an empty message at the field.
+    if (!useCommit.getState().message.trim() && !useCommit.getState().amend) {
+      setEmptyError(true);
+      useCommit.setState((s) => ({ focusTick: s.focusTick + 1 }));
+      return;
+    }
+    setBusy(true);
+    try {
+      const id = await commitChanges();
+      if (id === undefined) return;
+      onCommitted?.();
+      if (push) void pushAfterCommit();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return {
+    busy,
+    emptyError,
+    clearEmptyError: () => setEmptyError(false),
+    canCommit: (included > 0 || amend || merging) && !busy,
+    run,
+  };
+}
+
+/** Amend, message history and the message field with its inspections and failed checks. */
+export function CommitMessageField({ included, runner }: { included: number; runner: CommitRunner }) {
   const message = useCommit((s) => s.message);
   const amend = useCommit((s) => s.amend);
   const focusTick = useCommit((s) => s.focusTick);
-  const remoteBusy = useVcs((s) => s.remoteBusy);
-  const merging = useVcs((s) => s.branch?.operation === "merge");
   const ref = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLButtonElement>(null);
-  const optionsRef = useRef<HTMLButtonElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [optionsOpen, setOptionsOpen] = useState(false);
-  const [emptyError, setEmptyError] = useState(false);
-  const [busy, setBusy] = useState(false);
   const historyTick = useCommit((s) => s.historyTick);
   const checkProblems = useCommit((s) => s.checkProblems);
+  const { emptyError } = runner;
 
   // The failed checks concern what was about to be committed: editing it dismisses them.
   useEffect(() => {
@@ -580,29 +672,10 @@ function CommitMessage({ included }: { included: number }) {
   const problems = messageProblems(message, cfg).filter((p) => !p.startsWith("Subject line"));
   const margin = cfg.limitBody ? cfg.bodyLimit : cfg.subjectLimit;
   const showMargin = cfg.showRightMargin && (cfg.limitBody || cfg.limitSubject);
-
-  const commit = async (push: boolean) => {
-    if (busy) return;
-    // IDEA keeps Commit enabled and reports an empty message at the field.
-    if (!useCommit.getState().message.trim() && !useCommit.getState().amend) {
-      setEmptyError(true);
-      ref.current?.focus();
-      return;
-    }
-    setBusy(true);
-    try {
-      const id = await commitChanges();
-      if (id !== undefined && push) void executeAction("vcs.push");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const history = messageHistory();
-  const canCommit = (included > 0 || amend || merging) && !busy;
 
   return (
-    <div className={styles.commit}>
+    <>
       <div className={styles.commitBar}>
         <Checkbox checked={amend} onChange={(v) => void setAmend(v)} label="Amend" />
         <IconButton
@@ -651,13 +724,13 @@ function CommitMessage({ included }: { included: number }) {
           const wrapped =
             cfg.limitBody && cfg.wrapAtMargin ? wrapAtMargin(el.value, el.selectionStart, cfg.bodyLimit) : null;
           useCommit.setState({ message: wrapped?.text ?? el.value });
-          setEmptyError(false);
+          runner.clearEmptyError();
           if (wrapped) requestAnimationFrame(() => el.setSelectionRange(wrapped.caret, wrapped.caret));
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            void commit(e.altKey);
+            void runner.run(e.altKey);
           } else if (e.key === "Escape") {
             e.currentTarget.blur();
           }
@@ -694,18 +767,43 @@ function CommitMessage({ included }: { included: number }) {
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+/** Label of the Commit button. */
+export function commitLabel(amend: boolean, problems: boolean): string {
+  return problems ? "Commit Anyway" : amend ? "Amend Commit" : "Commit";
+}
+
+/** Label of the Commit and Push button. */
+export const commitAndPushLabel = (amend: boolean) => (amend ? "Amend and Push…" : "Commit and Push…");
+
+/** The message and the Commit buttons of the Commit tool window. */
+function CommitPanel({ included }: { included: number }) {
+  const amend = useCommit((s) => s.amend);
+  const remoteBusy = useVcs((s) => s.remoteBusy);
+  const checkProblems = useCommit((s) => s.checkProblems);
+  const optionsRef = useRef<HTMLButtonElement>(null);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const runner = useCommitRunner(included);
+  const { canCommit } = runner;
+
+  return (
+    <div className={styles.commit}>
+      <CommitMessageField included={included} runner={runner} />
       <div className={styles.commitActions}>
-        <Button variant="primary" disabled={!canCommit} onClick={() => void commit(false)} title="⌘↩">
-          <T>{checkProblems.length ? "Commit Anyway" : amend ? "Amend Commit" : "Commit"}</T>
+        <Button variant="primary" disabled={!canCommit} onClick={() => void runner.run(false)} title="⌘↩">
+          <T>{commitLabel(amend, checkProblems.length > 0)}</T>
         </Button>
         <Button
           className={styles.pushButton}
           disabled={!canCommit || !!remoteBusy}
-          onClick={() => void commit(true)}
+          onClick={() => void runner.run(true)}
           title="⌥⌘↩"
         >
           <span>
-            <T>{amend ? "Amend and Push…" : "Commit and Push…"}</T>
+            <T>{commitAndPushLabel(amend)}</T>
           </span>
         </Button>
         <span className={styles.grow} />
@@ -726,7 +824,7 @@ function CommitMessage({ included }: { included: number }) {
 
 // ---------------------------------------------------------------------------
 
-function StashesPanel() {
+export function StashesPanel() {
   const stashes = useVcs((s) => s.stashes);
   const loaded = useVcs((s) => s.stashesLoaded);
   const [active, setActive] = useState(0);

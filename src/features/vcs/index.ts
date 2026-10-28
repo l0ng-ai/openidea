@@ -10,6 +10,7 @@ import {
   registerEditorKind,
   registerMenuGroup,
   registerOverlay,
+  registerSettingsPage,
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
@@ -19,6 +20,7 @@ import { lazyComponent } from "@/ui";
 import { registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
 import { registerHistoryActions, trackOperationContext } from "./historyActions";
+import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
 import { BranchWidget, useBranchesPopup } from "./BranchWidget";
@@ -36,7 +38,7 @@ import { installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
 import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
-import { installGitLog } from "./logStore";
+import { installGitLog, selectGitTab, useGitLog } from "./logStore";
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
@@ -67,11 +69,59 @@ function trackTitleItem(): () => void {
   };
 }
 
+/**
+ * The Commit tool window exists with the non-modal commit interface only; with the
+ * modal one its tabs move to the Git tool window (and Commit… opens a dialog).
+ */
+function trackCommitWindow(): () => void {
+  let dispose: (() => void) | null = null;
+  const sync = (nonModal: boolean) => {
+    if (nonModal && !dispose) {
+      dispose = registerToolWindow({
+        id: "commit",
+        title: "Commit",
+        icon: "toolwindow-commit",
+        anchor: "left",
+        order: 1,
+        component: lazyComponent(() => import("./CommitView").then((m) => m.CommitToolWindow)),
+        headerContent: lazyComponent(() => import("./CommitView").then((m) => m.CommitTabs)),
+        tabsReplaceTitle: true,
+        useBadge: () => {
+          const n = useVcs((s) => s.status.length);
+          return n || null;
+        },
+      });
+      // The Git window's Local Changes / Shelf / Stash tabs are gone: back to its Log.
+      if (["changes", "shelf", "stashes"].includes(useGitLog.getState().tab)) selectGitTab("log");
+    } else if (!nonModal && dispose) {
+      dispose();
+      dispose = null;
+    }
+  };
+  sync(workflowSettings().vcs.commit.nonModal);
+  const unsub = onWorkflowSettingsChange((w) => w.vcs.commit.nonModal, sync);
+  return () => {
+    unsub();
+    dispose?.();
+  };
+}
+
 function conflictsBody(names: string[]): string {
   const list = names.slice(0, 3).join(", ") + (names.length > 3 ? "…" : "");
   return names.length === 1
     ? tx`${names.length} file has conflicts: ${list}`
     : tx`${names.length} files have conflicts: ${list}`;
+}
+
+/** Settings › Version Control › Log (also used by the Settings window). */
+export function activateSettingsPages(): () => void {
+  return registerSettingsPage({
+    id: "vcs.log",
+    title: "Log",
+    order: 6,
+    keywords: ["git log", "references", "tags", "columns", "commit time"],
+    component: lazyComponent(() => import("./LogSettingsPage").then((m) => m.LogSettingsPage)),
+  });
 }
 
 export function activate(): () => void {
@@ -122,6 +172,8 @@ export function activate(): () => void {
     ),
     registerVcsActions(),
     registerHistoryActions(),
+    registerLogPaneActions(),
+    activateSettingsPages(),
     registerLocalHistoryActions(),
     installChangelists(),
     trackOperationContext(),
@@ -129,20 +181,7 @@ export function activate(): () => void {
     trackTitleItem(),
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
-    registerToolWindow({
-      id: "commit",
-      title: "Commit",
-      icon: "toolwindow-commit",
-      anchor: "left",
-      order: 1,
-      component: lazyComponent(() => import("./CommitView").then((m) => m.CommitToolWindow)),
-      headerContent: lazyComponent(() => import("./CommitView").then((m) => m.CommitTabs)),
-      tabsReplaceTitle: true,
-      useBadge: () => {
-        const n = useVcs((s) => s.status.length);
-        return n || null;
-      },
-    }),
+    trackCommitWindow(),
     registerToolWindow({
       id: "git",
       title: "Git",

@@ -569,8 +569,14 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("vcs.pull", "Pull…"),
             act("vcs.fetch", "Fetch"),
             SEP,
+            // Operation items (Abort Merge, Continue Rebase…) are enabled only while it is in progress.
             act("vcs.merge", "Merge…"),
+            act("vcs.merge.abort", "Abort Merge"),
             act("vcs.rebase", "Rebase…"),
+            act("vcs.rebase.abort", "Abort Rebase"),
+            act("vcs.rebase.continue", "Continue Rebase"),
+            act("vcs.rebase.skip", "Skip Commit"),
+            act("vcs.resolveConflicts", "Resolve Conflicts…"),
             SEP,
             act("vcs.branches", "Branches…"),
             act("vcs.newBranch", "New Branch…"),
@@ -580,17 +586,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("vcs.newWorktree", "New Worktree…"),
             act("vcs.worktrees", "Worktrees…"),
             SEP,
-            act("vcs.showDiff", "Show Diff"),
-            act("vcs.rollback", "Rollback…"),
-            act("vcs.annotate", "Annotate with Git Blame"),
             act("vcs.showLog", "Show Git Log"),
-            act("vcs.localHistory", "Local History"),
-            act("localHistory.putLabel", "Put Label…"),
-            SEP,
-            act("vcs.stash", "Stash Changes…"),
-            act("vcs.unstash", "Unstash Changes…"),
-            act("vcs.shelve", "Shelve Changes…"),
-            act("vcs.showShelf", "Show Shelf"),
             sub(
                 "gitPatch",
                 "Patch",
@@ -600,12 +596,32 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     act("vcs.applyPatchFromClipboard", "Apply Patch from Clipboard…"),
                 ],
             ),
-            SEP,
-            act("vcs.resolveConflicts", "Resolve Conflicts…"),
-            act("vcs.rebase.continue", "Continue Rebase"),
-            act("vcs.rebase.abort", "Abort Rebase"),
-            act("vcs.rebase.skip", "Skip Commit"),
-            act("vcs.merge.abort", "Abort Merge"),
+            sub(
+                "gitUncommittedChanges",
+                "Uncommitted Changes",
+                vec![
+                    act("vcs.shelve", "Shelve Changes…"),
+                    act("vcs.showShelf", "Show Shelf"),
+                    act("vcs.stash", "Stash Changes…"),
+                    act("vcs.unstash", "Unstash Changes…"),
+                    act("vcs.rollback", "Rollback…"),
+                ],
+            ),
+            sub(
+                "gitCurrentFile",
+                "Current File",
+                vec![
+                    act("vcs.addToVcs", "Add to VCS"),
+                    SEP,
+                    act("vcs.annotate", "Annotate with Git Blame"),
+                    act("vcs.showDiff", "Show Diff"),
+                    act("vcs.compareWithBranch", "Compare with Branch or Revision…"),
+                    act("vcs.showHistory", "Show History"),
+                    SEP,
+                    act("vcs.localHistory", "Local History"),
+                    act("localHistory.putLabel", "Put Label…"),
+                ],
+            ),
             SEP,
             sub(
                 "gitHub",
@@ -621,6 +637,11 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("vcs.clone", "Clone…"),
             SEP,
             act("vcs.operations", "VCS Operations Popup…"),
+            SEP,
+            act("vcs.revert.continue", "Continue Revert"),
+            act("vcs.revert.abort", "Abort Revert"),
+            act("vcs.cherryPick.continue", "Continue Cherry-Pick"),
+            act("vcs.cherryPick.abort", "Abort Cherry-Pick"),
         ],
     ));
 
@@ -1436,6 +1457,69 @@ mod tests {
         assert!(item_enabled("dyn:toolwindow.git", &disabled));
         assert!(item_enabled("recent:/p/refactor.rename", &disabled));
         assert!(item_enabled("submenu:refactor", &disabled));
+    }
+
+    #[test]
+    fn git_menu_follows_idea_order() {
+        let spec = spec(Os::Mac);
+        let Some(Entry::Submenu { children, .. }) = spec.iter().find(|e| matches!(e, Entry::Submenu { id: "git", .. }))
+        else {
+            panic!("Git menu missing");
+        };
+        let top: Vec<&str> = children
+            .iter()
+            .map(|e| match e {
+                Entry::Action { id, .. } | Entry::Submenu { id, .. } => *id,
+                Entry::Separator => "|",
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(
+            top,
+            [
+                "vcs.commit",
+                "vcs.push",
+                "vcs.update",
+                "vcs.pull",
+                "vcs.fetch",
+                "|",
+                "vcs.merge",
+                "vcs.merge.abort",
+                "vcs.rebase",
+                "vcs.rebase.abort",
+                "vcs.rebase.continue",
+                "vcs.rebase.skip",
+                "vcs.resolveConflicts",
+                "|",
+                "vcs.branches",
+                "vcs.newBranch",
+                "vcs.newTag",
+                "vcs.resetHead",
+                "|",
+                "vcs.newWorktree",
+                "vcs.worktrees",
+                "|",
+                "vcs.showLog",
+                "gitPatch",
+                "gitUncommittedChanges",
+                "gitCurrentFile",
+                "|",
+                "gitHub",
+                "vcs.manageRemotes",
+                "vcs.clone",
+                "|",
+                "vcs.operations",
+                "|",
+                "vcs.revert.continue",
+                "vcs.revert.abort",
+                "vcs.cherryPick.continue",
+                "vcs.cherryPick.abort",
+            ]
+        );
+        let ids = action_ids(children);
+        for moved in ["vcs.showDiff", "vcs.rollback", "vcs.annotate", "vcs.localHistory", "localHistory.putLabel"] {
+            assert!(ids.contains(&moved), "{moved} missing from the Git menu");
+        }
     }
 
     #[test]

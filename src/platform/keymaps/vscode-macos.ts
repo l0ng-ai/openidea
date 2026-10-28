@@ -254,6 +254,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.nextChange": ["Alt+F5"],
   "vcs.prevChange": ["Alt+Shift+F5"],
   "vcs.branches": [],
+  "vcs.newBranch": [],
   "vcs.annotate": [],
   "vcs.localHistory": [],
   "localHistory.recentChanges": [],

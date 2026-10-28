@@ -1,5 +1,5 @@
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
-import { executeAction, registerActions, type Action } from "@/platform/actions";
+import { registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { activeEditor, editorsFor } from "@/editor/api";
 import { Menu, type MenuItem } from "@/ui";
@@ -23,7 +23,8 @@ import { openDiff, workingDiffData } from "./diffInput";
 import { openDialog } from "./dialogs";
 import { gotoChange, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
-import { revealCommit, setLogFilters, useGitLog, emptyFilters } from "./logStore";
+import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
+import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
 import { allRepos, runRemote } from "./ops";
 import { showPushDialog, showUpdateDialog, type PushTarget } from "./remoteUi";
 import { chooseRevision } from "./RevisionChooser";
@@ -55,7 +56,11 @@ function argPaths(arg: unknown): string[] | undefined {
   return p ? [p] : undefined;
 }
 
-const commitWindowFocused = () => getContext().activeToolWindow === "commit";
+/** The change tree is focused: the Commit window, or the Git window's Local Changes tab. */
+export const commitWindowFocused = () => {
+  const active = getContext().activeToolWindow;
+  return active === "commit" || (active === "git" && useGitLog.getState().tab === "changes");
+};
 
 /** Files the current context refers to: argument, commit view selection, or the active file. */
 function contextPaths(arg: unknown): string[] {
@@ -65,11 +70,6 @@ function contextPaths(arg: unknown): string[] {
   if (commitWindowFocused() && sel.length) return sel;
   const active = maybeEditorService()?.activePath();
   return active ? [active] : [];
-}
-
-function showCommitWindow(tab: "changes" | "stashes" = "changes") {
-  useCommit.setState((s) => ({ tab, focusTick: tab === "changes" ? s.focusTick + 1 : s.focusTick }));
-  toolWindowService().show("commit", true);
 }
 
 function showGitWindow() {
@@ -90,28 +90,26 @@ async function annotate(arg: unknown) {
   await toggleAnnotations(handle.view, handle.ctx.path);
 }
 
+/** VCS Operations popup: the change and file entries, then Git's own, then Local History. */
 const OPERATIONS: MenuItem[] = [
   { kind: "header", label: "Git" },
   { kind: "action", action: "vcs.commit" },
-  { kind: "action", action: "vcs.push" },
-  { kind: "action", action: "vcs.update" },
-  { kind: "action", action: "vcs.pull" },
-  { kind: "action", action: "vcs.fetch" },
-  { kind: "separator" },
   { kind: "action", action: "vcs.rollback" },
-  { kind: "action", action: "vcs.showDiff" },
-  { kind: "action", action: "vcs.compareWithBranch" },
-  { kind: "action", action: "vcs.addToVcs" },
   { kind: "separator" },
-  { kind: "action", action: "vcs.annotate" },
   { kind: "action", action: "vcs.showHistory" },
-  { kind: "action", action: "vcs.localHistory" },
+  { kind: "action", action: "vcs.annotate" },
+  { kind: "action", action: "vcs.showDiff" },
   { kind: "separator" },
   { kind: "action", action: "vcs.branches" },
-  { kind: "action", action: "vcs.newBranch" },
+  { kind: "action", action: "vcs.push" },
   { kind: "action", action: "vcs.stash" },
   { kind: "action", action: "vcs.unstash" },
+  { kind: "separator" },
+  { kind: "action", action: "vcs.worktrees" },
+  { kind: "action", action: "vcs.addToVcs" },
   { kind: "action", action: "vcs.resolveConflicts" },
+  { kind: "separator" },
+  { kind: "action", action: "vcs.localHistory" },
 ];
 
 function showOperations() {
@@ -143,7 +141,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "commit",
       when: VCS,
-      run: () => showCommitWindow(),
+      run: openCommit,
     },
     {
       id: "vcs.commitAndPush",
@@ -153,10 +151,10 @@ export function registerVcsActions(): () => void {
       when: VCS,
       run: async () => {
         const { message, amend } = useCommit.getState();
-        // Nothing to commit with yet: IDEA shows the commit window with the message field focused.
-        if (!message.trim() && !amend) return showCommitWindow();
+        // Nothing to commit with yet (or the modal interface): IDEA shows where the message is typed.
+        if (isModalCommit() || (!message.trim() && !amend)) return openCommit();
         const id = await commitChanges();
-        if (id !== undefined) void executeAction("vcs.push");
+        if (id !== undefined) await pushAfterCommit();
       },
     },
     {
@@ -423,8 +421,10 @@ export function registerVcsActions(): () => void {
       when: VCS,
       run: ({ arg }) => {
         const a = (arg ?? {}) as { branch?: string; path?: string };
-        useGitLog.setState({ tab: "log" });
-        setLogFilters({ ...emptyFilters(), branches: a.branch ? [a.branch] : [], path: a.path ?? null });
+        // A branch or a path gets a tab of its own; the main Log keeps its filters.
+        if (a.path) openLogTab("history", a.path);
+        else if (a.branch) openLogTab("branch", a.branch);
+        else selectGitTab("log");
         showGitWindow();
       },
     },
@@ -437,8 +437,7 @@ export function registerVcsActions(): () => void {
       run: ({ arg }) => {
         const path = contextPaths(arg)[0];
         if (!path) return;
-        useGitLog.setState({ tab: "log" });
-        setLogFilters({ ...emptyFilters(), path });
+        openLogTab("history", path);
         showGitWindow();
       },
     },

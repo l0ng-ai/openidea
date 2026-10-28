@@ -43,13 +43,8 @@ function Configure() {
   );
 }
 
-export function CommitOptionsPopup({
-  anchor,
-  onClose,
-}: {
-  anchor: RefObject<HTMLElement | null>;
-  onClose: () => void;
-}) {
+/** The options themselves: in the popup, and inline beside the Commit dialog's message. */
+export function CommitOptionsBody() {
   const author = useCommit((s) => s.author);
   const signOff = useCommit((s) => s.signOff);
   const runHooks = useCommit((s) => s.runHooks);
@@ -61,17 +56,7 @@ export function CommitOptionsPopup({
     </div>
   );
   return (
-    <Popup
-      open
-      anchor={anchor}
-      placement="top-start"
-      onClose={onClose}
-      role="dialog"
-      aria-label="Commit Options"
-      className={styles.options}
-    >
-      {/* IDEA opens the options without focusing the Author field. */}
-      <div tabIndex={-1} data-autofocus className={styles.optFocus} />
+    <>
       <Section title="Git">
         <label className={styles.optField}>
           <span>
@@ -96,6 +81,30 @@ export function CommitOptionsPopup({
         {check("analyzeCode", "Analyze code")}
         {check("checkTodo", "Check TODO", <Configure />)}
       </Section>
+    </>
+  );
+}
+
+export function CommitOptionsPopup({
+  anchor,
+  onClose,
+}: {
+  anchor: RefObject<HTMLElement | null>;
+  onClose: () => void;
+}) {
+  return (
+    <Popup
+      open
+      anchor={anchor}
+      placement="top-start"
+      onClose={onClose}
+      role="dialog"
+      aria-label="Commit Options"
+      className={styles.options}
+    >
+      {/* IDEA opens the options without focusing the Author field. */}
+      <div tabIndex={-1} data-autofocus className={styles.optFocus} />
+      <CommitOptionsBody />
     </Popup>
   );
 }
