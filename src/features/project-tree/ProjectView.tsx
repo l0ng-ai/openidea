@@ -26,7 +26,7 @@ import { isTauri } from "@/platform/ipc";
 import type { RootFolder } from "@/platform/languageSettings";
 import { useEffectiveRoots } from "@/platform/projectRoots";
 import { macStroke, strokeOf } from "@/platform/keymap";
-import { prepareMenuGroups, useFileDecoration } from "@/workbench/contributions";
+import { OWNS_FILE_DROP, prepareMenuGroups, useFileDecoration } from "@/workbench/contributions";
 import {
   FILES_DRAG,
   HighlightedText,
@@ -630,6 +630,7 @@ export function ProjectView() {
     <div
       ref={containerRef}
       className={styles.view}
+      {...OWNS_FILE_DROP}
       onKeyDown={onKeyDown}
       // The native Edit menu may take ⌘C/⌘X/⌘V before the keymap sees them; it then sends DOM clipboard events.
       onCopy={(e) => onClipboard(e, "project.copy")}

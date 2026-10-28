@@ -368,6 +368,13 @@ export function textEditorWrapperFor(
   return undefined;
 }
 
+/**
+ * Spread on an element that handles files dropped from the OS itself (copy into
+ * a folder, attach to a prompt); the window-wide drop (open in the editor)
+ * leaves drops over it alone.
+ */
+export const OWNS_FILE_DROP = { "data-owns-file-drop": "" } as const;
+
 // ---------------------------------------------------------------------------
 // Services implemented by one feature and consumed by others. The provider
 // calls `provide*` during activation; consumers call through the accessor.

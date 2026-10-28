@@ -13,6 +13,7 @@ import {
 } from "./contributions";
 import { installBrowserGuards } from "./browserGuards";
 import { installDistractionFree } from "./distractionFree";
+import { installFileDrop } from "./fileDrop";
 import { installFocusTracking } from "./focus";
 import { clearNotifications, installNotifyEvents, notificationServiceImpl } from "./notificationStore";
 import {
@@ -62,6 +63,7 @@ export function activateWorkbench(): () => void {
     installTaskEvents(),
     installNotifyEvents(),
     installBrowserGuards(),
+    installFileDrop(),
     registerOverlay({ id: "workbench.customizeToolbar", component: MainToolbarDialogHost }),
     registerStatusItem({ id: "workbench.tasks", align: "right", priority: 0, component: TaskStatus }),
     registerStatusItem({ id: "workbench.info", align: "left", priority: 5, component: StatusInfo }),

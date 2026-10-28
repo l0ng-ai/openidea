@@ -9,7 +9,7 @@ import type { AgentCommand, AgentConfigOption, AgentImage } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
-import { notifications } from "@/workbench/contributions";
+import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
 import { Icon, IconButton, fileIconName } from "@/ui";
 import {
   IMAGE_EXTENSIONS,
@@ -275,7 +275,12 @@ export function Composer(props: ComposerProps) {
   };
 
   return (
-    <div ref={boxRef} className={clsx(styles.composer, props.className)} onClick={() => ref.current?.focus()}>
+    <div
+      ref={boxRef}
+      className={clsx(styles.composer, props.className)}
+      {...OWNS_FILE_DROP}
+      onClick={() => ref.current?.focus()}
+    >
       {open && (
         <div className={styles.popup} role="listbox" aria-label={tx(completion.kind === "file" ? "Files" : "Commands")}>
           {items.map((item, i) => (
