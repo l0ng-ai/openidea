@@ -108,5 +108,7 @@ opt-level = 2
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
-strip = true
+# Unwind, so a panic fails one task or command instead of quitting the IDE.
+panic = "unwind"
+# Keep the symbol table: crash reports and logged backtraces name functions.
+strip = "debuginfo"
