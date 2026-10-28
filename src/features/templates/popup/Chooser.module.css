@@ -49,6 +49,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 320px;
+  /* The abbreviation keeps its width; a long description truncates instead. */
+  flex-shrink: 0;
 }
 .active .label {
   color: var(--fg-strong);

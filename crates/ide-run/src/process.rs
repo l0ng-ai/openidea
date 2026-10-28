@@ -171,6 +171,33 @@ fn shorten_java(inv: &mut Invocation, config: &RunConfig, cwd: &Path) -> IdeResu
     Ok(TempFile(Some(s.file)))
 }
 
+/// Tells JVM and Python processes to write the encoding the console decodes (see
+/// [`crate::output_encoding`]).
+fn match_console_encoding(inv: &mut Invocation, env: &mut LaunchEnv, config: &RunConfig, options: &StartOptions) {
+    if inv.raw_args {
+        return;
+    }
+    let inherit = !env.clear;
+    let fix = crate::output_encoding::fix(
+        &inv.program.to_string_lossy(),
+        &inv.args,
+        &env.vars,
+        |key| if inherit { std::env::var(key).ok() } else { None },
+        options.encoding.as_deref().unwrap_or("UTF-8"),
+        cfg!(windows),
+    );
+    env.vars.extend(fix.env);
+    if !fix.java_args.is_empty() {
+        inv.args.splice(0..0, fix.java_args);
+        let mut display = quote(config.command.trim());
+        for a in &inv.args {
+            display.push(' ');
+            display.push_str(&quote(a));
+        }
+        inv.display = display;
+    }
+}
+
 /// A launch's pathing jar / argfile, deleted when dropped (the process exited, or never started).
 struct TempFile(Option<PathBuf>);
 
@@ -275,7 +302,7 @@ impl ProcessManager {
         if extras.emulate_terminal && extras.stdin_file.is_some() {
             return Err(IdeError::invalid("input cannot be redirected from a file when emulating a terminal"));
         }
-        let env = launch_env(root, config)?;
+        let mut env = launch_env(root, config)?;
         let on_output: OutputFn = Arc::from(on_output);
         let on_output = match extras.output_file.as_deref() {
             Some(file) => tee_output(&resolve_cwd(root, Some(Path::new(file))), on_output)?,
@@ -286,6 +313,10 @@ impl ProcessManager {
             cwd: cwd.clone(),
             env: env.clone(),
         });
+        if !extras.emulate_terminal {
+            // A terminal re-encodes output itself; pipes carry the process's bytes as they are.
+            match_console_encoding(&mut inv, &mut env, config, options);
+        }
         let temp = shorten_java(&mut inv, config, &cwd)?;
         if extras.emulate_terminal {
             return self.start_pty(config, &inv, &cwd, &env, stop, options, sink, on_output, temp);

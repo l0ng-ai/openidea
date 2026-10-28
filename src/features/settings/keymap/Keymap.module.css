@@ -122,6 +122,19 @@
 }
 
 /* recorder */
+.mousePad {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 72px;
+  padding: 0 12px;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  color: var(--fg-emphasis);
+  text-align: center;
+  cursor: default;
+  user-select: none;
+}
 .recorder {
   display: flex;
   align-items: center;

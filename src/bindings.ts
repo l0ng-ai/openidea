@@ -587,11 +587,12 @@ export const commands = {
 	 */
 	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
 	/**
-	 *  Loose `files` opened from a window without a local project: handed to the LightEdit
-	 *  window when another one exists (`focused`), opened in a new one from a remote project
-	 *  window (`opened`), else `current` (the caller opens them in LightEdit itself).
+	 *  Loose `files` opened from a window without a local project: a file inside a local project
+	 *  open in some window goes to that window, the others to the LightEdit window (this one,
+	 *  another, or a new one from a remote project window). Returns the files this window opens
+	 *  itself, in LightEdit.
 	 */
-	windowOpenFiles: (files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_files", { files })),
+	windowOpenFiles: (files: string[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("window_open_files", { files })),
 	/**
 	 *  [`window_open_project`] for folder `path` on the host of SSH configuration
 	 *  `ssh_config` (Remote Development); a new window connects itself.

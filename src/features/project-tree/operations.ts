@@ -175,6 +175,15 @@ export function openMoveDialog(nodes: ProjectNode[] = selectedNodes(), target?: 
   openMoveDialogFor(paths, target, paths.length === 1 && movable.some((n) => n.path === paths[0] && n.dir));
 }
 
+/** Copy… (F5): IDEA's Copy dialog for the selection, into the folder it is in. */
+export function openCopyDialog(nodes: ProjectNode[] = selectedNodes()) {
+  const copyable = nodes.filter((n) => !n.root && !n.group);
+  const paths = topLevelPaths(copyable);
+  if (!paths.length) return;
+  const single = paths.length === 1 && copyable.some((n) => n.path === paths[0] && n.dir);
+  openCopyDialogFor(paths, parentOf(paths[0]!), single);
+}
+
 function openMoveDialogFor(paths: string[], target?: string, dir?: boolean, done?: () => void) {
   if (!paths.length) return;
   openFileRefactorDialog({

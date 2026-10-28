@@ -170,6 +170,7 @@ export function KeymapPage() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [lead, setLead] = useState<string | null>(null);
   const [recordFor, setRecordFor] = useState<Action | null>(null);
+  const [recordMouse, setRecordMouse] = useState(false);
   const [nameDialog, setNameDialog] = useState<NameDialog>(null);
   const gearRef = useRef<HTMLButtonElement>(null);
 
@@ -249,7 +250,21 @@ export function KeymapPage() {
   const menuFor = (action: Action): MenuItem[] => {
     const bindings = resolveBindings(draft, action.id);
     return [
-      { label: "Add Keyboard Shortcut", icon: "keyboard", run: () => setRecordFor(action) },
+      {
+        label: "Add Keyboard Shortcut",
+        icon: "keyboard",
+        run: () => {
+          setRecordMouse(false);
+          setRecordFor(action);
+        },
+      },
+      {
+        label: "Add Mouse Shortcut",
+        run: () => {
+          setRecordMouse(true);
+          setRecordFor(action);
+        },
+      },
       { kind: "separator" },
       ...(bindings.length
         ? bindings.map((b) => ({
@@ -352,7 +367,11 @@ export function KeymapPage() {
           icon="plus"
           title="Add Keyboard Shortcut"
           disabled={!leadAction}
-          onClick={() => leadAction && setRecordFor(leadAction)}
+          onClick={() => {
+            if (!leadAction) return;
+            setRecordMouse(false);
+            setRecordFor(leadAction);
+          }}
         />
       </div>
 
@@ -417,6 +436,7 @@ export function KeymapPage() {
       {recordFor && (
         <RecordShortcutDialog
           action={recordFor}
+          mouse={recordMouse}
           actions={actions}
           draft={draft}
           onCancel={() => setRecordFor(null)}

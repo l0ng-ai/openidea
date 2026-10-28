@@ -627,6 +627,23 @@ export function highlightUsages(view: EditorView) {
   void fetchHighlights(view, true);
 }
 
+/**
+ * ⌃⌥↓ / ⌃⌥↑: the next (previous) highlighted usage of the element at the caret,
+ * wrapping, with the caret at the same offset inside it.
+ */
+export function gotoHighlightedUsage(view: EditorView, dir: 1 | -1): boolean {
+  const st = view.state.field(highlightField, false);
+  const ranges: { from: number; to: number }[] = [];
+  st?.deco.between(0, view.state.doc.length, (from, to) => void ranges.push({ from, to }));
+  const head = view.state.selection.main.head;
+  const current = ranges.findIndex((r) => r.from <= head && head <= r.to);
+  if (ranges.length < 2 || current < 0) return false;
+  const target = ranges[(current + dir + ranges.length) % ranges.length]!;
+  const pos = Math.min(target.from + (head - ranges[current]!.from), target.to);
+  view.dispatch({ selection: EditorSelection.cursor(pos), scrollIntoView: true, userEvent: "select.navigate" });
+  return true;
+}
+
 const highlightPlugin = ViewPlugin.fromClass(
   class {
     private request = debounce(() => void fetchHighlights(this.view, false), 300);

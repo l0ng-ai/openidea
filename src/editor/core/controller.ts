@@ -875,6 +875,15 @@ export class EditorController implements SlotHost {
     }
   }
 
+  /** Window › Editor Tabs › Goto Next / Previous Splitter: the active tab of the next split pane, wrapping. */
+  focusSplitter(dir: 1 | -1) {
+    const s = useTabs.getState();
+    const ids = paneIds(s).filter((id) => s.panes[id]?.active);
+    if (ids.length < 2) return;
+    const next = ids[(ids.indexOf(s.activePane) + dir + ids.length) % ids.length]!;
+    this.activate(next, s.panes[next]!.active!);
+  }
+
   // --- tab commands -----------------------------------------------------------------------------
 
   private apply(f: (s: TabsState) => TabsState) {

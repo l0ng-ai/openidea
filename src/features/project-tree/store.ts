@@ -55,6 +55,12 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   previewTab: false,
 };
 
+function storedOptions(): ViewOptions {
+  const options = { ...DEFAULT_VIEW_OPTIONS, ...readJson<Partial<ViewOptions>>(OPTIONS_KEY) };
+  if (!["name", "type", "modified"].includes(options.sortBy)) options.sortBy = "name";
+  return options;
+}
+
 /** IDEA's Project view panes ("Project ▾" in the tool window header). */
 export type ViewMode = "project" | "projectFiles" | "openFiles" | "changedFiles" | "scratches";
 
@@ -128,7 +134,7 @@ export const useProjectTree = create<ProjectTreeState>(() => ({
   expanded: new Set(),
   selected: new Set(),
   lead: null,
-  options: { ...DEFAULT_VIEW_OPTIONS, ...readJson<Partial<ViewOptions>>(OPTIONS_KEY) },
+  options: storedOptions(),
   editing: null,
   clipboard: null,
   revealRequest: null,

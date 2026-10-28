@@ -90,7 +90,7 @@ describe("openProjectInWindow", () => {
 
 describe("loose files (LightEdit)", () => {
   it("turns a window without a project into LightEdit when no LightEdit window exists", async () => {
-    windowOpenFiles.mockResolvedValue(ok({ kind: "current" }));
+    windowOpenFiles.mockResolvedValue(ok(["/x/a.txt", "/y/b.md"]));
     await openFiles(["/x/a.txt", "/y/b.md"]);
     expect(windowOpenFiles).toHaveBeenCalledWith(["/x/a.txt", "/y/b.md"]);
     expect(lightEditOpen).toHaveBeenCalledWith("/x/a.txt");
@@ -98,18 +98,26 @@ describe("loose files (LightEdit)", () => {
     expect(opened).toEqual(["/x/a.txt", "/y/b.md (focus)"]);
   });
 
-  it("leaves files to the existing LightEdit window", async () => {
-    windowOpenFiles.mockResolvedValue(ok({ kind: "focused", label: "project-2" }));
+  it("leaves files to the existing LightEdit window or their project's window", async () => {
+    windowOpenFiles.mockResolvedValue(ok([]));
     await openFiles(["/x/a.txt"]);
     expect(lightEditOpen).not.toHaveBeenCalled();
     expect(opened).toEqual([]);
     expect(useProject.getState().lightEdit).toBe(false);
   });
 
+  it("opens only the files the backend leaves to this window", async () => {
+    windowOpenFiles.mockResolvedValue(ok(["/x/b.txt"]));
+    await openFiles(["/p/a.rs", "/x/b.txt"]);
+    expect(lightEditOpen).toHaveBeenCalledWith("/x/b.txt");
+    expect(opened).toEqual(["/x/b.txt (focus)"]);
+  });
+
   it("adds tabs to this LightEdit window", async () => {
     useProject.setState({ lightEdit: true });
+    windowOpenFiles.mockResolvedValue(ok(["/x/c.txt"]));
     await openFiles(["/x/c.txt"]);
-    expect(windowOpenFiles).not.toHaveBeenCalled();
+    expect(windowOpenFiles).toHaveBeenCalledWith(["/x/c.txt"]);
     expect(lightEditOpen).not.toHaveBeenCalled();
     expect(opened).toEqual(["/x/c.txt (focus)"]);
   });
@@ -123,7 +131,7 @@ describe("loose files (LightEdit)", () => {
   });
 
   it("routes dropped files to LightEdit and the dropped folder to a project", async () => {
-    windowOpenFiles.mockResolvedValue(ok({ kind: "current" }));
+    windowOpenFiles.mockResolvedValue(ok(["/x/a.txt"]));
     windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
     useProject.setState({ settings: { general: { openProjectIn: "new" } } } as never);
     await openPaths(["/x/a.txt", "/work/app"], async (p) => p === "/work/app");
@@ -141,7 +149,7 @@ describe("loose files (LightEdit)", () => {
 
   it("classifies paths through the file system by default", async () => {
     fsReadDir.mockResolvedValueOnce({ status: "error", error: { kind: "notFound", message: "not a dir" } } as never);
-    windowOpenFiles.mockResolvedValue(ok({ kind: "current" }));
+    windowOpenFiles.mockResolvedValue(ok(["/x/a.txt"]));
     await openPaths(["/x/a.txt"]);
     expect(fsReadDir).toHaveBeenCalledWith("/x/a.txt");
     expect(lightEditOpen).toHaveBeenCalledWith("/x/a.txt");

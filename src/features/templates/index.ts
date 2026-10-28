@@ -211,6 +211,19 @@ export function activate(): () => void {
         },
       },
       {
+        id: "code.surroundWithLiveTemplate",
+        title: "Surround with Live Template…",
+        category: "Code",
+        when: EDITOR_WHEN,
+        keywords: ["wrap", "snippet", "template", "selection"],
+        run: async () => {
+          const editor = activeEditor();
+          if (!editor) return;
+          const target = await surroundTarget(editor.view, editor.ctx);
+          if (activeEditor()?.view === editor.view) surroundWith(editor.view, target, true);
+        },
+      },
+      {
         id: "emmet.updateTag",
         title: "Update Tag with Emmet",
         category: "Code",

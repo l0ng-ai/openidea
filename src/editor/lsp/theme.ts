@@ -274,7 +274,6 @@ export const lspTheme = EditorView.theme({
     textUnderlineOffset: "2px",
     cursor: "pointer",
   },
-  ".cm-lsp-link *": { color: "var(--link)" },
   ".cm-lsp-occurrence": {
     backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
   },
@@ -383,6 +382,8 @@ export const lspTheme = EditorView.theme({
       },
     ]),
   ),
+  // After the semantic classes: the link wraps their (innermost) spans, and its colour must win.
+  ".cm-lsp-link *": { color: "var(--link)" },
 
   ...markdown,
 });

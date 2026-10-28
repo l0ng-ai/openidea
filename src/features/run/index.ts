@@ -351,6 +351,22 @@ export function activate(): () => void {
         },
       },
       {
+        id: "run.chooseDebugConfig",
+        title: "Debug…",
+        description: "Choose a run/debug configuration and debug it",
+        category: "Run",
+        keywords: ["choose and debug configuration"],
+        when: "projectOpen",
+        run: async () => {
+          if (useRun.getState().chooserOpen || chooserJustClosed()) {
+            useRun.setState({ chooserOpen: false });
+            return;
+          }
+          await ensureConfigs();
+          useRun.setState({ chooserOpen: true, chooserMode: "debug" });
+        },
+      },
+      {
         id: "run.editConfigs",
         title: "Edit Configurations…",
         category: "Run",

@@ -19,6 +19,7 @@ import {
   deleteSelection,
   findFileUsages,
   folderOf,
+  openCopyDialog,
   openMoveDialog,
   openRenameDialog,
   paste,
@@ -224,6 +225,12 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         label: nonRoot.length === 1 ? (nonRoot[0]!.dir ? "Move Directory…" : "Move File…") : "Move…",
         shortcut: keyLabel("project.move"),
         run: () => openMoveDialog(nonRoot),
+      },
+      nonRoot.length > 0 && {
+        id: "copy",
+        label: nonRoot.length === 1 ? (nonRoot[0]!.dir ? "Copy Directory…" : "Copy File…") : "Copy…",
+        shortcut: keyLabel("project.copyElement"),
+        run: () => openCopyDialog(nonRoot),
       },
       nonRoot.length > 0 && { kind: "separator" },
       nonRoot.length > 0 && {

@@ -22,6 +22,7 @@ import { debugUnsupportedReason, launchConfigFor } from "./launch";
 import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
 import {
   activeSession,
+  evaluate,
   isLive,
   rerunSession,
   revealFrame,
@@ -34,7 +35,8 @@ import {
   type DebugSession,
 } from "./state";
 import { focusedDebugView } from "./ui/focusedView";
-import { expressionAt } from "./editor/valueTooltip";
+import { expressionAt, valueHint } from "./editor/valueTooltip";
+import { showHint } from "@/editor/lsp/hint";
 import { pausedLineTargets, startInlineSmartStep } from "./editor/smartStep";
 import {
   openBreakpointsDialog,
@@ -145,6 +147,22 @@ function evaluateSeed(): string {
   const sel = state.selection.main;
   if (!sel.empty) return state.sliceDoc(sel.from, sel.to);
   return expressionAt(ed.view, sel.head)?.text ?? "";
+}
+
+async function quickEvaluate() {
+  const view = activeEditor()?.view;
+  if (!view) return;
+  const sel = view.state.selection.main;
+  const expression = evaluateSeed().trim();
+  if (!expression) return showHint(view, "Nothing to evaluate at the caret");
+  const session = activeSession();
+  try {
+    const value = await evaluate(expression, "hover", session);
+    if (!session) return;
+    showHint(view, () => valueHint(expression, value, session.id), { pos: sel.from, timeout: 60_000 });
+  } catch (e) {
+    showHint(view, e instanceof Error ? e.message : String(e), { pos: sel.from, tone: "error" });
+  }
 }
 
 /**
@@ -591,6 +609,14 @@ export function registerDebugActions(): () => void {
       category: "Debug",
       when: "debugSessionActive",
       run: () => openEvaluateDialog(evaluateSeed()),
+    },
+    {
+      // ⌥⌘F8: the selection (or expression at the caret) evaluated in a value hint, no dialog.
+      id: "debug.quickEvaluate",
+      title: "Quick Evaluate Expression",
+      category: "Debug",
+      when: "debugSessionActive && textEditorActive",
+      run: () => quickEvaluate(),
     },
     {
       id: "debug.showToolWindow",

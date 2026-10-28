@@ -4,6 +4,7 @@
  * evaluates it in the selected frame.
  */
 import type { Extension } from "@codemirror/state";
+import type { DebugSessionId, Variable } from "@/bindings";
 import { hoverTooltip, type EditorView } from "@codemirror/view";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { navigationModifierHeld } from "@/platform/navigationModifier";
@@ -37,6 +38,46 @@ export function expressionAt(view: EditorView, pos: number): { from: number; to:
   return { from: line.from + start, to: line.from + end, text };
 }
 
+/** IDEA's value hint: `expression = value {type}`, objects expandable into a variables tree in place. */
+export function valueHint(
+  expression: string,
+  value: Variable,
+  session: DebugSessionId,
+): { dom: HTMLElement; destroy: () => void } {
+  const dom = document.createElement("div");
+  dom.className = `${styles.valueTooltip} ${selectableText}`;
+  let tree: { unmount(): void } | null = null;
+  if (value.variablesReference > 0) {
+    // IDEA's value hint: the "+" expands the object into a variables tree in place.
+    const expand = document.createElement("button");
+    expand.type = "button";
+    expand.className = styles.valueExpand!;
+    expand.setAttribute("aria-label", tx("Expand value"));
+    expand.setAttribute("aria-expanded", "false");
+    expand.innerHTML = iconMarkup("chevron-right", 12) ?? "";
+    expand.addEventListener("mousedown", (e) => e.preventDefault());
+    expand.addEventListener("click", () => {
+      if (tree) return;
+      expand.remove();
+      dom.classList.replace(selectableText, styles.valueTooltipTree!);
+      dom.replaceChildren();
+      tree = mountValueTree(dom, expression, value, session);
+    });
+    dom.append(expand);
+  }
+  const name = document.createElement("span");
+  name.className = styles.valueName!;
+  name.textContent = `${expression} = `;
+  dom.append(name, inlineValue(value.value, 400));
+  if (value.typeName) {
+    const type = document.createElement("span");
+    type.className = styles.valueType!;
+    type.textContent = `  {${value.typeName}}`;
+    dom.append(type);
+  }
+  return { dom, destroy: () => tree?.unmount() };
+}
+
 export function valueTooltip(): Extension {
   return hoverTooltip(
     async (view, pos) => {
@@ -61,38 +102,7 @@ export function valueTooltip(): Extension {
         end: expr.to,
         above: true,
         create: () => {
-          const dom = document.createElement("div");
-          dom.className = `${styles.valueTooltip} ${selectableText}`;
-          let tree: { unmount(): void } | null = null;
-          if (value.variablesReference > 0) {
-            // IDEA's value hint: the "+" expands the object into a variables tree in place.
-            const expand = document.createElement("button");
-            expand.type = "button";
-            expand.className = styles.valueExpand!;
-            expand.setAttribute("aria-label", tx("Expand value"));
-            expand.setAttribute("aria-expanded", "false");
-            expand.innerHTML = iconMarkup("chevron-right", 12) ?? "";
-            expand.addEventListener("mousedown", (e) => e.preventDefault());
-            expand.addEventListener("click", () => {
-              if (tree) return;
-              expand.remove();
-              dom.classList.replace(selectableText, styles.valueTooltipTree!);
-              dom.replaceChildren();
-              tree = mountValueTree(dom, expr.text, value, session.id);
-            });
-            dom.append(expand);
-          }
-          const name = document.createElement("span");
-          name.className = styles.valueName!;
-          name.textContent = `${expr.text} = `;
-          dom.append(name, inlineValue(value.value, 400));
-          if (value.typeName) {
-            const type = document.createElement("span");
-            type.className = styles.valueType!;
-            type.textContent = `  {${value.typeName}}`;
-            dom.append(type);
-          }
-          return { dom, destroy: () => tree?.unmount() };
+          return valueHint(expr.text, value, session.id);
         },
       };
     },

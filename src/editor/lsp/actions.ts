@@ -1,6 +1,6 @@
 /** Actions of the LSP editor layer (ids from keymaps/intellij-macos.ts). */
 import type { EditorView } from "@codemirror/view";
-import { registerActions, type Action } from "@/platform/actions";
+import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { activeEditor, editorsFor, registerSaveParticipant, type TextEditorHandle } from "@/editor/api";
 import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
@@ -8,8 +8,8 @@ import { explicitCompletion } from "./completion";
 import { triggerSignatureHelp } from "./signature";
 import { quickDefinition, quickDocumentation } from "./hover";
 import { expressionTypeInfo } from "./typeInfo";
-import { gotoTargets, highlightUsages } from "./navigation";
-import { gotoDiagnostic } from "./diagnostics";
+import { gotoHighlightedUsage, gotoTargets, highlightUsages } from "./navigation";
+import { gotoDiagnostic, showErrorDescription } from "./diagnostics";
 import { applyKindSilently, applyQuickFix, runKindAction, showIntentions } from "./intentions";
 import { implementPythonAbstractMethods } from "./pythonMembers";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
@@ -227,7 +227,25 @@ export function registerLspActions(): () => void {
     ),
     editorAction("navigate.nextError", "Next Highlighted Error", "Navigate", (v) => gotoDiagnostic(v, 1)),
     editorAction("navigate.prevError", "Previous Highlighted Error", "Navigate", (v) => gotoDiagnostic(v, -1)),
+    editorAction("code.showErrorDescription", "Error Description", "View", showErrorDescription, {
+      keywords: ["problem", "warning", "tooltip"],
+    }),
     editorAction("find.highlightUsages", "Highlight Usages in File", "Find", highlightUsages),
+    // Shares Next / Previous Occurrence's key on Windows (as in IDEA): that runs without highlighted usages.
+    editorAction(
+      "navigate.nextHighlightedUsage",
+      "Next Highlighted Usage",
+      "Navigate",
+      (v) => gotoHighlightedUsage(v, 1) || executeAction("navigate.nextOccurrence"),
+      { keyWhen: "editorTextFocus" },
+    ),
+    editorAction(
+      "navigate.prevHighlightedUsage",
+      "Previous Highlighted Usage",
+      "Navigate",
+      (v) => gotoHighlightedUsage(v, -1) || executeAction("navigate.prevOccurrence"),
+      { keyWhen: "editorTextFocus" },
+    ),
     {
       // Also outside an editor, where nothing applies: IDEA's "Nothing here" popup.
       id: "refactor.thisMenu",

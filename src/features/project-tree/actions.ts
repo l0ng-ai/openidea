@@ -4,7 +4,7 @@ import { getAction, registerActions, type Action } from "@/platform/actions";
 import { dirname, useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
-import { OPTION_LABELS } from "./HeaderActions";
+import { OPTION_LABELS, SORT_LABELS } from "./HeaderActions";
 import { newMenuItems, revealLabel } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
 import type { ProjectNode } from "./model";
@@ -18,6 +18,7 @@ import {
   findFileUsages,
   folderOf,
   leadNode,
+  openCopyDialog,
   openMoveDialog,
   openRenameDialog,
   openSelection,
@@ -28,6 +29,7 @@ import {
   type PathKind,
 } from "./operations";
 import { nameOf, parentOf } from "./paths";
+import { showFilePathPopup } from "./filePath";
 import { showNewPopup, treeHandle } from "./ProjectView";
 import { lastFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import {
@@ -168,6 +170,15 @@ export function registerProjectActions(): () => void {
       setViewMode(mode);
       showProjectView(false);
     },
+  }));
+
+  const sorts: Action[] = SORT_LABELS.map(([sortBy, label]) => ({
+    id: `project.sortBy.${sortBy}`,
+    title: tx`Project View: ${label}`,
+    category: "View",
+    keywords: ["project", "tree", "sort", "order"],
+    toggled: () => useProjectTree.getState().options.sortBy === sortBy,
+    run: () => setViewOption("sortBy", sortBy),
   }));
 
   return registerActions([
@@ -316,6 +327,33 @@ export function registerProjectActions(): () => void {
       keyWhen: "!popupOpen",
       keywords: ["remove", "trash"],
       run: ({ arg }) => deleteSelection(nodesFrom(arg)),
+    },
+    {
+      // F5 (CopyElement): the Copy dialog for the selection, or for the file in the editor.
+      id: "project.copyElement",
+      title: "Copy…",
+      category: "Project View",
+      icon: "copy",
+      when: OPEN,
+      keyWhen: `${FOCUS} || editorFocus`,
+      keywords: ["copy file", "duplicate file", "clone"],
+      run: ({ arg, ctx }) => {
+        if (arg !== undefined || ctx.projectViewFocus) return openCopyDialog(nodesFrom(arg));
+        const path = activeEditor()?.ctx.path;
+        if (path) openCopyDialog(nodesFrom(path));
+      },
+    },
+    {
+      id: "navigate.showFilePath",
+      title: "File Path",
+      category: "Navigate",
+      when: OPEN,
+      keywords: ["reveal in finder", "show in explorer", "path popup"],
+      run: ({ arg, ctx }) => {
+        const node = typeof arg === "string" || ctx.projectViewFocus ? nodesFrom(arg)[0] : undefined;
+        const path = node?.path ?? activeEditor()?.ctx.path;
+        if (path) showFilePathPopup(path, node?.dir ?? false);
+      },
     },
     { id: "project.copy", title: "Copy", category: "Project View", when: FOCUS, run: () => copySelection(false) },
     { id: "project.cut", title: "Cut", category: "Project View", when: FOCUS, run: () => copySelection(true) },
@@ -470,5 +508,6 @@ export function registerProjectActions(): () => void {
     },
     ...toggles,
     ...modes,
+    ...sorts,
   ]);
 }
