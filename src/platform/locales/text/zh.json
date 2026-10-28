@@ -4635,6 +4635,8 @@
   "Website": "网站",
   "Removing…": "正在移除…",
   "Registry agents": "Registry Agent",
+  "No checksum provided": "未提供校验值",
+  "{name} provides no checksum for its download, so the downloaded file cannot be verified. Install it anyway?": "{name} 未为其下载文件提供校验值，无法校验下载的文件。仍要安装吗？",
   "Usage limit": "用量已达上限",
   "{provider} didn't start: {error}": "{provider} 未能启动：{error}",
   "resets {resetsMs}": "{resetsMs} 重置",

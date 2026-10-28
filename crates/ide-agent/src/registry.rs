@@ -69,6 +69,9 @@ pub struct RegistryAgent {
     /// How it installs here; `None` when it no longer can (an installed agent whose
     /// runtime went away).
     pub distribution: Option<RegistryDistribution>,
+    /// The release archive comes without a SHA-256, so the download cannot be checked.
+    /// npm and uv packages are checked by those tools.
+    pub no_checksum: bool,
     /// The installed version.
     pub installed: Option<String>,
     /// Whether [`Self::version`] is newer than the installed one.
@@ -291,7 +294,9 @@ fn visible(
             } else {
                 None
             };
-            let distribution = choose(e, platform, on_path).map(|c| c.kind());
+            let choice = choose(e, platform, on_path);
+            let no_checksum = matches!(choice, Some(Choice::Binary(b)) if b.sha256.is_none());
+            let distribution = choice.map(|c| c.kind());
             if distribution.is_none() && installed.is_none() {
                 return None;
             }
@@ -306,6 +311,7 @@ fn visible(
                 authors: e.authors.clone(),
                 license: e.license.clone(),
                 distribution,
+                no_checksum,
                 installed,
             })
         })
@@ -741,6 +747,22 @@ mod tests {
         );
         assert_eq!(platform_key(WINDOWS), "windows-x86_64");
         assert_eq!(platform_key(MAC_ARM), "darwin-aarch64");
+    }
+
+    #[test]
+    fn flags_release_archives_without_a_checksum() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = parse(INDEX).unwrap();
+        let flags = |platform| -> Vec<(String, bool)> {
+            visible(&paths(dir.path()), &entries, platform, &|_| true)
+                .into_iter()
+                .map(|a| (a.id, a.no_checksum))
+                .collect()
+        };
+        assert_eq!(flags(MAC_ARM)[0], ("amp-acp".to_owned(), false));
+        assert_eq!(flags(WINDOWS)[0], ("amp-acp".to_owned(), true));
+        // npm and uv check their own packages.
+        assert!(flags(LINUX).iter().all(|(_, no_checksum)| !no_checksum));
     }
 
     #[test]

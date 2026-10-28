@@ -9,6 +9,7 @@ import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { Badge, Button, ProgressBar, SearchField, Spinner, T } from "@/ui";
+import { confirm } from "@/workbench/messages";
 import {
   DISTRIBUTION_LABEL,
   afterInstall,
@@ -73,7 +74,17 @@ export function AgentRegistryPage({
   // The install in progress, for leaving the page.
   const running = useRef<RequestId | null>(null);
 
-  const install = (agent: RegistryAgent) => {
+  const install = async (agent: RegistryAgent) => {
+    if (
+      agent.noChecksum &&
+      !(await confirm({
+        title: tx`Install ${agent.name}`,
+        message: tx`${agent.name} provides no checksum for its download, so the downloaded file cannot be verified. Install it anyway?`,
+        ok: tx("Install"),
+        icon: "warning",
+      }))
+    )
+      return;
     const request = nextRequestId();
     running.current = request;
     setError(agent.id, null);
@@ -165,7 +176,7 @@ export function AgentRegistryPage({
                 removing={removing === agent.id}
                 disabled={busy}
                 error={errors[agent.id] ?? null}
-                onInstall={() => install(agent)}
+                onInstall={() => void install(agent)}
                 onRemove={() => remove(agent)}
                 onCancel={() => job && backend.cancel(job.request)}
               />
@@ -207,6 +218,7 @@ function AgentRow({
           </span>
           <span className={styles.version}>{agent.installed ?? agent.version}</span>
           {agent.distribution && <Badge>{DISTRIBUTION_LABEL[agent.distribution]}</Badge>}
+          {agent.noChecksum && <Badge tone="warning">{tx("No checksum provided")}</Badge>}
           {actions.update && <Badge tone="accent">{tx`${agent.version} available`}</Badge>}
           {agent.installed != null && !actions.update && <Badge tone="success">{tx("Installed")}</Badge>}
         </div>

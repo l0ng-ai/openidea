@@ -4622,6 +4622,11 @@ export type RegistryAgent = {
 	 *  runtime went away).
 	 */
 	distribution: RegistryDistribution | null,
+	/**
+	 *  The release archive comes without a SHA-256, so the download cannot be checked.
+	 *  npm and uv packages are checked by those tools.
+	 */
+	noChecksum: boolean,
 	/**  The installed version. */
 	installed: string | null,
 	/**  Whether [`Self::version`] is newer than the installed one. */

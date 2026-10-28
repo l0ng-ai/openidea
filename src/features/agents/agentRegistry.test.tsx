@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { AgentProvider, AgentRegistry, InstallEvent, RegistryAgent, RequestId } from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { MessagesHost } from "@/workbench/messages";
 import { AgentRegistryPage } from "./AgentRegistryPage";
 import { ADD_AGENT, providerOptions } from "./providerOptions";
 import { afterRemove, matchesQuery, rowActions, sortAgents, type RegistryBackend } from "./registry";
@@ -15,6 +16,7 @@ const agent = (partial: Partial<RegistryAgent> & Pick<RegistryAgent, "id" | "nam
   authors: [],
   license: null,
   distribution: "npx",
+  noChecksum: false,
   installed: null,
   update: false,
   ...partial,
@@ -174,6 +176,46 @@ describe("Agents settings page", () => {
     expect(onChanged).toHaveBeenCalledTimes(1);
     expect(within(row("Amp")).getByText("Installed")).toBeInTheDocument();
     expect(within(row("Amp")).getByRole("button", { name: "Remove" })).toBeEnabled();
+  });
+
+  it("asks before installing an agent whose download has no checksum", async () => {
+    const backend = new FakeBackend();
+    backend.registry = { agents: [{ ...AMP, noChecksum: true }], warning: null };
+    render(
+      <>
+        <AgentRegistryPage backend={backend} />
+        <MessagesHost />
+      </>,
+    );
+    await waitFor(() => expect(row("Amp")).toBeInTheDocument());
+    expect(within(row("Amp")).getByText("No checksum provided")).toBeInTheDocument();
+
+    fireEvent.click(within(row("Amp")).getByRole("button", { name: "Install" }));
+    let dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Amp provides no checksum for its download");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(backend.installs).toEqual([]);
+
+    fireEvent.click(within(row("Amp")).getByRole("button", { name: "Install" }));
+    dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Install" }));
+    await waitFor(() => expect(backend.installs).toEqual(["amp-acp"]));
+  });
+
+  it("installs an agent with a checksum without asking", async () => {
+    const backend = new FakeBackend();
+    render(
+      <>
+        <AgentRegistryPage backend={backend} />
+        <MessagesHost />
+      </>,
+    );
+    await waitFor(() => expect(row("Amp")).toBeInTheDocument());
+    expect(screen.queryByText("No checksum provided")).toBeNull();
+    fireEvent.click(within(row("Amp")).getByRole("button", { name: "Install" }));
+    await waitFor(() => expect(backend.installs).toEqual(["amp-acp"]));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("shows why an install failed, and cancels one when the page closes", async () => {
