@@ -574,6 +574,8 @@ impl AgentManager {
     pub fn shutdown(&self) {
         for task in self.tasks.read().values() {
             task.kill();
+            // What arrived after the last save (a subagent's late updates).
+            task.persist();
         }
         *self.shared.sink.write() = None;
     }
@@ -925,8 +927,7 @@ impl Task {
         // A subagent's title, settings and usage are its own, not the task's.
         if self.state.lock().conversation.owner(session).is_some() {
             if !SESSION_STATE.contains(&kind) && !self.replaying.load(Ordering::Acquire) {
-                let applied = self.state.lock().conversation.apply(session, update, now_ms());
-                self.mark_dirty(applied);
+                self.apply(session, kind, update);
             }
             return;
         }
@@ -984,8 +985,16 @@ impl Task {
         if self.replaying.load(Ordering::Acquire) {
             return;
         }
+        self.apply(session, kind, update);
+    }
+
+    fn apply(self: &Arc<Self>, session: Option<&str>, kind: &str, update: &Value) {
         let applied = self.state.lock().conversation.apply(session, update, now_ms());
         self.mark_dirty(applied);
+        // A subagent can start or finish after the turn that started it: saved right away.
+        if kind == "subagent_update" {
+            self.persist();
+        }
     }
 
     /// Blocks the calling (blocking-pool) thread until the user answers.

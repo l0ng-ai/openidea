@@ -426,6 +426,13 @@ async fn subagents_get_their_own_conversation() {
         assert!(matches!(&sub[0], AgentEntry::Tool { title, .. } if title == "Read lexer.rs"));
         assert_eq!(sub[1], AgentEntry::Agent { text: "It is in lexer.rs".into() });
     };
+    // Updates can trail the end of the turn.
+    for _ in 0..500 {
+        if mgr.entries(&task.id, None).unwrap().contains(&AgentEntry::Agent { text: "Found it".into() }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     check(&mgr);
     // The subagent's context use is not the task's.
     assert_ne!(mgr.task(&task.id).unwrap().state.lock().task.usage.as_ref().map(|u| u.used), Some(900));
