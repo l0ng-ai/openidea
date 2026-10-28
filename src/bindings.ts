@@ -658,11 +658,11 @@ export const commands = {
 	date: string | null,
 } | null>("app_startup_update_check"),
 	/**
-	 *  Downloads and installs the available update, then quits through every
-	 *  window's unsaved-changes check and relaunches. If a window cancels the quit,
-	 *  the update applies on the next start.
+	 *  Downloads and installs the available update, streaming progress to `on_progress`.
+	 *  Cancellable through `request` until the download completes; the UI then restarts
+	 *  with `app_restart`. One install runs at a time.
 	 */
-	appInstallUpdate: () => typedError<null, IdeError>(__TAURI_INVOKE("app_install_update")),
+	appInstallUpdate: (request: RequestId, onProgress: Channel<UpdateProgress>) => typedError<null, IdeError>(__TAURI_INVOKE("app_install_update", { request, onProgress })),
 	debugExceptionFilters: () => typedError<SessionExceptionFilters[], IdeError>(__TAURI_INVOKE("debug_exception_filters")),
 	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
 	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
@@ -5656,6 +5656,13 @@ export type UpdateInfo = {
 	notes: string | null,
 	date: string | null,
 };
+
+/**  Progress of [`app_install_update`], streamed to the UI's background task. */
+export type UpdateProgress = 
+/**  Bytes received so far; `total` when the server sends a length. */
+{ type: "downloading"; downloaded: number | null; total: number | null } | 
+/**  Download done; the new version is being written over this one. */
+{ type: "installing" };
 
 export type Variable = {
 	name: string,

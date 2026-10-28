@@ -2,12 +2,13 @@ import { redo, undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import type { Action } from "@/platform/actions";
 import { t } from "@/platform/i18n";
-import { call, commands, isTauri, type UpdateInfo } from "@/platform/ipc";
+import { call, commands, isTauri } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { showAbout } from "./AboutDialog";
 import { quitApp } from "./closeGuard";
 import { guessOs } from "./host";
 import { showKeymapReference } from "./KeymapReference";
+import { checkForUpdates } from "./updates";
 
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
@@ -22,59 +23,6 @@ export async function showLog(): Promise<void> {
   } catch (e) {
     notifications().notify({ level: "error", title: t("app.log.failed"), body: errorText(e) });
   }
-}
-
-/** Manual update check. Does nothing over the network unless an endpoint is configured. */
-export async function checkForUpdates(): Promise<void> {
-  if (!isTauri()) return;
-  try {
-    const r = await call(commands.appCheckUpdate());
-    if (!r.enabled) {
-      notifications().notify({
-        level: "info",
-        title: t("app.update.disabled"),
-        body: t("app.update.disabledBody"),
-        key: "app.update",
-      });
-    } else if (!r.update) {
-      const info = await commands.appBuildInfo();
-      notifications().notify({
-        level: "info",
-        title: t("app.update.none", { version: info.version }),
-        key: "app.update",
-      });
-    } else {
-      notifyUpdate(r.update);
-    }
-  } catch (e) {
-    notifications().notify({ level: "error", title: t("app.update.failed"), body: errorText(e), key: "app.update" });
-  }
-}
-
-/** Silent check once per app start; only an available update is shown. */
-export async function checkForUpdatesOnStartup(): Promise<void> {
-  if (!isTauri()) return;
-  const update = await commands.appStartupUpdateCheck().catch(() => null);
-  if (update) notifyUpdate(update);
-}
-
-function notifyUpdate(update: UpdateInfo) {
-  notifications().notify({
-    level: "info",
-    title: t("app.update.available", { version: update.version }),
-    body: update.notes ?? undefined,
-    sticky: true,
-    key: "app.update",
-    actions: [
-      {
-        label: t("app.update.install"),
-        run: () =>
-          void call(commands.appInstallUpdate()).catch((e) =>
-            notifications().notify({ level: "error", title: t("app.update.installFailed"), body: errorText(e) }),
-          ),
-      },
-    ],
-  });
 }
 
 /**

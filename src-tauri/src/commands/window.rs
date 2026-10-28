@@ -3,10 +3,12 @@
 use crate::menu::{self, MenuConfig, MenuState};
 use crate::state::AppState;
 use crate::windows::{self, Launch, OpenOutcome, WindowsState};
-use ide_core::{IdeError, IdeResult};
+use ide_core::{IdeError, IdeResult, RequestId};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
@@ -325,7 +327,6 @@ pub async fn app_check_update(app: AppHandle) -> IdeResult<UpdateCheck> {
 #[tauri::command]
 #[specta::specta]
 pub async fn app_startup_update_check(app: AppHandle) -> Option<UpdateInfo> {
-    use std::sync::atomic::{AtomicBool, Ordering};
     static DONE: AtomicBool = AtomicBool::new(false);
     if cfg!(debug_assertions) || DONE.swap(true, Ordering::SeqCst) {
         return None;
@@ -339,20 +340,140 @@ pub async fn app_startup_update_check(app: AppHandle) -> Option<UpdateInfo> {
     }
 }
 
-/// Downloads and installs the available update, then quits through every
-/// window's unsaved-changes check and relaunches. If a window cancels the quit,
-/// the update applies on the next start.
+/// Progress of [`app_install_update`], streamed to the UI's background task.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum UpdateProgress {
+    /// Bytes received so far; `total` when the server sends a length.
+    Downloading { downloaded: f64, total: Option<f64> },
+    /// Download done; the new version is being written over this one.
+    Installing,
+}
+
+/// Limits download events to one per whole percent (or per 256 KiB without a length).
+#[derive(Default)]
+struct ProgressThrottle {
+    downloaded: u64,
+    last_step: Option<u64>,
+}
+
+impl ProgressThrottle {
+    const UNKNOWN_STEP: u64 = 256 * 1024;
+
+    fn chunk(&mut self, len: usize, total: Option<u64>) -> Option<UpdateProgress> {
+        self.downloaded += len as u64;
+        let step = match total {
+            Some(t) if t > 0 => self.downloaded.min(t) * 100 / t,
+            _ => self.downloaded / Self::UNKNOWN_STEP,
+        };
+        if self.last_step == Some(step) {
+            return None;
+        }
+        self.last_step = Some(step);
+        Some(UpdateProgress::Downloading { downloaded: self.downloaded as f64, total: total.map(|t| t as f64) })
+    }
+}
+
+/// Set while an update is being downloaded or installed (by any window).
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+struct InstallingGuard;
+
+impl InstallingGuard {
+    fn acquire() -> Option<Self> {
+        (!INSTALLING.swap(true, Ordering::SeqCst)).then_some(Self)
+    }
+}
+
+impl Drop for InstallingGuard {
+    fn drop(&mut self) {
+        INSTALLING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Downloads and installs the available update, streaming progress to `on_progress`.
+/// Cancellable through `request` until the download completes; the UI then restarts
+/// with `app_restart`. One install runs at a time.
 #[tauri::command]
 #[specta::specta]
-pub async fn app_install_update(app: AppHandle, windows: State<'_, WindowsState>) -> IdeResult<()> {
-    let updater = updater(&app)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| IdeError::unavailable(e.to_string()))?
+pub async fn app_install_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: RequestId,
+    on_progress: Channel<UpdateProgress>,
+) -> IdeResult<()> {
+    let _guard =
+        InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
+    let token = state.host.begin_request(request);
+    let result = async {
+        let updater = updater(&app)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
+        let update = tokio::select! {
+            r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+            _ = token.cancelled() => return Err(IdeError::cancelled()),
+        }
         .ok_or_else(|| IdeError::not_found("no update available"))?;
-    update.download_and_install(|_, _| {}, || {}).await.map_err(|e| IdeError::internal(e.to_string()))?;
-    windows.set_restart();
-    app_quit(app, windows);
-    Ok(())
+        let mut throttle = ProgressThrottle::default();
+        let progress = on_progress.clone();
+        let download = update.download(
+            move |len, total| {
+                if let Some(p) = throttle.chunk(len, total) {
+                    let _ = progress.send(p);
+                }
+            },
+            || {},
+        );
+        let bytes = tokio::select! {
+            r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+            _ = token.cancelled() => return Err(IdeError::cancelled()),
+        };
+        let _ = on_progress.send(UpdateProgress::Installing);
+        tauri::async_runtime::spawn_blocking(move || update.install(bytes))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?
+            .map_err(|e| IdeError::internal(e.to_string()))
+    }
+    .await;
+    state.host.end_request(request);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn downloading(p: Option<UpdateProgress>) -> Option<(f64, Option<f64>)> {
+        match p? {
+            UpdateProgress::Downloading { downloaded, total } => Some((downloaded, total)),
+            UpdateProgress::Installing => None,
+        }
+    }
+
+    #[test]
+    fn throttle_reports_each_whole_percent_once() {
+        let mut t = ProgressThrottle::default();
+        assert_eq!(downloading(t.chunk(1, Some(1000))), Some((1.0, Some(1000.0))));
+        assert_eq!(downloading(t.chunk(5, Some(1000))), None);
+        assert_eq!(downloading(t.chunk(4, Some(1000))), Some((10.0, Some(1000.0))));
+        let reported = (0..99).filter(|_| t.chunk(10, Some(1000)).is_some()).count();
+        assert_eq!(reported, 99);
+        assert_eq!(t.downloaded, 1000);
+    }
+
+    #[test]
+    fn throttle_without_length_reports_per_step() {
+        let mut t = ProgressThrottle::default();
+        assert!(t.chunk(10, None).is_some());
+        assert!(t.chunk(1024, None).is_none());
+        assert_eq!(downloading(t.chunk(256 * 1024, None)), Some(((256 * 1024 + 1034) as f64, None)));
+        // A zero length is treated as unknown, not divided by.
+        assert!(ProgressThrottle::default().chunk(1, Some(0)).is_some());
+    }
+
+    #[test]
+    fn only_one_install_at_a_time() {
+        let first = InstallingGuard::acquire().expect("first install starts");
+        assert!(InstallingGuard::acquire().is_none());
+        drop(first);
+        assert!(InstallingGuard::acquire().is_some());
+    }
 }
