@@ -80,7 +80,10 @@ export const EDITOR_EXTRA_DEFAULTS = {
   appearance: {
     caretBlinking: true,
     caretBlinkPeriod: 500,
+    smoothCaretBlinking: false,
     blockCaret: false,
+    smoothCaretMovement: false,
+    caretMovementStyle: "snappy",
     lineNumbers: true,
     methodSeparators: false,
     whitespaceLeading: true,

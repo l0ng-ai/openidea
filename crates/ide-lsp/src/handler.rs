@@ -12,6 +12,9 @@ use lsp_types as lsp;
 use serde_json::{Value, json};
 use std::sync::{Arc, Weak};
 
+/// Progress token standing for `angular/projectLoadingStart` … `Finish`.
+const ANGULAR_LOADING: &str = "angular/projectLoading";
+
 pub struct ClientHandler {
     mgr: Weak<LspManager>,
     server: Arc<Server>,
@@ -201,6 +204,17 @@ impl Handler for ClientHandler {
                 }
             }
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
+            // The Angular server's project loading, shown like `$/progress`; one
+            // task while several projects load.
+            "angular/projectLoadingStart" if !self.server.progress.lock().contains_key(ANGULAR_LOADING) => self
+                .progress(
+                    &mgr,
+                    json!({ "token": ANGULAR_LOADING, "value": { "kind": "begin", "title": "Loading Angular project" } }),
+                ),
+            "angular/projectLoadingStart" => {}
+            "angular/projectLoadingFinish" => {
+                self.progress(&mgr, json!({ "token": ANGULAR_LOADING, "value": { "kind": "end" } }))
+            }
             "telemetry/event" | "$/logTrace" | "$/cancelRequest" => {}
             other => tracing::trace!("[{}] unhandled notification {other}", self.server.name),
         }

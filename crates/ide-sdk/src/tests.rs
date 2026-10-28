@@ -27,6 +27,7 @@ fn server(name: &str) -> LanguageServerConfig {
         args: vec![],
         env: BTreeMap::new(),
         root_markers: vec![],
+        require_root_marker: false,
         initialization_options: None,
         settings: None,
         install_hint: None,
@@ -598,6 +599,78 @@ fn vue_language_server_gets_a_typescript_with_the_language_service_api() {
     configure_server(&mut cfg, &project, &project, &s);
     let lib = project.join("node_modules/typescript/lib");
     assert_eq!(cfg.args, [format!("--tsdk={}", lib.to_string_lossy())]);
+}
+
+/// An npm shim for `name` in `dir`: `name.cmd` on Windows, an executable elsewhere.
+fn npm_shim(dir: &Path, name: &str) -> std::path::PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let shim = dir.join(if cfg!(windows) { format!("{name}.cmd") } else { name.to_owned() });
+    std::fs::write(&shim, "").unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    shim
+}
+
+#[test]
+fn angular_language_server_probes_its_own_package_then_the_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tools = tmp.path().join("tools/node_modules");
+    let project = tmp.path().join("app");
+    let ngserver = npm_shim(&tools.join(".bin"), "ngserver");
+    for (p, content) in [
+        (tools.join("@angular/language-server/package.json"), "{}"),
+        (project.join("node_modules/@angular/core/package.json"), r#"{"version":"17.3.0"}"#),
+        (project.join("node_modules/typescript/lib/tsserver.js"), ""),
+    ] {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, content).unwrap();
+    }
+    let configured = |command: &str, s: &Settings| {
+        let mut cfg = server("angular-language-server");
+        cfg.command = command.into();
+        cfg.args = vec!["--stdio".into()];
+        configure_server(&mut cfg, &project, &project, s);
+        cfg
+    };
+    let probes = format!("{},{}", tools.join("@angular/language-server").to_string_lossy(), project.to_string_lossy());
+    let cfg = configured(&ngserver.to_string_lossy(), &Settings::default());
+    assert_eq!(
+        cfg.args,
+        [
+            "--stdio",
+            "--ngProbeLocations",
+            &probes,
+            "--tsProbeLocations",
+            &probes,
+            "--angularCoreVersion",
+            "17.3.0",
+            "--disableLetSyntax"
+        ]
+    );
+    assert_eq!(cfg.launch_error, None);
+
+    // The project's TypeScript when selected.
+    let mut s = Settings::default();
+    s.languages.typescript.version = "workspace".into();
+    let args = configured(&ngserver.to_string_lossy(), &s).args;
+    let tsdk = args.iter().position(|a| a == "--tsdk").map(|i| args[i + 1].clone());
+    assert_eq!(tsdk, Some(project.join("node_modules/typescript/lib").to_string_lossy().into_owned()));
+
+    // Found on the selected Node.js's PATH like the launcher finds it, and
+    // launched from there.
+    let mut s = Settings::default();
+    s.languages.node.interpreter = tools.join(".bin/node").to_string_lossy().into_owned();
+    let cfg = configured("ngserver", &s);
+    assert_eq!(dunce::canonicalize(&cfg.command).unwrap(), dunce::canonicalize(&ngserver).unwrap());
+    assert!(cfg.args.contains(&probes));
+
+    // Without its package the server can't start; not installed, it asks to be.
+    let lone = npm_shim(&tmp.path().join("bin"), "ngserver");
+    let cfg = configured(&lone.to_string_lossy(), &Settings::default());
+    assert!(cfg.launch_error.is_some_and(|m| m.contains("@angular/language-server")));
+    assert_eq!(cfg.args, ["--stdio"]);
+    let cfg = configured(&tmp.path().join("nowhere/ngserver").to_string_lossy(), &Settings::default());
+    assert_eq!((cfg.launch_error, cfg.args), (None, vec!["--stdio".to_owned()]));
 }
 
 #[test]

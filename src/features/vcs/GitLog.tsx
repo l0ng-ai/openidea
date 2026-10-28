@@ -40,6 +40,7 @@ import {
   extendCommitSelection,
   goToChild,
   goToParent,
+  initLogBranchFilter,
   isMine,
   loadMore,
   ME,
@@ -49,6 +50,7 @@ import {
   selectCommit,
   selectGitTab,
   selectedCommits,
+  setLogBranches,
   setLogFilters,
   toggleCommitSelection,
   updateLogOptions,
@@ -164,6 +166,7 @@ function LogView() {
   const root = useVcs((s) => s.root);
   const repo = useVcs((s) => s.repo);
   const showBranches = useLogOptions((s) => s.showBranches);
+  const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const lastRefs = useRef<string | null>(null);
 
   // On mount, when the window switches to another project and when another of its
@@ -173,6 +176,18 @@ function LogView() {
     if (!useGitLog.getState().commits.length) void reloadLog();
     void loadBranches().catch(() => undefined);
   }, [root, repo]);
+
+  // Once the repository's branches are known, settle the branch filter (the
+  // remembered refs, else the current branch) and load the log with it.
+  useEffect(() => {
+    if (!branchesLoaded) return;
+    // The refs the log is loaded with, so the first checkout or commit after this reloads it.
+    const { branch, branches } = useVcs.getState();
+    lastRefs.current = refsSignature(branch, branches);
+    const settled = initLogBranchFilter();
+    const { commits, loading } = useGitLog.getState();
+    if (settled || (!commits.length && !loading)) void reloadLog();
+  }, [root, repo, branchesLoaded]);
 
   // HEAD or a branch tip moved (commit, undo, reset, rebase, fetch…): reload (keeps the selection).
   useEffect(() => {
@@ -379,7 +394,7 @@ export function BranchesPanel() {
             // selected one when it is part of a multi-selection; checking out stays in the context menu.
             if (!n.ref) return;
             const sel = selected.has(n.key) ? targets.map((r) => r.ref) : [n.ref];
-            setLogFilters({ branches: sel });
+            setLogBranches(sel);
           }}
           onContextMenu={(n, _s, e) => {
             const items = n?.branch ? branchMenu(n.branch, current) : [];
@@ -486,7 +501,7 @@ function FilterBar() {
       initial: filters.branches,
       customLabel: "Other revisions (comma-separated):",
     });
-    if (r) setLogFilters({ branches: r });
+    if (r) setLogBranches(r);
   };
 
   const openUser = (e: ReactMouseEvent<HTMLElement>) => {
@@ -578,7 +593,7 @@ function FilterBar() {
         label="Branch"
         value={filters.branches.join(", ") || null}
         onOpen={(e) => setBranchAnchor(e.currentTarget)}
-        onClear={() => setLogFilters({ branches: [] })}
+        onClear={() => setLogBranches([])}
       />
       {branchAnchor && (
         <BranchFilterPopup
@@ -587,7 +602,7 @@ function FilterBar() {
           selected={filters.branches}
           onClose={() => setBranchAnchor(null)}
           onSelect={(branch) => {
-            setLogFilters({ branches: [branch] });
+            setLogBranches([branch]);
             setBranchAnchor(null);
           }}
           onSelectMany={() => void selectBranches()}

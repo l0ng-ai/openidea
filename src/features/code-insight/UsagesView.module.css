@@ -92,6 +92,40 @@
   color: var(--fg-search-match, inherit);
   border-radius: 2px;
 }
+/* Lezer classHighlighter tokens of usage lines (same colours as Find in Files results). */
+.preview :global(.tok-keyword),
+.preview :global(.tok-modifier),
+.preview :global(.tok-controlKeyword),
+.preview :global(.tok-operatorKeyword) {
+  color: var(--syn-keyword);
+}
+.preview :global(.tok-string),
+.preview :global(.tok-string2) {
+  color: var(--syn-string);
+}
+.preview :global(.tok-number),
+.preview :global(.tok-bool),
+.preview :global(.tok-atom) {
+  color: var(--syn-number);
+}
+.preview :global(.tok-typeName),
+.preview :global(.tok-className),
+.preview :global(.tok-namespace) {
+  color: var(--syn-type);
+}
+.preview :global(.tok-comment) {
+  color: var(--syn-comment);
+}
+.preview :global(.tok-meta),
+.preview :global(.tok-macroName) {
+  color: var(--syn-annotation);
+}
+.preview :global(.tok-propertyName) {
+  color: var(--syn-property);
+}
+.preview :global(.tok-variableName.tok-definition) {
+  color: var(--syn-function);
+}
 
 .note {
   min-width: 0;

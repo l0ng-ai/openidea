@@ -82,6 +82,11 @@ describe("config merge / override", () => {
       cfg({ id: "cargo:run:app", name: "cargo run app" }),
     ];
     expect(defaultSelection(list)?.id).toBe("cargo:run:app");
+    const spring = [
+      cfg({ id: "maven:spring-boot:run", kind: "maven" }),
+      cfg({ id: "application:demo.App", kind: "spring-boot" }),
+    ];
+    expect(defaultSelection(spring)?.id).toBe("application:demo.App");
   });
 });
 

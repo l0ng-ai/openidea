@@ -1,12 +1,13 @@
 /**
  * IDEA's "Keyboard Shortcut" dialog: records a first (and optional second)
  * stroke and lists conflicts live; OK with conflicts asks whether to remove the
- * other assignments (Remove / Leave / Cancel).
+ * other assignments (Remove / Leave / Cancel). With `mouse` it is the "Mouse
+ * Shortcut" dialog: a click on its pad records the button and modifiers.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { Checkbox, Dialog, Icon, Kbd, T } from "@/ui";
 import type { Action } from "@/platform/actions";
-import { normalizeBinding } from "@/platform/keymap";
+import { formatBinding, mouseStrokeOf, normalizeBinding, suspendKeyboardDispatch } from "@/platform/keymap";
 import { ask } from "@/workbench/messages";
 import { findConflicts, resolveBindings, type Conflict, type KeymapDraft } from "./model";
 import { groupPath } from "./groups";
@@ -21,14 +22,16 @@ export interface RecordShortcutDialogProps {
   onCancel: () => void;
   /** `removeConflicts`: also unbind the conflicting assignments. */
   onSubmit: (binding: string, conflicts: Conflict[], removeConflicts: boolean) => void;
+  /** Record a mouse shortcut (side buttons with modifiers) instead of keys. */
+  mouse?: boolean;
 }
 
-export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmit }: RecordShortcutDialogProps) {
+export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmit, mouse }: RecordShortcutDialogProps) {
   const [first, setFirst] = useState("");
   const [second, setSecond] = useState("");
   const [useSecond, setUseSecond] = useState(false);
 
-  const binding = first && useSecond ? (second ? `${first} ${second}` : "") : first;
+  const binding = mouse ? first : first && useSecond ? (second ? `${first} ${second}` : "") : first;
   const conflicts = useMemo(
     () => (binding ? findConflicts(draft, binding, action.id, actions) : []),
     [binding, draft, action.id, actions],
@@ -62,7 +65,7 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
     <Dialog
       open
       onClose={onCancel}
-      title={tx`Keyboard Shortcut: ${action.title}`}
+      title={mouse ? tx`Mouse Shortcut: ${action.title}` : tx`Keyboard Shortcut: ${action.title}`}
       width={440}
       buttons={[
         { label: "OK", role: "default", disabled: !binding || already, onClick: () => void ok() },
@@ -70,25 +73,18 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
       ]}
     >
       <div className={styles.recordBody}>
-        <div className={styles.recordRow}>
-          <span className={styles.recordLabel}>
-            <T>First stroke:</T>
-          </span>
-          <StrokeRecorder autoFocus value={first} onChange={setFirst} aria-label="First stroke" />
-        </div>
-        <div className={styles.recordRow}>
-          <Checkbox checked={useSecond} onChange={setUseSecond} label="Second stroke:" />
-          <StrokeRecorder
-            value={second}
-            onChange={setSecond}
-            disabled={!useSecond}
-            placeholder={useSecond ? "Press a shortcut" : ""}
-            aria-label="Second stroke"
+        {mouse ? (
+          <MouseRecorder value={first} onChange={setFirst} />
+        ) : (
+          <KeyStrokes
+            first={first}
+            second={second}
+            useSecond={useSecond}
+            setFirst={setFirst}
+            setSecond={setSecond}
+            setUseSecond={setUseSecond}
           />
-        </div>
-        <div className={styles.recordHint}>
-          <T>Keys are recorded as pressed, including Tab and Esc. Use the buttons to finish.</T>
-        </div>
+        )}
         <div className={styles.conflictsLabel}>
           <T>Conflicts:</T>
         </div>
@@ -144,5 +140,71 @@ function ConflictList({ conflicts }: { conflicts: readonly Conflict[] }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+interface KeyStrokesProps {
+  first: string;
+  second: string;
+  useSecond: boolean;
+  setFirst: (v: string) => void;
+  setSecond: (v: string) => void;
+  setUseSecond: (v: boolean) => void;
+}
+
+function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecond }: KeyStrokesProps) {
+  return (
+    <>
+      <div className={styles.recordRow}>
+        <span className={styles.recordLabel}>
+          <T>First stroke:</T>
+        </span>
+        <StrokeRecorder autoFocus value={first} onChange={setFirst} aria-label="First stroke" />
+      </div>
+      <div className={styles.recordRow}>
+        <Checkbox checked={useSecond} onChange={setUseSecond} label="Second stroke:" />
+        <StrokeRecorder
+          value={second}
+          onChange={setSecond}
+          disabled={!useSecond}
+          placeholder={useSecond ? "Press a shortcut" : ""}
+          aria-label="Second stroke"
+        />
+      </div>
+      <div className={styles.recordHint}>
+        <T>Keys are recorded as pressed, including Tab and Esc. Use the buttons to finish.</T>
+      </div>
+    </>
+  );
+}
+
+/** Pad that records a side-button click with its modifiers; shortcuts stay off while the dialog is open. */
+function MouseRecorder({ value, onChange }: { value: string; onChange: (binding: string) => void }) {
+  useEffect(() => suspendKeyboardDispatch(), []);
+  const record = (e: MouseEvent<HTMLDivElement>) => {
+    const stroke = mouseStrokeOf(e.nativeEvent);
+    if (!stroke) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onChange(stroke);
+  };
+  return (
+    <div
+      role="textbox"
+      aria-readonly="true"
+      aria-label="Mouse shortcut"
+      className={styles.mousePad}
+      onMouseDown={record}
+      onAuxClick={(e) => e.preventDefault()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      {value ? (
+        <span className={styles.recorded}>{formatBinding(value)}</span>
+      ) : (
+        <span className={styles.recorderPlaceholder}>
+          <T>Click here with a mouse side button, holding any modifiers</T>
+        </span>
+      )}
+    </div>
   );
 }

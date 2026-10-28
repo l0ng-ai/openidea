@@ -5,6 +5,7 @@
 import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
+import { tokenSpans, useLineTokens } from "@/editor/lineTokens";
 import { formatMessage, useTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -46,12 +47,13 @@ type Node =
   | { kind: "usage"; key: string; usage: Usage };
 
 export function UsagePreview({ usage }: { usage: Usage }) {
-  const { text, from, to } = trimPreview(usage);
+  const { text, textCol, from, to } = trimPreview(usage);
+  const tokens = useLineTokens({ path: usage.path, line: usage.line, col: textCol }, text);
   return (
     <span className={styles.preview}>
-      {text.slice(0, from)}
-      <mark className={styles.match}>{text.slice(from, to)}</mark>
-      {text.slice(to)}
+      {tokenSpans(text, 0, from, tokens, "b:")}
+      <mark className={styles.match}>{tokenSpans(text, from, to, tokens, "m:")}</mark>
+      {tokenSpans(text, to, text.length, tokens, "a:")}
     </span>
   );
 }

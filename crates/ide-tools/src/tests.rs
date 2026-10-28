@@ -72,6 +72,10 @@ fn everything_missing_on_an_empty_system() {
     assert_eq!(ty.command, "ty");
     assert_eq!(ty.install_method.as_deref(), Some("pip (virtualenv)"));
     assert!(ty.languages.iter().any(|language| language == "Python"));
+    let angular = find(&list, "angular-language-server");
+    assert_eq!(angular.command, "ngserver");
+    assert_eq!(angular.install_method.as_deref(), Some("npm"));
+    assert_eq!(angular.languages, ["HTML", "TypeScript"]);
     // Servers without an installer are listed with their manual hint.
     let hls = find(&list, "haskell-language-server");
     assert_eq!(hls.install_method, None);

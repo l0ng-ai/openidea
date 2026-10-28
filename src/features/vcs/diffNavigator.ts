@@ -4,6 +4,10 @@ export interface DiffNavigator {
   next(): void;
   prev(): void;
   jumpToSource(): void;
+  /** Apply the change at the caret from the left side to the right (`a`) or back (`b`). */
+  applyChange(source: "a" | "b"): boolean;
+  /** Open the next / previous file of the diff chain (changes of a commit or change list). */
+  file(dir: 1 | -1): void;
 }
 
 let focused: DiffNavigator | null = null;

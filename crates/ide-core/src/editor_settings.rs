@@ -55,7 +55,13 @@ pub struct EditorAppearanceSettings {
     pub caret_blinking: bool,
     /// Blink period in ms.
     pub caret_blink_period: u32,
+    /// Fade the caret in and out instead of toggling it; rounds its corners.
+    pub smooth_caret_blinking: bool,
     pub block_caret: bool,
+    /// Animate the caret between positions when it is moved.
+    pub smooth_caret_movement: bool,
+    /// Smooth caret movement curve: `snappy` | `gliding`.
+    pub caret_movement_style: String,
     pub line_numbers: bool,
     pub method_separators: bool,
     /// Sub-options of `editor.showWhitespace`.
@@ -75,7 +81,10 @@ impl Default for EditorAppearanceSettings {
         Self {
             caret_blinking: true,
             caret_blink_period: 500,
+            smooth_caret_blinking: false,
             block_caret: false,
+            smooth_caret_movement: false,
+            caret_movement_style: "snappy".into(),
             line_numbers: true,
             method_separators: false,
             whitespace_leading: true,

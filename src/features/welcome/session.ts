@@ -106,9 +106,9 @@ export async function reopenLastProject(): Promise<void> {
     /* use the local preference */
   }
   if (!reopenEnabled(settings, useSession.getState().reopenPref)) return;
-  // A project passed on the command line wins over the last session's.
+  // A project or files passed on the command line (or from Finder) win over the last session's.
   await startupLaunchHandled();
-  if (useProject.getState().project) return;
+  if (useProject.getState().project || useProject.getState().lightEdit) return;
   await reopen(path);
 }
 

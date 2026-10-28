@@ -1,8 +1,9 @@
 /**
- * Run configurations in the Services tool window (IDEA's Run Dashboard): the
- * configuration types added there ("Add Service › Run Configuration Type") and
- * the types of this window's run sessions, one group each, with run / stop /
- * rerun / show output per configuration.
+ * Run configurations in the Services tool window (IDEA's Run Dashboard): Spring
+ * Boot by default, the configuration types added there ("Add Service › Run
+ * Configuration Type") and the types of this window's run sessions, one group
+ * each, with run / debug / stop / rerun per configuration. A configuration that
+ * ran shows its console in the detail pane, a running web application its HTTP port.
  */
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
@@ -14,30 +15,38 @@ import { Button, EmptyState, T } from "@/ui";
 import type { MenuItem } from "@/ui";
 import {
   toolWindowService,
+  useRunConfigTypes,
   type ServiceItemAction,
   type ServiceProviderContribution,
   type ServiceTreeItem,
 } from "@/workbench/contributions";
 import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
-import { rerunSession, stopSession, useRun, type RunSession } from "./store";
+import { SessionPanel } from "./RunView";
+import { startRun, stopSession, useRun, type RunSession } from "./store";
+import { isDebugOnly } from "./types";
 import styles from "./RunServices.module.css";
 
 export const RUN_PROVIDER = "runConfigurations";
 const TYPE_PREFIX = "run:type:";
 const CONFIG_PREFIX = "run:config:";
 const STORAGE_KEY = "openidea.services.runTypes:";
+/** Types shown in Services until the user changes the list. */
+export const DEFAULT_TYPES: readonly string[] = ["spring-boot"];
 
 // ---------------------------------------------------------------------------
 // Types added to Services, per project
 
 const useAddedTypes = create<{ root: string | null; types: string[] }>(() => ({ root: null, types: [] }));
 
-function readTypes(root: string): string[] {
+/** The project's types; Spring Boot until the user changes the list. */
+export function readTypes(root: string): string[] {
   try {
-    const v: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY + root) ?? "[]");
+    const raw = localStorage.getItem(STORAGE_KEY + root);
+    if (raw === null) return [...DEFAULT_TYPES];
+    const v: unknown = JSON.parse(raw);
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch {
-    return [];
+    return [...DEFAULT_TYPES];
   }
 }
 
@@ -57,13 +66,15 @@ function setAddedTypes(types: string[]) {
   }
 }
 
+const currentTypes = () => addedTypes(useProject.getState().project?.root ?? null);
+
 export function addType(kind: string) {
-  const types = addedTypes(useProject.getState().project?.root ?? null);
+  const types = currentTypes();
   if (!types.includes(kind)) setAddedTypes([...types, kind]);
 }
 
 export function removeType(kind: string) {
-  setAddedTypes(addedTypes(useProject.getState().project?.root ?? null).filter((t) => t !== kind));
+  setAddedTypes(currentTypes().filter((t) => t !== kind));
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +100,15 @@ export function sessionStatus(s: RunSession | undefined): string | undefined {
   return "Finished";
 }
 
-/** Groups by configuration type: added types list all their configurations, other types only those that ran. */
+/** A node's grey text: the HTTP port of a running web application, else the state. */
+export function sessionDetail(s: RunSession | undefined): string | undefined {
+  return s && busy(s) && s.httpPort ? `:${s.httpPort}` : sessionStatus(s);
+}
+
+/**
+ * Groups by configuration type: added types list all their configurations, other
+ * types only those that ran. A default type (Spring Boot) without configurations is hidden.
+ */
 export function runServiceItems(
   configs: readonly RunConfig[],
   sessions: readonly RunSession[],
@@ -98,17 +117,18 @@ export function runServiceItems(
   const latest = latestSessions(sessions);
   const kinds = [...added];
   for (const s of sessions) if (!kinds.includes(s.config.kind)) kinds.push(s.config.kind);
-  return kinds.map((kind) => {
+  return kinds.flatMap((kind) => {
     const entries: RunConfig[] = added.includes(kind) ? configs.filter((c) => c.kind === kind) : [];
     for (const s of latest.values())
       if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
+    if (!entries.length && DEFAULT_TYPES.includes(kind)) return [];
     const children = entries.map((c): ServiceTreeItem => {
       const s = latest.get(c.id);
       return {
         key: CONFIG_PREFIX + c.id,
         label: c.name,
         icon: s && busy(s) ? "run" : configIcon(c),
-        detail: sessionStatus(s),
+        detail: sessionDetail(s),
         dim: !s || !busy(s),
       };
     });
@@ -116,13 +136,16 @@ export function runServiceItems(
       const s = latest.get(c.id);
       return !!s && busy(s);
     }).length;
-    return {
-      key: TYPE_PREFIX + kind,
-      label: kindLabel(kind),
-      icon: configIcon({ kind, isTest: false }),
-      detail: running ? tx`${running} running` : undefined,
-      children,
-    };
+    return [
+      {
+        key: TYPE_PREFIX + kind,
+        label: kindLabel(kind),
+        icon: configIcon({ kind, isTest: false }),
+        detail: running ? tx`${running} running` : undefined,
+        expanded: true,
+        children,
+      },
+    ];
   });
 }
 
@@ -167,9 +190,15 @@ function showOutput(s: RunSession) {
   toolWindowService().show("run", true);
 }
 
+/** Runs (or reruns, in its tab) a configuration; the output stays in Services instead of opening Run. */
 function run(r: Resolved) {
-  if (r.session && r.session.config.id === r.config?.id) rerunSession(r.session.id);
-  else if (r.config) void executeAction("run.runConfig", r.config);
+  if (r.session && r.session.config.id === r.config?.id)
+    void startRun(r.session.config, r.session.id, r.session.baseConfig, { show: false });
+  else if (r.config) void startRun(r.config, undefined, undefined, { show: false });
+}
+
+function debug(r: Resolved) {
+  if (r.config) void executeAction("run.debugConfig", r.config);
 }
 
 function actions(item: ServiceTreeItem): ServiceItemAction[] {
@@ -185,15 +214,15 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
   if (!r.config) return [stop];
   const live = !!r.session && busy(r.session);
   return [
-    { id: "run", title: live ? "Rerun" : "Run", icon: live ? "rerun" : "run", run: () => run(r) },
-    stop,
     {
-      id: "output",
-      title: "Show Output",
-      icon: "toolwindow-run",
-      disabled: !r.session,
-      run: () => r.session && showOutput(r.session),
+      id: "run",
+      title: live ? "Rerun" : "Run",
+      icon: live ? "rerun" : "run",
+      disabled: isDebugOnly(r.config),
+      run: () => run(r),
     },
+    { id: "debug", title: "Debug", icon: "debug", run: () => debug(r) },
+    stop,
   ];
 }
 
@@ -205,14 +234,21 @@ function menu(item: ServiceTreeItem): MenuItem[] {
     run: a.run,
   }));
   const r = resolve(item);
-  if (!r.config && r.kind && addedTypes(useProject.getState().project?.root ?? null).includes(r.kind)) {
+  if (!r.config && r.kind && currentTypes().includes(r.kind)) {
     const kind = r.kind;
     items.push({ kind: "separator" }, { label: "Remove from Services", icon: "close", run: () => removeType(kind) });
   }
   if (r.config) {
     const config = r.config;
+    const session = r.session;
     items.push(
       { kind: "separator" },
+      {
+        label: "Show in Run Tool Window",
+        icon: "toolwindow-run",
+        disabled: !session,
+        run: () => session && showOutput(session),
+      },
       { label: "Edit Configuration…", icon: "edit", run: () => void executeAction("run.editConfigs", config.id) },
     );
   }
@@ -235,8 +271,8 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
         </div>
       </EmptyState>
     );
-  const s = r.session;
-  const live = !!s && busy(s);
+  // The configuration ran: its console, as in the Run tool window.
+  if (r.session) return <SessionPanel session={r.session} />;
   return (
     <div className={styles.detail}>
       <dl className={styles.facts}>
@@ -257,25 +293,16 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
         <dt>
           <T>Status</T>
         </dt>
-        <dd>{txTemplate(sessionStatus(s) ?? "Not started")}</dd>
-        {s && (
-          <>
-            <dt>
-              <T>Started</T>
-            </dt>
-            <dd>{new Date(s.startedAt).toLocaleTimeString()}</dd>
-          </>
-        )}
+        <dd>
+          <T>Not started</T>
+        </dd>
       </dl>
       <div className={styles.actions}>
-        <Button icon={live ? "rerun" : "run"} onClick={() => run(r)}>
-          {live ? "Rerun" : "Run"}
+        <Button icon="run" disabled={isDebugOnly(r.config)} onClick={() => run(r)}>
+          Run
         </Button>
-        <Button icon="stop" disabled={!live} onClick={() => s && void stopSession(s.id)}>
-          Stop
-        </Button>
-        <Button icon="toolwindow-run" disabled={!s} onClick={() => s && showOutput(s)}>
-          Show Output
+        <Button icon="debug" onClick={() => debug(r)}>
+          Debug
         </Button>
       </div>
     </div>
@@ -284,11 +311,10 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
 
 /** "Add Service › Run Configuration Type": the project's types first, then the rest. */
 function addMenu(): MenuItem[] {
-  const added = addedTypes(useProject.getState().project?.root ?? null);
+  const added = currentTypes();
   const used = [...new Set(useRun.getState().configs.map((c) => c.kind))];
-  const kinds = [...used, ...KIND_OPTIONS.map((o) => o.value).filter((k) => !used.includes(k))].filter(
-    (k) => !added.includes(k),
-  );
+  const known = [...KIND_OPTIONS.map((o) => o.value), ...useRunConfigTypes.getState().types.keys()];
+  const kinds = [...new Set([...used, ...known])].filter((k) => k !== "compound" && !added.includes(k));
   const item = (kind: string): MenuItem => ({
     label: kindLabel(kind),
     icon: configIcon({ kind, isTest: false }),
@@ -297,7 +323,10 @@ function addMenu(): MenuItem[] {
   const submenu: MenuItem[] = [
     ...kinds.filter((k) => used.includes(k)).map(item),
     ...(used.some((k) => kinds.includes(k)) ? [{ kind: "separator" } as MenuItem] : []),
-    ...kinds.filter((k) => !used.includes(k)).map(item),
+    ...kinds
+      .filter((k) => !used.includes(k))
+      .sort((a, b) => kindLabel(a).localeCompare(kindLabel(b)))
+      .map(item),
   ];
   return [{ label: "Run Configuration Type", icon: "toolwindow-run", disabled: !submenu.length, submenu }];
 }
@@ -310,8 +339,7 @@ export const runServiceProvider: ServiceProviderContribution = {
   menu,
   activate: (item) => {
     const r = resolve(item);
-    if (r.session) showOutput(r.session);
-    else if (r.config) run(r);
+    if (r.config && !(r.session && busy(r.session)) && !isDebugOnly(r.config)) run(r);
   },
   detail: RunDetail,
   addMenu,

@@ -66,6 +66,7 @@ describe("Download JDK dialog", () => {
   it("preselects the version a fix asks for", async () => {
     render(<DownloadJdkDialog initialVersion={21} onClose={() => {}} onDownloaded={() => {}} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Download" })).toBeEnabled());
-    expect(screen.getByRole("button", { name: "Version" })).toHaveTextContent("21");
+    // The version list loads after the Download button enables on a busy runner.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Version" })).toHaveTextContent("21"));
   });
 });

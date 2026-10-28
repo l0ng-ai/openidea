@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { codeFolding, foldEffect, foldService, foldedRanges } from "@codemirror/language";
-import { enclosingFoldRange, foldSelectionEffects, foldToExpand, foldsFromRanges } from "./folding";
+import {
+  enclosingFoldRange,
+  expandToLevelEffects,
+  foldSelectionEffects,
+  foldToExpand,
+  foldsFromRanges,
+} from "./folding";
 
 /** Folds `{ … }` blocks whose header line ends with `{`. */
 const braces = foldService.of((state, from, to) => {
@@ -71,6 +77,12 @@ describe("foldsFromRanges", () => {
     ]);
   });
 
+  it("folds a custom region from its start marker through its end marker", () => {
+    const s = EditorState.create({ doc: "class A {\n  //region Fields\n  int a;\n  //endregion\n}\n" });
+    const [f] = foldsFromRanges(s, [fold(1, 3)]);
+    expect(f).toMatchObject({ from: s.doc.line(2).from + 2, to: s.doc.line(4).to, custom: true });
+  });
+
   it("keeps a brace line that follows a statement or comment", () => {
     const s = EditorState.create({ doc: "x();\n{\n    y();\n}\n// c\n{\n}\n" });
     expect(foldsFromRanges(s, [fold(1, 3), fold(5, 6)]).map((f) => s.doc.lineAt(f.from).number)).toEqual([2, 6]);
@@ -86,5 +98,28 @@ describe("foldSelectionEffects (⌘.)", () => {
     expect(folded).toEqual([[9, 30]]);
     s = s.update({ effects: foldSelectionEffects(s) }).state;
     expect(foldedRanges(s).size).toBe(0);
+  });
+});
+
+describe("expandToLevelEffects", () => {
+  const folded = (s: EditorState) => {
+    const out: number[] = [];
+    foldedRanges(s).between(0, s.doc.length, (a) => void out.push(s.doc.lineAt(a).number));
+    return out;
+  };
+
+  it("Expand All to Level 1 keeps top-level regions open and folds nested ones", () => {
+    let s = make();
+    s = s.update({ effects: expandToLevelEffects(s, 1, true) }).state;
+    expect(folded(s)).toEqual([2]);
+    s = s.update({ effects: expandToLevelEffects(s, 2, true) }).state;
+    expect(folded(s)).toEqual([]);
+  });
+
+  it("Expand to Level counts from the region around the caret", () => {
+    let s = make().update({ selection: { anchor: text.indexOf("y()") } }).state;
+    s = s.update({ effects: expandToLevelEffects(s, 1, true) }).state;
+    s = s.update({ selection: { anchor: text.indexOf("z()") } }).state;
+    expect(folded(s.update({ effects: expandToLevelEffects(s, 2) }).state)).toEqual([]);
   });
 });

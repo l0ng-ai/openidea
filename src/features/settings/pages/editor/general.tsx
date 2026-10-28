@@ -215,7 +215,21 @@ const APPEARANCE = editorPage({
           label: "Caret blinking (ms):",
           inline: { kind: "number", key: `${P}.appearance.caretBlinkPeriod`, min: 100, max: 2000 },
         },
+        { t: "check", key: `${P}.appearance.smoothCaretBlinking`, label: "Use smooth caret blinking" },
         { t: "check", key: `${P}.appearance.blockCaret`, label: "Use block caret" },
+        {
+          t: "check",
+          key: `${P}.appearance.smoothCaretMovement`,
+          label: "Use smooth caret movement",
+          inline: {
+            kind: "select",
+            key: `${P}.appearance.caretMovementStyle`,
+            options: [
+              { value: "snappy", label: "Snappy" },
+              { value: "gliding", label: "Gliding" },
+            ],
+          },
+        },
         {
           t: "check",
           key: `${P}.appearance.hardWrapGuides`,

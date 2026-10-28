@@ -15,13 +15,18 @@ export interface TreeOptions {
   /** Merge single-child folder chains (`com/acme/orders` → `com.acme.orders`). */
   compact: boolean;
   foldersFirst: boolean;
+  /** Order within a folder: name, file type (extension), or newest modification first. */
+  sortBy: SortKey;
 }
+
+export type SortKey = "name" | "type" | "modified";
 
 export const DEFAULT_TREE_OPTIONS: TreeOptions = {
   showHidden: false,
   showExcluded: true,
   compact: true,
   foldersFirst: true,
+  sortBy: "name",
 };
 
 export interface ProjectNode {
@@ -74,11 +79,27 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
 /** Symlinks report the target's metadata; folders have size 0 (the entry has no target kind). */
 export const isDirEntry = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.size === 0);
 
-export function sortEntries(entries: readonly FileEntry[], foldersFirst: boolean): FileEntry[] {
+const extensionOf = (name: string) => {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1) : "";
+};
+
+export function sortEntries(
+  entries: readonly FileEntry[],
+  foldersFirst: boolean,
+  sortBy: SortKey = "name",
+): FileEntry[] {
   return [...entries].sort((a, b) => {
     if (foldersFirst) {
       const d = Number(isDirEntry(b)) - Number(isDirEntry(a));
       if (d) return d;
+    }
+    if (sortBy === "type") {
+      const t = collator.compare(extensionOf(a.name), extensionOf(b.name));
+      if (t) return t;
+    } else if (sortBy === "modified") {
+      const m = (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0);
+      if (m) return m;
     }
     return collator.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   });
@@ -88,7 +109,7 @@ export function sortEntries(entries: readonly FileEntry[], foldersFirst: boolean
 export function visibleEntries(listing: readonly FileEntry[], opts: TreeOptions): FileEntry[] {
   const filtered = listing.filter((e) => isVisible(e, opts));
   // The backend already sorts folders first (natural order); only re-sort when needed.
-  return opts.foldersFirst ? filtered : sortEntries(filtered, false);
+  return opts.foldersFirst && opts.sortBy === "name" ? filtered : sortEntries(filtered, opts.foldersFirst, opts.sortBy);
 }
 
 /** JVM-style source folders join compacted package chains with `.` instead of `/`. */

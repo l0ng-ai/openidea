@@ -15,7 +15,7 @@ import { installMenuBridge } from "./menuBridge";
 import { NewProjectOverlay } from "./NewProject";
 import { projectActions, registerPowerSaveBanner } from "./projectActions";
 import { installWindowTitle } from "./title";
-import { installLaunchHandling, windowActions } from "./windows";
+import { installLaunchHandling, installLightEditAutoClose, windowActions } from "./windows";
 
 /** The UI locale of a secondary (Settings) window. */
 export const activateLocale = installLocaleSync;
@@ -42,6 +42,7 @@ export function activate(): () => void {
     installWindowTitle(),
     installCloseGuard(),
     installLaunchHandling(),
+    installLightEditAutoClose(),
   ];
   let disposed = false;
   void buildInfo().then((b) => {

@@ -5,7 +5,8 @@
  * menu (Search In Selection ⌥E — on by default when Replace opens over a
  * multi-line selection — and the search scope: anywhere, in / except comments
  * and string literals), n/N counter, ↑/↓ (⇧↵ / ↵), Replace / Replace All /
- * Exclude with Preserve Case, Esc closes.
+ * Exclude with Preserve Case, Esc closes. `FindPanel` is the bar itself, for
+ * any CodeMirror view (the diff viewer's sides); `FindBar` is it on an editor pane.
  */
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
@@ -57,10 +58,43 @@ const useFindScoped = create<Record<string, boolean>>(() => ({}));
 /** The selection the bar was opened over, for toggling "In Selection" on later. */
 const openSelections = new Map<string, FindScope>();
 
+/** The editor a find bar searches. */
+export interface FindTarget {
+  /** Keys the bar's counter and selection scope. */
+  id: string;
+  view(): EditorView | null;
+  /** Calls `fn` on document / selection changes of the searched editor; returns the unsubscribe. */
+  watch(fn: (u: { docChanged: boolean; selectionSet: boolean }) => void): () => void;
+  /** Still open: an unmount that isn't a close (React's dev-mode remount) keeps the highlights. */
+  isOpen(): boolean;
+}
+
 function activeView(paneId: string): EditorView | null {
   const pane = useTabs.getState().panes[paneId];
   if (!pane?.active) return null;
   return editorController().slotFor(pane.active)?.view ?? null;
+}
+
+const paneTargets = new Map<string, FindTarget>();
+
+function paneTarget(paneId: string): FindTarget {
+  let target = paneTargets.get(paneId);
+  if (!target) {
+    target = {
+      id: paneId,
+      view: () => activeView(paneId),
+      watch(fn) {
+        const tab = useTabs.getState().panes[paneId]?.active;
+        const slot = tab ? editorController().slotFor(tab) : null;
+        if (!slot) return () => {};
+        slot.listeners.add(fn);
+        return () => void slot.listeners.delete(fn);
+      },
+      isOpen: () => !!useFindBars.getState()[paneId],
+    };
+    paneTargets.set(paneId, target);
+  }
+  return target;
 }
 
 export function closeFindBar(paneId: string) {
@@ -77,12 +111,18 @@ const MAX_QUERY = 10_000;
  * multi-line query isn't kept for a later search without a selection.
  */
 export function openFindBar(paneId: string, replace: boolean) {
-  const view = activeView(paneId);
+  seedFind(paneTarget(paneId), replace);
+  useFindBars.setState((s) => ({ [paneId]: { replace, seq: (s[paneId]?.seq ?? 0) + 1 } }));
+}
+
+/** The query and scope a bar opening over `target`'s selection starts with (see openFindBar). */
+export function seedFind(target: FindTarget, replace: boolean) {
+  const view = target.view();
   const sel = view?.state.selection.main;
   if (view && sel && !sel.empty) {
     const text = view.state.sliceDoc(sel.from, sel.to);
     const multiline = text.includes("\n");
-    openSelections.set(paneId, { from: sel.from, to: sel.to });
+    openSelections.set(target.id, { from: sel.from, to: sel.to });
     if (multiline && replace) {
       view.dispatch({ effects: setFindScope.of({ from: sel.from, to: sel.to }) });
       useFindOptions.setState({ search: "" });
@@ -94,7 +134,6 @@ export function openFindBar(paneId: string, replace: boolean) {
   } else if (useFindOptions.getState().search.includes("\n")) {
     useFindOptions.setState({ search: "" });
   }
-  useFindBars.setState((s) => ({ [paneId]: { replace, seq: (s[paneId]?.seq ?? 0) + 1 } }));
 }
 
 /** Show / Hide Replace on the open bar, keeping its query and scope. */
@@ -104,44 +143,49 @@ function setReplaceShown(paneId: string, replace: boolean) {
 
 /** ⌘G / ⇧⌘G: next / previous occurrence of the last search, with or without the bar. */
 export function findAgain(paneId: string, forward: boolean) {
-  const view = activeView(paneId);
-  const opts = useFindOptions.getState();
+  const target = paneTarget(paneId);
+  const view = target.view();
   if (!view) return;
-  if (!opts.search || (opts.regexp && !regexValid(opts.search))) {
-    openFindBar(paneId, false);
-    return;
-  }
+  if (!searchAgain(target, forward)) openFindBar(paneId, false);
+}
+
+/** Next / previous occurrence of the last search in `target`; false without a usable query. */
+export function searchAgain(target: FindTarget, forward: boolean): boolean {
+  const view = target.view();
+  const opts = useFindOptions.getState();
+  if (!view || !opts.search || (opts.regexp && !regexValid(opts.search))) return false;
   setQuery(view, opts);
   if (forward) findNext(view);
   else findPrevious(view);
-  if (useFindBars.getState()[paneId]) recount(paneId);
+  if (target.isOpen()) recount(target);
+  return true;
 }
 
 /** Toggles "In Selection": limit to the selection the bar was opened over (or the current one). */
-function toggleScope(paneId: string) {
-  const view = activeView(paneId);
+function toggleScope(target: FindTarget) {
+  const view = target.view();
   if (!view) return;
   if (view.state.field(findScope, false)) {
     view.dispatch({ effects: setFindScope.of(null) });
   } else {
     const main = view.state.selection.main;
     const len = view.state.doc.length;
-    const saved = openSelections.get(paneId);
+    const saved = openSelections.get(target.id);
     const range = saved && saved.to <= len && saved.to - saved.from > main.to - main.from ? saved : main;
     if (range.to <= range.from) return;
     view.dispatch({ effects: setFindScope.of({ from: range.from, to: range.to }) });
   }
-  recount(paneId);
+  recount(target);
 }
 
-function recount(paneId: string) {
-  const view = activeView(paneId);
+function recount(target: FindTarget) {
+  const view = target.view();
   if (!view) return;
   const opts = useFindOptions.getState();
   const r = countMatches(view.state);
   const { from, to } = view.state.selection.main;
-  useFindCounts.setState({ [paneId]: opts.search ? { ...r, excluded: isExcluded(view.state, from, to) } : null });
-  useFindScoped.setState({ [paneId]: !!view.state.field(findScope, false) });
+  useFindCounts.setState({ [target.id]: opts.search ? { ...r, excluded: isExcluded(view.state, from, to) } : null });
+  useFindScoped.setState({ [target.id]: !!view.state.field(findScope, false) });
   view.dispatch({ effects: setFindMarks.of(opts.search ? r.starts : []) });
 }
 
@@ -153,15 +197,41 @@ function rememberQuery(replace: boolean) {
 
 export function FindBar({ paneId }: { paneId: string }) {
   const bar = useFindBars((s) => s[paneId]);
+  const activeTab = useTabs((s) => s.panes[paneId]?.active ?? null);
   if (!bar) return null;
-  return <FindBarInner paneId={paneId} replace={bar.replace} seq={bar.seq} />;
+  return (
+    <FindPanel
+      target={paneTarget(paneId)}
+      version={activeTab}
+      replace={bar.replace}
+      seq={bar.seq}
+      onReplaceShown={(replace) => setReplaceShown(paneId, replace)}
+      onClose={() => {
+        closeFindBar(paneId);
+        activeView(paneId)?.focus();
+      }}
+    />
+  );
 }
 
-function FindBarInner({ paneId, replace, seq }: { paneId: string; replace: boolean; seq: number }) {
-  const activeTab = useTabs((s) => s.panes[paneId]?.active ?? null);
+export interface FindPanelProps {
+  target: FindTarget;
+  /** Changes when the target's view does (another tab, a rebuilt viewer). */
+  version: unknown;
+  replace: boolean;
+  /** Bumped by each open (⌘F again): refocuses the field. */
+  seq: number;
+  /** Show / Hide Replace; without it the bar only finds. */
+  onReplaceShown?: (replace: boolean) => void;
+  /** Closes the bar (the owner unmounts it) and focuses the editor. */
+  onClose(): void;
+}
+
+export function FindPanel({ target, version, replace, seq, onReplaceShown, onClose }: FindPanelProps) {
+  const id = target.id;
   const opts = useFindOptions();
-  const count = useFindCounts((s) => s[paneId] ?? null);
-  const scoped = useFindScoped((s) => !!s[paneId]);
+  const count = useFindCounts((s) => s[id] ?? null);
+  const scoped = useFindScoped((s) => !!s[id]);
   const inputRef = useRef<HTMLInputElement>(null);
   const replaceRef = useRef<HTMLInputElement>(null);
   const findBoxRef = useRef<HTMLDivElement>(null);
@@ -179,7 +249,7 @@ function FindBarInner({ paneId, replace, seq }: { paneId: string; replace: boole
 
   // Push the query into the editor; incremental search selects the nearest match.
   useEffect(() => {
-    const view = activeView(paneId);
+    const view = target.view();
     if (!view) return;
     const valid = !opts.regexp || regexValid(opts.search);
     setQuery(view, valid ? opts : { ...opts, search: "" });
@@ -189,43 +259,39 @@ function FindBarInner({ paneId, replace, seq }: { paneId: string; replace: boole
       view.dispatch({ selection: { anchor: from } });
       findNext(view);
     }
-    recount(paneId);
-  }, [opts, paneId, activeTab]);
+    recount(target);
+  }, [opts, target, version]);
 
   // Keep the counter current while the document / selection changes.
   useEffect(() => {
-    const slot = activeTab ? editorController().slotFor(activeTab) : null;
-    if (!slot) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const listener = (u: { docChanged: boolean; selectionSet: boolean }) => {
+    const unwatch = target.watch((u) => {
       if (!u.docChanged && !u.selectionSet) return;
       clearTimeout(timer);
-      timer = setTimeout(() => recount(paneId), u.docChanged ? 150 : 0);
-    };
-    slot.listeners.add(listener);
+      timer = setTimeout(() => recount(target), u.docChanged ? 150 : 0);
+    });
     return () => {
       clearTimeout(timer);
-      slot.listeners.delete(listener);
+      unwatch();
     };
-  }, [activeTab, paneId]);
+  }, [target, version]);
 
   // Closing clears highlights, marks and the selection scope (not React's dev-mode remount).
   useEffect(
     () => () => {
-      if (!useFindBars.getState()[paneId]) activeView(paneId)?.dispatch({ effects: [setFindOpen.of(false)] });
+      if (!target.isOpen()) target.view()?.dispatch({ effects: [setFindOpen.of(false)] });
     },
-    [paneId],
+    [target],
   );
 
   const close = () => {
     rememberQuery(replace);
-    closeFindBar(paneId);
-    activeView(paneId)?.focus();
+    onClose();
   };
   const run = (cmd: (v: EditorView) => boolean) => {
-    const view = activeView(paneId);
+    const view = target.view();
     if (view) cmd(view);
-    recount(paneId);
+    recount(target);
   };
   const doReplace = () => {
     rememberQuery(true);
@@ -239,9 +305,9 @@ function FindBarInner({ paneId, replace, seq }: { paneId: string; replace: boole
     useFindOptions.setState((o) => ({ [key]: !o[key] }));
 
   const onKeyDown = (e: KeyboardEvent, field: "find" | "replace") => {
-    const target = e.target as HTMLTextAreaElement | HTMLInputElement;
+    const input = e.target as HTMLTextAreaElement | HTMLInputElement;
     // Inside a multi-line query the arrows move the caret between its lines.
-    const multiLine = target.value.includes("\n");
+    const multiLine = input.value.includes("\n");
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -271,7 +337,7 @@ function FindBarInner({ paneId, replace, seq }: { paneId: string; replace: boole
         toggle(k);
       } else if (e.code === "KeyE") {
         e.preventDefault();
-        toggleScope(paneId);
+        toggleScope(target);
       } else if (replace && e.code === "KeyP") {
         e.preventDefault();
         doReplace();
@@ -312,7 +378,7 @@ function FindBarInner({ paneId, replace, seq }: { paneId: string; replace: boole
       : [{ label: kind === "find" ? "No recent searches" : "No recent replacements", disabled: true }];
   };
   const filterItems: MenuItem[] = [
-    { label: "Search In Selection", shortcut: "⌥E", checked: scoped || undefined, run: () => toggleScope(paneId) },
+    { label: "Search In Selection", shortcut: "⌥E", checked: scoped || undefined, run: () => toggleScope(target) },
     { kind: "separator" },
     { kind: "header", label: "Search Scope" },
     ...SEARCH_CONTEXTS.map((c) => ({
@@ -384,13 +450,15 @@ function FindBarInner({ paneId, replace, seq }: { paneId: string; replace: boole
           pressed={scoped || opts.context !== "any"}
           onClick={() => setFilterMenu(true)}
         />
-        <IconButton
-          icon="replace"
-          title={replace ? "Hide Replace" : "Show Replace"}
-          size="small"
-          pressed={replace}
-          onClick={() => setReplaceShown(paneId, !replace)}
-        />
+        {onReplaceShown && (
+          <IconButton
+            icon="replace"
+            title={replace ? "Hide Replace" : "Show Replace"}
+            size="small"
+            pressed={replace}
+            onClick={() => onReplaceShown(!replace)}
+          />
+        )}
       </div>
       <IconButton icon="close" title="Close" shortcut="⎋" size="small" className={styles.findClose} onClick={close} />
       {replace && (

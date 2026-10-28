@@ -13,7 +13,10 @@ mod state;
 mod theme_frame;
 mod windows;
 
+use parking_lot::Mutex;
 use state::AppState;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use windows::WindowsState;
 
@@ -74,6 +77,9 @@ pub fn run() {
     #[cfg(debug_assertions)]
     let app = app.plugin(tauri_plugin_mcp_bridge::Builder::new().bind_address("127.0.0.1").build());
 
+    // Paths macOS asked to open (Finder's Open With, the Dock) before setup ran: the first window takes them.
+    let early_opens: Arc<Mutex<Option<Vec<PathBuf>>>> = Arc::default();
+    let setup_opens = early_opens.clone();
     app.invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -89,6 +95,9 @@ pub fn run() {
             app.manage(state);
             app.manage(windows);
             app.manage(menu_state);
+            if let Some(paths) = setup_opens.lock().take() {
+                windows::open_paths_at_launch(app.handle(), paths);
+            }
             app.on_menu_event(on_menu_event);
             windows::create_main_window(app.handle())?;
             Ok(())
@@ -115,7 +124,18 @@ pub fn run() {
         })
         .build(context)
         .expect("error while running OpenIDEA")
-        .run(|app, event| {
+        .run(move |app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                let paths = windows::opened_paths(urls);
+                if app.try_state::<WindowsState>().is_some() {
+                    windows::open_paths(app, paths);
+                } else {
+                    early_opens.lock().get_or_insert_default().extend(paths);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = &early_opens;
             // Quit after installing an update (`app_install_update`): relaunch.
             if let tauri::RunEvent::Exit = event
                 && app.try_state::<WindowsState>().is_some_and(|w| w.restart_requested())

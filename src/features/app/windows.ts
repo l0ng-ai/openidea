@@ -80,18 +80,18 @@ async function openFilesHere(files: readonly string[]): Promise<void> {
 }
 
 /**
- * Opens loose `files`: in this window's local project or LightEdit session, else
- * in the LightEdit window if there is one, else this window turns into LightEdit
- * (a remote project window gets a new one).
+ * Opens loose `files`: in this window's local project; else a file inside a project open in
+ * another window opens there and the rest in LightEdit (this window's session, the LightEdit
+ * window, or this window turns into one; a remote project window gets a new one).
  */
 export async function openFiles(files: readonly string[]): Promise<void> {
   if (!files.length) return;
   const s = useProject.getState();
-  if (s.lightEdit || (s.project && !isRemoteWindow())) return openInEditor(files);
+  if (s.project && !isRemoteWindow()) return openInEditor(files);
   if (desktopOnly()) return;
   try {
-    const outcome = await call(commands.windowOpenFiles([...files]));
-    if (outcome.kind === "current") await openFilesHere(files);
+    const here = await call(commands.windowOpenFiles([...files]));
+    if (here.length) await openFilesHere(here);
   } catch (e) {
     openFailed(files[0]!, e);
   }
@@ -294,6 +294,25 @@ export function windowActions(): Action[] {
       },
     },
   ];
+}
+
+async function closeThisWindow(): Promise<void> {
+  if (!isTauri()) return;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().close();
+}
+
+/**
+ * LightEdit: closing its last editor tab closes the window (through the close guard,
+ * so the last window shows the Welcome screen instead).
+ */
+export function installLightEditAutoClose(closeWindow: () => Promise<void> = closeThisWindow): () => void {
+  const editor = maybeEditorService();
+  const off = editor?.onActiveInputChange?.((input) => {
+    if (input || !useProject.getState().lightEdit || editor?.openTabs?.().length) return;
+    void closeWindow().catch((e) => console.warn("could not close the window", e));
+  });
+  return () => off?.();
 }
 
 export function installLaunchHandling(): () => void {

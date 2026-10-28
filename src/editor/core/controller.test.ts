@@ -65,6 +65,25 @@ describe("EditorController", () => {
     expect(openFilePaths(useTabs.getState())).toEqual(["/p/a.ts", "/p/b.ts"]);
   });
 
+  it("reopens the LightEdit files the next time a window switches to LightEdit", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/x/a.txt": "a", "/y/b.md": "b" }));
+    ctrl.start();
+    useProject.setState({ lightEdit: true });
+    await ctrl.openFile("/x/a.txt", { focus: false });
+    await ctrl.openFile("/y/b.md", { focus: false });
+    // The LightEdit window closes with its tabs open.
+    useProject.setState({ lightEdit: false });
+    expect(openFilePaths(useTabs.getState())).toEqual([]);
+    useProject.setState({ lightEdit: true });
+    expect(openFilePaths(useTabs.getState())).toEqual(["/x/a.txt", "/y/b.md"]);
+    // Closing every tab leaves nothing to reopen.
+    ctrl.closeEverything();
+    useProject.setState({ lightEdit: false });
+    useProject.setState({ lightEdit: true });
+    expect(openFilePaths(useTabs.getState())).toEqual([]);
+    useProject.setState({ lightEdit: false });
+  });
+
   it("closes a tab by its input key", async () => {
     ctrl = new EditorController(createMemoryBackend());
     ctrl.start();

@@ -8,6 +8,8 @@ import { notify } from "./notificationStore";
 import { NOTIFICATIONS_TOOL_WINDOW } from "./Notifications";
 import { activateToolWindow } from "./toolwindows/store";
 import { toggleTheme } from "./theme";
+import { useTasks } from "./tasks";
+import { showStatusInfo } from "./contributions";
 
 export async function openProjectDialog() {
   if (!isTauri()) {
@@ -35,6 +37,18 @@ export async function openProjectDialog() {
   }
 }
 
+/** Stop Background Processes (⇧⌘F2): the one running cancellable task, else a choice of them. */
+export function stopBackgroundProcesses() {
+  const running = useTasks.getState().tasks.filter((t) => t.cancel && !t.done);
+  if (!running.length) return showStatusInfo("No background processes to stop");
+  if (running.length === 1) return running[0]!.cancel!();
+  showContextMenu({ x: window.innerWidth / 2 - 160, y: 96 }, [
+    ...running.map((t) => ({ id: String(t.id), label: t.title, icon: "stop", run: () => t.cancel!() })),
+    { kind: "separator" as const },
+    { id: "all", label: "Stop All", run: () => running.forEach((t) => t.cancel!()) },
+  ]);
+}
+
 /** Generic actions owned by the shell. */
 export function registerShellActions(): () => void {
   return registerActions([
@@ -54,6 +68,13 @@ export function registerShellActions(): () => void {
       run: async () => {
         if (useProject.getState().project && (await confirmLeaveProject())) await closeProject();
       },
+    },
+    {
+      id: "workbench.stopBackgroundProcesses",
+      title: "Stop Background Processes…",
+      category: "Window",
+      keywords: ["cancel task", "background tasks", "progress"],
+      run: stopBackgroundProcesses,
     },
     {
       id: "view.toggleTheme",

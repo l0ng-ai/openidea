@@ -523,9 +523,32 @@ mod tests {
             ("typescript", vec!["vtsls", "typescript-language-server"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
-            let got: Vec<(&str, bool)> = cfg.language_servers.iter().map(|s| (s.name.as_str(), s.fallback)).collect();
+            let got: Vec<(&str, bool)> = cfg
+                .language_servers
+                .iter()
+                .filter(|s| !s.require_root_marker)
+                .map(|s| (s.name.as_str(), s.fallback))
+                .collect();
             let expected: Vec<(&str, bool)> = servers.iter().enumerate().map(|(i, name)| (*name, i > 0)).collect();
             assert_eq!(got, expected);
+        }
+    }
+
+    #[test]
+    fn angular_server_joins_typescript_and_html_in_angular_projects() {
+        let reg = reg();
+        let names = |lang: &str| -> Vec<String> {
+            reg.get(&LanguageId::new(lang)).unwrap().language_servers.iter().map(|s| s.name.clone()).collect()
+        };
+        // After the TypeScript fallback (an available server before it would hide
+        // it); before the HTML server (hover, rename and symbols take the first).
+        assert_eq!(names("typescript"), ["vtsls", "typescript-language-server", "angular-language-server"]);
+        assert_eq!(names("html"), ["angular-language-server", "vscode-html-language-server"]);
+        for lang in ["typescript", "html"] {
+            let cfg = reg.get(&LanguageId::new(lang)).unwrap();
+            let angular = cfg.language_servers.iter().find(|s| s.name == "angular-language-server").unwrap();
+            assert!(angular.require_root_marker && !angular.fallback, "{lang}");
+            assert_eq!(angular.root_markers, ["angular.json", "node_modules/@angular/core"], "{lang}");
         }
     }
 

@@ -184,6 +184,130 @@ fn maven_projects() {
     assert_eq!(c[0].command, "mvn");
 }
 
+const BOOT_POM: &str = "<project><artifactId>app</artifactId><build><plugins><plugin>\
+                        <artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>";
+const PARENT_POM: &str = "<project><packaging>pom</packaging><modules><module>app</module></modules>\
+                          <build><pluginManagement><plugins><plugin>\
+                          <artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></pluginManagement>\
+                          </build></project>";
+const BOOT_MAIN: &str = "package org.dromara;\n\nimport org.springframework.boot.SpringApplication;\n\
+                         import org.springframework.boot.autoconfigure.SpringBootApplication;\n\n\
+                         /** Entry. */\n@SpringBootApplication\npublic class DromaraApplication {\n\
+                         \x20   public static void main(String[] args) {\n\
+                         \x20       SpringApplication.run(DromaraApplication.class, args);\n    }\n}\n";
+
+/// A folder holding a Maven back end and an npm front end, each its own repository
+/// (RuoYi-Vue-Plus + plus-ui): the Maven build is detected where it is.
+#[test]
+fn builds_nested_in_a_folder_of_repositories() {
+    let dir = project(&[
+        ("RuoYi-Vue-Plus/pom.xml", PARENT_POM),
+        ("RuoYi-Vue-Plus/ruoyi-admin/pom.xml", BOOT_POM),
+        ("RuoYi-Vue-Plus/ruoyi-admin/src/main/java/org/dromara/DromaraApplication.java", BOOT_MAIN),
+        ("RuoYi-Vue-Plus/ruoyi-admin/src/main/java/org/dromara/web/Controller.java", "package org.dromara.web;"),
+        ("RuoYi-Vue-Plus/ruoyi-common/pom.xml", "<project><packaging>pom</packaging></project>"),
+        ("RuoYi-Vue-Plus/ruoyi-common/ruoyi-common-core/pom.xml", "<project/>"),
+        ("RuoYi-Vue-Plus/ruoyi-common/ruoyi-common-core/src/main/java/A.java", "class A {}"),
+        ("plus-ui/package.json", r#"{"scripts":{"dev":"vite"}}"#),
+    ]);
+    let c = detect(dir.path());
+    let app = find(&c, "application:RuoYi-Vue-Plus/ruoyi-admin:org.dromara.DromaraApplication");
+    assert_eq!(app.name, "DromaraApplication");
+    assert_eq!(app.kind, "spring-boot");
+    assert_eq!(cmdline(app), "java -cp ${classpath} org.dromara.DromaraApplication");
+    assert_eq!(app.cwd.as_deref(), Some(Path::new("RuoYi-Vue-Plus/ruoyi-admin")));
+    assert_eq!(app.debug_adapter.as_deref(), Some("java-debug"));
+    let package = find(&c, "maven:package:RuoYi-Vue-Plus");
+    assert_eq!(package.name, "RuoYi-Vue-Plus: mvn package");
+    assert_eq!(cmdline(package), "mvn package");
+    assert_eq!(package.cwd.as_deref(), Some(Path::new("RuoYi-Vue-Plus")));
+    assert!(find(&c, "maven:test:RuoYi-Vue-Plus").is_test);
+    assert!(ids(&c).contains(&"maven:spring-boot:run:RuoYi-Vue-Plus"));
+    assert!(ids(&c).contains(&"npm:plus-ui:dev"));
+    // Modules of the nested build are not builds of their own; only one application.
+    assert!(!ids(&c).iter().any(|id| id.contains("ruoyi-common")));
+    assert_eq!(c.iter().filter(|c| c.kind == "spring-boot").count(), 1);
+}
+
+#[test]
+fn nested_builds_of_every_kind_and_depth() {
+    let dir = project(&[
+        ("services/api/settings.gradle.kts", "include(\"app\")"),
+        ("services/api/gradlew", "#!/bin/sh"),
+        ("services/api/app/build.gradle.kts", "plugins { id(\"org.springframework.boot\") version \"3.3.0\" }\n"),
+        (
+            "services/api/app/src/main/kotlin/com/acme/Api.kt",
+            "package com.acme\n\n@SpringBootApplication\nclass Api\n\nfun main(args: Array<String>) {\n    runApplication<Api>(*args)\n}\n",
+        ),
+        ("billing/pom.xml", BOOT_POM),
+        ("billing/mvnw", "#!/bin/sh"),
+        (
+            "billing/src/main/java/Billing.java",
+            "@SpringBootApplication\nclass Billing { public static void main(String[] a) {} }",
+        ),
+        // Deeper than a build is looked for.
+        ("a/b/c/d/pom.xml", "<project/>"),
+        // Build output and sources are not searched.
+        ("web/node_modules/x/pom.xml", "<project/>"),
+        ("tool/src/pom.xml", "<project/>"),
+    ]);
+    let c = detect(dir.path());
+    let boot = find(&c, "gradle:bootRun:services/api");
+    assert_eq!(boot.name, "services/api: gradle bootRun");
+    assert_eq!(boot.cwd.as_deref(), Some(Path::new("services/api")));
+    if cfg!(unix) {
+        assert_eq!(cmdline(boot), "./gradlew bootRun");
+        assert_eq!(cmdline(find(&c, "maven:package:billing")), "./mvnw package");
+    }
+    assert!(find(&c, "gradle:test:services/api").is_test);
+    let api = find(&c, "application:services/api/app:com.acme.ApiKt");
+    assert_eq!(api.cwd.as_deref(), Some(Path::new("services/api/app")));
+    let billing = find(&c, "application:billing:Billing");
+    assert_eq!(billing.cwd.as_deref(), Some(Path::new("billing")));
+    let builds: Vec<&str> =
+        ids(&c).into_iter().filter(|id| id.starts_with("maven:package") || id.starts_with("gradle:build")).collect();
+    assert_eq!(builds, ["gradle:build:services/api", "maven:package:billing"]);
+}
+
+#[test]
+fn a_root_build_disables_the_nested_scan() {
+    let dir = project(&[
+        ("pom.xml", BOOT_POM),
+        (
+            "src/main/java/demo/App.java",
+            "package demo;\n@SpringBootApplication public class App {\n  public static void main(String[] args) {}\n}\n",
+        ),
+        ("tools/gen/pom.xml", "<project/>"),
+    ]);
+    let c = detect(dir.path());
+    assert!(ids(&c).contains(&"maven:package"));
+    assert!(!ids(&c).iter().any(|id| id.contains("tools")));
+    let app = find(&c, "application:demo.App");
+    assert_eq!(app.cwd, None);
+}
+
+#[test]
+fn spring_boot_applications_need_the_plugin_and_a_main() {
+    let main =
+        "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n";
+    // A library using Spring Boot without the plugin, a configuration class without `main`,
+    // the annotation in a comment, a parent POM.
+    let dir = project(&[
+        ("lib/pom.xml", "<project><dependencies>spring-boot-starter</dependencies></project>"),
+        ("lib/src/main/java/demo/App.java", main),
+        ("svc/pom.xml", BOOT_POM),
+        ("svc/src/main/java/demo/Config.java", "package demo;\n@SpringBootApplication\npublic class Config {}\n"),
+        (
+            "svc/src/main/java/demo/Old.java",
+            "package demo;\n// @SpringBootApplication\nclass Old { public static void main(String[] a) {} }\n",
+        ),
+        ("gr/build.gradle", "dependencies { implementation 'org.springframework.boot:spring-boot-starter' }\n"),
+        ("gr/src/main/java/demo/App.java", main),
+    ]);
+    let c = detect(dir.path());
+    assert!(!c.iter().any(|c| c.kind == "spring-boot"), "{:?}", ids(&c));
+}
+
 #[test]
 fn go_projects() {
     let dir = project(&[

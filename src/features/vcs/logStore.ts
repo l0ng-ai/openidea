@@ -6,7 +6,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { collapseLinear, computeGraph, emptyGraphState, type GraphRow, type GraphState } from "./graph";
 import { logOptions, setLogOptions, type LogOptions } from "./logOptions";
 import { clearConsole, errorMessage } from "./ops";
-import { currentRepo, repoOf, selectRepo, useVcs } from "./store";
+import { currentRepo, currentRepoRoot, repoOf, selectRepo, useVcs } from "./store";
 
 /** Date filter: commits made (committer time) after / before the given times (epoch ms). */
 export interface LogDateFilter {
@@ -52,6 +52,8 @@ interface LogState {
   logTabs: LogTab[];
   /** The log tab whose commits / filters / selection the store holds ("log" or a `logTabs` id). */
   shownLog: string;
+  /** Repository whose branch filter is settled (default or chosen); null until then. */
+  branchScope: string | null;
   /** Bumped to ask the list to scroll the selection into view. */
   revealTick: number;
   /** The current user (`user.email`, else `user.name`), for View Options › Highlight › My Commits. */
@@ -138,11 +140,73 @@ const initialLog = (): Omit<LogState, "generation"> => ({
   tab: "log",
   logTabs: [],
   shownLog: "log",
+  branchScope: null,
   revealTick: 0,
   user: null,
 });
 
 export const useGitLog = create<LogState>(() => ({ ...initialLog(), generation: 0 }));
+
+/**
+ * The refs the log shows: the remembered ones that still exist, else `HEAD` (the
+ * current branch, followed across checkouts). An empty list is a real choice: all branches.
+ */
+export function resolveLogBranches(remembered: readonly string[] | undefined, branches: readonly string[]): string[] {
+  if (remembered === undefined) return ["HEAD"];
+  if (!remembered.length) return [];
+  const valid = remembered.filter((ref) => ref === "HEAD" || branches.includes(ref));
+  return valid.length ? valid : ["HEAD"];
+}
+
+const branchMemoryKey = (repo: string) => `openidea.vcs.logBranches:${repo}`;
+
+/** The main Log's branch filter last chosen for `repo`; undefined when none was. */
+export function rememberedLogBranches(repo: string): string[] | undefined {
+  try {
+    const raw = localStorage.getItem(branchMemoryKey(repo));
+    const v: unknown = raw ? JSON.parse(raw) : undefined;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberLogBranches(repo: string, branches: readonly string[]) {
+  try {
+    localStorage.setItem(branchMemoryKey(repo), JSON.stringify(branches));
+  } catch {
+    // Storage unavailable: the choice lasts for the session only.
+  }
+}
+
+/**
+ * Settles the main Log's branch filter for the selected repository: its last
+ * choice, else the current branch. False when it was already settled.
+ */
+export function initLogBranchFilter(): boolean {
+  const s = useGitLog.getState();
+  const repo = currentRepoRoot();
+  if (s.shownLog !== "log" || !repo || s.branchScope === repo) return false;
+  const names = useVcs
+    .getState()
+    .branches.filter((b) => !b.name.endsWith("/HEAD"))
+    .map((b) => b.name);
+  const next = resolveLogBranches(rememberedLogBranches(repo), names);
+  useGitLog.setState({ filters: { ...s.filters, branches: next }, branchScope: repo });
+  return true;
+}
+
+/** The Branch filter's setter: a choice in the main Log is remembered for the repository. */
+export function setLogBranches(branches: readonly string[]) {
+  const s = useGitLog.getState();
+  const repo = s.shownLog === "log" ? currentRepoRoot() : null;
+  useGitLog.setState({
+    filters: { ...s.filters, branches: [...branches] },
+    ...(repo ? { branchScope: repo } : {}),
+  });
+  if (repo) rememberLogBranches(repo, branches);
+  void reloadLog();
+}
 
 let loadPromise: Promise<void> | null = null;
 
@@ -240,12 +304,30 @@ export function installGitLog(): () => void {
     } else if (s.repo !== prev.repo && prev.repo !== null) {
       // The parked log tabs load again when shown.
       for (const [id, view] of parked) parked.set(id, freshView(view.filters));
-      const l = useGitLog.getState();
-      if (l.generation === 0 && !l.filters.path) return;
-      const { path } = useGitLog.getState().filters;
-      // A path filter belongs to the repository it is in.
-      if (path && repoOf(path) !== s.repo) useGitLog.setState((l) => ({ filters: { ...l.filters, path: null } }));
-      void reloadLog();
+      // Drops a page still loading for the old repository (its generation no longer matches).
+      loadPromise = null;
+      useGitLog.setState((l) => ({
+        // The shown log belonged to the old repository: it loads again once the new
+        // repository's branch filter is settled (see LogView).
+        commits: [],
+        rows: [],
+        graph: emptyGraphState(),
+        loading: false,
+        done: false,
+        error: null,
+        selected: null,
+        selection: [],
+        branchScope: null,
+        generation: l.generation + 1,
+        filters: {
+          ...l.filters,
+          // The main Log's branch filter belonged to the old repository; show all
+          // until the new repository's remembered/current branch is settled.
+          ...(l.shownLog === "log" ? { branches: [] } : {}),
+          // A path filter belongs to the repository it is in.
+          ...(l.filters.path && repoOf(l.filters.path) !== s.repo ? { path: null } : {}),
+        },
+      }));
     }
   });
 }

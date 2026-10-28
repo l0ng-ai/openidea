@@ -14,7 +14,7 @@ import {
   selectAllOccurrences,
   unselectOccurrence,
 } from "./editing";
-import { pasteReindentFilter } from "./prefs";
+import { caretExtension, pasteReindentFilter } from "./prefs";
 import { closesStringAt, skipClosingQuote } from "./smartKeys";
 import {
   collapseAllEffects,
@@ -27,6 +27,7 @@ import { nearestMark, unfoldAround } from "./lanes";
 import { lineRangeSelection } from "./gutterDrag";
 import { matchBraceTarget } from "./caretCommands";
 import { overwriteField, toggleOverwrite } from "./overwrite";
+import { validateEditorExtras } from "@/platform/editorSettings";
 
 const views: EditorView[] = [];
 afterEach(() => views.splice(0).forEach((v) => v.destroy()));
@@ -327,5 +328,34 @@ describe("overwrite mode", () => {
         .some((h) => h(v, v.state.selection.main.from, v.state.selection.main.to, text, () => v.state.update({})));
     type("XYZ");
     expect(show(v)).toBe("abXYZ|\nx");
+  });
+});
+
+describe("smooth caret", () => {
+  const caret = (appearance: object) => caretExtension(validateEditorExtras({ appearance }));
+
+  it("marks the editor for smooth blinking and the chosen movement curve", () => {
+    const v = make(
+      "ab|c",
+      caret({ smoothCaretBlinking: true, smoothCaretMovement: true, caretMovementStyle: "gliding" }),
+    );
+    expect(v.dom.classList.contains("cm-openidea-smoothCaretBlink")).toBe(true);
+    expect(v.dom.classList.contains("cm-openidea-caretMotion-gliding")).toBe(true);
+    const plain = make("ab|c", caret({ smoothCaretBlinking: false, smoothCaretMovement: false }));
+    expect(plain.dom.className).not.toMatch(/smoothCaretBlink|caretMotion/);
+  });
+
+  it("glides selection-only moves and puts the caret in place at once when typing", () => {
+    const v = make("ab|c", caret({ smoothCaretMovement: true }));
+    const layer = v.scrollDOM.querySelector(".cm-cursorLayer")!;
+    const flush = () => (v as unknown as { measure(): void }).measure();
+    // jsdom has no layout: every caret is on screen.
+    v.coordsAtPos = () => ({ left: 0, right: 0, top: 0, bottom: 10 });
+    v.scrollDOM.getBoundingClientRect = () => new DOMRect(0, 0, 100, 100);
+    v.dispatch({ selection: { anchor: 1 } });
+    flush();
+    expect(layer.classList.contains("cm-openidea-caretGlide")).toBe(true);
+    v.dispatch({ changes: { from: 1, insert: "x" }, selection: { anchor: 2 } });
+    expect(layer.classList.contains("cm-openidea-caretGlide")).toBe(false);
   });
 });

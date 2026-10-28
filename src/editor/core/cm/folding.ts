@@ -3,7 +3,15 @@
  * with CodeMirror's syntax folding (`foldNodeProp`) as fallback, IDEA-style
  * chevrons in the gutter (open chevrons only on gutter hover).
  */
-import { Prec, StateEffect, StateField, type EditorState, type Extension, type Line } from "@codemirror/state";
+import {
+  EditorSelection,
+  Prec,
+  StateEffect,
+  StateField,
+  type EditorState,
+  type Extension,
+  type Line,
+} from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import {
   codeFolding,
@@ -15,6 +23,8 @@ import {
   unfoldEffect,
 } from "@codemirror/language";
 import type { FoldRange } from "@/platform/ipc";
+import { enclosingCodeBlock } from "./caretCommands";
+import { regionMarker, regionNameAt } from "./regions";
 
 export interface BackendFold {
   /** Offset where the fold starts (end of the header line). */
@@ -22,6 +32,8 @@ export interface BackendFold {
   to: number;
   /** 0-based header line at the time the folds were computed (for sticky scroll). */
   kind: FoldRange["kind"];
+  /** A custom region (`//region` … `//endregion`): folds from its start marker, which the placeholder names. */
+  custom?: boolean;
 }
 
 export const setBackendFolds = StateEffect.define<FoldRange[]>();
@@ -44,8 +56,14 @@ export function foldsFromRanges(state: EditorState, ranges: readonly FoldRange[]
   const lines = state.doc.lines;
   for (const r of ranges) {
     if (r.start_line + 1 > lines || r.end_line + 1 > lines || r.end_line <= r.start_line) continue;
-    const start = allmanHeader(state, state.doc.line(r.start_line + 1));
+    const first = state.doc.line(r.start_line + 1);
     const end = state.doc.line(r.end_line + 1);
+    if (regionMarker(first.text)?.start) {
+      const from = first.from + /^\s*/.exec(first.text)![0].length;
+      if (end.to > from) out.push({ from, to: end.to, kind: r.kind, custom: true });
+      continue;
+    }
+    const start = allmanHeader(state, first);
     const trimmed = end.text.trimStart();
     // `}` / `)` / `]` on the last line stays visible after the placeholder, like IDEA.
     const to = /^[}\])]/.test(trimmed) ? end.from + (end.text.length - trimmed.length) : end.to;
@@ -81,8 +99,8 @@ function foldAtLine(folds: readonly BackendFold[], lineStart: number, lineEnd: n
   let best: BackendFold | null = null;
   for (let i = lo; i < folds.length && folds[i]!.from <= lineEnd; i++) {
     const f = folds[i]!;
-    // Only folds whose header ends on this line; keep the widest.
-    if (f.from === lineEnd && (!best || f.to > best.to)) best = f;
+    // Only folds whose header ends on this line (custom regions: on this line); keep the widest.
+    if ((f.from === lineEnd || f.custom) && (!best || f.to > best.to)) best = f;
   }
   return best;
 }
@@ -163,6 +181,38 @@ export function unfoldAtCaret(view: EditorView): boolean {
 }
 
 /**
+ * IDEA "Collapse Block" (⇧⌘.): folds the inside of the `{…}` block around the
+ * caret, whether or not the language offers a fold there; an already folded
+ * block passes on to the one enclosing it.
+ */
+export function collapseBlockEffects(state: EditorState): StateEffect<unknown>[] {
+  const effects: StateEffect<unknown>[] = [];
+  for (const range of state.selection.ranges) {
+    let block = enclosingCodeBlock(state, range.head);
+    while (block && isFolded(state, block)) block = enclosingCodeBlock(state, block.from - 1);
+    if (block && block.to > block.from) effects.push(foldEffect.of(block));
+  }
+  return effects;
+}
+
+export function collapseBlock(view: EditorView): boolean {
+  const effects = collapseBlockEffects(view.state);
+  if (!effects.length) return false;
+  // A caret inside a fold would unfold it again: it moves to the fold, as in IDEA.
+  const folds = effects.map((e) => e.value as { from: number; to: number });
+  const sel = view.state.selection;
+  const selection = EditorSelection.create(
+    sel.ranges.map((r) => {
+      const f = folds.find((x) => x.from < r.head && r.head < x.to);
+      return f ? EditorSelection.cursor(f.from) : r;
+    }),
+    sel.mainIndex,
+  );
+  view.dispatch({ effects, selection });
+  return true;
+}
+
+/**
  * IDEA "Fold Selection / Remove Region" (⌘.): folds each selection (without
  * a trailing line break); with no selection, toggles the region at the caret.
  */
@@ -239,6 +289,34 @@ export function collapseAllEffects(state: EditorState): StateEffect<unknown>[] {
 }
 
 /** IDEA "Expand All" (⌘⇧=): every folded region, or those inside the selection. */
+/**
+ * IDEA "Expand to Level N" (⌘* N) / "Expand All to Level N" (⌘⇧* N): the
+ * regions of the region around the caret (of the file with `all`) nested at most
+ * `level` deep are expanded, deeper ones collapsed.
+ */
+export function expandToLevelEffects(state: EditorState, level: number, all = false): StateEffect<unknown>[] {
+  const regions = foldableRegions(state);
+  let scope = regions;
+  if (!all) {
+    const head = state.selection.main.head;
+    const around = regions.filter((r) => r.from <= head && head <= r.to);
+    const root = around.reduce<(typeof regions)[number] | null>(
+      (best, r) => (!best || r.to - r.from < best.to - best.from ? r : best),
+      null,
+    );
+    if (!root) return [];
+    scope = regions.filter((r) => r.from >= root.from && r.to <= root.to);
+  }
+  const effects: StateEffect<unknown>[] = [];
+  for (const r of scope) {
+    const depth = scope.filter((o) => o !== r && o.from <= r.from && r.to <= o.to).length + 1;
+    const folded = isFolded(state, r);
+    if (depth <= level && folded) effects.push(unfoldEffect.of(r));
+    else if (depth > level && !folded) effects.push(foldEffect.of(r));
+  }
+  return effects;
+}
+
 export function expandAllEffects(state: EditorState): StateEffect<unknown>[] {
   const all: Array<{ from: number; to: number }> = [];
   foldedRanges(state).between(0, state.doc.length, (from, to) => void all.push({ from, to }));
@@ -319,10 +397,12 @@ export function foldingExtension(showOutline = true): Extension {
     backendFolds,
     backendFoldService,
     codeFolding({
-      placeholderDOM: (_view, onclick) => {
+      // A folded custom region shows its name, as in IDEA.
+      preparePlaceholder: (state, range) => regionNameAt(state, range.from),
+      placeholderDOM: (_view, onclick, name: string | null) => {
         const el = document.createElement("span");
         el.className = "cm-foldPlaceholder";
-        el.textContent = "…";
+        el.textContent = name ?? "…";
         el.title = "Expand";
         el.setAttribute("aria-label", "folded code");
         el.onclick = onclick;

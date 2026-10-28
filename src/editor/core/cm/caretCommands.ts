@@ -78,18 +78,38 @@ export function codeBlockEnd(state: EditorState, pos: number): number | null {
   return null;
 }
 
-function moveToBlock(find: (state: EditorState, pos: number) => number | null): Command {
+function moveToBlock(find: (state: EditorState, pos: number) => number | null, extend = false): Command {
   return (view) => {
     const { state } = view;
-    const target = find(state, state.selection.main.head);
+    const main = state.selection.main;
+    const target = find(state, main.head);
     if (target == null) return false;
-    view.dispatch({ selection: EditorSelection.cursor(target), scrollIntoView: true, userEvent: "select.navigate" });
+    view.dispatch({
+      selection: extend ? EditorSelection.range(main.anchor, target) : EditorSelection.cursor(target),
+      scrollIntoView: true,
+      userEvent: extend ? "select" : "select.navigate",
+    });
     return true;
   };
 }
 
 export const cursorCodeBlockStart = moveToBlock(codeBlockStart);
 export const cursorCodeBlockEnd = moveToBlock(codeBlockEnd);
+export const selectCodeBlockStart = moveToBlock(codeBlockStart, true);
+export const selectCodeBlockEnd = moveToBlock(codeBlockEnd, true);
+
+/**
+ * The inside of the `{…}` block around `pos` (between the braces) for Collapse Block;
+ * after a `}` the block it closes. `null` outside any block.
+ */
+export function enclosingCodeBlock(state: EditorState, pos: number): { from: number; to: number } | null {
+  const start = codeBlockStart(state, pos);
+  if (start == null) return null;
+  const open = braceAt(state, start) === "{" ? start : start - 1;
+  const end = codeBlockEnd(state, open);
+  if (end == null) return null;
+  return { from: open + 1, to: end - 1 };
+}
 
 /**
  * Where Go to Matching Brace (⌃M) goes from `pos`: from a brace next to the

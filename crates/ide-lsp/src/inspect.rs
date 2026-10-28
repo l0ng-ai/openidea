@@ -66,6 +66,11 @@ impl LspManager {
     pub fn serves_path(&self, path: &Path) -> bool {
         let lang = self.languages.detect(path, None);
         self.language_servers(&lang).iter().any(|ls| {
+            if ls.require_root_marker
+                && crate::launch::marked_root(&self.project_root, path, &ls.root_markers).is_none()
+            {
+                return false;
+            }
             let mut cfg = ls.clone();
             if let Some(hook) = self.config_hook.read().clone() {
                 hook(&mut cfg, &self.project_root);

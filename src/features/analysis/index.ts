@@ -14,7 +14,8 @@ import {
 import { AnalysisDialogHost } from "./dialogs";
 import { resetDuplicates } from "./duplicates";
 import { DuplicatesHeaderActions, DuplicatesView } from "./DuplicatesView";
-import { installInspectionProfileSync, resetInspection } from "./inspect";
+import { installInspectionProfileSync, resetInspection, runInspection } from "./inspect";
+import { defaultScope } from "./scope";
 import { InspectionHeaderActions, InspectionView, useInspectionHeaderMenu } from "./InspectionView";
 
 export function activate(): () => void {
@@ -56,6 +57,16 @@ export function activate(): () => void {
         when: "projectOpen",
         keywords: ["inspection", "analyze", "diagnostics", "problems"],
         run: () => void showInspectCodeDialog(),
+      },
+      {
+        // IDEA's "Inspect Code with Editor Settings": the current file, no scope dialog.
+        id: "analyze.inspectFile",
+        title: "Inspect Current File",
+        category: "Code",
+        icon: "toolwindow-inspection",
+        when: "projectOpen && textEditorActive",
+        keywords: ["inspect code with editor settings", "inspection", "analyze file"],
+        run: () => runInspection(defaultScope("file")),
       },
       {
         id: "code.cleanup",

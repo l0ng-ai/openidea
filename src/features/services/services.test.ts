@@ -22,7 +22,7 @@ import {
 } from "./model";
 import { endpointFrom } from "./dialogs";
 import { dockerItems } from "./docker";
-import { addServiceMenu, expandableKeys, indexTree } from "./tree";
+import { addServiceMenu, expandableKeys, indexTree, setProviderRoots, useServicesTree } from "./tree";
 
 const container = (name: string, state: string, project?: string, service?: string): DockerContainer => ({
   id: `${name}-id`,
@@ -128,6 +128,15 @@ describe("services tree host", () => {
       "Docker Registry…",
       "Docker Connection…",
     ]);
+  });
+
+  it("expands nodes asking for it once, when they first appear", () => {
+    const group = () => ({ key: "run:type:npm", label: "npm", icon: "x", expanded: true, children: [] });
+    setProviderRoots("run", [group()]);
+    expect(useServicesTree.getState().expanded.has("run:type:npm")).toBe(true);
+    useServicesTree.setState({ expanded: new Set() });
+    setProviderRoots("run", [group()]);
+    expect(useServicesTree.getState().expanded.has("run:type:npm")).toBe(false);
   });
 
   it("builds connection endpoints from the dialog fields", () => {

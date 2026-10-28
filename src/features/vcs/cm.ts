@@ -3,12 +3,11 @@
  * based theme + syntax colours and lazy language loading by file name.
  */
 import { HighlightStyle, LanguageDescription, syntaxHighlighting, type LanguageSupport } from "@codemirror/language";
-import { EditorState, RangeSetBuilder, type Extension, type Line } from "@codemirror/state";
+import { Compartment, EditorState, RangeSetBuilder, type Extension, type Line } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
   ViewPlugin,
-  drawSelection,
   highlightActiveLine,
   keymap,
   lineNumbers,
@@ -19,6 +18,11 @@ import { getChunks } from "@codemirror/merge";
 import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
 import { tags as t } from "@lezer/highlight";
+import { findExtension } from "@/editor/core/cm/find";
+import { caretExtension } from "@/editor/core/cm/prefs";
+import { caretStyles, findLocals, findStyles } from "@/editor/core/cm/theme";
+import { editorPrefs } from "@/platform/editorSettings";
+import { useProject } from "@/platform/project";
 
 const wholeLine = Decoration.line({ class: "cm-diffWholeLine" });
 
@@ -98,10 +102,11 @@ export const viewerTheme = EditorView.theme(
       backgroundColor: "var(--bg-app)",
       color: "var(--fg)",
       fontSize: "var(--fs-code)",
+      ...findLocals,
     },
     ".cm-scroller": { fontFamily: "var(--font-mono)", fontWeight: "var(--fw-code, 400)", lineHeight: "var(--lh-code)" },
-    ".cm-content": { caretColor: "var(--accent)", WebkitUserSelect: "text", userSelect: "text" },
-    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)" },
+    ".cm-content": { caretColor: "var(--caret, var(--fg-strong))", WebkitUserSelect: "text", userSelect: "text" },
+    ...caretStyles,
     "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
       backgroundColor: "var(--bg-selected-strong)",
     },
@@ -163,18 +168,42 @@ export const viewerTheme = EditorView.theme(
     },
     ".cm-panels": { backgroundColor: "var(--bg-elev)", color: "var(--fg)" },
     ".cm-searchMatch": { backgroundColor: "color-mix(in srgb, var(--accent) 22%, transparent)" },
+    ...findStyles,
   },
   { dark: true },
 );
 
-/** Base extensions for a read-only (or editable) viewer pane. */
-export function viewerBase(opts: { readOnly: boolean; lineNumbers?: boolean }): Extension[] {
+const caretSlot = new Compartment();
+
+/** The editor's caret (Settings › Editor › General › Appearance), kept in step with the settings. */
+function viewerCaret(): Extension {
+  return [
+    caretSlot.of(caretExtension(editorPrefs())),
+    ViewPlugin.define((view) => {
+      let appearance = editorPrefs().appearance;
+      const unsubscribe = useProject.subscribe(() => {
+        const next = editorPrefs();
+        if (JSON.stringify(next.appearance) === JSON.stringify(appearance)) return;
+        appearance = next.appearance;
+        view.dispatch({ effects: caretSlot.reconfigure(caretExtension(next)) });
+      });
+      return { destroy: unsubscribe };
+    }),
+  ];
+}
+
+/**
+ * Base extensions for a read-only (or editable) viewer pane. `findBar`: the
+ * viewer shows the editor's find bar (FindPanel) instead of CodeMirror's panel.
+ */
+export function viewerBase(opts: { readOnly: boolean; lineNumbers?: boolean; findBar?: boolean }): Extension[] {
   return [
     opts.lineNumbers === false ? [] : lineNumbers(),
-    drawSelection(),
+    viewerCaret(),
     highlightActiveLine(),
-    search({ top: true }),
-    keymap.of([...searchKeymap, ...defaultKeymap]),
+    opts.findBar
+      ? [findExtension(), keymap.of(defaultKeymap)]
+      : [search({ top: true }), keymap.of([...searchKeymap, ...defaultKeymap])],
     syntaxHighlighting(viewerHighlight),
     viewerTheme,
     wholeChangedLines,

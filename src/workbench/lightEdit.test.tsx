@@ -5,6 +5,7 @@ import { evaluateWhen } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { activateWorkbench } from "./activate";
 import { registerStatusItem, registerTitleItem, registerToolWindow } from "./contributions";
+import { EmptyEditor } from "./EditorArea";
 import { chooseProjectWindow } from "./projectWindow";
 import { Workbench } from "./Workbench";
 
@@ -49,6 +50,21 @@ describe("LightEdit window", () => {
     const items = [...document.querySelectorAll("[data-status-item]")].map((el) => el.getAttribute("data-status-item"));
     expect(items).toEqual(["editor.caret"]);
     expect(screen.queryByText("Welcome to OpenIDEA")).toBeNull();
+  });
+
+  it("hints only at opening files in an empty editor", () => {
+    render(<EmptyEditor />);
+    expect(screen.getByText("Open File")).toBeInTheDocument();
+    expect(screen.getByText("Drop files here to open them")).toBeInTheDocument();
+    for (const project of ["Search Everywhere", "Go to File", "Recent Files", "Navigation Bar"])
+      expect(screen.queryByText(project)).toBeNull();
+  });
+
+  it("keeps the navigation hints in a project window", () => {
+    useProject.setState({ lightEdit: false });
+    render(<EmptyEditor />);
+    expect(screen.getByText("Go to File")).toBeInTheDocument();
+    expect(screen.queryByText("Open File")).toBeNull();
   });
 
   it("sets the context keys that keep project actions off", () => {

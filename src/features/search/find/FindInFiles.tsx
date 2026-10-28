@@ -685,6 +685,7 @@ function FindInFilesDialog() {
                     <MatchText
                       text={r.text}
                       ranges={r.ranges}
+                      source={{ path: r.path, line: r.line, col: r.textCol }}
                       active={st.active}
                       replacement={s.replace && state !== "done" ? s.replacement : null}
                       query={query}

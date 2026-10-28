@@ -84,7 +84,7 @@ class RevertWidget extends WidgetType {
   }
 }
 
-function chunkAt(chunks: readonly Chunk[], side: "a" | "b", pos: number, docLength: number): number {
+export function chunkAt(chunks: readonly Chunk[], side: "a" | "b", pos: number, docLength: number): number {
   return chunks.findIndex((c) => {
     const [from, to] = side === "a" ? [c.fromA, c.toA] : [c.fromB, c.toB];
     return from === to ? pos === from : pos >= from && pos < Math.max(to, from + 1) && pos <= docLength;

@@ -46,6 +46,13 @@ describe("reopenLastProject", () => {
     expect(openProject).not.toHaveBeenCalled();
   });
 
+  it("leaves files opened at launch in LightEdit", async () => {
+    provideStartupLaunch(Promise.resolve().then(() => useProject.setState({ lightEdit: true })));
+    await reopenLastProject();
+    expect(openProject).not.toHaveBeenCalled();
+    useProject.setState({ lightEdit: false });
+  });
+
   it("reopens the last project when the launch named none", async () => {
     provideStartupLaunch(Promise.resolve());
     await reopenLastProject();
