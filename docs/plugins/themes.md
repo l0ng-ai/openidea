@@ -295,7 +295,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-203 themeable tokens: 113 in the UI theme file, 90 in the editor colour scheme file.
+219 themeable tokens: 113 in the UI theme file, 106 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -479,6 +479,27 @@ a token.
 | `--ansi-bright-magenta` | `#ed7eed` | `#c04bcf` |
 | `--ansi-bright-cyan` | `#00e5e5` | `#1b9ea3` |
 | `--ansi-bright-white` | `#ffffff` | `#5f6269` |
+
+### Terminal ANSI palette (editor scheme)
+
+| Token | Islands Dark | Islands Light |
+|---|---|---|
+| `--terminal-ansi-black` | `#000000` | `#000000` |
+| `--terminal-ansi-red` | `#f27481` | `#c93645` |
+| `--terminal-ansi-green` | `#6bcc62` | `#357d1f` |
+| `--terminal-ansi-yellow` | `#e0ce70` | `#b2a400` |
+| `--terminal-ansi-blue` | `#5594fa` | `#225cd6` |
+| `--terminal-ansi-magenta` | `#c092fa` | `#6e32e5` |
+| `--terminal-ansi-cyan` | `#47ccbd` | `#007a80` |
+| `--terminal-ansi-white` | `#ced0d6` | `#bec0c5` |
+| `--terminal-ansi-bright-black` | `#4e5157` | `#6c707e` |
+| `--terminal-ansi-bright-red` | `#ff6b7a` | `#ff5462` |
+| `--terminal-ansi-bright-green` | `#67ff59` | `#3dcc3d` |
+| `--terminal-ansi-bright-yellow` | `#ffec1a` | `#d4bb00` |
+| `--terminal-ansi-bright-blue` | `#3399ff` | `#009dff` |
+| `--terminal-ansi-bright-magenta` | `#d970ff` | `#d659ff` |
+| `--terminal-ansi-bright-cyan` | `#40ffe9` | `#31c4b3` |
+| `--terminal-ansi-bright-white` | `#ffffff` | `#d2d4d9` |
 
 ### Shadows and window controls (UI theme)
 
