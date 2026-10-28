@@ -166,6 +166,18 @@ pub struct AgentToolDiff {
     pub removed: u32,
 }
 
+/// What a subagent is doing, as its parent reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSubagentStatus {
+    Running,
+    /// One of its requests (a permission) waits for an answer.
+    NeedsInput,
+    Done,
+    Cancelled,
+    Failed,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPlanItem {
@@ -217,6 +229,33 @@ pub enum AgentEntry {
     },
     Plan {
         items: Vec<AgentPlanItem>,
+    },
+    /// A subagent the agent started: its own session, whose entries are listed separately.
+    Subagent {
+        /// The subagent's session id.
+        id: String,
+        title: Option<String>,
+        description: Option<String>,
+        status: AgentSubagentStatus,
+        error: Option<String>,
+        /// What it was asked to do, last.
+        prompt: Option<String>,
+        /// Its answer.
+        reply: Option<String>,
+        /// Tool calls it made.
+        tools: u32,
+        /// Title of its latest tool call.
+        activity: Option<String>,
+        started_ms: f64,
+        /// When it last stopped working; `None` while it works.
+        ended_ms: Option<f64>,
+        /// Whether it can be stopped on its own.
+        cancellable: bool,
+    },
+    /// A message between sessions in a subagent's conversation: its task (`incoming`) or its report.
+    Message {
+        incoming: bool,
+        text: String,
     },
     Permission {
         id: u32,
@@ -279,9 +318,10 @@ pub enum AgentEvent {
     Removed {
         id: String,
     },
-    /// Entry `index` of `task` was added or replaced.
+    /// Entry `index` of `task` (of its subagent `subagent`) was added or replaced.
     Entry {
         task: String,
+        subagent: Option<String>,
         index: u32,
         entry: AgentEntry,
     },

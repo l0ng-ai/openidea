@@ -696,24 +696,28 @@ const KEY_STEP = 10;
 /**
  * Splitter between the primary and split areas of a side: horizontal on the
  * left and right (areas stacked), vertical at the bottom (side by side).
- * Moves CSS variables while dragging; the ratio is stored on release.
+ * Moves the areas' flex-grow while dragging; the ratio is stored on release.
  */
 function SplitHandle({ anchor, hidden }: { anchor: ToolWindowAnchor; hidden: boolean }) {
   const stacked = anchor !== "bottom";
   const measure = (el: HTMLElement) => {
-    const side = el.parentElement;
     const first = el.previousElementSibling as HTMLElement | null;
     const second = el.nextElementSibling as HTMLElement | null;
-    if (!side || !first || !second) return null;
+    if (!first || !second) return null;
     const size = (e: HTMLElement) => (stacked ? e.offsetHeight : e.offsetWidth);
     const total = size(first) + size(second);
     if (total <= 0) return null;
     const min = Math.min(stacked ? SPLIT_MIN.stacked : SPLIT_MIN.sideBySide, total / 2);
-    return { side, first: size(first), total, clamp: (px: number) => Math.min(total - min, Math.max(min, px)) };
+    return {
+      areas: [first, second] as const,
+      first: size(first),
+      total,
+      clamp: (px: number) => Math.min(total - min, Math.max(min, px)),
+    };
   };
-  const apply = (side: HTMLElement, ratio: number) => {
-    side.style.setProperty("--split-a", String(ratio));
-    side.style.setProperty("--split-b", String(1 - ratio));
+  const apply = ([first, second]: readonly [HTMLElement, HTMLElement], ratio: number) => {
+    first.style.flexGrow = String(ratio);
+    second.style.flexGrow = String(1 - ratio);
   };
   const ratioOf = (px: number, total: number) => Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, px / total));
 
@@ -729,7 +733,7 @@ function SplitHandle({ anchor, hidden }: { anchor: ToolWindowAnchor; hidden: boo
     let ratio: number | null = null;
     const move = (ev: globalThis.PointerEvent) => {
       ratio = ratioOf(m.clamp(m.first + (stacked ? ev.clientY : ev.clientX) - origin), m.total);
-      apply(m.side, ratio);
+      apply(m.areas, ratio);
     };
     const end = () => {
       el.removeEventListener("pointermove", move);
@@ -738,7 +742,7 @@ function SplitHandle({ anchor, hidden }: { anchor: ToolWindowAnchor; hidden: boo
       document.body.style.cursor = cursor;
       if (ratio !== null) setToolWindowSplit(anchor, ratio);
       // Back to the store's value (unchanged when the ratio was clamped to it).
-      apply(m.side, useToolWindowLayout.getState().splits[anchor]);
+      apply(m.areas, useToolWindowLayout.getState().splits[anchor]);
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", end);
@@ -782,25 +786,32 @@ function SidePanel({
   visible: SlotRecord;
 }) {
   const mounted = useToolWindowLayout((s) => s.mounted);
+  const split = !!visible[anchor] && !!visible[`${anchor}-split`];
+  // A lone area takes the whole side: flex-grow below 1 would leave the rest empty.
   const ratio = useToolWindowLayout((s) => s.splits[anchor]);
-  const area = (slot: ToolWindowSlot, className: string | undefined) => {
+  const area = (slot: ToolWindowSlot, grow: number) => {
     const visibleId = visible[slot];
     const list = windows.filter((w) => slotOf(w) === slot && (mounted.has(w.id) || w.id === visibleId));
     if (!list.length) return null;
     return (
-      <div className={clsx(styles.island, styles.anchor, className)} data-slot={slot} hidden={!visibleId}>
+      <div
+        className={clsx(styles.island, styles.anchor)}
+        // The stored ratio; SplitHandle moves it directly while dragging.
+        style={{ flexGrow: grow }}
+        data-slot={slot}
+        hidden={!visibleId}
+      >
         {list.map((w) => (
           <ToolWindowView key={w.id} tw={w} hidden={w.id !== visibleId} />
         ))}
       </div>
     );
   };
-  const style = { "--split-a": ratio, "--split-b": 1 - ratio } as CSSProperties;
   return (
-    <div className={clsx(styles.side, anchor === "bottom" && styles.sideRow)} data-anchor={anchor} style={style}>
-      {area(anchor, styles.areaFirst)}
-      <SplitHandle anchor={anchor} hidden={!visible[anchor] || !visible[`${anchor}-split`]} />
-      {area(`${anchor}-split`, styles.areaSecond)}
+    <div className={clsx(styles.side, anchor === "bottom" && styles.sideRow)} data-anchor={anchor}>
+      {area(anchor, split ? ratio : 1)}
+      <SplitHandle anchor={anchor} hidden={!split} />
+      {area(`${anchor}-split`, split ? 1 - ratio : 1)}
     </div>
   );
 }

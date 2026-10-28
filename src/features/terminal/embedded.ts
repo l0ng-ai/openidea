@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 import type { EmbeddedTerminal, EmbeddedTerminalOptions } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { fitScheduler, settledResize } from "./fit";
 import { findTerminalLinks } from "./links";
 import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
 import { readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
@@ -49,10 +50,11 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const fit = new FitAddon();
   term.loadAddon(fit);
   live.add(term);
+  const processResize = settledResize((cols, rows) => opts.onResize(cols, rows));
   const disposables: IDisposable[] = [
     term.onData((d) => opts.onData(d)),
     term.onBinary((d) => opts.onData(d)),
-    term.onResize(({ cols, rows }) => opts.onResize(cols, rows)),
+    term.onResize(({ cols, rows }) => processResize.resized(cols, rows)),
     term.registerLinkProvider({
       provideLinks(y, callback) {
         const line = term.buffer.active.getLine(y - 1);
@@ -76,17 +78,13 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   term.open(host);
   if (opts["aria-label"]) term.textarea?.setAttribute("aria-label", opts["aria-label"]);
 
-  let raf = 0;
-  const doFit = () => {
-    raf = 0;
+  const fitter = fitScheduler(() => {
     if (!host.isConnected || host.offsetWidth === 0 || host.offsetHeight === 0) return;
     const dims = fit.proposeDimensions();
     if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
     if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
-  };
-  const scheduleFit = () => {
-    if (!raf) raf = requestAnimationFrame(doFit);
-  };
+  });
+  const scheduleFit = () => fitter.schedule();
   const observer = new ResizeObserver(scheduleFit);
   observer.observe(host);
   scheduleFit();
@@ -98,12 +96,10 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     write: (data) => term.write(data),
     clear: () => term.reset(),
     focus: () => term.focus(),
-    fit: () => {
-      cancelAnimationFrame(raf);
-      doFit();
-    },
+    fit: () => fitter.flush(),
     dispose: () => {
-      cancelAnimationFrame(raf);
+      fitter.cancel();
+      processResize.cancel();
       observer.disconnect();
       for (const d of disposables) d.dispose();
       live.delete(term);

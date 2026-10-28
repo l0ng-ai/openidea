@@ -13,6 +13,7 @@ import { openideaTheme } from "./theme";
 import { findLanguageDescription, loadSupport, loadedSupport, uiModeForPath } from "./languages";
 import { fontExtension } from "./setup";
 import { tx } from "@/platform/i18n";
+import { selectableText } from "@/ui";
 
 export async function previewExtensions(path: string, settings: EditorSettings | undefined): Promise<Extension> {
   const open = editorsFor(path)[0]?.ctx;
@@ -26,7 +27,8 @@ export async function previewExtensions(path: string, settings: EditorSettings |
     syntaxHighlighting(openideaHighlightStyle),
     EditorState.readOnly.of(true),
     EditorView.editable.of(false),
-    EditorView.contentAttributes.of({ "aria-label": tx`Preview of ${path}` }),
+    // Not editable, so selection and Copy need the text opted back in and a tab stop.
+    EditorView.contentAttributes.of({ "aria-label": tx`Preview of ${path}`, class: selectableText, tabindex: "0" }),
     support ?? [],
   ];
 }

@@ -186,6 +186,22 @@ describe("diff options", () => {
     parent.remove();
   });
 
+  it("gives a read-only side a tab stop and leaves an editable side alone", () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const mv = new MergeView({
+      a: { doc: "old\n", extensions: viewerBase({ readOnly: true }) },
+      b: { doc: "new\n", extensions: viewerBase({ readOnly: false }) },
+      parent,
+    });
+    expect(mv.a.contentDOM.getAttribute("contenteditable")).toBe("false");
+    expect(mv.a.contentDOM.getAttribute("tabindex")).toBe("0");
+    expect(mv.b.contentDOM.getAttribute("contenteditable")).toBe("true");
+    expect(mv.b.contentDOM.hasAttribute("tabindex")).toBe(false);
+    mv.destroy();
+    parent.remove();
+  });
+
   it("transfers a chunk between sides (>> / << / Revert)", () => {
     const a = doc("x\nold\ny\n");
     const b = doc("x\nnew\nnewer\ny\n");

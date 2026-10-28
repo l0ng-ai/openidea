@@ -25,6 +25,44 @@ impl FakeAgent {
     }
 }
 
+impl FakeAgent {
+    /// Runs a subagent in session `c1`, as an agent with ACP subagent sessions reports it.
+    fn delegate(&self, root: &str) {
+        let sub = |state: Value| json!({"sessionUpdate": "subagent_update", "sessionId": "c1", "state": state});
+        let mut announce = sub(json!({"state": "running"}));
+        announce["title"] = json!("Explore");
+        self.update(root, announce);
+        self.update(
+            root,
+            json!({"sessionUpdate": "session_message", "messageId": "m1", "senderSessionId": root,
+                "recipientSessionId": "c1", "content": [{"type": "text", "text": "Find the lexer"}]}),
+        );
+        self.update("c1", json!({"sessionUpdate": "usage_update", "used": 900, "size": 1000}));
+        self.update(
+            "c1",
+            json!({"sessionUpdate": "tool_call", "toolCallId": "c1-t1", "title": "Read lexer.rs",
+            "kind": "read", "status": "completed"}),
+        );
+        let peer = self.peer.get().unwrap().clone();
+        let _: Value = tokio::runtime::Handle::current()
+            .block_on(peer.request(
+                "session/request_permission",
+                json!({"sessionId": "c1", "toolCall": {"toolCallId": "c1-t2", "title": "Run ls"},
+                    "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"}]}),
+                None,
+            ))
+            .unwrap();
+        self.say("c1", "It is in lexer.rs");
+        self.update(root, sub(json!({"state": "idle", "stopReason": "end_turn"})));
+        self.update(
+            root,
+            json!({"sessionUpdate": "session_message", "messageId": "m2", "senderSessionId": "c1",
+                "recipientSessionId": root, "content": [{"type": "text", "text": "lexer.rs"}]}),
+        );
+        self.say(root, "Found it");
+    }
+}
+
 impl Handler for FakeAgent {
     fn on_notification(&self, method: &str, _: Value) {
         self.calls.lock().push(method.to_owned());
@@ -34,7 +72,12 @@ impl Handler for FakeAgent {
         self.calls.lock().push(method.to_owned());
         let session = params.get("sessionId").and_then(Value::as_str).unwrap_or("s1").to_owned();
         match method {
-            "initialize" => Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": true}})),
+            "initialize" => {
+                if params.pointer("/clientCapabilities/subagents").is_some_and(Value::is_object) {
+                    self.calls.lock().push("subagents".into());
+                }
+                Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": true}}))
+            }
             "session/new" => Ok(json!({"sessionId": "s1",
                 "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
                 "configOptions": [{"id": "model", "category": "model", "type": "select", "currentValue": "big",
@@ -51,6 +94,10 @@ impl Handler for FakeAgent {
                 let text = params.pointer("/prompt/0/text").and_then(Value::as_str).unwrap_or_default().to_owned();
                 if text == "again" {
                     self.say(&session, "second turn");
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
+                if text == "delegate" {
+                    self.delegate(&session);
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
                 if text == "wait" {
@@ -194,7 +241,7 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
     wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
 
     let permission = mgr
-        .entries(&task.id)
+        .entries(&task.id, None)
         .unwrap()
         .iter()
         .find_map(|e| match e {
@@ -205,7 +252,7 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
     mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
 
-    let entries = mgr.entries(&task.id).unwrap();
+    let entries = mgr.entries(&task.id, None).unwrap();
     let kinds: Vec<String> = entries
         .iter()
         .map(|e| match e {
@@ -261,13 +308,13 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
     mgr.shutdown();
     let agent2 = Arc::new(FakeAgent::default());
     let mgr2 = manager(tmp.path(), agent2.clone());
-    assert_eq!(mgr2.entries(&task.id).unwrap().len(), 5);
+    assert_eq!(mgr2.entries(&task.id, None).unwrap().len(), 5);
     assert_eq!(mgr2.task(&task.id).unwrap().state.lock().task.title, "Lexer fix");
     assert_eq!(mgr2.providers().iter().find(|p| p.id == "claude").unwrap().config.len(), 2);
     mgr2.prompt(&task.id, text("again"), false).await.unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
     wait_for(&mgr2, &task.id, AgentStatus::Ready).await;
-    let entries = mgr2.entries(&task.id).unwrap();
+    let entries = mgr2.entries(&task.id, None).unwrap();
     assert_eq!(entries.len(), 7);
     assert_eq!(entries[6], AgentEntry::Agent { text: "second turn".into() });
     assert!(agent2.calls.lock().contains(&"session/load".to_owned()));
@@ -303,14 +350,14 @@ async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
 
     mgr.send_queued_now(&task.id, &queue[0].id).unwrap();
     for _ in 0..500 {
-        if mgr.entries(&task.id).unwrap().iter().any(|e| *e == AgentEntry::Agent { text: "second turn".into() }) {
+        if mgr.entries(&task.id, None).unwrap().iter().any(|e| *e == AgentEntry::Agent { text: "second turn".into() }) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     let users: Vec<String> = mgr
-        .entries(&task.id)
+        .entries(&task.id, None)
         .unwrap()
         .into_iter()
         .filter_map(|e| match e {
@@ -326,12 +373,74 @@ async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
     wait_for(&mgr, &task.id, AgentStatus::Running).await;
     agent.calls.lock().retain(|c| c != "session/cancel");
     mgr.prompt(&task.id, text("later"), false).await.unwrap();
-    mgr.cancel(&task.id).unwrap();
+    mgr.cancel(&task.id, None).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     let queued = mgr.task(&task.id).unwrap().state.lock().task.queue.clone();
     assert_eq!(queued.len(), 1);
     assert_eq!(mgr.unqueue(&task.id, &queued[0].id).unwrap().prompt.text, "later");
     assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subagents_get_their_own_conversation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("delegate"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    // The subagent's permission request is answered in the task's conversation.
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let (id, title) = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .into_iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, title, .. } => Some((id, title)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(title, "Explore: Run ls");
+    mgr.respond(&task.id, id, Some("yes".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(agent.calls.lock().iter().any(|c| c == "subagents"));
+
+    let check = |mgr: &AgentManager| {
+        let main = mgr.entries(&task.id, None).unwrap();
+        let card = main.iter().find(|e| matches!(e, AgentEntry::Subagent { .. })).unwrap();
+        let AgentEntry::Subagent { title, status, prompt, reply, tools, activity, .. } = card else { unreachable!() };
+        assert_eq!(title.as_deref(), Some("Explore"));
+        assert_eq!(*status, AgentSubagentStatus::Done);
+        assert_eq!((prompt.as_deref(), reply.as_deref()), (Some("Find the lexer"), Some("lexer.rs")));
+        assert_eq!((*tools, activity.as_deref()), (1, Some("Read lexer.rs")));
+        assert!(main.contains(&AgentEntry::Agent { text: "Found it".into() }));
+        assert!(!main.iter().any(|e| matches!(e, AgentEntry::Tool { .. })));
+        let sub = mgr.entries(&task.id, Some("c1".into())).unwrap();
+        assert!(matches!(&sub[0], AgentEntry::Tool { title, .. } if title == "Read lexer.rs"));
+        assert_eq!(sub[1], AgentEntry::Agent { text: "It is in lexer.rs".into() });
+    };
+    // Updates can trail the end of the turn.
+    for _ in 0..500 {
+        if mgr.entries(&task.id, None).unwrap().contains(&AgentEntry::Agent { text: "Found it".into() }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    check(&mgr);
+    // The subagent's context use is not the task's.
+    assert_ne!(mgr.task(&task.id).unwrap().state.lock().task.usage.as_ref().map(|u| u.used), Some(900));
+    assert!(mgr.entries(&task.id, Some("nope".into())).is_err());
+
+    // Saved with the task.
+    mgr.shutdown();
+    check(&manager(tmp.path(), Arc::new(FakeAgent::default())));
 }
 
 #[test]
@@ -381,15 +490,15 @@ async fn cancelling_resolves_the_open_permission_and_delete_forgets_the_task() {
         .await
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
-    mgr.cancel(&task.id).unwrap();
+    mgr.cancel(&task.id, None).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
-    let entries = mgr.entries(&task.id).unwrap();
+    let entries = mgr.entries(&task.id, None).unwrap();
     assert!(entries.iter().any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c == "Cancelled")));
     assert_eq!(entries.last(), Some(&AgentEntry::Agent { text: "chose none".into() }));
     assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.model.as_deref(), Some("big"), "the agent's default");
 
     mgr.delete(&task.id, false).await.unwrap();
-    assert!(mgr.entries(&task.id).is_err());
+    assert!(mgr.entries(&task.id, None).is_err());
     assert!(!tmp.path().join("store").join(format!("{}.json", task.id)).exists());
     assert!(
         mgr.create(NewAgentTask {
@@ -452,7 +561,7 @@ async fn real_claude_task_in_a_worktree() {
         let status = mgr.task(&task.id).unwrap().state.lock().task.status;
         match status {
             AgentStatus::NeedsInput => {
-                let pending = mgr.entries(&task.id).unwrap().into_iter().rev().find_map(|e| match e {
+                let pending = mgr.entries(&task.id, None).unwrap().into_iter().rev().find_map(|e| match e {
                     AgentEntry::Permission { id, options, chosen: None, .. } => Some((id, options)),
                     _ => None,
                 });
@@ -467,7 +576,7 @@ async fn real_claude_task_in_a_worktree() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    for e in mgr.entries(&task.id).unwrap() {
+    for e in mgr.entries(&task.id, None).unwrap() {
         eprintln!("{e:?}");
     }
     let t = mgr.task(&task.id).unwrap().state.lock().task.clone();

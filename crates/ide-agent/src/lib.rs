@@ -8,6 +8,7 @@
 //! next prompt when the agent supports `session/load`.
 
 mod config;
+mod conversation;
 mod model;
 mod provider;
 mod skills;
@@ -16,6 +17,7 @@ mod worktree;
 
 pub use model::*;
 
+use conversation::{Conversation, SavedSubagent, Session};
 use ide_core::{IdeError, IdeResult, IpcPath};
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use parking_lot::{Mutex, RwLock};
@@ -26,7 +28,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
-use timeline::Timeline;
 
 /// Receives the events of one project's tasks.
 pub type AgentSink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
@@ -39,6 +40,9 @@ const REPLAY_GRACE: Duration = Duration::from_millis(300);
 /// can trail its `session/prompt` response by this much.
 const TURN_GRACE: Duration = Duration::from_millis(100);
 const STDERR_LINES: usize = 20;
+/// Updates of a session's state rather than its conversation.
+const SESSION_STATE: [&str; 5] =
+    ["session_info_update", "config_option_update", "current_mode_update", "available_commands_update", "usage_update"];
 /// Referenced files up to this size are embedded in the prompt (when the agent takes it).
 const MAX_EMBED: u64 = 256 * 1024;
 
@@ -155,12 +159,14 @@ struct TaskFile {
     /// In the project's own checkout: files already changed when the task started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     before: BTreeMap<String, worktree::Stamp>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    subagents: Vec<SavedSubagent>,
 }
 
 struct TaskState {
     task: AgentTask,
     session_id: Option<String>,
-    timeline: Timeline,
+    conversation: Conversation,
     wanted: Vec<AgentConfigChoice>,
     before: Arc<BTreeMap<String, worktree::Stamp>>,
     /// A turn is running or about to (prompts arriving now are queued).
@@ -192,7 +198,7 @@ struct Task {
     replaying: AtomicBool,
     /// The current turn is being cancelled to send the first queued message right away.
     send_now: AtomicBool,
-    dirty: Mutex<BTreeSet<usize>>,
+    dirty: Mutex<BTreeSet<(Session, usize)>>,
     flush_scheduled: AtomicBool,
     stderr: Mutex<VecDeque<String>>,
     /// Set by `delete`; held while saving.
@@ -235,11 +241,9 @@ impl AgentManager {
                     // The agent process did not survive the restart: whatever was in flight is over.
                     if matches!(f.task.status, AgentStatus::Running | AgentStatus::NeedsInput | AgentStatus::Starting) {
                         f.task.status = AgentStatus::Ready;
-                        let mut timeline = Timeline::from_entries(std::mem::take(&mut f.entries));
-                        timeline.end_turn(None);
-                        f.entries = timeline.entries;
                     }
                     let task = Task::restore(f, shared.clone());
+                    task.state.lock().conversation.settle(now_ms());
                     tasks.insert(task.id.clone(), task);
                 }
                 Err(e) => tracing::warn!("skipping agent task {}: {e}", path.display()),
@@ -301,8 +305,12 @@ impl AgentManager {
         self.tasks.read().get(id).cloned().ok_or_else(|| IdeError::not_found(format!("no agent task {id}")))
     }
 
-    pub fn entries(&self, id: &str) -> IdeResult<Vec<AgentEntry>> {
-        Ok(self.task(id)?.state.lock().timeline.entries.clone())
+    /// The entries of the task's conversation, or of its subagent `subagent`'s.
+    pub fn entries(&self, id: &str, subagent: Option<String>) -> IdeResult<Vec<AgentEntry>> {
+        let task = self.task(id)?;
+        let s = task.state.lock();
+        let timeline = s.conversation.timeline(&subagent).ok_or_else(|| IdeError::not_found("no such subagent"))?;
+        Ok(timeline.entries.clone())
     }
 
     /// Creates the task (and its worktree) and sends `req.prompt` as its first message.
@@ -357,7 +365,14 @@ impl AgentManager {
             usage: None,
             queue: Vec::new(),
         };
-        let file = TaskFile { task: task.clone(), session_id: None, entries: Vec::new(), wanted: req.config, before };
+        let file = TaskFile {
+            task: task.clone(),
+            session_id: None,
+            entries: Vec::new(),
+            wanted: req.config,
+            before,
+            subagents: Vec::new(),
+        };
         let handle = Task::restore(file, self.shared.clone());
         handle.state.lock().busy = true;
         self.tasks.write().insert(task.id.clone(), handle.clone());
@@ -487,9 +502,17 @@ impl AgentManager {
     }
 
     /// Stops the current turn (`session/cancel`); pending permission requests are cancelled.
-    /// Queued messages stay queued.
-    pub fn cancel(&self, id: &str) -> IdeResult<()> {
-        self.task(id)?.cancel();
+    /// Queued messages stay queued. With `subagent`, stops only that subagent's work.
+    pub fn cancel(&self, id: &str, subagent: Option<String>) -> IdeResult<()> {
+        let task = self.task(id)?;
+        match subagent {
+            None => task.cancel(),
+            Some(sub) => {
+                if let Some(live) = task.live.lock().clone() {
+                    let _ = live.peer.notify("session/cancel", json!({ "sessionId": sub }));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -551,6 +574,8 @@ impl AgentManager {
     pub fn shutdown(&self) {
         for task in self.tasks.read().values() {
             task.kill();
+            // What arrived after the last save (a subagent's late updates).
+            task.persist();
         }
         *self.shared.sink.write() = None;
     }
@@ -559,14 +584,14 @@ impl AgentManager {
 impl Task {
     fn restore(file: TaskFile, shared: Arc<Shared>) -> Arc<Self> {
         let task = file.task;
-        let timeline = Timeline::from_entries(file.entries);
+        let conversation = Conversation::restore(file.entries, file.subagents);
         Arc::new(Self {
             id: task.id.clone(),
             shared,
             state: Mutex::new(TaskState {
                 task,
                 session_id: file.session_id,
-                timeline,
+                conversation,
                 wanted: file.wanted,
                 before: Arc::new(file.before),
                 busy: false,
@@ -623,9 +648,10 @@ impl Task {
             serde_json::to_vec(&TaskFile {
                 task: s.task.clone(),
                 session_id: s.session_id.clone(),
-                entries: s.timeline.entries.clone(),
+                entries: s.conversation.main.entries.clone(),
                 wanted: s.wanted.clone(),
                 before: (*s.before).clone(),
+                subagents: s.conversation.saved_subagents(),
             })
         };
         let path = self.shared.paths.store_dir.join(format!("{}.json", self.id));
@@ -634,7 +660,7 @@ impl Task {
         }
     }
 
-    fn mark_dirty(self: &Arc<Self>, indices: impl IntoIterator<Item = usize>) {
+    fn mark_dirty(self: &Arc<Self>, indices: impl IntoIterator<Item = (Session, usize)>) {
         self.dirty.lock().extend(indices);
         if !self.flush_scheduled.swap(true, Ordering::AcqRel) {
             let task = self.clone();
@@ -652,9 +678,9 @@ impl Task {
             let s = self.state.lock();
             indices
                 .into_iter()
-                .filter_map(|i| {
-                    let entry = s.timeline.entries.get(i)?.clone();
-                    Some(AgentEvent::Entry { task: self.id.clone(), index: i as u32, entry })
+                .filter_map(|(subagent, i)| {
+                    let entry = s.conversation.timeline(&subagent)?.entries.get(i)?.clone();
+                    Some(AgentEvent::Entry { task: self.id.clone(), subagent, index: i as u32, entry })
                 })
                 .collect()
         };
@@ -664,8 +690,8 @@ impl Task {
     }
 
     fn push_entry(self: &Arc<Self>, entry: AgentEntry) -> usize {
-        let i = self.state.lock().timeline.push(entry);
-        self.mark_dirty([i]);
+        let i = self.state.lock().conversation.main.push(entry);
+        self.mark_dirty([(None, i)]);
         i
     }
 
@@ -675,7 +701,7 @@ impl Task {
         loop {
             let result = self.turn(&prompt).await;
             tokio::time::sleep(TURN_GRACE).await;
-            let changed = self.state.lock().timeline.end_turn(Some(now_ms()));
+            let changed = self.state.lock().conversation.end_turn(Some(now_ms()));
             self.mark_dirty(changed);
             let send_now = self.send_now.swap(false, Ordering::AcqRel);
             let next = {
@@ -789,7 +815,12 @@ impl Task {
                 "initialize",
                 json!({
                     "protocolVersion": 1,
-                    "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false },
+                    "clientCapabilities": {
+                        "fs": { "readTextFile": false, "writeTextFile": false },
+                        "terminal": false,
+                        // Subagents as sessions of their own (ACP subagents RFD).
+                        "subagents": {},
+                    },
                     "clientInfo": { "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
                 }),
                 None,
@@ -890,8 +921,16 @@ impl Task {
         }
     }
 
-    fn on_update(self: &Arc<Self>, update: &Value) {
+    /// Applies a `session/update` of session `session` (the task's, or one of its subagents').
+    fn on_update(self: &Arc<Self>, session: Option<&str>, update: &Value) {
         let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or_default();
+        // A subagent's title, settings and usage are its own, not the task's.
+        if self.state.lock().conversation.owner(session).is_some() {
+            if !SESSION_STATE.contains(&kind) && !self.replaying.load(Ordering::Acquire) {
+                self.apply(session, kind, update);
+            }
+            return;
+        }
         if kind == "session_info_update" {
             // The agent's own title for the session replaces the first line of the prompt.
             let title = update.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
@@ -946,8 +985,16 @@ impl Task {
         if self.replaying.load(Ordering::Acquire) {
             return;
         }
-        let applied = self.state.lock().timeline.apply(update);
-        self.mark_dirty(applied.changed);
+        self.apply(session, kind, update);
+    }
+
+    fn apply(self: &Arc<Self>, session: Option<&str>, kind: &str, update: &Value) {
+        let applied = self.state.lock().conversation.apply(session, update, now_ms());
+        self.mark_dirty(applied);
+        // A subagent can start or finish after the turn that started it: saved right away.
+        if kind == "subagent_update" {
+            self.persist();
+        }
     }
 
     /// Blocks the calling (blocking-pool) thread until the user answers.
@@ -959,6 +1006,12 @@ impl Task {
             .filter(|t| !t.is_empty())
             .unwrap_or("The agent asks for permission")
             .to_owned();
+        // A subagent's request is answered in the task's conversation, named after the subagent.
+        let session = params.get("sessionId").and_then(Value::as_str);
+        let title = match session.and_then(|s| self.state.lock().conversation.label(s)) {
+            Some(label) => format!("{label}: {title}"),
+            None => title,
+        };
         let options: Vec<AgentPermissionOption> = params
             .get("options")
             .and_then(Value::as_array)
@@ -986,11 +1039,11 @@ impl Task {
             .map_or_else(|| "Cancelled".to_owned(), |o| o.name.clone());
         {
             let mut s = self.state.lock();
-            if let Some(AgentEntry::Permission { chosen, .. }) = s.timeline.entries.get_mut(entry) {
+            if let Some(AgentEntry::Permission { chosen, .. }) = s.conversation.main.entries.get_mut(entry) {
                 *chosen = Some(name);
             }
         }
-        self.mark_dirty([entry]);
+        self.mark_dirty([(None, entry)]);
         let still_asking = !self.permissions.lock().is_empty();
         if !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput {
             self.set_status(AgentStatus::Running, None);
@@ -1032,7 +1085,7 @@ impl Handler for Client {
         if method == "session/update"
             && let (Some(task), Some(update)) = (self.task.upgrade(), params.get("update"))
         {
-            task.on_update(update);
+            task.on_update(params.get("sessionId").and_then(Value::as_str), update);
         }
     }
 

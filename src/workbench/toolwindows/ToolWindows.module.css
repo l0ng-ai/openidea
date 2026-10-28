@@ -12,6 +12,35 @@
 .frameNoLeft {
   padding-left: var(--island-gap);
 }
+/*
+ * Only the grid reads its track variables. Not inherited, so dragging a tool window
+ * edge restyles the grid alone instead of every node in the workbench below it.
+ */
+@property --tw-left {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-right {
+  syntax: "*";
+  inherits: false;
+}
+@property --tw-bottom {
+  syntax: "*";
+  inherits: false;
+}
+@property --gap-left {
+  syntax: "*";
+  inherits: false;
+}
+@property --gap-right {
+  syntax: "*";
+  inherits: false;
+}
+@property --gap-bottom {
+  syntax: "*";
+  inherits: false;
+}
+
 .grid {
   flex: 1;
   display: grid;
@@ -55,13 +84,6 @@
 }
 .sideRow {
   flex-direction: row;
-}
-/* --split-a / --split-b: the stored ratio (SidePanel), moved directly while the splitter is dragged. */
-.areaFirst {
-  flex: var(--split-a, 1) 1 0px;
-}
-.areaSecond {
-  flex: var(--split-b, 1) 1 0px;
 }
 .island[hidden] {
   display: none;

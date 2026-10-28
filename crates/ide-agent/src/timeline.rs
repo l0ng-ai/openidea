@@ -1,6 +1,6 @@
 //! Folds ACP `session/update` notifications into a task's entries.
 
-use crate::model::{AgentEntry, AgentPlanItem, AgentToolDiff, AgentToolStatus};
+use crate::model::{AgentEntry, AgentPlanItem, AgentSubagentStatus, AgentToolDiff, AgentToolStatus};
 use ide_core::IpcPath;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -13,6 +13,10 @@ pub(crate) struct Timeline {
     pub entries: Vec<AgentEntry>,
     tools: HashMap<String, usize>,
     plan: Option<usize>,
+    /// Subagent cards, by the subagent's session id.
+    cards: HashMap<String, usize>,
+    /// Session messages, by message id.
+    messages: HashMap<String, usize>,
 }
 
 /// What a `session/update` changed in the timeline.
@@ -31,6 +35,9 @@ impl Timeline {
                     t.tools.insert(id.clone(), i);
                 }
                 AgentEntry::Plan { .. } => t.plan = Some(i),
+                AgentEntry::Subagent { id, .. } => {
+                    t.cards.insert(id.clone(), i);
+                }
                 _ => {}
             }
         }
@@ -166,6 +173,119 @@ impl Timeline {
         }
     }
 
+    /// Adds or updates the card of subagent `id` from its `subagent_update`; returns the
+    /// card's index and whether the subagent just stopped working.
+    pub fn subagent(&mut self, id: &str, update: &Value, now: f64) -> (usize, bool) {
+        let index = match self.cards.get(id) {
+            Some(&i) => i,
+            None => {
+                let i = self.push(AgentEntry::Subagent {
+                    id: id.to_owned(),
+                    title: None,
+                    description: None,
+                    status: AgentSubagentStatus::Running,
+                    error: None,
+                    prompt: None,
+                    reply: None,
+                    tools: 0,
+                    activity: None,
+                    started_ms: now,
+                    ended_ms: None,
+                    cancellable: false,
+                });
+                self.cards.insert(id.to_owned(), i);
+                i
+            }
+        };
+        let AgentEntry::Subagent { title, description, status, error, ended_ms, cancellable, .. } =
+            &mut self.entries[index]
+        else {
+            return (index, false);
+        };
+        // Patch semantics: an omitted field is unchanged, `null` clears it.
+        if let Some(v) = update.get("title") {
+            *title = v.as_str().map(str::to_owned);
+        }
+        if let Some(v) = update.get("description") {
+            *description = v.as_str().map(str::to_owned);
+        }
+        if let Some(v) = update.get("capabilities") {
+            *cancellable = v.get("cancel").is_some_and(Value::is_object);
+        }
+        let mut stopped = false;
+        if let Some((next, message)) = update.get("state").and_then(subagent_status) {
+            let working = matches!(next, AgentSubagentStatus::Running | AgentSubagentStatus::NeedsInput);
+            stopped = !working && ended_ms.is_none();
+            *ended_ms = if working { None } else { ended_ms.or(Some(now)) };
+            *status = next;
+            *error = message;
+        }
+        (index, stopped)
+    }
+
+    /// Sets (or with `append`, extends) what subagent `id` was asked or answered, on its card.
+    pub fn card_message(&mut self, id: &str, reply: bool, text: &str, append: bool) -> Option<usize> {
+        let &index = self.cards.get(id)?;
+        let AgentEntry::Subagent { prompt, reply: answer, .. } = &mut self.entries[index] else { return None };
+        let field = if reply { answer } else { prompt };
+        match field {
+            Some(t) if append => t.push_str(text),
+            _ => *field = Some(text.to_owned()),
+        }
+        Some(index)
+    }
+
+    /// Adds, replaces or (with `append`) extends session message `id`.
+    pub fn message(&mut self, id: &str, incoming: bool, text: &str, append: bool) -> usize {
+        if let Some(&i) = self.messages.get(id)
+            && let AgentEntry::Message { text: t, .. } = &mut self.entries[i]
+        {
+            if append {
+                t.push_str(text);
+            } else {
+                *t = text.to_owned();
+            }
+            return i;
+        }
+        let i = self.push(AgentEntry::Message { incoming, text: text.to_owned() });
+        self.messages.insert(id.to_owned(), i);
+        i
+    }
+
+    /// Updates subagent `id`'s card with what its own timeline `of` shows: how many tool
+    /// calls it made and its latest one. Returns the card's index when it changed.
+    pub fn card_activity(&mut self, id: &str, of: &Timeline) -> Option<usize> {
+        let &index = self.cards.get(id)?;
+        let AgentEntry::Subagent { tools, activity, .. } = &mut self.entries[index] else { return None };
+        let calls = of.entries.iter().filter_map(|e| match e {
+            AgentEntry::Tool { title, kind, .. } => Some(if title.is_empty() { kind } else { title }),
+            _ => None,
+        });
+        let count = calls.clone().count() as u32;
+        let latest = calls.clone().next_back().cloned();
+        if *tools == count && *activity == latest {
+            return None;
+        }
+        *tools = count;
+        *activity = latest;
+        Some(index)
+    }
+
+    /// Marks the subagents still working as stopped (their agent is gone).
+    pub fn stop_subagents(&mut self, now: f64) -> Vec<usize> {
+        let mut changed = Vec::new();
+        for (i, e) in self.entries.iter_mut().enumerate() {
+            if let AgentEntry::Subagent { status, ended_ms, .. } = e
+                && matches!(status, AgentSubagentStatus::Running | AgentSubagentStatus::NeedsInput)
+            {
+                *status = AgentSubagentStatus::Cancelled;
+                *ended_ms = Some(now);
+                changed.push(i);
+            }
+        }
+        changed
+    }
+
     /// Settles what an ended turn left open: running tools and pending permissions,
     /// and records when the turn ended (`done`) on the message that started it.
     pub fn end_turn(&mut self, done: Option<f64>) -> Vec<usize> {
@@ -198,7 +318,30 @@ fn str_field(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or_default().to_owned()
 }
 
-fn content_text(content: Option<&Value>) -> Option<String> {
+/// The status a subagent `state` reports, with its error message; `None` for an unknown state.
+fn subagent_status(state: &Value) -> Option<(AgentSubagentStatus, Option<String>)> {
+    Some(match state.get("state")?.as_str()? {
+        "running" => (AgentSubagentStatus::Running, None),
+        "requires_action" => (AgentSubagentStatus::NeedsInput, None),
+        "idle" => match state.get("stopReason").and_then(Value::as_str) {
+            Some("cancelled") => (AgentSubagentStatus::Cancelled, None),
+            Some("error") => (
+                AgentSubagentStatus::Failed,
+                state.pointer("/error/message").and_then(Value::as_str).map(str::to_owned),
+            ),
+            _ => (AgentSubagentStatus::Done, None),
+        },
+        _ => return None,
+    })
+}
+
+/// The text of a list of content blocks, one per line.
+pub(crate) fn blocks_text(content: Option<&Value>) -> String {
+    let blocks = content.and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    blocks.iter().filter_map(|b| content_text(Some(b))).collect::<Vec<_>>().join("\n")
+}
+
+pub(crate) fn content_text(content: Option<&Value>) -> Option<String> {
     let c = content?;
     match c.get("type").and_then(Value::as_str) {
         Some("text") => c.get("text").and_then(Value::as_str).map(str::to_owned),

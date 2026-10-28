@@ -16,7 +16,17 @@ import {
   usageLabel,
   workTime,
 } from "./composerModel";
-import { age, attentionChange, branchLabel, groupTasks, upsertEntry } from "./model";
+import {
+  age,
+  attentionChange,
+  branchLabel,
+  entriesKey,
+  findSubagent,
+  groupTasks,
+  subagentTitle,
+  upsertEntry,
+  type SubagentEntry,
+} from "./model";
 import { markdownHtml } from "./Markdown";
 
 function task(id: string, status: AgentStatus, updatedMs: number): AgentTask {
@@ -185,6 +195,30 @@ describe("agents model", () => {
     expect(attentionChange(undefined, "ready")).toBeNull();
   });
 
+  it("finds subagent cards and keys their conversations apart", () => {
+    const card: SubagentEntry = {
+      type: "subagent",
+      id: "c1",
+      title: null,
+      description: "Find the lexer",
+      status: "running",
+      error: null,
+      prompt: null,
+      reply: null,
+      tools: 0,
+      activity: null,
+      startedMs: 0,
+      endedMs: null,
+      cancellable: false,
+    };
+    expect(findSubagent([{ type: "agent", text: "a" }, card], "c1")).toBe(card);
+    expect(findSubagent(undefined, "c1")).toBeUndefined();
+    expect(subagentTitle(card)).toBe("Find the lexer");
+    expect(subagentTitle({ ...card, title: "Explore" })).toBe("Explore");
+    expect(entriesKey("t", null)).toBe("t");
+    expect(entriesKey("t", "c1")).not.toBe(entriesKey("t", null));
+  });
+
   it("formats labels", () => {
     expect(branchLabel("agent/fix-lexer")).toBe("fix-lexer");
     expect(branchLabel(null)).toBe("");
@@ -198,5 +232,12 @@ describe("agents model", () => {
     expect(html).toContain("<strong>bold</strong>");
     expect(html).not.toContain("onerror");
     expect(html).not.toContain("<script");
+  });
+
+  it("gives the text of a list item with a nested list its own block", () => {
+    const html = markdownHtml("- **parent** text:\n  - child\n- plain");
+    expect(html).toContain("<li><div><strong>parent</strong> text:</div><ul>");
+    expect(html).toContain("<li>child</li>");
+    expect(html).toContain("<li>plain</li>");
   });
 });

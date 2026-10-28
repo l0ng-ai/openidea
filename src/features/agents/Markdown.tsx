@@ -19,7 +19,35 @@ const marked = new Marked({ gfm: true, breaks: true });
 
 export function markdownHtml(text: string): string {
   const html = marked.parse(text, { async: false }) as string;
-  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+  const root = DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, RETURN_DOM: true }) as HTMLElement;
+  root.querySelectorAll("li").forEach(wrapLooseText);
+  return root.innerHTML;
+}
+
+const BLOCK = new Set(["UL", "OL", "P", "PRE", "BLOCKQUOTE", "TABLE", "HR", "DIV", "H1", "H2", "H3", "H4", "H5", "H6"]);
+
+/**
+ * Puts the text of an item that also holds a nested list (or other blocks) in its own
+ * block. Otherwise WebKit paints a stray sliver of selection from the end of that text
+ * to the right edge when a selection ends there.
+ */
+function wrapLooseText(li: Element) {
+  const nodes = [...li.childNodes];
+  if (!nodes.some((n) => BLOCK.has(n.nodeName))) return;
+  let run: ChildNode[] = [];
+  const flush = () => {
+    if (run.some((n) => n.nodeType !== Node.TEXT_NODE || n.textContent!.trim())) {
+      const div = li.ownerDocument.createElement("div");
+      run[0]!.before(div);
+      div.append(...run);
+    }
+    run = [];
+  };
+  for (const n of nodes) {
+    if (BLOCK.has(n.nodeName)) flush();
+    else run.push(n);
+  }
+  flush();
 }
 
 /** Whether a path names an existing file, per path (agents name the same files again and again). */

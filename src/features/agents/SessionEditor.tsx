@@ -1,6 +1,7 @@
 /** An agent task as an editor tab: the conversation, a composer and the task's changed files. */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import clsx from "clsx";
+import { useShallow } from "zustand/react/shallow";
 import type { AgentChange, AgentEntry, AgentTask, AgentUsage } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
@@ -28,7 +29,18 @@ import { canSend, emptyDraft, usageLabel, workTime } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { Markdown } from "./Markdown";
-import { branchLabel, isBusy, providerIcon, statusLabel } from "./model";
+import {
+  branchLabel,
+  entriesKey,
+  findSubagent,
+  isBusy,
+  providerIcon,
+  statusLabel,
+  subagentStatusLabel,
+  subagentTitle,
+  subagentWorking,
+  type SubagentEntry,
+} from "./model";
 import {
   archiveTask,
   cancelTask,
@@ -56,11 +68,23 @@ export function SessionEditor({ input }: { input: EditorInput }) {
   const entries = useAgents((s) => s.entries.get(id));
   const changes = useAgents((s) => s.changes.get(id));
   const head = useLocalHead(task?.isolation === "local" ? task.status : null);
+  // The subagent conversation shown, with the subagents that lead to it (empty: the task's own).
+  const [path, setPath] = useState<string[]>([]);
+  const view = path.at(-1) ?? null;
+  const viewEntries = useAgents((s) => s.entries.get(entriesKey(id, view)));
+  // Each subagent's card, from its parent's conversation.
+  const cards = useAgents(
+    useShallow((s) => path.map((sub, i) => findSubagent(s.entries.get(entriesKey(id, path[i - 1] ?? null)), sub))),
+  );
   useEffect(() => {
     void loadEntries(id).catch(() => undefined);
     void refreshChanges(id);
     return markVisible(id);
   }, [id]);
+  useEffect(() => {
+    if (view) void loadEntries(id, view).catch(() => undefined);
+  }, [id, view]);
+  const openSubagent = (sub: string) => setPath((p) => [...p, sub]);
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
   const [session] = useState<FocusedSession>(() => ({
@@ -88,15 +112,25 @@ export function SessionEditor({ input }: { input: EditorInput }) {
     >
       <div className={styles.conversation}>
         <Header task={task} entries={entries ?? null} head={head} />
+        {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
         <PermissionBanner task={task} entries={entries ?? null} />
         <Stream
+          key={view ?? ""}
           task={task}
-          entries={entries ?? null}
+          entries={viewEntries ?? null}
+          subagent={view ? (cards.at(-1) ?? null) : null}
+          onOpenSubagent={openSubagent}
           finding={finding}
           findFocus={findFocus}
           onCloseFind={() => setFinding(false)}
         />
-        <SessionComposer task={task} entries={entries ?? null} />
+        {view ? (
+          <div className={styles.readOnly}>
+            <T>Subagents take their instructions from the agent that started them.</T>
+          </div>
+        ) : (
+          <SessionComposer task={task} entries={entries ?? null} onOpenSubagent={openSubagent} />
+        )}
       </div>
       <ChangesPane task={task} changes={changes ?? null} head={head} />
     </div>
@@ -210,16 +244,70 @@ function useNow(interval: number): number {
   return now;
 }
 
+/** Where a subagent conversation sits: the way back to the task, and the subagent's state. */
+function SubagentBar({
+  task,
+  path,
+  cards,
+  onNavigate,
+}: {
+  task: AgentTask;
+  path: string[];
+  cards: Array<SubagentEntry | undefined>;
+  onNavigate: (path: string[]) => void;
+}) {
+  const tx = useTx();
+  const card = cards.at(-1);
+  return (
+    <div className={styles.subagentBar}>
+      <IconButton icon="arrow-left" title="Back" size="small" onClick={() => onNavigate(path.slice(0, -1))} />
+      <nav className={styles.crumbs} aria-label={tx("Subagent")}>
+        <button type="button" className={styles.crumb} onClick={() => onNavigate([])} title={task.title}>
+          {task.title}
+        </button>
+        {path.map((sub, i) => {
+          const title = cards[i] ? subagentTitle(cards[i]) : tx("Subagent");
+          return (
+            <Fragment key={sub}>
+              <Icon name="chevron-right" size={12} className={styles.muted} />
+              {i === path.length - 1 ? (
+                <span className={styles.crumbCurrent} title={cards[i]?.description ?? title}>
+                  {title}
+                </span>
+              ) : (
+                <button type="button" className={styles.crumb} onClick={() => onNavigate(path.slice(0, i + 1))}>
+                  {title}
+                </button>
+              )}
+            </Fragment>
+          );
+        })}
+      </nav>
+      {card && (
+        <span className={styles.muted}>
+          <T>{subagentStatusLabel(card.status)}</T>
+        </span>
+      )}
+      {card && subagentWorking(card.status) && card.cancellable && (
+        <IconButton icon="stop" title="Stop Subagent" size="small" onClick={() => void cancelTask(task.id, card.id)} />
+      )}
+    </div>
+  );
+}
+
 interface StreamProps {
   task: AgentTask;
   entries: AgentEntry[] | null;
+  /** The card of the subagent whose conversation this is; `null`: the task's own. */
+  subagent: SubagentEntry | null;
+  onOpenSubagent: (id: string) => void;
   finding: boolean;
   /** Bumped by Find in Conversation: focus the find field again. */
   findFocus: number;
   onCloseFind: () => void;
 }
 
-function Stream({ task, entries, finding, findFocus, onCloseFind }: StreamProps) {
+function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   useLayoutEffect(() => {
@@ -255,9 +343,16 @@ function Stream({ task, entries, finding, findFocus, onCloseFind }: StreamProps)
         {entries === null ? (
           <Spinner />
         ) : (
-          entries.map((entry, i) => <Entry key={i} task={task} entry={entry} />)
+          entries.map((entry, i) => <Entry key={i} task={task} entry={entry} onOpenSubagent={onOpenSubagent} />)
         )}
-        {(task.status === "running" || task.status === "starting") && !waiting && (
+        {subagent && subagentWorking(subagent.status) && (
+          <div className={styles.working}>
+            <Spinner size={12} />
+            <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
+            {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
+          </div>
+        )}
+        {!subagent && (task.status === "running" || task.status === "starting") && !waiting && (
           <div className={styles.working}>
             <Spinner size={12} />
             <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
@@ -439,7 +534,15 @@ const TOOL_ICONS: Record<string, string> = {
   think: "todo",
 };
 
-function Entry({ task, entry }: { task: AgentTask; entry: AgentEntry }) {
+function Entry({
+  task,
+  entry,
+  onOpenSubagent,
+}: {
+  task: AgentTask;
+  entry: AgentEntry;
+  onOpenSubagent: (id: string) => void;
+}) {
   switch (entry.type) {
     case "user":
       return <UserMessage task={task} entry={entry} />;
@@ -468,6 +571,24 @@ function Entry({ task, entry }: { task: AgentTask; entry: AgentEntry }) {
               {item.content}
             </div>
           ))}
+        </div>
+      );
+    case "subagent":
+      return <SubagentCard task={task} entry={entry} onOpen={() => onOpenSubagent(entry.id)} />;
+    case "message":
+      return entry.incoming ? (
+        <div className={styles.message}>
+          <div className={styles.messageFrom}>
+            <T>Task from the parent agent</T>
+          </div>
+          <div className={styles.user}>{entry.text}</div>
+        </div>
+      ) : (
+        <div>
+          <div className={styles.messageFrom}>
+            <T>Report to the parent agent</T>
+          </div>
+          <Markdown text={entry.text} cwd={task.cwd} />
         </div>
       );
     case "permission":
@@ -568,6 +689,102 @@ function ToolEntry({ task, entry }: { task: AgentTask; entry: Extract<AgentEntry
   );
 }
 
+function SubagentStatusIcon({ status }: { status: SubagentEntry["status"] }) {
+  switch (status) {
+    case "running":
+      return <Spinner size={11} />;
+    case "needsInput":
+      return <Icon name="warning" size={13} label="Needs input" />;
+    case "done":
+      return <Icon name="check" size={13} className={styles.done} label="Done" />;
+    case "cancelled":
+      return <Icon name="minus" size={13} className={styles.muted} label="Stopped" />;
+    case "failed":
+      return <Icon name="close" size={13} className={styles.removed} label="Failed" />;
+  }
+}
+
+/** A subagent in its parent's conversation: what it does, its latest step, what it was asked and answered. */
+function SubagentCard({ task, entry, onOpen }: { task: AgentTask; entry: SubagentEntry; onOpen: () => void }) {
+  const tx = useTx();
+  const working = subagentWorking(entry.status);
+  const now = useNow(working ? 1000 : 60_000);
+  const time = entry.startedMs == null ? null : (entry.endedMs ?? now) - entry.startedMs;
+  const title = subagentTitle(entry);
+  return (
+    <div className={styles.subagent}>
+      <div className={styles.subagentHead}>
+        <button type="button" className={styles.subagentOpen} onClick={onOpen} title={tx("Open the subagent's conversation")}>
+          <SubagentStatusIcon status={entry.status} />
+          <Icon name="toolwindow-agents" size={14} className={styles.muted} />
+          <span className={styles.subagentTitle}>{title}</span>
+          {entry.description && entry.description !== title && (
+            <span className={styles.subagentDescription}>{entry.description}</span>
+          )}
+          <span className={styles.subagentMeta}>
+            {[
+              entry.tools > 0 && `${entry.tools} ${tx(entry.tools === 1 ? "tool call" : "tool calls")}`,
+              time != null && formatDuration(Math.max(0, time)),
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          <Icon name="chevron-right" size={12} className={styles.muted} />
+        </button>
+        {working && entry.cancellable && (
+          <IconButton icon="stop" title="Stop Subagent" size="small" onClick={() => void cancelTask(task.id, entry.id)} />
+        )}
+      </div>
+      {working && entry.activity && (
+        <div className={styles.subagentActivity} title={entry.activity}>
+          {shortTitle(task, entry.activity)}
+        </div>
+      )}
+      {entry.error && (
+        <div className={styles.error} role="alert">
+          <Icon name="error" size={14} />
+          <span>{entry.error}</span>
+        </div>
+      )}
+      {entry.prompt && (
+        <details className={styles.subagentSection}>
+          <summary>
+            <T>Task</T>
+          </summary>
+          <div className={styles.thoughtText}>{entry.prompt}</div>
+        </details>
+      )}
+      {entry.reply && (
+        <details className={styles.subagentSection}>
+          <summary>
+            <T>Result</T>
+          </summary>
+          <div className={styles.subagentReply}>
+            <Markdown text={entry.reply} cwd={task.cwd} />
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/** The subagents of the conversation still at work, to look in on. */
+function WorkingSubagents({ entries, onOpen }: { entries: AgentEntry[] | null; onOpen: (id: string) => void }) {
+  const tx = useTx();
+  const working = (entries ?? []).filter((e): e is SubagentEntry => e.type === "subagent" && subagentWorking(e.status));
+  if (!working.length) return null;
+  return (
+    <div className={styles.subagentStrip} aria-label={tx("Subagents at work")}>
+      {working.map((e) => (
+        <button key={e.id} type="button" className={styles.subagentChip} onClick={() => onOpen(e.id)} title={e.activity ?? undefined}>
+          <SubagentStatusIcon status={e.status} />
+          <span className={styles.subagentChipTitle}>{subagentTitle(e)}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** Agent-written titles with the task's own folder dropped from paths. */
 const shortTitle = (task: AgentTask, title: string) => title.replaceAll(`${task.cwd}/`, "");
 
@@ -606,7 +823,15 @@ function PermissionBanner({ task, entries }: { task: AgentTask; entries: AgentEn
   );
 }
 
-function SessionComposer({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
+function SessionComposer({
+  task,
+  entries,
+  onOpenSubagent,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  onOpenSubagent: (id: string) => void;
+}) {
   const project = useProject((s) => s.project);
   const composer = useAgents((s) => s.composers.get(task.id)) ?? emptyDraft();
   const [sending, setSending] = useState(false);
@@ -630,6 +855,7 @@ function SessionComposer({ task, entries }: { task: AgentTask; entries: AgentEnt
     );
   return (
     <div className={styles.composerArea}>
+      <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
       {task.queue.length > 0 && <Queue task={task} />}
       <Composer
         id={task.id}
