@@ -67,6 +67,11 @@ fn everything_missing_on_an_empty_system() {
     let vtsls = find(&list, "vtsls");
     assert!(vtsls.languages.iter().any(|l| l == "TypeScript"));
     assert!(vtsls.unavailable_reason.as_deref().unwrap().contains("npm"));
+    let ty = find(&list, "ty");
+    assert_eq!(ty.status, ToolStatus::Missing);
+    assert_eq!(ty.command, "ty");
+    assert_eq!(ty.install_method.as_deref(), Some("pip (virtualenv)"));
+    assert!(ty.languages.iter().any(|language| language == "Python"));
     // Servers without an installer are listed with their manual hint.
     let hls = find(&list, "haskell-language-server");
     assert_eq!(hls.install_method, None);

@@ -11,6 +11,12 @@
   max-width: 680px;
   color: var(--fg-secondary);
 }
+.pythonAnalyzer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .body {
   display: flex;
   flex: 1;

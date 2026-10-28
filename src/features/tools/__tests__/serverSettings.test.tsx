@@ -73,6 +73,24 @@ describe("Language Servers page settings", () => {
 
   afterEach(() => setToolsBackend(null));
 
+  it("selects exactly one Python analyzer and can restore automatic fallback", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const picker = screen.getByRole("button", { name: "Python language server" });
+    expect(picker).toHaveTextContent("Automatic");
+    await user.click(picker);
+    await user.click(screen.getByRole("option", { name: "ty" }));
+    expect(stagedFor("languageServers.basedpyright.enabled")).toBe(false);
+    expect(stagedFor("languageServers.pyright.enabled")).toBe(false);
+    expect(stagedFor("languageServers.ty.enabled")).toBe(true);
+    expect(picker).toHaveTextContent("ty");
+    await user.click(picker);
+    await user.click(screen.getByRole("option", { name: /Automatic/ }));
+    for (const name of ["basedpyright", "pyright", "ty"]) {
+      expect(stagedFor(`languageServers.${name}.enabled`)).toBe(true);
+    }
+  });
+
   it("stages startup options, showing the defaults they replace", async () => {
     const user = userEvent.setup();
     renderPage();

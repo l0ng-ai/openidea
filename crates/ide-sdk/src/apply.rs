@@ -134,7 +134,7 @@ pub fn tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
     }
 }
 
-const PYTHON_SERVERS: [&str; 5] = ["basedpyright", "pyright", "pylsp", "jedi-language-server", "ruff"];
+const PYTHON_SERVERS: [&str; 6] = ["basedpyright", "pyright", "ty", "pylsp", "jedi-language-server", "ruff"];
 
 fn merge(base: &mut Value, layer: Value) {
     match (base, layer) {

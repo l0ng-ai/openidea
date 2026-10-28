@@ -518,12 +518,14 @@ mod tests {
     #[test]
     fn alternative_servers_are_fallbacks() {
         let reg = reg();
-        for (lang, servers) in
-            [("python", ["basedpyright", "pyright"]), ("typescript", ["vtsls", "typescript-language-server"])]
-        {
+        for (lang, servers) in [
+            ("python", vec!["basedpyright", "pyright", "ty"]),
+            ("typescript", vec!["vtsls", "typescript-language-server"]),
+        ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let got: Vec<(&str, bool)> = cfg.language_servers.iter().map(|s| (s.name.as_str(), s.fallback)).collect();
-            assert_eq!(got, [(servers[0], false), (servers[1], true)]);
+            let expected: Vec<(&str, bool)> = servers.iter().enumerate().map(|(i, name)| (*name, i > 0)).collect();
+            assert_eq!(got, expected);
         }
     }
 

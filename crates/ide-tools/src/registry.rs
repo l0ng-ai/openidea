@@ -168,6 +168,16 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "ty",
+        display: "ty (Python)",
+        kind: LanguageServer,
+        commands: &["ty"],
+        method: Method::PipVenv { package: "ty" },
+        version: ver("ty"),
+        homepage: "https://docs.astral.sh/ty/",
+        needs: &[],
+    },
+    ToolSpec {
         name: "bash-language-server",
         display: "Bash Language Server",
         kind: LanguageServer,
