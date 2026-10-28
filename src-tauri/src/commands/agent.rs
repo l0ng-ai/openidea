@@ -46,10 +46,16 @@ pub async fn agent_commands(
     agent::commands(&state.host, window.label(), provider, task).await
 }
 
+/// Entries of `task`'s conversation, or of its subagent `subagent`'s.
 #[tauri::command]
 #[specta::specta]
-pub fn agent_entries(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<Vec<AgentEntry>> {
-    agent::entries(&state.host, window.label(), task)
+pub fn agent_entries(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    subagent: Option<String>,
+) -> IdeResult<Vec<AgentEntry>> {
+    agent::entries(&state.host, window.label(), task, subagent)
 }
 
 #[tauri::command]
@@ -108,10 +114,16 @@ pub async fn agent_set_config(
     agent::set_config(&state.host, window.label(), task, option, value).await
 }
 
+/// Stops the task's current turn, or with `subagent` only that subagent's work.
 #[tauri::command]
 #[specta::specta]
-pub fn agent_cancel(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<()> {
-    agent::cancel(&state.host, window.label(), task)
+pub fn agent_cancel(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    subagent: Option<String>,
+) -> IdeResult<()> {
+    agent::cancel(&state.host, window.label(), task, subagent)
 }
 
 /// Answers a permission request; `option: null` cancels it.

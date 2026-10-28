@@ -61,7 +61,8 @@ export const commands = {
 	 *  before a task exists (skills and custom commands on disk included).
 	 */
 	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError>(__TAURI_INVOKE("agent_commands", { provider, task })),
-	agentEntries: (task: string) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task })),
+	/**  Entries of `task`'s conversation, or of its subagent `subagent`'s. */
+	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create", { request })),
 	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
 	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
@@ -71,7 +72,8 @@ export const commands = {
 	agentSendQueuedNow: (task: string, queued: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_send_queued_now", { task, queued })),
 	/**  Changes a session setting (model, mode, thinking effort…). */
 	agentSetConfig: (task: string, option: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_config", { task, option, value })),
-	agentCancel: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task })),
+	/**  Stops the task's current turn, or with `subagent` only that subagent's work. */
+	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
 	/**  Answers a permission request; `option: null` cancels it. */
 	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
 	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
@@ -1001,7 +1003,25 @@ doneMs?: number | null } | { type: "agent"; text: string } | { type: "thought"; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
 /**  Text the tool reported (command output…), truncated. */
-output: string | null; diffs: AgentToolDiff[] } | { type: "plan"; items: AgentPlanItem[] } | { type: "permission"; id: number; title: string; options: AgentPermissionOption[]; 
+output: string | null; diffs: AgentToolDiff[] } | { type: "plan"; items: AgentPlanItem[] } | 
+/**  A subagent the agent started: its own session, whose entries are listed separately. */
+{ type: "subagent"; 
+/**  The subagent's session id. */
+id: string; title: string | null; description: string | null; status: AgentSubagentStatus; error: string | null; 
+/**  What it was asked to do, last. */
+prompt: string | null; 
+/**  Its answer. */
+reply: string | null; 
+/**  Tool calls it made. */
+tools: number; 
+/**  Title of its latest tool call. */
+activity: string | null; startedMs: number | null; 
+/**  When it last stopped working; `None` while it works. */
+endedMs: number | null; 
+/**  Whether it can be stopped on its own. */
+cancellable: boolean } | 
+/**  A message between sessions in a subagent's conversation: its task (`incoming`) or its report. */
+{ type: "message"; incoming: boolean; text: string } | { type: "permission"; id: number; title: string; options: AgentPermissionOption[]; 
 /**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
 chosen: string | null } | { type: "error"; message: string };
 
@@ -1009,8 +1029,8 @@ chosen: string | null } | { type: "error"; message: string };
 export type AgentEvent = 
 /**  A task was created or its metadata changed. */
 { type: "task"; task: AgentTask } | { type: "removed"; id: string } | 
-/**  Entry `index` of `task` was added or replaced. */
-{ type: "entry"; task: string; index: number; entry: AgentEntry };
+/**  Entry `index` of `task` (of its subagent `subagent`) was added or replaced. */
+{ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry };
 
 export type AgentImage = {
 	mimeType: string,
@@ -1064,6 +1084,11 @@ export type AgentStatus =
 "needsInput" | 
 /**  The turn ended; the result can be reviewed or the conversation continued. */
 "ready" | "failed" | "archived";
+
+/**  What a subagent is doing, as its parent reports it. */
+export type AgentSubagentStatus = "running" | 
+/**  One of its requests (a permission) waits for an answer. */
+"needsInput" | "done" | "cancelled" | "failed";
 
 export type AgentTask = {
 	id: string,

@@ -15,7 +15,7 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications } from "@/workbench/contributions";
 import { canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
 import { withQuote } from "./conversation";
-import { HOME_KEY, HOME_KIND, SESSION_KIND, attentionChange, isBusy, sessionKey, upsertEntry } from "./model";
+import { HOME_KEY, HOME_KIND, SESSION_KIND, attentionChange, entriesKey, isBusy, sessionKey, upsertEntry } from "./model";
 
 /** New Task page settings (its text lives in the `HOME` composer). */
 export interface Draft {
@@ -35,7 +35,7 @@ interface AgentsState {
   /** Why the tasks could not be loaded. */
   error: string | null;
   tasks: Map<string, AgentTask>;
-  /** Entries of the tasks opened in this window. */
+  /** Entries of the tasks (and subagents) opened in this window, by `entriesKey`. */
   entries: Map<string, AgentEntry[]>;
   changes: Map<string, AgentChange[]>;
   providers: AgentProvider[];
@@ -170,11 +170,12 @@ function onEvent(e: AgentEvent) {
       break;
     }
     case "entry": {
-      const current = s.entries.get(e.task);
+      const key = entriesKey(e.task, e.subagent);
+      const current = s.entries.get(key);
       if (!current) return;
       const next = upsertEntry(current, e.index, e.entry);
-      if (next) useAgents.setState({ entries: new Map(s.entries).set(e.task, next) });
-      else void loadEntries(e.task);
+      if (next) useAgents.setState({ entries: new Map(s.entries).set(key, next) });
+      else void loadEntries(e.task, e.subagent);
       if (e.entry.type === "tool" && e.entry.status === "completed" && e.entry.diffs.length) {
         scheduleChanges(e.task);
       }
@@ -200,9 +201,10 @@ function notifyChange(prev: AgentTask | undefined, task: AgentTask) {
   });
 }
 
-export async function loadEntries(task: string): Promise<void> {
-  const entries = await call(commands.agentEntries(task));
-  useAgents.setState((s) => ({ entries: new Map(s.entries).set(task, entries) }));
+/** Loads the entries of the task's conversation, or of its subagent `subagent`'s. */
+export async function loadEntries(task: string, subagent: string | null = null): Promise<void> {
+  const entries = await call(commands.agentEntries(task, subagent));
+  useAgents.setState((s) => ({ entries: new Map(s.entries).set(entriesKey(task, subagent), entries) }));
 }
 
 export async function refreshChanges(task: string): Promise<void> {
@@ -373,7 +375,8 @@ export function addReferences(refs: Array<{ path: string; rel: string; mention: 
   else openHome();
 }
 
-export const cancelTask = (task: string) => call(commands.agentCancel(task));
+/** Stops the task's turn, or with `subagent` only that subagent's work. */
+export const cancelTask = (task: string, subagent: string | null = null) => call(commands.agentCancel(task, subagent));
 export const respond = (task: string, permission: number, option: string | null) =>
   call(commands.agentRespond(task, permission, option));
 export const archiveTask = (task: string) => call(commands.agentArchive(task));

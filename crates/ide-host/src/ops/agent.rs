@@ -28,8 +28,9 @@ pub async fn commands(
     host.project(window)?.agents.commands(&provider, task.as_deref()).await
 }
 
-pub fn entries(host: &Host, window: &str, task: String) -> IdeResult<Vec<AgentEntry>> {
-    host.project(window)?.agents.entries(&task)
+/// Entries of `task`'s conversation, or of its subagent `subagent`'s.
+pub fn entries(host: &Host, window: &str, task: String, subagent: Option<String>) -> IdeResult<Vec<AgentEntry>> {
+    host.project(window)?.agents.entries(&task, subagent)
 }
 
 pub async fn create(host: &Host, window: &str, request: NewAgentTask) -> IdeResult<AgentTask> {
@@ -56,8 +57,9 @@ pub async fn set_config(host: &Host, window: &str, task: String, option: String,
     host.project(window)?.agents.set_config(&task, &option, value).await
 }
 
-pub fn cancel(host: &Host, window: &str, task: String) -> IdeResult<()> {
-    host.project(window)?.agents.cancel(&task)
+/// Stops the task's current turn, or with `subagent` only that subagent's work.
+pub fn cancel(host: &Host, window: &str, task: String, subagent: Option<String>) -> IdeResult<()> {
+    host.project(window)?.agents.cancel(&task, subagent)
 }
 
 /// Answers a permission request; `option: None` cancels it.
@@ -87,7 +89,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_subscribe", |c| async move { subscribe(&c.host, &c.window, c.channel("onEvent")?) });
     d.add("agent_providers", |c| async move { providers(&c.host, &c.window) });
     d.add("agent_commands", |c| async move { commands(&c.host, &c.window, c.arg("provider")?, c.arg("task")?).await });
-    d.add("agent_entries", |c| async move { entries(&c.host, &c.window, c.arg("task")?) });
+    d.add("agent_entries", |c| async move { entries(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
     d.add("agent_create", |c| async move { create(&c.host, &c.window, c.arg("request")?).await });
     d.add("agent_prompt", |c| async move {
         prompt(&c.host, &c.window, c.arg("task")?, c.arg("prompt")?, c.arg("now")?).await
@@ -100,7 +102,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_set_config", |c| async move {
         set_config(&c.host, &c.window, c.arg("task")?, c.arg("option")?, c.arg("value")?).await
     });
-    d.add("agent_cancel", |c| async move { cancel(&c.host, &c.window, c.arg("task")?) });
+    d.add("agent_cancel", |c| async move { cancel(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
     d.add("agent_respond", |c| async move {
         respond(&c.host, &c.window, c.arg("task")?, c.arg("permission")?, c.arg("option")?)
     });

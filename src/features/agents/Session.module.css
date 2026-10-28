@@ -550,3 +550,185 @@
 .removed {
   color: var(--danger);
 }
+
+/* Subagents: a card per subagent in its parent's conversation, and the way into its own. */
+.subagent {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+}
+.subagentHead {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.subagentOpen {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border: 0;
+  border-radius: var(--radius-row);
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.subagentOpen:hover {
+  background: var(--bg-hover);
+}
+.subagentTitle {
+  flex: none;
+  max-width: 50%;
+  font-weight: 600;
+  color: var(--fg-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagentDescription {
+  flex: 1 1 0;
+  min-width: 0;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagentMeta {
+  flex: none;
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.subagentActivity {
+  padding-left: 22px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagentSection > summary {
+  padding-left: 22px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  cursor: pointer;
+  list-style: none;
+}
+.subagentSection > summary::-webkit-details-marker {
+  display: none;
+}
+.subagentSection > summary:hover {
+  color: var(--fg);
+}
+.subagentSection > :not(summary) {
+  margin: 4px 0 2px 22px;
+}
+.subagentReply {
+  max-height: 320px;
+  overflow: auto;
+}
+.done {
+  color: var(--success);
+}
+
+.subagentBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px 0 6px;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.crumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+.crumb {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.crumb:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+.crumbCurrent {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--fg-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.messageFrom {
+  margin-bottom: 2px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
+.readOnly {
+  flex: none;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.subagentStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.subagentChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+.subagentChip:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.subagentChipTitle {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
