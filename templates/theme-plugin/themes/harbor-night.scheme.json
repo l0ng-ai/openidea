@@ -97,6 +97,24 @@
     "--ansi-bright-blue": "#3be3d8",
     "--ansi-bright-magenta": "#ed7eed",
     "--ansi-bright-cyan": "#00e5e5",
-    "--ansi-bright-white": "#ffffff"
+    "--ansi-bright-white": "#ffffff",
+
+    // Terminal ANSI palette
+    "--terminal-ansi-black": "#000000",
+    "--terminal-ansi-red": "#f0524f",
+    "--terminal-ansi-green": "#5c962c",
+    "--terminal-ansi-yellow": "#a68a0d",
+    "--terminal-ansi-blue": "#4cc1b9",
+    "--terminal-ansi-magenta": "#a771bf",
+    "--terminal-ansi-cyan": "#00a3a3",
+    "--terminal-ansi-white": "#6e7b8d",
+    "--terminal-ansi-bright-black": "#4c5561",
+    "--terminal-ansi-bright-red": "#ff4050",
+    "--terminal-ansi-bright-green": "#4fc414",
+    "--terminal-ansi-bright-yellow": "#e5bf00",
+    "--terminal-ansi-bright-blue": "#3be3d8",
+    "--terminal-ansi-bright-magenta": "#ed7eed",
+    "--terminal-ansi-bright-cyan": "#00e5e5",
+    "--terminal-ansi-bright-white": "#ffffff"
   }
 }

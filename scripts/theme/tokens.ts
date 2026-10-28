@@ -23,7 +23,7 @@ export interface TokenGroup {
 }
 
 /** tokens.css sections that IntelliJ keeps in an editor scheme (`.icls`). */
-export const SCHEME_GROUPS = ["syntax", "editor", "ANSI palette"];
+export const SCHEME_GROUPS = ["syntax", "editor", "ANSI palette", "terminal ANSI palette"];
 
 const LIGHT_SELECTOR = ':root[data-theme="light"]';
 

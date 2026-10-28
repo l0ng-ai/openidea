@@ -264,16 +264,16 @@ function TerminalFont() {
             aria-label="Terminal font size"
           />
         </Row>
-        <Row label="Line height">
-          <NumberInput
-            value={lineHeight}
-            onChange={setLineHeight}
-            {...L.terminalLineHeight}
-            step={0.1}
-            aria-label="Terminal line height"
-          />
-        </Row>
       </Indented>
+      <Row label="Line height">
+        <NumberInput
+          value={lineHeight}
+          onChange={setLineHeight}
+          {...L.terminalLineHeight}
+          step={0.1}
+          aria-label="Terminal line height"
+        />
+      </Row>
       <Row label="Fallback font" htmlFor={fallbackId} hint="Used for characters the main font lacks.">
         <Input
           id={fallbackId}

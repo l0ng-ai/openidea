@@ -13,7 +13,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { fitScheduler, settledResize } from "./fit";
 import { findTerminalLinks } from "./links";
 import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
-import { readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
+import { MIN_CONTRAST_RATIO, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
 
 const live = new Set<Terminal>();
 
@@ -42,7 +42,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     macOptionIsMeta: settings.optionAsMeta,
     macOptionClickForcesSelection: true,
     drawBoldTextInBrightColors: false,
-    minimumContrastRatio: 1,
+    minimumContrastRatio: MIN_CONTRAST_RATIO,
     smoothScrollDuration: 0,
     convertEol: false,
     theme: readTerminalTheme(),

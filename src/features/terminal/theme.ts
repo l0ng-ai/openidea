@@ -1,8 +1,8 @@
 /**
  * xterm.js theme read from the design tokens at runtime, so the terminal
- * follows the active theme. The 16-colour palette comes from the `--ansi-*`
- * tokens (PyCharm's console colours per theme); when a theme lacks them it is
- * derived from the status + syntax tokens.
+ * follows the active theme. The 16-colour palette comes from the `--terminal-ansi-*`
+ * tokens, else the console's `--ansi-*`; when a theme lacks both it is derived
+ * from the status + syntax tokens.
  */
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { fontWeightOf } from "@/platform/editorSettings";
@@ -23,6 +23,9 @@ export function toHex([r, g, b]: Rgba): string {
 export function mix(a: Rgba, b: Rgba, t: number): Rgba {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1];
 }
+
+/** Lifts colours that read poorly on the background (yellow on white) to WCAG AA. */
+export const MIN_CONTRAST_RATIO = 4.5;
 
 /** Reads a token as a colour; `fallback` when missing or unparsable. */
 export type TokenReader = (name: string) => string;
@@ -46,7 +49,8 @@ export function buildTheme(read: TokenReader): ITheme {
   const accent = color("--accent");
   const caret = color("--caret", toHex(accent));
   const selection = parseColor(read("--bg-editor-selection"));
-  const ansi = (name: string, derived: () => Rgba): Rgba => parseColor(read(`--ansi-${name}`)) ?? derived();
+  const ansi = (name: string, derived: () => Rgba): Rgba =>
+    parseColor(read(`--terminal-ansi-${name}`)) ?? parseColor(read(`--ansi-${name}`)) ?? derived();
 
   const red = ansi("red", () => color("--danger", "#c97a6f"));
   const green = ansi("green", () => color("--success", "#8fae7e"));
@@ -195,8 +199,9 @@ function cssNumber(name: string): number {
 
 /**
  * Font from Settings › Tools › Terminal: the editor font (Editor › Font, with its
- * fallback and Typography Settings weights) or the terminal's own family / size / line height (a multiple of the
- * cell height). The family resolves like the editor's (`monoFontFamily`), so the
+ * fallback and Typography Settings weights) or the terminal's own family / size. The line
+ * height (a multiple of the cell height) is always the terminal's: the editor's roomier
+ * spacing would stretch box drawing and ASCII art. The family resolves like the editor's (`monoFontFamily`), so the
  * bundled JetBrains Mono is used where it isn't installed; `base` is the resolved
  * `--font-mono` stack, since xterm measures on a canvas and can't use `var()`.
  * The column width (a multiple of the cell width) becomes xterm's letter spacing,
@@ -207,21 +212,17 @@ export function terminalFont(
   editor: EditorFont | undefined,
   base = monoStack(),
 ): TerminalFont {
-  let family: string, fallback: string, size: number, lineHeight: number;
+  let family: string, fallback: string, size: number;
   let weight = 400,
     boldWeight = 700;
   if (!t.useEditorFont) {
     family = t.fontFamily;
     fallback = t.fallbackFontFamily;
     size = t.fontSize;
-    lineHeight = t.lineHeight;
   } else {
     family = editor?.fontFamily || BUNDLED_MONO_FAMILY;
     fallback = t.fallbackFontFamily.trim() || editor?.fallbackFont || "";
     size = editor?.fontSize || cssNumber("--fs-code") || 13;
-    const lh = editor?.lineHeight ?? (editor?.fontSize ? size * 1.6 : cssNumber("--lh-code") || 21);
-    // xterm's lineHeight is a multiplier of the cell height (≈ 1.2 × font size); aim for the editor's line height.
-    lineHeight = Math.max(1, Math.round((lh / (size * 1.2)) * 100) / 100);
     weight = fontWeightOf(editor?.fontWeight, weight);
     boldWeight = fontWeightOf(editor?.boldFontWeight, boldWeight);
   }
@@ -229,7 +230,7 @@ export function terminalFont(
   return {
     family: withNerdFonts(monoFontFamily(family, fallback, base)),
     size,
-    lineHeight,
+    lineHeight: t.lineHeight,
     letterSpacing,
     weight,
     boldWeight,

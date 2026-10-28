@@ -182,6 +182,24 @@ html {
   --ansi-bright-cyan: #00e5e5;
   --ansi-bright-white: #ffffff;
 
+  /* terminal ANSI palette (the Run console keeps --ansi-*) */
+  --terminal-ansi-black: #000000;
+  --terminal-ansi-red: #f27481;
+  --terminal-ansi-green: #6bcc62;
+  --terminal-ansi-yellow: #e0ce70;
+  --terminal-ansi-blue: #5594fa;
+  --terminal-ansi-magenta: #c092fa;
+  --terminal-ansi-cyan: #47ccbd;
+  --terminal-ansi-white: #ced0d6;
+  --terminal-ansi-bright-black: #4e5157;
+  --terminal-ansi-bright-red: #ff6b7a;
+  --terminal-ansi-bright-green: #67ff59;
+  --terminal-ansi-bright-yellow: #ffec1a;
+  --terminal-ansi-bright-blue: #3399ff;
+  --terminal-ansi-bright-magenta: #d970ff;
+  --terminal-ansi-bright-cyan: #40ffe9;
+  --terminal-ansi-bright-white: #ffffff;
+
   /* typography (Inter 13 UI, JetBrains Mono 13 editor) */
   --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
   /* Shortcut glyphs (⌘⇧⌥⌃↵) render best in the system UI font, as in macOS menus. */
@@ -527,6 +545,24 @@ html {
   --ansi-bright-cyan: #1b9ea3;
   --ansi-bright-white: #5f6269;
 
+  /* terminal ANSI palette (the Run console keeps --ansi-*) */
+  --terminal-ansi-black: #000000;
+  --terminal-ansi-red: #c93645;
+  --terminal-ansi-green: #357d1f;
+  --terminal-ansi-yellow: #b2a400;
+  --terminal-ansi-blue: #225cd6;
+  --terminal-ansi-magenta: #6e32e5;
+  --terminal-ansi-cyan: #007a80;
+  --terminal-ansi-white: #bec0c5;
+  --terminal-ansi-bright-black: #6c707e;
+  --terminal-ansi-bright-red: #ff5462;
+  --terminal-ansi-bright-green: #3dcc3d;
+  --terminal-ansi-bright-yellow: #d4bb00;
+  --terminal-ansi-bright-blue: #009dff;
+  --terminal-ansi-bright-magenta: #d659ff;
+  --terminal-ansi-bright-cyan: #31c4b3;
+  --terminal-ansi-bright-white: #d2d4d9;
+
   /* shadows and window controls */
   --shadow-popup: 0 6px 20px rgba(0, 0, 0, 0.12);
   --shadow-dialog: 0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 10px 24px rgba(0, 0, 0, 0.1), 0 24px 72px rgba(0, 0, 0, 0.2);
@@ -754,6 +790,23 @@ html {
   --ansi-bright-magenta: #ff9cff;
   --ansi-bright-cyan: #4ff0f0;
   --ansi-bright-white: #ffffff;
+  /* the terminal keeps the high-contrast console palette */
+  --terminal-ansi-black: var(--ansi-black);
+  --terminal-ansi-red: var(--ansi-red);
+  --terminal-ansi-green: var(--ansi-green);
+  --terminal-ansi-yellow: var(--ansi-yellow);
+  --terminal-ansi-blue: var(--ansi-blue);
+  --terminal-ansi-magenta: var(--ansi-magenta);
+  --terminal-ansi-cyan: var(--ansi-cyan);
+  --terminal-ansi-white: var(--ansi-white);
+  --terminal-ansi-bright-black: var(--ansi-bright-black);
+  --terminal-ansi-bright-red: var(--ansi-bright-red);
+  --terminal-ansi-bright-green: var(--ansi-bright-green);
+  --terminal-ansi-bright-yellow: var(--ansi-bright-yellow);
+  --terminal-ansi-bright-blue: var(--ansi-bright-blue);
+  --terminal-ansi-bright-magenta: var(--ansi-bright-magenta);
+  --terminal-ansi-bright-cyan: var(--ansi-bright-cyan);
+  --terminal-ansi-bright-white: var(--ansi-bright-white);
 
   --bg-tooltip: #24262b;
   --fg-tooltip: #ffffff;
@@ -1034,6 +1087,22 @@ html {
   --ansi-bright-cyan: var(--palette-ansi-bright-cyan);
   --ansi-white: var(--palette-ansi-white);
   --ansi-bright-white: var(--palette-ansi-bright-white);
+  --terminal-ansi-black: var(--ansi-black);
+  --terminal-ansi-red: var(--ansi-red);
+  --terminal-ansi-green: var(--ansi-green);
+  --terminal-ansi-yellow: var(--ansi-yellow);
+  --terminal-ansi-blue: var(--ansi-blue);
+  --terminal-ansi-magenta: var(--ansi-magenta);
+  --terminal-ansi-cyan: var(--ansi-cyan);
+  --terminal-ansi-white: var(--ansi-white);
+  --terminal-ansi-bright-black: var(--ansi-bright-black);
+  --terminal-ansi-bright-red: var(--ansi-bright-red);
+  --terminal-ansi-bright-green: var(--ansi-bright-green);
+  --terminal-ansi-bright-yellow: var(--ansi-bright-yellow);
+  --terminal-ansi-bright-blue: var(--ansi-bright-blue);
+  --terminal-ansi-bright-magenta: var(--ansi-bright-magenta);
+  --terminal-ansi-bright-cyan: var(--ansi-bright-cyan);
+  --terminal-ansi-bright-white: var(--ansi-bright-white);
 }
 
 :root[data-color-theme="solarized-light"] {

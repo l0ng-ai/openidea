@@ -301,6 +301,11 @@ describe("terminalFont", () => {
     expect([f.weight, f.boldWeight]).toEqual([400, 700]);
   });
 
+  it("keeps the terminal's line height with Use editor font", () => {
+    expect(terminalFont(t, { ...editor, lineHeight: 21 }, BASE).lineHeight).toBe(1);
+    expect(terminalFont({ ...t, lineHeight: 1.2 }, editor, BASE).lineHeight).toBe(1.2);
+  });
+
   it("turns the column width into letter spacing", () => {
     expect(terminalFont({ ...t, useEditorFont: false }, editor, BASE).letterSpacing).toBe(0);
     expect(terminalFont({ ...t, useEditorFont: false, columnWidth: 1.5 }, editor, BASE).letterSpacing).toBe(3);
@@ -309,8 +314,13 @@ describe("terminalFont", () => {
 
 describe("terminal tab titles", () => {
   const tab: TerminalTab = { id: "t1", name: "Local", customName: null, panes: ["s1"], layout: "s1", activePane: "s1" };
-  const snap = (appTitle: string | null): Record<string, SessionSnapshot> => ({
-    s1: { status: "running", exitCode: null, title: "zsh", appTitle, cwd: "/p" },
+  const snap = (appTitle: string | null, commandRunning = true): Record<string, SessionSnapshot> => ({
+    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p" },
+  });
+
+  it("shows the default name at the prompt, whatever title the shell sets", () => {
+    expect(tabTitle(tab, snap("thomas@mac: ~/repo", false))).toBe("Local");
+    expect(tabFullTitle(tab, snap("thomas@mac: ~/repo", false))).toBe("Local");
   });
 
   it("follows the title the running program sets, else the default name", () => {

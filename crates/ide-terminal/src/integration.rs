@@ -1,6 +1,8 @@
 //! Shell integration (Settings › Tools › Terminal › Shell integration): the
 //! shell reports its working directory (OSC 7) at every prompt, so links and
-//! new splits resolve against the directory the user `cd`-ed into.
+//! new splits resolve against the directory the user `cd`-ed into, and marks
+//! where a command starts and ends (OSC 133 C / D), so the tab shows the
+//! running program's title only while one runs.
 //!
 //! zsh starts with `ZDOTDIR` pointing at generated startup files that source
 //! the user's own ones first; bash gets an `--init-file` that replays the
@@ -29,8 +31,11 @@ ZDOTDIR=$OPENIDEA_USER_ZDOTDIR
 [[ -f $ZDOTDIR/.zshrc ]] && . $ZDOTDIR/.zshrc
 OPENIDEA_USER_ZDOTDIR=$ZDOTDIR
 ZDOTDIR=$_openidea_dir
-_openidea_osc7() { printf '\e]7;file://%s%s\a' "${HOST}" "${PWD}" }
-autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd _openidea_osc7
+_openidea_osc7() { printf '\e]133;D\a\e]7;file://%s%s\a' "${HOST}" "${PWD}" }
+_openidea_preexec() { printf '\e]133;C\a' }
+# First, so the command counts as finished before other hooks set the prompt's title.
+precmd_functions=(_openidea_osc7 ${precmd_functions:#_openidea_osc7})
+preexec_functions+=(_openidea_preexec)
 if [[ ! -o login ]]; then
   ZDOTDIR=$OPENIDEA_USER_ZDOTDIR
   unset OPENIDEA_USER_ZDOTDIR _openidea_dir
@@ -54,15 +59,22 @@ if [ "${OPENIDEA_LOGIN:-}" = 1 ]; then
 else
   [ -f ~/.bashrc ] && . ~/.bashrc
 fi
-__openidea_osc7() { printf '\e]7;file://%s%s\a' "${HOSTNAME}" "${PWD}"; }
+__openidea_osc7() { printf '\e]133;D\a\e]7;file://%s%s\a' "${HOSTNAME}" "${PWD}"; }
 case ";${PROMPT_COMMAND:-};" in
   *";__openidea_osc7;"*) ;;
   *) PROMPT_COMMAND="__openidea_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
 esac
+# PS0 (bash 4.4+) prints before each command runs.
+case "${PS0:-}" in
+  *'133;C'*) ;;
+  *) PS0="${PS0:-}\e]133;C\a" ;;
+esac
 "#;
 
-const FISH_INIT: &str =
-    r#"function __openidea_osc7 --on-event fish_prompt; printf '\e]7;file://%s%s\a' (hostname) $PWD; end"#;
+const FISH_INIT: &str = concat!(
+    r#"function __openidea_osc7 --on-event fish_prompt; printf '\e]133;D\a\e]7;file://%s%s\a' (hostname) $PWD; end; "#,
+    r#"function __openidea_preexec --on-event fish_preexec; printf '\e]133;C\a'; end"#,
+);
 
 /// Directory holding the generated startup files (written on demand).
 fn scripts_dir() -> PathBuf {
