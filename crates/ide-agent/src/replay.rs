@@ -185,7 +185,23 @@ pub(crate) fn recorder(out: PathBuf) -> Connector {
     let file = Arc::new(Mutex::new(String::new()));
     let connections = Arc::new(Mutex::new(0u32));
     Arc::new(move |spec, cwd, client, on_stderr| {
-        let mut cmd = tokio::process::Command::new(&spec.command);
+        let program = {
+            let path = Path::new(&spec.command);
+            if path.components().count() > 1 || path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                let search = spec
+                    .env
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+                    .map(|(_, v)| std::ffi::OsString::from(v))
+                    .or_else(|| ide_core::process::shell_env().find(|(k, _)| k == "PATH").map(|(_, v)| v))
+                    .or_else(|| ide_core::process::host_var_os("PATH"))
+                    .unwrap_or_default();
+                ide_core::process::find_executable(&spec.command, &search).unwrap_or_else(|| path.to_path_buf())
+            }
+        };
+        let mut cmd = tokio::process::Command::new(&program);
         ide_core::process::prepare(cmd.as_std_mut());
         let mut child = cmd
             .args(&spec.args)
