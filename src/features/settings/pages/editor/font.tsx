@@ -2,10 +2,11 @@
  * Editor › Font: family (installed fonts, monospaced filter), size, line height,
  * ligatures, Typography Settings (main / bold weight, fallback font), editable preview.
  */
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Checkbox, type SelectOption, T } from "@/ui";
 import { monoFontFamily } from "@/platform/fonts";
 import { NumberInput, Row, SearchLabel, Select } from "../../components/Form";
+import { FontSelect } from "../../components/FontSelect";
 import { useLabelMatch, usePageContext, useSetting } from "../../components/context";
 import { FONT_WEIGHTS, fontWeightOf, fontWeightVars } from "@/platform/editorSettings";
 import { LIMITS } from "../../model/schema";
@@ -13,88 +14,15 @@ import { editorPage } from "./kit";
 import styles from "./Editor.module.css";
 import { tx } from "@/platform/i18n";
 
-const CANDIDATES = [
-  "JetBrains Mono",
-  "SF Mono",
-  "Menlo",
-  "Monaco",
-  "Fira Code",
-  "Fira Mono",
-  "Source Code Pro",
-  "Cascadia Code",
-  "Cascadia Mono",
-  "IBM Plex Mono",
-  "Hack",
-  "Inconsolata",
-  "Roboto Mono",
-  "Ubuntu Mono",
-  "DejaVu Sans Mono",
-  "Consolas",
-  "Courier New",
-  "PT Mono",
-  "Andale Mono",
-  "Victor Mono",
-  "Iosevka",
-  "Sarasa Mono SC",
-  "Noto Sans Mono",
-  "Noto Sans Mono CJK SC",
-  "PingFang SC",
-  "Hiragino Sans GB",
-  "Microsoft YaHei",
-  "Helvetica Neue",
-  "Arial",
-  "Inter",
-  "Georgia",
-];
-
-interface FontInfo {
-  name: string;
-  mono: boolean;
-}
-
-let detected: FontInfo[] | null = null;
-
-/** Installed candidates, detected by comparing glyph widths against generic fallbacks. */
-export function installedFonts(): FontInfo[] {
-  if (detected) return detected;
-  const canvas = typeof document !== "undefined" ? document.createElement("canvas") : null;
-  const ctx = canvas?.getContext?.("2d");
-  if (!ctx) return (detected = CANDIDATES.map((name) => ({ name, mono: true })));
-  const width = (font: string, text: string) => {
-    ctx.font = `32px ${font}`;
-    return ctx.measureText(text).width;
-  };
-  const sample = "mmmmmmmmmmlli1WQ@";
-  const out: FontInfo[] = [];
-  for (const name of CANDIDATES) {
-    const quoted = `"${name}"`;
-    const present = ["monospace", "serif", "sans-serif"].some(
-      (base) => width(`${quoted}, ${base}`, sample) !== width(base, sample),
-    );
-    if (!present && name !== "JetBrains Mono") continue;
-    out.push({
-      name,
-      mono: Math.abs(width(`${quoted}, monospace`, "iiiiiiiiii") - width(`${quoted}, monospace`, "WWWWWWWWWW")) < 0.5,
-    });
-  }
-  return (detected = out);
-}
-
 function FontRow() {
   const [family, setFamily] = useSetting<string>("editor.fontFamily");
   const [monoOnly, setMonoOnly] = useState(true);
   const matched = useLabelMatch("Show only monospaced fonts");
-  const options = useMemo<SelectOption[]>(() => {
-    const list = installedFonts().filter((f) => !monoOnly || f.mono);
-    const names = list.map((f) => f.name);
-    if (!names.includes(family)) names.unshift(family);
-    return names.map((n) => ({ value: n, label: n }));
-  }, [family, monoOnly]);
   return (
     <Row label="Font">
       <span className={styles.fontFamily}>
         <span className={styles.fontSelect}>
-          <Select value={family} options={options} onChange={setFamily} aria-label="Font" />
+          <FontSelect value={family} onChange={setFamily} monospacedOnly={monoOnly} aria-label="Font" />
         </span>
         <span className={matched ? styles.matched : undefined}>
           <Checkbox
@@ -125,13 +53,9 @@ function SizeRow() {
 
 function FallbackRow() {
   const [fallback, setFallback] = useSetting<string>("editor.fallbackFont");
-  const options = useMemo<SelectOption[]>(
-    () => [{ value: "", label: "None" }, ...installedFonts().map((f) => ({ value: f.name, label: f.name }))],
-    [],
-  );
   return (
     <Row label="Fallback font" hint="For symbols not supported by the main font">
-      <Select value={fallback} options={options} onChange={setFallback} aria-label="Fallback font" />
+      <FontSelect value={fallback} onChange={setFallback} none aria-label="Fallback font" />
     </Row>
   );
 }

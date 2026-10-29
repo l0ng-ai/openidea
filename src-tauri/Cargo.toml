@@ -36,6 +36,7 @@ dirs.workspace = true
 ide-core.workspace = true
 dunce.workspace = true
 ide-clipboard.workspace = true
+ide-fonts.workspace = true
 ide-text.workspace = true
 ide-vfs.workspace = true
 ide-workspace.workspace = true

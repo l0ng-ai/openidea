@@ -229,6 +229,39 @@ fn builds_nested_in_a_folder_of_repositories() {
     assert_eq!(c.iter().filter(|c| c.kind == "spring-boot").count(), 1);
 }
 
+/// RuoYi-AI opened from the folder above it (`ites-agent/ruoyi-ai`), or two folders above:
+/// its application class builds the `SpringApplication` itself.
+#[test]
+fn spring_boot_application_of_a_repository_nested_one_or_two_levels_down() {
+    const MAIN: &str = "package org.ruoyi;\n\nimport org.springframework.boot.SpringApplication;\n\
+                        import org.springframework.boot.autoconfigure.SpringBootApplication;\n\n\
+                        /**\n * 启动程序\n *\n * @author Lion Li\n */\n@SpringBootApplication\n\
+                        public class RuoYiAIApplication {\n\n    public static void main(String[] args) {\n\
+                        \x20       SpringApplication application = new SpringApplication(RuoYiAIApplication.class);\n\
+                        \x20       application.run(args);\n\
+                        \x20       System.out.println(\"(♥◠‿◠)ﾉﾞ     RuoYi-AI启动成功   ლ(´ڡ`ლ)\");\n    }\n}\n";
+    for prefix in ["", "ites-agent/"] {
+        let file = |p: &str| format!("{prefix}ruoyi-ai/{p}");
+        let files = [
+            (file("pom.xml"), PARENT_POM),
+            (file("ruoyi-admin/pom.xml"), BOOT_POM),
+            (file("ruoyi-admin/src/main/java/org/ruoyi/RuoYiAIApplication.java"), MAIN),
+            (file("ruoyi-admin/src/main/java/org/ruoyi/RuoYiAIServletInitializer.java"), "package org.ruoyi;"),
+            (file("ruoyi-common/pom.xml"), "<project><packaging>pom</packaging></project>"),
+            (file("ruoyi-modules/ruoyi-chat/pom.xml"), "<project/>"),
+            (file("docs/README.md"), "docs"),
+        ];
+        let files: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), *t)).collect();
+        let dir = project(&files);
+        let c = detect(dir.path());
+        let module = format!("{prefix}ruoyi-ai/ruoyi-admin");
+        let app = find(&c, &format!("application:{module}:org.ruoyi.RuoYiAIApplication"));
+        assert_eq!((app.name.as_str(), app.kind.as_str()), ("RuoYiAIApplication", "spring-boot"), "{prefix}");
+        assert_eq!(app.cwd.as_deref(), Some(Path::new(&module)));
+        assert!(ids(&c).contains(&format!("maven:spring-boot:run:{prefix}ruoyi-ai").as_str()), "{prefix}");
+    }
+}
+
 #[test]
 fn nested_builds_of_every_kind_and_depth() {
     let dir = project(&[

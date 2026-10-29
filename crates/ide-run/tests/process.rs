@@ -414,3 +414,28 @@ fn long_java_classpath_is_shortened() {
         .unwrap_or_else(|| panic!("no pathing jar / argfile in {first}"));
     assert!(!Path::new(file).exists(), "{file} not deleted");
 }
+
+/// A build tool (here a fake `mvn` that forks like `spring-boot:run`) gets the console
+/// encoding in `JAVA_TOOL_OPTIONS`, and the notice its JVMs print about it is hidden.
+#[test]
+fn build_tools_get_the_console_encoding_for_every_jvm() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = harness();
+    let mvn = h.root.path().join("mvn");
+    let script = "#!/bin/sh\nnotice() { echo \"Picked up JAVA_TOOL_OPTIONS: $JAVA_TOOL_OPTIONS\" >&2; }\n\
+                  notice; echo \"maven $JAVA_TOOL_OPTIONS\"; notice 2>&1; printf 'Consume Time\\243\\272 1 ms\\n' >&2\n";
+    std::fs::write(&mvn, script).unwrap();
+    std::fs::set_permissions(&mvn, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let chunks: Chunks = Arc::default();
+    let sink = chunks.clone();
+    let options = StartOptions { encoding: Some("GBK".into()) };
+    let config = cfg("t:mvn", mvn.to_str().unwrap(), &["spring-boot:run"]);
+    let info =
+        h.pm.start(h.root.path(), &config, &options, h.sink.clone(), Box::new(move |c| sink.lock().push(c))).unwrap();
+    wait_exit(&h, info.id, Duration::from_secs(10));
+    assert_eq!(
+        text(&chunks, stdout),
+        "maven -Dstdout.encoding=GBK -Dstderr.encoding=GBK -Dsun.stdout.encoding=GBK -Dsun.stderr.encoding=GBK\n"
+    );
+    assert_eq!(text(&chunks, stderr), "Consume Time： 1 ms\n");
+}

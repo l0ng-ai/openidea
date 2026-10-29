@@ -886,6 +886,8 @@ export interface RunConfigTypeField {
    */
   control?: "text" | "textarea" | "select" | "checkbox" | "output";
   mono?: boolean;
+  /** Visible lines of a `textarea` (default 4). */
+  rows?: number;
   placeholder?: string;
   options?: ReadonlyArray<{ value: string; label: string }>;
   /** Values offered while typing (e.g. the scripts of detected configurations). */

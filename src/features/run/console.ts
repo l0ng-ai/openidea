@@ -1,28 +1,14 @@
 /**
  * Console line model for run output: splits streamed chunks into lines,
- * parses ANSI SGR colours (via `anser`, one stateful parser per stream),
+ * parses ANSI SGR colours (`ui/ansi`, one stateful parser per stream),
  * handles `\r` overwrites (progress bars) and caps the buffer.
  */
-/* eslint-disable no-control-regex -- escape-sequence parsing matches control characters by design */
-import Anser from "anser";
 import type { OutputChunk } from "@/platform/ipc";
+import { AnsiStream, sameStyle, type Span } from "@/ui/ansi";
+
+export { paletteColor, type Span, type SpanStyle } from "@/ui/ansi";
 
 export type ChunkKind = OutputChunk["kind"];
-
-export interface SpanStyle {
-  /** CSS colour (`var(--ansi-red)`, `rgb(…)`). */
-  fg?: string;
-  bg?: string;
-  bold?: boolean;
-  dim?: boolean;
-  italic?: boolean;
-  underline?: boolean;
-  strike?: boolean;
-}
-
-export interface Span extends SpanStyle {
-  text: string;
-}
 
 export interface ConsoleLine {
   /** Monotonic id (stable across trimming). */
@@ -36,111 +22,6 @@ export interface ConsoleLine {
 export const MAX_LINES = 50_000;
 /** Very long lines are broken up so a single minified blob can't stall rendering. */
 export const MAX_LINE_LENGTH = 8_000;
-
-const NAMED = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
-
-/** xterm 256-colour palette entry (16–255) as `rgb(…)`. */
-export function paletteColor(n: number): string {
-  if (n < 16) {
-    const bright = n >= 8;
-    return `var(--ansi-${bright ? "bright-" : ""}${NAMED[n % 8]})`;
-  }
-  if (n >= 232) {
-    const v = 8 + (n - 232) * 10;
-    return `rgb(${v}, ${v}, ${v})`;
-  }
-  const i = n - 16;
-  const steps = [0, 95, 135, 175, 215, 255];
-  return `rgb(${steps[Math.floor(i / 36)]}, ${steps[Math.floor(i / 6) % 6]}, ${steps[i % 6]})`;
-}
-
-function cssColor(cls: string | null, truecolor: string | null): string | undefined {
-  if (!cls) return undefined;
-  if (cls === "ansi-truecolor") return truecolor ? `rgb(${truecolor})` : undefined;
-  const palette = /^ansi-palette-(\d+)$/.exec(cls);
-  if (palette) return paletteColor(Number(palette[1]));
-  if (cls.startsWith("ansi-")) return `var(--${cls})`;
-  return undefined;
-}
-
-function sameStyle(a: SpanStyle, b: SpanStyle) {
-  return (
-    a.fg === b.fg &&
-    a.bg === b.bg &&
-    !!a.bold === !!b.bold &&
-    !!a.dim === !!b.dim &&
-    !!a.italic === !!b.italic &&
-    !!a.underline === !!b.underline &&
-    !!a.strike === !!b.strike
-  );
-}
-
-// OSC (…BEL or …ST), and escape sequences other than CSI.
-const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-const NON_CSI_ESC_RE = /\x1b(?:[()][0-9A-Za-z]|[=>78DEHMNOZc])/g;
-// CSI that isn't SGR: erase-line becomes a carriage return, everything else is dropped.
-const CSI_RE = /\x1b\[([0-9;?]*)([ -/]*)([@-~])/g;
-// An escape sequence cut off at the end of a chunk.
-const INCOMPLETE_RE = /\x1b(?:\[[0-9;?]*[ -/]*|\][^\x07\x1b]*\x1b?)?$/;
-
-class StreamParser {
-  private anser = new Anser();
-  private carry = "";
-
-  /** Normalises escapes; returns text whose only escapes are SGR (`ESC[…m`). */
-  clean(text: string): string {
-    let s = this.carry + text;
-    this.carry = "";
-    const cut = INCOMPLETE_RE.exec(s);
-    if (cut && cut[0].length > 0) {
-      this.carry = cut[0];
-      s = s.slice(0, cut.index);
-    }
-    return s
-      .replace(OSC_RE, "")
-      .replace(NON_CSI_ESC_RE, "")
-      .replace(CSI_RE, (all, params: string, _i: string, final: string) => {
-        if (final === "m") return all;
-        if (final === "K" && (params === "2" || params === "1")) return "\r";
-        if (final === "G" && (params === "" || params === "1" || params === "0")) return "\r";
-        return "";
-      })
-      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f]/g, "");
-  }
-
-  /** Style in effect at the end of the previous call (anser only carries it into escaped chunks). */
-  private carryStyle: SpanStyle = {};
-
-  spans(text: string): Span[] {
-    const out: Span[] = [];
-    const entries = this.anser.ansiToJson(text, { json: true, use_classes: true });
-    entries.forEach((e, i) => {
-      // Entry 0 is the text before the first escape: it continues the previous style.
-      const style = i === 0 ? this.carryStyle : entryStyle(e);
-      if (i === entries.length - 1) this.carryStyle = style;
-      if (e.content) out.push({ text: e.content, ...style });
-    });
-    return out;
-  }
-}
-
-function entryStyle(e: Anser.AnserJsonEntry): SpanStyle {
-  const decorations = e.decorations ?? [];
-  const style: SpanStyle = {};
-  let fg = cssColor(e.fg, e.fg_truecolor);
-  let bg = cssColor(e.bg, e.bg_truecolor);
-  if ((e as { isInverted?: boolean }).isInverted) {
-    [fg, bg] = [bg ?? "var(--bg-app)", fg ?? "var(--fg)"];
-  }
-  if (fg) style.fg = fg;
-  if (bg) style.bg = bg;
-  if (decorations.includes("bold")) style.bold = true;
-  if (decorations.includes("dim")) style.dim = true;
-  if (decorations.includes("italic")) style.italic = true;
-  if (decorations.includes("underline")) style.underline = true;
-  if (decorations.includes("strikethrough")) style.strike = true;
-  return style;
-}
 
 export interface ConsoleModelOptions {
   maxLines?: number;
@@ -157,7 +38,7 @@ export class ConsoleModel {
   private nextId = 1;
   private open: ConsoleLine | null = null;
   private pendingCR = false;
-  private readonly parsers = { stdout: new StreamParser(), stderr: new StreamParser(), system: new StreamParser() };
+  private readonly parsers = { stdout: new AnsiStream(), stderr: new AnsiStream(), system: new AnsiStream() };
   private readonly maxLines: number;
   private maxChars: number | null;
   /** Characters currently buffered (line text + one per line break). */

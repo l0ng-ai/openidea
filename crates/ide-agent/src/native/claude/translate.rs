@@ -5,6 +5,7 @@
 //! Agent tool use that launched them: their messages carry it as `parent_tool_use_id`.
 
 use super::tools;
+use crate::RETRY_UPDATE;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -426,6 +427,23 @@ impl Translator {
                     return vec![Update { session: t.session.clone(), update }];
                 }
                 Vec::new()
+            }
+            // Claude Code retries a failed API request on its own; without this the turn looks stuck.
+            Some("api_retry") => {
+                let n = |k: &str| msg.get(k).and_then(Value::as_u64);
+                let error = msg.get("error").and_then(|e| {
+                    e.as_str().map(str::to_owned).or_else(|| e.get("message")?.as_str().map(str::to_owned))
+                });
+                vec![Update {
+                    session: self.root.clone(),
+                    update: json!({
+                        "sessionUpdate": RETRY_UPDATE,
+                        "attempt": n("attempt").unwrap_or(1),
+                        "maxRetries": n("max_retries"),
+                        "retryDelayMs": n("retry_delay_ms").unwrap_or(0),
+                        "error": error,
+                    }),
+                }]
             }
             Some("task_notification") if self.children.get(&tool_use).is_some_and(|c| c.background != Some(false)) => {
                 let stop = match msg.get("status").and_then(Value::as_str) {
