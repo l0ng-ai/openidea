@@ -89,8 +89,9 @@ const PATTERNS: Pattern[] = [
   },
   // Generic `path:line` (Go `file.go:12`, Rust `--> src/main.rs:10`, gcc, eslint…) and `path(line,col)`.
   {
-    re: new RegExp(String.raw`(?<![\w/.~\-])(${PATH})(?::(\d+)(?::(\d+))?|\((\d+)(?:,(\d+))?\))`, "dg"),
+    re: new RegExp(String.raw`(${PATH})(?::(\d+)(?::(\d+))?|\((\d+)(?:,(\d+))?\))`, "dg"),
     build: (m) => {
+      if (m.index! > 0 && /[\w/.~-]/.test(m.input![m.index! - 1]!)) return null;
       const [start, end] = [m.index!, m.index! + m[0].length];
       return {
         kind: "file",

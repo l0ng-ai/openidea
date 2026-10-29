@@ -25,7 +25,11 @@ export function calleeName(label: string): string | null {
 
 /** A call of `name`: `name(` not preceded by an identifier character. */
 function callPattern(name: string, flags: string): RegExp {
-  return new RegExp(`(?<![\\p{L}\\p{N}_$])${name.replace(/\$/g, "\\$")}\\s*\\(`, flags);
+  return new RegExp(`${name.replace(/\$/g, "\\$")}\\s*\\(`, flags);
+}
+
+function isCallBoundary(text: string, from: number): boolean {
+  return !/[\p{L}\p{N}_$]$/u.test(text.slice(Math.max(0, from - 2), from));
 }
 
 function identifierEnd(text: string, from: number): number {
@@ -55,7 +59,7 @@ export function locateStepTargets(lineText: string, line: number, targets: StepI
       const name = calleeName(t.label);
       if (!name) return null;
       for (const m of lineText.matchAll(callPattern(name, "gu"))) {
-        if (used.has(m.index!)) continue;
+        if (used.has(m.index!) || !isCallBoundary(lineText, m.index!)) continue;
         from = m.index!;
         to = from + name.length;
         break;
@@ -78,7 +82,7 @@ export function targetsOnLine(lineText: string, line: number, targets: StepInTar
     if (t.line != null) return t.line === line;
     if (t.column != null) return true;
     const name = calleeName(t.label);
-    return !name || callPattern(name, "u").test(lineText);
+    return !name || [...lineText.matchAll(callPattern(name, "gu"))].some((m) => isCallBoundary(lineText, m.index));
   });
   return kept.length ? kept : targets;
 }

@@ -231,6 +231,12 @@ describe("localDeclaration", () => {
 });
 
 describe("textOccurrences", () => {
+  it("checks Unicode identifier boundaries without shifting UTF-16 offsets", () => {
+    const text = "𐐀foo αfoo $foo _foo foo 𐐀 foo foo𐐀";
+    const hits = textOccurrences(text, "foo", [], { from: -1, to: -1 });
+    expect(hits).toEqual([21, 28].map((from) => ({ from, to: from + 3 })));
+  });
+
   it("finds whole-word mentions that are not identifier tokens, outside the declaration", () => {
     const text = 'foo(); // foo and food\nlet s = "foo";\nfn foo() {}';
     const ids = [0, text.lastIndexOf("foo")].map((from) => ({ from, to: from + 3 }));
