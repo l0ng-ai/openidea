@@ -287,14 +287,12 @@ export async function saveTemporary(id: string): Promise<void> {
   selectConfig(id);
 }
 
-/** Whether the chooser's Delete may remove `id` (user and temporary configurations; detected ones come back). */
+/** Whether the chooser's Delete may remove `id`. */
 export function canDeleteConfig(id: string): boolean {
-  const { configs, temporary } = useRun.getState();
-  const config = configs.find((c) => c.id === id);
-  return !!config && (temporary.includes(id) || !config.detected);
+  return useRun.getState().configs.some((c) => c.id === id);
 }
 
-/** Deletes a user or temporary configuration. */
+/** Deletes a configuration, suppressing detections and preserving temporary behavior. */
 export async function deleteConfig(id: string): Promise<void> {
   if (!canDeleteConfig(id)) return;
   const { configs, temporary, selectedId } = useRun.getState();
@@ -304,12 +302,20 @@ export async function deleteConfig(id: string): Promise<void> {
     persistTemporary();
     return;
   }
-  await saveUserConfigs(configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== id));
+  await saveUserConfigs(
+    configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== id),
+    configs.find((c) => c.id === id)?.detected ? [id] : [],
+  );
 }
 
 /** Persists user configurations and reloads the merged list. */
-export async function saveUserConfigs(user: RunConfig[]): Promise<void> {
-  await call(commands.runSaveConfigs(user.map((c) => ({ ...c, detected: false }))));
+export async function saveUserConfigs(user: RunConfig[], removedDetectedIds: string[] = []): Promise<void> {
+  await call(
+    commands.runSaveConfigs(
+      user.map((c) => ({ ...c, detected: false })),
+      removedDetectedIds,
+    ),
+  );
   await loadConfigs();
 }
 

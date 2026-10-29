@@ -21,8 +21,13 @@ pub async fn run_configs(window: Window, state: State<'_, AppState>) -> IdeResul
 
 #[tauri::command]
 #[specta::specta]
-pub fn run_save_configs(window: Window, state: State<'_, AppState>, configs: Vec<RunConfig>) -> IdeResult<()> {
-    ide_host::ops::run::save_configs(&state.host, window.label(), &configs)
+pub fn run_save_configs(
+    window: Window,
+    state: State<'_, AppState>,
+    configs: Vec<RunConfig>,
+    removed_detected_ids: Option<Vec<String>>,
+) -> IdeResult<()> {
+    ide_host::ops::run::save_configs(&state.host, window.label(), &configs, &removed_detected_ids.unwrap_or_default())
 }
 
 #[tauri::command]

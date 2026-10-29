@@ -211,3 +211,26 @@ fn jvm_options_persist_in_the_project_file() {
     ide_run::save_templates(dir.path(), std::slice::from_ref(&template)).unwrap();
     assert_eq!(ide_run::load_templates(dir.path()).unwrap()[0].extras.params["vmOptions"], "-Xmx512m");
 }
+
+#[test]
+fn suppression_round_trip_and_resaving() {
+    use ide_run::{load_suppressed_config_ids, save_user_configs_with_removals};
+    let dir = tempfile::tempdir().unwrap();
+    assert!(load_suppressed_config_ids(dir.path()).unwrap().is_empty());
+    let configs = sample();
+    save_user_configs(dir.path(), &configs).unwrap();
+    // Old files without the field still load.
+    assert!(load_suppressed_config_ids(dir.path()).unwrap().is_empty());
+    let ids = vec!["npm:dev".to_owned(), "spring-boot:App".to_owned()];
+    save_user_configs_with_removals(dir.path(), &configs, &ids).unwrap();
+    assert_eq!(load_suppressed_config_ids(dir.path()).unwrap(), ids);
+    assert_eq!(load_user_configs(dir.path()).unwrap(), configs);
+    save_user_configs(dir.path(), &[]).unwrap();
+    assert_eq!(load_suppressed_config_ids(dir.path()).unwrap(), ids);
+    let mut restored = configs[0].clone();
+    restored.id = ids[0].clone();
+    restored.extras.local = true;
+    save_user_configs(dir.path(), &[restored]).unwrap();
+    assert_eq!(load_suppressed_config_ids(dir.path()).unwrap(), vec![ids[1].clone()]);
+    assert!(fs::read_to_string(dir.path().join(".openidea/.gitignore")).unwrap().contains("/run.local.toml"));
+}

@@ -130,6 +130,7 @@ function EditConfigsDialog() {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   // "Modify Run Configuration…": the would-be configuration is saved on OK even when unedited.
   const [dirty, setDirty] = useState(() => useRun.getState().editDirty);
+  const [removedDetectedIds, setRemovedDetectedIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const runTargets = useWorkflowSettings((s) => s.runTargets);
   const [adding, setAdding] = useState<{ x: number; y: number } | null>(null);
@@ -209,7 +210,10 @@ function EditConfigsDialog() {
       setDirty(true);
       return;
     }
-    if (!current || current.detected) return;
+    if (!current) return;
+    if (current.detected && !temporary.includes(current.id)) {
+      setRemovedDetectedIds((ids) => [...ids, current.id]);
+    }
     const index = draft.findIndex((c) => c.id === current.id);
     const next = removeConfig(draft, current.id);
     setDraft(next);
@@ -262,8 +266,9 @@ function EditConfigsDialog() {
     }
     setSaving(true);
     try {
-      if (dirty) await saveUserConfigs(userConfigs(draft));
+      if (dirty) await saveUserConfigs(userConfigs(draft), removedDetectedIds);
       if (templatesDirty && templates) await call(commands.runSaveTemplates(templates));
+      setRemovedDetectedIds([]);
       setDirty(false);
       setTemplatesDirty(false);
       if (andClose) {
@@ -325,7 +330,7 @@ function EditConfigsDialog() {
   };
 
   const templateTypes = runConfigTypes(types).filter((t) => t.id !== COMPOUND);
-  const canRemove = selection?.type === "folder" || (!!current && !current.detected);
+  const canRemove = selection?.type === "folder" || !!current;
 
   return (
     <Dialog
@@ -423,7 +428,19 @@ function EditConfigsDialog() {
                   onClick={() => move(1)}
                 />
               </div>
-              <div className={styles.editList} role="tree" aria-label={tx("Run configurations")}>
+              <div
+                className={styles.editList}
+                role="tree"
+                tabIndex={0}
+                aria-label={tx("Run configurations")}
+                onKeyDown={(e) => {
+                  if (e.key === "Delete" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && canRemove) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    remove();
+                  }
+                }}
+              >
                 {rows.map((r) => {
                   if (r.type === "group")
                     return (

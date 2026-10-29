@@ -9,16 +9,24 @@ pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     let project = host.project(window)?;
     let root = project.root.clone();
     let user = ide_run::load_user_configs(&root)?;
-    let mut all: Vec<RunConfig> =
-        ide_run::detect(&root).into_iter().filter(|d| !user.iter().any(|u| u.id == d.id)).collect();
+    let suppressed = ide_run::load_suppressed_config_ids(&root)?;
+    let mut all: Vec<RunConfig> = ide_run::detect(&root)
+        .into_iter()
+        .filter(|d| !suppressed.contains(&d.id) && !user.iter().any(|u| u.id == d.id))
+        .collect();
     all.extend(user);
     // Project interpreter / package manager / toolchains from Languages & Frameworks.
     ide_sdk::apply::apply_to_run_configs(&mut all, &root, &project.settings.effective());
     Ok(all)
 }
 
-pub fn save_configs(host: &Host, window: &str, configs: &[RunConfig]) -> IdeResult<()> {
-    ide_run::save_user_configs(&host.project(window)?.root, configs)
+pub fn save_configs(
+    host: &Host,
+    window: &str,
+    configs: &[RunConfig],
+    removed_detected_ids: &[String],
+) -> IdeResult<()> {
+    ide_run::save_user_configs_with_removals(&host.project(window)?.root, configs, removed_detected_ids)
 }
 
 pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit<OutputChunk>) -> IdeResult<RunInfo> {

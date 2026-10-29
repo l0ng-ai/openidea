@@ -197,7 +197,22 @@ pub fn load_user_configs(root: &Path) -> IdeResult<Vec<RunConfig>> {
 /// Writes `<root>/.openidea/run.toml` (and the workspace-local `run.local.toml` for
 /// configurations not stored as project files), preserving unrelated content.
 pub fn save_user_configs(root: &Path, configs: &[RunConfig]) -> IdeResult<()> {
-    config::save(root, configs)
+    config::save(root, configs, &[])
+}
+
+/// Detected ids explicitly removed in this workspace.
+pub fn load_suppressed_config_ids(root: &Path) -> IdeResult<Vec<String>> {
+    config::load_suppressed(root)
+}
+
+/// Saves user configurations and suppresses explicitly removed detections.
+/// Saving a configuration with a suppressed id restores that id.
+pub fn save_user_configs_with_removals(
+    root: &Path,
+    configs: &[RunConfig],
+    removed_detected_ids: &[String],
+) -> IdeResult<()> {
+    config::save(root, configs, removed_detected_ids)
 }
 
 /// Configuration templates (per-type defaults for new configurations) from `run.toml`.
