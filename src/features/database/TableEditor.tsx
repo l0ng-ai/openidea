@@ -13,8 +13,9 @@ import {
   type DbTablePage,
   type RequestId,
 } from "@/platform/ipc";
-import { Button, EmptyState, Icon, IconButton, Input, Select, Spinner, T, showContextMenu } from "@/ui";
+import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
 import { notifications, type EditorInput } from "@/workbench/contributions";
+import { SqlFilterInput } from "./SqlFilterInput";
 import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
 import type { ExportFormat } from "./export";
 import {
@@ -257,13 +258,14 @@ export function TableEditor({ input }: { input: EditorInput }) {
       <div className={styles.filterBar}>
         <label className={styles.filterField}>
           <Icon name="filter" size={14} />
-          <Input
-            variant="bare"
-            mono
-            aria-label="WHERE filter"
-            placeholder="WHERE"
+          <SqlFilterInput
+            kind="where"
+            schema={ref.schema}
+            table={ref.table}
+            columns={gridColumns}
+            driver={sourceById(ref.id)?.driver ?? "sqlite"}
             value={filterText}
-            onChange={(e) => setFilterText(e.target.value)}
+            onChange={setFilterText}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 setOffset(0);
@@ -274,14 +276,15 @@ export function TableEditor({ input }: { input: EditorInput }) {
         </label>
         <label className={styles.filterField}>
           <Icon name="db-sort" size={14} />
-          <Input
-            variant="bare"
-            mono
-            aria-label="ORDER BY"
-            placeholder="ORDER BY"
+          <SqlFilterInput
+            kind="order"
+            schema={ref.schema}
+            table={ref.table}
+            columns={gridColumns}
+            driver={sourceById(ref.id)?.driver ?? "sqlite"}
             invalid={orderInvalid}
             value={orderDraft ?? formatOrderBy(sort)}
-            onChange={(e) => setOrderDraft(e.target.value)}
+            onChange={setOrderDraft}
             onBlur={() => !orderInvalid && setOrderDraft(null)}
             onKeyDown={(e) => {
               if (e.key === "Escape") setOrderDraft(null);

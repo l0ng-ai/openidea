@@ -38,7 +38,7 @@ import { shortcutLabel } from "@/platform/keymap";
 import { IconButton, Select } from "@/ui";
 import { sourceLabel, splitTarget, targetOf } from "./model";
 import { analyze, templateContexts, valuesSlot } from "./sql/analyze";
-import { sqlCandidates, type CandidateKind, type SqlCandidate } from "./sql/complete";
+import { shouldAutoCompleteSql, sqlCandidates, type CandidateKind, type SqlCandidate } from "./sql/complete";
 import { sqlSupport } from "./sqlSupport";
 import {
   bindConsole,
@@ -427,9 +427,7 @@ function completionSource(path: string): CompletionSource {
     const analysis = placeholder
       ? analyze(doc.slice(0, sel.from) + doc.slice(sel.to), sel.from, driver)
       : analyze(doc, ctx.pos, driver);
-    const typed = analysis.prefix.text;
-    const afterDot = !!analysis.qualifier && !typed;
-    if (!ctx.explicit && ((!typed && !afterDot) || /^\d/.test(typed))) return null;
+    if (!ctx.explicit && !shouldAutoCompleteSql(analysis)) return null;
     const candidates = sqlCandidates({ model, analysis, driver, sourceName: source?.name ?? undefined });
     if (!candidates.length) return null;
     return {

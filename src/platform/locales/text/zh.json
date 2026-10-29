@@ -1731,6 +1731,7 @@
   "Search history": "搜索历史",
   "Search history (⌥↑ / ⌥↓)": "搜索历史（⌥↑ / ⌥↓）",
   "Searching for usages of '{symbol}'": "正在搜索 '{symbol}' 的用法",
+  "SQL completion": "SQL 补全",
   "SQL Inserts": "SQL Insert 语句",
   "SQL Script Template": "SQL 脚本模板",
   "SQL Scripts": "SQL 脚本",

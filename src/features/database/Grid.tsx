@@ -3,11 +3,11 @@
  * cell selection (click, ⇧-click, arrows, ⌘A), copy as TSV / CSV, `<null>`
  * rendering, sortable headers and in-place editing (table editor).
  */
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { Icon, showContextMenu, type MenuItem } from "@/ui";
-import { toCsv, toTsv, type Cell } from "./model";
+import { parseDelimited, toCsv, toTsv, type Cell } from "./model";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -95,6 +95,14 @@ export function Grid(props: GridProps) {
   const { columns, rowCount, value, editable, onEdit, sort, onSort, rowMenu, firstRowNumber = 1 } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [sel, setSel] = useState<Sel | null>(null);
+  const dragging = useRef(false);
+  useEffect(() => {
+    const stop = () => {
+      dragging.current = false;
+    };
+    window.addEventListener("mouseup", stop);
+    return () => window.removeEventListener("mouseup", stop);
+  }, []);
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const columnKey = columns.map((c) => c.name).join("\u0000");
   const [widths, setWidths] = useState<number[]>([]);
@@ -206,7 +214,32 @@ export function Grid(props: GridProps) {
       return;
     }
     if (editing) commit();
+    e.preventDefault();
+    scrollRef.current?.focus();
+    dragging.current = true;
     setSel(e.shiftKey && sel ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
+  };
+
+  const onPaste = (e: ClipboardEvent<HTMLDivElement>) => {
+    if (editing || !editable || !onEdit || !sel) return;
+    const text = e.clipboardData.getData("text/plain");
+    if (!text) return;
+    e.preventDefault();
+    const rows = parseDelimited(text, "\t");
+    const { top, left } = norm(sel);
+    let bottom = top;
+    let right = left;
+    rows.forEach((cells, dr) =>
+      cells.forEach((cell, dc) => {
+        const row = top + dr,
+          col = left + dc;
+        if (row >= rowCount || col >= columns.length || props.rowState?.(row) === "deleted") return;
+        onEdit(row, col, cell);
+        bottom = Math.max(bottom, row);
+        right = Math.max(right, col);
+      }),
+    );
+    setSel({ r0: top, c0: left, r1: bottom, c1: right });
   };
 
   const onRowNumberMouseDown = (e: MouseEvent, r: number) => {
@@ -266,6 +299,7 @@ export function Grid(props: GridProps) {
       aria-label={props["aria-label"] ?? "Results"}
       aria-rowcount={rowCount}
       onKeyDown={onKeyDown}
+      onPaste={onPaste}
       onContextMenu={onContextMenu}
     >
       <div className={styles.gridInner} style={{ width: totalWidth, height: virtualizer.getTotalSize() + ROW_H }}>
@@ -367,6 +401,9 @@ export function Grid(props: GridProps) {
                       props.isModified?.(r, c) && styles.cellModified,
                     )}
                     onMouseDown={(e) => onCellMouseDown(e, r, c)}
+                    onMouseEnter={() => {
+                      if (dragging.current) setSel((s) => (s ? { ...s, r1: r, c1: c } : s));
+                    }}
                     onDoubleClick={() => startEdit(r, c)}
                     title={val != null && val.length > 40 ? val.slice(0, 2000) : undefined}
                   >
