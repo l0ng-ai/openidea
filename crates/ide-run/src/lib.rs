@@ -7,6 +7,7 @@ pub mod gradle_jvm;
 pub mod java_cmdline;
 pub mod junit;
 mod process;
+pub mod python_path;
 mod utf8;
 pub mod which;
 pub mod wrap;

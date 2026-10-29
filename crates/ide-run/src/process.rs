@@ -77,6 +77,8 @@ impl Entry {
 pub struct StartOptions {
     /// Output encoding label (`UTF-8`, `GBK`, `windows-1252`…); `None` = UTF-8.
     pub encoding: Option<String>,
+    /// Project content and source roots added to Python launch environments.
+    pub python_paths: Vec<PathBuf>,
 }
 
 #[derive(Default)]
@@ -311,6 +313,9 @@ impl ProcessManager {
             return Err(IdeError::invalid("input cannot be redirected from a file when emulating a terminal"));
         }
         let mut env = launch_env(root, config)?;
+        if matches!(config.kind.as_str(), "python" | "pytest") {
+            crate::python_path::extend(&mut env.vars, &options.python_paths, !env.clear)?;
+        }
         let on_output: OutputFn = Arc::from(on_output);
         let on_output = match extras.output_file.as_deref() {
             Some(file) => tee_output(&resolve_cwd(root, Some(Path::new(file))), on_output)?,

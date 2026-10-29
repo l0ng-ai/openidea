@@ -428,7 +428,7 @@ fn build_tools_get_the_console_encoding_for_every_jvm() {
     std::fs::set_permissions(&mvn, std::fs::Permissions::from_mode(0o755)).unwrap();
     let chunks: Chunks = Arc::default();
     let sink = chunks.clone();
-    let options = StartOptions { encoding: Some("GBK".into()) };
+    let options = StartOptions { encoding: Some("GBK".into()), ..Default::default() };
     let config = cfg("t:mvn", mvn.to_str().unwrap(), &["spring-boot:run"]);
     let info =
         h.pm.start(h.root.path(), &config, &options, h.sink.clone(), Box::new(move |c| sink.lock().push(c))).unwrap();
@@ -438,4 +438,33 @@ fn build_tools_get_the_console_encoding_for_every_jvm() {
         "maven -Dstdout.encoding=GBK -Dstderr.encoding=GBK -Dsun.stdout.encoding=GBK -Dsun.stderr.encoding=GBK\n"
     );
     assert_eq!(text(&chunks, stderr), "Consume Time： 1 ms\n");
+}
+
+#[test]
+fn python_scripts_import_sibling_packages_and_preserve_env_file_paths() {
+    for (kind, source_dir) in [("python", ""), ("pytest", "src")] {
+        let h = harness();
+        let root = h.root.path();
+        let source = root.join(source_dir);
+        for dir in [root.join("app"), source.join("helpers"), root.join("vendor")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(source.join("helpers/__init__.py"), "def hello(): return 'import OK'\n").unwrap();
+        std::fs::write(root.join("vendor/custom.py"), "VALUE = 'vendor OK'\n").unwrap();
+        std::fs::write(
+            root.join("app/main.py"),
+            "from helpers import hello\nfrom custom import VALUE\nprint(hello(), VALUE)\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".env"), format!("PYTHONPATH={}\n", root.join("vendor").display())).unwrap();
+        let mut config = cfg("python-imports", "python3", &["app/main.py"]);
+        config.kind = kind.into();
+        config.extras.env_files = vec![".env".into()];
+        let options = StartOptions { python_paths: vec![root.to_owned(), source], ..Default::default() };
+        let chunks: Chunks = Arc::default();
+        let sink = chunks.clone();
+        let info = h.pm.start(root, &config, &options, h.sink.clone(), Box::new(move |c| sink.lock().push(c))).unwrap();
+        assert_eq!(wait_exit(&h, info.id, Duration::from_secs(10)), Some(0), "{}", text(&chunks, stderr));
+        assert_eq!(text(&chunks, stdout), "import OK vendor OK\n");
+    }
 }
