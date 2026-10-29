@@ -2,7 +2,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Arc, RwLock};
 
 /// Windows `CREATE_NO_WINDOW` creation flag, for call sites that combine it
 /// with other flags (and then call [`host_env`] themselves). Prefer [`prepare`] otherwise.
@@ -13,7 +13,7 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 ///
 /// - Windows: release builds use the GUI subsystem, so without `CREATE_NO_WINDOW` every
 ///   console child flashes a `cmd` window.
-/// - Linux AppImage: see [`host_env`].
+/// - Linux AppImage, reloaded and project variables: see [`host_env`].
 ///
 /// Variables the call site has already set are kept; call it before `env_clear`.
 pub fn prepare(cmd: &mut Command) -> &mut Command {
@@ -30,10 +30,11 @@ pub fn prepare(cmd: &mut Command) -> &mut Command {
 /// `GST_PLUGIN_*`, ... into the mounted image for the IDE itself; a host program that
 /// inherits them loads the image's (older) libraries and plugins next to its own, e.g.
 /// `curl: symbol lookup error ... nghttp2_...`. The IDE process keeps its environment
-/// (WebKit and GTK still need it). Variables the call site has already set are kept.
-/// A no-op outside an AppImage.
+/// (WebKit and GTK still need it). Then applies the [`set_env_overlay`] variables.
+/// Variables the call site has already set are kept. A no-op outside an AppImage
+/// without an overlay.
 pub fn host_env(cmd: &mut Command) -> &mut Command {
-    let fixes = appimage_fixes();
+    let fixes = child_env_changes();
     if fixes.is_empty() {
         return cmd;
     }
@@ -49,28 +50,52 @@ pub fn host_env(cmd: &mut Command) -> &mut Command {
 
 /// The [`host_env`] changes as `(name, value)` pairs, `None` meaning "remove", for spawners
 /// that are not a `std::process::Command` (a PTY `CommandBuilder`). Apply before the call
-/// site's own variables. Empty outside an AppImage.
+/// site's own variables. Empty outside an AppImage without an overlay.
 pub fn host_env_fixes() -> Vec<(OsString, Option<OsString>)> {
-    appimage_fixes()
+    child_env_changes()
 }
 
 /// This process's environment as a child should inherit it (see [`host_env`]), for call
 /// sites that build a child's environment from the IDE's own instead of inheriting it.
 pub fn host_vars() -> impl Iterator<Item = (OsString, OsString)> {
-    let fixes = appimage_fixes();
-    std::env::vars_os().filter_map(move |(k, v)| match fixes.iter().find(|(f, _)| *f == k) {
-        Some((_, fixed)) => fixed.clone().map(|v| (k, v)),
-        None => Some((k, v)),
-    })
+    apply_changes(std::env::vars_os().collect(), &child_env_changes()).into_iter()
 }
 
 /// [`std::env::var_os`] as a child should see it (see [`host_env`]).
 pub fn host_var_os(key: impl AsRef<OsStr>) -> Option<OsString> {
     let key = key.as_ref();
-    match appimage_fixes().into_iter().find(|(k, _)| k == key) {
+    match child_env_changes().into_iter().find(|(k, _)| k == key) {
         Some((_, fixed)) => fixed,
         None => std::env::var_os(key),
     }
+}
+
+/// `vars` with `changes` applied (`None` removes), new names appended.
+fn apply_changes(
+    mut vars: Vec<(OsString, OsString)>,
+    changes: &[(OsString, Option<OsString>)],
+) -> Vec<(OsString, OsString)> {
+    for (key, value) in changes {
+        let at = vars.iter().position(|(k, _)| k == key);
+        match (at, value) {
+            (Some(i), Some(v)) => vars[i].1 = v.clone(),
+            (Some(i), None) => {
+                vars.remove(i);
+            }
+            (None, Some(v)) => vars.push((key.clone(), v.clone())),
+            (None, None) => {}
+        }
+    }
+    vars
+}
+
+/// The AppImage fixes, then the overlay (which wins for a name both change); one entry per name.
+fn child_env_changes() -> Vec<(OsString, Option<OsString>)> {
+    let mut changes = appimage_fixes();
+    let overlay = env_overlay();
+    changes.retain(|(k, _)| !overlay.iter().any(|(o, _)| o == k));
+    changes.extend(overlay.iter().cloned());
+    changes
 }
 
 /// Read on every call, not cached: startup rewrites `PATH` (login shell, managed tools).
@@ -120,23 +145,49 @@ fn appimage_env_fixes(vars: &[(OsString, OsString)]) -> Vec<(OsString, Option<Os
     fixes
 }
 
-static SHELL_ENV: OnceLock<Vec<(OsString, OsString)>> = OnceLock::new();
+type Vars = Arc<Vec<(OsString, OsString)>>;
+type Changes = Arc<Vec<(OsString, Option<OsString>)>>;
 
-/// Records the login shell's environment, read once at startup off the main thread.
+static SHELL_ENV: RwLock<Option<Vars>> = RwLock::new(None);
+static OVERLAY: RwLock<Option<Changes>> = RwLock::new(None);
+
+/// Records the login shell's environment: read at startup off the main thread, and again
+/// by Reload Environment.
 pub fn set_shell_env(vars: Vec<(OsString, OsString)>) {
-    let _ = SHELL_ENV.set(vars);
+    *SHELL_ENV.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(vars));
+}
+
+/// The login shell's environment as last read, all of it (`None` until it has been read).
+pub fn login_env() -> Option<Vars> {
+    SHELL_ENV.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// The login shell's variables this process lacks: an app started from Finder/Dock gets only
 /// PATH from the shell, not what rc files export (API keys and provider switches, SDK homes...).
 /// Apply before a call site's own variables so those win. Empty until the shell has been read.
-pub fn shell_env() -> impl Iterator<Item = (&'static OsStr, &'static OsStr)> {
-    SHELL_ENV
-        .get()
-        .into_iter()
-        .flatten()
-        .filter(|(k, _)| std::env::var_os(k).is_none())
-        .map(|(k, v)| (k.as_os_str(), v.as_os_str()))
+/// Names the overlay sets are left out: [`host_env`] gives them their value.
+pub fn shell_env() -> impl Iterator<Item = (OsString, OsString)> {
+    let overlay = env_overlay();
+    let vars = login_env().unwrap_or_default();
+    let lacking: Vec<_> = vars
+        .iter()
+        .filter(|(k, _)| std::env::var_os(k).is_none() && !overlay.iter().any(|(o, _)| o == k))
+        .cloned()
+        .collect();
+    lacking.into_iter()
+}
+
+/// Variables every child process gets on top of this process's environment (`None`: removed)
+/// unless its call site sets them: an environment re-read after startup (this process's own
+/// can't change safely once threads run) and the project's (`remoteEnv`). Replaces the
+/// previous overlay; children already running keep what they started with.
+pub fn set_env_overlay(changes: Vec<(OsString, Option<OsString>)>) {
+    *OVERLAY.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(changes));
+}
+
+/// The current [`set_env_overlay`] variables.
+pub fn env_overlay() -> Changes {
+    OVERLAY.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -144,10 +195,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shell_env_adds_only_what_the_process_lacks() {
+    fn shell_env_adds_only_what_the_process_lacks_and_the_overlay_wins() {
         set_shell_env(vec![("OPENIDEA_SHELL_ONLY_VAR".into(), "1".into()), ("PATH".into(), "/from/shell".into())]);
         let vars: Vec<_> = shell_env().collect();
-        assert_eq!(vars, [(OsStr::new("OPENIDEA_SHELL_ONLY_VAR"), OsStr::new("1"))]);
+        assert_eq!(vars, [(OsString::from("OPENIDEA_SHELL_ONLY_VAR"), OsString::from("1"))]);
+
+        // The overlay (process-wide too, hence the same test).
+        set_shell_env(vec![("OPENIDEA_OVERLAY_A".into(), "shell".into()), ("OPENIDEA_OVERLAY_B".into(), "b".into())]);
+        set_env_overlay(vec![
+            ("OPENIDEA_OVERLAY_A".into(), Some("project".into())),
+            ("PATH".into(), Some("/reloaded".into())),
+            ("HOME".into(), None),
+        ]);
+        let mut cmd = Command::new("true");
+        cmd.env("PATH", "/custom");
+        host_env(&mut cmd);
+        let get = |k: &str| cmd.get_envs().find(|(n, _)| *n == k).map(|(_, v)| v.map(OsStr::to_owned));
+        assert_eq!(get("OPENIDEA_OVERLAY_A"), Some(Some("project".into())));
+        assert_eq!(get("PATH"), Some(Some("/custom".into())), "the call site's value wins");
+        assert_eq!(get("HOME"), Some(None));
+        let shell: Vec<_> = shell_env().map(|(k, _)| k).collect();
+        assert_eq!(shell, [OsString::from("OPENIDEA_OVERLAY_B")]);
+        assert_eq!(host_var_os("PATH"), Some("/reloaded".into()));
+        assert!(host_vars().all(|(k, _)| k != "HOME"));
+        assert!(host_vars().any(|(k, v)| k == "OPENIDEA_OVERLAY_A" && v == "project"));
+        assert_eq!(host_env_fixes().len(), env_overlay().len());
+        set_env_overlay(Vec::new());
+    }
+
+    #[test]
+    fn changes_apply_in_order() {
+        let vars = apply_changes(
+            env(&[("A", "1"), ("B", "2")]),
+            &[("A".into(), Some("3".into())), ("B".into(), None), ("C".into(), Some("4".into())), ("D".into(), None)],
+        );
+        assert_eq!(vars, env(&[("A", "3"), ("C", "4")]));
     }
 
     fn env(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {

@@ -164,6 +164,7 @@
   "menu.file.newProjectsSettings": "新项目的设置…",
   "menu.file.toggleReadOnly": "将文件设为只读/可写",
   "menu.file.closeProject": "关闭项目",
+  "menu.remote.reloadEnvironment": "重新加载环境",
   "menu.file.new": "新建…",
   "menu.file.newScratchFile": "新建临时文件…",
   "menu.file.openInNewWindow": "在新窗口中打开…",

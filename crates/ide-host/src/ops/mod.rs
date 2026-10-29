@@ -9,6 +9,7 @@ pub mod bytes;
 pub mod coverage;
 pub mod debug;
 pub mod doc;
+pub mod env;
 pub mod fs;
 pub mod history;
 pub mod java;
@@ -75,6 +76,7 @@ pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     doc::register(d);
     search::register(d);
     run::register(d);
+    env::register(d);
 }
 
 impl Host {

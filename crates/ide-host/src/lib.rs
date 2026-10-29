@@ -3,6 +3,7 @@
 //! wraps one [`Host`] and adds windows, menus and plugins; `openidea-server`
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
+pub mod environment;
 pub mod ops;
 mod project;
 pub mod rpc;
@@ -33,6 +34,9 @@ pub struct HostConfig {
     /// The window that owns what `window` starts (e.g. a settings window's parent).
     pub owner: fn(&str) -> &str,
     pub runtime: tokio::runtime::Handle,
+    /// Apply the open project's `devcontainer.json` (`remoteEnv`, `postStartCommand`) to
+    /// this process's children: the remote server, which has one project.
+    pub project_environment: bool,
 }
 
 pub struct Host {
@@ -49,6 +53,8 @@ pub struct Host {
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
     pub remote: Arc<ide_remote::RemoteService>,
+    /// What child processes get beyond this process's environment (Reload Environment, `remoteEnv`).
+    pub environment: environment::Environment,
     pub(crate) sink_for: SinkFactory,
     owner: fn(&str) -> &str,
     pub runtime: tokio::runtime::Handle,
@@ -59,13 +65,15 @@ pub struct Host {
 
 impl Host {
     pub fn new(config: HostConfig) -> Self {
-        let HostConfig { config_dir, data_dir, languages, syntax, sink_for, owner, runtime } = config;
+        let HostConfig { config_dir, data_dir, languages, syntax, sink_for, owner, runtime, project_environment } =
+            config;
         let global_settings = SettingsStore::load(&config_dir, None);
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         Self {
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
+            environment: environment::Environment::new(project_environment, data_dir.clone()),
             global_settings,
             // Sessions, runs and terminals report to the window that started them (`window_sink`).
             terminals: TerminalManager::new(),
@@ -118,6 +126,9 @@ impl Host {
 
     pub fn close_project(&self, window: &str) {
         if let Some(project) = self.projects.write().remove(window) {
+            if !project.light {
+                self.environment.project_closed();
+            }
             project.agents.shutdown();
             let lsp = project.lsp.clone();
             self.runtime.spawn(async move { lsp.shutdown_all().await });
@@ -127,6 +138,7 @@ impl Host {
     /// Stops what this host started: language servers, agents, runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
     pub async fn shutdown(&self) {
+        self.environment.shutdown();
         self.processes.kill_all();
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();

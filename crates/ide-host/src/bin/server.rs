@@ -24,16 +24,13 @@ fn main() {
         .init();
     let home = dirs::home_dir().unwrap_or_default();
     let base = std::env::var_os("OPENIDEA_SERVER_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".openidea"));
-    // An SSH exec channel gets a minimal PATH: take the login shell's, as the
-    // desktop app does, plus the IDE-managed tools. Before any other thread starts.
-    let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path("openidea-server");
+    // An SSH exec channel gets a minimal environment: take the login shell's, read
+    // afresh on every start, plus the IDE-managed tools. Before any other thread starts.
+    ide_host::shell_env::inherit_login_shell_env("openidea-server");
     let data_dir = base.join("data");
     ide_tools::extend_process_path(&data_dir);
     ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&data_dir));
     ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&data_dir));
-    if let Some(refresh) = refresh_shell_path {
-        refresh();
-    }
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     let code = runtime.block_on(run(base));
     std::process::exit(code);
@@ -64,6 +61,7 @@ async fn run(base: PathBuf) -> i32 {
         sink_for: Box::new(move |window| rpc::event_sink(sink_peer.clone(), Some(window.to_owned()))),
         owner: |w| w,
         runtime: tokio::runtime::Handle::current(),
+        project_environment: true,
     }));
     tracing::info!("openidea-server {} ready", env!("CARGO_PKG_VERSION"));
     rpc::serve(host.clone(), Dispatcher::standard(), peer, tokio::io::stdin(), tokio::io::stdout()).await;

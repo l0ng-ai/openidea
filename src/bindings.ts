@@ -923,6 +923,11 @@ export const commands = {
 	 *  `on_channel` tagged with the id.
 	 */
 	remoteInvoke: (cmd: string, args: string, onChannel: Channel<ChannelFrame>) => typedError<string, IdeError>(__TAURI_INVOKE("remote_invoke", { cmd, args, onChannel })),
+	/**
+	 *  Reload Environment: new child processes get the login shell's current environment
+	 *  (and the project's `remoteEnv` on a remote host); running ones keep theirs.
+	 */
+	envReload: () => typedError<EnvReloaded, IdeError>(__TAURI_INVOKE("env_reload")),
 	/**  Test Connection: connects with unsaved settings and returns the server version. */
 	dbTest: (source: DataSource, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
@@ -2731,6 +2736,16 @@ export type EncodingSettings = {
 };
 
 export type EntryKind = "file" | "dir" | "symlink";
+
+/**  What Reload Environment changed. */
+export type EnvReloaded = {
+	/**  Names of the variables new child processes now get differently (added, changed or removed). */
+	changed: string[],
+	/**  The `devcontainer.json` whose `remoteEnv` applies, if any. */
+	devcontainer: string | null,
+	/**  Whether the login shell was read (it isn't on Windows). */
+	shellRead: boolean,
+};
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  Document version mismatch; the UI must resync the full text. */
