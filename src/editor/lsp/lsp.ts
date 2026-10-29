@@ -2,7 +2,7 @@
 import { Facet } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { whenAllSynced, type EditorDocContext } from "@/editor/api";
-import { IpcError, call, isCancelled, isTauri } from "@/platform/ipc";
+import { IpcError, call, isCancelled, isTauri, unavailableText } from "@/platform/ipc";
 import type { IdeError } from "@/bindings";
 import { showHint } from "./hint";
 
@@ -44,7 +44,8 @@ export const NO_SERVER = "No language server available";
 
 /**
  * Error policy: background requests fail silently; explicit actions show a
- * small hint at the caret ("No language server available" for missing servers).
+ * small hint at the caret ("No language server available" for missing servers,
+ * "jdtls doesn't support X" when the running server lacks the feature).
  */
 export function reportLspError(view: EditorView | null, e: unknown, explicit: boolean) {
   if (isCancelled(e)) return;
@@ -52,7 +53,7 @@ export function reportLspError(view: EditorView | null, e: unknown, explicit: bo
     if (!isUnavailable(e)) console.debug("[lsp]", e);
     return;
   }
-  showHint(view, isUnavailable(e) ? NO_SERVER : e instanceof Error ? e.message : String(e));
+  showHint(view, isUnavailable(e) ? unavailableText(e, NO_SERVER) : e instanceof Error ? e.message : String(e));
 }
 
 /** Runs `fn` once `ms` after the last call; `cancel()` drops a pending run. */

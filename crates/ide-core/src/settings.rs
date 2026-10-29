@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 pub use crate::editor_settings::*;
 pub use crate::inspection_settings::*;
+pub use crate::proxy_settings::{ProxyKind, ProxyMode, ProxySettings};
 pub use crate::remote_settings::*;
 pub use crate::workflow_settings::*;
 
@@ -25,6 +26,8 @@ pub struct Settings {
     /// keymap's own overrides. `keymap` may name one of these ids.
     pub custom_keymaps: BTreeMap<String, CustomKeymap>,
     pub notifications: NotificationSettings,
+    /// System Settings › HTTP Proxy (global only).
+    pub proxy: ProxySettings,
     /// Interpreters / toolchains per language (Python, Node.js, Rust, Go, TypeScript).
     pub languages: LanguagesSettings,
     /// Project Structure: source / test / resource / excluded folders (project-relative).
@@ -134,6 +137,7 @@ impl Default for Settings {
             keymap_overrides: BTreeMap::new(),
             custom_keymaps: BTreeMap::new(),
             notifications: NotificationSettings::default(),
+            proxy: ProxySettings::default(),
             languages: LanguagesSettings::default(),
             project_structure: ProjectStructureSettings::default(),
             vcs: VcsSettings::default(),

@@ -8,7 +8,8 @@ vi.mock("@/platform/ipc", async (orig) => {
   return { ...actual, isTauri: () => true };
 });
 
-const { lspRequest } = await import("./lsp");
+const { lspRequest, reportLspError } = await import("./lsp");
+const { IpcError } = await import("@/platform/ipc");
 
 describe("lspRequest", () => {
   it("waits until open editors' edits reached the backend", async () => {
@@ -24,6 +25,30 @@ describe("lspRequest", () => {
     synced();
     expect(await result).toBe(1);
     _removeEditor(handle);
+    view.destroy();
+  });
+});
+
+describe("reportLspError", () => {
+  const unavailable = (message: string) => new IpcError({ kind: "unavailable", message });
+  const hintText = () => document.querySelector(".cm-lsp-hint")?.textContent ?? null;
+
+  it.each([
+    ["jdtls doesn't support type hierarchy", "jdtls doesn't support type hierarchy"],
+    ["pyright, ruff doesn't support code lens", "pyright, ruff doesn't support code lens"],
+    ["no running language server supports rename", "No language server available"],
+    ["jdtls is not running", "No language server available"],
+  ])("explicit %s → %s", (message, shown) => {
+    const view = new EditorView({ state: EditorState.create({ doc: "x" }), parent: document.body });
+    reportLspError(view, unavailable(message), true);
+    expect(hintText()).toBe(shown);
+    view.destroy();
+  });
+
+  it("stays silent for background requests", () => {
+    const view = new EditorView({ state: EditorState.create({ doc: "x" }), parent: document.body });
+    reportLspError(view, unavailable("jdtls doesn't support inlay hints"), false);
+    expect(hintText()).toBeNull();
     view.destroy();
   });
 });

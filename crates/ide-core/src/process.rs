@@ -30,7 +30,8 @@ pub fn prepare(cmd: &mut Command) -> &mut Command {
 /// `GST_PLUGIN_*`, ... into the mounted image for the IDE itself; a host program that
 /// inherits them loads the image's (older) libraries and plugins next to its own, e.g.
 /// `curl: symbol lookup error ... nghttp2_...`. The IDE process keeps its environment
-/// (WebKit and GTK still need it). Then applies the [`set_env_overlay`] variables.
+/// (WebKit and GTK still need it). Then applies the [`set_env_overlay`] variables and
+/// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]).
 /// Variables the call site has already set are kept. A no-op outside an AppImage
 /// without an overlay.
 pub fn host_env(cmd: &mut Command) -> &mut Command {
@@ -89,12 +90,16 @@ fn apply_changes(
     vars
 }
 
-/// The AppImage fixes, then the overlay (which wins for a name both change); one entry per name.
+/// The AppImage fixes, the overlay, then the manual proxy's (a later one wins); one entry per name.
 fn child_env_changes() -> Vec<(OsString, Option<OsString>)> {
     let mut changes = appimage_fixes();
     let overlay = env_overlay();
     changes.retain(|(k, _)| !overlay.iter().any(|(o, _)| o == k));
     changes.extend(overlay.iter().cloned());
+    // A manual HTTP proxy reaches tools that read `HTTP_PROXY` (language servers, git, curl).
+    let proxy = crate::proxy_settings::proxy().child_env();
+    changes.retain(|(k, _)| !proxy.iter().any(|(p, _)| p == k));
+    changes.extend(proxy);
     changes
 }
 
@@ -188,6 +193,29 @@ pub fn set_env_overlay(changes: Vec<(OsString, Option<OsString>)>) {
 /// The current [`set_env_overlay`] variables.
 pub fn env_overlay() -> Changes {
     OVERLAY.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
+}
+
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+/// File names an executable `name` may have on disk. Unix: the name itself. Windows: the
+/// name when it already ends in a `PATHEXT` extension, else the name with each
+/// extension (an extensionless file is not executable there).
+pub fn executable_names(name: &str, windows: bool, pathext: Option<&str>) -> Vec<String> {
+    if !windows {
+        return vec![name.to_owned()];
+    }
+    let exts: Vec<&str> = pathext
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or(DEFAULT_PATHEXT)
+        .split(';')
+        .map(str::trim)
+        .filter(|e| e.starts_with('.') && e.len() > 1)
+        .collect();
+    let lower = name.to_ascii_lowercase();
+    if exts.iter().any(|e| lower.ends_with(&e.to_ascii_lowercase())) {
+        return vec![name.to_owned()];
+    }
+    exts.iter().map(|e| format!("{name}{}", e.to_ascii_lowercase())).collect()
 }
 
 #[cfg(test)]

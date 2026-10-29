@@ -162,6 +162,20 @@ describe("run config → launch config", () => {
     expect(launchConfigFor(script, "/p")).not.toBeNull();
   });
 
+  it("never hands a Java command to java-debug as a program to start", () => {
+    const tomcat = rc({
+      name: "tomcat9",
+      command: "C:\\apache-tomcat-9.0.98\\bin\\catalina.bat",
+      args: ["run"],
+      debugAdapter: "java-debug",
+    });
+    const gradle = rc({ kind: "gradle", command: "./gradlew", args: ["build"], debugAdapter: "java-debug" });
+    for (const c of [tomcat, gradle]) {
+      expect(launchConfigFor(c, "/p")).toBeNull();
+      expect(debugUnsupportedReason(c)).toContain("Remote JVM Debug");
+    }
+  });
+
   it("delve: debug mode for run, test mode for test", () => {
     const run = launchConfigFor(rc({ kind: "go", command: "go", args: ["run", "."], debugAdapter: "delve" }), "/p")!;
     expect(run.program).toBe("/p");

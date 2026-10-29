@@ -4,7 +4,7 @@ import type { EditorInput } from "@/workbench/contributions";
 import { Chunk } from "@codemirror/merge";
 import { Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { iconMarkup } from "@/ui";
+import { ContextMenuHost, iconMarkup } from "@/ui";
 
 const probe = vi.fn();
 const openFile = vi.fn();
@@ -78,6 +78,40 @@ describe("Diff toolbar", () => {
     render(<DiffEditor input={input} />);
     await screen.findByRole("button", { name: "Jump to Source" });
     expect(probe).toHaveBeenCalledWith("/p/a.ts");
+  });
+
+  it("turns on aligned changes from the settings menu (off by default)", async () => {
+    localStorage.clear();
+    texts.HEAD = "a\nb\n";
+    texts.abc123 = "a\nnew\nb\n";
+    render(
+      <>
+        <DiffEditor input={input} />
+        <ContextMenuHost />
+      </>,
+    );
+    await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+    // Unpadded panes joined by the divider.
+    await waitFor(() => expect(document.querySelector(".cm-diffDivider")).not.toBeNull());
+    expect(document.querySelector(".cm-changeGutter")).toBeNull();
+    expect(document.querySelector(".cm-merge-b .cm-lineNumbers .cm-diffWholeGutter")?.textContent).toBe("2");
+    // The lock turns scrolling together off without rebuilding the panes.
+    const divider = document.querySelector(".cm-diffDivider");
+    (await screen.findByRole("button", { name: "Synchronize Scrolling" })).click();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).syncScroll).toBe(false));
+    expect(document.querySelector(".cm-diffDivider")).toBe(divider);
+    (await screen.findByRole("button", { name: "Settings" })).click();
+    const item = await screen.findByRole("menuitemcheckbox", { name: "Align Changes" });
+    expect(item.getAttribute("aria-checked")).toBe("false");
+    item.click();
+    // Padded panes with a change bar.
+    await waitFor(() => expect(document.querySelector(".cm-diffDivider")).toBeNull());
+    expect(document.querySelector(".cm-changeGutter")).not.toBeNull();
+    expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!)).toMatchObject({
+      alignChanges: true,
+      syncScroll: false,
+    });
+    localStorage.clear();
   });
 
   it("has no Jump to Source when the file is gone from the working tree", async () => {

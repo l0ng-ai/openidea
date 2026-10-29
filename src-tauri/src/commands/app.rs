@@ -128,7 +128,7 @@ pub fn settings_get(window: Window, state: State<'_, AppState>) -> Settings {
 #[tauri::command]
 #[specta::specta]
 pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
-    state.global_settings.effective()
+    state.host.with_proxy_password(state.global_settings.effective())
 }
 
 /// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
@@ -196,11 +196,9 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
         tauri::async_runtime::spawn(async move { lsp.reconfigure().await });
     }
     crate::commands::ssh::apply_ssh_settings(&state);
+    state.host.apply_proxy();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
-    let settings = match state.project(window.label()) {
-        Ok(p) => p.settings.effective(),
-        Err(_) => state.global_settings.effective(),
-    };
+    let settings = ide_host::ops::project::settings(&state.host, window.label());
     Ok(SettingsImport { settings, storage })
 }
 

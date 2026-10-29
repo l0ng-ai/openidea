@@ -3,7 +3,7 @@ import type { EditorView } from "@codemirror/view";
 import { activeEditor, editorsFor } from "@/editor/api";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import { executeAction } from "@/platform/actions";
-import { IpcError, call, commands, isCancelled, isTauri } from "@/platform/ipc";
+import { IpcError, call, commands, isCancelled, isTauri, unavailableText } from "@/platform/ipc";
 import type { IdeError } from "@/bindings";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 
@@ -36,7 +36,7 @@ export function hint(text: string, tone: "info" | "warning" | "error" = "info") 
 export function reportError(e: unknown) {
   if (isCancelled(e)) return;
   hint(
-    isUnavailable(e) ? "No language server available" : e instanceof Error ? e.message : String(e),
+    isUnavailable(e) ? unavailableText(e) : e instanceof Error ? e.message : String(e),
     isUnavailable(e) ? "info" : "error",
   );
 }
