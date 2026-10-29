@@ -49,6 +49,7 @@ import {
   type DiffSide,
 } from "./diffInput";
 import { diffAnnotations } from "./diffAnnotations";
+import { UnalignedPanes } from "./diffScroll";
 import { groupOf } from "./changes";
 import { inclusionGutter } from "./hunkInclusion";
 import { hunksOverlapping } from "./hunks";
@@ -65,6 +66,8 @@ interface Views {
   b: EditorView;
   a: EditorView | null;
   merge: MergeView | null;
+  /** Unpadded side-by-side panes with synchronized scrolling (IDEA). */
+  panes: UnalignedPanes | null;
   destroy(): void;
 }
 
@@ -227,18 +230,23 @@ export function DiffEditor({ input }: { input: EditorInput }) {
   const editableB = !!attached?.b && !attached.b.readOnly;
   const ready = !!attached && !!statics && lang !== null;
 
+  // Read when the views are built; toggling it later goes through `setSync`.
+  const syncScroll = useRef(opts.syncScroll);
+  syncScroll.current = opts.syncScroll;
+
   // (Re)build the CodeMirror views.
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !attached || !statics || lang === null) return;
     const textA = attached.a?.text() ?? statics.a ?? "";
     const textB = attached.b?.text() ?? statics.b ?? "";
-    const scrollTop = viewsRef.current
-      ? viewsRef.current.merge
-        ? (viewsRef.current.merge.dom as HTMLElement).scrollTop
-        : viewsRef.current.b.scrollDOM.scrollTop
+    const prev = viewsRef.current;
+    const scrollTop = prev
+      ? prev.merge && !prev.panes
+        ? (prev.merge.dom as HTMLElement).scrollTop
+        : prev.b.scrollDOM.scrollTop
       : null;
-    viewsRef.current?.destroy();
+    prev?.destroy();
     host.textContent = "";
     const listener = EditorView.updateListener.of((u) => {
       if (u.selectionSet || u.docChanged) updateChunkInfo();
@@ -272,11 +280,21 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     let views: Views;
     if (opts.mode === "split") {
       let merge: MergeView | null = null;
+      const panes = opts.alignChanges
+        ? null
+        : new UnalignedPanes({
+            sync: syncScroll.current,
+            arrows:
+              editableA || editableB
+                ? { toA: editableA, toB: editableB, apply: (i, source) => merge && applyChunk(merge, i, source) }
+                : undefined,
+          });
       const mv = new MergeView({
         a: {
           doc: textA,
           extensions: [
             side(attached.a, editableA, "left"),
+            panes?.extension ?? [],
             focusTracker("a"),
             findWatch("a"),
             editableA ? hoverRevert((_v, i) => merge && applyChunk(merge, i, "b")) : [],
@@ -286,6 +304,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           doc: textB,
           extensions: [
             side(attached.b, editableB, "right"),
+            panes?.extension ?? [],
             listener,
             focusTracker("b"),
             findWatch("b"),
@@ -294,17 +313,36 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           ],
         },
         parent: host,
-        revertControls: editableB ? "a-to-b" : editableA ? "b-to-a" : undefined,
+        // Unaligned panes draw their arrows on their own divider.
+        revertControls: panes ? undefined : editableB ? "a-to-b" : editableA ? "b-to-a" : undefined,
         renderRevertControl:
-          editableA || editableB ? arrowControls(() => merge, { toA: editableA, toB: editableB }) : undefined,
+          !panes && (editableA || editableB)
+            ? arrowControls(() => merge, { toA: editableA, toB: editableB })
+            : undefined,
         highlightChanges,
-        gutter: true,
+        // Unpadded panes tint the gutters of changed lines instead of a change bar.
+        gutter: !panes,
         collapseUnchanged,
         diffConfig,
       });
       merge = mv;
-      views = { a: mv.a, b: mv.b, merge: mv, destroy: () => mv.destroy() };
-      if (scrollTop != null) requestAnimationFrame(() => ((mv.dom as HTMLElement).scrollTop = scrollTop));
+      panes?.attach(mv);
+      views = {
+        a: mv.a,
+        b: mv.b,
+        merge: mv,
+        panes,
+        destroy: () => {
+          panes?.destroy();
+          mv.destroy();
+        },
+      };
+      if (scrollTop != null)
+        requestAnimationFrame(() => {
+          // The left pane of unpadded panes follows by itself.
+          if (!panes) (mv.dom as HTMLElement).scrollTop = scrollTop;
+          else mv.b.scrollDOM.scrollTop = scrollTop;
+        });
     } else {
       const view = new EditorView({
         doc: textB,
@@ -338,7 +376,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           }),
         ],
       });
-      views = { a: null, b: view, merge: null, destroy: () => view.destroy() };
+      views = { a: null, b: view, merge: null, panes: null, destroy: () => view.destroy() };
       if (scrollTop != null) requestAnimationFrame(() => (view.scrollDOM.scrollTop = scrollTop));
     }
     viewsRef.current = views;
@@ -349,6 +387,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     statics,
     lang,
     opts.mode,
+    opts.alignChanges,
     opts.collapse,
     opts.ignore,
     opts.highlight,
@@ -359,6 +398,8 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     includable,
     path,
   ]);
+
+  useEffect(() => viewsRef.current?.panes?.setSync(opts.syncScroll), [opts.syncScroll]);
 
   useEffect(
     () => () => {
@@ -603,9 +644,10 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     if (neighbour) void openDiff(neighbour, { preview: true });
   };
   const toolbarRef = useRef<HTMLDivElement | null>(null);
-  const showSettings = () => {
-    const r = toolbarRef.current?.getBoundingClientRect();
-    showContextMenu({ x: r ? r.left + 8 : 120, y: r ? r.bottom : 120 }, [
+  /** The viewer settings menu, under the toolbar's gear (`from`) or its start. */
+  const showSettings = (from?: HTMLElement) => {
+    const r = (from ?? toolbarRef.current)?.getBoundingClientRect();
+    showContextMenu({ x: r ? r.left + (from ? 0 : 8) : 120, y: r ? r.bottom : 120 }, [
       { kind: "header", label: "Viewer" },
       {
         id: "split",
@@ -653,6 +695,13 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         checked: opts.syncScroll,
         disabled: opts.mode !== "split",
         run: () => setOpts({ syncScroll: !opts.syncScroll }),
+      },
+      {
+        id: "align",
+        label: "Align Changes",
+        checked: opts.alignChanges,
+        disabled: opts.mode !== "split",
+        run: () => setOpts({ alignChanges: !opts.alignChanges }),
       },
     ]);
   };
@@ -805,6 +854,14 @@ export function DiffEditor({ input }: { input: EditorInput }) {
                   ? tx`${chunkInfo.count} difference`
                   : tx`${chunkInfo.count} differences`}
         </span>
+        <IconButton
+          icon="settings"
+          title="Settings"
+          shortcut={shortcutLabel("diff.showSettings")}
+          size="small"
+          aria-haspopup="menu"
+          onClick={(e) => showSettings(e.currentTarget)}
+        />
       </div>
       {opts.mode === "split" ? (
         <div className={styles.labels}>
@@ -860,7 +917,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         className={clsx(
           styles.host,
           opts.highlight === "none" && styles.noHighlight,
-          opts.mode === "split" && !opts.syncScroll && styles.unsynced,
+          opts.mode === "split" && (opts.alignChanges ? !opts.syncScroll && styles.unsynced : styles.unaligned),
         )}
         hidden={!!error || !ready}
         aria-label={diffTitle(data)}

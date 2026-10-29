@@ -4,15 +4,26 @@
  * (`spring-boot:run` → `-Dspring-boot.run.jvmArguments`, Surefire →
  * `-Dmaven.surefire.debug`, Gradle → `--debug-jvm`); when the agent reports
  * its port, the Java debugger attaches. Output and the test tree stay in the Run tab.
+ * Maven goals that run the application inside Maven's JVM (`tomcat7:run`, `jetty:run`,
+ * `exec:java`) get the agent through `MAVEN_OPTS`; any other configuration set to the Java
+ * debugger (a script such as `catalina.sh run`) through `JAVA_TOOL_OPTIONS`, which every JVM reads.
  */
 import { executeAction } from "@/platform/actions";
 import type { RunConfig } from "@/platform/ipc";
-import { JDWP_AGENT, jdwpListeningPort } from "@/platform/javaLaunch";
+import { isJvmApplication, JDWP_AGENT, jdwpListeningPort } from "@/platform/javaLaunch";
 import { startRun, useRun } from "./store";
 
 const isMavenTestGoal = (a: string) =>
   /^(test|verify|integration-test|surefire:test|failsafe:integration-test)$/.test(a);
 const isGradleJvmTask = (a: string) => /(^|:)(test|bootRun|run|integrationTest|check)$/.test(a);
+/** A plugin goal that runs the application in Maven's own JVM (`tomcat7:run`, `jetty:run-war`, `exec:java`). */
+const isMavenInProcessGoal = (a: string) => /^[\w.-]+(:[\w.-]+)*:(run|run-war|run-exploded|java)$/.test(a);
+const JAVA_ADAPTER = "java-debug";
+
+function withOption(env: Record<string, string>, key: string, value: string): Record<string, string> {
+  const current = env[key]?.trim();
+  return { ...env, [key]: current ? `${current} ${value}` : value };
+}
 
 function withProperty(args: readonly string[], key: string, value: string): string[] {
   const prefix = `-D${key}=`;
@@ -38,12 +49,17 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
       if (failsafe) out = withProperty(out, "maven.failsafe.debug", JDWP_AGENT);
       return { ...config, args: out };
     }
+    if (config.debugAdapter === JAVA_ADAPTER || args.some(isMavenInProcessGoal))
+      return { ...config, env: withOption(config.env, "MAVEN_OPTS", JDWP_AGENT) };
     return null;
   }
   if (config.kind === "gradle" || /(^|\/)gradlew?(\.bat)?$/.test(config.command)) {
     if (!args.some(isGradleJvmTask)) return null;
     return args.includes("--debug-jvm") ? config : { ...config, args: [...args, "--debug-jvm"] };
   }
+  // Application / Spring Boot configurations are launched by java-debug itself.
+  if (config.debugAdapter === JAVA_ADAPTER && !isJvmApplication(config))
+    return { ...config, env: withOption(config.env, "JAVA_TOOL_OPTIONS", JDWP_AGENT) };
   return null;
 }
 

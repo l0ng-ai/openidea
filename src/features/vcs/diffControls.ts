@@ -17,7 +17,8 @@ export function applyChunk(mv: MergeView, index: number, source: "a" | "b") {
   dst.dispatch({ changes: transferChunk(chunk, source, src.state.doc, dst.state.doc), userEvent: "revert" });
 }
 
-function arrowButton(dir: "a-to-b" | "b-to-a", run: (chunkIndex: number) => void): HTMLButtonElement {
+/** A ">>" / "<<" button; the chunk index comes from the nearest `data-chunk` (itself included). */
+export function arrowButton(dir: "a-to-b" | "b-to-a", run: (chunkIndex: number) => void): HTMLButtonElement {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = `cm-diffArrow cm-diffArrow-${dir}`;
