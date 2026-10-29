@@ -67,7 +67,7 @@ pub fn is_downloaded(home: &Path) -> bool {
 }
 
 /// JDK homes in the usual install locations (macOS `JavaVirtualMachines`,
-/// `/usr/lib/jvm`, SDKMAN, IDEA's `~/.jdks`, Homebrew, Windows vendor
+/// `/usr/lib/jvm`, SDKMAN, mise, asdf, IDEA's `~/.jdks`, Homebrew, Windows vendor
 /// directories, the IDE's downloads), `JAVA_HOME` first, then the `java` on `PATH`.
 fn scan() -> Vec<Jdk> {
     let mut homes: Vec<PathBuf> = Vec::new();
@@ -109,6 +109,10 @@ fn scan() -> Vec<Jdk> {
         for dir in children(root) {
             homes.extend([dir.join("Contents/Home"), dir.join("libexec/openjdk.jdk/Contents/Home"), dir]);
         }
+    }
+    // mise keeps a macOS JDK as its bundle (`<version>/Contents/Home`), asdf flattens it.
+    for (dir, _) in ide_core::version_managers::installs(ide_core::version_managers::Tool::Java) {
+        homes.extend([dir.join("Contents/Home"), dir]);
     }
     let mut out: Vec<Jdk> = Vec::new();
     for h in homes {
