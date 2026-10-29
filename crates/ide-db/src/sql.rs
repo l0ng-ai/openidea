@@ -671,7 +671,10 @@ mod tests {
         assert_eq!(qualified(DbDriver::SqlServer, "", "t"), "[t]");
         assert_eq!(current_schema(DbDriver::SqlServer), Some("SELECT DB_NAME()"));
         assert_eq!(crate::conn::begin_statement(DbDriver::SqlServer), "BEGIN TRAN");
-        assert_eq!(schemas(DbDriver::SqlServer, true), "SELECT schema_name FROM information_schema.schemata ORDER BY 1");
+        assert_eq!(
+            schemas(DbDriver::SqlServer, true),
+            "SELECT schema_name FROM information_schema.schemata ORDER BY 1"
+        );
         assert!(schemas(DbDriver::SqlServer, false).contains("NOT IN ('sys', 'information_schema', 'guest')"));
     }
 

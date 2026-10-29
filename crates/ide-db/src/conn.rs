@@ -5,6 +5,9 @@
 //! whatever its type.
 
 use crate::source::{DataSource, DbDriver, DbSslMode};
+use bb8::Pool as Bb8Pool;
+use bb8_tiberius::ConnectionManager as MssqlConnectionManager;
+use futures::StreamExt;
 use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -15,12 +18,9 @@ use sqlx::{
     postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode},
     sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
 };
-use bb8::Pool as Bb8Pool;
-use bb8_tiberius::ConnectionManager as MssqlConnectionManager;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use futures::StreamExt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -53,8 +53,6 @@ pub enum Pool {
     Mysql(MySqlPool),
     SqlServer(Bb8Pool<MssqlConnectionManager>),
 }
-
-
 
 pub(crate) fn db_err(e: sqlx::Error) -> IdeError {
     match &e {
@@ -503,10 +501,7 @@ impl Pool {
                     .build(manager)
                     .await
                     .map_err(|e| IdeError::new(ErrorKind::Io, e.to_string()))?;
-                let mut conn = pool
-                    .get_owned()
-                    .await
-                    .map_err(|e| IdeError::new(ErrorKind::Io, e.to_string()))?;
+                let mut conn = pool.get_owned().await.map_err(|e| IdeError::new(ErrorKind::Io, e.to_string()))?;
                 let _ = conn.query("SELECT 1", &[]).await;
                 Ok(Pool::SqlServer(pool))
             }
@@ -536,7 +531,8 @@ impl Pool {
         match self {
             Pool::SqlServer(p) => {
                 let mut conn = p.get_owned().await.map_err(|e| IdeError::new(ErrorKind::Io, e.to_string()))?;
-                let mut stream = conn.query(sql, &[]).await.map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))?;
+                let mut stream =
+                    conn.query(sql, &[]).await.map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))?;
                 let mut rows = Vec::new();
                 let mut has_more = false;
                 while let Some(res) = stream.next().await {
@@ -592,25 +588,33 @@ impl Pool {
                 conn.execute("BEGIN TRAN", &[]).await.map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))?;
                 let mut total = 0u64;
                 for (sql, expect_one) in statements {
-                    let res = conn.execute(sql, &[]).await.map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))?;
+                    let res =
+                        conn.execute(sql, &[]).await.map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))?;
                     let n = res.rows_affected().iter().sum::<u64>();
                     if *expect_one && (n > 1 || n == 0) {
                         let _ = conn.execute("ROLLBACK TRAN", &[]).await;
-                        return Err(IdeError::invalid(format!("{sql}: expected to change 1 row, changed {n}; nothing was saved")));
+                        return Err(IdeError::invalid(format!(
+                            "{sql}: expected to change 1 row, changed {n}; nothing was saved"
+                        )));
                     }
                     total += n;
                 }
-                conn.execute("COMMIT TRAN", &[]).await.map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))?;
+                conn.execute("COMMIT TRAN", &[])
+                    .await
+                    .map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))?;
                 Ok(total)
             }
             Pool::Sqlite(p) => {
                 let mut tx = p.begin().await.map_err(db_err)?;
                 let mut total = 0;
                 for (sql, expect_one) in statements {
-                    let done = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *tx).await.map_err(db_err)?;
+                    let done =
+                        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *tx).await.map_err(db_err)?;
                     let n = done.rows_affected();
-                    if *expect_one && (n > 1 || (n == 0 && true)) {
-                        return Err(IdeError::invalid(format!("{sql}: expected to change 1 row, changed {n}; nothing was saved")));
+                    if *expect_one && (n > 1 || n == 0) {
+                        return Err(IdeError::invalid(format!(
+                            "{sql}: expected to change 1 row, changed {n}; nothing was saved"
+                        )));
                     }
                     total += n;
                 }
@@ -621,10 +625,13 @@ impl Pool {
                 let mut tx = p.begin().await.map_err(db_err)?;
                 let mut total = 0;
                 for (sql, expect_one) in statements {
-                    let done = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *tx).await.map_err(db_err)?;
+                    let done =
+                        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *tx).await.map_err(db_err)?;
                     let n = done.rows_affected();
-                    if *expect_one && (n > 1 || (n == 0 && true)) {
-                        return Err(IdeError::invalid(format!("{sql}: expected to change 1 row, changed {n}; nothing was saved")));
+                    if *expect_one && (n > 1 || n == 0) {
+                        return Err(IdeError::invalid(format!(
+                            "{sql}: expected to change 1 row, changed {n}; nothing was saved"
+                        )));
                     }
                     total += n;
                 }
@@ -635,11 +642,14 @@ impl Pool {
                 let mut tx = p.begin().await.map_err(db_err)?;
                 let mut total = 0;
                 for (sql, expect_one) in statements {
-                    let done = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *tx).await.map_err(db_err)?;
+                    let done =
+                        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *tx).await.map_err(db_err)?;
                     let n = done.rows_affected();
                     // MySQL reports 0 for an UPDATE that leaves the row unchanged.
-                    if *expect_one && (n > 1 || (n == 0 && false)) {
-                        return Err(IdeError::invalid(format!("{sql}: expected to change 1 row, changed {n}; nothing was saved")));
+                    if *expect_one && n > 1 {
+                        return Err(IdeError::invalid(format!(
+                            "{sql}: expected to change 1 row, changed {n}; nothing was saved"
+                        )));
                     }
                     total += n;
                 }
@@ -656,7 +666,7 @@ pub enum Held {
     Sqlite(PoolConnection<Sqlite>),
     Postgres(PoolConnection<Postgres>),
     Mysql(PoolConnection<MySql>),
-    SqlServer(bb8::PooledConnection<'static, MssqlConnectionManager>),
+    SqlServer(Box<bb8::PooledConnection<'static, MssqlConnectionManager>>),
 }
 
 impl Held {
@@ -665,18 +675,18 @@ impl Held {
             Pool::Sqlite(p) => Held::Sqlite(p.acquire().await.map_err(db_err)?),
             Pool::Postgres(p) => Held::Postgres(p.acquire().await.map_err(db_err)?),
             Pool::Mysql(p) => Held::Mysql(p.acquire().await.map_err(db_err)?),
-            Pool::SqlServer(p) => Held::SqlServer(p.get_owned().await.map_err(|e| IdeError::new(ErrorKind::Io, e.to_string()))?),
+            Pool::SqlServer(p) => {
+                Held::SqlServer(Box::new(p.get_owned().await.map_err(|e| IdeError::new(ErrorKind::Io, e.to_string()))?))
+            }
         })
     }
 
     /// Runs a statement without results (`BEGIN`, `COMMIT`, `ROLLBACK`).
     pub async fn command(&mut self, sql: &str) -> IdeResult<()> {
         match self {
-            Held::SqlServer(c) => c
-                .execute(sql, &[])
-                .await
-                .map(|_| ())
-                .map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string())),
+            Held::SqlServer(c) => {
+                c.execute(sql, &[]).await.map(|_| ()).map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))
+            }
             other => {
                 let sql = sqlx::AssertSqlSafe(sql.to_owned());
                 match other {
@@ -751,17 +761,19 @@ impl Held {
             Held::Mysql(c) => run!(c, Some("SELECT CONNECTION_ID()"), |b: String| format!("KILL QUERY {b}")),
             Held::SqlServer(c) => {
                 // Basic execution without cancellation-on-server; dropping the stream aborts client-side.
-                let mut stream = c.query(sql, &[]).await.map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))?;
-                let columns: Vec<ResultColumn> = match stream.columns().await.map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))? {
-                    Some(cols) => cols
-                        .iter()
-                        .map(|col| ResultColumn {
-                            name: col.name().to_owned(),
-                            type_name: format!("{:?}", col.column_type()),
-                        })
-                        .collect(),
-                    None => Vec::new(),
-                };
+                let mut stream =
+                    c.query(sql, &[]).await.map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))?;
+                let columns: Vec<ResultColumn> =
+                    match stream.columns().await.map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))? {
+                        Some(cols) => cols
+                            .iter()
+                            .map(|col| ResultColumn {
+                                name: col.name().to_owned(),
+                                type_name: format!("{:?}", col.column_type()),
+                            })
+                            .collect(),
+                        None => Vec::new(),
+                    };
                 let mut rows: Vec<Vec<Option<String>>> = Vec::new();
                 let mut has_more = false;
                 while let Some(res) = stream.next().await {
