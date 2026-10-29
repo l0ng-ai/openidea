@@ -258,8 +258,11 @@ export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []
 
 export const hasErrors = (e: ConfigErrors) => Object.keys(e).length > 0;
 
-/** Splits a command line into arguments: whitespace, '…' and "…" quoting, backslash escapes. */
-export function parseArgs(input: string): string[] {
+/**
+ * Splits a command line into arguments: whitespace, '…' and "…" quoting, backslash escapes.
+ * `windowsPaths`: a backslash only escapes a quote, so `C:\dir\app.jar` stays as typed.
+ */
+export function parseArgs(input: string, windowsPaths = false): string[] {
   const out: string[] = [];
   let cur = "";
   let has = false;
@@ -268,13 +271,18 @@ export function parseArgs(input: string): string[] {
     const ch = input[i]!;
     if (quote) {
       if (ch === quote) quote = null;
-      else if (ch === "\\" && quote === '"' && i + 1 < input.length && '"\\$`'.includes(input[i + 1]!))
+      else if (
+        ch === "\\" &&
+        quote === '"' &&
+        i + 1 < input.length &&
+        (windowsPaths ? '"' : '"\\$`').includes(input[i + 1]!)
+      )
         cur += input[++i];
       else cur += ch;
     } else if (ch === "'" || ch === '"') {
       quote = ch;
       has = true;
-    } else if (ch === "\\" && i + 1 < input.length) {
+    } else if (ch === "\\" && i + 1 < input.length && (!windowsPaths || "\"'".includes(input[i + 1]!))) {
       cur += input[++i];
       has = true;
     } else if (/\s/.test(ch)) {
