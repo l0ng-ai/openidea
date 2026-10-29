@@ -153,6 +153,11 @@ export const commands = {
 	 */
 	clipboardSetFileList: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("clipboard_set_file_list", { paths })),
 	/**
+	 *  Every installed family, sorted, each flagged monospaced or not. Read once
+	 *  per run (off the command threads) and cached.
+	 */
+	systemFontFamilies: () => typedError<FontFamily[], IdeError>(__TAURI_INVOKE("system_font_families")),
+	/**
 	 *  Opens a document. Async: reading and decoding a large file must not block
 	 *  the main thread (synchronous commands run on it).
 	 */
@@ -2977,6 +2982,15 @@ export type FoldingSettings = {
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,
+};
+
+/**
+ *  One installed family. `monospaced` is the font system's own flag (fixed
+ *  pitch; on Linux also fontconfig's dual-width CJK monospace).
+ */
+export type FontFamily = {
+	name: string,
+	monospaced: boolean,
 };
 
 export type FormatOptions = {

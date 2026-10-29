@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { monoFontFamily } from "./fonts";
+import { monoFontFamily, uiFontFamily } from "./fonts";
 
 const BASE = "var(--font-mono)";
 
@@ -20,5 +20,15 @@ describe("monoFontFamily", () => {
     expect(monoFontFamily("Not Installed", "", '"JetBrains Mono Variable", monospace')).toBe(
       '"Not Installed", "JetBrains Mono Variable", monospace',
     );
+  });
+});
+
+describe("uiFontFamily", () => {
+  it.each([
+    ["Inter", '"Inter Variable", "Inter", system-ui, sans-serif'],
+    ["JetBrains Mono", '"JetBrains Mono Variable", "JetBrains Mono", system-ui, sans-serif'],
+    [' "PingFang SC" ', '"PingFang SC", system-ui, sans-serif'],
+  ])("%j", (family, expected) => {
+    expect(uiFontFamily(family)).toBe(expected);
   });
 });

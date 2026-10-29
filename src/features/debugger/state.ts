@@ -5,6 +5,7 @@
 import { workflowSettings } from "@/platform/workflowSettings";
 import { executeAction } from "@/platform/actions";
 import { create } from "zustand";
+import { AnsiStream, appendSpans, type Span } from "@/ui/ansi";
 import { setContext } from "@/platform/context";
 import {
   call,
@@ -55,7 +56,10 @@ export interface DebugSession {
 export interface ConsoleLine {
   id: number;
   category: string;
+  /** Plain text without escape sequences. */
   text: string;
+  /** `text` styled by its ANSI colours. */
+  spans: Span[];
 }
 
 export interface WatchResult {
@@ -95,6 +99,16 @@ export const useExecutionPoint = create<ExecutionPoint>(() => ({ path: null, lin
 
 const MAX_CONSOLE_LINES = 5000;
 let lineSeq = 0;
+/** ANSI state per session and output category (a colour can span several output events). */
+const ansiStreams = new Map<DebugSessionId, Map<string, AnsiStream>>();
+
+function ansiStream(session: DebugSessionId, category: string): AnsiStream {
+  let streams = ansiStreams.get(session);
+  if (!streams) ansiStreams.set(session, (streams = new Map()));
+  let stream = streams.get(category);
+  if (!stream) streams.set(category, (stream = new AnsiStream()));
+  return stream;
+}
 
 // --- accessors ---------------------------------------------------------------
 
@@ -215,7 +229,10 @@ export function publishContext() {
 
 // --- console -----------------------------------------------------------------
 
-export function appendConsole(session: DebugSessionId, category: string, text: string) {
+export function appendConsole(session: DebugSessionId, category: string, raw: string) {
+  if (!raw) return;
+  const spans = ansiStream(session, category).parse(raw);
+  const text = spans.map((sp) => sp.text).join("");
   if (!text) return;
   useDebug.setState((s) => {
     const prev = s.console[session] ?? [];
@@ -223,9 +240,9 @@ export function appendConsole(session: DebugSessionId, category: string, text: s
     const last = next[next.length - 1];
     // Merge partial lines of the same category.
     if (last && last.category === category && !last.text.endsWith("\n")) {
-      next[next.length - 1] = { ...last, text: last.text + text };
+      next[next.length - 1] = { ...last, text: last.text + text, spans: appendSpans(last.spans, spans) };
     } else {
-      next.push({ id: ++lineSeq, category, text });
+      next.push({ id: ++lineSeq, category, text, spans });
     }
     if (next.length > MAX_CONSOLE_LINES) next.splice(0, next.length - MAX_CONSOLE_LINES);
     return { console: { ...s.console, [session]: next } };
@@ -233,6 +250,7 @@ export function appendConsole(session: DebugSessionId, category: string, text: s
 }
 
 export function clearConsole(session: DebugSessionId) {
+  ansiStreams.delete(session);
   useDebug.setState((s) => ({ console: { ...s.console, [session]: [] } }));
 }
 
@@ -255,6 +273,7 @@ export async function startSession(
   useDebug.setState((s) => {
     const sessions = Object.fromEntries(Object.entries(s.sessions).filter(([, v]) => isLive(v)));
     const consoleLines = Object.fromEntries(Object.entries(s.console).filter(([k]) => sessions[+k]));
+    for (const id of ansiStreams.keys()) if (!sessions[id]) ansiStreams.delete(id);
     return { sessions, console: consoleLines, active: s.active != null && sessions[s.active] ? s.active : null };
   });
   try {
@@ -657,6 +676,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
 export function resetSessions() {
   const { sessions } = useDebug.getState();
   for (const s of Object.values(sessions)) if (s.parent == null && isLive(s)) void stopSession(s.id);
+  ansiStreams.clear();
   useDebug.setState({ sessions: {}, active: null, console: {}, stopSeq: 0 });
   useExecutionPoint.setState({ path: null, line: 0, top: true, values: {} });
   publishContext();

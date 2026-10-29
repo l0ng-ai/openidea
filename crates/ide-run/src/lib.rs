@@ -6,7 +6,6 @@ pub mod envfile;
 pub mod gradle_jvm;
 pub mod java_cmdline;
 pub mod junit;
-mod output_encoding;
 mod process;
 mod utf8;
 pub mod which;

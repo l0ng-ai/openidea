@@ -30,6 +30,20 @@ export function monoFontFamily(family: string | undefined, fallback = "", base =
   return [...head, ...(fb ? [quote(fb)] : []), base].join(", ");
 }
 
+export const BUNDLED_UI_FAMILY = "Inter";
+const BUNDLED_UI_FACES = ['"Inter Variable"', '"Inter"'];
+
+/**
+ * The `--font-ui` stack for a custom UI font. The bundled families map to their
+ * bundled faces, like `monoFontFamily`, so they render without a system install.
+ */
+export function uiFontFamily(family: string): string {
+  const name = family.replace(/"/g, "").trim();
+  const head =
+    name === BUNDLED_UI_FAMILY ? BUNDLED_UI_FACES : name === BUNDLED_MONO_FAMILY ? BUNDLED_MONO_FACES : [quote(name)];
+  return [...head, "system-ui", "sans-serif"].join(", ");
+}
+
 /**
  * Resolves once the faces `family` uses at `size` are loaded, so code that measures
  * glyphs (xterm's cell size) measures the real font rather than the swap fallback.

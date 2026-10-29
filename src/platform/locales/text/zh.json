@@ -2040,6 +2040,8 @@
   "Template name": "模板名称",
   "Template text": "模板文本",
   "Terminal": "终端",
+  "Terminal fallback font": "终端备用字体",
+  "Terminal font": "终端字体",
   "Terminal font size": "终端字体大小",
   "Terminal line height": "终端行高",
   "Terminal sessions": "终端会话",
@@ -4729,5 +4731,10 @@
   "Proxy host is empty": "代理主机为空",
   "Invalid proxy host": "代理主机无效",
   "Proxy port must be between 1 and 65535": "代理端口必须介于 1 和 65535 之间",
-  "Proxy login is empty": "代理登录名为空"
+  "Proxy login is empty": "代理登录名为空",
+  "No interpreter": "无解释器",
+  "Add New Interpreter…": "添加新的解释器…",
+  "Interpreter Settings…": "解释器设置…",
+  "Cannot select Python interpreter": "无法选择 Python 解释器",
+  "Python Interpreter: {label}": "Python 解释器：{label}"
 }
