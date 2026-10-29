@@ -269,10 +269,10 @@ export function letterOf(e: Pick<KeyboardEvent, "code" | "key"> & { altKey?: boo
 export function strokeOf(
   e: Pick<KeyboardEvent, "code" | "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ): string | null {
-  let key: string | undefined = letterOf(e) ?? undefined;
-  if (key) {
-    // Resolved by letterOf.
-  } else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
+  let key: string | undefined;
+  const letter = letterOf(e);
+  if (letter) key = letter;
+  else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
   else if (/^Numpad\d$/.test(e.code)) key = e.code.slice(6);
   else if (/^F\d{1,2}$/.test(e.code)) key = e.code;
   else key = CODE_NAMES[e.code];
