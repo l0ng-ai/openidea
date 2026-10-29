@@ -5,28 +5,7 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
-
-/// File names `name` may have on disk. Unix: the name itself. Windows: the
-/// name when it already ends in a `PATHEXT` extension, else the name with each
-/// extension (an extensionless file is not executable there).
-pub fn executable_names(name: &str, windows: bool, pathext: Option<&str>) -> Vec<String> {
-    if !windows {
-        return vec![name.to_owned()];
-    }
-    let exts: Vec<&str> = pathext
-        .filter(|p| !p.trim().is_empty())
-        .unwrap_or(DEFAULT_PATHEXT)
-        .split(';')
-        .map(str::trim)
-        .filter(|e| e.starts_with('.') && e.len() > 1)
-        .collect();
-    let lower = name.to_ascii_lowercase();
-    if exts.iter().any(|e| lower.ends_with(&e.to_ascii_lowercase())) {
-        return vec![name.to_owned()];
-    }
-    exts.iter().map(|e| format!("{name}{}", e.to_ascii_lowercase())).collect()
-}
+pub use ide_core::process::executable_names;
 
 /// First `search` directory holding `name` (see [`executable_names`]).
 pub fn find_executable_in(name: &str, search: &OsStr, windows: bool, pathext: Option<&str>) -> Option<PathBuf> {

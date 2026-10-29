@@ -34,6 +34,18 @@ export function isCancelled(e: unknown): boolean {
   return e instanceof IpcError && e.kind === "cancelled";
 }
 
+/** Backend `unavailable` message when servers run but none has the feature: "jdtls doesn't support inline completion". */
+const LACKS_FEATURE = /^\S.* doesn't support \S.*$/;
+
+/**
+ * What to tell the user when a language-server feature is `unavailable`: the
+ * running server that lacks it, so a working server doesn't read as missing;
+ * `fallback` when no server is running.
+ */
+export function unavailableText(e: unknown, fallback = "No language server available"): string {
+  return e instanceof IpcError && e.kind === "unavailable" && LACKS_FEATURE.test(e.message) ? e.message : fallback;
+}
+
 // Ids are shared by every window of the backend and outlive a reload there (a cancel that
 // arrives before its request began is remembered), so each page starts at a random point.
 let nextId = 1 + Math.floor(Math.random() * 0x7000_0000);

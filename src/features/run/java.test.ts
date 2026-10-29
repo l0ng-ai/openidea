@@ -261,6 +261,48 @@ describe("debugging build tool configurations", () => {
     expect(jdwpLaunch(cfg({ id: "p", kind: "maven", args: ["package"] }))).toBeNull();
     expect(jdwpLaunch(cfg({ id: "n", kind: "npm", args: ["test"] }))).toBeNull();
   });
+
+  const AGENT = /-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127\.0\.0\.1:0$/;
+
+  it.each([
+    ["tomcat7:run"],
+    ["org.apache.tomcat.maven:tomcat7-maven-plugin:2.2:run"],
+    ["jetty:run"],
+    ["jetty:run-war"],
+    ["exec:java"],
+  ])("debugs Maven's own JVM for the in-process goal %s", (goal) => {
+    const out = jdwpLaunch(cfg({ id: "m", kind: "maven", args: ["clean", goal], env: { MAVEN_OPTS: "-Xmx1g" } }))!;
+    expect(out.args).toEqual(["clean", goal]);
+    expect(out.env.MAVEN_OPTS).toMatch(/^-Xmx1g -agentlib:jdwp=/);
+    expect(out.env.MAVEN_OPTS).toMatch(AGENT);
+  });
+
+  it("keeps plain Maven builds out of the debugger unless set to the Java debugger", () => {
+    expect(jdwpLaunch(cfg({ id: "p", kind: "maven", args: ["exec:exec"] }))).toBeNull();
+    const chosen = jdwpLaunch(cfg({ id: "p", kind: "maven", args: ["package"], debugAdapter: "java-debug" }))!;
+    expect(chosen.env.MAVEN_OPTS).toMatch(AGENT);
+  });
+
+  it.each([
+    ["shell", "C:\\apache-tomcat-9.0.98\\bin\\catalina.bat", ["run"]],
+    ["shell", "/opt/tomcat9/bin/catalina.sh", ["run"]],
+    ["program", "java", ["-jar", "app.war"]],
+  ])("starts a %s configuration set to the Java debugger with an agent in JAVA_TOOL_OPTIONS", (kind, command, args) => {
+    const rc = cfg({ id: "tomcat9", kind, command, args, debugAdapter: "java-debug" });
+    const out = jdwpLaunch(rc)!;
+    expect(out.command).toBe(command);
+    expect(out.args).toEqual(args);
+    expect(out.env.JAVA_TOOL_OPTIONS).toMatch(AGENT);
+    const merged = jdwpLaunch({ ...rc, env: { JAVA_TOOL_OPTIONS: "-Dfile.encoding=UTF-8" } })!;
+    expect(merged.env.JAVA_TOOL_OPTIONS).toMatch(/^-Dfile\.encoding=UTF-8 -agentlib:jdwp=/);
+  });
+
+  it("leaves Application configurations and other debuggers alone", () => {
+    for (const kind of ["application", "spring-boot"])
+      expect(jdwpLaunch(cfg({ id: "a", kind, command: "java", debugAdapter: "java-debug" }))).toBeNull();
+    expect(jdwpLaunch(cfg({ id: "s", kind: "shell", command: "./run.sh", debugAdapter: "debugpy" }))).toBeNull();
+    expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["build"], debugAdapter: "java-debug" }))).toBeNull();
+  });
 });
 
 describe("JUnit XML reports", () => {

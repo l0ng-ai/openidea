@@ -6,6 +6,7 @@
 pub mod environment;
 pub mod ops;
 mod project;
+mod proxy;
 mod requests;
 pub mod rpc;
 pub mod shell_env;
@@ -56,6 +57,8 @@ pub struct Host {
     pub remote: Arc<ide_remote::RemoteService>,
     /// What child processes get beyond this process's environment (Reload Environment, `remoteEnv`).
     pub environment: environment::Environment,
+    /// The HTTP proxy's saved password (see `proxy.rs`).
+    proxy_password: ide_ssh::secrets::SecretFile,
     pub(crate) sink_for: SinkFactory,
     owner: fn(&str) -> &str,
     pub runtime: tokio::runtime::Handle,
@@ -71,7 +74,8 @@ impl Host {
         let global_settings = SettingsStore::load(&config_dir, None);
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
-        Self {
+        let host = Self {
+            proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
             environment: environment::Environment::new(project_environment, data_dir.clone()),
@@ -89,7 +93,9 @@ impl Host {
             runtime,
             projects: RwLock::default(),
             requests: Default::default(),
-        }
+        };
+        host.apply_proxy();
+        host
     }
 
     /// The tree-sitter grammars (blocks only if start-up warm-up is still running).

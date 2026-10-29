@@ -1,0 +1,88 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.modes {
+  display: flex;
+  flex-direction: column;
+}
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+.radio input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.disabled {
+  color: var(--fg-subtle);
+}
+.hint {
+  padding-left: 20px;
+  color: var(--fg-subtle);
+}
+
+/* Manual configuration, indented under its radio button. */
+.manual {
+  display: flex;
+  flex-direction: column;
+  padding-left: 20px;
+}
+.kinds {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.hostRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+.host {
+  width: 220px;
+}
+.port {
+  width: 64px;
+}
+.wide {
+  width: 360px;
+}
+.toggle {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+}
+.auth {
+  display: flex;
+  flex-direction: column;
+  padding-left: 20px;
+}
+.error {
+  color: var(--danger);
+}
+.ok {
+  color: var(--success, var(--fg-muted));
+}
+
+.check {
+  margin-top: 12px;
+}
+.popup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  max-width: 480px;
+}
+.urlRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.result {
+  min-height: 1lh;
+  overflow-wrap: anywhere;
+}

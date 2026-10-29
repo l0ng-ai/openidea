@@ -6,6 +6,7 @@
 //! Adapters that run inside another process (java-debug inside jdtls) are
 //! reached through a `debugServer` port in the launch arguments instead.
 
+use ide_core::process::executable_names;
 use ide_core::{IdeError, IdeResult};
 use ide_language::{DebuggerConfig, LanguageRegistry};
 use std::future::Future;
@@ -195,30 +196,43 @@ fn search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn is_executable(path: &Path) -> bool {
+fn is_executable(path: &Path, windows: bool) -> bool {
     #[cfg(unix)]
-    {
+    if !windows {
         use std::os::unix::fs::PermissionsExt;
-        path.metadata().map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+        return path.metadata().map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false);
     }
     #[cfg(not(unix))]
-    {
-        path.is_file()
-    }
+    let _ = windows;
+    path.is_file()
 }
 
 /// Resolves `command` to an executable: paths are taken as-is (relative to `cwd`), bare names are looked up on PATH.
+/// On Windows only `PATHEXT` files count (`foo` → `foo.exe` / `foo.cmd`), so a `.jar` or an
+/// extensionless script next to a shim is never started as a program.
 pub fn find_binary(command: &str, cwd: &Path) -> Option<PathBuf> {
+    let pathext = std::env::var("PATHEXT").ok();
+    find_binary_in(command, cwd, &search_dirs(), cfg!(windows), pathext.as_deref())
+}
+
+fn find_binary_in(
+    command: &str,
+    cwd: &Path,
+    dirs: &[PathBuf],
+    windows: bool,
+    pathext: Option<&str>,
+) -> Option<PathBuf> {
     let p = Path::new(command);
     if p.components().count() > 1 || p.is_absolute() {
         let full = if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) };
-        return is_executable(&full).then_some(full);
+        let (dir, name) = (full.parent()?, full.file_name()?.to_str()?);
+        return executable_names(name, windows, pathext)
+            .into_iter()
+            .map(|n| dir.join(n))
+            .find(|c| is_executable(c, windows));
     }
-    let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
-    search_dirs()
-        .into_iter()
-        .flat_map(|d| exts.iter().map(move |e| d.join(format!("{command}{e}"))))
-        .find(|c| is_executable(c))
+    let names = executable_names(command, windows, pathext);
+    dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|c| is_executable(c, windows))
 }
 
 /// [`find_binary`], plus Xcode's toolchain on macOS (`xcrun -f lldb-dap`): Xcode ships
@@ -234,7 +248,7 @@ fn xcrun_tool(command: &str) -> Option<PathBuf> {
     }
     let out = std::process::Command::new("/usr/bin/xcrun").args(["-f", command]).stderr(Stdio::null()).output().ok()?;
     let path = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-    (out.status.success() && is_executable(&path)).then_some(path)
+    (out.status.success() && is_executable(&path, false)).then_some(path)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -286,6 +300,22 @@ pub async fn prepare_debugpy(spec: &mut AdapterSpec) -> IdeResult<()> {
         python.display(),
         python.display()
     )))
+}
+
+/// An adapter that is a plugin of another program (java-debug, a jdtls bundle) rather
+/// than a program: it has no process of its own and is reached through `debugServer`.
+pub fn is_plugin_bundle(command: &str) -> bool {
+    Path::new(command).extension().is_some_and(|e| e.eq_ignore_ascii_case("jar"))
+}
+
+/// A launch of a plugin adapter without the `debugServer` of its host program.
+pub fn not_standalone(spec: &AdapterSpec) -> IdeError {
+    IdeError::unavailable(format!(
+        "debug adapter `{}` runs inside the Java language server and can't be started on its own. \
+         Debug an Application, Spring Boot, JUnit, Maven or Gradle configuration, or start the JVM \
+         with a JDWP agent and attach with a Remote JVM Debug configuration",
+        spec.adapter
+    ))
 }
 
 pub fn missing(spec: &AdapterSpec) -> IdeError {
@@ -375,6 +405,9 @@ impl AdapterLauncher for ProcessLauncher {
             }
             if spec.adapter == DEBUGPY_TOOL {
                 prepare_debugpy(&mut spec).await?;
+            }
+            if is_plugin_bundle(&spec.command) {
+                return Err(not_standalone(&spec));
             }
             let (command, cwd) = (spec.command.clone(), spec.cwd.clone());
             let binary = tokio::task::spawn_blocking(move || resolve_binary(&command, &cwd))
@@ -583,5 +616,67 @@ mod tests {
         spec.command = "definitely-not-a-real-binary-openidea".into();
         let err = ProcessLauncher.launch(spec, None).await.err().unwrap();
         assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+    }
+
+    /// The managed tools layout (`<tools>/<tool>/bin`) as Windows sees it: only `PATHEXT`
+    /// files run, so the java-debug bundle jar and POSIX shims are never adapter programs.
+    #[test]
+    fn windows_resolution_only_takes_pathext_files() {
+        let dir = std::env::temp_dir().join(format!("openidea-dap-win-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let java_debug = dir.join("java-debug").join("bin");
+        let js_debug = dir.join("js-debug").join("bin");
+        let codelldb = dir.join("codelldb").join("bin");
+        for d in [&java_debug, &js_debug, &codelldb] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let jar = "com.microsoft.java.debug.plugin.jar";
+        std::fs::write(java_debug.join(jar), "PK").unwrap();
+        std::fs::write(js_debug.join("js-debug-adapter"), "#!/bin/sh\n").unwrap();
+        std::fs::write(js_debug.join("js-debug-adapter.cmd"), "@echo off\r\n").unwrap();
+        std::fs::write(codelldb.join("codelldb.exe"), "MZ").unwrap();
+        let dirs = [java_debug.clone(), js_debug.clone(), codelldb.clone()];
+        let cwd = dir.clone();
+        let win = |cmd: &str| find_binary_in(cmd, &cwd, &dirs, true, Some(".COM;.EXE;.BAT;.CMD"));
+        assert_eq!(win(jar), None);
+        assert_eq!(win(&java_debug.join(jar).to_string_lossy()), None);
+        assert_eq!(win("js-debug-adapter"), Some(js_debug.join("js-debug-adapter.cmd")));
+        assert_eq!(win("codelldb"), Some(codelldb.join("codelldb.exe")));
+        assert_eq!(win(&codelldb.join("codelldb").to_string_lossy()), Some(codelldb.join("codelldb.exe")));
+        assert_eq!(win(&codelldb.join("codelldb.exe").to_string_lossy()), Some(codelldb.join("codelldb.exe")));
+        assert_eq!(win("netcoredbg"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unix needs the executable bit: a plain file (the bundle jar) is not a program.
+    #[cfg(unix)]
+    #[test]
+    fn unix_resolution_needs_the_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("openidea-dap-unix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.jar"), "PK").unwrap();
+        std::fs::write(dir.join("adapter"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(dir.join("adapter"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dirs = [dir.clone()];
+        assert_eq!(find_binary_in("plugin.jar", &dir, &dirs, false, None), None);
+        assert_eq!(find_binary_in("adapter", &dir, &dirs, false, None), Some(dir.join("adapter")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// java-debug (from `languages/java.toml` or the built-in) is only reachable through
+    /// jdtls: a launch without `debugServer` is refused instead of starting the jar.
+    #[tokio::test]
+    async fn plugin_adapters_are_never_started_as_processes() {
+        assert!(is_plugin_bundle("com.microsoft.java.debug.plugin.jar"));
+        assert!(is_plugin_bundle("C:\\tools\\java-debug\\bin\\Plugin.JAR"));
+        for cmd in ["codelldb", "python3", "js-debug-adapter", "dlv", "netcoredbg.exe", "lldb-dap"] {
+            assert!(!is_plugin_bundle(cmd), "{cmd}");
+        }
+        let spec = resolve(&builtin("java-debug").unwrap(), std::env::temp_dir());
+        let err = ProcessLauncher.launch(spec, None).await.err().unwrap();
+        assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+        assert!(err.message.contains("runs inside the Java language server"), "{}", err.message);
     }
 }

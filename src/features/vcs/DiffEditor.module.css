@@ -182,19 +182,100 @@
 .noHighlight :global(.cm-changedText) {
   background: none !important;
 }
-.unsynced :global(.cm-mergeView) {
+/* Side-by-side without alignment (IDEA's default): each pane scrolls itself. */
+.unaligned :global(.cm-mergeView) {
   overflow: hidden;
 }
-.unsynced :global(.cm-mergeViewEditors) {
+.unaligned :global(.cm-mergeViewEditors) {
   height: 100%;
   min-height: 0;
 }
-.unsynced :global(.cm-mergeViewEditor) {
+.unaligned :global(.cm-mergeViewEditor) {
   height: 100%;
+  min-height: 0;
   overflow: hidden;
 }
-.unsynced :global(.cm-mergeViewEditor > .cm-editor) {
-  height: 100%;
+/* Overrides MergeView's base theme, which leaves scrolling to the outer view. */
+.unaligned :global(.cm-mergeViewEditor > .cm-editor),
+.unaligned :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
+  height: 100% !important;
+}
+.unaligned :global(.cm-mergeViewEditor > .cm-editor > .cm-scroller) {
+  overflow: auto !important;
+}
+.host :global(.cm-diffDivider) {
+  position: relative;
+  flex: none;
+  width: 30px;
+  overflow: hidden;
+  background: var(--bg-app);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.host :global(.cm-diffDivider svg) {
+  position: absolute;
+  inset: 0;
+}
+/* Opaque mixes of the line backgrounds (cm.ts), so bands and their midlines read as one shape. */
+.host :global(.cm-diffBand-inserted) {
+  --band: color-mix(in srgb, var(--success) 26%, var(--bg-app));
+}
+.host :global(.cm-diffBand-deleted) {
+  --band: color-mix(in srgb, var(--danger) 26%, var(--bg-app));
+}
+.host :global(.cm-diffBand-modified) {
+  --band: color-mix(in srgb, var(--gutter-added) 20%, var(--bg-app));
+}
+.host :global(.cm-diffBand:not(.cm-diffBand-modified)) {
+  fill: var(--band);
+}
+.host :global(.cm-diffBandLine) {
+  fill: none;
+  stroke: var(--band);
+  stroke-width: 1px;
+}
+.host :global(.cm-diffBandStopA) {
+  stop-color: color-mix(in srgb, var(--gutter-deleted) 20%, var(--bg-app));
+}
+.host :global(.cm-diffBandStopB) {
+  stop-color: color-mix(in srgb, var(--gutter-added) 20%, var(--bg-app));
+}
+.host :global(.cm-diffDivider button.cm-diffArrow) {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+.host :global(.cm-diffDivider button.cm-diffArrow-a-to-b) {
+  left: 1px;
+}
+.host :global(.cm-diffDivider button.cm-diffArrow-b-to-a) {
+  right: 1px;
+}
+.host :global(.cm-diffDivider button.cm-diffArrow:hover) {
+  color: var(--fg-strong);
+  background: var(--bg-hover);
+}
+/* Where the other pane has lines this one lacks. */
+.host :global(.cm-diffGap-inserted) {
+  box-shadow: inset 0 1px 0 var(--success);
+}
+.host :global(.cm-diffGap-deleted) {
+  box-shadow: inset 0 1px 0 var(--danger);
+}
+.host :global(.cm-diffGap-inserted.cm-diffGapEnd) {
+  box-shadow: inset 0 -1px 0 var(--success);
+}
+.host :global(.cm-diffGap-deleted.cm-diffGapEnd) {
+  box-shadow: inset 0 -1px 0 var(--danger);
 }
 
 /* Review comments under diff lines (pull requests). */

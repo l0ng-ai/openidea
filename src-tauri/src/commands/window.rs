@@ -295,7 +295,8 @@ fn updater(app: &AppHandle) -> IdeResult<Option<tauri_plugin_updater::Updater>> 
         return Ok(None);
     }
     let env = update_endpoint_env();
-    let mut builder = app.updater_builder();
+    let proxy = ide_core::proxy_settings::proxy();
+    let mut builder = app.updater_builder().configure_client(move |b| ide_http::client::with_proxy(b, &proxy));
     if let Some(url) = env {
         let url = url.parse().map_err(|e| IdeError::invalid(format!("OPENIDEA_UPDATE_ENDPOINT: {e}")))?;
         builder = builder.endpoints(vec![url]).map_err(|e| IdeError::invalid(e.to_string()))?;

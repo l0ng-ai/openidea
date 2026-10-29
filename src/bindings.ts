@@ -850,6 +850,11 @@ export const commands = {
 	httpHistory: () => typedError<HttpHistoryEntry[], IdeError>(__TAURI_INVOKE("http_history")),
 	httpHistoryGet: (id: string) => typedError<HttpExchange, IdeError>(__TAURI_INVOKE("http_history_get", { id })),
 	httpHistoryClear: () => typedError<null, IdeError>(__TAURI_INVOKE("http_history_clear")),
+	/**
+	 *  System Settings › HTTP Proxy › Check connection: GETs `url` through `proxy` as
+	 *  edited (not yet applied); the response status, or why there was none.
+	 */
+	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
 	dbSources: () => typedError<DataSource[], IdeError>(__TAURI_INVOKE("db_sources")),
 	dbSaveSources: (sources: DataSource[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
 	/**
@@ -4511,6 +4516,30 @@ export type ProjectStructureSettings = {
 	excludeFiles?: string,
 };
 
+export type ProxyKind = "http" | "socks";
+
+export type ProxyMode = 
+/**  Every connection goes direct. */
+"none" | 
+/**  The system's proxy: `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` of the environment. */
+"auto" | 
+/**  The proxy configured here. */
+"manual";
+
+export type ProxySettings = {
+	mode?: ProxyMode,
+	kind?: ProxyKind,
+	host?: string,
+	port?: number,
+	/**  Hosts reached directly, comma-separated; `*` matches any characters (`*.example.com`, `192.168.*`). */
+	noProxy?: string,
+	/**  Send `login` / `password` to the proxy. */
+	authenticate?: boolean,
+	login?: string,
+	/**  Kept in the saved passwords rather than `settings.toml`; filled in when settings are read. */
+	password?: string,
+};
+
 export type PruneTarget = "containers" | 
 /**  Dangling images only. */
 "images" | 
@@ -5139,6 +5168,8 @@ export type Settings_Deserialize = {
 	 */
 	customKeymaps?: { [key in string]: CustomKeymap },
 	notifications?: NotificationSettings,
+	/**  System Settings › HTTP Proxy (global only). */
+	proxy?: ProxySettings,
 	/**  Interpreters / toolchains per language (Python, Node.js, Rust, Go, TypeScript). */
 	languages?: LanguagesSettings,
 	/**  Project Structure: source / test / resource / excluded folders (project-relative). */
@@ -5192,6 +5223,8 @@ export type Settings_Serialize = {
 	 */
 	customKeymaps: { [key in string]: CustomKeymap },
 	notifications: NotificationSettings,
+	/**  System Settings › HTTP Proxy (global only). */
+	proxy: ProxySettings,
 	/**  Interpreters / toolchains per language (Python, Node.js, Rust, Go, TypeScript). */
 	languages: LanguagesSettings,
 	/**  Project Structure: source / test / resource / excluded folders (project-relative). */

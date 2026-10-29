@@ -521,6 +521,20 @@ async fn inline_completion_only_from_servers_that_advertise_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn unsupported_feature_names_the_running_servers_that_lack_it() {
+    let h = harness(&[("plain", incremental_caps()), ("other", json!({ "textDocumentSync": 2 }))]);
+    let (doc, _) = h.open("a.mk", "let x = fo");
+    for name in ["plain", "other"] {
+        h.wait_status(name, ServerStatus::Ready).await;
+    }
+    let e = h.mgr.inline_completion(doc, Pos::new(0, 10), false, Default::default()).await.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Unavailable);
+    assert_eq!(e.message, "plain, other doesn't support inline completion");
+    let e = h.mgr.type_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming).await.unwrap_err();
+    assert_eq!(e.message, "plain, other doesn't support type hierarchy");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn diagnostics_become_events_and_feed_code_actions() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "let unused = 1;\nlet y = 2;\n");

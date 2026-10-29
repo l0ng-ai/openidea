@@ -21,6 +21,7 @@ const {
   ghostText,
   inlineCompletionExtension,
   nextWord,
+  registerInlineCompletionActions,
   requestInline,
   toSuggestions,
 } = await import("./inlineCompletion");
@@ -134,5 +135,51 @@ describe("inline completion", () => {
     expect(nextWord("(bar)")).toBe("(");
     expect(nextWord("  bar baz")).toBe("  bar");
     expect(nextWord("   ")).toBe("   ");
+  });
+});
+
+describe("inline completion without a provider", () => {
+  const unavailable = (message: string) => ({
+    status: "error" as const,
+    error: { kind: "unavailable" as const, message },
+  });
+  const hintText = () => document.querySelector(".cm-lsp-hint")?.textContent ?? null;
+
+  async function invoke(view: EditorView) {
+    const { useEditorRegistry } = await import("@/editor/api");
+    const { getAction } = await import("@/platform/actions");
+    useEditorRegistry.setState({ active: { view, ctx: view.state.facet(lspDoc)! } as never });
+    const off = registerInlineCompletionActions();
+    void getAction("editor.inlineCompletion.trigger")!.run({ ctx: {} } as never);
+    off();
+  }
+
+  it.each([
+    [
+      "names the running server that lacks it",
+      "jdtls doesn't support inline completion",
+      "jdtls doesn't support inline completion",
+    ],
+    [
+      "says no server runs when none does",
+      "no running language server supports inline completion",
+      "No language server available",
+    ],
+  ])("on explicit invocation %s", async (_, message, shown) => {
+    const view = editor("String s = ");
+    ipc.lspInlineCompletion.mockResolvedValueOnce(unavailable(message));
+    await invoke(view);
+    await vi.waitFor(() => expect(hintText()).toBe(shown));
+  });
+
+  it("stays silent while typing", async () => {
+    const view = editor("String s = ");
+    ipc.lspInlineCompletion.mockResolvedValue(unavailable("jdtls doesn't support inline completion"));
+    expect(await requestInline(view, true)).toBe(false);
+    view.dispatch({ changes: { from: 11, insert: "x" }, userEvent: "input.type" });
+    await new Promise((r) => setTimeout(r, 120));
+    expect(hintText()).toBeNull();
+    expect(ghostDom(view)).toBeNull();
+    ipc.lspInlineCompletion.mockReset();
   });
 });
