@@ -6,6 +6,7 @@
  * pressed only" and "Save files if the IDE is idle".
  */
 import { executeAction, type Action } from "@/platform/actions";
+import { uiFontFamily } from "@/platform/fonts";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { setDragRequiresAlt } from "@/ui";
@@ -32,8 +33,7 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
     if (size === DEFAULT_SETTINGS.appearance.uiFontSize) root.style.removeProperty(name);
     else root.style.setProperty(name, `${size + delta}px`);
   }
-  if (a.useCustomFont)
-    root.style.setProperty("--font-ui", `"${a.uiFontFamily.replace(/"/g, "")}", system-ui, sans-serif`);
+  if (a.useCustomFont) root.style.setProperty("--font-ui", uiFontFamily(a.uiFontFamily));
   else root.style.removeProperty("--font-ui");
 
   flag(root, "compact", a.compactMode);

@@ -2038,6 +2038,8 @@
   "Template name": "模板名称",
   "Template text": "模板文本",
   "Terminal": "终端",
+  "Terminal fallback font": "终端备用字体",
+  "Terminal font": "终端字体",
   "Terminal font size": "终端字体大小",
   "Terminal line height": "终端行高",
   "Terminal sessions": "终端会话",

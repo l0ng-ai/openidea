@@ -23,6 +23,11 @@
 }
 
 /* "[x] Limit history to: [1000] rows" */
+.fontFamily {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .inlineRow {
   display: flex;
   align-items: center;

@@ -3,9 +3,10 @@
 
 use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path};
-use crate::{angular, godot, vue};
+use crate::{angular, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{LanguageServerSettings, Settings};
+use ide_core::version_managers::Tool;
 use ide_language::{LanguageConfig, LanguageServerConfig};
 use ide_run::RunConfig;
 use serde_json::{Value, json};
@@ -28,14 +29,22 @@ pub fn setting_path(root: &Path, s: &str) -> Option<PathBuf> {
 }
 
 /// The project interpreter: the configured one, else a project virtualenv
-/// (`.venv`, `venv`, …) in `dir` or the project root.
+/// (`.venv`, `venv`, …) in the project root, else the Python the project pins for mise / asdf.
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
-    setting_path(root, &s.languages.python.interpreter).or_else(|| project_venv_python(root))
+    setting_path(root, &s.languages.python.interpreter)
+        .or_else(|| project_venv_python(root))
+        .or_else(|| pinned::pinned_python(root))
 }
 
-/// The configured `node` executable's directory.
+/// The configured `node` executable's directory, else the `bin` of the Node.js the
+/// project pins for mise / asdf.
 pub(crate) fn node_dir(root: &Path, s: &Settings) -> Option<PathBuf> {
-    setting_path(root, &s.languages.node.interpreter).and_then(|p| p.parent().map(Path::to_path_buf))
+    match setting_path(root, &s.languages.node.interpreter) {
+        Some(p) => p.parent().map(Path::to_path_buf),
+        None => pinned::pinned_install(root, Tool::Node)
+            .map(|(dir, _)| dir.join("bin"))
+            .filter(|bin| bin.join(exe("node")).is_file()),
+    }
 }
 
 /// The configured Rust toolchain's `bin` directory and rustup toolchain name.
@@ -54,8 +63,10 @@ pub(crate) fn rust_bin(root: &Path, s: &Settings) -> Option<(PathBuf, Option<Str
     Some((bin, toolchain))
 }
 
+/// The configured GOROOT, else the Go the project pins for mise / asdf.
 pub(crate) fn goroot(root: &Path, s: &Settings) -> Option<PathBuf> {
     setting_path(root, &s.languages.go.goroot)
+        .or_else(|| pinned::pinned_install(root, Tool::Go).and_then(|(dir, _)| pinned::goroot_in_install(&dir)))
 }
 
 /// A JDK setting: a JDK home, its `bin` or its `bin/java`.
@@ -64,11 +75,12 @@ fn jdk_setting(root: &Path, value: &str) -> Option<Result<crate::java::Jdk, Path
     Some(p.ancestors().take(3).find_map(crate::java::jdk_at).ok_or(p))
 }
 
-/// The project JDK (`languages.java.jdk`).
+/// The project JDK (`languages.java.jdk`), else the JDK the project pins for mise / asdf.
 pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
-    jdk_setting(root, &s.languages.java.jdk)?
-        .inspect_err(|p| tracing::warn!("project JDK {} is not a JDK home", p.display()))
-        .ok()
+    match jdk_setting(root, &s.languages.java.jdk) {
+        Some(jdk) => jdk.inspect_err(|p| tracing::warn!("project JDK {} is not a JDK home", p.display())).ok(),
+        None => pinned::pinned_install(root, Tool::Java).and_then(|(dir, _)| pinned::jdk_in_install(&dir)),
+    }
 }
 
 /// The JDK chosen to run jdtls (`languages.java.jdtlsJdk`): `Ok(None)` when not
@@ -85,10 +97,18 @@ pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, 
 }
 
 /// `mvn` of the configured Maven home (`languages.java.maven.home`): the
-/// executable itself, `<home>/bin/mvn` or `<bin>/mvn`.
+/// executable itself, `<home>/bin/mvn` or `<bin>/mvn`; else of the Maven the project
+/// pins for mise / asdf when it has no Maven wrapper.
 pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
-    let p = setting_path(root, &s.languages.java.maven.home)?;
     let name = if cfg!(windows) { "mvn.cmd" } else { "mvn" };
+    let Some(p) = setting_path(root, &s.languages.java.maven.home) else {
+        if root.join("mvnw").is_file() || root.join("mvnw.cmd").is_file() {
+            return None;
+        }
+        let (dir, _) = pinned::pinned_install(root, Tool::Maven)?;
+        let homes = std::iter::once(dir.clone()).chain(std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path()));
+        return homes.map(|h| h.join("bin").join(name)).find(|c| c.is_file());
+    };
     let found = [p.clone(), p.join("bin").join(name), p.join(name)].into_iter().find(|c| c.is_file());
     if found.is_none() {
         tracing::warn!("Maven home {} has no {name}", p.display());
@@ -458,6 +478,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let jdk = project_jdk(root, s);
     let mvn = maven_command(root, s);
     let mvn_options = maven_options(root, s);
+    let gradle = pinned::pinned_install(root, Tool::Gradle).map(|(dir, _)| dir.join("bin"));
 
     for c in configs.iter_mut() {
         resolve_run_command(c, root, s);
@@ -528,6 +549,11 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
             "maven" | "gradle" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
+                }
+                if c.kind == "gradle"
+                    && let Some(bin) = gradle.as_ref().filter(|b| b.is_dir())
+                {
+                    path_dirs.push(bin.clone());
                 }
                 if c.kind == "maven" && c.detected {
                     if let Some(mvn) = &mvn {

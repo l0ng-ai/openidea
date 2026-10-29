@@ -1,7 +1,8 @@
 //! Finding installed interpreters and toolchains.
 
 use crate::exec::{query, search_path, which};
-use crate::{Sdk, SdkKind, bin_dir, exe, home_dir, venv_of};
+use crate::{Sdk, SdkKind, bin_dir, exe, home_dir, pinned, venv_of};
+use ide_core::version_managers::{self, Tool};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,7 +12,7 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(4);
 /// Installed SDKs of `kind`, project-local ones (`root`) first. Blocking: runs
 /// `--version` queries in parallel.
 pub fn detect(kind: SdkKind, root: Option<&Path>) -> Vec<Sdk> {
-    match kind {
+    let mut out = match kind {
         SdkKind::Python => python(root),
         SdkKind::Node => node(),
         SdkKind::PackageManager => package_managers(),
@@ -20,7 +21,32 @@ pub fn detect(kind: SdkKind, root: Option<&Path>) -> Vec<Sdk> {
         SdkKind::TypeScript => typescript(root),
         SdkKind::Jdk => jdk(),
         SdkKind::Maven => maven(),
+    };
+    if let Some(root) = root {
+        pinned_first(&mut out, kind, root);
     }
+    out
+}
+
+fn tool_of(kind: SdkKind) -> Option<Tool> {
+    match kind {
+        SdkKind::Python => Some(Tool::Python),
+        SdkKind::Node => Some(Tool::Node),
+        SdkKind::Go => Some(Tool::Go),
+        SdkKind::Jdk => Some(Tool::Java),
+        SdkKind::Maven => Some(Tool::Maven),
+        SdkKind::PackageManager | SdkKind::Rust | SdkKind::TypeScript => None,
+    }
+}
+
+/// Moves the install the project pins for mise / asdf after the project's own SDKs
+/// (virtualenvs), ahead of the rest.
+fn pinned_first(sdks: &mut Vec<Sdk>, kind: SdkKind, root: &Path) {
+    let Some((dir, _)) = tool_of(kind).and_then(|t| pinned::pinned_install(root, t)) else { return };
+    let Some(i) = sdks.iter().position(|s| s.path.starts_with(&dir)) else { return };
+    let at = sdks.iter().take_while(|s| s.source == "venv").count().min(i);
+    let sdk = sdks.remove(i);
+    sdks.insert(at, sdk);
 }
 
 /// Runs `f` over `items` on scoped threads (version queries spawn processes).
@@ -99,6 +125,9 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
         for v in subdirs(&home.join(".local/share/uv/python")) {
             found.push((v.join(bin_dir()).join(exe("python3")), "uv"));
         }
+        for (v, manager) in version_managers::installs(Tool::Python) {
+            found.extend(pinned::python_in_install(&v).map(|p| (p, manager)));
+        }
         let mut conda_roots: Vec<PathBuf> =
             ["miniconda3", "anaconda3", "miniforge3", "mambaforge", "micromamba", "opt/miniconda3"]
                 .iter()
@@ -118,7 +147,7 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
         }
     }
     for dir in std::env::split_paths(&search_path()) {
-        if dir.ends_with(".pyenv/shims") {
+        if dir.ends_with(".pyenv/shims") || version_managers::is_shims_dir(&dir) {
             continue;
         }
         let mut names: Vec<String> = std::fs::read_dir(&dir)
@@ -177,7 +206,7 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
             format!("Python {short} (conda: {})", env.unwrap_or_default())
         }
         (None, "pyenv") => format!("Python {short} (pyenv)"),
-        (None, "uv") => format!("Python {short} (uv)"),
+        (None, tool @ ("uv" | "mise" | "asdf")) => format!("Python {short} ({tool})"),
         _ => format!("Python {short}"),
     };
     Some(Sdk {
@@ -209,8 +238,10 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 
 fn node() -> Vec<Sdk> {
     let mut found: Vec<(PathBuf, &'static str)> = Vec::new();
-    if let Some(p) = which("node") {
-        found.push((p, "path"));
+    // A mise / asdf shim picks the version by directory: its installs are listed instead.
+    if let Some(p) = which("node").filter(|p| !version_managers::is_shim(p)) {
+        let source = version_managers::manager_of(&p).unwrap_or("path");
+        found.push((p, source));
     }
     if let Some(home) = home_dir() {
         for v in subdirs(&home.join(".nvm/versions/node")).into_iter().rev() {
@@ -222,6 +253,9 @@ fn node() -> Vec<Sdk> {
         for v in subdirs(&home.join(".local/share/fnm/node-versions")).into_iter().rev() {
             found.push((v.join("installation/bin").join(exe("node")), "fnm"));
         }
+    }
+    for (v, manager) in version_managers::installs(Tool::Node).into_iter().rev() {
+        found.push((v.join("bin").join(exe("node")), manager));
     }
     for p in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
         found.push((PathBuf::from(p), "system"));
@@ -323,7 +357,7 @@ fn go() -> Vec<Sdk> {
     let path_go = which("go");
     let default_gopath =
         path_go.as_ref().and_then(|go| query(go, &["env", "GOPATH"], VERSION_TIMEOUT)).map(PathBuf::from);
-    if let Some(go) = &path_go
+    if let Some(go) = path_go.as_ref().filter(|p| !version_managers::is_shim(p))
         && let Some(root) = query(go, &["env", "GOROOT"], VERSION_TIMEOUT)
     {
         roots.push((PathBuf::from(root), "path"));
@@ -340,6 +374,9 @@ fn go() -> Vec<Sdk> {
                 roots.push((d, "toolchain"));
             }
         }
+    }
+    for (d, manager) in version_managers::installs(Tool::Go) {
+        roots.extend(pinned::goroot_in_install(&d).map(|r| (r, manager)));
     }
     let mut seen = HashSet::new();
     roots.retain(|(r, _)| {
@@ -411,7 +448,7 @@ pub fn jdk_sdk(j: &crate::java::Jdk) -> Sdk {
     } else if crate::java::is_downloaded(&j.home) {
         "downloaded"
     } else {
-        "system"
+        version_managers::manager_of(&j.home).unwrap_or("system")
     };
     Sdk {
         path: j.home.clone().into(),
@@ -465,6 +502,10 @@ fn maven() -> Vec<Sdk> {
     if let Some(home) = home_dir() {
         for d in subdirs(&home.join(".sdkman/candidates/maven")) {
             found.push((d, "sdkman"));
+        }
+        for (d, manager) in version_managers::installs(Tool::Maven) {
+            found.extend(subdirs(&d).into_iter().map(|s| (s, manager)));
+            found.push((d, manager));
         }
         // Distributions the Maven wrapper downloaded: `dists/apache-maven-3.9.6-bin/<hash>/apache-maven-3.9.6`,
         // or since wrapper 3.3 the home itself, `dists/apache-maven-3.9.6/<hash>`.

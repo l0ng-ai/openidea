@@ -28,6 +28,8 @@ export interface SelectProps<V extends string = string> {
   renderValue?: (option: SelectOption<V> | undefined) => ReactNode;
 }
 
+const TYPE_AHEAD_MS = 800;
+
 /** Dropdown select with a listbox popup (↑↓ Enter Esc, type-ahead). */
 export function Select<V extends string = string>({
   value,
@@ -45,6 +47,7 @@ export function Select<V extends string = string>({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const current = options.find((o) => o.value === value);
   const [active, setActive] = useState(0);
+  const typeAhead = useRef({ text: "", at: -Infinity });
   const isSection = (o: SelectOption<V>) => !!o.disabled;
 
   const openPopup = () => {
@@ -76,11 +79,16 @@ export function Select<V extends string = string>({
       return;
     }
     if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
-      const ch = e.key.toLowerCase();
+      // Keys typed in quick succession extend the prefix ("me" → Menlo); a lone key cycles.
+      const ahead = typeAhead.current;
+      ahead.text = e.timeStamp - ahead.at < TYPE_AHEAD_MS ? ahead.text + e.key.toLowerCase() : e.key.toLowerCase();
+      ahead.at = e.timeStamp;
+      const repeat = ahead.text.length > 1 && [...ahead.text].every((c) => c === ahead.text[0]);
+      const prefix = repeat ? ahead.text[0]! : ahead.text;
       const n = options.length;
-      for (let s = 1; s <= n; s++) {
+      for (let s = prefix.length > 1 ? 0 : 1; s <= n; s++) {
         const i = (active + s) % n;
-        if (!options[i]!.disabled && tx(options[i]!.label).toLowerCase().startsWith(ch)) {
+        if (!options[i]!.disabled && tx(options[i]!.label).toLowerCase().startsWith(prefix)) {
           setActive(i);
           break;
         }
