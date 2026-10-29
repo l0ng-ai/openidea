@@ -28,7 +28,8 @@ export function SqlHighlight({ text }: { text: string }) {
     const result: React.ReactNode[] = [];
     let offset = 0;
     highlightTree(tree, openideaHighlightStyle, (from, to, classes) => {
-      if (from > offset) result.push(text.slice(offset, from));
+      // Every piece is an element: the overlay is a flex row, which drops bare whitespace-only text.
+      if (from > offset) result.push(<span key={`t${offset}`}>{text.slice(offset, from)}</span>);
       result.push(
         <span key={from} className={classes}>
           {text.slice(from, to)}
@@ -36,7 +37,7 @@ export function SqlHighlight({ text }: { text: string }) {
       );
       offset = to;
     });
-    if (offset < text.length) result.push(text.slice(offset));
+    if (offset < text.length) result.push(<span key={`t${offset}`}>{text.slice(offset)}</span>);
     return result;
   }, [support, text]);
   return (
