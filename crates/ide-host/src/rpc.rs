@@ -200,7 +200,12 @@ impl Dispatcher {
         .add("term_available_shells", |_| async move { Ok(ide_terminal::available_shells()) })
         .add("run_configs", |c| async move { ops::run::configs(&c.host, &c.window) })
         .add("run_save_configs", |c| async move {
-            ops::run::save_configs(&c.host, &c.window, &c.arg::<Vec<ide_run::RunConfig>>("configs")?)
+            ops::run::save_configs(
+                &c.host,
+                &c.window,
+                &c.arg::<Vec<ide_run::RunConfig>>("configs")?,
+                &c.arg::<Option<Vec<String>>>("removedDetectedIds")?.unwrap_or_default(),
+            )
         })
         .add("run_system_env", |_| async move { Ok(ide_run::system_env()) })
         .add("run_start", |c| async move {

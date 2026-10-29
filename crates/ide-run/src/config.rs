@@ -55,6 +55,8 @@ pub(crate) fn local_path(root: &Path) -> PathBuf {
 
 #[derive(Deserialize)]
 struct FileDoc {
+    #[serde(default, rename = "suppressed-ids")]
+    suppressed_ids: Vec<String>,
     #[serde(default)]
     configurations: Vec<FileConfig>,
     #[serde(default)]
@@ -195,6 +197,10 @@ pub(crate) fn load_templates(root: &Path) -> IdeResult<Vec<RunConfig>> {
     Ok(read_doc(&config_path(root))?.map(|d| convert(d.templates, false)).unwrap_or_default())
 }
 
+pub(crate) fn load_suppressed(root: &Path) -> IdeResult<Vec<String>> {
+    Ok(read_doc(&local_path(root))?.map(|d| d.suppressed_ids).unwrap_or_default())
+}
+
 fn to_table(c: &RunConfig) -> Table {
     let mut t = Table::new();
     t.insert("id", value(&c.id));
@@ -284,13 +290,13 @@ fn to_table(c: &RunConfig) -> Table {
 }
 
 /// Replaces the `key` array of tables in the file at `path`, keeping unrelated keys and comments.
-fn write_array(path: &Path, key: &str, configs: &[&RunConfig]) -> IdeResult<()> {
+fn write_array(path: &Path, key: &str, configs: &[&RunConfig], suppressed: Option<&[String]>) -> IdeResult<()> {
     let existing = match fs::read_to_string(path) {
         Ok(t) => Some(t),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
     };
-    if existing.is_none() && configs.is_empty() {
+    if existing.is_none() && configs.is_empty() && suppressed.is_none_or(|ids| ids.is_empty()) {
         return Ok(());
     }
     // A file we cannot parse is replaced.
@@ -303,6 +309,13 @@ fn write_array(path: &Path, key: &str, configs: &[&RunConfig]) -> IdeResult<()> 
             array.push(to_table(c));
         }
         doc.insert(key, Item::ArrayOfTables(array));
+    }
+    if let Some(ids) = suppressed {
+        if ids.is_empty() {
+            doc.remove("suppressed-ids");
+        } else {
+            doc.insert("suppressed-ids", value(ids.iter().collect::<Array>()));
+        }
     }
     let text = doc.to_string();
     if existing.as_deref() == Some(text.as_str()) {
@@ -343,15 +356,20 @@ fn ignore_local(root: &Path) -> IdeResult<()> {
     Ok(())
 }
 
-pub(crate) fn save(root: &Path, configs: &[RunConfig]) -> IdeResult<()> {
+pub(crate) fn save(root: &Path, configs: &[RunConfig], removed_detected_ids: &[String]) -> IdeResult<()> {
+    let mut suppressed = load_suppressed(root)?;
+    suppressed.extend_from_slice(removed_detected_ids);
+    suppressed.sort();
+    suppressed.dedup();
+    suppressed.retain(|id| !configs.iter().any(|c| &c.id == id));
     let (local, shared): (Vec<&RunConfig>, Vec<&RunConfig>) = configs.iter().partition(|c| c.extras.local);
-    write_array(&config_path(root), CONFIGURATIONS, &shared)?;
-    if !local.is_empty() {
+    write_array(&config_path(root), CONFIGURATIONS, &shared, None)?;
+    if !local.is_empty() || !suppressed.is_empty() {
         ignore_local(root)?;
     }
-    write_array(&local_path(root), CONFIGURATIONS, &local)
+    write_array(&local_path(root), CONFIGURATIONS, &local, Some(&suppressed))
 }
 
 pub(crate) fn save_templates(root: &Path, templates: &[RunConfig]) -> IdeResult<()> {
-    write_array(&config_path(root), TEMPLATES, &templates.iter().collect::<Vec<_>>())
+    write_array(&config_path(root), TEMPLATES, &templates.iter().collect::<Vec<_>>(), None)
 }
