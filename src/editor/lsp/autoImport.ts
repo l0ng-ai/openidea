@@ -9,14 +9,15 @@
 import { ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { commands, type CodeAction, type Diagnostic } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
-import { docOf, lspRequest } from "./lsp";
+import { docOf, isUnavailable, lspRequest } from "./lsp";
 import { diagnosticsFor, subscribeDiagnostics } from "./diagnostics";
 import { applyCodeAction } from "./intentions";
 import { offsetsToRange, rangeToOffsets } from "./positions";
-import { serverBackoff } from "./availability";
+import { featureBackoff } from "./availability";
 
 const IDLE_MS = 1500;
 const IMPORT_TITLE = /\bimport\b/i;
+const importBackoff = featureBackoff();
 
 /** The single import fix among `actions`, if exactly one exists. */
 export function unambiguousImport(actions: readonly CodeAction[]): CodeAction | null {
@@ -65,7 +66,7 @@ const autoImportPlugin = ViewPlugin.fromClass(
       const view = this.view;
       const doc = docOf(view);
       if ((!prefs.addUnambiguous && !prefs.optimizeOnTheFly) || this.running || !doc || doc.readOnly) return;
-      if (!view.dom.isConnected || !view.hasFocus || serverBackoff.active(doc.doc)) return;
+      if (!view.dom.isConnected || !view.hasFocus || importBackoff.active(doc.doc)) return;
       this.running = true;
       try {
         const caretLine = view.state.doc.lineAt(view.state.selection.main.head).number - 1;
@@ -75,8 +76,9 @@ const autoImportPlugin = ViewPlugin.fromClass(
           this.dirty = false;
           await this.optimize(caretLine);
         }
-      } catch {
+      } catch (e) {
         // Servers without these code actions: nothing to do.
+        if (isUnavailable(e)) importBackoff.mark(doc.doc);
       } finally {
         this.running = false;
       }

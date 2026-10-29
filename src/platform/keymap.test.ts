@@ -24,6 +24,11 @@ describe("keymap", () => {
     expect(formatBinding("Shift Shift")).toBe("⇧⇧");
   });
 
+  it("labels numeric-keypad operators", () => {
+    expect(formatBinding("Meta+Shift+NumpadDivide", true)).toBe("⇧⌘NumPad /");
+    expect(formatBinding("Ctrl+NumpadSubtract", false)).toBe("Ctrl+NumPad -");
+  });
+
   it("uses physical key codes", () => {
     expect(strokeOf({ code: "KeyF", key: "ƒ", metaKey: false, ctrlKey: false, altKey: true, shiftKey: false })).toBe(
       "Alt+F",

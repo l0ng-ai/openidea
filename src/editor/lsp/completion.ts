@@ -50,7 +50,7 @@ import { isEmptyMarkup, renderCode, renderMarkup } from "./markdown";
 import { selectableText } from "@/ui/selectableText";
 import { iconNode } from "./iconMarkup";
 import { parameterInfoOrLeave, triggerSignatureHelp } from "./signature";
-import { serverBackoff } from "./availability";
+import { featureBackoff } from "./availability";
 import { pathCompletionSource } from "./fileReferences";
 import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
@@ -410,6 +410,9 @@ interface RichCompletion extends Completion {
   typeText?: string;
 }
 
+/** Documents the server could not complete in, so typing doesn't ask again until a server is ready. */
+const completionBackoff = featureBackoff();
+
 async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionResult | null> {
   const doc = ctx.state.facet(lspDoc);
   if (!doc || doc.readOnly) return null;
@@ -417,8 +420,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 2), ctx.pos));
   if (!ctx.explicit && !word && !trigger) return null;
   if (!ctx.explicit && word && !trigger && /^\d/.test(word.text)) return null;
-  if (serverBackoff.active(doc.doc)) return fallback(ctx);
-
+  if (completionBackoff.active(doc.doc)) return fallback(ctx);
   cancelInflight();
   const id = nextRequestId();
   inflight = id;
@@ -433,7 +435,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
     );
   } catch (e) {
     if (isUnavailable(e)) {
-      serverBackoff.mark(doc.doc);
+      completionBackoff.mark(doc.doc);
       return fallback(ctx);
     }
     return null;

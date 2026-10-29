@@ -15,6 +15,8 @@ import { getAction, isActionKeyEnabled, executeAction } from "./actions";
 import { getContext } from "./context";
 import { intellijMacos } from "./keymaps/intellij-macos";
 import { intellijWindows } from "./keymaps/intellij-windows";
+import { eclipseMacos } from "./keymaps/eclipse-macos";
+import { eclipseWindows } from "./keymaps/eclipse-windows";
 import { vscodeMacos } from "./keymaps/vscode-macos";
 import { vscodeWindows } from "./keymaps/vscode-windows";
 import { usePlatform } from "./platformInfo";
@@ -35,6 +37,8 @@ export const PRESETS: Record<string, Keymap> = {
   "intellij-windows": intellijWindows,
   "vscode-macos": vscodeMacos,
   "vscode-windows": vscodeWindows,
+  "eclipse-macos": eclipseMacos,
+  "eclipse-windows": eclipseWindows,
 };
 
 /** Display names of the presets, in menu order. */
@@ -43,6 +47,8 @@ export const PRESET_TITLES: Record<string, string> = {
   "intellij-windows": "Windows",
   "vscode-macos": "VS Code (macOS)",
   "vscode-windows": "VS Code (Windows)",
+  "eclipse-macos": "Eclipse (macOS)",
+  "eclipse-windows": "Eclipse",
 };
 
 /** ⌘ held on macOS, Ctrl elsewhere: the modifier of ⌘/Ctrl-click and copy/paste. */
@@ -241,10 +247,10 @@ const CODE_NAMES: Record<string, string> = {
   Backquote: "`",
   Minus: "-",
   Equal: "=",
-  NumpadAdd: "+",
-  NumpadSubtract: "-",
-  NumpadMultiply: "*",
-  NumpadDivide: "/",
+  NumpadAdd: "NumpadAdd",
+  NumpadSubtract: "NumpadSubtract",
+  NumpadMultiply: "NumpadMultiply",
+  NumpadDivide: "NumpadDivide",
 };
 
 /** Converts a keydown event into a canonical stroke, or null for bare modifiers. */
@@ -284,6 +290,13 @@ const SYMBOLS: Record<string, string> = {
   PageDown: "⇟",
 };
 
+const KEY_LABELS: Record<string, string> = {
+  NumpadAdd: "NumPad +",
+  NumpadSubtract: "NumPad -",
+  NumpadMultiply: "NumPad *",
+  NumpadDivide: "NumPad /",
+};
+
 /**
  * Human display. macOS: `Meta+Shift+O` → `⇧⌘O`, `Shift Shift` → `⇧⇧`, `Alt Alt+Up` → `⌥⌥↑`.
  * Windows/Linux: `Ctrl+Shift+N`, chords as `Ctrl+K, Ctrl+I`, `Shift, Shift`, `Ctrl, Ctrl+Up`.
@@ -294,7 +307,11 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
     const button = `${parts.pop()} Click`;
     return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + button : [...parts, button].join("+");
   }
-  if (!mac) return normalizeBinding(binding).split(" ").join(", ");
+  if (!mac)
+    return normalizeBinding(binding)
+      .split(" ")
+      .map((stroke) => stroke.replace(/[^+]+$/, (key) => KEY_LABELS[key] ?? key))
+      .join(", ");
   const double = parseDoubleModifier(binding);
   if (double) return SYMBOLS[double.modifier]!.repeat(2) + (double.key ? (SYMBOLS[double.key] ?? double.key) : "");
   return normalizeBinding(binding)
@@ -303,7 +320,7 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
       const parts = stroke.split("+");
       const key = parts.pop()!;
       // macOS menu order: ⌃⌥⇧⌘
-      return parts.map((p) => SYMBOLS[p] ?? p).join("") + (SYMBOLS[key] ?? key);
+      return parts.map((p) => SYMBOLS[p] ?? p).join("") + (SYMBOLS[key] ?? KEY_LABELS[key] ?? key);
     })
     .join(" ");
 }
@@ -456,8 +473,18 @@ export function installKeyboardDispatcher(
       if (isClaimed(e, stroke)) return;
     }
 
-    const seq = [...pending, stroke].join(" ");
     const bindings = effectiveBindings();
+    const physicalSeq = [...pending, stroke].join(" ");
+    // Preserve older presets' numeric-keypad aliases unless a preset distinguishes the physical key.
+    const keypadAliases: Record<string, string> = {
+      NumpadAdd: "+",
+      NumpadSubtract: "-",
+      NumpadMultiply: "*",
+      NumpadDivide: "/",
+    };
+    const seq = bindings.some(([b]) => b === physicalSeq || b.startsWith(physicalSeq + " "))
+      ? physicalSeq
+      : physicalSeq.replace(/Numpad(Add|Subtract|Multiply|Divide)/g, (key) => keypadAliases[key]!);
     const ctx = getContext();
     const exact = bindings.filter(([b]) => b === seq).map(([, id]) => id);
     // Later presets/overrides win; the first enabled match runs.

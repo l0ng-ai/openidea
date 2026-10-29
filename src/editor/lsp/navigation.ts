@@ -50,7 +50,7 @@ import { showHint } from "./hint";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
 import { identifierAt, readManyFileLines } from "./files";
 import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
-import { serverBackoff } from "./availability";
+import { featureBackoff } from "./availability";
 import { requestHover } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -59,6 +59,8 @@ import { shortcutLabel } from "@/platform/keymap";
 import { isNavigationGesture, onNavigationModifier } from "@/platform/navigationModifier";
 import { create } from "zustand";
 import { tx } from "@/platform/i18n";
+
+const highlightsBackoff = featureBackoff();
 
 export async function navigateTo(loc: Location) {
   await editorService().openFile(loc.path, {
@@ -573,7 +575,7 @@ async function fetchHighlights(view: EditorView, sticky: boolean) {
     );
   };
   let lspError: unknown = null;
-  if (!serverBackoff.active(doc.doc)) {
+  if (!highlightsBackoff.active(doc.doc)) {
     try {
       const items = await lspRequest(() => commands.lspDocumentHighlights(doc.doc, offsetToPos(state.doc, head)));
       if (stale()) return;
@@ -582,7 +584,7 @@ async function fetchHighlights(view: EditorView, sticky: boolean) {
       return;
     } catch (e) {
       if (isCancelled(e)) return;
-      if (isUnavailable(e)) serverBackoff.mark(doc.doc);
+      if (isUnavailable(e)) highlightsBackoff.mark(doc.doc);
       lspError = e;
     }
   }
