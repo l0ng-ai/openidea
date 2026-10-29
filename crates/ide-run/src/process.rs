@@ -106,6 +106,8 @@ pub(crate) struct Invocation {
     pub args: Vec<String>,
     /// Passed verbatim (Windows `cmd /S /C "…"`: cmd does not parse C runtime quoting).
     pub raw_args: bool,
+    /// A command line run by the platform shell (`display` is the line).
+    pub shell: bool,
     pub display: String,
 }
 
@@ -141,7 +143,7 @@ pub(crate) fn invocation(config: &RunConfig, cwd: &Path) -> Invocation {
         display.push(' ');
         display.push_str(&quote(a));
     }
-    Invocation { program, args: config.args.clone(), raw_args: false, display }
+    Invocation { program, args: config.args.clone(), raw_args: false, shell: false, display }
 }
 
 /// "Shorten command line" for a `java` launch too long for the platform (see
@@ -172,22 +174,25 @@ fn shorten_java(inv: &mut Invocation, config: &RunConfig, cwd: &Path) -> IdeResu
 }
 
 /// Tells JVM and Python processes to write the encoding the console decodes (see
-/// [`crate::output_encoding`]).
-fn match_console_encoding(inv: &mut Invocation, env: &mut LaunchEnv, config: &RunConfig, options: &StartOptions) {
-    if inv.raw_args {
-        return;
-    }
+/// [`ide_core::output_encoding`]); returns the notice line to hide from the output.
+fn match_console_encoding(
+    inv: &mut Invocation,
+    env: &mut LaunchEnv,
+    config: &RunConfig,
+    options: &StartOptions,
+) -> Option<String> {
+    use ide_core::output_encoding;
     let inherit = !env.clear;
-    let fix = crate::output_encoding::fix(
-        &inv.program.to_string_lossy(),
-        &inv.args,
-        &env.vars,
-        |key| if inherit { std::env::var(key).ok() } else { None },
-        options.encoding.as_deref().unwrap_or("UTF-8"),
-        cfg!(windows),
-    );
+    let inherited = |key: &str| if inherit { std::env::var(key).ok() } else { None };
+    let encoding = options.encoding.as_deref().unwrap_or("UTF-8");
+    let fix = if inv.shell {
+        output_encoding::fix_command_line(&inv.display, &env.vars, inherited, encoding, cfg!(windows))
+    } else {
+        let program = inv.program.to_string_lossy();
+        output_encoding::fix(&program, &inv.args, &env.vars, inherited, encoding, cfg!(windows))
+    };
     env.vars.extend(fix.env);
-    if !fix.java_args.is_empty() {
+    if !fix.java_args.is_empty() && !inv.raw_args {
         inv.args.splice(0..0, fix.java_args);
         let mut display = quote(config.command.trim());
         for a in &inv.args {
@@ -196,6 +201,7 @@ fn match_console_encoding(inv: &mut Invocation, env: &mut LaunchEnv, config: &Ru
         }
         inv.display = display;
     }
+    fix.notice
 }
 
 /// A launch's pathing jar / argfile, deleted when dropped (the process exited, or never started).
@@ -217,6 +223,7 @@ fn shell_invocation(command: &str, windows: bool, comspec: Option<String>) -> In
             program: comspec.filter(|c| !c.is_empty()).unwrap_or_else(|| "cmd.exe".into()).into(),
             args: vec!["/D".into(), "/S".into(), "/C".into(), format!("\"{command}\"")],
             raw_args: true,
+            shell: true,
             display: command.into(),
         };
     }
@@ -224,6 +231,7 @@ fn shell_invocation(command: &str, windows: bool, comspec: Option<String>) -> In
         program: "/bin/sh".into(),
         args: vec!["-c".into(), command.into()],
         raw_args: false,
+        shell: true,
         display: command.into(),
     }
 }
@@ -313,10 +321,9 @@ impl ProcessManager {
             cwd: cwd.clone(),
             env: env.clone(),
         });
-        if !extras.emulate_terminal {
-            // A terminal re-encodes output itself; pipes carry the process's bytes as they are.
-            match_console_encoding(&mut inv, &mut env, config, options);
-        }
+        // A terminal re-encodes output itself; pipes carry the process's bytes as they are.
+        let notice =
+            if extras.emulate_terminal { None } else { match_console_encoding(&mut inv, &mut env, config, options) };
         let temp = shorten_java(&mut inv, config, &cwd)?;
         if extras.emulate_terminal {
             return self.start_pty(config, &inv, &cwd, &env, stop, options, sink, on_output, temp);
@@ -391,7 +398,7 @@ impl ProcessManager {
             if let Some(err) = stderr {
                 spawn_reader(id, Stream::Stderr, err, tx.clone())?;
             }
-            spawn_pump(rx, on_output, entry.clone(), sink, options.encoding.clone())?;
+            spawn_pump(rx, on_output, entry.clone(), sink, options.encoding.clone(), notice)?;
             Ok(())
         })();
         if let Err(e) = result {
@@ -484,7 +491,7 @@ impl ProcessManager {
 
         let (tx, rx) = mpsc::channel();
         let result = spawn_reader(id, Stream::Stdout, reader, tx.clone())
-            .and_then(|_| spawn_pump(rx, on_output, entry.clone(), sink, options.encoding.clone()));
+            .and_then(|_| spawn_pump(rx, on_output, entry.clone(), sink, options.encoding.clone(), None));
         if let Err(e) = result {
             let _ = child.kill();
             let _ = child.wait();
@@ -807,10 +814,16 @@ fn spawn_pump(
     entry: Arc<Entry>,
     sink: SharedSink,
     encoding: Option<String>,
+    notice: Option<String>,
 ) -> std::io::Result<()> {
     std::thread::Builder::new().name(format!("openidea-run-pump-{}", entry.id.0)).spawn(move || {
         let mut out_dec = OutputDecoder::for_label(encoding.as_deref());
         let mut err_dec = OutputDecoder::for_label(encoding.as_deref());
+        // "Picked up JAVA_TOOL_OPTIONS: …" from every JVM given the console encoding, on
+        // either stream (`spring-boot:run` copies its fork's stderr to Maven's stdout).
+        let filter = || notice.clone().map(ide_core::output_encoding::NoticeFilter::new);
+        let (mut out_notice, mut err_notice) = (filter(), filter());
+        let mut decoded = String::new();
         let mut pending = String::new();
         let mut pending_stream = Stream::Stdout;
         let mut batch_started: Option<Instant> = None;
@@ -840,8 +853,18 @@ fn spawn_pump(
                         flush(&mut pending, pending_stream, &mut batch_started);
                         pending_stream = stream;
                     }
-                    let dec = if stream == Stream::Stdout { &mut out_dec } else { &mut err_dec };
-                    dec.decode_into(&bytes, &mut pending);
+                    let (dec, notice) = match stream {
+                        Stream::Stdout => (&mut out_dec, &mut out_notice),
+                        Stream::Stderr => (&mut err_dec, &mut err_notice),
+                    };
+                    match notice {
+                        Some(filter) => {
+                            dec.decode_into(&bytes, &mut decoded);
+                            filter.filter(&decoded, &mut pending);
+                            decoded.clear();
+                        }
+                        None => dec.decode_into(&bytes, &mut pending),
+                    }
                     if !pending.is_empty() && batch_started.is_none() {
                         batch_started = Some(Instant::now());
                     }
@@ -865,8 +888,15 @@ fn spawn_pump(
             }
         }
         flush(&mut pending, pending_stream, &mut batch_started);
-        for (stream, dec) in [(Stream::Stdout, &mut out_dec), (Stream::Stderr, &mut err_dec)] {
-            let rest = dec.finish();
+        for (stream, dec, notice) in
+            [(Stream::Stdout, &mut out_dec, &mut out_notice), (Stream::Stderr, &mut err_dec, &mut err_notice)]
+        {
+            let mut rest = dec.finish();
+            if let Some(filter) = notice {
+                let tail = std::mem::take(&mut rest);
+                filter.filter(&tail, &mut rest);
+                rest.push_str(&filter.finish());
+            }
             if !rest.is_empty() {
                 on_output(chunk(stream, rest));
             }

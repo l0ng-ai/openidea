@@ -437,6 +437,10 @@
   color: var(--fg-muted);
 }
 
+.retrying {
+  color: var(--warning);
+}
+
 .composerArea {
   flex: none;
   display: flex;

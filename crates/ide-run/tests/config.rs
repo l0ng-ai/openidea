@@ -169,3 +169,45 @@ fn extras_round_trip_and_local_file() {
     assert_eq!(load_templates(dir.path()).unwrap(), vec![template]);
     assert_eq!(load_user_configs(dir.path()).unwrap(), moved);
 }
+
+#[test]
+fn jvm_options_persist_in_the_project_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let vm = "-Ddemo.flag=on --add-opens java.base/java.lang=ALL-UNNAMED '-Dname=a b'";
+    let args =
+        ["-Ddemo.flag=on", "--add-opens", "java.base/java.lang=ALL-UNNAMED", "-Dname=a b", "-cp", "${classpath}"];
+    let mut app = sample().remove(0);
+    app.id = "user:demo".into();
+    app.kind = "spring-boot".into();
+    app.command = "java".into();
+    app.args =
+        args.into_iter().chain(["a.DemoApplication", "--spring.profiles.active=dev"]).map(String::from).collect();
+    app.extras.params = BTreeMap::from([
+        ("mainClass".into(), "a.DemoApplication".into()),
+        ("vmOptions".into(), vm.into()),
+        ("activeProfiles".into(), "dev".into()),
+        ("classpath".into(), "${classpath}".into()),
+    ]);
+    save_user_configs(dir.path(), std::slice::from_ref(&app)).unwrap();
+    let text = fs::read_to_string(user_configs_path(dir.path())).unwrap();
+    assert!(text.contains(&format!("vmOptions = \"{vm}\"")), "{text}");
+    assert_eq!(load_user_configs(dir.path()).unwrap(), vec![app.clone()]);
+
+    // A file written before the form had these fields loads with its command line only.
+    fs::write(
+        user_configs_path(dir.path()),
+        "[[configurations]]\nid = \"user:old\"\nname = \"Old\"\nkind = \"spring-boot\"\ncommand = \"java\"\n\
+         args = [\"-Xmx1g\", \"-cp\", \"${classpath}\", \"a.App\"]\n",
+    )
+    .unwrap();
+    let old = load_user_configs(dir.path()).unwrap();
+    assert_eq!(old[0].args, ["-Xmx1g", "-cp", "${classpath}", "a.App"]);
+    assert!(old[0].extras.params.is_empty());
+
+    // Templates keep default VM options for new configurations.
+    let mut template = app;
+    template.id = "template:spring-boot".into();
+    template.extras.params = BTreeMap::from([("vmOptions".into(), "-Xmx512m".into())]);
+    ide_run::save_templates(dir.path(), std::slice::from_ref(&template)).unwrap();
+    assert_eq!(ide_run::load_templates(dir.path()).unwrap()[0].extras.params["vmOptions"], "-Xmx512m");
+}

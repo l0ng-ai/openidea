@@ -12,6 +12,7 @@ pub mod ignored;
 pub mod inspection_settings;
 pub mod ipc_path;
 pub mod jsonc;
+pub mod output_encoding;
 pub mod process;
 pub mod project_dir;
 pub mod proxy_settings;

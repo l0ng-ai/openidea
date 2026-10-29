@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
-  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
 } from "react";
@@ -14,7 +13,9 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Icon, showContextMenu } from "@/ui";
-import type { ConsoleLine, ConsoleModel, SpanStyle } from "./console";
+import { spanStyle } from "@/ui/ansi";
+import ansi from "@/ui/ansi.module.css";
+import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
 import { openTarget, openUrl } from "./navigate";
 import { segmentLine } from "./segments";
@@ -22,19 +23,6 @@ import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
 const ROW = 20;
-
-function spanStyle(s: SpanStyle): CSSProperties | undefined {
-  if (!s.fg && !s.bg && !s.bold && !s.dim && !s.italic && !s.underline && !s.strike) return undefined;
-  const deco = [s.underline && "underline", s.strike && "line-through"].filter(Boolean).join(" ");
-  return {
-    color: s.fg,
-    background: s.bg,
-    fontWeight: s.bold ? "var(--fw-code-bold, 700)" : undefined,
-    opacity: s.dim ? 0.6 : undefined,
-    fontStyle: s.italic ? "italic" : undefined,
-    textDecoration: deco || undefined,
-  };
-}
 
 const Line = memo(
   function Line({ line, cwd }: { line: ConsoleLine; length: number; cwd: string }) {
@@ -289,7 +277,7 @@ export function ConsoleView({
   return (
     <div
       ref={scrollRef}
-      className={clsx(styles.console, softWrap && styles.wrap)}
+      className={clsx(styles.console, ansi.palette, softWrap && styles.wrap)}
       role="log"
       aria-live="off"
       aria-label={aria["aria-label"] ?? "Console"}

@@ -249,14 +249,14 @@ export function JavaPage() {
         <Row
           label="JVM options"
           htmlFor={id}
-          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx2g. A Lombok agent is added automatically: the one installed in Language Servers, else, when the project uses Lombok (its build, an inherited parent POM or Gradle build, or its sources' imports), the newest from the Maven / Gradle caches."
+          hint="Passed to the JVM running jdtls (java.jdt.ls.vmargs), e.g. -Xmx4g. jdtls runs with -XX:+UseParallelGC -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -Xmx2G -Xms100m by default; an option set here replaces the default for the same setting, and another collector (e.g. -XX:+UseG1GC) replaces the default collector options. A Lombok agent is added automatically: the one installed in Language Servers, else, when the project uses Lombok (its build, an inherited parent POM or Gradle build, or its sources' imports), the newest from the Maven / Gradle caches."
         >
           <Input
             id={id}
             mono
             className={styles.pathInput}
             value={vmArgs}
-            placeholder="-Xmx2g"
+            placeholder="-Xmx4g"
             onChange={(e) => setVmArgs(e.target.value)}
           />
         </Row>
