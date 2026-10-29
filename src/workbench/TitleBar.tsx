@@ -256,7 +256,7 @@ function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, Ti
 
 /**
  * 40px main toolbar. macOS: native traffic lights overlay its left edge.
- * Windows: the window is frameless, so the bar carries IDEA's main menu (☰) and
+ * Windows and Linux: the window is frameless, so the bar carries IDEA's main menu (☰) and
  * the caption buttons. `dialog`: a dialog window's bar (Settings), close button only.
  * `lightEdit`: a LightEdit window's bar, its title and the menu but no toolbar widgets.
  */
@@ -279,7 +279,7 @@ export function TitleBar({
   const [menuExpanded, setMenuExpanded] = useState(false);
   const className = clsx(styles.bar, overlay && styles.overlay, frameless && styles.frameless);
   // Distraction Free Mode: the window frame only. Where the title bar carries the
-  // main menu (Windows) it stays, or nothing would lead back out of the mode.
+  // main menu (Windows, Linux) it stays, or nothing would lead back out of the mode.
   if (bare)
     return (
       <header className={className} data-tauri-drag-region data-titlebar="bare">

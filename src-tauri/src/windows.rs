@@ -690,7 +690,7 @@ pub fn open_settings_window(
     let mut config = window_config(app)?;
     config.label = label.clone();
     config.title = "Settings".into();
-    // Frameless on Windows like project windows (tauri.windows.conf.json): the page draws
+    // Frameless on Windows and Linux like project windows (tauri.<os>.conf.json): the page draws
     // the title bar in the app theme instead of a system caption that follows the OS theme.
     (config.width, config.height) = SETTINGS_SIZE;
     (config.min_width, config.min_height) = (Some(SETTINGS_MIN_SIZE.0), Some(SETTINGS_MIN_SIZE.1));

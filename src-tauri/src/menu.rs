@@ -1165,10 +1165,10 @@ pub fn model(spec: &[Entry], recent: &[RecentItem], config: &MenuConfig) -> Vec<
     out
 }
 
-/// Whether the OS menu bar is used. Windows project windows draw IDEA's
-/// hamburger menu in their own title bar instead.
+/// Whether the OS menu bar is used. Windows and Linux project windows are
+/// frameless and draw IDEA's hamburger menu in their own title bar instead.
 pub fn native_menu_bar() -> bool {
-    !cfg!(target_os = "windows")
+    cfg!(target_os = "macos")
 }
 
 /// Rebuilds and installs the app menu from the current config and recent list.
