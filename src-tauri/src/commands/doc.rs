@@ -63,6 +63,14 @@ pub async fn doc_open_virtual(window: Window, state: State<'_, AppState>, uri: S
     ide_host::ops::doc::doc_open_virtual(&state.host, window.label(), uri).await
 }
 
+/// The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
+/// without opening it: previews of closed files.
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_ui_mode(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Option<String>> {
+    ide_host::ops::doc::doc_ui_mode(&state.host, window.label(), path).await
+}
+
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
 #[tauri::command]
 #[specta::specta]

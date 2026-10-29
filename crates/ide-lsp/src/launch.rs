@@ -231,32 +231,10 @@ pub fn find_root(project_root: &Path, file: &Path, markers: &[String]) -> Option
     Some(marked_root(project_root, file, markers).unwrap_or_else(|| project_root.to_path_buf()))
 }
 
-/// The outermost ancestor of `file` within `project_root` containing a root marker.
+/// The outermost ancestor of `file` within `project_root` containing a root
+/// marker (the same lookup as `framework-ui-modes`).
 pub fn marked_root(project_root: &Path, file: &Path, markers: &[String]) -> Option<PathBuf> {
-    let mut best = None;
-    for dir in file.ancestors().skip(1) {
-        if !dir.starts_with(project_root) {
-            break;
-        }
-        if markers.iter().any(|m| has_marker(dir, m)) {
-            best = Some(dir.to_path_buf());
-        }
-    }
-    best
-}
-
-fn has_marker(dir: &Path, marker: &str) -> bool {
-    if !marker.contains('*') {
-        return dir.join(marker).exists();
-    }
-    let (prefix, suffix) = marker.split_once('*').unwrap_or((marker, ""));
-    std::fs::read_dir(dir).is_ok_and(|entries| {
-        entries.flatten().any(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            name.len() >= prefix.len() + suffix.len() && name.starts_with(prefix) && name.ends_with(suffix)
-        })
-    })
+    ide_language::marked_root(Some(project_root), file, markers)
 }
 
 #[cfg(test)]
@@ -278,19 +256,6 @@ mod tests {
         assert_eq!(find_root(&tmp, Path::new("/elsewhere/x.rs"), &markers), None);
         assert_eq!(find_root(&tmp.join("crates"), &tmp.join("crates/b.rs"), &markers), Some(tmp.join("crates")));
         std::fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
-    fn marked_root_needs_a_marker() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let file = root.join("apps/web/src/app.ts");
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let markers = vec!["angular.json".to_string(), "node_modules/@angular/core".to_string()];
-        assert_eq!(marked_root(root, &file, &markers), None);
-        std::fs::create_dir_all(root.join("apps/web/node_modules/@angular/core")).unwrap();
-        assert_eq!(marked_root(root, &file, &markers), Some(root.join("apps/web")));
-        assert_eq!(marked_root(root, &root.join("apps/api/main.ts"), &markers), None);
     }
 
     #[test]

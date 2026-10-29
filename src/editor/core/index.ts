@@ -56,7 +56,7 @@ export function activate(): void | (() => void) {
     },
   });
   _provideDocumentAttacher((path) => attachDocument(ctrl.manager, path));
-  _provideCodePreview((path) => previewExtensions(path, ctrl.manager.settings()?.editor));
+  _provideCodePreview((path) => previewExtensions(path, ctrl.manager.settings()?.editor, ctrl.manager.backend));
   const disposers = [
     installColorScheme(),
     provideEditorArea(EditorAreaView),

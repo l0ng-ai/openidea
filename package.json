@@ -18,6 +18,7 @@
     "knip": "knip",
     "typecheck": "tsrs --noEmit && tsrs -p tsconfig.node.json --noEmit && tsrs -p perf --noEmit && tsrs -p scripts --noEmit",
     "gen:bindings": "cargo test -p openidea --test export_bindings",
+    "gen:angular-grammar": "lezer-generator src/editor/core/cm/angular/angular.grammar --typeScript -o src/editor/core/cm/angular/parser.ts",
     "gen:theme-docs": "node scripts/theme/gen-docs.ts",
     "theme:import-intellij": "node scripts/theme/import-intellij-theme.ts",
     "dev:app": "node scripts/tauri.ts dev --config src-tauri/tauri.dev.conf.json",
@@ -37,6 +38,8 @@
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-html": "^6.4.12",
+    "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/language": "^6.13.1",
     "@codemirror/language-data": "^6.5.2",
     "@codemirror/lint": "^6.9.7",
@@ -47,7 +50,9 @@
     "@floating-ui/react-dom": "^2.1.9",
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@lezer/common": "^1.5.3",
     "@lezer/highlight": "^1.2.5",
+    "@lezer/lr": "^1.4.11",
     "@replit/codemirror-vim": "6.4.0",
     "@tanstack/react-virtual": "^3.14.21",
     "@tauri-apps/api": "^2",
@@ -69,6 +74,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@lezer/generator": "^1.8.1",
     "@playwright/test": "^1.64.1",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^7.0.1",

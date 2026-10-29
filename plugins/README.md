@@ -192,7 +192,12 @@ token reference and IntelliJ / VS Code porting tables are in
 `languages/<id>.toml` files use the IDE's own language format; see any file in
 [`languages/`](../languages) (`id`, `name`, `extensions`, `filenames`,
 `first-line`, `line-comment`, `block-comment`, `indent`, `ui-mode`,
-`language-servers`, `debugger`). `language-toy` is a minimal example.
+`framework-ui-modes`, `language-servers`, `debugger`). `language-toy` is a
+minimal example. `[[framework-ui-modes]]` entries (`ui-mode`, `root-markers`)
+replace `ui-mode` for the files of a framework's projects: the first whose
+root marker is in a directory above the file, up to the project folder, applies
+(see [`languages/html.toml`](../languages/html.toml), Angular templates).
+Markers are matched like a language server's `root-markers`.
 
 ## 5. Installing and developing
 

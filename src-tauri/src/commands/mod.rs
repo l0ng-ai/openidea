@@ -130,6 +130,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_save,
         doc::doc_save_all,
         doc::doc_snapshot,
+        doc::doc_ui_mode,
         doc::doc_set_encoding,
         doc::doc_set_line_ending,
         doc::doc_outline,

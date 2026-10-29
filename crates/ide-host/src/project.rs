@@ -2,7 +2,7 @@
 //! watchers and the per-project services, opened by [`crate::Host::open_project`].
 
 use crate::Host;
-use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, SharedSink};
+use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, LanguageId, SharedSink};
 use ide_index::ProjectIndex;
 use ide_language::{FileTypes, LanguageRegistry, SyntaxCache};
 use ide_lsp::LspManager;
@@ -88,13 +88,7 @@ impl Host {
         // The project's own registry: File Types associations may be project-scoped.
         let languages = Arc::new(self.languages.fork());
         languages.set_file_types(FileTypes::from_settings(&settings.effective().files, Some(&root)));
-        let documents = {
-            let languages = languages.clone();
-            Arc::new(Documents::new(
-                sink.clone(),
-                Box::new(move |p: &Path, first: Option<&str>| languages.detect(p, first)),
-            ))
-        };
+        let documents = documents(&sink, &languages, Some(&root));
         documents.set_file_defaults(ide_workspace::FileDefaults::from_settings(&settings.effective(), Some(&root)));
         let history = Arc::new(LocalHistory::open(&self.data_dir.join("history"), &root)?);
         {
@@ -190,6 +184,7 @@ impl Host {
             let settings = settings.clone();
             let index = index.clone();
             let documents = documents.clone();
+            let languages = languages.clone();
             let sink = sink.clone();
             let root = root.clone();
             let detected_roots = detected_roots.clone();
@@ -205,6 +200,12 @@ impl Host {
                     index.update(&changed, &batch.removed);
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&changed);
+                    // A framework's root marker (`angular.json`) created or deleted: its
+                    // templates gain or lose their mode. Markers in `node_modules` only
+                    // count here when the folder isn't excluded (it is by default).
+                    if batch.created.iter().chain(&batch.removed).any(|p| languages.is_framework_marker(p)) {
+                        documents.redetect_languages();
+                    }
                     record_external_changes(&history, &changed, &batch.removed);
                     if !batch.removed.is_empty() {
                         delete_deployed(
@@ -382,13 +383,7 @@ impl Host {
         let effective = settings.effective();
         let languages = Arc::new(self.languages.fork());
         languages.set_file_types(FileTypes::from_settings(&effective.files, None));
-        let documents = {
-            let languages = languages.clone();
-            Arc::new(Documents::new(
-                sink.clone(),
-                Box::new(move |p: &Path, first: Option<&str>| languages.detect(p, first)),
-            ))
-        };
+        let documents = documents(&sink, &languages, None);
         documents.set_file_defaults(ide_workspace::FileDefaults::from_settings(&effective, None));
         let history = Arc::new(LocalHistory::open(&self.data_dir.join("history"), &dir)?);
         let index = ProjectIndex::unindexed(&dir, languages.clone(), self.syntax(), sink.clone())?;
@@ -450,6 +445,18 @@ impl Project {
             Err(e) => tracing::warn!("watching {}: {e}", dir.display()),
         }
     }
+}
+
+/// The documents of a project whose languages and UI modes `languages` detects,
+/// looking for frameworks' root markers up to `root` (anywhere for loose files).
+fn documents(sink: &SharedSink, languages: &Arc<LanguageRegistry>, root: Option<&Path>) -> Arc<Documents> {
+    let (detect, modes, root) = (languages.clone(), languages.clone(), root.map(Path::to_path_buf));
+    Arc::new(
+        Documents::new(sink.clone(), Box::new(move |p: &Path, first: Option<&str>| detect.detect(p, first)))
+            .with_ui_mode_detection(Box::new(move |p: &Path, lang: &LanguageId| {
+                modes.framework_ui_mode(lang, p, root.as_deref())
+            })),
+    )
 }
 
 fn light_watcher(

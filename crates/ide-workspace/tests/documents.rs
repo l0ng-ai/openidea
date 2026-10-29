@@ -102,8 +102,95 @@ fn redetect_reopens_documents_whose_language_changed() {
     let log = rec.log.lock().clone();
     assert_eq!(log[log.len() - 2..], ["close".to_owned(), "open v0 python".to_owned()]);
     assert!(events.lock().iter().any(
-        |e| matches!(e, IdeEvent::DocLanguage { doc, language } if *doc == a.id && language.as_str() == "python")
+        |e| matches!(e, IdeEvent::DocLanguage { doc, language, .. } if *doc == a.id && language.as_str() == "python")
     ));
+}
+
+#[test]
+fn ui_modes_are_detected_with_the_language() {
+    let tmp = tempfile::tempdir().unwrap();
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let sink: SharedSink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let tpl_is_html = Arc::new(Mutex::new(false));
+    let docs = {
+        let tpl_is_html = tpl_is_html.clone();
+        Documents::new(
+            sink,
+            Box::new(move |p: &Path, _: Option<&str>| match p.extension().and_then(|e| e.to_str()) {
+                Some("html") => LanguageId::new("html"),
+                Some("tpl") if *tpl_is_html.lock() => LanguageId::new("html"),
+                _ => LanguageId::plain_text(),
+            }),
+        )
+        .with_ui_mode_detection(Box::new(|p: &Path, lang: &LanguageId| {
+            (lang.as_str() == "html" && p.parent().is_some_and(|d| d.ends_with("ng")))
+                .then(|| "Angular Template".into())
+        }))
+    };
+    fs::create_dir_all(tmp.path().join("ng")).unwrap();
+    let (template, page, tpl) =
+        (tmp.path().join("ng/app.html"), tmp.path().join("index.html"), tmp.path().join("ng/a.tpl"));
+    for p in [&template, &page, &tpl] {
+        fs::write(p, "<p></p>\n").unwrap();
+    }
+    assert_eq!(docs.open(&template).unwrap().ui_mode.as_deref(), Some("Angular Template"));
+    assert_eq!(docs.open(&page).unwrap().ui_mode, None);
+    let a = docs.open(&tpl).unwrap();
+    assert_eq!(a.ui_mode, None);
+
+    *tpl_is_html.lock() = true;
+    assert_eq!(docs.redetect_languages(), vec![a.id]);
+    assert_eq!(docs.snapshot(a.id).unwrap().ui_mode.as_deref(), Some("Angular Template"));
+    assert!(events.lock().iter().any(|e| matches!(
+        e,
+        IdeEvent::DocLanguage { doc, ui_mode: Some(mode), .. } if *doc == a.id && mode == "Angular Template"
+    )));
+}
+
+#[test]
+fn ui_modes_are_redetected_without_a_language_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let sink: SharedSink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let docs = Documents::new(sink, Box::new(|_: &Path, _: Option<&str>| LanguageId::new("html")))
+        .with_ui_mode_detection(Box::new(|p: &Path, _: &LanguageId| {
+            p.parent().is_some_and(|d| d.join("angular.json").exists()).then(|| "Angular Template".into())
+        }));
+    let rec = Arc::new(Recorder::default());
+    docs.add_observer(rec.clone());
+    let (template, marker) = (tmp.path().join("app.html"), tmp.path().join("angular.json"));
+    fs::write(&template, "<p></p>\n").unwrap();
+    let a = docs.open(&template).unwrap();
+    assert_eq!(a.ui_mode, None);
+    let opened = rec.log.lock().len();
+
+    fs::write(&marker, "{}").unwrap();
+    assert_eq!(docs.ui_mode_of(&template).as_deref(), Some("Angular Template"));
+    assert_eq!(docs.redetect_languages(), vec![a.id]);
+    assert_eq!(docs.snapshot(a.id).unwrap().ui_mode.as_deref(), Some("Angular Template"));
+    assert!(docs.redetect_languages().is_empty());
+    fs::remove_file(&marker).unwrap();
+    assert_eq!(docs.redetect_languages(), vec![a.id]);
+    assert_eq!(docs.snapshot(a.id).unwrap().ui_mode, None);
+
+    let modes: Vec<Option<String>> = events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::DocLanguage { doc, language, ui_mode } if *doc == a.id && language.as_str() == "html" => {
+                Some(ui_mode.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(modes, [Some("Angular Template".to_owned()), None]);
+    assert_eq!(rec.log.lock().len(), opened, "language servers keep the document");
 }
 
 fn dirty_events(events: &[IdeEvent]) -> Vec<bool> {

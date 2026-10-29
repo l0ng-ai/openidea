@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
 
+mod markers;
 mod registry;
 mod syntax;
+pub use markers::marked_root;
 pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
     CSS_CLASS, CSS_ID, CSS_VARIABLE, FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES,
@@ -41,12 +43,27 @@ pub struct LanguageConfig {
     /// Name of the CodeMirror/Lezer language the UI should load for instant highlighting.
     #[serde(default)]
     pub ui_mode: Option<String>,
+    /// Modes replacing `ui_mode` in a framework's projects (Angular templates);
+    /// the first one whose root marker is found applies.
+    #[serde(default)]
+    pub framework_ui_modes: Vec<FrameworkUiMode>,
     #[serde(default)]
     pub tree_sitter: Option<String>,
     #[serde(default)]
     pub language_servers: Vec<LanguageServerConfig>,
     #[serde(default)]
     pub debugger: Option<DebuggerConfig>,
+}
+
+/// A CodeMirror mode for the files of a framework's projects.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FrameworkUiMode {
+    pub ui_mode: String,
+    /// Files whose presence in a directory above a file, up to the project
+    /// folder, marks the framework's project, e.g. `angular.json`; matched like
+    /// language servers' `root-markers`.
+    pub root_markers: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
