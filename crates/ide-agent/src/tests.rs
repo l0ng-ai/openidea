@@ -720,3 +720,64 @@ fn retry_updates_become_a_countdown() {
     );
     assert_eq!(retry_of(&json!({"sessionUpdate": RETRY_UPDATE}), 0.0), None, "no attempt");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let new = || NewAgentTask {
+        prompt: text("Fix"),
+        provider: "cursor".into(),
+        config: Vec::new(),
+        isolation: Isolation::Local,
+        base: None,
+    };
+    let task = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.set_config(&task.id, config::CURSOR_APPROVAL, "bypass".into()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(
+        mgr.entries(&task.id, None)
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, AgentEntry::Permission { chosen: Some(name), .. } if name == "Allow"))
+    );
+    // Agent config updates must not erase the client's approval setting.
+    mgr.prompt(&task.id, text("late option"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let t = mgr.task(&task.id).unwrap();
+    assert!(config::bypass_approvals("cursor", &t.state.lock().task.config));
+    t.kill();
+    mgr.prompt(&task.id, text("Fix again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(!agent.calls.lock().iter().any(|c| c.contains("bypass")));
+    assert!(!config::bypass_approvals("cursor", &mgr.shared.known_config("cursor")));
+    mgr.set_config(&task.id, config::CURSOR_APPROVAL, "ask".into()).await.unwrap();
+    mgr.prompt(&task.id, text("Fix once more"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    // An unrelated new conversation still asks, even after the cache was updated.
+    let other = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &other.id, AgentStatus::NeedsInput).await;
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cursor_approval_choice_applies_before_first_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("Fix"),
+            provider: "cursor".into(),
+            config: vec![AgentConfigChoice { id: config::CURSOR_APPROVAL.into(), value: "bypass".into() }],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.shutdown();
+}

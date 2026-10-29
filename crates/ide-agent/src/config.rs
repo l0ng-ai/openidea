@@ -4,6 +4,39 @@
 use crate::model::{AgentCommand, AgentConfigOption, AgentConfigValue, AgentConfigVia, AgentUsage};
 use serde_json::{Value, json};
 
+/// Cursor exposes execution modes over ACP, but leaves approval policy to its client.
+pub(crate) const CURSOR_APPROVAL: &str = "openidea.cursor.approval";
+
+pub(crate) fn add_client_options(provider: &str, config: &mut Vec<AgentConfigOption>) {
+    if provider != "cursor" || config.iter().any(|o| o.id == CURSOR_APPROVAL) {
+        return;
+    }
+    config.push(AgentConfigOption {
+        id: CURSOR_APPROVAL.into(),
+        name: "Approvals".into(),
+        description: Some("Tool approvals for this Cursor conversation".into()),
+        category: Some("approval".into()),
+        current: Some("ask".into()),
+        via: AgentConfigVia::Option,
+        values: vec![
+            AgentConfigValue {
+                value: "ask".into(),
+                name: "Ask for approval".into(),
+                description: Some("Show permission requests from Cursor".into()),
+            },
+            AgentConfigValue {
+                value: "bypass".into(),
+                name: "Bypass approvals".into(),
+                description: Some("Automatically approve tool requests in this conversation".into()),
+            },
+        ],
+    });
+}
+
+pub(crate) fn bypass_approvals(provider: &str, config: &[AgentConfigOption]) -> bool {
+    provider == "cursor" && config.iter().any(|o| o.id == CURSOR_APPROVAL && o.current.as_deref() == Some("bypass"))
+}
+
 /// The settings in a `session/new` or `session/load` result: its select `configOptions`,
 /// plus the older `modes` / `models` fields for what those don't cover.
 pub(crate) fn options_of(result: &Value) -> Vec<AgentConfigOption> {
@@ -64,7 +97,7 @@ pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
 pub(crate) fn merge_update(config: &mut Vec<AgentConfigOption>, options: &Value) {
     let fresh = parse_options(options);
     let covered = |o: &AgentConfigOption| fresh.iter().any(|f| f.category.is_some() && f.category == o.category);
-    config.retain(|o| o.via != AgentConfigVia::Option && !covered(o));
+    config.retain(|o| o.id == CURSOR_APPROVAL || (o.via != AgentConfigVia::Option && !covered(o)));
     let legacy = std::mem::take(config);
     config.extend(fresh);
     config.extend(legacy);

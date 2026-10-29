@@ -1,6 +1,6 @@
 /**
- * Model / mode / thinking-effort dropdowns for a composer's bottom row. Like other agent
- * UIs, only the mode gets icons (one per mode, by what it allows); levels are plain text.
+ * Model, mode, approvals and thinking-effort dropdowns for a composer's bottom row.
+ * Modes and approvals use icons; levels are plain text.
  */
 import type { AgentConfigOption } from "@/bindings";
 import { useTx } from "@/platform/i18n";
@@ -34,7 +34,14 @@ export function ConfigPickers({
             options={o.values.map((v) => ({
               value: v.value,
               label: v.name,
-              icon: isMode ? modeIcon(v.value) : undefined,
+              icon:
+                o.category === "approval"
+                  ? v.value === "bypass"
+                    ? "unlock"
+                    : "lock"
+                  : isMode
+                    ? modeIcon(v.value)
+                    : undefined,
               detail: v.description ?? undefined,
             }))}
             onChange={(v) => onChange(o.id, v)}

@@ -126,6 +126,8 @@ describe("agent composer", () => {
     const config = [option("fast", ["on"], null), option("mode", ["ask", "code"], "code"), option("model", ["m"], "m")];
     expect(mainOptions(config).map((o) => o.id)).toEqual(["model", "mode"]);
     expect(nextValue(config[1]!)).toBe("ask");
+    const approvals = { ...option("openidea.cursor.approval", ["ask", "bypass"], "ask"), category: "approval" };
+    expect(mainOptions([...config, approvals]).map((o) => o.id)).toEqual(["model", "mode", approvals.id]);
     expect(
       ["default", "acceptEdits", "plan", "auto", "bypassPermissions", "auto_edit", "read-only", "x"].map(modeIcon),
     ).toEqual(["lock", "edit", "todo", "run", "unlock", "edit", "eye", "lock"]);
