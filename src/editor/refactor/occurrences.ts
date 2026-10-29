@@ -86,6 +86,7 @@ export function findTextOccurrences(
   const want = normalizeExpression(expr.trim());
   const out: { from: number; to: number }[] = [];
   for (let m = re.exec(scope); m; m = re.exec(scope)) {
+    if (!m[0].length) re.lastIndex = m.index + 1;
     if (WORD.test(want[0] ?? "") && m.index > 0 && WORD.test(scope[m.index - 1]!)) {
       re.lastIndex = m.index + 1;
       continue;

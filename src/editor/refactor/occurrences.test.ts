@@ -15,6 +15,14 @@ describe("text occurrence boundaries", () => {
     expect(findTextOccurrences(text, 0, text.length, "b + b")).toEqual([{ from: 5, to: 10 }]);
   });
 
+  it("advances through zero-length matches", () => {
+    expect(findTextOccurrences("ab", 0, 2, "")).toEqual([
+      { from: 0, to: 0 },
+      { from: 1, to: 1 },
+      { from: 2, to: 2 },
+    ]);
+  });
+
   it("keeps punctuation-led expressions and scope-relative boundaries", () => {
     expect(findTextOccurrences("x(a) x(a)", 0, 9, "(a)")).toEqual([
       { from: 1, to: 4 },
