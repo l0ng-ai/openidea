@@ -170,10 +170,10 @@ export function SqlFilterInput({
           }}
         />
       </div>
-      {open && options.length > 0 && ref.current && (
+      {open && options.length > 0 && (
         <Popup
           open
-          anchor={ref.current}
+          anchor={ref}
           onClose={() => setOpen(false)}
           autoFocus={false}
           restoreFocus={false}
