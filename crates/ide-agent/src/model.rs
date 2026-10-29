@@ -81,6 +81,21 @@ pub struct AgentTask {
     /// When a [`AgentStatus::Limited`] task's limit resets (ms since the epoch), if the agent said.
     #[serde(default)]
     pub resets_ms: Option<f64>,
+    /// The agent is retrying a failed API request (connection lost, overloaded…); cleared
+    /// by its next output or any status change.
+    #[serde(default)]
+    pub retry: Option<AgentRetry>,
+}
+
+/// An API request the agent is about to retry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRetry {
+    pub attempt: u32,
+    pub max_retries: Option<u32>,
+    /// When the next attempt starts (ms since the epoch).
+    pub retry_at_ms: f64,
+    pub error: Option<String>,
 }
 
 /// One value of a select-type session setting.

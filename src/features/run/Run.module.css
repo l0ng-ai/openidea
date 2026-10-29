@@ -1,24 +1,3 @@
-/* ANSI palette derived from tokens (console spans reference these). */
-.root,
-.console {
-  --ansi-black: var(--control-off);
-  --ansi-red: var(--danger);
-  --ansi-green: var(--success);
-  --ansi-yellow: var(--warning);
-  --ansi-blue: var(--syn-keyword);
-  --ansi-magenta: var(--syn-annotation);
-  --ansi-cyan: color-mix(in srgb, var(--syn-keyword) 50%, var(--syn-string));
-  --ansi-white: var(--fg);
-  --ansi-bright-black: var(--fg-subtle);
-  --ansi-bright-red: color-mix(in srgb, var(--danger) 72%, var(--fg-strong));
-  --ansi-bright-green: color-mix(in srgb, var(--success) 72%, var(--fg-strong));
-  --ansi-bright-yellow: color-mix(in srgb, var(--warning) 72%, var(--fg-strong));
-  --ansi-bright-blue: color-mix(in srgb, var(--syn-keyword) 72%, var(--fg-strong));
-  --ansi-bright-magenta: color-mix(in srgb, var(--syn-annotation) 72%, var(--fg-strong));
-  --ansi-bright-cyan: color-mix(in srgb, var(--ansi-cyan) 72%, var(--fg-strong));
-  --ansi-bright-white: var(--fg-strong);
-}
-
 .root {
   flex: 1;
   display: flex;

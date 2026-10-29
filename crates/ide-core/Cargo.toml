@@ -13,3 +13,6 @@ specta.workspace = true
 specta-typescript.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

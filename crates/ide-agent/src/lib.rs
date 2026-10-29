@@ -46,6 +46,8 @@ const STDERR_LINES: usize = 20;
 /// Updates of a session's state rather than its conversation.
 const SESSION_STATE: [&str; 5] =
     ["session_info_update", "config_option_update", "current_mode_update", "available_commands_update", "usage_update"];
+/// A native agent's own update: it is about to retry a failed API request (see [`AgentRetry`]).
+pub(crate) const RETRY_UPDATE: &str = "openidea_retry";
 /// Referenced files up to this size are embedded in the prompt (when the agent takes it).
 const MAX_EMBED: u64 = 256 * 1024;
 /// How long a probe waits for the agent to answer `initialize`.
@@ -264,6 +266,7 @@ impl AgentManager {
                     if matches!(f.task.status, AgentStatus::Running | AgentStatus::NeedsInput | AgentStatus::Starting) {
                         f.task.status = AgentStatus::Ready;
                     }
+                    f.task.retry = None;
                     let task = Task::restore(f, shared.clone());
                     task.state.lock().conversation.settle(now_ms());
                     tasks.insert(task.id.clone(), task);
@@ -389,6 +392,7 @@ impl AgentManager {
             queue: Vec::new(),
             capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
             resets_ms: None,
+            retry: None,
         };
         let file = TaskFile {
             task: task.clone(),
@@ -577,6 +581,7 @@ impl AgentManager {
                 usage: None,
                 queue: Vec::new(),
                 resets_ms: None,
+                retry: None,
                 ..s.task.clone()
             };
             TaskFile {
@@ -830,9 +835,22 @@ impl Task {
         self.shared.emit(AgentEvent::Task { task });
     }
 
+    /// Shows (or clears) the agent's pending retry; emitted only when it changes.
+    fn set_retry(&self, retry: Option<AgentRetry>) {
+        {
+            let mut s = self.state.lock();
+            if s.task.retry == retry {
+                return;
+            }
+            s.task.retry = retry;
+        }
+        self.emit_task();
+    }
+
     fn set_status(&self, status: AgentStatus, error: Option<String>) {
         {
             let mut s = self.state.lock();
+            s.task.retry = None;
             s.task.status = status;
             s.task.error = error;
             s.task.updated_ms = now_ms();
@@ -1264,6 +1282,12 @@ impl Task {
             }
             return;
         }
+        if kind == RETRY_UPDATE {
+            if !self.replaying.load(Ordering::Acquire) {
+                self.set_retry(retry_of(update, now_ms()));
+            }
+            return;
+        }
         if kind == "session_info_update" {
             // The agent's own title for the session replaces the first line of the prompt.
             let title = update.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
@@ -1332,6 +1356,8 @@ impl Task {
     }
 
     fn apply(self: &Arc<Self>, session: Option<&str>, kind: &str, update: &Value) {
+        // Output again: the retried request went through.
+        self.set_retry(None);
         let applied = self.state.lock().conversation.apply(session, update, now_ms());
         self.mark_dirty(applied);
         // A subagent can start or finish after the turn that started it: saved right away.
@@ -1554,6 +1580,17 @@ fn turn_starts(entries: &[AgentEntry]) -> Vec<usize> {
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
+}
+
+/// The retry a [`RETRY_UPDATE`] announces, timed from `now`.
+fn retry_of(update: &Value, now: f64) -> Option<AgentRetry> {
+    let n = |k: &str| update.get(k).and_then(Value::as_u64);
+    Some(AgentRetry {
+        attempt: u32::try_from(n("attempt")?).unwrap_or(u32::MAX),
+        max_retries: n("maxRetries").and_then(|m| u32::try_from(m).ok()),
+        retry_at_ms: now + n("retryDelayMs").unwrap_or(0) as f64,
+        error: update.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_owned),
+    })
 }
 
 fn model_of(config: &[AgentConfigOption]) -> Option<String> {

@@ -16,6 +16,7 @@ pub mod libraries;
 pub mod locate;
 pub mod lombok;
 mod npm;
+pub mod pinned;
 pub mod python;
 mod vue;
 

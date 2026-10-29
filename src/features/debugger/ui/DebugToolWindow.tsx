@@ -42,6 +42,8 @@ import { VariablesView, type VarRoot } from "./VariablesView";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { spanStyle } from "@/ui/ansi";
+import ansi from "@/ui/ansi.module.css";
 import styles from "./DebugToolWindow.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -609,7 +611,7 @@ function ConsoleView({ session }: { session: DebugSession }) {
     <div className={styles.console}>
       <div
         ref={scroller}
-        className={styles.consoleOutput}
+        className={clsx(styles.consoleOutput, ansi.palette)}
         onScroll={(e) => {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
@@ -624,7 +626,11 @@ function ConsoleView({ session }: { session: DebugSession }) {
       >
         {(lines ?? []).map((l) => (
           <span key={l.id} className={clsx(styles.out, styles[`cat-${l.category}`])}>
-            {l.text}
+            {l.spans.map((sp, i) => (
+              <span key={i} style={spanStyle(sp)}>
+                {sp.text}
+              </span>
+            ))}
           </span>
         ))}
       </div>

@@ -157,8 +157,10 @@ pub fn extend_process_path(app_data: &Path) {
     }
 }
 
-/// `path` (a `PATH` value) with [`tools_bin_dirs`] in front, those it lacks.
+/// `path` (a `PATH` value) with [`tools_bin_dirs`] in front, those it lacks, and the
+/// mise / asdf shims when their shell hook didn't put them there.
 pub fn path_with_tools(app_data: &Path, path: &std::ffi::OsStr) -> OsString {
+    let path = &ide_core::version_managers::path_with_shims(&ide_core::version_managers::managers(), path);
     let mut dirs = tools_bin_dirs(app_data);
     let current: Vec<PathBuf> = if path.is_empty() { Vec::new() } else { std::env::split_paths(path).collect() };
     dirs.retain(|d| !current.contains(d));
