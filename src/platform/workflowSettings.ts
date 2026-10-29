@@ -85,6 +85,7 @@ export interface DebuggerSettingsValid {
   inlineValues: boolean;
   sortValues: boolean;
   valueTooltip: boolean;
+  valueTooltipOnSelection: boolean;
   valueTooltipDelay: number;
   skipLibraryCode: boolean;
   python: { attachSubprocess: boolean; gevent: boolean };
@@ -245,6 +246,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     inlineValues: true,
     sortValues: false,
     valueTooltip: true,
+    valueTooltipOnSelection: true,
     valueTooltipDelay: 700,
     skipLibraryCode: true,
     python: { attachSubprocess: true, gevent: false },
@@ -380,6 +382,7 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     inlineValues: bool(v.inlineValues, d.inlineValues),
     sortValues: bool(v.sortValues, d.sortValues),
     valueTooltip: bool(v.valueTooltip, d.valueTooltip),
+    valueTooltipOnSelection: bool(v.valueTooltipOnSelection, d.valueTooltipOnSelection),
     valueTooltipDelay: num(v.valueTooltipDelay, d.valueTooltipDelay, WORKFLOW_LIMITS.tooltipDelay, true),
     skipLibraryCode: bool(v.skipLibraryCode, d.skipLibraryCode),
     python: {

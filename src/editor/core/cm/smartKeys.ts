@@ -14,6 +14,7 @@ import {
 import { EditorView, keymap, type Command } from "@codemirror/view";
 import { getIndentUnit, getIndentation, indentString, indentUnit, syntaxTree } from "@codemirror/language";
 import { indentMore } from "@codemirror/commands";
+import { visibleColumn } from "./visibleColumn";
 
 // --- Tab -------------------------------------------------------------------------------
 
@@ -32,7 +33,7 @@ export const insertTab: Command = (view) => {
   const size = Math.max(1, getIndentUnit(state));
   const tr = state.changeByRange((r) => {
     const line = state.doc.lineAt(r.from);
-    const col = countColumn(line.text.slice(0, r.from - line.from), state.tabSize);
+    const col = visibleColumn(line.text, r.from - line.from, state.tabSize);
     const insert = useTab ? "\t" : " ".repeat(size - (col % size));
     return { changes: { from: r.from, to: r.to, insert }, range: EditorSelection.cursor(r.from + insert.length) };
   });

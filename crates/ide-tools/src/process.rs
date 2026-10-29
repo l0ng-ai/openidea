@@ -12,7 +12,35 @@ use std::time::{Duration, Instant};
 
 pub type Emit<'a> = &'a dyn Fn(InstallEvent);
 
+/// Starts the child as the leader of its own process group, so [`kill`] reaches what it
+/// starts in turn (`npm` → `node`, `go install` → the compiler, `pip` → build backends).
+fn own_group(cmd: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd
+}
+
+/// Kills the child and everything it started.
 fn kill(child: &mut Child) {
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(child.id()) {
+        // SAFETY: plain syscall; the child leads its own process group (`own_group`) and is not reaped yet.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut taskkill = Command::new("taskkill");
+        ide_core::process::prepare(&mut taskkill)
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = taskkill.status();
+    }
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -48,7 +76,7 @@ pub fn run_streamed(cmd: Command, cancel: &CancellationToken, emit: Emit) -> Ide
 /// Like [`run_streamed`] but returns `(success, output, status text)` instead of failing on a non-zero exit.
 pub fn run_collect(mut cmd: Command, cancel: &CancellationToken, emit: Emit) -> IdeResult<(bool, String, String)> {
     emit(InstallEvent::Line { text: format!("$ {}", describe(&cmd)) });
-    ide_core::process::prepare(&mut cmd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    own_group(ide_core::process::prepare(&mut cmd)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run {}: {e}", describe(&cmd))))?;
     let (tx, rx) = mpsc::channel::<String>();
     let pipes: [Option<Box<dyn Read + Send>>; 2] = [
@@ -168,7 +196,7 @@ impl Http {
 
     fn base(&self, url: &str) -> Command {
         let mut cmd = Command::new(&self.curl);
-        ide_core::process::prepare(&mut cmd);
+        own_group(ide_core::process::prepare(&mut cmd));
         cmd.args(["-fsSL", "--retry", "2", "--connect-timeout", "20", "-A", "openidea"]);
         if self.https_only {
             cmd.args(["--proto", "=https", "--proto-redir", "=https"]);
@@ -344,6 +372,36 @@ mod tests {
         let err = run_streamed(cmd, &cancel, &|_| {}).unwrap_err();
         assert_eq!(err.kind, ErrorKind::Cancelled);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// `npm` / `go` / `pip` run the real work in children of their own: cancelling
+    /// kills those too, not only the process the installer started.
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_kills_what_the_child_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let cancel = CancellationToken::new();
+        let c2 = cancel.clone();
+        let watch = pid_file.clone();
+        std::thread::spawn(move || {
+            while !watch.exists() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            c2.cancel();
+        });
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(format!("sleep 30 & echo $! > '{}'; wait", pid_file.display()));
+        let err = run_streamed(cmd, &cancel, &|_| {}).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Cancelled);
+        let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // SAFETY: signal 0 only checks that the process exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "the grandchild {pid} survived the cancel");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[cfg(unix)]

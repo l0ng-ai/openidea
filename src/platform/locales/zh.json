@@ -66,6 +66,7 @@
   "app.update.installed": "OpenIDEA {version} 已安装",
   "app.update.installedBody": "重启 OpenIDEA 后生效。",
   "app.update.installingMessage": "正在安装…",
+  "app.update.installUncancellable": "正在安装更新，此步骤无法取消",
   "app.update.none": "OpenIDEA {version} 已是最新版本",
   "app.update.progress": "{done} MB / {total} MB",
   "app.update.progressUnknown": "{done} MB",

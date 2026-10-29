@@ -66,6 +66,7 @@
   "app.update.installed": "OpenIDEA {version} is installed",
   "app.update.installedBody": "It is used after OpenIDEA restarts.",
   "app.update.installingMessage": "Installing…",
+  "app.update.installUncancellable": "The update is being installed; this step can't be cancelled",
   "app.update.none": "OpenIDEA {version} is up to date",
   "app.update.progress": "{done} MB of {total} MB",
   "app.update.progressUnknown": "{done} MB",

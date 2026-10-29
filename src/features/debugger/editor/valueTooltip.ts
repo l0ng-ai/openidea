@@ -3,9 +3,10 @@
  * while suspended, hovering an expression (or the selection under the mouse)
  * evaluates it in the selected frame.
  */
-import type { Extension } from "@codemirror/state";
+import type { EditorState, Extension } from "@codemirror/state";
 import type { DebugSessionId, Variable } from "@/bindings";
-import { hoverTooltip, type EditorView } from "@codemirror/view";
+import { hoverTooltip, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
+import { showHint } from "@/editor/lsp/hint";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { navigationModifierHeld } from "@/platform/navigationModifier";
 import { activeSession, evaluate } from "../state";
@@ -107,5 +108,61 @@ export function valueTooltip(): Extension {
       };
     },
     { hoverTime: BASE_HOVER },
+  );
+}
+
+const SELECTION_DELAY = 400;
+const MAX_SELECTION = 200;
+
+/** The selected text when it can be evaluated: one non-blank line, not too long. */
+export function selectionExpression(state: EditorState): { from: number; text: string } | null {
+  const sel = state.selection;
+  if (sel.ranges.length !== 1 || sel.main.empty) return null;
+  const text = state.sliceDoc(sel.main.from, sel.main.to).trim();
+  if (!text || text.length > MAX_SELECTION || text.includes("\n")) return null;
+  return { from: sel.main.from, text };
+}
+
+/**
+ * Settings › Debugger › Data Views › "Show value tooltip on code selection": while
+ * suspended, selecting an expression shows its value once the selection settles.
+ */
+export function selectionValueTooltip(): Extension {
+  return ViewPlugin.fromClass(
+    class {
+      private timer: ReturnType<typeof setTimeout> | undefined;
+      private seq = 0;
+      constructor(readonly view: EditorView) {}
+
+      update(u: ViewUpdate) {
+        if (!u.selectionSet) return;
+        clearTimeout(this.timer);
+        this.seq++;
+        if (!u.transactions.some((tr) => tr.isUserEvent("select"))) return;
+        const seq = this.seq;
+        this.timer = setTimeout(() => void this.show(seq), SELECTION_DELAY);
+      }
+
+      private async show(seq: number) {
+        if (!workflowSettings().debugger.valueTooltipOnSelection) return;
+        const session = activeSession();
+        if (!session || session.status !== "paused") return;
+        const expr = selectionExpression(this.view.state);
+        if (!expr) return;
+        let value;
+        try {
+          value = await evaluate(expr.text, "hover", session);
+        } catch {
+          return;
+        }
+        // The selection moved on while evaluating.
+        if (seq !== this.seq) return;
+        showHint(this.view, () => valueHint(expr.text, value, session.id), { pos: expr.from, timeout: 60_000 });
+      }
+
+      destroy() {
+        clearTimeout(this.timer);
+      }
+    },
   );
 }

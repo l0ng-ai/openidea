@@ -201,6 +201,13 @@ describe("comment with line comment", () => {
     expect(show(v)).toBe("//a\nb|\n//c\nd|\n");
   });
 
+  it("moves the caret down to the same visible column past CJK text", () => {
+    const v = make("张三|x\nabcdefgh\n", comments);
+    commentLine(v);
+    // "//张三" is six columns wide.
+    expect(show(v)).toBe("//张三x\nabcdef|gh\n");
+  });
+
   it("keeps the caret after the prefix on an empty line", () => {
     const v = make("f {\n  |\n  b", indented);
     commentLine(v);

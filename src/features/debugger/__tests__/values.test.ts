@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { EditorSelection, EditorState } from "@codemirror/state";
+import { selectionExpression } from "../editor/valueTooltip";
 import { classifyValue, identifiersIn, inlineValue, sortVariables } from "../values";
 import { inlineValuesFor } from "../editor/execution";
 import { frameLabel, groupFrames, isLibraryFrame } from "../frames";
@@ -107,5 +109,24 @@ describe("sortVariables", () => {
   it("keeps array elements in index order", () => {
     const items = [{ name: "[0]" }, { name: "[1]" }, { name: "[10]" }, { name: "[2]" }];
     expect(names(sortVariables(items))).toEqual(["[0]", "[1]", "[10]", "[2]"]);
+  });
+});
+
+describe("selectionExpression", () => {
+  const at = (doc: string, from: number, to: number) =>
+    selectionExpression(EditorState.create({ doc, selection: EditorSelection.single(from, to) }));
+  it("takes a one-line selection", () => {
+    expect(at("total += item.price", 9, 19)).toEqual({ from: 9, text: "item.price" });
+  });
+  it("ignores empty, blank, multi-line and multiple selections", () => {
+    expect(at("a + b", 2, 2)).toBeNull();
+    expect(at("a   b", 1, 4)).toBeNull();
+    expect(at("a\nb", 0, 3)).toBeNull();
+    const multi = EditorState.create({
+      doc: "a + b",
+      selection: EditorSelection.create([EditorSelection.range(0, 1), EditorSelection.range(4, 5)]),
+      extensions: EditorState.allowMultipleSelections.of(true),
+    });
+    expect(selectionExpression(multi)).toBeNull();
   });
 });

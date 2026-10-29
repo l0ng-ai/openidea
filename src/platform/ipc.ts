@@ -34,7 +34,9 @@ export function isCancelled(e: unknown): boolean {
   return e instanceof IpcError && e.kind === "cancelled";
 }
 
-let nextId = 1;
+// Ids are shared by every window of the backend and outlive a reload there (a cancel that
+// arrives before its request began is remembered), so each page starts at a random point.
+let nextId = 1 + Math.floor(Math.random() * 0x7000_0000);
 /** Allocates an id for a cancellable request (see `commands.cancelRequest`). */
 export function nextRequestId(): RequestId {
   return nextId++ as RequestId;

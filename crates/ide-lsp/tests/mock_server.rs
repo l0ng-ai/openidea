@@ -729,6 +729,37 @@ async fn progress_tasks_and_busy_status() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_cancellable_progress_task_asks_the_server_to_stop() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let peer = s.peer();
+    let begin = |token: Value, cancellable: bool| json!({ "token": token, "value": { "kind": "begin", "title": "Building", "cancellable": cancellable } });
+    peer.notify("$/progress", begin(json!(7), true)).unwrap();
+    peer.notify("$/progress", begin(json!("plain"), false)).unwrap();
+    let task_of = |want: bool| {
+        h.events.lock().iter().find_map(|e| match e {
+            IdeEvent::Task { id, cancellable, done: false, .. } if *cancellable == want => Some(*id),
+            _ => None,
+        })
+    };
+    eventually(|| task_of(true).is_some() && task_of(false).is_some()).await;
+    let (cancellable, plain) = (task_of(true).unwrap(), task_of(false).unwrap());
+    assert!(!ide_core::task::cancel(plain), "the server did not offer to cancel it");
+    assert!(ide_core::task::cancel(cancellable));
+    eventually(|| !s.notified("window/workDoneProgress/cancel").is_empty()).await;
+    assert_eq!(s.notified("window/workDoneProgress/cancel"), [json!({ "token": 7 })]);
+    // Once it ended there is nothing left to cancel.
+    peer.notify("$/progress", json!({ "token": 7, "value": { "kind": "end" } })).unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { id, done: true, .. } if *id == cancellable))
+    })
+    .await;
+    assert!(!ide_core::task::cancel(cancellable));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn angular_project_loading_shows_as_progress() {
     let h = harness(&[("mock", incremental_caps())]);
     h.open("a.mk", "x");

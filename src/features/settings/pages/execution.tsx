@@ -180,6 +180,7 @@ export const EXECUTION_PAGES: PageSpec[] = [
             label: "Show value tooltip on mouse hover",
             hint: "Hovering a variable while suspended evaluates it in the selected frame.",
           },
+          { kind: "toggle", key: "debugger.valueTooltipOnSelection", label: "Show value tooltip on code selection" },
           { kind: "custom", label: "Value tooltip delay (ms)", component: TooltipDelayRow },
         ],
       },

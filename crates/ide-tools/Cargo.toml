@@ -20,5 +20,8 @@ zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 hex = "0.4"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile.workspace = true

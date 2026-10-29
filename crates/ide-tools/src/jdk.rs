@@ -290,9 +290,13 @@ impl Tools {
             let archive = fetch_verified(&http, &dl, &staging, cancel, emit)?;
             emit(InstallEvent::Line { text: "Extracting…".into() });
             let pkg = staging.join("pkg");
-            archive::extract(&archive, archive::ArchiveKind::from_name(&dl.name), &pkg, "java")?;
+            archive::extract(&archive, archive::ArchiveKind::from_name(&dl.name), &pkg, "java", cancel)?;
             let home = find_jdk_home(&pkg, self.platform)
                 .ok_or_else(|| IdeError::new(ErrorKind::Io, format!("no JDK found in {}", dl.name)))?;
+            // Last point to stop: from here the JDK replaces what is at `target`.
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
             if target.exists() {
                 std::fs::remove_dir_all(&target)?;
             }

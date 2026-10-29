@@ -6,9 +6,10 @@ import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import type { GitOperation, RemoteOp } from "@/bindings";
 import { tx } from "@/platform/i18n";
-import { call, commands, emitLocalIdeEvent, isCancelled, nextRequestId } from "@/platform/ipc";
+import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import { editorsFor } from "@/editor/api";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { cancelTask, upsertTaskSoon, useTasks } from "@/workbench/tasks";
 import { progressFraction } from "./model";
 import { currentRepo, refreshNow, repoName, useVcs } from "./store";
 
@@ -129,7 +130,10 @@ export function lastRemoteFailure(): string | null {
 }
 
 export function cancelRemote() {
-  if (activeRemote !== null) void commands.cancelRequest(activeRemote);
+  if (activeRemote === null) return;
+  const taskId = `vcs:${activeRemote}`;
+  if (useTasks.getState().tasks.some((t) => t.id === taskId)) cancelTask(taskId);
+  else void commands.cancelRequest(activeRemote);
 }
 
 /** Every repository of the project (Fetch and Update Project act on all of them, as in IDEA). */
@@ -154,11 +158,12 @@ export async function runRemote(
   const [progressText, doneTitle] = REMOTE_TITLE[op.op];
   const progressTitle = tx(progressText);
   const request = nextRequestId();
-  const taskId = 900_000 + request;
+  const taskId = `vcs:${request}`;
   activeRemote = request;
   useVcs.setState({ remoteBusy: progressTitle });
+  const cancel = () => void commands.cancelRequest(request);
   const task = (message: string | null, fraction: number | null, done: boolean) =>
-    emitLocalIdeEvent({ type: "task", id: taskId, title: progressTitle, message, fraction, done });
+    upsertTaskSoon({ id: taskId, title: progressTitle, message, fraction, done, cancel });
   task(detail ?? null, null, false);
   notifications().notify({
     group: "vcs",
@@ -220,13 +225,16 @@ export async function runRemote(
     const cancelled = isCancelled(e);
     lastRemoteError = cancelled ? null : errorMessage(e);
     logConsole(cancelled ? "info" : "err", cancelled ? `${doneTitle} cancelled` : errorMessage(e));
-    notifications().notify({
-      group: "vcs",
-      level: cancelled ? "warning" : "error",
-      key: "vcs.remote",
-      title: cancelled ? `${doneTitle} cancelled` : `${doneTitle} failed`,
-      body: cancelled ? undefined : errorMessage(e),
-    });
+    // The user asked for it: the progress balloon just goes away.
+    if (cancelled) notifications().expire?.("vcs.remote");
+    else
+      notifications().notify({
+        group: "vcs",
+        level: "error",
+        key: "vcs.remote",
+        title: `${doneTitle} failed`,
+        body: errorMessage(e),
+      });
     return false;
   } finally {
     task(null, 1, true);
@@ -320,12 +328,13 @@ export async function runGitOperation(op: GitOperation, opts: GitOperationOption
   }
   await saveAll();
   const request = nextRequestId();
-  const taskId = 900_000 + request;
+  const taskId = `vcs:${request}`;
   activeRemote = request;
   const progress = tx(opts.progress);
   useVcs.setState({ remoteBusy: progress });
+  const cancel = () => void commands.cancelRequest(request);
   const task = (message: string | null, done: boolean) =>
-    emitLocalIdeEvent({ type: "task", id: taskId, title: progress, message, fraction: done ? 1 : null, done });
+    upsertTaskSoon({ id: taskId, title: progress, message, fraction: done ? 1 : null, done, cancel });
   task(null, false);
   notifications().notify({
     group: "vcs",
@@ -357,14 +366,14 @@ export async function runGitOperation(op: GitOperation, opts: GitOperationOption
     logConsole(cancelled ? "info" : "err", cancelled ? `${opts.failure}: cancelled` : message);
     notifications().expire?.("vcs.operation");
     await refreshNow();
-    const handled = !cancelled && opts.onError ? await opts.onError(message) : false;
+    const handled = cancelled || (opts.onError ? await opts.onError(message) : false);
     if (!handled)
       notifications().notify({
         group: "vcs",
-        level: cancelled ? "warning" : "error",
+        level: "error",
         key: "vcs.operation",
-        title: cancelled ? `${opts.progress} cancelled` : opts.failure,
-        body: cancelled ? undefined : message,
+        title: opts.failure,
+        body: message,
       });
     return false;
   } finally {

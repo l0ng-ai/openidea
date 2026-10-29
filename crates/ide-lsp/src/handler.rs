@@ -30,6 +30,18 @@ impl ClientHandler {
         self.server.running_gen(self.generation).map(|r| r.caps.read().encoding).unwrap_or_default()
     }
 
+    /// Cancelling task `task` asks this server instance to stop the work of progress `token`.
+    fn cancel_handle(&self, task: TaskId, token: &Value) -> ide_core::task::CancelHandle {
+        let (server, generation, token) = (self.server.clone(), self.generation, token.clone());
+        ide_core::task::on_cancel(task, move || {
+            if let Some(run) = server.running_gen(generation)
+                && let Err(e) = run.peer.notify("window/workDoneProgress/cancel", json!({ "token": token }))
+            {
+                tracing::debug!("{}: cannot cancel progress: {e}", server.name);
+            }
+        })
+    }
+
     fn progress(&self, mgr: &LspManager, params: Value) {
         let token = match &params["token"] {
             Value::String(s) => s.clone(),
@@ -38,6 +50,7 @@ impl ClientHandler {
         let value = &params["value"];
         let message = value.get("message").and_then(Value::as_str).map(str::to_owned);
         let fraction = value.get("percentage").and_then(Value::as_f64).map(|p| (p / 100.0).clamp(0.0, 1.0) as f32);
+        let cancellable = value.get("cancellable").and_then(Value::as_bool);
         let event = {
             let mut progress = self.server.progress.lock();
             match value.get("kind").and_then(Value::as_str) {
@@ -49,13 +62,22 @@ impl ClientHandler {
                         .map(str::to_owned)
                         .unwrap_or_else(|| self.server.name.clone());
                     let task = TaskId::next();
-                    progress.insert(token, Progress { task, title: title.clone(), message: message.clone() });
-                    IdeEvent::Task { id: task, title, message, fraction, done: false }
+                    let cancel = (cancellable == Some(true)).then(|| self.cancel_handle(task, &params["token"]));
+                    let cancellable = cancel.is_some();
+                    progress.insert(token, Progress { task, title: title.clone(), message: message.clone(), cancel });
+                    IdeEvent::Task { id: task, title, message, fraction, done: false, cancellable }
                 }
                 Some("report") => {
                     let Some(p) = progress.get_mut(&token) else { return };
                     if message.is_some() {
                         p.message = message;
+                    }
+                    match cancellable {
+                        Some(true) if p.cancel.is_none() => {
+                            p.cancel = Some(self.cancel_handle(p.task, &params["token"]))
+                        }
+                        Some(false) => p.cancel = None,
+                        _ => {}
                     }
                     IdeEvent::Task {
                         id: p.task,
@@ -63,6 +85,7 @@ impl ClientHandler {
                         message: p.message.clone(),
                         fraction,
                         done: false,
+                        cancellable: p.cancel.is_some(),
                     }
                 }
                 Some("end") => {
@@ -73,6 +96,7 @@ impl ClientHandler {
                         message: message.or(p.message),
                         fraction: Some(1.0),
                         done: true,
+                        cancellable: false,
                     }
                 }
                 _ => return,

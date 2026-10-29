@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use ide_core::settings::Settings;
-use ide_core::{EventSink, IdeError, IdeResult, RequestId};
+use ide_core::{EventSink, IdeError, IdeResult, RequestId, TaskId};
 use ide_language::LanguageInfo;
 use ide_workspace::RecentProject;
 use ide_workspace::settings::SettingsScope;
@@ -223,6 +223,14 @@ pub fn project_current(window: Window, state: State<'_, AppState>) -> Option<Pro
 #[specta::specta]
 pub fn cancel_request(state: State<'_, AppState>, id: RequestId) {
     state.cancel_request(id);
+}
+
+/// Stops a background task the backend reported with `cancellable` set; false when it
+/// has ended or can't be cancelled.
+#[tauri::command]
+#[specta::specta]
+pub fn cancel_task(id: TaskId) -> bool {
+    ide_core::task::cancel(id)
 }
 
 #[derive(Serialize, Deserialize, Type)]

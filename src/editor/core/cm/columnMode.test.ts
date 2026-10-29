@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { columnModeExtension, extendBlock, isColumnMode, toggleColumnMode } from "./columnMode";
+import { columnModeExtension, extendBlock, isColumnMode, rectangleRanges, toggleColumnMode } from "./columnMode";
 
 let view: EditorView | null = null;
 afterEach(() => {
@@ -58,5 +58,51 @@ describe("Column Selection Mode", () => {
       [1, 3],
       [6, 7],
     ]);
+  });
+});
+
+describe("block selection in visible columns", () => {
+  // `张三` takes four columns, so `//` starts at column 15 on both lines.
+  const doc = 'name = "张三"  // 中文注释\nid = 42        // answer';
+  const [first, second] = doc.split("\n") as [string, string];
+  const from2 = first.length + 1;
+
+  it("⇧↓ / ⇧→ keep the block on the same columns across CJK text", () => {
+    const v = make(doc, first.indexOf("//"));
+    toggleColumnMode(v);
+    extendBlock(v, 1, 0);
+    extendBlock(v, 0, 1);
+    extendBlock(v, 0, 1);
+    expect(ranges(v)).toEqual([
+      [first.indexOf("//"), first.indexOf("//") + 2],
+      [from2 + second.indexOf("//"), from2 + second.indexOf("//") + 2],
+    ]);
+  });
+
+  it("⇧→ steps over a wide character as one unit", () => {
+    const v = make("张三四\nabcdef", 0);
+    toggleColumnMode(v);
+    extendBlock(v, 0, 1);
+    extendBlock(v, 1, 0);
+    // One ideograph on line 1 is two letters on line 2.
+    expect(ranges(v)).toEqual([
+      [0, 1],
+      [4, 6],
+    ]);
+  });
+
+  it("mouse rectangles map visible columns back to UTF-16 offsets per line", () => {
+    const v = make(`${doc}\n😀😀ab`, 0);
+    const line3 = v.state.doc.line(3);
+    const got = rectangleRanges(v.state, { line: 1, col: 15 }, { line: 3, col: 17 }).map((r) => [r.from, r.to]);
+    expect(got).toEqual([
+      [first.indexOf("//"), first.indexOf("//") + 2],
+      [from2 + second.indexOf("//"), from2 + second.indexOf("//") + 2],
+      // Line 3 is six columns wide, left of the block: a caret at its end.
+      [line3.to, line3.to],
+    ]);
+    // Columns 2..6 of "😀😀ab": the second emoji (code units 2..4) and "ab".
+    const inner = rectangleRanges(v.state, { line: 3, col: 2 }, { line: 3, col: 6 });
+    expect(inner.map((r) => [r.from, r.to])).toEqual([[line3.from + 2, line3.from + 6]]);
   });
 });

@@ -13,7 +13,7 @@
 
 use crate::Host;
 use crate::ops::{self, Emit};
-use ide_core::{IdeError, IdeEvent, IdeResult, RequestId};
+use ide_core::{IdeError, IdeEvent, IdeResult, RequestId, TaskId};
 use ide_jsonrpc::{Handler, Peer, codes};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -165,6 +165,7 @@ impl Dispatcher {
             c.host.cancel_request(c.arg::<RequestId>("id")?);
             Ok(())
         })
+        .add("cancel_task", |c| async move { Ok(ide_core::task::cancel(c.arg::<TaskId>("id")?)) })
         .add("fs_read_dir", |c| async move { ops::fs::read_dir(&c.host, &c.window, c.arg("path")?) })
         .add("fs_create_file", |c| async move { ops::fs::create_file(&c.host, &c.window, c.arg("path")?) })
         .add("fs_create_dir", |c| async move { ide_vfs::create_dir(&c.arg::<PathBuf>("path")?) })

@@ -1,10 +1,10 @@
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { BarButton, IconButton, Popup, ProgressBar, showContextMenu, T } from "@/ui";
+import { BarButton, IconButton, Popup, ProgressBar, showContextMenu, T, tooltipAttrs } from "@/ui";
 import { useContributions, useStatusInfo, type StatusItemContribution } from "./contributions";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { isStatusItemVisible, statusBarMenu, useStatusWidgetOverrides } from "./statusBarWidgets";
-import { useTasks } from "./tasks";
+import { cancelTask, canCancel, useTasks, type BackgroundTask } from "./tasks";
 import styles from "./StatusBar.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -71,13 +71,29 @@ export function StatusInfo() {
   );
 }
 
+/** A task's cancel button: working, "Cancelling…", or disabled with the reason it can't be stopped. */
+function TaskCancel({ task: t }: { task: BackgroundTask }) {
+  if (t.done) return null;
+  if (canCancel(t))
+    return <IconButton icon="stop" size="small" title={tx`Cancel ${t.title}`} onClick={() => cancelTask(t.id)} />;
+  const reason = t.cancelling ? tx("Cancelling…") : t.uncancellable;
+  if (!reason) return null;
+  // A disabled button gets no pointer events; the wrapper shows why.
+  return (
+    <span className={styles.taskCancelOff} {...tooltipAttrs(reason)}>
+      <IconButton icon="stop" size="small" title={reason} disabled />
+    </span>
+  );
+}
+
 /** Built-in: background task progress; click lists all running tasks. */
 export function TaskStatus() {
   const tasks = useTasks((s) => s.tasks);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const running = tasks.filter((t) => !t.done);
-  const current = running[running.length - 1] ?? tasks[tasks.length - 1];
+  // A task that is working wins over the queued ones waiting behind it.
+  const current = running.findLast((t) => !t.queued) ?? running[running.length - 1] ?? tasks[tasks.length - 1];
   if (!current) return null;
   const more = running.length - 1;
   return (
@@ -119,9 +135,7 @@ export function TaskStatus() {
                   <T>{t.title}</T>
                 </span>
                 {t.fraction != null && <span className={styles.taskPct}>{Math.round(t.fraction * 100)}%</span>}
-                {t.cancel && !t.done && (
-                  <IconButton icon="stop" size="small" title={tx`Cancel ${t.title}`} onClick={() => t.cancel?.()} />
-                )}
+                <TaskCancel task={t} />
               </div>
               <ProgressBar value={t.done ? 1 : t.fraction} aria-label={t.title} />
               {t.message && <div className={styles.taskMessage}>{t.message}</div>}
