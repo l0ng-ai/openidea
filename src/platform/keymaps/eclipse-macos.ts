@@ -7,8 +7,7 @@ import { intellijMacos } from "./intellij-macos";
 
 export const eclipseMacos: Record<string, string[]> = {
   ...intellijMacos,
-  "edit.redo": ["Meta+Shift+Z"],
-  "edit.undo": ["Meta+Z"],
+  // $Undo / $Redo stay unbound as in the parent keymap: the focused editor or view handles them.
   "code.autoIndentLines": ["Meta+I"],
   "navigate.back": ["Meta+[", "Button4"],
   "refactor.changeSignature": ["Alt+Meta+C"],
@@ -130,6 +129,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "debug.toggleBreakpoint": ["Shift+Meta+B"],
   "navigate.typeHierarchy": ["F4"],
   "vcs.update": [],
+  "navigate.navigationBar": ["Alt+Meta+B"],
   "code.moveLineDown": [],
   "code.moveLineUp": [],
   "code.cyclicExpandWord": ["Ctrl+."],

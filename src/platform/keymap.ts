@@ -290,6 +290,13 @@ const SYMBOLS: Record<string, string> = {
   PageDown: "⇟",
 };
 
+const KEY_LABELS: Record<string, string> = {
+  NumpadAdd: "NumPad +",
+  NumpadSubtract: "NumPad -",
+  NumpadMultiply: "NumPad *",
+  NumpadDivide: "NumPad /",
+};
+
 /**
  * Human display. macOS: `Meta+Shift+O` → `⇧⌘O`, `Shift Shift` → `⇧⇧`, `Alt Alt+Up` → `⌥⌥↑`.
  * Windows/Linux: `Ctrl+Shift+N`, chords as `Ctrl+K, Ctrl+I`, `Shift, Shift`, `Ctrl, Ctrl+Up`.
@@ -300,7 +307,11 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
     const button = `${parts.pop()} Click`;
     return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + button : [...parts, button].join("+");
   }
-  if (!mac) return normalizeBinding(binding).split(" ").join(", ");
+  if (!mac)
+    return normalizeBinding(binding)
+      .split(" ")
+      .map((stroke) => stroke.replace(/[^+]+$/, (key) => KEY_LABELS[key] ?? key))
+      .join(", ");
   const double = parseDoubleModifier(binding);
   if (double) return SYMBOLS[double.modifier]!.repeat(2) + (double.key ? (SYMBOLS[double.key] ?? double.key) : "");
   return normalizeBinding(binding)
@@ -309,7 +320,7 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
       const parts = stroke.split("+");
       const key = parts.pop()!;
       // macOS menu order: ⌃⌥⇧⌘
-      return parts.map((p) => SYMBOLS[p] ?? p).join("") + (SYMBOLS[key] ?? key);
+      return parts.map((p) => SYMBOLS[p] ?? p).join("") + (SYMBOLS[key] ?? KEY_LABELS[key] ?? key);
     })
     .join(" ");
 }

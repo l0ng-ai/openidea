@@ -125,6 +125,12 @@ describe.each(presets)("%s", (preset, title, km, parent, mod) => {
     expect(km["vcs.push"]).toEqual([]);
   });
 
+  it("leaves undo / redo to the focused component", () => {
+    for (const key of [`${mod}+Z`, `${mod}+Shift+Z`]) expect(owners(km, key), key).toEqual([]);
+    // Eclipse's Ctrl+Y Redo reaches the editor once Delete Line moves to Ctrl+D.
+    if (mod === "Ctrl") expect(owners(km, "Ctrl+Y")).toEqual([]);
+  });
+
   it("distinguishes keypad folding from font size and block comments during dispatch", () => {
     applyKeymapSettings(preset, {});
     const actions = ["code.fold", "editor.decreaseFontSize", "code.foldAll", "code.commentBlock"];
@@ -164,6 +170,7 @@ it("uses the bundled Run / Debug choices rather than assuming Ctrl becomes Cmd",
   expect(eclipseMacos["run.debug"]).toEqual(["Meta+F11"]);
   expect(eclipseMacos["run.run"]).toEqual(["Meta+Shift+F11"]);
   expect(eclipseMacos["run.rerun"]).toEqual([]);
+  expect(eclipseMacos["navigate.navigationBar"]).toEqual(["Alt+Meta+B"]);
   expect(
     Object.values(eclipseWindows)
       .flat()
