@@ -226,6 +226,17 @@ pub(crate) fn is_atomic_temp(path: &Path) -> bool {
 /// writes through symlinks. Falls back to an in-place write when the directory
 /// does not allow creating files. Returns the new mtime in ms.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
+    write_atomic_impl(path, bytes, true)
+}
+
+/// Replaces a file atomically without falling back to truncating it in place.
+/// Preserves existing permissions and writes through symlinks; if a sibling
+/// temporary file cannot be created, leaves the existing file untouched.
+pub fn write_atomic_strict(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
+    write_atomic_impl(path, bytes, false)
+}
+
+fn write_atomic_impl(path: &Path, bytes: &[u8], allow_in_place: bool) -> IdeResult<f64> {
     let target = match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() => fs::canonicalize(path)?,
         _ => path.to_path_buf(),
@@ -235,10 +246,19 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
         return Err(IdeError::invalid(format!("{} is a directory", target.display())));
     }
     let tmp = temp_path_for(&target);
-    let file = fs::OpenOptions::new().write(true).create_new(true).open(&tmp);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if existing.is_some() || !allow_in_place {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Replacement bytes must not become readable before the final
+        // permissions are restored, even when the directory has a loose umask.
+        options.mode(0o600);
+    }
+    let file = options.open(&tmp);
     let mut file = match file {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && existing.is_some() => {
+        Err(e) if allow_in_place && e.kind() == std::io::ErrorKind::PermissionDenied && existing.is_some() => {
             tracing::debug!("cannot create temp file next to {}: {e}; writing in place", target.display());
             fs::write(&target, bytes)?;
             return Ok(mtime_ms(&fs::metadata(&target)?));
@@ -264,6 +284,61 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strict_write_replaces_complete_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notebook.ipynb");
+        fs::write(&path, b"original, longer contents").unwrap();
+
+        write_atomic_strict(&path, b"{\"cells\":[]}").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"{\"cells\":[]}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_write_preserves_symlink_and_target_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.ipynb");
+        let link = dir.path().join("link.ipynb");
+        fs::write(&target, b"old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        write_atomic_strict(&link, b"new notebook").unwrap();
+
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), b"new notebook");
+        assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o640);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_write_does_not_truncate_when_sibling_creation_is_denied() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notebook.ipynb");
+        fs::write(&path, b"original notebook").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        // Privileged test runners can bypass directory permissions.
+        let probe = dir.path().join("probe");
+        if fs::File::create(&probe).is_ok() {
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+            fs::remove_file(probe).unwrap();
+            return;
+        }
+
+        let result = write_atomic_strict(&path, b"replacement");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(result.unwrap_err().kind, ide_core::error::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(&path).unwrap(), b"original notebook");
+    }
 
     #[test]
     fn decode_variants() {

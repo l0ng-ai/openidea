@@ -100,6 +100,28 @@ describe("DocumentManager + slots", () => {
     expect(backend.docs.size).toBe(0);
     expect(manager.get("/p/a.txt")).toBeUndefined();
   });
+
+  it("Save All rejects a failed document save after saving the remaining dirty documents", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" }, { files: { autoSave: false } });
+    try {
+      const a = await manager.acquire("/p/a.txt");
+      const b = await manager.acquire("/p/b.txt");
+      backend.patch(a.doc, [{ from: 0, to: 0, insert: "changed " }]);
+      backend.patch(b.doc, [{ from: 0, to: 0, insert: "changed " }]);
+      const save = backend.save.bind(backend);
+      vi.spyOn(backend, "save").mockImplementation(async (id) => {
+        if (id === a.doc) throw new Error("disk full");
+        await save(id);
+      });
+      await expect(manager.saveAll("explicit")).rejects.toThrow("disk full");
+      expect(backend.files.get("/p/a.txt")).toBe("a\n");
+      expect(backend.files.get("/p/b.txt")).toBe("changed b\n");
+      expect(a.getMeta().dirty).toBe(true);
+      expect(b.getMeta().dirty).toBe(false);
+    } finally {
+      manager.stop();
+    }
+  });
 });
 
 describe("save cleanup", () => {

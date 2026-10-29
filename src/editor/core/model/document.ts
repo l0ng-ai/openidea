@@ -735,6 +735,7 @@ export class DocumentManager {
     for (const m of this.byPath.values()) m.applySettings();
   }
 
+  /** Saves every document; failures are notified, and an explicit Save All also rejects with them. */
   async saveAll(reason: "explicit" | "auto") {
     const errors: unknown[] = [];
     await Promise.all(
@@ -747,6 +748,8 @@ export class DocumentManager {
     if (errors.length) {
       const e = errors[0];
       this.notify({ level: "error", title: "Could not save", body: e instanceof Error ? e.message : String(e) });
+      if (reason === "explicit")
+        throw errors.length === 1 ? e : new AggregateError(errors, e instanceof Error ? e.message : String(e));
     }
   }
 }

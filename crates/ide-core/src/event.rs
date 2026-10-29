@@ -117,6 +117,15 @@ pub enum IdeEvent {
     AskpassDone {
         id: u64,
     },
+    /// The kernel of an open notebook changed state (`starting`, `idle`, `busy`,
+    /// `dead`); `message` says why it failed to start or died.
+    NotebookKernel {
+        /// Backend document incarnation; stale queued events cannot target a reopen.
+        id: String,
+        path: crate::IpcPath,
+        state: String,
+        message: Option<String>,
+    },
 }
 
 /// What an askpass prompt asks for.

@@ -40,6 +40,7 @@ ide-fonts = { path = "crates/ide-fonts" }
 ide-ssh = { path = "crates/ide-ssh" }
 ide-remote = { path = "crates/ide-remote" }
 ide-host = { path = "crates/ide-host" }
+ide-notebook = { path = "crates/ide-notebook" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }
@@ -85,6 +86,9 @@ redb = "4"
 tree-sitter = "0.25"
 
 # protocols & integrations
+jupyter-zmq-client = { version = "=2.0.0", default-features = false, features = ["tokio-runtime", "ring"] }
+jupyter-protocol = "=2.0.3"
+zeromq = { version = "0.6", default-features = false, features = ["tokio-runtime", "tcp-transport"] }
 lsp-types = "0.97"
 gix = { version = "0.89", default-features = false }
 portable-pty = "0.9"

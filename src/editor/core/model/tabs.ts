@@ -310,9 +310,9 @@ export function reopenClosed(s: TabsState): { state: TabsState; tabId: string; p
 }
 
 /**
- * Tab limit: closes tabs of `paneId` beyond `limit` (pinned and `keep` tabs
- * excluded). `unchanged` closes the least recently used unmodified tab first,
- * `lru` the least recently used one.
+ * Tab limit: closes tabs of `paneId` beyond `limit` (pinned, `keep` and
+ * `isProtected` tabs excluded). `unchanged` closes the least recently used
+ * unmodified tab first, `lru` the least recently used one.
  */
 export function enforceTabLimit(
   s: TabsState,
@@ -321,12 +321,13 @@ export function enforceTabLimit(
   policy: string,
   isDirty: (tab: Tab) => boolean,
   keep?: string,
+  isProtected?: (tab: Tab) => boolean,
 ): TabsState {
   let next = s;
   for (;;) {
     const pane = next.panes[paneId];
     if (!pane || limit <= 0) return next;
-    const closable = pane.tabs.filter((t) => !t.pinned && t.id !== keep && t.id !== pane.active);
+    const closable = pane.tabs.filter((t) => !t.pinned && t.id !== keep && t.id !== pane.active && !isProtected?.(t));
     if (pane.tabs.filter((t) => !t.pinned).length <= limit || !closable.length) return next;
     const lruOrder = [...closable].sort((a, b) => rank(pane, b) - rank(pane, a));
     const victim = (policy === "unchanged" ? lruOrder.find((t) => !isDirty(t)) : undefined) ?? lruOrder[0]!;

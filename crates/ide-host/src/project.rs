@@ -46,6 +46,8 @@ pub struct Project {
     pub http_history: Arc<ide_http::History>,
     /// Coding agent tasks (Agents tool window).
     pub agents: Arc<ide_agent::AgentManager>,
+    /// Native notebooks and owned kernels, scoped to this project incarnation.
+    pub notebooks: Arc<crate::notebook::NotebookService>,
     pub(crate) watcher: Watcher,
     /// Watchers of the Project Structure content roots outside the project folder.
     pub(crate) content_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
@@ -282,6 +284,10 @@ impl Host {
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
 
         let (db, http_history, agents) = self.project_services(&root, &project_key);
+        let notebooks = crate::notebook::NotebookService::new(
+            self.data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
+            sink.clone(),
+        );
         ide_agent::registry::maintain(crate::ops::agent::registry_paths(self));
         let project = Arc::new(Project {
             root,
@@ -301,6 +307,7 @@ impl Host {
             db,
             http_history,
             agents,
+            notebooks,
             watcher,
             content_watchers: Mutex::new(content_watchers),
             _scratch_watcher: scratch_watcher,
@@ -393,6 +400,10 @@ impl Host {
         let watcher = light_watcher(&dir, &sink, &documents, &history)?;
         let project_key = project_key(&dir);
         let (db, http_history, agents) = self.project_services(&dir, &project_key);
+        let notebooks = crate::notebook::NotebookService::new(
+            self.data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
+            sink.clone(),
+        );
         let project = Arc::new(Project {
             sink,
             languages,
@@ -410,6 +421,7 @@ impl Host {
             db,
             http_history,
             agents,
+            notebooks,
             watcher,
             content_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: None,

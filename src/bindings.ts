@@ -116,6 +116,17 @@ export const commands = {
 	agentChanges: (task: string) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task })),
 	/**  Content of `path` when the task started (left side of its diff). */
 	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
+	notebookOpen: (path: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_open", { path })),
+	notebookGet: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_get", { id })),
+	notebookEdit: (id: string, version: number, edit: NotebookEdit) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_edit", { id, version, edit })),
+	notebookSave: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_save", { id })),
+	notebookReload: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_reload", { id })),
+	notebookUndo: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_undo", { id })),
+	notebookRedo: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_redo", { id })),
+	notebookClose: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("notebook_close", { id })),
+	notebookExecute: (id: string, cells: string[], python: string | null, request: RequestId, onOutput: Channel<NotebookOutputEvent>) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_execute", { id, cells, python, request, onOutput })),
+	notebookInterrupt: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("notebook_interrupt", { id })),
+	notebookRestart: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_restart", { id })),
 	fsReadDir: (path: string) => typedError<FileEntry[], IdeError>(__TAURI_INVOKE("fs_read_dir", { path })),
 	/**  Size and text/binary classification, from the file's head only. */
 	fsProbe: (path: string) => typedError<FileProbe, IdeError>(__TAURI_INVOKE("fs_probe", { path })),
@@ -3331,7 +3342,14 @@ cancellable: boolean } |
 /**  A child process (`ssh`, `git`) asks for a credential; answered with `ssh_askpass_answer`. */
 { type: "askpass"; id: number; prompt: string; kind: AskpassKind } | 
 /**  Prompt `id` was answered (in any window) or gave up. */
-{ type: "askpassDone"; id: number };
+{ type: "askpassDone"; id: number } | 
+/**
+ *  The kernel of an open notebook changed state (`starting`, `idle`, `busy`,
+ *  `dead`); `message` says why it failed to start or died.
+ */
+{ type: "notebookKernel"; 
+/**  Backend document incarnation; stale queued events cannot target a reopen. */
+id: string; path: IpcPath; state: string; message: string | null };
 
 /**  An identifier-like token whose text equals the searched name. */
 export type IdentifierOccurrence = {
@@ -4171,6 +4189,43 @@ export type NotLocalReason =
  *  member, or declared in a way the query does not cover.
  */
 "unresolved";
+
+export type NotebookCell = {
+	id: string,
+	cellType: string,
+	source: string,
+	metadata: unknown,
+	outputs: unknown[],
+	executionCount: number | null,
+	attachments: unknown,
+};
+
+export type NotebookEdit = { type: "setSource"; cell: string; source: string } | { type: "insertCell"; after: string | null; cellType: string } | { type: "deleteCell"; cell: string } | { type: "moveCell"; cell: string; before: string | null } | { type: "setCellType"; cell: string; cellType: string } | { type: "setOutputs"; cell: string; outputs: unknown[]; executionCount: number | null };
+
+export type NotebookOutputEvent = {
+	id: string,
+	path: string,
+	cell: string,
+	msgId: string,
+	kind: string,
+	content: unknown,
+	version: number,
+	dirty: boolean,
+	changedCells: string[],
+};
+
+export type NotebookSnapshot = {
+	id: string,
+	path: string,
+	version: number,
+	dirty: boolean,
+	canUndo: boolean,
+	canRedo: boolean,
+	nbformat: number,
+	nbformatMinor: number,
+	metadata: unknown,
+	cells: NotebookCell[],
+};
 
 export type NotificationGroupSettings = {
 	/**  `balloon` | `sticky` | `none` */

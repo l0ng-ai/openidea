@@ -118,6 +118,53 @@ export interface EditorKindContribution {
    * `data` must be plain JSON). The editor closes tabs whose target is gone itself.
    */
   restorable?: boolean;
+  /**
+   * The editor owns a document with unsaved state (a notebook): it takes part in
+   * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
+   * `input.key` (splits) share one document.
+   */
+  document?: EditorDocumentLifecycle;
+}
+
+/**
+ * Document lifecycle of a custom editor kind, keyed by its tabs' input. The
+ * workbench calls it whatever React has mounted: hidden tabs keep their
+ * document. Call `notifyEditorDocumentChanged` whenever `isDirty` may change.
+ */
+export interface EditorDocumentLifecycle {
+  /** Unsaved changes, pending edits not committed yet included. */
+  isDirty(input: EditorInput): boolean;
+  /** Commits pending edits; rejects when they can't be. */
+  flush(input: EditorInput): Promise<void>;
+  /** Flushes and saves; rejects on failure (the document stays dirty and open). */
+  save(input: EditorInput): Promise<void>;
+  /**
+   * Before a close decision: stops admitting edits and runs, flushes, and
+   * interrupts and drains execution, so `isDirty` holds until `cancelClose`.
+   */
+  prepareClose(input: EditorInput): Promise<void>;
+  /** The close didn't happen (Cancel, a failed save, a tab of it opened again): edits and runs resume. */
+  cancelClose(input: EditorInput): void;
+  /** Don't Save: drops unsaved changes without saving them. */
+  discard(input: EditorInput): Promise<void>;
+  /** Releases the document (and its kernel…) once no tab shows it any more. Called once per open. */
+  close(input: EditorInput): Promise<void>;
+  /** Edit › Undo / Redo while the editor has focus. */
+  undo?(input: EditorInput): Promise<void>;
+  redo?(input: EditorInput): Promise<void>;
+}
+
+/** Bumped by `notifyEditorDocumentChanged`; selectors reading `isDirty` re-run on it. */
+export const useEditorDocuments = create<{ revision: number }>(() => ({ revision: 0 }));
+
+/** A custom editor document's dirty state (or pending edits) may have changed: tab marks and counts refresh. */
+export function notifyEditorDocumentChanged() {
+  useEditorDocuments.setState((s) => ({ revision: s.revision + 1 }));
+}
+
+/** Changes with every `notifyEditorDocumentChanged`, for components that read `isDirty`. */
+export function useEditorDocumentRevision(): number {
+  return useEditorDocuments((s) => s.revision);
 }
 
 /**
@@ -307,11 +354,23 @@ export const provideProjectPopup = (component: ComponentType<ProjectPopupProps>)
 // editor kind (images, hex view) before the text editor. A provider may probe
 // the file (size, binary content); the first non-null answer wins.
 
+/** Resources acquired while resolving belong to the request until its tab is admitted. */
+export interface FileEditorResolutionContext {
+  /** Commit is synchronous: no close/project transition may interleave with tab insertion. */
+  onAdmission(commit: () => void, rollback: () => Promise<void>): void;
+}
+
+export interface FileEditorResolution {
+  input: EditorInput;
+  admit(): void;
+  rollback(): Promise<void>;
+}
+
 export interface FileEditorProvider {
   id: string;
   /** Lower asks first. Default 100. */
   order?: number;
-  resolve(path: string): EditorInput | null | Promise<EditorInput | null>;
+  resolve(path: string, context: FileEditorResolutionContext): EditorInput | null | Promise<EditorInput | null>;
 }
 
 const fileEditorProviders = new Map<string, FileEditorProvider>();
@@ -324,15 +383,39 @@ export function registerFileEditorProvider(p: FileEditorProvider): () => void {
 }
 
 /** The non-text editor input for `path`, or null for the text editor. Provider failures fall through. */
-export async function resolveFileEditor(path: string): Promise<EditorInput | null> {
+export async function resolveFileEditor(path: string): Promise<FileEditorResolution | null> {
   const providers = [...fileEditorProviders.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
   for (const p of providers) {
+    const acquisitions: Array<{ commit: () => void; rollback: () => Promise<void> }> = [];
+    let admitted = false;
+    const rollback = async () => {
+      if (admitted) return;
+      const results = await Promise.allSettled(acquisitions.splice(0).map((a) => Promise.resolve().then(a.rollback)));
+      const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (errors.length)
+        throw new AggregateError(
+          errors.map((r) => r.reason),
+          "File editor acquisition cleanup failed",
+        );
+    };
     try {
-      const input = await p.resolve(path);
-      if (input) return input;
+      const input = await p.resolve(path, {
+        onAdmission: (commit, release) => acquisitions.push({ commit, rollback: release }),
+      });
+      if (input)
+        return {
+          input,
+          admit: () => {
+            for (const acquisition of acquisitions) acquisition.commit();
+            admitted = true;
+            acquisitions.length = 0;
+          },
+          rollback,
+        };
     } catch (e) {
       console.warn(`file editor provider ${p.id} failed`, e);
     }
+    await rollback();
   }
   return null;
 }
@@ -412,7 +495,7 @@ export interface EditorService {
   activePath(): string | null;
   /** Doc id + cursor of the focused text editor. */
   activeCursor(): { doc: number; path: string; line: number; col: number; offset: number } | null;
-  /** Save all dirty documents. */
+  /** Save all dirty documents; rejects with the failures once every save was tried. */
   saveAll(): Promise<void>;
   /** Move keyboard focus to the active editor (used by Escape from tool windows). */
   focus?(): void;
@@ -424,12 +507,37 @@ export interface EditorService {
   activeInput?(): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
   onActiveInputChange?(fn: (input: EditorInput | null) => void): () => void;
-  /** Closes every tab showing `path`. */
-  closePath?(path: string): void;
-  /** Closes the tab of the input with this `key` (e.g. a merge editor once applied). */
-  closeInput?(key: string): void;
+  /**
+   * Closes every tab showing `path`. Tabs without a custom document close at
+   * once; unsaved custom documents are asked about first. Resolves false when
+   * the user kept them (Cancel, a failed save).
+   */
+  closePath?(path: string): Promise<boolean>;
+  /** Closes the tab of the input with this `key` (e.g. a merge editor once applied), like `closePath`. */
+  closeInput?(key: string): Promise<boolean>;
   /** Reformat Code on the whole open document at `path` (quietly); whether anything changed. */
   reformat?(path: string): Promise<boolean>;
+  /**
+   * Window / project close: prepares every open custom editor document for the
+   * Save / Don't Save / Cancel decision (see `EditorCloseSession`).
+   */
+  prepareClose?(): Promise<EditorCloseSession>;
+  /** Backend project/window transition failed after authorization: resume its prepared documents. */
+  cancelClose?(): void;
+  /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
+  documentHistory?(command: "undo" | "redo"): boolean;
+}
+
+/** Custom editor documents held still for a window / project close decision. */
+export interface EditorCloseSession {
+  /** Documents with unsaved changes. */
+  dirty: number;
+  /** Don't Save: drops their unsaved changes. */
+  discard(): Promise<void>;
+  /** The close didn't happen (Cancel, a failed save): the documents resume. */
+  cancel(): void;
+  /** The close goes ahead: they stay held until their tabs close (they resume if the project stays open). */
+  commit(): void;
 }
 
 export interface ToolWindowService {
