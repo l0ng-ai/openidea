@@ -6,7 +6,9 @@
 import type { DbColumnInfo, DbDriver } from "@/platform/ipc";
 
 export function quoteIdent(driver: DbDriver, name: string): string {
-  return driver === "mysql" ? `\`${name.replace(/`/g, "``")}\`` : `"${name.replace(/"/g, '""')}"`;
+  if (driver === "mysql") return `\`${name.replace(/`/g, "``")}\``;
+  if (driver === "sqlServer") return `[${name.replace(/]/g, "]]")}]`;
+  return `"${name.replace(/"/g, '""')}"`;
 }
 
 /** Quotes only when needed: lower-case (PostgreSQL) / plain words stay bare, like IDEA's generated SQL. */
@@ -132,7 +134,7 @@ export function truncateSql(
 ): string {
   const q = qualifiedName(driver, schema, table);
   if (driver === "sqlite") return `delete from ${q};`;
-  if (driver === "mysql") return `truncate table ${q};`;
+  if (driver === "mysql" || driver === "sqlServer") return `truncate table ${q};`;
   return `truncate table ${q}${opts.restartIdentity ? " restart identity" : ""}${opts.cascade ? " cascade" : ""};`;
 }
 

@@ -17,6 +17,7 @@ import {
   textEditorWrapperFor,
   useContributions,
   useFileDecorations,
+  useEditorDocumentRevision,
   useTextEditorWrappers,
   type EditorInput,
 } from "@/workbench/contributions";
@@ -39,6 +40,7 @@ import {
 } from "@/ui";
 import { editorController, isTextInput, tabIcon, tabTitle, useTabs, type VirtualInputData } from "../controller";
 import { useDocMeta } from "../model/document";
+import { inputDirty } from "../model/customDocuments";
 import type { LayoutNode, SplitEdge, Tab } from "../model/tabs";
 import { disambiguateTitles } from "../model/tabTitles";
 import { TextEditorHost } from "./TextEditorHost";
@@ -130,7 +132,9 @@ function PaneView({ paneId }: { paneId: string }) {
   const kinds = useContributions((s) => s.editorKinds);
   const tabs = useMemo(() => pane?.tabs ?? [], [pane]);
   const paths = tabs.map((t) => t.input.path ?? "");
-  const dirty = useDocMeta(useShallow((s) => paths.map((p) => !!s[p]?.dirty)));
+  const textDirty = useDocMeta(useShallow((s) => paths.map((p) => !!s[p]?.dirty)));
+  useEditorDocumentRevision();
+  const dirty = tabs.map((tab, i) => inputDirty(tab.input, kinds) ?? textDirty[i] ?? false);
   const colors = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.color ?? "") : ""))));
   const tints = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.tint ?? "") : ""))));
 
@@ -257,8 +261,8 @@ function PaneView({ paneId }: { paneId: string }) {
       layout={tabPrefs.multipleRows ? "wrap" : tabPrefs.oneRowOverflow === "squeeze" ? "squeeze" : "scroll"}
       closePosition={tabPrefs.closeButtonPosition === "left" ? "left" : "right"}
       onSelect={(id) => ctrl.activate(paneId, id)}
-      onClose={(id) => ctrl.closeTab(paneId, id)}
-      onCloseOthers={(id) => ctrl.closeOthers(paneId, id)}
+      onClose={(id) => void ctrl.closeTab(paneId, id)}
+      onCloseOthers={(id) => void ctrl.closeOthers(paneId, id)}
       onDoubleClick={(id) => {
         // IDEA: a preview tab becomes a regular one; any other tab maximizes the editor.
         if (pane.tabs.find((t) => t.id === id)?.preview) ctrl.keepTab(paneId, id);

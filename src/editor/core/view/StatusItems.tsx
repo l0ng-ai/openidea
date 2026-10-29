@@ -1,10 +1,11 @@
 /** Status bar widgets of the active text editor (design footer). */
-import { Fragment, useMemo, useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import clsx from "clsx";
+import { useShallow } from "zustand/react/shallow";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { basename, dirname, relativePath, useProject } from "@/platform/project";
-import type { LineEnding } from "@/platform/ipc";
+import type { LineEnding, OutlineItem } from "@/platform/ipc";
 import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
@@ -23,6 +24,23 @@ function useActiveMeta() {
   return meta;
 }
 
+const NO_SYMBOLS: OutlineItem[] = [];
+
+/**
+ * Symbols at the caret while `path` is the active editor, `null` otherwise. Selected
+ * from the status store so callers re-render when the chain changes, not on every
+ * keystroke or caret move.
+ */
+function useCaretSymbols(path: string | null, outline: readonly OutlineItem[] | undefined) {
+  return useEditorStatus(
+    useShallow((s) => {
+      const st = s.status;
+      if (!st || st.path !== path) return null;
+      return outline ? symbolChain(outline, st.line, st.col) : NO_SYMBOLS;
+    }),
+  );
+}
+
 interface Crumb {
   label: string;
   icon?: string;
@@ -37,15 +55,12 @@ interface Crumb {
  * symbols, with icons; clicking a segment opens a popup of its children.
  */
 export function Breadcrumbs() {
-  const status = useEditorStatus((s) => s.status);
+  const path = useEditorStatus((s) => s.status?.path ?? null);
   const project = useProject((s) => s.project);
-  const outline = useOutline((s) => (status ? s[status.path] : undefined));
-  const line = status?.line ?? 0;
-  const col = status?.col ?? 0;
-  const chain = useMemo(() => (outline ? symbolChain(outline, line, col) : []), [outline, line, col]);
+  const outline = useOutline((s) => (path ? s[path] : undefined));
+  const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
   const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);
-  if (!status) return null;
-  const path = status.path;
+  if (!path) return null;
   const parent = dirname(path);
   const segments: Crumb[] = [];
   if (project)
@@ -137,12 +152,12 @@ export function CodeBreadcrumbs({
   const prefs = useEditorPrefs().breadcrumbs;
   const language = useDocMeta((s) => s[path]?.language);
   const outline = useOutline((s) => s[path]);
-  const status = useEditorStatus((s) => (s.status?.path === path ? s.status : null));
-  const slot = editorController().slots.get(tabId);
-  const caret = status ?? (slot ? slot.caret() : null);
-  const line = caret?.line ?? 0;
-  const col = caret?.col ?? 0;
-  const chain = useMemo(() => (outline ? symbolChain(outline, line, col) : []), [outline, line, col]);
+  let chain = useCaretSymbols(path, outline);
+  if (!chain) {
+    // Not the active editor (another split): its own caret, as of this render.
+    const caret = editorController().slots.get(tabId)?.caret();
+    chain = outline ? symbolChain(outline, caret?.line ?? 0, caret?.col ?? 0) : NO_SYMBOLS;
+  }
   if (
     !prefs.show ||
     prefs.placement !== position ||

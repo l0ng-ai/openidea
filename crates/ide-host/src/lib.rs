@@ -4,6 +4,7 @@
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod environment;
+pub mod notebook;
 pub mod ops;
 mod project;
 mod proxy;
@@ -132,26 +133,75 @@ impl Host {
     }
 
     pub fn close_project(&self, window: &str) {
-        if let Some(project) = self.projects.write().remove(window) {
+        let project = self.projects.write().remove(window);
+        if let Some(project) = project {
             if !project.light {
                 self.environment.project_closed();
             }
             project.agents.shutdown();
+            project.notebooks.stop_admission();
+            self.shutdown_notebooks_blocking(vec![project.notebooks.clone()]);
             let lsp = project.lsp.clone();
             self.runtime.spawn(async move { lsp.shutdown_all().await });
         }
     }
 
-    /// Stops what this host started: language servers, agents, runs and terminals.
+    /// Synchronous project/window destruction must finish owned kernel cleanup,
+    /// not enqueue work which can be lost as the desktop runtime exits.
+    fn shutdown_notebooks_blocking(&self, notebooks: Vec<Arc<notebook::NotebookService>>) {
+        for service in &notebooks {
+            service.stop_admission();
+        }
+        let runtime = self.runtime.clone();
+        let wait = move || {
+            let worker = std::thread::spawn(move || {
+                runtime.block_on(async move {
+                    for service in notebooks {
+                        service.shutdown().await;
+                    }
+                });
+            });
+            if let Err(error) = worker.join() {
+                tracing::error!("notebook shutdown thread failed: {error:?}");
+            }
+        };
+        if tokio::runtime::Handle::try_current()
+            .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+        {
+            tokio::task::block_in_place(wait);
+        } else {
+            wait();
+        }
+    }
+
+    /// Called before the desktop runtime exits, including update/restart exits.
+    pub fn shutdown_notebooks_on_exit(&self) {
+        self.shutdown_notebooks_blocking(self.projects().iter().map(|project| project.notebooks.clone()).collect());
+    }
+
+    /// Stops what this host started: notebook kernels, language servers, agents, runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
     pub async fn shutdown(&self) {
         self.environment.shutdown();
         self.processes.kill_all();
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
-        for project in projects {
+        for project in &projects {
+            project.notebooks.stop_admission();
             project.agents.shutdown();
-            project.lsp.shutdown_all().await;
+        }
+        // Kernel cleanup owns its interrupt/termination/reaping deadlines. An
+        // outer LSP timeout must never abort it before owned children are reaped.
+        for project in &projects {
+            project.notebooks.shutdown().await;
+        }
+        let stop_language_servers = async {
+            for project in &projects {
+                project.lsp.shutdown_all().await;
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
+            tracing::warn!("language servers did not shut down in time");
         }
     }
 

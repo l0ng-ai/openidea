@@ -127,7 +127,7 @@ function RecentFilesDialog() {
   };
 
   // IDEA: Delete closes the selected editor (and drops it from the list) or hides the tool window.
-  const removeSelected = () => {
+  const removeSelected = async () => {
     if (effectiveColumn === "tools") {
       const tw = tools[tIndex]?.tw;
       if (tw) toolWindowService().hide(tw.id);
@@ -135,8 +135,10 @@ function RecentFilesDialog() {
     }
     const item = files[fIndex];
     if (!item) return;
-    if (item.editor) maybeEditorService()?.closeInput?.(item.path);
-    else maybeEditorService()?.closePath?.(item.path);
+    const closed = item.editor
+      ? await maybeEditorService()?.closeInput?.(item.path)
+      : await maybeEditorService()?.closePath?.(item.path);
+    if (closed === false) return;
     if (!switcher) void call(commands.removeRecent(item.path)).catch(() => {});
     setRemoved((r) => new Set(r).add(item.path));
     setFileIndex(fIndex);
@@ -192,7 +194,7 @@ function RecentFilesDialog() {
     // In Recent Files Backspace edits the speed search text first.
     if (e.key === "Delete" || (e.key === "Backspace" && !query)) {
       e.preventDefault();
-      removeSelected();
+      void removeSelected();
       return;
     }
     if (e.key === "Tab" || ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !query)) {

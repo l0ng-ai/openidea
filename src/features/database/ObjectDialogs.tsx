@@ -250,6 +250,25 @@ const TYPES: Record<DbDriver, string[]> = {
     "json",
     "blob",
   ],
+  sqlServer: [
+    "int",
+    "bigint",
+    "smallint",
+    "tinyint",
+    "decimal(10,2)",
+    "float",
+    "real",
+    "varchar(255)",
+    "nvarchar(255)",
+    "text",
+    "ntext",
+    "date",
+    "datetime",
+    "datetime2",
+    "uniqueidentifier",
+    "bit",
+    "varbinary(max)",
+  ],
 };
 
 interface ModifyProps {

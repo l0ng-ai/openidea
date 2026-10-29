@@ -280,7 +280,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       setResolved(true);
       await refreshNow();
       // Like IDEA, applying the result closes the merge editor.
-      editorService().closeInput?.(input.key);
+      await editorService().closeInput?.(input.key);
     }
   };
 
