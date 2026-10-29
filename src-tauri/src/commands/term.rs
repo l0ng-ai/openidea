@@ -4,9 +4,11 @@ use ide_terminal::{TerminalInfo, TerminalOptions};
 use tauri::ipc::Channel;
 use tauri::{State, Window};
 
+/// Async to stay off the main thread: forking the IDE (its whole address space)
+/// to start the shell takes tens of milliseconds, a frozen UI if run there.
 #[tauri::command]
 #[specta::specta]
-pub fn term_spawn(
+pub async fn term_spawn(
     window: Window,
     state: State<'_, AppState>,
     options: TerminalOptions,
