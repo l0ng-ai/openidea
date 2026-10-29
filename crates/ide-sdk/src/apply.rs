@@ -428,8 +428,8 @@ fn configure_vue_typescript(cfg: &mut LanguageServerConfig, root: &Path, server_
 fn configure_angular(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
     // Found as the launcher finds it; missing, it asks to be installed.
     let path = cfg.env.get("PATH").map_or_else(search_path, OsString::from);
-    let Ok(bin) = which::which_in(&cfg.command, Some(path), server_root) else { return };
-    let Some(package) = angular::server_package(&bin) else {
+    let Ok(bin) = which::which_in(&cfg.command, Some(&path), server_root) else { return };
+    let Some(package) = angular::server_package(&bin, &path, server_root, &cfg.env) else {
         cfg.launch_error = Some(angular::missing_package_message(&bin));
         return;
     };

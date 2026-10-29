@@ -24,7 +24,7 @@ mod uri;
 mod virtual_doc;
 
 pub use inspect::{FileInspection, InspectHost, InspectOptions};
-pub use launch::{LaunchError, Launcher, ProcessLauncher, search_path};
+pub use launch::{LaunchError, Launcher, ProcessLauncher};
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
 pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
 
@@ -1921,9 +1921,22 @@ impl LspManager {
     /// Servers no longer enabled stop; newly enabled ones attach to open documents.
     pub async fn reconfigure(&self) {
         self.stop_unlisted().await;
+        let Some(me) = self.me.upgrade() else { return };
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         for s in servers {
-            let next = self.configured(&s);
+            // The settings hook may run tools (`npm root -g`), as when the server starts.
+            let next = match tokio::task::spawn_blocking({
+                let (me, s) = (me.clone(), s.clone());
+                move || me.configured(&s)
+            })
+            .await
+            {
+                Ok(next) => next,
+                Err(e) => {
+                    tracing::warn!("{}: settings hook failed: {e}", s.name);
+                    continue;
+                }
+            };
             let current = s.effective_config();
             if next == current {
                 continue;

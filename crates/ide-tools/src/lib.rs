@@ -171,28 +171,6 @@ pub fn path_with_tools(app_data: &Path, path: &std::ffi::OsStr) -> OsString {
     std::env::join_paths(dirs).unwrap_or_else(|_| path.to_owned())
 }
 
-/// `PATH` plus the usual per-user tool locations (GUI apps on macOS start with a minimal `PATH`).
-pub fn default_search_path() -> OsString {
-    let mut dirs: Vec<PathBuf> =
-        ide_core::process::host_var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) {
-        for rel in [".cargo/bin", ".local/bin", "go/bin", ".bun/bin", ".volta/bin", ".npm-global/bin", "Library/pnpm"] {
-            dirs.push(home.join(rel));
-        }
-        if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
-            let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path().join("bin")).collect();
-            versions.sort();
-            dirs.extend(versions.into_iter().rev());
-        }
-    }
-    for d in ["/opt/homebrew/bin", "/usr/local/go/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
-        dirs.push(PathBuf::from(d));
-    }
-    let mut seen = HashSet::new();
-    dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()));
-    std::env::join_paths(dirs).unwrap_or_default()
-}
-
 static INSTALLING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 struct InstallGuard(String);
@@ -313,9 +291,9 @@ pub struct Tools {
 }
 
 impl Tools {
-    /// Tools under `<app_data>/tools` using [`default_search_path`].
+    /// Tools under `<app_data>/tools` using [`ide_core::tool_path::search_path`].
     pub fn new(app_data: &Path) -> Self {
-        Self::with_paths(tools_dir(app_data), default_search_path(), Platform::current())
+        Self::with_paths(tools_dir(app_data), ide_core::tool_path::search_path(), Platform::current())
     }
 
     pub fn with_paths(root: PathBuf, search_path: OsString, platform: Platform) -> Self {

@@ -448,7 +448,7 @@ mod tests {
             _ => None,
         };
         if let Some(platform) = other {
-            let tools = Tools::with_paths(crate::tools_dir(tmp.path()), crate::default_search_path(), platform);
+            let tools = Tools::with_paths(crate::tools_dir(tmp.path()), ide_core::tool_path::search_path(), platform);
             let jdk = tools.download_jdk(TEMURIN, feature, None, &CancellationToken::new(), &|_| {}).unwrap();
             let home = jdk.home.into_path_buf();
             eprintln!("{}", home.display());

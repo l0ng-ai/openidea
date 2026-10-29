@@ -674,6 +674,108 @@ fn angular_language_server_probes_its_own_package_then_the_project() {
 }
 
 #[test]
+fn angular_language_server_is_found_behind_version_manager_shims() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("app");
+    std::fs::create_dir_all(&project).unwrap();
+    let install = |node_modules: &Path| {
+        let package = node_modules.join("@angular/language-server");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("package.json"), "{}").unwrap();
+        package
+    };
+    let probes = |command: &Path, s: &Settings, env: &[(&str, &str)]| {
+        let mut cfg = server("angular-language-server");
+        cfg.command = command.to_string_lossy().into_owned();
+        cfg.env.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        configure_server(&mut cfg, &project, &project, s);
+        cfg.args.iter().position(|a| a == "--ngProbeLocations").map(|i| cfg.args[i + 1].clone())
+    };
+    let with_project = |package: &Path| Some(format!("{},{}", package.to_string_lossy(), project.to_string_lossy()));
+
+    // pnpm: the shim script runs the package from pnpm's global directory.
+    let pnpm = tmp.path().join("pnpm");
+    let package = install(&pnpm.join("global/v11/abc/node_modules"));
+    let shim = npm_shim(&pnpm.join("bin"), "ngserver");
+    let script = "exec node \"$basedir/../global/v11/abc/node_modules/@angular/language-server/bin/ngserver\" \"$@\"\n";
+    std::fs::write(&shim, format!("#!/bin/sh\n{script}")).unwrap();
+    assert_eq!(probes(&shim, &Settings::default(), &[]), with_project(&dunce::canonicalize(&package).unwrap()));
+
+    // Volta: the package's image, next to the shim's directory.
+    let volta = tmp.path().join("volta");
+    let package = install(&volta.join("tools/image/packages/@angular/language-server/lib/node_modules"));
+    let shim = npm_shim(&volta.join("bin"), "ngserver");
+    assert_eq!(probes(&shim, &Settings::default(), &[]), with_project(&package));
+
+    // asdf, mise: the shim names only the command; the manager's npm shim knows
+    // where global packages are, run as the server is: in the project (whose
+    // `.tool-versions` picks the Node), with the login shell's and its own variables.
+    let root_of = |package: &Path| package.parent().unwrap().parent().unwrap().display().to_string();
+    let package = install(&tmp.path().join("asdf/installs/nodejs/24/lib/node_modules"));
+    std::fs::write(project.join(".tool-versions"), "nodejs 24\n").unwrap();
+    // The only writer in this test binary.
+    ide_core::process::set_shell_env(vec![("OPENIDEA_TEST_SHELL".into(), "1".into())]);
+    let shims = tmp.path().join(".asdf/shims");
+    // The manager's npm runs on the first Node on PATH (`#!/usr/bin/env node`).
+    std::fs::write(
+        npm_shim(&shims, "npm"),
+        if cfg!(windows) {
+            "@if exist .tool-versions if \"%OPENIDEA_TEST_SHELL%\"==\"1\" call node\r\n"
+        } else {
+            "#!/bin/sh\n[ -f .tool-versions ] && [ \"$OPENIDEA_TEST_SHELL\" = 1 ] && exec node\n"
+        },
+    )
+    .unwrap();
+    std::fs::write(
+        npm_shim(&shims, "node"),
+        if cfg!(windows) {
+            "@echo %OPENIDEA_TEST_NPM_ROOT%\r\n"
+        } else {
+            "#!/bin/sh\necho \"$OPENIDEA_TEST_NPM_ROOT\"\n"
+        },
+    )
+    .unwrap();
+    // Another installation's npm and Node, first on PATH.
+    let node = tmp.path().join("node/bin");
+    let other = root_of(&install(&tmp.path().join("node/lib/node_modules")));
+    for name in ["npm", "node"] {
+        std::fs::write(
+            npm_shim(&node, name),
+            if cfg!(windows) { format!("@echo {other}\r\n") } else { format!("#!/bin/sh\necho '{other}'\n") },
+        )
+        .unwrap();
+    }
+    let mut s = Settings::default();
+    s.languages.node.interpreter = node.join("node").to_string_lossy().into_owned();
+    let root = root_of(&package);
+    let env = [("OPENIDEA_TEST_NPM_ROOT", root.as_str())];
+    assert_eq!(probes(&npm_shim(&shims, "ngserver"), &s, &env), with_project(&package));
+    // Not without the manager's own npm, nor for an executable elsewhere: the npm
+    // on PATH may be another installation's.
+    assert_eq!(probes(&npm_shim(&tmp.path().join("mise/shims"), "ngserver"), &s, &env), None);
+    assert_eq!(probes(&npm_shim(&tmp.path().join("bin"), "ngserver"), &s, &env), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn query_output_is_read_within_the_deadline() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Its own PATH: the first search path would read the login shell within the timing.
+    let env = [("PATH", "/usr/bin:/bin")];
+    let timeout = std::time::Duration::from_millis(500);
+    // Exits at once, leaving a job that holds its output open, or keeps writing to it.
+    let jobs = ["sleep 5", "i=0; while [ $i -lt 2000000 ]; do echo more; i=$((i+1)); done"];
+    for (i, job) in jobs.iter().enumerate() {
+        let program = npm_shim(tmp.path(), &format!("wrapper{i}"));
+        std::fs::write(&program, format!("#!/bin/sh\necho /global/root\n({job}) &\n")).unwrap();
+        let started = std::time::Instant::now();
+        let out = crate::exec::query_in(&program, &[], None, &env, timeout).unwrap();
+        assert!(out.starts_with("/global/root"), "{job}: {out:.40}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{job}: {:?}", started.elapsed());
+    }
+}
+
+#[test]
 fn max_java_picks_an_older_jdk() {
     let dir = tempfile::tempdir().unwrap();
     let jdk = |major: u32| {
