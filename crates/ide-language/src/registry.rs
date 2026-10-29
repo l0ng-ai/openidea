@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
+    ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
     ("cmake", include_str!("../../../languages/cmake.toml")),
@@ -348,8 +349,10 @@ mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
 
-    /// `name`s exported by `@codemirror/language-data` (the UI resolves `ui-mode` against these).
+    /// `name`s exported by `@codemirror/language-data` or built into `src/editor/core/cm/languages.ts`
+    /// (the UI resolves `ui-mode` against these).
     const UI_MODES: &[&str] = &[
+        "Batch",
         "C",
         "C++",
         "CQL",
@@ -511,6 +514,7 @@ mod tests {
         assert_eq!(reg.detect(Path::new("script"), Some("#!/usr/bin/env python3")).as_str(), "python");
         assert_eq!(detect(&reg, "README"), "plaintext");
         assert_eq!(detect(&reg, "unknown.zzz"), "plaintext");
+        assert_eq!(reg.get(&LanguageId::new("bat")).unwrap().line_comment.as_deref(), Some("@REM"));
         let rust = reg.get(&LanguageId::new("rust")).unwrap();
         assert_eq!(rust.language_servers[0].name, "rust-analyzer");
     }
@@ -679,6 +683,8 @@ mod tests {
             ("deploy.sh", "shellscript"),
             (".zshrc", "shellscript"),
             ("Build.ps1", "powershell"),
+            ("build.bat", "bat"),
+            ("run.cmd", "bat"),
             ("schema.sql", "sql"),
             ("api.http", "http"),
             ("api.rest", "http"),

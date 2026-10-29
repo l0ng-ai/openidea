@@ -15,6 +15,7 @@ import { currentRoots } from "@/platform/projectRoots";
 import { applicationConfig, jvmModuleDir } from "./application";
 import { formatArgs } from "./configs";
 import { contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
+import { isWindows } from "./jvmTypes";
 import { detectRunTargets, targetConfig, targetLanguage, type RunTarget } from "./targets";
 import { tx } from "@/platform/i18n";
 
@@ -154,6 +155,7 @@ export type ScriptLanguage =
   | "ts"
   | "python"
   | "shell"
+  | "bat"
   | "ruby"
   | "php"
   | "perl"
@@ -192,6 +194,7 @@ export function scriptLanguage(path: string, content?: string): ScriptLanguage |
   if (/\.[cm]?ts$/.test(name) && !/\.d\.[cm]?ts$/.test(name)) return "ts";
   if (/\.pyw?$/.test(name)) return "python";
   if (/\.(sh|bash|zsh)$/.test(name)) return "shell";
+  if (/\.(bat|cmd)$/i.test(name)) return "bat";
   if (/\.rb$/.test(name)) return "ruby";
   if (/\.php$/.test(name)) return "php";
   if (/\.pl$/.test(name)) return "perl";
@@ -229,6 +232,8 @@ export function toolsFor(lang: ScriptLanguage, content?: string): string[] {
         (n, i, all) => all.indexOf(n) === i,
       );
     }
+    case "bat":
+      return [];
     case "ruby":
       return ["ruby"];
     case "php":
@@ -667,6 +672,14 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
         name: s.file,
         scope: "file",
         config: fileConfig(s, "shell", t.command, [...(sb?.slice(1) ?? []), s.arg]),
+      };
+    }
+    case "bat": {
+      if (!(env.windows ?? isWindows())) return null;
+      return {
+        name: s.file,
+        scope: "file",
+        config: { ...fileConfig(s, "shell", "cmd.exe", ["/c", s.file]), cwd: dirName(s.idPath) || null },
       };
     }
     case "ruby":

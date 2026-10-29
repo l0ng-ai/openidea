@@ -562,6 +562,7 @@ export const KEYWORD_BLOCK_LANGS = new Set([
   "r",
   "perl",
   "powershell",
+  "bat",
 ]);
 /** A line opening an indented body in `end` / layout languages (Ruby, Lua, Elixir, Haskell…). */
 const KEYWORD_HEAD =

@@ -115,6 +115,8 @@ const EXT_LANG: Record<string, string> = {
   cpp: "cpp",
   h: "c",
   sh: "shellscript",
+  bat: "bat",
+  cmd: "bat",
   sql: "sql",
   xml: "xml",
 };
@@ -218,6 +220,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     lineComment: "#",
     blockComment: null,
     indent: { tabSize: 2, insertSpaces: true },
+  },
+  {
+    id: "bat",
+    name: "Batch",
+    extensions: ["bat", "cmd"],
+    uiMode: "Batch",
+    lineComment: "@REM",
+    blockComment: null,
+    indent: { tabSize: 4, insertSpaces: true },
   },
   {
     id: "plaintext",
