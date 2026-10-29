@@ -149,3 +149,78 @@ describe("multi-root Git log", () => {
     }
   });
 });
+
+describe("Git log background refresh", () => {
+  it("keeps history and selection visible until the replacement is ready", async () => {
+    useVcs.setState({ roots: ["/project/front"] });
+    log.mockResolvedValue({ status: "ok", data: [commit("old")] });
+    await reloadLog();
+    const before = useGitLog.getState();
+    selectCommit(commitKey(before.commits[0]!));
+    let finish!: (value: unknown) => void;
+    log.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const refresh = reloadLog({ preserve: true });
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(useGitLog.getState().commits).toBe(before.commits);
+    expect(useGitLog.getState().rows).toBe(before.rows);
+    expect(useGitLog.getState().loading).toBe(true);
+    finish({ status: "ok", data: [commit("new"), commit("old")] });
+    await refresh;
+    expect(useGitLog.getState().commits.map((c) => c.id)).toEqual(["new", "old"]);
+    expect(useGitLog.getState().rows).toHaveLength(2);
+    expect(useGitLog.getState().selected).toBe(commitKey(before.commits[0]!));
+    expect(useGitLog.getState().loading).toBe(false);
+  });
+
+  it("refreshes the loaded range and resumes paging at the replacement's end", async () => {
+    useVcs.setState({ roots: ["/project/front"] });
+    const history = Array.from({ length: PAGE * 3 }, (_, i) => commit(String(i)));
+    log.mockImplementation(async (_repo, q) => ({ status: "ok", data: history.slice(q.skip, q.skip + q.limit) }));
+    await reloadLog();
+    await loadMore();
+    history.unshift(commit("new"));
+    await reloadLog({ preserve: true });
+    expect(useGitLog.getState().commits).toHaveLength(PAGE * 2);
+    expect(log.mock.lastCall?.[1]).toMatchObject({ skip: 0, limit: PAGE * 2 });
+    await loadMore();
+    expect(log.mock.lastCall?.[1]).toMatchObject({ skip: PAGE * 2, limit: PAGE });
+    expect(useGitLog.getState().commits.map((c) => c.id)).toEqual(history.slice(0, PAGE * 3).map((c) => c.id));
+  });
+
+  it("retains the current history if refreshing fails", async () => {
+    useVcs.setState({ roots: ["/project/front"] });
+    log.mockResolvedValue({ status: "ok", data: [commit("old")] });
+    await reloadLog();
+    const before = useGitLog.getState();
+    log.mockRejectedValue(new Error("unavailable"));
+    await reloadLog({ preserve: true });
+    expect(useGitLog.getState().commits).toBe(before.commits);
+    expect(useGitLog.getState().rows).toBe(before.rows);
+    expect(useGitLog.getState().error).toContain("unavailable");
+    expect(useGitLog.getState().loading).toBe(false);
+  });
+
+  it("ignores a refresh that finishes after the filters have changed", async () => {
+    useVcs.setState({ roots: ["/project/front"] });
+    let finish!: (value: unknown) => void;
+    log.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const refresh = reloadLog({ preserve: true });
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    useGitLog.setState({ filters: { ...emptyFilters(), text: "filtered" } });
+    log.mockResolvedValue({ status: "ok", data: [commit("filtered")] });
+    await reloadLog();
+    finish({ status: "ok", data: [commit("stale")] });
+    await refresh;
+    expect(useGitLog.getState().commits.map((c) => c.id)).toEqual(["filtered"]);
+  });
+});
