@@ -4,10 +4,11 @@
  * direct interpreter invocation for main files. Best effort, IDEA-style.
  */
 import type { RunConfig } from "@/platform/ipc";
+import { isWindows } from "./jvmTypes";
 
 export type FileRole = "test" | "main" | "script" | null;
 
-export function fileRole(relPath: string, content?: string): FileRole {
+export function fileRole(relPath: string, content?: string, windows = isWindows()): FileRole {
   const name = relPath.split("/").pop() ?? relPath;
   if (
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(name) ||
@@ -23,6 +24,7 @@ export function fileRole(relPath: string, content?: string): FileRole {
   if (/\.(kt|java)$/.test(name) && content !== undefined && /\bfun\s+main\s*\(|static\s+void\s+main\s*\(/.test(content))
     return "main";
   if (/\.(py|sh|bash|zsh|[cm]?js|ts)$/.test(name)) return "script";
+  if (windows && /\.(bat|cmd)$/i.test(name)) return "script";
   return null;
 }
 
@@ -194,7 +196,7 @@ function mainConfigFor(relPath: string, configs: RunConfig[]): RunConfig | null 
   return null;
 }
 
-function scriptConfigFor(relPath: string, configs: RunConfig[]): RunConfig | null {
+function scriptConfigFor(relPath: string, configs: RunConfig[], windows = isWindows()): RunConfig | null {
   const base: RunConfig = {
     id: `context:file:${relPath}`,
     name: relPath.split("/").pop() ?? relPath,
@@ -220,14 +222,23 @@ function scriptConfigFor(relPath: string, configs: RunConfig[]): RunConfig | nul
     const shell = relPath.endsWith(".zsh") ? "zsh" : relPath.endsWith(".bash") ? "bash" : "sh";
     return { ...base, command: shell, args: [relPath] };
   }
+  if (windows && /\.(bat|cmd)$/i.test(relPath)) {
+    const file = relPath.split("/").pop() ?? relPath;
+    return { ...base, command: "cmd.exe", args: ["/c", file], cwd: dirOf(relPath) || null };
+  }
   return null;
 }
 
 /** Config to run for the file at `relPath` (relative to the project root), if any. */
-export function contextConfig(relPath: string, configs: RunConfig[], content?: string): RunConfig | null {
-  const role = fileRole(relPath, content);
+export function contextConfig(
+  relPath: string,
+  configs: RunConfig[],
+  content?: string,
+  windows = isWindows(),
+): RunConfig | null {
+  const role = fileRole(relPath, content, windows);
   if (role === "test") return testConfigFor(relPath, configs);
-  if (role === "main") return mainConfigFor(relPath, configs) ?? scriptConfigFor(relPath, configs);
-  if (role === "script") return scriptConfigFor(relPath, configs);
+  if (role === "main") return mainConfigFor(relPath, configs) ?? scriptConfigFor(relPath, configs, windows);
+  if (role === "script") return scriptConfigFor(relPath, configs, windows);
   return null;
 }

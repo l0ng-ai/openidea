@@ -163,6 +163,9 @@ describe("context configuration", () => {
     expect(fileRole("src/main.rs")).toBe("main");
     expect(fileRole("cmd/main.go", "package main\nfunc main() {}")).toBe("main");
     expect(fileRole("tools/gen.py")).toBe("script");
+    expect(fileRole("scripts/build.bat", undefined, true)).toBe("script");
+    expect(fileRole("scripts/run.cmd", undefined, true)).toBe("script");
+    expect(fileRole("scripts/build.bat", undefined, false)).toBeNull();
     expect(fileRole("README.md")).toBeNull();
   });
 
@@ -196,6 +199,17 @@ describe("context configuration", () => {
       args: ["tools/gen.py"],
     });
     expect(contextConfig("scripts/build.sh", configs)).toMatchObject({ command: "sh", args: ["scripts/build.sh"] });
+    expect(contextConfig("scripts/build.bat", configs, undefined, true)).toMatchObject({
+      command: "cmd.exe",
+      args: ["/c", "build.bat"],
+      cwd: "scripts",
+    });
+    expect(contextConfig("run.cmd", configs, undefined, true)).toMatchObject({
+      command: "cmd.exe",
+      args: ["/c", "run.cmd"],
+      cwd: null,
+    });
+    expect(contextConfig("scripts/build.bat", configs, undefined, false)).toBeNull();
     expect(contextConfig("docs/readme.md", configs)).toBeNull();
   });
 

@@ -153,10 +153,10 @@ export const commands = {
 	 */
 	clipboardSetFileList: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("clipboard_set_file_list", { paths })),
 	/**
-	 *  Every installed family, sorted, each flagged monospaced or not. Read once
-	 *  per run (off the command threads) and cached.
+	 *  Every installed family, sorted, each flagged monospaced or not. Read on
+	 *  first use (off the command threads), cached, and re-queried on `refresh`.
 	 */
-	systemFontFamilies: () => typedError<FontFamily[], IdeError>(__TAURI_INVOKE("system_font_families")),
+	systemFontFamilies: (refresh: boolean) => typedError<FontFamily[], IdeError>(__TAURI_INVOKE("system_font_families", { refresh })),
 	/**
 	 *  Opens a document. Async: reading and decoding a large file must not block
 	 *  the main thread (synchronous commands run on it).

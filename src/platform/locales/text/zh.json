@@ -4755,5 +4755,13 @@
   "Target": "目标",
   "Directory, file or test id; empty runs the whole suite": "目录、文件或测试 ID；留空则运行整个测试套件",
   "pytest options": "pytest 选项",
-  "e.g. -x -q --tb=short": "例如 -x -q --tb=short"
+  "e.g. -x -q --tb=short": "例如 -x -q --tb=short",
+  "Monospaced": "等宽",
+  "Proportional": "非等宽",
+  "Loading system fonts…": "正在加载系统字体…",
+  "Refresh system fonts": "刷新系统字体",
+  "No matching fonts. Enter a family name manually.": "没有匹配的字体。可手动输入字体家族名称。",
+  "This name was not found on this desktop. The saved preference is kept.": "此桌面未发现该字体，已保留保存的设置。",
+  "No system fonts were returned. Bundled fonts and manual input are available.": "未发现系统字体。可选择内置字体或手动输入。",
+  "Type a family name or search installed fonts.": "输入字体家族名称或搜索已安装字体。"
 }

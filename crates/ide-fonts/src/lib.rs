@@ -4,13 +4,14 @@
 //! Each platform asks the font system the WebView itself resolves CSS
 //! `font-family` names against, so every listed name renders: CoreText on
 //! macOS, DirectWrite on Windows, fontconfig (`fc-list`) on Linux and the BSDs.
-//! The list is read once per run and cached; the first read can take a few
-//! hundred milliseconds, so callers run it off the UI and command threads.
+//! The list is read on first use and cached until explicitly refreshed; the
+//! query can take a few hundred milliseconds, so callers run it off the UI and
+//! command threads.
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 
 /// One installed family. `monospaced` is the font system's own flag (fixed
 /// pitch; on Linux also fontconfig's dual-width CJK monospace).
@@ -21,10 +22,23 @@ pub struct FontFamily {
     pub monospaced: bool,
 }
 
-/// The installed families, sorted case-insensitively, read on first use.
-pub fn families() -> &'static [FontFamily] {
-    static CACHE: OnceLock<Vec<FontFamily>> = OnceLock::new();
-    CACHE.get_or_init(|| normalize(imp::list()))
+type Cache = Mutex<Option<Arc<[FontFamily]>>>;
+
+/// The installed families, sorted case-insensitively, read on first use and
+/// re-queried when `refresh` is true.
+pub fn families(refresh: bool) -> Arc<[FontFamily]> {
+    static CACHE: Cache = Mutex::new(None);
+    cached(&CACHE, refresh, imp::list)
+}
+
+fn cached(cache: &Cache, refresh: bool, list: impl FnOnce(bool) -> Vec<(String, bool)>) -> Arc<[FontFamily]> {
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if !refresh && let Some(families) = guard.as_ref() {
+        return Arc::clone(families);
+    }
+    let families: Arc<[FontFamily]> = normalize(list(refresh)).into();
+    *guard = Some(Arc::clone(&families));
+    families
 }
 
 /// Merges the per-face records a font system reports into one entry per
@@ -79,7 +93,7 @@ mod imp {
     };
 
     /// Every face CoreText makes available to this process, as (family, fixed pitch).
-    pub(crate) fn list() -> Vec<(String, bool)> {
+    pub(crate) fn list(_refresh: bool) -> Vec<(String, bool)> {
         // SAFETY: CoreText's documented types: the matching descriptors array
         // holds CTFontDescriptors and the traits dictionary maps CFString keys.
         unsafe {
@@ -116,15 +130,15 @@ mod imp {
 
     /// The system font collection's families, named in English when the
     /// family has an English name (what CSS matches), else its first name.
-    pub(crate) fn list() -> Vec<(String, bool)> {
+    pub(crate) fn list(refresh: bool) -> Vec<(String, bool)> {
         // SAFETY: plain DirectWrite COM calls on interfaces we own.
-        unsafe { read() }.unwrap_or_default()
+        unsafe { read(refresh) }.unwrap_or_default()
     }
 
-    unsafe fn read() -> windows::core::Result<Vec<(String, bool)>> {
+    unsafe fn read(refresh: bool) -> windows::core::Result<Vec<(String, bool)>> {
         let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
         let mut collection = None;
-        unsafe { factory.GetSystemFontCollection(&mut collection, false) }?;
+        unsafe { factory.GetSystemFontCollection(&mut collection, refresh) }?;
         let Some(collection) = collection else {
             return Ok(Vec::new());
         };
@@ -171,7 +185,7 @@ mod imp {
 
     /// fontconfig's view, which WebKitGTK resolves names with. Empty when
     /// `fc-list` isn't installed.
-    pub(crate) fn list() -> Vec<(String, bool)> {
+    pub(crate) fn list(_refresh: bool) -> Vec<(String, bool)> {
         Command::new("fc-list")
             .args(["-f", "%{family[0]}\t%{spacing}\n"])
             .stdin(Stdio::null())
@@ -186,7 +200,7 @@ mod imp {
 
 #[cfg(not(any(unix, windows)))]
 mod imp {
-    pub(crate) fn list() -> Vec<(String, bool)> {
+    pub(crate) fn list(_refresh: bool) -> Vec<(String, bool)> {
         Vec::new()
     }
 }
@@ -194,6 +208,7 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn fam(name: &str, monospaced: bool) -> FontFamily {
         FontFamily { name: name.into(), monospaced }
@@ -243,12 +258,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn caches_until_refresh_requested() {
+        let cache = Mutex::new(None);
+        let calls = AtomicUsize::new(0);
+        let lister = |refresh: bool| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            vec![(format!("Font {n} (refresh={refresh})"), n.is_multiple_of(2))]
+        };
+
+        let first = cached(&cache, false, lister);
+        assert_eq!(&*first, &[fam("Font 0 (refresh=false)", true)]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let second = cached(&cache, false, lister);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let refreshed = cached(&cache, true, lister);
+        assert_eq!(&*refreshed, &[fam("Font 1 (refresh=true)", false)]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let after_refresh = cached(&cache, false, lister);
+        assert!(Arc::ptr_eq(&refreshed, &after_refresh));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
     /// The real font system: every desktop OS ships some fonts, at least one
     /// of them monospaced, and the list comes back sorted without duplicates.
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn lists_installed_families() {
-        let list = families();
+        let list = families(false);
         assert!(list.len() > 20, "only {} families", list.len());
         assert!(list.iter().any(|f| f.monospaced));
         assert!(list.iter().any(|f| !f.monospaced));
@@ -260,5 +301,6 @@ mod tests {
             assert!(menlo.monospaced);
             assert!(list.iter().any(|f| f.name == "Helvetica Neue" && !f.monospaced));
         }
+        assert_eq!(&*families(true), &*list);
     }
 }

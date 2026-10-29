@@ -298,6 +298,17 @@ describe("terminalFont", () => {
     expect(font.family).not.toContain("var(");
   });
 
+  it("resolves bundled Inter in inherited, independent and fallback selections", () => {
+    expect(terminalFont(t, { ...editor, fontFamily: "Inter" }, BASE).family).toMatch(/^"Inter Variable", "Inter",/);
+    expect(terminalFont({ ...t, useEditorFont: false, fontFamily: "Inter" }, editor, BASE).family).toMatch(
+      /^"Inter Variable", "Inter",/,
+    );
+    expect(terminalFont({ ...t, fallbackFontFamily: "Inter" }, editor, BASE).family).toContain(
+      '"Inter Variable", "Inter"',
+    );
+    expect(terminalFont(t, { ...editor, fallbackFont: "Inter" }, BASE).family).toContain('"Inter Variable", "Inter"');
+  });
+
   it("prefers the terminal's fallback over the editor's", () => {
     const font = terminalFont(
       { ...t, fallbackFontFamily: "Sarasa Mono SC" },

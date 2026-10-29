@@ -108,6 +108,58 @@ describe("Settings dialog", () => {
     expect(within(dialog).getByRole("button", { name: "Apply" })).toBeDisabled();
   });
 
+  it("stages manual editor and proportional CJK fallback names and applies them", async () => {
+    const dialog = await openDialog("editor.font");
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Font" }), { target: { value: "Maple Mono NF" } });
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Fallback font" }), {
+      target: { value: "思源宋体" },
+    });
+    expect(settingsSet).not.toHaveBeenCalled();
+    expect(within(dialog).getByLabelText("Font preview").style.fontFamily).toContain("思源宋体");
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet.mock.calls).toEqual([
+      ["global", "editor.fallbackFont", '"思源宋体"'],
+      ["global", "editor.fontFamily", '"Maple Mono NF"'],
+    ]);
+  });
+
+  it("cancels manual font edits without changing saved preferences", async () => {
+    const dialog = await openDialog("editor.font");
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Font" }), { target: { value: "Unsaved Font" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(settingsSet).not.toHaveBeenCalled();
+    expect(useSettingsDialog.getState().open).toBe(false);
+    expect(useProject.getState().settings?.editor?.fontFamily).toBe("JetBrains Mono");
+  });
+
+  it("keeps global and project font edits separate when switching scope", async () => {
+    useSettingsDialog.setState({ scopes: {} });
+    const global = setAt(structuredClone(DEFAULT_SETTINGS) as Settings, "editor.fontFamily", "Global Font");
+    current = setAt(global, "editor.fontFamily", "Project Font");
+    settingsGetGlobal.mockResolvedValue(global);
+    useProject.setState({
+      settings: current,
+      project: { root: "/synthetic", name: "synthetic", settings: current } as never,
+    });
+    const dialog = await openDialog("editor.font");
+    const font = () => within(dialog).getByRole("combobox", { name: "Font" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+    expect(font()).toHaveValue("Project Font");
+    fireEvent.change(font(), { target: { value: "Project Maple" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Global" }));
+    expect(font()).toHaveValue("Global Font");
+    fireEvent.change(font(), { target: { value: "Global Maple" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+    expect(font()).toHaveValue("Project Maple");
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet.mock.calls).toEqual(
+      expect.arrayContaining([
+        ["project", "editor.fontFamily", '"Project Maple"'],
+        ["global", "editor.fontFamily", '"Global Maple"'],
+      ]),
+    );
+  });
+
   it("Typography Settings weights preview live and apply as editor settings", async () => {
     const dialog = await openDialog("editor.font");
     expect(within(dialog).getByRole("button", { name: "Main font weight" })).toHaveTextContent("Regular");
