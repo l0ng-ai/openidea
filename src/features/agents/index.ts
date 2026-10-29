@@ -21,6 +21,7 @@ import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TOOL_WINDOW } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
+import { taskActions } from "./taskActions";
 
 /** Settings › Tools › Agents (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
@@ -54,7 +55,9 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
       useBadge: () => {
-        const n = useAgents((s) => [...s.tasks.values()].filter((t) => t.status === "needsInput").length);
+        const n = useAgents(
+          (s) => [...s.tasks.values()].filter((t) => t.status === "needsInput" || s.unread.has(t.id)).length,
+        );
         return n || null;
       },
     }),
@@ -87,6 +90,7 @@ export function activate(): () => void {
           : [],
     }),
     registerActions([
+      ...taskActions,
       {
         id: "agents.findInConversation",
         title: "Find in Conversation",

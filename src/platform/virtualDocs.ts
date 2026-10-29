@@ -64,8 +64,3 @@ export function virtualDocument(uri: string): Promise<VirtualDocument> {
   }
   return p;
 }
-
-/** Test hook. */
-export function _clearVirtualDocuments() {
-  cache.clear();
-}

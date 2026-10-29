@@ -268,11 +268,6 @@ export function themeScheme(
   return root.dataset.contrast === "high" || root.dataset.theme === "dark-hc" ? "dark-hc" : "dark";
 }
 
-/** Base value of an attribute variable in a scheme. */
-export function schemeValue(id: SchemeId, cssVar: string): string | undefined {
-  return schemeTokens(id).get(cssVar);
-}
-
 /** An explicit Bold / regular attribute: the editor's configured bold or main weight. */
 export function boldWeight(bold: boolean): string {
   return bold ? "var(--fw-code-bold, 700)" : "var(--fw-code, 400)";

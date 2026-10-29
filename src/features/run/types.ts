@@ -4,12 +4,7 @@
  * command line. Other features contribute types with `registerRunConfigType`.
  */
 import type { RunConfig } from "@/platform/ipc";
-import {
-  registerRunConfigType,
-  runConfigTypes,
-  useRunConfigTypes,
-  type RunConfigTypeContribution,
-} from "@/workbench/contributions";
+import { registerRunConfigType, useRunConfigTypes, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { formatArgs, parseArgs, uid, uniqueName } from "./configs";
 import {
   applicationType,
@@ -321,10 +316,6 @@ export function registerBuiltinTypes(): () => void {
 export function typeFor(kind: string): RunConfigTypeContribution | undefined {
   return useRunConfigTypes.getState().types.get(kind);
 }
-
-export { runConfigTypes };
-
-export const isCompound = (c: Pick<RunConfig, "kind">) => c.kind === COMPOUND;
 
 /** Only Debug applies to `c` (Remote JVM Debug, Go Remote…): it attaches and launches no process. */
 export const isDebugOnly = (c: Pick<RunConfig, "kind">, type = typeFor(c.kind)) => !!type?.debugOnly;

@@ -117,8 +117,8 @@
 .stream:focus {
   outline: none;
 }
-/* Off-screen entries skip layout, so resizing the pane doesn't reflow a long conversation. */
-.stream > * {
+/* Skip off-screen output layout; editable messages must repaint immediately when focus/content changes. */
+.stream > :not(.message) {
   content-visibility: auto;
   contain-intrinsic-block-size: auto 80px;
 }

@@ -24,8 +24,9 @@ import { registerAction, executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { useKeymap } from "@/platform/keymap";
 import { ContextMenuHost } from "@/ui";
+import { PageContext, useSetting } from "../components/context";
 import { DEFAULT_SETTINGS, setAt } from "../model/schema";
-import { stage, useSettingsDialog } from "../model/staging";
+import { openSettings, stage, useSettingsDialog } from "../model/staging";
 import { SettingsDialog } from "../dialog/SettingsDialog";
 import { activate } from "..";
 import { MessagesHost } from "@/workbench/messages";
@@ -269,6 +270,37 @@ describe("Settings dialog", () => {
       expect(within(dialog).getByLabelText("Language server JDK")).toBeInTheDocument();
       expect(within(dialog).getByText(/used by new projects/)).toBeInTheDocument();
     });
+  });
+
+  it("keeps object settings stable when child keys are staged (HTTP Proxy)", async () => {
+    const seen: Array<{ mode: string; host: string }> = [];
+    function Probe() {
+      const [proxy] = useSetting<{ mode: string; host: string }>("proxy", "global");
+      seen.push(proxy);
+      return <output data-testid="proxy">{`${proxy.mode}:${proxy.host}`}</output>;
+    }
+    openSettings("general.httpProxy");
+    const view = render(
+      <PageContext.Provider value={{ pageId: "general.httpProxy", scope: "global" }}>
+        <Probe />
+      </PageContext.Provider>,
+    );
+    expect(screen.getByTestId("proxy")).toHaveTextContent("auto:");
+    act(() => {
+      stage("general.httpProxy", "global", "proxy.mode", "manual");
+      stage("general.httpProxy", "global", "proxy.host", "127.0.0.1");
+    });
+    expect(screen.getByTestId("proxy")).toHaveTextContent("manual:127.0.0.1");
+    expect(seen.at(-1)).toMatchObject({ mode: "manual", host: "127.0.0.1" });
+    view.unmount();
+
+    const dialog = await openDialog("general.httpProxy");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Manual proxy configuration" }));
+    expect(within(dialog).getByRole("radio", { name: "Manual proxy configuration" })).toBeChecked();
+    fireEvent.change(within(dialog).getByLabelText("Host name"), { target: { value: "127.0.0.1" } });
+    expect(within(dialog).getByLabelText("Host name")).toHaveValue("127.0.0.1");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "No proxy" }));
+    expect(within(dialog).getByRole("radio", { name: "No proxy" })).toBeChecked();
   });
 
   it("survives invalid settings values", async () => {

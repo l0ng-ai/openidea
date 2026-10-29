@@ -62,12 +62,6 @@ export interface ConsoleLine {
   spans: Span[];
 }
 
-export interface WatchResult {
-  expression: string;
-  result: Variable | null;
-  error: string | null;
-}
-
 interface DebugState {
   sessions: Record<number, DebugSession>;
   /** Session shown in the Debug tool window / title bar. */

@@ -67,9 +67,34 @@ export function showHint(
   timers.set(
     view,
     setTimeout(() => {
-      if (view.state.field(hintField, false)) view.dispatch({ effects: setHint.of(null) });
+      if (view.dom.isConnected && view.state.field(hintField, false)) view.dispatch({ effects: setHint.of(null) });
     }, opts.timeout ?? 4000),
   );
+}
+
+/** Show progress only for slow requests; the disposer removes only its own hint. */
+export function showPendingHint(view: EditorView, content: string): () => void {
+  const { doc, selection } = view.state;
+  const previous = view.state.field(hintField, false);
+  let shown: Hint | null = null;
+  const timer = setTimeout(() => {
+    if (
+      !view.dom.isConnected ||
+      view.state.doc !== doc ||
+      !view.state.selection.eq(selection) ||
+      view.state.field(hintField, false) !== previous
+    )
+      return;
+    showHint(view, content, { timeout: 30_000 });
+    shown = view.state.field(hintField);
+  }, 250);
+  return () => {
+    clearTimeout(timer);
+    if (shown && view.state.field(hintField, false) === shown) {
+      clearTimeout(timers.get(view));
+      if (view.dom.isConnected) hideHint(view);
+    }
+  };
 }
 
 export function hideHint(view: EditorView): boolean {

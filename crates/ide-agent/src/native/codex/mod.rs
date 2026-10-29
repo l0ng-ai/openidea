@@ -199,7 +199,12 @@ fn invalid(message: impl Into<String>) -> ResponseError {
 fn from_codex(e: RpcError) -> ResponseError {
     match e {
         RpcError::Server { code, message, data } => {
-            let code = if message.to_lowercase().contains("auth") { AUTH_REQUIRED } else { code };
+            // Protocol errors can list method names containing "auth"; they are not sign-in failures.
+            let protocol = matches!(
+                code,
+                codes::PARSE_ERROR | codes::INVALID_REQUEST | codes::METHOD_NOT_FOUND | codes::INVALID_PARAMS
+            );
+            let code = if !protocol && message.to_lowercase().contains("auth") { AUTH_REQUIRED } else { code };
             ResponseError { code, message, data }
         }
         RpcError::Closed => error(codes::INTERNAL_ERROR, "Codex exited"),
@@ -426,8 +431,46 @@ impl CodexShim {
     async fn rollback(&self, params: &Value) -> Result<Value, ResponseError> {
         let session = str_param(params, "sessionId")?;
         let turns = params.get("turns").and_then(Value::as_u64).filter(|n| *n > 0).ok_or_else(|| invalid("turns"))?;
-        self.call("thread/rollback", json!({ "threadId": session, "numTurns": turns })).await?;
+        match self.call("thread/rollback", json!({ "threadId": session, "numTurns": turns })).await {
+            Ok(_) => {}
+            Err(e)
+                if e.code == codes::METHOD_NOT_FOUND
+                    || (e.code == codes::INVALID_REQUEST
+                        && e.message.contains("unknown variant `thread/rollback`")) =>
+            {
+                self.revert(session, turns).await?;
+            }
+            Err(e) => return Err(e),
+        }
         Ok(json!({}))
+    }
+
+    /// New Codex versions replace rollback counts with an exclusive turn id.
+    async fn revert(&self, session: &str, mut remaining: u64) -> Result<(), ResponseError> {
+        let mut cursor = Value::Null;
+        let mut seen = HashSet::new();
+        loop {
+            let page = self
+                .call(
+                    "thread/turns/list",
+                    json!({ "threadId": session, "sortDirection": "desc", "limit": remaining.min(100), "cursor": cursor }),
+                )
+                .await?;
+            let turns = page.get("data").and_then(Value::as_array).ok_or_else(|| invalid("Codex returned no turns"))?;
+            if remaining <= turns.len() as u64 {
+                let before = str_param(&turns[remaining as usize - 1], "id")?;
+                self.call("thread/revert", json!({ "threadId": session, "beforeTurnId": before })).await?;
+                return Ok(());
+            }
+            remaining -= turns.len() as u64;
+            let next = page.get("nextCursor").and_then(Value::as_str);
+            let Some(next) = next.filter(|next| seen.insert((*next).to_owned())) else {
+                return Err(invalid(
+                    "Codex history has fewer turns than the conversation; reload the task before editing",
+                ));
+            };
+            cursor = json!(next);
+        }
     }
 
     /// Stops following the session's thread (codex unloads it once nothing follows it).

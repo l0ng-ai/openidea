@@ -44,6 +44,8 @@ interface AgentsState {
   /** Why the tasks could not be loaded. */
   error: string | null;
   tasks: Map<string, AgentTask>;
+  /** Tasks with unseen replies or status changes in this project. */
+  unread: Set<string>;
   /** Entries of the tasks (and subagents) opened in this window, by `entriesKey`. */
   entries: Map<string, AgentEntry[]>;
   changes: Map<string, AgentChange[]>;
@@ -85,6 +87,7 @@ export const useAgents = create<AgentsState>(() => ({
   loaded: false,
   error: null,
   tasks: new Map(),
+  unread: new Set(),
   entries: new Map(),
   changes: new Map(),
   providers: [],
@@ -110,11 +113,40 @@ export function updateComposer(key: string, patch: Partial<ComposerDraft>) {
   }));
 }
 
-/** Session tabs on screen; their tasks do not notify. */
-const visible = new Set<string>();
+/** Session tabs on screen; a task can be shown in more than one split. */
+const visible = new Map<string, number>();
+const windowFocused = () => document.visibilityState !== "hidden" && document.hasFocus();
+const viewing = (task: string) => visible.has(task) && windowFocused();
+
+function setUnread(task: string, value: boolean) {
+  const s = useAgents.getState();
+  if (s.unread.has(task) === value) return;
+  const unread = new Set(s.unread);
+  if (value) unread.add(task);
+  else unread.delete(task);
+  useAgents.setState({ unread });
+}
+
+function markUnread(task: string) {
+  const current = useAgents.getState().tasks.get(task);
+  if (current && current.status !== "archived" && !viewing(task)) setUnread(task, true);
+}
+
 export function markVisible(task: string): () => void {
-  visible.add(task);
-  return () => visible.delete(task);
+  visible.set(task, (visible.get(task) ?? 0) + 1);
+  const read = () => {
+    if (viewing(task)) setUnread(task, false);
+  };
+  read();
+  window.addEventListener("focus", read);
+  document.addEventListener("visibilitychange", read);
+  return () => {
+    const count = (visible.get(task) ?? 1) - 1;
+    if (count) visible.set(task, count);
+    else visible.delete(task);
+    window.removeEventListener("focus", read);
+    document.removeEventListener("visibilitychange", read);
+  };
 }
 
 let generation = 0;
@@ -154,7 +186,14 @@ export async function connect(): Promise<void> {
 
 export function disconnect() {
   generation++;
-  useAgents.setState({ loaded: false, error: null, tasks: new Map(), entries: new Map(), changes: new Map() });
+  useAgents.setState({
+    loaded: false,
+    error: null,
+    tasks: new Map(),
+    unread: new Set(),
+    entries: new Map(),
+    changes: new Map(),
+  });
 }
 
 function onEvent(e: AgentEvent) {
@@ -163,6 +202,8 @@ function onEvent(e: AgentEvent) {
     case "task": {
       const prev = s.tasks.get(e.task.id);
       useAgents.setState({ tasks: new Map(s.tasks).set(e.task.id, e.task) });
+      if (e.task.status === "archived") setUnread(e.task.id, false);
+      else if (attentionChange(prev?.status, e.task.status)) markUnread(e.task.id);
       notifyChange(prev, e.task);
       if (prev?.status !== e.task.status && !isBusy(e.task.status)) {
         void refreshChanges(e.task.id);
@@ -175,7 +216,9 @@ function onEvent(e: AgentEvent) {
       tasks.delete(e.id);
       const composers = new Map(s.composers);
       composers.delete(e.id);
-      useAgents.setState({ tasks, composers });
+      const unread = new Set(s.unread);
+      unread.delete(e.id);
+      useAgents.setState({ tasks, composers, unread });
       editorService().closeInput?.(sessionKey(e.id));
       break;
     }
@@ -186,6 +229,14 @@ function onEvent(e: AgentEvent) {
       break;
     }
     case "entry": {
+      if (
+        !e.subagent &&
+        ((e.entry.type === "agent" && e.entry.text.trim()) ||
+          e.entry.type === "error" ||
+          (e.entry.type === "permission" && e.entry.chosen === null))
+      ) {
+        markUnread(e.task);
+      }
       const key = entriesKey(e.task, e.subagent);
       const current = s.entries.get(key);
       if (!current) return;
@@ -203,7 +254,7 @@ function onEvent(e: AgentEvent) {
 function notifyChange(prev: AgentTask | undefined, task: AgentTask) {
   const change = attentionChange(prev?.status, task.status);
   if (!change) return;
-  if (visible.has(task.id) && document.hasFocus()) return;
+  if (viewing(task.id)) return;
   const body =
     change === "input"
       ? "Waiting for your answer"
@@ -364,7 +415,15 @@ export async function rerunFrom(task: string, turn: number, text: string): Promi
     await settled(task);
   }
   await call(commands.agentRollback(task, turn));
-  await call(commands.agentPrompt(task, { text, files: [], images: [] }, false));
+  try {
+    await call(commands.agentPrompt(task, { text, files: [], images: [] }, false));
+  } catch (e) {
+    // Rollback removes the inline editor; recover its text in the session composer.
+    const current = composerDraft(task);
+    updateComposer(task, { text: current.text ? `${text}\n${current.text}` : text });
+    focusComposer(task);
+    throw e;
+  }
 }
 
 /** Resolves once the task's turn has ended (or after a while). */

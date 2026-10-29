@@ -4,6 +4,8 @@
 //! adapter from IPC to a backend crate; no domain logic lives here.
 
 mod commands;
+#[cfg(debug_assertions)]
+mod dev;
 mod events;
 mod logging;
 mod menu;
@@ -39,6 +41,8 @@ pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
 pub fn run() {
     ide_workspace::process::mark_start();
     let context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    let context = dev::configure(context);
     logging::init(&context.config().identifier);
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
@@ -58,8 +62,7 @@ pub fn run() {
 
     let app = tauri::Builder::default();
     // Single instance first: a second launch focuses this one and opens its path argument.
-    // Release only, so a dev build can run beside an installed release (same identifier).
-    #[cfg(not(debug_assertions))]
+    // Debug builds have a separate identifier per worktree.
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
     let app = app
         .plugin(tauri_plugin_opener::init())

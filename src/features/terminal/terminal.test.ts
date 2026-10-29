@@ -128,6 +128,25 @@ describe("terminal keys", () => {
       kind: "send",
       data: "\x14",
     });
+    // AZERTY: the key typing "z" is physically KeyW; Ctrl+Z must send ^Z (SIGTSTP), not ^W.
+    expect(terminalKeyAction(key({ key: "z", code: "KeyW", ctrlKey: true }), false)).toEqual({
+      kind: "send",
+      data: "\x1a",
+    });
+    // Non-QWERTY Ctrl+Shift+C / V / T match the typed letter, not the physical key.
+    expect(terminalKeyAction(key({ key: "C", code: "KeyI", ctrlKey: true, shiftKey: true }), true)).toEqual({
+      kind: "copy",
+    });
+    expect(terminalKeyAction(key({ key: "V", code: "KeyPeriod", ctrlKey: true, shiftKey: true }), false)).toEqual({
+      kind: "paste",
+    });
+    expect(terminalKeyAction(key({ key: "T", code: "KeyK", ctrlKey: true, shiftKey: true }), false)).toEqual({
+      kind: "pass",
+    });
+    expect(terminalKeyAction(key({ key: "J", code: "KeyC", ctrlKey: true, shiftKey: true }), true)).toEqual({
+      kind: "send",
+      data: "\x0a",
+    });
   });
 
   it("implements macOS conveniences", () => {

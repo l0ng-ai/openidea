@@ -183,6 +183,3 @@ export async function runPluginCommand(pluginId: string, commandId: string, arg:
     return null;
   }
 }
-
-/** Plugins whose contributions are live (enabled and running, or contribution-only). */
-export const isLive = (p: PluginInfo) => p.status === "active" || p.status === "static";

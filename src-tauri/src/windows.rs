@@ -643,7 +643,6 @@ pub fn path_launch(path: PathBuf) -> Launch {
 }
 
 /// Second instance launched: focus this one and open its path argument.
-#[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
     match cli_path(&args, Path::new(&cwd)) {
         Some(path) => open_path(app, &path),

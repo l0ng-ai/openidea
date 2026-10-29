@@ -36,8 +36,6 @@ export const DEFAULT_LOCALE = "en";
 export const SUPPORTED_LOCALES = ["en", "zh"] as const;
 export type Locale = (typeof SUPPORTED_LOCALES)[number];
 
-const LOCALE_NAMES: Record<Locale, string> = { en: "English", zh: "中文" };
-
 const loaders = import.meta.glob<Catalog>(["./locales/*.json", "!./locales/en.json"], { import: "default" });
 const textLoaders = import.meta.glob<Catalog>("./locales/text/*.json", { import: "default" });
 
@@ -63,10 +61,6 @@ export function resolveLocale(input: string | null | undefined): Locale {
     tag = typeof navigator !== "undefined" ? (navigator.language ?? DEFAULT_LOCALE) : DEFAULT_LOCALE;
   const base = tag.toLowerCase().split(/[-_]/)[0] ?? "";
   return (SUPPORTED_LOCALES as readonly string[]).includes(base) ? (base as Locale) : DEFAULT_LOCALE;
-}
-
-export function localeDisplayName(locale: Locale): string {
-  return LOCALE_NAMES[locale];
 }
 
 let fallbackCache: Catalog | null = null;

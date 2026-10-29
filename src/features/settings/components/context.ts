@@ -19,7 +19,7 @@ export function usePageContext(): PageContextValue {
 export function useSetting<T>(key: string, scopeOverride?: Scope): [T, (value: T) => void] {
   const { pageId, scope: pageScope } = usePageContext();
   const scope = scopeOverride ?? pageScope;
-  const value = useSettingsDialog((s) => stagedValue(s, scope, key)) as T;
+  const value = useStagedValue(scope, key) as T;
   const set = useCallback((v: T) => stage(pageId, scope, key, v), [pageId, scope, key]);
   return [value, set];
 }

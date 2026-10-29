@@ -64,7 +64,7 @@ export const templateDoc = Facet.define<TemplateDocInfo, TemplateDocInfo>({
  * The LSP completion uses `override`, so it must merge sources found under
  * this key (`state.languageDataAt<CompletionSource>(EXTRA_COMPLETION_KEY, pos)`).
  */
-export const EXTRA_COMPLETION_KEY = "openideaCompletion";
+const EXTRA_COMPLETION_KEY = "openideaCompletion";
 
 /**
  * Language-data key for a lookup restricted to one source: `(state) =>

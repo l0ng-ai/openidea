@@ -678,5 +678,3 @@ export function PluginsPage() {
     </div>
   );
 }
-
-export default PluginsPage;

@@ -4,7 +4,7 @@
  * backend folding ranges, or from the syntax tree when there are none.
  * Clicking a sticky line scrolls to it, the caret where it was clicked.
  */
-import { Compartment, EditorSelection, Facet, type EditorState, type Extension } from "@codemirror/state";
+import { EditorSelection, Facet, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { foldNodeProp, syntaxTree } from "@codemirror/language";
 import { highlightTree } from "@lezer/highlight";
@@ -250,6 +250,4 @@ class StickyScroll {
     this.dom.remove();
   }
 }
-
-export const stickyScrollCompartment = new Compartment();
 export const stickyScroll: Extension = ViewPlugin.fromClass(StickyScroll);

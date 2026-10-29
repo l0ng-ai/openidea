@@ -547,8 +547,3 @@ let current: DocBackend | null = null;
 export function docBackend(): DocBackend {
   return (current ??= isTauri() ? ipcBackend : createMemoryBackend());
 }
-
-/** Test hook. */
-export function _setDocBackend(b: DocBackend | null) {
-  current = b;
-}

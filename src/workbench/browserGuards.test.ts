@@ -56,4 +56,14 @@ describe("browser guards: context menu", () => {
     rightClick(p);
     expect(useContextMenuStore.getState().menu).toBeNull();
   });
+
+  it("blocks browser shortcuts by typed letter", () => {
+    const press = (init: KeyboardEventInit) => {
+      const e = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    expect(press({ key: "p", code: "KeyR", ctrlKey: true })).toBe(true);
+    expect(press({ key: "l", code: "KeyP", ctrlKey: true })).toBe(false);
+  });
 });

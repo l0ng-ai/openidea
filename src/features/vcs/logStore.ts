@@ -64,9 +64,6 @@ interface LogState {
   generation: number;
 }
 
-/** Fixed content tabs of the Git tool window. */
-export type GitTab = "changes" | "shelf" | "stashes" | "log" | "console" | "worktrees";
-
 /** A log tab of its own (IDEA's "History: file" / "Log: branch" tabs): its own filters and view. */
 export interface LogTab {
   id: string;

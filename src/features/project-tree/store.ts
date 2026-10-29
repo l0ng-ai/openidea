@@ -404,10 +404,6 @@ export function loadDir(path: string, force = false): Promise<void> {
   return p;
 }
 
-export function isLoading(path: string): boolean {
-  return inflight.has(path);
-}
-
 /** Applies a backend `fsChanged` event: reloads affected loaded folders only. */
 export async function applyFsChange(event: { created: string[]; modified: string[]; removed: string[] }) {
   const s = get();

@@ -69,11 +69,6 @@ export function paneOf(s: TabsState, paneId: string): Pane {
   return p;
 }
 
-export function activeTab(s: TabsState, paneId = s.activePane): Tab | null {
-  const p = s.panes[paneId];
-  return p?.tabs.find((t) => t.id === p.active) ?? null;
-}
-
 export function findTab(s: TabsState, key: string, paneId?: string): { paneId: string; tab: Tab } | null {
   const order = paneId ? [paneId, ...paneIds(s).filter((p) => p !== paneId)] : paneIds(s);
   for (const id of order) {
@@ -296,14 +291,6 @@ export function closeKey(s: TabsState, key: string): TabsState {
     next = removeTabs(next, id, new Set(pane.tabs.filter((t) => t.input.key === key).map((t) => t.id)));
   }
   return next;
-}
-
-/** Re-keys tabs after a rename / move. */
-export function rekey(s: TabsState, fromKey: string, input: EditorInput): TabsState {
-  const panes: Record<string, Pane> = {};
-  for (const [id, p] of Object.entries(s.panes))
-    panes[id] = { ...p, tabs: p.tabs.map((t) => (t.input.key === fromKey ? { ...t, input } : t)) };
-  return { ...s, panes };
 }
 
 export function reopenClosed(s: TabsState): { state: TabsState; tabId: string; paneId: string } | null {

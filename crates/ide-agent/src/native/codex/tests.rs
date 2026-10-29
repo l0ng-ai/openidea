@@ -593,6 +593,104 @@ async fn resume_replays_history_then_forks_and_rolls_back() {
     assert_eq!(sent(&frames, "thread/unsubscribe")[0]["params"], json!({"threadId": thread}));
 }
 
+async fn rollback_replies(turns: u32, replies: Vec<(&str, Value)>) -> (Result<Value, RpcError>, Vec<Value>) {
+    let frames = replies
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, (method, mut reply))| {
+            let id = i + 1;
+            reply["id"] = json!(id);
+            [(true, json!({ "id": id, "method": method })), (false, reply)]
+        })
+        .collect();
+    let transcript = Transcript { meta: Value::Null, frames };
+    let (ours, theirs) = tokio::io::duplex(1 << 16);
+    let acp = attach(Arc::new(Client::default()), |events| {
+        let (read, write) = tokio::io::split(ours);
+        Ok(Peer::connect_framed(read, write, events, Framing::Lines))
+    })
+    .unwrap();
+    let (read, write) = tokio::io::split(theirs);
+    let player = tokio::spawn(async move { play(&transcript, read, write).await });
+    let result = request(&acp, "_openidea/rollback", json!({ "sessionId": "s", "turns": turns })).await;
+    let (sent, _read, _write) = player.await.unwrap();
+    acp.kill();
+    (result, sent)
+}
+
+fn removed_rollback() -> Value {
+    json!({ "error": { "code": -32600, "message": "Invalid request: unknown variant `thread/rollback`, expected one of `thread/revert`, `account/gatewayOAuth/read`, `getAuthStatus`" } })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removed_rollback_reverts_before_the_target_turn_across_pages() {
+    let (result, frames) = rollback_replies(
+        3,
+        vec![
+            ("thread/rollback", removed_rollback()),
+            (
+                "thread/turns/list",
+                json!({ "result": { "data": [{ "id": "last" }, { "id": "middle" }], "nextCursor": "older" } }),
+            ),
+            (
+                "thread/turns/list",
+                json!({ "result": { "data": [{ "id": "edited" }, { "id": "retained" }], "nextCursor": null } }),
+            ),
+            ("thread/revert", json!({ "result": { "thread": { "id": "s", "turns": [] } } })),
+        ],
+    )
+    .await;
+    assert_eq!(result.unwrap(), json!({}));
+    let pages = sent(&frames, "thread/turns/list");
+    assert_eq!(pages[0]["params"], json!({ "threadId": "s", "sortDirection": "desc", "limit": 3, "cursor": null }));
+    assert_eq!(pages[1]["params"]["cursor"], "older");
+    assert_eq!(pages[1]["params"]["limit"], 1);
+    assert_eq!(sent(&frames, "thread/revert")[0]["params"], json!({ "threadId": "s", "beforeTurnId": "edited" }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn method_not_found_reverts_the_latest_turn() {
+    let (result, frames) = rollback_replies(
+        1,
+        vec![
+            ("thread/rollback", json!({ "error": { "code": -32601, "message": "Method not found" } })),
+            ("thread/turns/list", json!({ "result": { "data": [{ "id": "last" }], "nextCursor": null } })),
+            ("thread/revert", json!({ "result": {} })),
+        ],
+    )
+    .await;
+    assert_eq!(result.unwrap(), json!({}));
+    assert_eq!(sent(&frames, "thread/revert")[0]["params"]["beforeTurnId"], "last");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rollback_refusals_are_not_retried_as_revert() {
+    let (result, frames) = rollback_replies(
+        1,
+        vec![("thread/rollback", json!({ "error": { "code": -32600, "message": "a turn is still running" } }))],
+    )
+    .await;
+    assert!(result.unwrap_err().to_string().contains("a turn is still running"));
+    assert_eq!(frames.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn incomplete_or_repeated_history_pages_do_not_revert_the_wrong_turn() {
+    for next in [Value::Null, json!("older")] {
+        let (result, frames) = rollback_replies(
+            3,
+            vec![
+                ("thread/rollback", removed_rollback()),
+                ("thread/turns/list", json!({ "result": { "data": [{ "id": "last" }], "nextCursor": "older" } })),
+                ("thread/turns/list", json!({ "result": { "data": [], "nextCursor": next } })),
+            ],
+        )
+        .await;
+        assert!(result.unwrap_err().to_string().contains("reload the task"));
+        assert!(sent(&frames, "thread/revert").is_empty());
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn steering_adds_to_the_running_turn() {
     let (results, _client, frames, _) = replay(Scenario::Steer).await;

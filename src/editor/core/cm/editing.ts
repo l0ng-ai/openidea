@@ -287,8 +287,6 @@ export function nextOccurrence(view: EditorView): "selected" | "added" | "notFou
   return "added";
 }
 
-export const addCaretNextOccurrence: Command = (view) => nextOccurrence(view) !== "none";
-
 /** ⌃⌘G: select every occurrence of the selection, or of the word at the caret (whole words). */
 export const selectAllOccurrences: Command = (view) => {
   const { state } = view;
@@ -656,17 +654,6 @@ export function completeStatement(language: string): Command {
     view.dispatch(spec);
     return true;
   };
-}
-
-// --- helpers -------------------------------------------------------------------
-
-export function selectRange(view: EditorView, range: SelectionRange | { from: number; to: number }, center = true) {
-  view.dispatch({
-    selection: EditorSelection.single(range.from, range.to),
-    effects: center ? EditorView.scrollIntoView(range.from, { y: "center" }) : undefined,
-    scrollIntoView: !center,
-    userEvent: "select",
-  });
 }
 
 // --- comments ------------------------------------------------------------------------

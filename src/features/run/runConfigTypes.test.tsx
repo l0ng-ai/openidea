@@ -318,6 +318,17 @@ describe("Run/Debug Configurations tree", () => {
     fireEvent.click(await screen.findByText("Redirect input"));
     expect(screen.getByLabelText("Redirect input from")).toBeTruthy();
   });
+
+  it("opens Add New Configuration on Ctrl+N by typed letter", () => {
+    useRun.setState({ configs: [], loaded: true, editorOpen: true });
+    render(<EditConfigsOverlay />);
+    const tree = screen.getByRole("tree", { name: "Run configurations" });
+    // Dvorak: physical KeyN types "b", physical KeyL types "n".
+    fireEvent.keyDown(tree, { key: "b", code: "KeyN", ctrlKey: true });
+    expect(screen.queryByLabelText("Search configuration types")).toBeNull();
+    fireEvent.keyDown(tree, { key: "n", code: "KeyL", ctrlKey: true });
+    expect(screen.getByLabelText("Search configuration types")).toBeTruthy();
+  });
 });
 
 describe("debug-only types (Remote JVM Debug)", () => {
