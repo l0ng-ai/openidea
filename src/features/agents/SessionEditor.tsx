@@ -2,7 +2,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
-import type { AgentChange, AgentEntry, AgentTask, AgentUsage } from "@/bindings";
+import type { AgentChange, AgentEntry, AgentRetry, AgentTask, AgentUsage } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -25,7 +25,7 @@ import {
 import { useTx, tx } from "@/platform/i18n";
 import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
-import { canSend, emptyDraft, usageLabel, workTime } from "./composerModel";
+import { canSend, emptyDraft, retryParts, usageLabel, workTime } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { Markdown } from "./Markdown";
@@ -381,7 +381,11 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         {!subagent && (task.status === "running" || task.status === "starting") && !waiting && (
           <div className={styles.working}>
             <Spinner size={12} />
-            <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
+            {task.retry ? (
+              <Retrying retry={task.retry} />
+            ) : (
+              <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
+            )}
             {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
           </div>
         )}
@@ -393,6 +397,20 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
 type UserEntry = Extract<AgentEntry, { type: "user" }>;
 
 /** Time since `since`, ticking every second. */
+/** The agent lost its API connection (or was refused) and retries on its own. */
+function Retrying({ retry }: { retry: AgentRetry }) {
+  const tx = useTx();
+  const now = useNow(1000);
+  const { attempt, wait } = retryParts(retry, now);
+  return (
+    <span className={styles.retrying} title={retry.error ?? undefined}>
+      {wait > 0
+        ? tx`API request failed, retrying in ${wait}s (attempt ${attempt})`
+        : tx`API request failed, retrying (attempt ${attempt})`}
+    </span>
+  );
+}
+
 function Elapsed({ since }: { since: number }) {
   const now = useNow(1000);
   return <span className={styles.muted}>{formatDuration(now - since)}</span>;

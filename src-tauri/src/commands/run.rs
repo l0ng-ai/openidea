@@ -89,6 +89,17 @@ pub fn run_system_env(state: State<'_, AppState>) -> std::collections::BTreeMap<
     ide_host::ops::run::run_system_env(&state.host, "")
 }
 
+/// Writes the Gradle init script adding `jvm_args` to the JVMs the build forks; returns its path.
+#[tauri::command]
+#[specta::specta]
+pub async fn run_gradle_jvm_args_script(
+    window: Window,
+    state: State<'_, AppState>,
+    jvm_args: Vec<String>,
+) -> IdeResult<String> {
+    ide_host::ops::run::run_gradle_jvm_args_script(&state.host, window.label(), jvm_args).await
+}
+
 /// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
 /// `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
 #[tauri::command]

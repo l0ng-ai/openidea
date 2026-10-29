@@ -266,6 +266,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_list,
         run::run_close_stdin,
         run::run_resize,
+        run::run_gradle_jvm_args_script,
         run::run_test_reports,
         build::build_model,
         build::build_sync,
