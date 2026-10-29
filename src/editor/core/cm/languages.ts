@@ -73,7 +73,6 @@ const BATCH_KEYWORDS = new Set([
   "exit",
   "setlocal",
   "endlocal",
-  "rem",
   "not",
   "exist",
   "defined",
@@ -96,7 +95,7 @@ const batchParser: StreamParser<null> = {
     const lineStart = /^\s*$/.test(stream.string.slice(0, stream.start));
     if (lineStart) {
       if (stream.match(/^@?::.*$/)) return "comment";
-      if (stream.match(/^@rem(?:\s.*|$)/i)) return "comment";
+      if (stream.match(/^@?rem(?:\s.*|$)/i)) return "comment";
       if (stream.match(/^:[A-Za-z0-9_.-]+/)) return "labelName";
     }
     if (stream.match(/^::.*$/)) return "comment";

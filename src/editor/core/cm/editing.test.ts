@@ -351,7 +351,7 @@ describe("Batch language mode and @REM comment toggle", () => {
     expect(v.state.doc.toString()).toBe("echo hello\n");
   });
 
-  it("highlights keywords, labels, variables, strings and :: / @REM comments", () => {
+  it("highlights keywords, labels, variables, strings and :: / REM comments", () => {
     const src = [
       ":: header comment",
       "@REM line comment",
@@ -375,7 +375,8 @@ describe("Batch language mode and @REM comment toggle", () => {
     const has = (tag: string, text: string) => tokens.some(([n, s]) => n.includes(tag) && s === text);
     expect(has("comment", ":: header comment")).toBe(true);
     expect(has("comment", "@REM line comment")).toBe(true);
-    for (const kw of ["echo", "setlocal", "set", "for", "in", "do", "if", "exist", "call", "rem", "exit", "endlocal"]) {
+    expect(has("comment", "rem note")).toBe(true);
+    for (const kw of ["echo", "setlocal", "set", "for", "in", "do", "if", "exist", "call", "exit", "endlocal"]) {
       expect(has("keyword", kw)).toBe(true);
     }
     expect(has("string", '"APP=demo"')).toBe(true);

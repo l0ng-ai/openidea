@@ -96,8 +96,8 @@ export const commentLine: Command = (view) => {
   const changes: ChangeSpec[] = [];
   blocks.forEach((b, bi) => {
     const token = tokens[bi]!;
-    // Batch REM needs a separator even when optional comment spacing is disabled.
-    const addSpace = style.addSpace || token === "@REM";
+    // A word token (Batch `@REM`) needs a separator even when comment spacing is off.
+    const addSpace = style.addSpace || /\w$/.test(token);
     if (allCommented) {
       for (let n = b.startLine; n <= b.endLine; n++) {
         const line = doc.line(n);
