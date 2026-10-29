@@ -80,7 +80,32 @@ describe("Python interpreter status", () => {
     mocks.files.mockResolvedValue([{ path: "/project/src/main.py" }]);
     mount();
     expect(await screen.findByText("No interpreter")).toBeTruthy();
-    expect(screen.getByRole("button").className).toContain("warning");
+    const button = screen.getByRole("button", { name: "Python Interpreter: No interpreter" });
+    expect(button.querySelector("svg")).toBeTruthy();
+  });
+  it("shows the paths of interpreters that share a name", async () => {
+    mocks.files.mockResolvedValue([{ path: "/project/main.py" }]);
+    mocks.effective.mockResolvedValue("/usr/local/bin/python3.11");
+    mocks.detect.mockResolvedValue([
+      { path: "/usr/local/bin/python3.11", name: "Python 3.11" },
+      { path: "/opt/homebrew/bin/python3.11", name: "Python 3.11" },
+      { path: "/venv/bin/python", name: "Python 3.12 (.venv)" },
+    ]);
+    mount();
+    await screen.findByRole("button", { name: "Python Interpreter: Python 3.11" });
+    await act(() => executeAction("python.interpreterPopup"));
+    expect(await screen.findByText("/opt/homebrew/bin/python3.11")).toBeTruthy();
+    expect(screen.getByText("/usr/local/bin/python3.11")).toBeTruthy();
+    expect(screen.queryByText("/venv/bin/python")).toBeNull();
+  });
+  it("opens the Python page when the widget is hidden", async () => {
+    const run = vi.fn();
+    const off = registerAction({ id: "file.settings", title: "Settings…", run });
+    mount();
+    await waitFor(() => expect(mocks.files).toHaveBeenCalled());
+    await executeAction("python.interpreterPopup");
+    expect(run.mock.calls.map(([ctx]) => ctx.arg)).toEqual(["python.interpreter"]);
+    off();
   });
   it("shows the effective SDK name and hides old state on project change", async () => {
     mocks.files.mockResolvedValue([{ path: "/project/pyproject.toml" }]);

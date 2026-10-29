@@ -8,9 +8,9 @@ import { notifications, registerStatusItem } from "@/workbench/contributions";
 import { BarButton, Menu, type MenuItem } from "@/ui";
 import { Icon } from "@/ui/icons";
 import { effectivePython, type Sdk } from "./api";
-import styles from "./PythonStatus.module.css";
+import { tildify } from "./components";
 
-const usePopup = create<{ open: boolean }>(() => ({ open: false }));
+const usePopup = create<{ open: boolean; shown: boolean }>(() => ({ open: false, shown: false }));
 const close = () => usePopup.setState({ open: false });
 const markers = [
   "pyproject.toml",
@@ -109,14 +109,23 @@ function PythonStatus() {
     };
   }, [root, configured]);
   const current = state && state.root === root && state.configured === configured ? state : null;
-  if (!root || !current || (!current.visible && !configured)) return null;
+  const shown = !!root && !!current && (current.visible || !!configured);
+  useEffect(() => {
+    usePopup.setState({ shown });
+    return () => usePopup.setState({ shown: false, open: false });
+  }, [shown]);
+  if (!shown || !current) return null;
   const choices = interpreterChoices(current.sdks, current.python);
   const label = choices.find((sdk) => sdk.path === current.python)?.name ?? tx("No interpreter");
+  const names = new Map<string, number>();
+  for (const sdk of choices) names.set(sdk.name, (names.get(sdk.name) ?? 0) + 1);
   const items: MenuItem[] = [
     { kind: "header", label: "Python Interpreter" },
     ...choices.map((sdk): MenuItem => ({
       label: sdk.name,
       verbatim: true,
+      // Several system interpreters share a name ("Python 3.11"); their paths tell them apart.
+      shortcut: (names.get(sdk.name) ?? 0) > 1 ? tildify(sdk.path) : undefined,
       checked: sdk.path === current.python,
       run: () => void executeAction("python.selectInterpreter", sdk.path),
     })),
@@ -128,9 +137,8 @@ function PythonStatus() {
     <>
       <BarButton
         ref={anchor}
-        className={!current.python ? styles.warning : undefined}
         tooltip={current.python ?? tx("No interpreter")}
-        aria-label={tx("Python Interpreter")}
+        aria-label={tx`Python Interpreter: ${label}`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => void executeAction("python.interpreterPopup")}
@@ -165,7 +173,10 @@ export function activatePythonStatus(): () => void {
         title: "Python Interpreter",
         category: "Settings",
         when: "projectOpen",
-        run: () => usePopup.setState((s) => ({ open: !s.open })),
+        run: () =>
+          usePopup.getState().shown
+            ? usePopup.setState((s) => ({ open: !s.open }))
+            : void executeAction("file.settings", "python.interpreter"),
       },
       {
         id: "python.selectInterpreter",
@@ -190,14 +201,14 @@ export function activatePythonStatus(): () => void {
         title: "Add New Interpreter…",
         category: "Settings",
         when: "projectOpen",
-        run: () => executeAction("file.settings", "python.interpreter"),
+        run: () => void executeAction("file.settings", "python.interpreter"),
       },
       {
         id: "python.interpreterSettings",
         title: "Interpreter Settings…",
         category: "Settings",
         when: "projectOpen",
-        run: () => executeAction("file.settings", "python.interpreter"),
+        run: () => void executeAction("file.settings", "python.interpreter"),
       },
     ]),
   ];

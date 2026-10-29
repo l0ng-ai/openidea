@@ -4731,5 +4731,6 @@
   "No interpreter": "无解释器",
   "Add New Interpreter…": "添加新的解释器…",
   "Interpreter Settings…": "解释器设置…",
-  "Cannot select Python interpreter": "无法选择 Python 解释器"
+  "Cannot select Python interpreter": "无法选择 Python 解释器",
+  "Python Interpreter: {label}": "Python 解释器：{label}"
 }
