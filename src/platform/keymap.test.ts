@@ -4,6 +4,7 @@ import {
   installKeyboardDispatcher,
   isAltGrTyping,
   isValidBinding,
+  letterOf,
   normalizeBinding,
   parseDoubleModifier,
   strokeOf,
@@ -31,6 +32,9 @@ describe("keymap", () => {
 
   it("names letters by the character typed, so AZERTY's Ctrl+Z is not Ctrl+W", () => {
     // AZERTY: the key typing "z" is physically KeyW.
+    expect(letterOf({ code: "KeyW", key: "z", altKey: false })).toBe("Z");
+    expect(letterOf({ code: "KeyF", key: "ƒ", altKey: true })).toBe("F");
+    expect(letterOf({ code: "Digit1", key: "1", altKey: false })).toBeNull();
     expect(strokeOf({ code: "KeyW", key: "z", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false })).toBe(
       "Ctrl+Z",
     );

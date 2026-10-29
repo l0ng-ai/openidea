@@ -5,6 +5,7 @@
  * shortcuts stay untouched. A right-click no component handled on selected or
  * selectable read-only text gets IDEA's Copy menu instead of nothing.
  */
+import { letterOf } from "@/platform/keymap";
 import { copyMenuFor, showContextMenu, useContextMenuStore } from "@/ui";
 
 const BLOCKED = new Set([
@@ -23,13 +24,7 @@ const BLOCKED = new Set([
 const RELOAD = new Set(["Meta+R", "Meta+Shift+R", "Ctrl+R", "Ctrl+Shift+R", "F5", "Shift+F5"]);
 
 function keyId(e: KeyboardEvent) {
-  const key = e.code.startsWith("Key")
-    ? e.code.slice(3)
-    : e.code === "BracketLeft"
-      ? "["
-      : e.code === "BracketRight"
-        ? "]"
-        : e.key;
+  const key = letterOf(e) ?? (e.code === "BracketLeft" ? "[" : e.code === "BracketRight" ? "]" : e.key);
   return [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Meta", key]
     .filter(Boolean)
     .join("+");
