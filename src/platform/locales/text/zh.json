@@ -4747,5 +4747,13 @@
   "Cannot delete agent tasks": "无法删除 Agent 任务",
   "Cannot archive agent tasks": "无法归档 Agent 任务",
   "Archive ({count})": "归档（{count}）",
-  "Delete ({count})…": "删除（{count}）…"
+  "Delete ({count})…": "删除（{count}）…",
+  "Run pytest tests": "运行 pytest 测试",
+  "e.g. pytest, uv, poetry, .venv/bin/pytest, python": "例如 pytest、uv、poetry、.venv/bin/pytest、python",
+  "Runner arguments": "运行器实参",
+  "e.g. `run pytest` for uv/poetry, `-m pytest` for python; empty calls the command itself": "例如 uv/poetry 使用 `run pytest`，python 使用 `-m pytest`；留空则直接调用命令本身",
+  "Target": "目标",
+  "Directory, file or test id; empty runs the whole suite": "目录、文件或测试 ID；留空则运行整个测试套件",
+  "pytest options": "pytest 选项",
+  "e.g. -x -q --tb=short": "例如 -x -q --tb=short"
 }
