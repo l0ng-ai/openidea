@@ -253,12 +253,25 @@ const CODE_NAMES: Record<string, string> = {
   NumpadDivide: "NumpadDivide",
 };
 
+/**
+ * The uppercase ASCII letter of a key event: the character it types when Alt
+ * is not held (on AZERTY the Z key sits on the physical KeyW, so Ctrl+Z must
+ * not read as Ctrl+W), or the physical `KeyX` when Alt is held (⌥ on macOS and
+ * AltGr may type a symbol) or `e.key` is not an ASCII letter.
+ */
+export function letterOf(e: Pick<KeyboardEvent, "code" | "key"> & { altKey?: boolean }): string | null {
+  if (/^[a-zA-Z]$/.test(e.key) && !e.altKey) return e.key.toUpperCase();
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
+  return null;
+}
+
 /** Converts a keydown event into a canonical stroke, or null for bare modifiers. */
 export function strokeOf(
   e: Pick<KeyboardEvent, "code" | "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ): string | null {
   let key: string | undefined;
-  if (/^Key[A-Z]$/.test(e.code)) key = e.code.slice(3);
+  const letter = letterOf(e);
+  if (letter) key = letter;
   else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
   else if (/^Numpad\d$/.test(e.code)) key = e.code.slice(6);
   else if (/^F\d{1,2}$/.test(e.code)) key = e.code;

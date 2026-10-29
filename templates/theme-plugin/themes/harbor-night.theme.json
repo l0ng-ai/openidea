@@ -63,6 +63,9 @@
     "--gutter-modified": "#469e98",
     "--gutter-added": "#549159",
     "--gutter-deleted": "#75869d",
+    "--diff-modified": "#2f4f63",
+    "--diff-inserted": "#294436",
+    "--diff-deleted": "#43494f",
 
     // Shadows and window controls
     "--shadow-popup": "0 6px 20px rgba(0, 0, 0, 0.45)",

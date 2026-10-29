@@ -1,7 +1,8 @@
 /**
  * Feature activation. Each feature exports `activate(): void | (() => void)`
  * that registers actions, tool windows, status items and services, returning
- * a disposer. The editor goes first because it provides the editor service.
+ * a disposer. The editor provides the editor service; app must install its launch
+ * barrier before welcome can restore a remembered project.
  */
 import { activate as editor } from "@/editor/core";
 import { activate as editorLsp } from "@/editor/lsp";
@@ -29,6 +30,7 @@ import { activate as tools, activateSettingsPages as toolsPages } from "./tools"
 import { activate as scratch } from "./scratch";
 import { activate as libraries } from "./libraries";
 import { activate as viewers } from "./viewers";
+import { activate as notebook } from "./notebook";
 import { activate as web } from "./web";
 import { activate as analysis } from "./analysis";
 import { activate as services } from "./services";
@@ -46,6 +48,7 @@ type Activate = () => void | (() => void);
 const features: Array<[string, Activate]> = [
   ["editor", editor],
   ["editor-lsp", editorLsp],
+  ["app", app],
   ["welcome", welcome],
   ["project-tree", projectTree],
   ["search", search],
@@ -63,12 +66,12 @@ const features: Array<[string, Activate]> = [
   ["templates", templates],
   ["todo", todo],
   ["settings", settings],
-  ["app", app],
   ["perf", perf],
   ["plugins", plugins],
   ["tools", tools],
   ["scratch", scratch],
   ["libraries", libraries],
+  ["notebook", notebook],
   ["viewers", viewers],
   ["web", web],
   ["analysis", analysis],

@@ -159,25 +159,6 @@ export function mergeConfigs(detected: readonly RunConfig[], user: readonly RunC
   return [...detected.filter((d) => !ids.has(d.id)), ...user];
 }
 
-export function configsEqual(a: RunConfig, b: RunConfig): boolean {
-  return (
-    a.id === b.id &&
-    a.name === b.name &&
-    a.kind === b.kind &&
-    a.command === b.command &&
-    a.args.join("\u0000") === b.args.join("\u0000") &&
-    (a.cwd ?? "") === (b.cwd ?? "") &&
-    JSON.stringify(sortedEnv(a.env)) === JSON.stringify(sortedEnv(b.env)) &&
-    a.isTest === b.isTest &&
-    (a.debugAdapter ?? "") === (b.debugAdapter ?? "") &&
-    a.detected === b.detected
-  );
-}
-
-function sortedEnv(env: RunConfig["env"]) {
-  return Object.entries(env).sort(([a], [b]) => a.localeCompare(b));
-}
-
 let counter = 0;
 export function uid(): string {
   const rnd =

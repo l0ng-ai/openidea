@@ -23,6 +23,7 @@ import {
   showContextMenu,
 } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
+import { isImeKey } from "@/platform/ime";
 import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
 import { canSend, emptyDraft, retryParts, usageLabel, workTime } from "./composerModel";
@@ -697,9 +698,9 @@ function UserMessage({
         initial={entry.text}
         later={turn < turnCount - 1}
         onCancel={() => setEditing(false)}
-        onSend={(text) => {
+        onSend={async (text) => {
+          await rerunFrom(task.id, turn, text);
           setEditing(false);
-          void rerunFrom(task.id, turn, text).catch(fail);
         }}
       />
     );
@@ -770,12 +771,27 @@ function MessageEditor({
   /** Turns follow it (they are dropped on send). */
   later: boolean;
   onCancel: () => void;
-  onSend: (text: string) => void;
+  onSend: (text: string) => Promise<void>;
 }) {
   const tx = useTx();
   const [text, setText] = useState(initial);
-  const send = () => {
-    if (text.trim()) onSend(text.trim());
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useRef(false);
+  const send = async () => {
+    if (!text.trim() || pending.current) return;
+    pending.current = true;
+    setSending(true);
+    setError(null);
+    try {
+      await onSend(text.trim());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) });
+    } finally {
+      pending.current = false;
+      setSending(false);
+    }
   };
   return (
     <div className={styles.message}>
@@ -784,19 +800,30 @@ function MessageEditor({
         value={text}
         rows={Math.min(Math.max(text.split("\n").length, 2), 12)}
         autoFocus
+        readOnly={sending}
         aria-label={tx("Message")}
         onChange={(e) => setText(e.target.value)}
         onFocus={(e) => e.currentTarget.setSelectionRange(text.length, text.length)}
         onKeyDown={(e) => {
+          if (isImeKey(e.nativeEvent)) return;
           if (e.key === "Escape") {
             e.preventDefault();
-            onCancel();
+            e.stopPropagation();
+            if (!pending.current) onCancel();
           } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            send();
+            void send();
           }
         }}
       />
+      {error && (
+        <div className={styles.error} role="alert">
+          <Icon name="error" size={14} />
+          <span>
+            <T>Couldn't send the message</T>: {error}
+          </span>
+        </div>
+      )}
       <div className={styles.editBar}>
         {later && (
           <span className={styles.muted}>
@@ -804,11 +831,12 @@ function MessageEditor({
           </span>
         )}
         <span className={styles.editButtons}>
-          <Button size="small" onClick={onCancel}>
+          <Button size="small" disabled={sending} onClick={onCancel}>
             Cancel
           </Button>
-          <Button size="small" variant="primary" disabled={!text.trim()} onClick={send}>
-            Send
+          <Button size="small" variant="primary" disabled={!text.trim() || sending} onClick={() => void send()}>
+            {sending && <Spinner size={12} />}
+            <T>Send</T>
           </Button>
         </span>
       </div>

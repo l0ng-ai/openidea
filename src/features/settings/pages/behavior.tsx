@@ -4,6 +4,8 @@
  * Notifications. Every option is wired (see `appearanceRuntime`, workbench
  * theme / tool windows / notifications, app title / windows, `platform/dateFormat`).
  */
+
+import { FontPicker } from "../components/FontPicker";
 import { useId, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
@@ -14,8 +16,6 @@ import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
 import { ColorSwatches, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
-import { FontSelect } from "../components/FontSelect";
-import { BUNDLED_MONO_FAMILY, BUNDLED_UI_FAMILY } from "@/platform/fonts";
 import {
   ZOOM_LIMITS,
   IDLE_LIMITS,
@@ -176,8 +176,6 @@ function ZoomRow() {
   );
 }
 
-const UI_BUNDLED = [BUNDLED_UI_FAMILY, BUNDLED_MONO_FAMILY];
-
 function CustomFontRow() {
   const [on, setOn] = useSetting<boolean>("appearance.useCustomFont");
   const [family, setFamily] = useSetting<string>("appearance.uiFontFamily");
@@ -187,9 +185,7 @@ function CustomFontRow() {
   return (
     <div className={clsx(styles.fontRow, matched && styles.matched)}>
       <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
-      <span className={styles.fontInput}>
-        <FontSelect value={family} onChange={setFamily} bundled={UI_BUNDLED} disabled={!on} aria-label="UI font" />
-      </span>
+      <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
       <label className={clsx(styles.sizeLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
         <SearchLabel text="Size:" />
       </label>

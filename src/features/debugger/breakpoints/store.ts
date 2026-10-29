@@ -229,10 +229,3 @@ export function setMuted(muted: boolean) {
   persist();
   for (const path of Object.keys(useBreakpoints.getState().byFile)) scheduleSync(path);
 }
-
-export function allBreakpoints(): Array<{ path: string; bp: BreakpointEntry }> {
-  const { byFile } = useBreakpoints.getState();
-  return Object.keys(byFile)
-    .sort()
-    .flatMap((path) => byFile[path]!.map((bp) => ({ path, bp })));
-}

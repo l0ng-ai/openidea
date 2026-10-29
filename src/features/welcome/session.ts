@@ -87,7 +87,10 @@ let attempted = false;
 export async function reopenLastProject(): Promise<void> {
   if (attempted || !isTauri()) return;
   attempted = true;
-  if (useProject.getState().project) return;
+  // An explicit launch wins over both this window's and the last session's project.
+  await startupLaunchHandled();
+  const startup = useProject.getState();
+  if (startup.project || startup.lightEdit) return;
   // A reloaded webview gets back its own project, whatever window it is.
   const own = windowProject();
   if (own) {
@@ -96,7 +99,6 @@ export async function reopenLastProject(): Promise<void> {
   }
   // Secondary windows open the project they were created for (features/app/windows.ts).
   if (getCurrentWindow().label !== "main") return;
-  if (useProject.getState().project) return;
   const path = lastSessionProject();
   if (!path) return;
   let settings: Settings | null = null;
@@ -106,9 +108,8 @@ export async function reopenLastProject(): Promise<void> {
     /* use the local preference */
   }
   if (!reopenEnabled(settings, useSession.getState().reopenPref)) return;
-  // A project or files passed on the command line (or from Finder) win over the last session's.
-  await startupLaunchHandled();
-  if (useProject.getState().project || useProject.getState().lightEdit) return;
+  const current = useProject.getState();
+  if (current.project || current.lightEdit) return;
   await reopen(path);
 }
 

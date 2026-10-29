@@ -35,9 +35,14 @@ const close = () => useNavBarPopup.setState({ open: false });
 
 export function NavBarPopup() {
   const open = useNavBarPopup((s) => s.open);
+  // Closed nearly always: no subscription to the caret, which moves on every keystroke.
+  return open ? <OpenNavBar /> : null;
+}
+
+function OpenNavBar() {
   const seq = useNavBarPopup((s) => s.seq);
   const status = useEditorStatus((s) => s.status);
-  if (!open || !status) return null;
+  if (!status) return null;
   return <NavBar key={seq} path={status.path} line={status.line} col={status.col} />;
 }
 

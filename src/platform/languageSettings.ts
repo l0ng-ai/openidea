@@ -157,14 +157,6 @@ export function validateProjectStructure(raw: unknown): ProjectStructureValid {
   };
 }
 
-/** The "Exclude files" name patterns (`*.log;tmp*`). */
-export function excludeFilePatterns(excludeFiles: string): string[] {
-  return excludeFiles
-    .split(";")
-    .map((p) => p.trim())
-    .filter(Boolean);
-}
-
 /** Root kinds, as in IDEA's Project Structure (`ide-workspace::roots::RootKind`). */
 export type FolderRole = "source" | "test" | "resources" | "testResources" | "excluded";
 
@@ -282,8 +274,6 @@ export function unmarkedRoots(detected: readonly RootFolder[], ps: ProjectStruct
 export function restoreDetected(ps: ProjectStructureValid, detected: readonly RootFolder[]): ProjectStructureValid {
   return { ...ps, unmarked: ps.unmarked.filter((p) => !detected.some((d) => d.path === folderKey(p))) };
 }
-
-export const PROJECT_STRUCTURE_KEY = (role: FolderRole) => `projectStructure.${ROLE_KEYS[role]}`;
 
 /** Settings keys of `ProjectStructureValid`, in a stable order. */
 export const PROJECT_STRUCTURE_KEYS = [

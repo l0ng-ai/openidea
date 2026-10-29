@@ -50,6 +50,7 @@ type OnChange = Box<dyn Fn(&FsBatch) + Send + Sync>;
 pub struct Watcher {
     inner: Inner,
     excludes: SharedExcludes,
+    rules: Arc<GitignoreStack>,
 }
 
 type SharedExcludes = Arc<RwLock<ExcludeMatcher>>;
@@ -74,6 +75,7 @@ impl Watcher {
         let root = dunce::canonicalize(root)?;
         let filter = EventFilter::new(root.clone(), &excludes);
         let shared = filter.excludes.clone();
+        let rules = filter.gitignore.clone();
         let emit = move |batch: &FsBatch| {
             sink.emit(IdeEvent::FsChanged {
                 created: batch.created.iter().map(Into::into).collect(),
@@ -87,7 +89,7 @@ impl Watcher {
             WatchMode::Flat => Self::start_recursive(root, filter, emit, RecursiveMode::NonRecursive),
             WatchMode::PerDirectory => Self::start_per_directory(root, filter, emit),
         }?;
-        Ok(Self { inner, excludes: shared })
+        Ok(Self { inner, excludes: shared, rules })
     }
 
     /// Replaces the exclude globs (Settings › Project Structure / File Types
@@ -95,6 +97,12 @@ impl Watcher {
     /// per-directory mode, folders no longer excluded are watched once they change.
     pub fn set_excludes(&self, excludes: &[String]) {
         *self.excludes.write() = ExcludeMatcher::new(excludes);
+    }
+
+    /// Explicit refresh for writes to Git common metadata outside the watched root.
+    pub fn reload_ignore_rules(&self) {
+        self.rules.reload_repo_level();
+        self.rules.invalidate_tree(self.rules.repo_root().unwrap_or(Path::new("/")));
     }
 
     /// Number of OS-level watches (1 in recursive and flat mode).
@@ -374,13 +382,13 @@ fn merge(prev: Option<Change>, next: Change) -> Change {
 pub(crate) struct EventFilter {
     root: PathBuf,
     excludes: SharedExcludes,
-    gitignore: GitignoreStack,
+    gitignore: Arc<GitignoreStack>,
 }
 
 impl EventFilter {
     pub fn new(root: PathBuf, excludes: &[String]) -> Self {
         Self {
-            gitignore: GitignoreStack::new(&root),
+            gitignore: Arc::new(GitignoreStack::new(&root)),
             excludes: Arc::new(RwLock::new(ExcludeMatcher::new(excludes))),
             root,
         }

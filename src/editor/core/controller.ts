@@ -22,11 +22,15 @@ import {
   notifications,
   resolveFileEditor,
   useContributions,
+  type EditorCloseSession,
   type EditorInput,
   type OpenOptions,
+  type FileEditorResolution,
   type OpenEditorTab,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
+import { ask } from "@/workbench/messages";
+import { t } from "@/platform/i18n";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
 import { usePlatform } from "@/platform/platformInfo";
 import {
@@ -46,6 +50,7 @@ import {
   moveTab,
   moveTabToNewSplit,
   neighbourPane,
+  openKeys,
   openTab,
   paneIds,
   paneOf,
@@ -64,6 +69,16 @@ import {
   type TabsState,
 } from "./model/tabs";
 import { DocumentManager, useDocMeta } from "./model/document";
+import {
+  closedDocuments,
+  combinedError,
+  customDocuments,
+  documentDirty,
+  documentLifecycle,
+  failures,
+  inputDirty,
+  type CustomDocument,
+} from "./model/customDocuments";
 import { EditorSlot, type SlotHost } from "./model/slot";
 import { NavigationHistory } from "./model/navHistory";
 import { EditHistory } from "./model/editHistory";
@@ -194,6 +209,16 @@ export class EditorController implements SlotHost {
   /** When each input key was last the active tab (a counter, across panes). */
   private lastActive = new Map<string, number>();
   private activeClock = 0;
+  /** Serializes close decisions without retaining a stale tabs snapshot. */
+  private removalTail: Promise<unknown> = Promise.resolve();
+  private closingDocuments = new Map<string, Promise<void>>();
+  private preparedDocuments = new Map<string, CustomDocument>();
+  private closeSession: EditorCloseSession | null = null;
+  private closeCommitted = false;
+  private projectGeneration = 0;
+  private admissionGeneration = 0;
+  private closeRequests = 0;
+  private projectTransition: Promise<void> = Promise.resolve();
 
   constructor(backend: DocBackend = docBackend(), scheduler?: Scheduler) {
     this.manager = new DocumentManager(
@@ -224,7 +249,7 @@ export class EditorController implements SlotHost {
     let prevRoot = useProject.getState().project?.root ?? null;
     let prevLight = useProject.getState().lightEdit;
     this.disposers.push(
-      useProject.subscribe((s) => {
+      useProject.subscribe((s, previous) => {
         if (s.settings !== prevSettings) {
           prevSettings = s.settings;
           tabOptions.activateOnClose = editorPrefs(s.settings).tabs
@@ -233,16 +258,33 @@ export class EditorController implements SlotHost {
         }
         const root = s.project?.root ?? null;
         // Entering or leaving LightEdit replaces the backend's documents too.
-        if (root !== prevRoot || s.lightEdit !== prevLight) {
+        if (root !== prevRoot || s.lightEdit !== prevLight || (s.opening && s.project !== previous.project)) {
           prevRoot = root;
           prevLight = s.lightEdit;
           this.saveSession();
           this.sessionRoot = null;
-          this.closeEverything();
+          const generation = ++this.projectGeneration;
+          const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);
+          // The guard decided already. Disposal must never prompt or autosave
+          // custom documents after the backend has replaced their project.
+          useTabs.setState(initialTabsState(), true);
+          this.closeSession = null;
+          this.closeCommitted = false;
+          this.preparedDocuments.clear();
           this.nav.clear();
           this.edits.clear();
-          if (root) this.restoreSession(root);
-          else if (s.lightEdit) this.restoreSession(LIGHT_EDIT_SESSION);
+          this.restoredTabs.clear();
+          this.restoredViews.clear();
+          this.projectTransition = this.releaseDocuments(documents.values())
+            .catch((e) => this.documentError(e))
+            .then(() => {
+              if (generation !== this.projectGeneration) return;
+              if (root) this.restoreSession(root);
+              else if (s.lightEdit) this.restoreSession(LIGHT_EDIT_SESSION);
+            });
+        } else if (previous.opening && !s.opening && this.closeCommitted) {
+          // A failed project open returns to the same project.
+          this.closeSession?.cancel();
         }
       }),
     );
@@ -252,7 +294,10 @@ export class EditorController implements SlotHost {
     if (this.manager.backend.onFsChanged)
       this.disposers.push(this.manager.backend.onFsChanged((e) => this.onFilesRemoved(e.removed)));
     const onWindowBlur = () => {
-      if (this.autoSave()) void this.manager.saveAll("auto");
+      if (this.autoSave() && !this.closeSession) {
+        void this.manager.saveAll("auto");
+        void this.saveCustomDocuments(true).catch((e) => this.documentError(e));
+      }
     };
     const onPageHide = () => this.saveSession();
     if (typeof window !== "undefined") {
@@ -271,11 +316,18 @@ export class EditorController implements SlotHost {
   stop() {
     this.saveSession();
     this.sessionRoot = null;
+    ++this.projectGeneration;
     clearTimeout(this.sessionTimer);
+    const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);
     this.disposers.splice(0).forEach((d) => d());
+    this.closeSession = null;
+    this.closeCommitted = false;
+    this.preparedDocuments.clear();
     for (const slot of this.slots.values()) slot.dispose();
     this.slots.clear();
     this.manager.stop();
+    useTabs.setState(initialTabsState(), true);
+    void this.releaseDocuments(documents.values()).catch((e) => this.documentError(e));
   }
 
   autoSave(): boolean {
@@ -302,13 +354,23 @@ export class EditorController implements SlotHost {
           return n;
         }, true);
 
-    // Autosave on tab switch (IDEA).
-    if (this.autoSave()) {
+    // Save only a document that remains open. A discarded/closing document must
+    // never be saved by the tab removal that follows its close decision.
+    if (this.autoSave() && !this.closeSession) {
+      const saved = new Set<string>();
+      const open = openKeys(next);
       for (const [paneId, pane] of Object.entries(prev.panes)) {
         const now = next.panes[paneId];
         if (pane.active && now && now.active !== pane.active) {
           const slot = this.slots.get(pane.active);
           if (slot) void slot.model.save("auto").catch(() => {});
+          const input = pane.tabs.find((t) => t.id === pane.active)?.input;
+          if (input && open.has(input.key) && !saved.has(input.key) && !this.preparedDocuments.has(input.key)) {
+            saved.add(input.key);
+            const lifecycle = documentLifecycle(input, useContributions.getState().editorKinds);
+            if (lifecycle && documentDirty({ input, lifecycle }))
+              void lifecycle.save(input).catch((e) => this.documentError(e));
+          }
         }
       }
     }
@@ -356,6 +418,9 @@ export class EditorController implements SlotHost {
     const session = loadSession(root);
     if (!session) return;
     const state = restoreTabsState(session, fileKey);
+    const kinds = useContributions.getState().editorKinds;
+    for (const pane of Object.values(state.panes))
+      pane.tabs = pane.tabs.map((tab) => (documentLifecycle(tab.input, kinds) ? { ...tab, preview: false } : tab));
     this.restoredViews = new Map(Object.entries(session.files));
     this.restoredTabs = new Set(Object.values(state.panes).flatMap((p) => p.tabs.map((t) => t.id)));
     useTabs.setState(state, true);
@@ -713,6 +778,7 @@ export class EditorController implements SlotHost {
       Object.values(s.panes).some((p) => p.tabs.length > 0),
     );
     setContext("editorSplit", paneIds(s).length > 1);
+    setContext("editorTextFocus", !!slot?.view?.hasFocus);
     setContext("textEditorActive", !!slot);
   }
 
@@ -766,18 +832,43 @@ export class EditorController implements SlotHost {
 
   // --- opening ---------------------------------------------------------------------------
 
+  private openingGeneration() {
+    const generation = { project: this.projectGeneration, admission: this.admissionGeneration };
+    this.checkOpening(generation);
+    return generation;
+  }
+
+  private checkOpening(generation: { project: number; admission: number }) {
+    if (generation.project !== this.projectGeneration) throw new Error("The project changed while opening the editor");
+    if (generation.admission !== this.admissionGeneration || this.closeSession || this.closeRequests)
+      throw new Error("The project is closing");
+  }
+
   async openFile(path: string, o: OpenOptions = {}) {
+    const generation = this.openingGeneration();
     if (isVirtualUri(path)) return this.openVirtual(path, o);
+    await this.projectTransition;
+    this.checkOpening(generation);
     // Images, binary and huge files open in a contributed viewer unless already open as text.
     if (!o.asText && !findTab(useTabs.getState(), fileKey(path))) {
       const viewer = await resolveFileEditor(path);
-      if (viewer) return this.openInput(viewer, o);
+      if (viewer) {
+        try {
+          await this.admitInput(viewer.input, o, generation, viewer);
+        } finally {
+          await viewer.rollback();
+        }
+        return;
+      }
     }
-    await this.openInput(fileInput(path), o);
+    await this.admitInput(fileInput(path), o, generation);
   }
 
   /** Opens the library class (or other server-provided document) behind `uri` read-only. */
   async openVirtual(uri: string, o: OpenOptions = {}) {
+    const generation = this.openingGeneration();
+    await this.projectTransition;
+    this.checkOpening(generation);
     let vd: VirtualDocument;
     try {
       vd = await virtualDocument(uri);
@@ -790,10 +881,23 @@ export class EditorController implements SlotHost {
       });
       return;
     }
-    await this.openInput(virtualInput(vd), o);
+    await this.admitInput(virtualInput(vd), o, generation);
   }
 
   async openInput(input: EditorInput, o: OpenOptions = {}) {
+    return this.admitInput(input, o, this.openingGeneration());
+  }
+
+  private async admitInput(
+    input: EditorInput,
+    o: OpenOptions,
+    generation: { project: number; admission: number },
+    resolution?: FileEditorResolution,
+  ) {
+    await this.projectTransition;
+    this.checkOpening(generation);
+    await this.closingDocuments.get(input.key);
+    this.checkOpening(generation);
     this.navSuppress++;
     try {
       let s = useTabs.getState();
@@ -815,13 +919,17 @@ export class EditorController implements SlotHost {
       if (found && (!(o.side || o.pane) || found.paneId === paneId)) {
         paneId = found.paneId;
         s = activateTab(setActivePane(s, paneId), paneId, found.tab.id);
-        if (!o.preview) s = promoteTab(s, paneId, found.tab.id);
+        if (!o.preview || documentLifecycle(input, useContributions.getState().editorKinds))
+          s = promoteTab(s, paneId, found.tab.id);
         tabId = found.tab.id;
         if (found.tab.input.data !== input.data && input.data !== undefined)
-          s = openTab(s, paneId, input, { preview: o.preview }).state;
+          s = openTab(s, paneId, input, {
+            preview: o.preview && !documentLifecycle(input, useContributions.getState().editorKinds),
+          }).state;
       } else {
         const tabs = editorPrefs().tabs;
-        const preview = !!o.preview && tabs.previewTab;
+        const preview =
+          !!o.preview && tabs.previewTab && !documentLifecycle(input, useContributions.getState().editorKinds);
         const r = openTab(s, paneId, input, {
           preview,
           ...(tabs.openAtEnd ? { index: s.panes[paneId]?.tabs.length ?? 0 } : {}),
@@ -829,16 +937,27 @@ export class EditorController implements SlotHost {
         s = r.state;
         tabId = r.tabId;
         if (tabs.sortAlphabetically) s = sortTabs(s, paneId, (t) => tabSortKey(t.input));
-        s = enforceTabLimit(
-          s,
-          paneId,
-          tabs.tabLimit,
-          tabs.closingPolicy,
-          (t) => !!(t.input.path && useDocMeta.getState()[t.input.path]?.dirty),
-          tabId,
-        );
       }
+      resolution?.admit();
       useTabs.setState(s, true);
+      const tabPrefs = editorPrefs().tabs;
+      await this.removeGuarded(
+        (current) =>
+          current.panes[paneId]
+            ? enforceTabLimit(
+                current,
+                paneId,
+                tabPrefs.tabLimit,
+                tabPrefs.closingPolicy,
+                (tab) =>
+                  inputDirty(tab.input, useContributions.getState().editorKinds) ??
+                  !!(tab.input.path && useDocMeta.getState()[tab.input.path]?.dirty),
+                tabId,
+                (tab) => inputDirty(tab.input, useContributions.getState().editorKinds) === true,
+              )
+            : current,
+        { protect: (tab) => inputDirty(tab.input, useContributions.getState().editorKinds) === true },
+      );
       if (!isTextInput(input)) {
         if (o.focus !== false) requestAnimationFrame(() => this.focus());
         return;
@@ -892,32 +1011,171 @@ export class EditorController implements SlotHost {
     useTabs.setState((s) => f(s), true);
   }
 
-  closeTab(paneId: string, tabId: string) {
-    this.apply((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s));
+  private documentError(error: unknown) {
+    notifications().notify({
+      level: "error",
+      title: t("app.unsaved.saveFailed"),
+      body: error instanceof Error ? error.message : String(error),
+    });
   }
-  closeOthers(paneId: string, tabId: string) {
-    this.apply((s) => closeOthers(s, paneId, tabId));
+
+  private enqueueRemoval<T>(run: () => Promise<T>): Promise<T> {
+    const result = this.removalTail.then(run);
+    this.removalTail = result.catch(() => {});
+    return result;
   }
-  closeAll(paneId: string, keepPinned = false) {
-    this.apply((s) => closeAll(s, paneId, keepPinned));
+
+  private releaseDocuments(documents: Iterable<CustomDocument>): Promise<void> {
+    const pending = [...documents].map((d) => {
+      const key = d.input.key;
+      const previous = this.closingDocuments.get(key) ?? Promise.resolve();
+      const close = previous.then(() => d.lifecycle.close(d.input));
+      this.closingDocuments.set(key, close);
+      return close.finally(() => {
+        if (this.closingDocuments.get(key) === close) this.closingDocuments.delete(key);
+      });
+    });
+    return Promise.allSettled(pending).then((results) => {
+      const errors = failures(results);
+      if (errors.length) throw combinedError(errors);
+    });
   }
-  closeToRight(paneId: string, tabId: string) {
-    this.apply((s) => closeToRight(s, paneId, tabId));
+
+  /** Close exactly the originally selected tabs, evaluating references after every await. */
+  private removeGuarded(
+    select: (s: TabsState) => TabsState,
+    options: { protect?: (tab: Tab) => boolean; clearHistory?: boolean } = {},
+  ): Promise<boolean> {
+    const generation = this.projectGeneration;
+    const initial = useTabs.getState();
+    const planned = select(initial);
+    const remainingIds = new Set(Object.values(planned.panes).flatMap((p) => p.tabs.map((t) => t.id)));
+    const targets = new Set(
+      Object.values(initial.panes).flatMap((p) => p.tabs.filter((t) => !remainingIds.has(t.id)).map((t) => t.id)),
+    );
+    const emptyPanes = paneIds(initial).filter((id) => !planned.panes[id] && !initial.panes[id]?.tabs.length);
+    return this.enqueueRemoval(async () => {
+      if (generation !== this.projectGeneration || this.closeSession) return false;
+      const prepared: CustomDocument[] = [];
+      const currentRemoval = (s: TabsState) => {
+        let next = s;
+        for (const [paneId, pane] of Object.entries(s.panes))
+          for (const tab of pane.tabs)
+            if (targets.has(tab.id) && next.panes[paneId] && !options.protect?.(tab))
+              next = closeTab(next, paneId, tab.id);
+        for (const id of emptyPanes)
+          if (next.panes[id]?.tabs.length === 0 && paneIds(next).length > 1) next = removePane(next, id);
+        return next;
+      };
+      const stillLast = (d: CustomDocument) => {
+        if (generation !== this.projectGeneration) return false;
+        const current = useTabs.getState();
+        return openKeys(current).has(d.input.key) && !openKeys(currentRemoval(current)).has(d.input.key);
+      };
+      try {
+        const authorized = new Set<string>();
+        const discards = new Map<string, CustomDocument>();
+        for (;;) {
+          const current = useTabs.getState();
+          const d = closedDocuments(current, currentRemoval(current), useContributions.getState().editorKinds).find(
+            (document) => !authorized.has(document.input.key),
+          );
+          if (!d) {
+            // A later Cancel/save failure must not discard earlier documents.
+            const discard = [...discards.values()].find(stillLast);
+            if (!discard) break;
+            discards.delete(discard.input.key);
+            await discard.lifecycle.discard(discard.input);
+            // The await may have changed which documents lose their last tab.
+            if (generation !== this.projectGeneration) return false;
+            continue;
+          }
+          if (!prepared.some((document) => document.input.key === d.input.key)) {
+            prepared.push(d);
+            this.preparedDocuments.set(d.input.key, d);
+            await d.lifecycle.prepareClose(d.input);
+          }
+          if (generation !== this.projectGeneration) return false;
+          if (!stillLast(d)) continue;
+          if (documentDirty(d)) {
+            const decision = await ask({
+              title: t("app.unsaved.title"),
+              body: t("app.unsaved.body", { count: 1, project: d.input.path ?? d.input.key }),
+              buttons: [
+                { id: "discard", label: t("app.unsaved.discard") },
+                { id: "save", label: t("app.unsaved.save"), primary: true },
+              ],
+              icon: "warning",
+            });
+            if (!stillLast(d)) continue;
+            if (decision.button === "save") await d.lifecycle.save(d.input);
+            else if (decision.button === "discard") discards.set(d.input.key, d);
+            else return false;
+          }
+          authorized.add(d.input.key);
+        }
+        // Commit only the original target ids against the latest tab state.
+        if (generation !== this.projectGeneration) return false;
+        const before = useTabs.getState();
+        const next = currentRemoval(before);
+        const closed = closedDocuments(before, next, useContributions.getState().editorKinds);
+        const closedKeys = new Set(closed.map((d) => d.input.key));
+        for (const d of prepared) if (!closedKeys.has(d.input.key)) d.lifecycle.cancelClose(d.input);
+        // Remove frozen markers only after the tab reaction, to prevent autosave.
+        useTabs.setState(options.clearHistory ? { ...next, closed: [] } : next, true);
+        for (const d of prepared) this.preparedDocuments.delete(d.input.key);
+        prepared.length = 0;
+        await this.releaseDocuments(closed);
+        return true;
+      } catch (e) {
+        this.documentError(e);
+        return false;
+      } finally {
+        for (const d of prepared) {
+          if (this.preparedDocuments.get(d.input.key) === d) this.preparedDocuments.delete(d.input.key);
+          if (generation === this.projectGeneration) d.lifecycle.cancelClose(d.input);
+        }
+      }
+    });
   }
-  closeToLeft(paneId: string, tabId: string) {
-    this.apply((s) => closeToLeft(s, paneId, tabId));
+
+  closeTab(paneId: string, tabId: string): Promise<boolean> {
+    return this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s));
+  }
+  closeOthers(paneId: string, tabId: string): Promise<boolean> {
+    return this.removeGuarded((s) => (s.panes[paneId] ? closeOthers(s, paneId, tabId) : s), {
+      protect: (tab) => tab.pinned,
+    });
+  }
+  closeAll(paneId: string, keepPinned = false): Promise<boolean> {
+    return this.removeGuarded((s) => (s.panes[paneId] ? closeAll(s, paneId, keepPinned) : s), {
+      protect: (tab) => keepPinned && tab.pinned,
+    });
+  }
+  closeToRight(paneId: string, tabId: string): Promise<boolean> {
+    return this.removeGuarded((s) => (s.panes[paneId] ? closeToRight(s, paneId, tabId) : s), {
+      protect: (tab) => tab.pinned,
+    });
+  }
+  closeToLeft(paneId: string, tabId: string): Promise<boolean> {
+    return this.removeGuarded((s) => (s.panes[paneId] ? closeToLeft(s, paneId, tabId) : s), {
+      protect: (tab) => tab.pinned,
+    });
   }
   /** Keeps tabs with unsaved changes or a VCS status (IDEA: tabs shown as modified). */
-  closeUnmodified(paneId: string) {
-    const modified = (t: Tab) => {
-      const p = t.input.path;
-      return !!p && (!!useDocMeta.getState()[p]?.dirty || !!getFileDecoration(p)?.color);
-    };
-    this.apply((s) => closeUnmodified(s, paneId, modified));
+  closeUnmodified(paneId: string): Promise<boolean> {
+    const modified = (tab: Tab) =>
+      (inputDirty(tab.input, useContributions.getState().editorKinds) ?? false) ||
+      !!(tab.input.path && (useDocMeta.getState()[tab.input.path]?.dirty || getFileDecoration(tab.input.path)?.color));
+    return this.removeGuarded((s) => (s.panes[paneId] ? closeUnmodified(s, paneId, modified) : s), {
+      protect: (tab) => tab.pinned || modified(tab),
+    });
   }
-  closeReadOnly(paneId: string) {
+  closeReadOnly(paneId: string): Promise<boolean> {
     const writable = (t: Tab) => !t.input.path || !useDocMeta.getState()[t.input.path]?.readOnly;
-    this.apply((s) => closeUnmodified(s, paneId, writable));
+    return this.removeGuarded((s) => (s.panes[paneId] ? closeUnmodified(s, paneId, writable) : s), {
+      protect: (tab) => tab.pinned || writable(tab),
+    });
   }
   /** Reload from Disk: re-reads the open, unmodified documents of `paths`. */
   async reloadFromDisk(paths: string[]) {
@@ -990,7 +1248,11 @@ export class EditorController implements SlotHost {
     this.apply((s) => cycleTab(s, delta));
     this.focus();
   }
-  reopenClosed() {
+  async reopenClosed(): Promise<void> {
+    const generation = this.projectGeneration;
+    await this.projectTransition;
+    await this.removalTail;
+    if (generation !== this.projectGeneration || this.closeSession) return;
     const r = reopenClosed(useTabs.getState());
     if (!r) return;
     useTabs.setState(r.state, true);
@@ -1012,12 +1274,16 @@ export class EditorController implements SlotHost {
     }
   }
 
-  unsplit(paneId: string) {
-    this.apply((s) => removePane(s, paneId));
+  unsplit(paneId: string): Promise<boolean> {
+    return this.removeGuarded((s) => (s.panes[paneId] ? removePane(s, paneId) : s));
   }
-  unsplitAll(paneId: string) {
-    this.apply((s) => unsplitAll(s, paneId));
-    this.focus();
+  async unsplitAll(paneId: string): Promise<boolean> {
+    const closed = await this.removeGuarded((s) => unsplitAll(s, paneId));
+    if (closed) {
+      this.apply((s) => setActivePane(s, paneId));
+      this.focus();
+    }
+    return closed;
   }
   changeSplitOrientation(paneId: string) {
     this.apply((s) => changeSplitOrientation(s, paneId));
@@ -1040,35 +1306,46 @@ export class EditorController implements SlotHost {
     });
   }
 
-  closeActiveTab() {
+  closeActiveTab(): Promise<boolean> {
     const s = useTabs.getState();
     const pane = s.panes[s.activePane];
-    if (pane?.active) this.closeTab(pane.id, pane.active);
-    else if (paneIds(s).length > 1) this.unsplit(s.activePane);
+    if (pane?.active) return this.closeTab(pane.id, pane.active);
+    if (paneIds(s).length > 1) return this.unsplit(s.activePane);
+    return Promise.resolve(true);
   }
 
-  closeEverything() {
-    this.apply((s) => {
-      let next = s;
-      for (const id of paneIds(s)) if (next.panes[id]) next = closeAll(next, id);
-      return { ...next, closed: [] };
-    });
+  closeEverything(): Promise<boolean> {
+    return this.removeGuarded(
+      (s) => {
+        let next = s;
+        for (const id of paneIds(s)) if (next.panes[id]) next = closeAll(next, id);
+        return next;
+      },
+      { clearHistory: true },
+    );
   }
 
   private onFilesRemoved(removed: string[]) {
     if (!removed.length) return;
-    for (const path of removed) {
-      const isUnder = (k: string) => k === fileKey(path) || k.startsWith(fileKey(path) + "/");
-      const s = useTabs.getState();
-      const keys = new Set<string>();
-      for (const pane of Object.values(s.panes))
-        for (const t of pane.tabs) if (isUnder(t.input.key)) keys.add(t.input.key);
-      for (const key of keys) {
-        const model = this.manager.get(key.slice(5));
-        if (model?.getMeta().dirty) continue;
-        this.apply((st) => closeKey(st, key));
-        this.nav.removePath(key.slice(5));
-        this.edits.removePath(key.slice(5));
+    const kinds = useContributions.getState().editorKinds;
+    const inputs = new Map<string, EditorInput>();
+    for (const pane of Object.values(useTabs.getState().panes))
+      for (const tab of pane.tabs) {
+        const path = tab.input.path;
+        if (path && removed.some((root) => path === root || path.startsWith(`${root}/`)))
+          inputs.set(tab.input.key, tab.input);
+      }
+    for (const input of inputs.values()) {
+      if (inputDirty(input, kinds) === true || (input.path && this.manager.get(input.path)?.getMeta().dirty)) continue;
+      // A pending output/edit can make the document dirty before this queued
+      // removal runs. Recheck then; external deletion never discards edits.
+      void this.removeGuarded((s) => closeKey(s, input.key), {
+        protect: (tab) =>
+          inputDirty(tab.input, kinds) === true || !!(tab.input.path && useDocMeta.getState()[tab.input.path]?.dirty),
+      });
+      if (input.path) {
+        this.nav.removePath(input.path);
+        this.edits.removePath(input.path);
       }
     }
   }
@@ -1124,8 +1401,8 @@ export class EditorController implements SlotHost {
     return [...out];
   }
 
-  closePath(path: string) {
-    this.apply((s) => {
+  closePath(path: string): Promise<boolean> {
+    return this.removeGuarded((s) => {
       const keys = new Set<string>();
       for (const pane of Object.values(s.panes))
         for (const t of pane.tabs) if (t.input.path === path) keys.add(t.input.key);
@@ -1135,8 +1412,8 @@ export class EditorController implements SlotHost {
     });
   }
 
-  closeInput(key: string) {
-    this.apply((s) => closeKey(s, key));
+  closeInput(key: string): Promise<boolean> {
+    return this.removeGuarded((s) => closeKey(s, key));
   }
 
   activeInput(): EditorInput | null {
@@ -1163,8 +1440,96 @@ export class EditorController implements SlotHost {
     return { doc: slot.model.doc, path: slot.model.path, ...slot.caret() };
   }
 
-  saveAll() {
-    return this.manager.saveAll("explicit");
+  private async saveCustomDocuments(auto = false): Promise<void> {
+    const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);
+    const results = await Promise.allSettled(
+      [...documents.values()]
+        .filter((d) => (!auto || !this.preparedDocuments.has(d.input.key)) && documentDirty(d))
+        .map((d) => Promise.resolve().then(() => d.lifecycle.save(d.input))),
+    );
+    const errors = failures(results);
+    if (errors.length) throw combinedError(errors);
+  }
+
+  async saveAll(): Promise<void> {
+    const results = await Promise.allSettled([this.manager.saveAll("explicit"), this.saveCustomDocuments()]);
+    const errors = failures(results);
+    if (errors.length) throw combinedError(errors);
+  }
+
+  /** Hold every open custom document still until the project/window decision. */
+  prepareClose(): Promise<EditorCloseSession> {
+    ++this.admissionGeneration;
+    ++this.closeRequests;
+    return this.enqueueRemoval(async () => {
+      if (this.closeSession) throw new Error("An editor close decision is already pending");
+      const generation = this.projectGeneration;
+      const documents = [...customDocuments(useTabs.getState(), useContributions.getState().editorKinds).values()];
+      const prepared: CustomDocument[] = [];
+      let settled = false;
+      const session: EditorCloseSession = {
+        dirty: 0,
+        discard: async () => {
+          if (settled || this.closeSession !== session || generation !== this.projectGeneration)
+            throw new Error("The editor close decision is no longer current");
+          const results = await Promise.allSettled(
+            documents.filter(documentDirty).map((d) => Promise.resolve().then(() => d.lifecycle.discard(d.input))),
+          );
+          const errors = failures(results);
+          if (errors.length) throw combinedError(errors);
+        },
+        cancel: () => {
+          if (settled) return;
+          settled = true;
+          if (this.closeSession !== session || generation !== this.projectGeneration) return;
+          this.closeSession = null;
+          this.closeCommitted = false;
+          for (const d of prepared) {
+            this.preparedDocuments.delete(d.input.key);
+            d.lifecycle.cancelClose(d.input);
+          }
+        },
+        commit: () => {
+          if (settled || this.closeSession !== session || generation !== this.projectGeneration)
+            throw new Error("The editor close decision is no longer current");
+          this.closeCommitted = true;
+        },
+      };
+      this.closeSession = session;
+      try {
+        for (const d of documents) {
+          prepared.push(d);
+          this.preparedDocuments.set(d.input.key, d);
+          await d.lifecycle.prepareClose(d.input);
+          if (generation !== this.projectGeneration) throw new Error("The project changed during close");
+          if (this.closeSession !== session) {
+            d.lifecycle.cancelClose(d.input);
+            throw new Error("The editor close decision was cancelled");
+          }
+        }
+        session.dirty = documents.filter(documentDirty).length;
+        return session;
+      } catch (e) {
+        session.cancel();
+        throw e;
+      }
+    }).finally(() => {
+      --this.closeRequests;
+    });
+  }
+
+  cancelClose(): void {
+    this.closeSession?.cancel();
+  }
+
+  documentHistory(command: "undo" | "redo"): boolean {
+    const input = this.activeTabOf()?.input;
+    if (!input) return false;
+    const lifecycle = documentLifecycle(input, useContributions.getState().editorKinds);
+    const run = lifecycle?.[command];
+    if (!run) return false;
+    void run.call(lifecycle, input).catch((e) => this.documentError(e));
+    return true;
   }
 
   /** Context menu of a tab (IDEA's EditorTabPopupMenu). */
@@ -1180,21 +1545,21 @@ export class EditorController implements SlotHost {
       run();
     };
     return [
-      { label: "Close", shortcut: shortcutLabel("editor.closeTab"), run: () => this.closeTab(paneId, tab.id) },
-      { label: "Close Other Tabs", disabled: tabs.length < 2, run: () => this.closeOthers(paneId, tab.id) },
-      { label: "Close Tabs to the Left", disabled: index <= 0, run: () => this.closeToLeft(paneId, tab.id) },
+      { label: "Close", shortcut: shortcutLabel("editor.closeTab"), run: () => void this.closeTab(paneId, tab.id) },
+      { label: "Close Other Tabs", disabled: tabs.length < 2, run: () => void this.closeOthers(paneId, tab.id) },
+      { label: "Close Tabs to the Left", disabled: index <= 0, run: () => void this.closeToLeft(paneId, tab.id) },
       {
         label: "Close Tabs to the Right",
         disabled: index < 0 || index >= tabs.length - 1,
-        run: () => this.closeToRight(paneId, tab.id),
+        run: () => void this.closeToRight(paneId, tab.id),
       },
-      { label: "Close All Tabs", run: () => this.closeAll(paneId) },
-      { label: "Close Unmodified Tabs", run: () => this.closeUnmodified(paneId) },
+      { label: "Close All Tabs", run: () => void this.closeAll(paneId) },
+      { label: "Close Unmodified Tabs", run: () => void this.closeUnmodified(paneId) },
       ...(tabs.some((t) => t.pinned)
-        ? ([{ label: "Close All but Pinned", run: () => this.closeAll(paneId, true) }] as MenuItem[])
+        ? ([{ label: "Close All but Pinned", run: () => void this.closeAll(paneId, true) }] as MenuItem[])
         : []),
       ...(tabs.some((t) => !t.pinned && !!t.input.path && useDocMeta.getState()[t.input.path]?.readOnly)
-        ? ([{ label: "Close All Read-Only Tabs", run: () => this.closeReadOnly(paneId) }] as MenuItem[])
+        ? ([{ label: "Close All Read-Only Tabs", run: () => void this.closeReadOnly(paneId) }] as MenuItem[])
         : []),
       { kind: "separator" },
       { label: tab.pinned ? "Unpin Tab" : "Pin Tab", icon: "pin", run: () => this.togglePin(paneId, tab.id) },
@@ -1219,8 +1584,8 @@ export class EditorController implements SlotHost {
             { label: "Move to Opposite Group", run: () => this.moveToOpposite(paneId, tab.id) },
             { label: "Open in Opposite Group", run: () => this.openInOpposite(paneId, tab.id) },
             { label: "Change Splitter Orientation", run: () => this.changeSplitOrientation(paneId) },
-            { label: "Unsplit", run: () => this.unsplit(paneId) },
-            { label: "Unsplit All", run: () => this.unsplitAll(paneId) },
+            { label: "Unsplit", run: () => void this.unsplit(paneId) },
+            { label: "Unsplit All", run: () => void this.unsplitAll(paneId) },
           ] as MenuItem[])
         : []),
       { kind: "separator" },
@@ -1347,11 +1712,6 @@ let controller: EditorController | null = null;
 
 export function editorController(): EditorController {
   return (controller ??= new EditorController());
-}
-
-/** Test hook. */
-export function _setEditorController(c: EditorController | null) {
-  controller = c;
 }
 
 /** "Finder" / "Explorer" / "Files", like IDEA's Open In submenu. */

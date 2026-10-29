@@ -111,6 +111,24 @@ describe("project view context menu", () => {
     expect(sub(items, "Git")?.slice(0, 4)).toEqual(["Commit File…", "Add", "-", "Annotate with Git Blame"]);
   });
 
+  it("offers both ignore destinations for files, directories and multi-selection, separately from IDE exclusion", () => {
+    const dispose = registerActions(
+      ["vcs.ignoreShared", "vcs.ignoreLocal"].map((id) => ({ id, title: id, run: () => undefined })),
+    );
+    try {
+      for (const nodes of [[node("/p/a")], [node("/p/dir", true)], [node("/p/a"), node("/p/dir", true)]]) {
+        const git = resolveMenuItems(contextMenuItems(nodes)).find((item) => item.label === "Git")!;
+        expect(sub(git.submenu!, "Add to .gitignore")).toEqual([".gitignore", ".git/info/exclude"]);
+      }
+      const root = resolveMenuItems(contextMenuItems([node("/p", true, true)])).find((item) => item.label === "Git")!;
+      expect(labels(root.submenu!)).not.toContain("Add to .gitignore");
+      const folder = contextMenuItems([node("/p/dir", true)]);
+      expect(sub(folder, "Mark Directory as")).toContain("Excluded");
+    } finally {
+      dispose();
+    }
+  });
+
   it("shows Mark Directory as for folders, without file-only items", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
     expect(l).toContain("Mark Directory as");

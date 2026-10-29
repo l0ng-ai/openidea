@@ -8,7 +8,7 @@
 import { RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { getChunks, type Chunk, type MergeView } from "@codemirror/merge";
-import { changedLineGutters } from "./cm";
+import { changedLineGutters, chunkKind, type DiffKind } from "./cm";
 import { arrowButton } from "./diffControls";
 
 type Side = "a" | "b";
@@ -91,9 +91,6 @@ export function transferY(bands: readonly Band[], y: number, from: Side): number
   return m1 > m0 ? s0 + ((y - m0) * (s1 - s0)) / (m1 - m0) : s0;
 }
 
-type ChangeKind = "inserted" | "deleted" | "modified";
-const kindOf = (c: Chunk): ChangeKind => (c.fromA === c.toA ? "inserted" : c.fromB === c.toB ? "deleted" : "modified");
-
 /** The divider band between [a0, a1] on the left and [b0, b1] on the right (DiffDrawUtil.makeCurve). */
 export function bandPath(w: number, a0: number, a1: number, b0: number, b1: number): string {
   // An empty side is a 2px sliver on its boundary.
@@ -104,7 +101,7 @@ export function bandPath(w: number, a0: number, a1: number, b0: number, b1: numb
   return `M0 ${a0}C${c1} ${a0} ${c2} ${b0} ${w} ${b0}L${w} ${b1}C${c2} ${b1} ${c1} ${a1} 0 ${a1}Z`;
 }
 
-const gapMark = (kind: ChangeKind, end: boolean) =>
+const gapMark = (kind: DiffKind, end: boolean) =>
   Decoration.line({ class: `cm-diffGap cm-diffGap-${kind}${end ? " cm-diffGapEnd" : ""}` });
 
 /** A line where the other side has lines this one lacks, as in IDEA's empty-side marker. */
@@ -122,7 +119,7 @@ function gapDeco(view: EditorView): DecorationSet {
     if (from < vpFrom) continue;
     // Past the end of a document without a final line break: below its last line.
     const line = doc.lineAt(Math.min(from, doc.length));
-    builder.add(line.from, line.from, gapMark(kindOf(c), from > doc.length));
+    builder.add(line.from, line.from, gapMark(chunkKind(c), from > doc.length));
   }
   return builder.finish();
 }
@@ -143,7 +140,6 @@ const gapMarks = ViewPlugin.fromClass(
 
 const SVG = "http://www.w3.org/2000/svg";
 const ARROW_HEIGHT = 16;
-let gradients = 0;
 
 export interface UnalignedPanesOptions {
   /** Scrolling one pane carries the other along. */
@@ -162,7 +158,6 @@ export class UnalignedPanes {
   private readonly divider = document.createElement("div");
   private readonly svg = document.createElementNS(SVG, "svg");
   private readonly bandLayer = document.createElementNS(SVG, "g");
-  private readonly gradient = `cm-diffBandGradient-${++gradients}`;
   private readonly arrowEls = new Map<string, HTMLButtonElement>();
   /** Scroll position each pane was last moved to by the other one, to tell its echo from the user. */
   private readonly moved: Record<Side, { top: number | null; left: number | null }> = {
@@ -179,10 +174,6 @@ export class UnalignedPanes {
     this.extension = [gapMarks, changedLineGutters, EditorView.updateListener.of(() => this.schedule())];
     this.divider.className = "cm-diffDivider";
     this.svg.setAttribute("aria-hidden", "true");
-    this.svg.innerHTML =
-      `<defs><linearGradient id="${this.gradient}" x1="0" x2="1">` +
-      `<stop offset="0" class="cm-diffBandStopA"/><stop offset="1" class="cm-diffBandStopB"/>` +
-      `</linearGradient></defs>`;
     this.svg.appendChild(this.bandLayer);
     this.divider.appendChild(this.svg);
   }
@@ -321,12 +312,11 @@ export class UnalignedPanes {
       const [b0, b1] = extent(mv.b, c.fromB, c.toB).map((y) => y + offB) as [number, number];
       if (a0 > h + 1 && b0 > h + 1) break;
       if (a1 < -1 && b1 < -1) continue;
-      const kind = kindOf(c);
-      const fill = kind === "modified" ? ` fill="url(#${this.gradient})"` : "";
+      const kind = chunkKind(c);
       const mid = (a0 + a1) / 2;
       const midB = (b0 + b1) / 2;
       paths +=
-        `<path class="cm-diffBand cm-diffBand-${kind}"${fill} d="${bandPath(w, a0, a1, b0, b1)}"/>` +
+        `<path class="cm-diffBand cm-diffBand-${kind}" d="${bandPath(w, a0, a1, b0, b1)}"/>` +
         `<path class="cm-diffBandLine cm-diffBand-${kind}" d="M0 ${mid}C${w * 0.3} ${mid} ${w * 0.7} ${midB} ${w} ${midB}"/>`;
       if (arrows?.toB) this.placeArrow(shown, i, "a-to-b", arrowTop(a0, a1), h);
       if (arrows?.toA) this.placeArrow(shown, i, "b-to-a", arrowTop(b0, b1), h);

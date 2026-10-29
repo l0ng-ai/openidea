@@ -73,8 +73,7 @@ impl Launcher for ProcessLauncher {
         cancel: &CancellationToken,
     ) -> Result<Peer, LaunchError> {
         let search = server_search_path(config);
-        let binary = which::which_in(&config.command, Some(&search), root)
-            .ok()
+        let binary = ide_core::tool_path::find_command(&config.command, &search, root)
             .and_then(|b| resolve_rustup_proxy(&config.command, b));
         let mut env: Vec<(String, String)> = vec![("PATH".into(), search.to_string_lossy().into_owned())];
         env.extend(config.env.iter().filter(|(k, _)| *k != "PATH").map(|(k, v)| (k.clone(), v.clone())));
@@ -96,7 +95,7 @@ impl Launcher for ProcessLauncher {
     }
 
     fn available(&self, config: &LanguageServerConfig, root: &Path) -> bool {
-        which::which_in(&config.command, Some(server_search_path(config)), root).is_ok()
+        ide_core::tool_path::find_command(&config.command, &server_search_path(config), root).is_some()
     }
 }
 
@@ -161,32 +160,10 @@ pub fn find_root(project_root: &Path, file: &Path, markers: &[String]) -> Option
     Some(marked_root(project_root, file, markers).unwrap_or_else(|| project_root.to_path_buf()))
 }
 
-/// The outermost ancestor of `file` within `project_root` containing a root marker.
+/// The outermost ancestor of `file` within `project_root` containing a root
+/// marker (the same lookup as `framework-ui-modes`).
 pub fn marked_root(project_root: &Path, file: &Path, markers: &[String]) -> Option<PathBuf> {
-    let mut best = None;
-    for dir in file.ancestors().skip(1) {
-        if !dir.starts_with(project_root) {
-            break;
-        }
-        if markers.iter().any(|m| has_marker(dir, m)) {
-            best = Some(dir.to_path_buf());
-        }
-    }
-    best
-}
-
-fn has_marker(dir: &Path, marker: &str) -> bool {
-    if !marker.contains('*') {
-        return dir.join(marker).exists();
-    }
-    let (prefix, suffix) = marker.split_once('*').unwrap_or((marker, ""));
-    std::fs::read_dir(dir).is_ok_and(|entries| {
-        entries.flatten().any(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            name.len() >= prefix.len() + suffix.len() && name.starts_with(prefix) && name.ends_with(suffix)
-        })
-    })
+    ide_language::marked_root(Some(project_root), file, markers)
 }
 
 #[cfg(test)]
@@ -221,6 +198,13 @@ mod tests {
         std::fs::create_dir_all(root.join("apps/web/node_modules/@angular/core")).unwrap();
         assert_eq!(marked_root(root, &file, &markers), Some(root.join("apps/web")));
         assert_eq!(marked_root(root, &root.join("apps/api/main.ts"), &markers), None);
+    }
+
+    #[test]
+    fn search_path_contains_env_path() {
+        let p = search_path();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&p).collect();
+        assert!(dirs.contains(&PathBuf::from("/usr/bin")));
     }
 }
 

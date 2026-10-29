@@ -11,10 +11,7 @@ pub(crate) fn find_command(command: &str, path: &OsStr) -> Option<PathBuf> {
     if p.is_absolute() {
         return p.is_file().then(|| p.to_path_buf());
     }
-    let exts: &[&str] = if cfg!(windows) { &[".cmd", ".exe", ""] } else { &[""] };
-    std::env::split_paths(path)
-        .flat_map(|d| exts.iter().map(move |e| d.join(format!("{command}{e}"))))
-        .find(|c| c.is_file())
+    ide_core::process::find_executable(command, path)
 }
 
 /// The npm package an executable comes from: next to a `node_modules/.bin` shim

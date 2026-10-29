@@ -13,9 +13,7 @@ export {
   registerDropTarget,
   setDragRequiresAlt,
   startPointerDrag,
-  type DragData,
   type DragSession,
-  type DropTarget,
 } from "./pointerDrag";
 export * from "./Tree";
 export * from "./List";
@@ -26,11 +24,10 @@ export * from "./Splitter";
 export * from "./SourcePreview";
 export * from "./Feedback";
 export * from "./HighlightedText";
-export { fuzzyMatch, indexRuns, wordMatch } from "./match";
+export { fuzzyMatch, wordMatch } from "./match";
 export { badgeKind } from "./symbolKind";
-export { acquirePopup, isPopupOpen, openLayer } from "./popupState";
+export { acquirePopup, isPopupOpen } from "./popupState";
 export * from "./BarButton";
-export * from "./AppLogo";
 export { lazyComponent, prefetchLazyComponents } from "./lazy";
 export { T } from "./T";
 export { selectableText, copyMenuFor, copyText } from "./selectableText";

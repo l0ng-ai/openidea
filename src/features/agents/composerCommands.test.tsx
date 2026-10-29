@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { AgentCommand, AgentProvider } from "@/bindings";
 
 const agentCommands = vi.fn();
@@ -85,5 +86,22 @@ describe("New Task composer commands", () => {
     expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull();
     fireEvent.change(box, { target: { value: "/com" } });
     expect(await screen.findByRole("option")).toHaveTextContent("/compact");
+  });
+
+  it("completes at the caret without replacing the rest of the message", async () => {
+    const user = userEvent.setup();
+    agentCommands.mockResolvedValue({ status: "ok", data: [command("compact", "Free up context")] });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+    box.focus();
+    fireEvent.change(box, { target: { value: "/com keep this context", selectionStart: 4, selectionEnd: 4 } });
+    expect(await screen.findByRole("option")).toHaveTextContent("/compact");
+    expect(box).toHaveFocus();
+
+    await user.keyboard("{Tab}");
+    expect(box).toHaveValue("/compact keep this context");
+    await waitFor(() => expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull());
+    expect(agentCreate).not.toHaveBeenCalled();
   });
 });

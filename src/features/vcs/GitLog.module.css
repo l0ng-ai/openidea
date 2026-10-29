@@ -173,7 +173,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  overflow: hidden;
+  /* Let graph endpoints overlap adjacent rows; text is clipped by .subject. */
+  overflow: visible;
 }
 .colAuthor {
   flex: none;

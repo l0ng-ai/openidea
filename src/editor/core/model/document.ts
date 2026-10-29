@@ -209,6 +209,8 @@ export class DocModel {
   language: LanguageSupport | null;
   /** Too large for language support (no CodeMirror language, backend highlighting only). */
   private large: boolean;
+  /** The backend's mode for this file over its language's (an Angular project's templates). */
+  private ownUiMode: string | null;
   lastFocused: EditorSlot | null = null;
   /** Bumped by every change (local or remote). */
   changeCounter = 0;
@@ -229,13 +231,16 @@ export class DocModel {
     // `large`: the backend skips LSP and syntax trees for it; heavy UI features follow.
     const large = !!info.large || info.text.length > HEAVY_LIMIT;
     this.large = large;
-    this.desc = large ? null : findLanguageDescription(this.info?.uiMode ?? null, info.path);
+    // The document's own mode (an Angular project's templates) wins over the language's.
+    this.ownUiMode = info.uiMode ?? null;
+    const uiMode = this.ownUiMode ?? this.info?.uiMode ?? null;
+    this.desc = large ? null : findLanguageDescription(uiMode, info.path);
     this.language = loadedSupport(this.desc);
     this.meta = {
       doc: info.id,
       path: info.path,
       language: info.language,
-      uiMode: this.info?.uiMode ?? this.desc?.name ?? null,
+      uiMode: uiMode ?? this.desc?.name ?? null,
       encoding: info.encoding,
       lineEnding: info.lineEnding,
       // Library sources (External Libraries) open read-only, like IDEA's.
@@ -266,7 +271,6 @@ export class DocModel {
       },
       manager.scheduler,
     );
-    if (this.desc && !this.language) void this.loadLanguage();
     this.scheduleRefresh(0);
   }
 
@@ -354,14 +358,19 @@ export class DocModel {
     this.scheduleRefresh();
   }
 
-  /** The backend detected another language (Settings › File Types, Override File Type). */
-  setLanguage(language: string) {
-    if (this.closed || language === this.meta.language) return;
+  /**
+   * The backend detected another language (Settings › File Types, Override File
+   * Type) or mode (`angular.json` created or removed).
+   */
+  setLanguage(language: string, ownUiMode: string | null = null) {
+    if (this.closed || (language === this.meta.language && ownUiMode === this.ownUiMode)) return;
     this.info = languageInfo(language);
-    this.desc = this.large ? null : findLanguageDescription(this.info?.uiMode ?? null, this.path);
+    this.ownUiMode = ownUiMode;
+    const uiMode = ownUiMode ?? this.info?.uiMode ?? null;
+    this.desc = this.large ? null : findLanguageDescription(uiMode, this.path);
     this.language = loadedSupport(this.desc);
     this.highlights = null;
-    this.setMeta({ language, uiMode: this.info?.uiMode ?? this.desc?.name ?? null });
+    this.setMeta({ language, uiMode: uiMode ?? this.desc?.name ?? null });
     for (const s of this.slots) {
       s.reconfigure([compartments.language.reconfigure(this.language ?? [])]);
       s.syncContributions(true);
@@ -638,7 +647,7 @@ export class DocumentManager {
   start() {
     this.disposers.push(
       this.backend.onPatched((e) => this.byId.get(e.doc)?.sync.remote(e)),
-      this.backend.onLanguage?.((e) => this.byId.get(e.doc)?.setLanguage(e.language)) ?? (() => {}),
+      this.backend.onLanguage?.((e) => this.byId.get(e.doc)?.setLanguage(e.language, e.uiMode)) ?? (() => {}),
       this.backend.onDirty((e) => {
         const m = this.byId.get(e.doc);
         if (m && m.getMeta().dirty !== e.dirty) {
@@ -682,6 +691,8 @@ export class DocumentManager {
           return raced;
         }
         const model = new DocModel(this, info);
+        // The first slot must include the lazy mode, not briefly render plain text.
+        await model.loadLanguage();
         this.byPath.set(path, model);
         this.byId.set(model.doc, model);
         _emitEditorEvent({ type: "docOpened", doc: model.doc, path, language: info.language });
@@ -735,6 +746,7 @@ export class DocumentManager {
     for (const m of this.byPath.values()) m.applySettings();
   }
 
+  /** Saves every document; failures are notified, and an explicit Save All also rejects with them. */
   async saveAll(reason: "explicit" | "auto") {
     const errors: unknown[] = [];
     await Promise.all(
@@ -747,6 +759,8 @@ export class DocumentManager {
     if (errors.length) {
       const e = errors[0];
       this.notify({ level: "error", title: "Could not save", body: e instanceof Error ? e.message : String(e) });
+      if (reason === "explicit")
+        throw errors.length === 1 ? e : new AggregateError(errors, e instanceof Error ? e.message : String(e));
     }
   }
 }

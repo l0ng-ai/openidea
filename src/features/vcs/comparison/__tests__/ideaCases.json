@@ -1,0 +1,2546 @@
+[
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testEqualStrings",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "",
+    "after": ""
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testEqualStrings",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x",
+    "after": "x"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testEqualStrings",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny\nz\n",
+    "after": "x\ny\nz\n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testEqualStrings",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "\n",
+    "after": "\n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testEqualStrings",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": " x\ny ",
+    "after": " x\ny "
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testTrivialCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n",
+    "after": "y\n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testTrivialCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x",
+    "after": ""
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testTrivialCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "",
+    "after": "x"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testTrivialCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x",
+    "after": "y"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testTrivialCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\nz",
+    "after": "y\nz"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testTrivialCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[1, 2, 1, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "z\nx",
+    "after": "z\ny"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testTrivialCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[1, 1, 1, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x",
+    "after": "x\n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testTrivialCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[1, 2, 1, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n",
+    "after": "x"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\nz",
+    "after": "y\nz"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[1, 2, 1, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n",
+    "after": "x\nz"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 2, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny",
+    "after": "n\nm"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 1, 0, 1],
+        [2, 3, 2, 3]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny\nz",
+    "after": "n\ny\nm"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 1, 0, 2],
+        [2, 3, 3, 3]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny\nz",
+    "after": "n\nk\ny"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 1, 0, 0],
+        [2, 3, 1, 1]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny\nz",
+    "after": "y"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 2, 0, 0],
+        [3, 3, 1, 3]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "a\nb\nx",
+    "after": "x\nm\nn"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testEmptyLastLine",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 0]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n",
+    "after": ""
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testEmptyLastLine",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 0, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "",
+    "after": "x\n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testEmptyLastLine",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[1, 2, 1, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n",
+    "after": "x"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testEmptyLastLine",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[1, 2, 1, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n",
+    "after": "x\nz "
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testWhitespaceOnlyChanges",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]],
+      "trim": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x ",
+    "after": " x"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testWhitespaceOnlyChanges",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]],
+      "trim": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x \t",
+    "after": "\t x"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testWhitespaceOnlyChanges",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 2, 0, 1]],
+      "trim": [[1, 2, 1, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n",
+    "after": "x "
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testWhitespaceOnlyChanges",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 2, 0, 2]],
+      "trim": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": " x\ny ",
+    "after": "x \n y"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testWhitespaceOnlyChanges",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]],
+      "ignore": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x y ",
+    "after": "x  y"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testWhitespaceOnlyChanges",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 3, 0, 3]],
+      "trim": [[2, 3, 2, 3]],
+      "ignore": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x y\nx y\nx y",
+    "after": "  x y  \nx y  \nx   y"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 3, 0, 0],
+        [4, 4, 1, 4]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny\nz\nAAAAA",
+    "after": "AAAAA\nx\ny\nz"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 3, 0, 3]],
+      "trim": [
+        [0, 1, 0, 0],
+        [2, 3, 1, 3]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny\nz",
+    "after": " y\n m\n n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 0]]
+    },
+    "matchings": {},
+    "policies": ["default"],
+    "before": "}\n }",
+    "after": " }"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [1, 1, 1, 3],
+        [2, 2, 4, 5]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default"],
+    "before": "{\n}",
+    "after": "{\n {\n }\n}\nx"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testNonDeterministicCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[1, 1, 1, 3]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "",
+    "after": "\n\n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "testNonDeterministicCases",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[1, 3, 1, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "\n\n",
+    "after": ""
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - shifted similar lines should be matched as a single change, not insertion-deletion`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--_---", "---_----"]
+    },
+    "policies": ["default"],
+    "before": " X\n  X",
+    "after": "  X\n   X"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer chunks bounded by empty line`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" _ _ _ _ _ _ _ _ _ _ _ _ ", " _ _ _ _ _ _ _-_-_-_-_-_-_-_ _ _ _ _ _ "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A\nB\no\no\nY\nZ\n \nA\nB\nz\nz\nY\nZ",
+    "after": "A\nB\no\no\nY\nZ\n \nA\nB\nu\nu\nY\nZ\n \nA\nB\nz\nz\nY\nZ"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer chunks bounded by empty line`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" _ _ _ _ _ _ _ _ _ _ _ _ ", " _ _ _ _ _ _ _ _ _-_-_-_-_-_-_-_ _ _ _ "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A\nB\no\no\nY\nZ\n \nA\nB\n \n \nY\nZ",
+    "after": "A\nB\no\no\nY\nZ\n \nA\nB\nu\nu\nY\nZ\n \nA\nB\n \n \nY\nZ"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer chunks bounded by empty line`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" _ _ _ _ _ _ _ _ ", " _ _ _ _ _-_-_-_-_-_ _ _ _ "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A\nB\no\no\n \nA\nB\nz\nz",
+    "after": "A\nB\no\no\n \nA\nB\nu\nu\n \nA\nB\nz\nz"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer chunks bounded by empty line`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" _ _ _ _ _ _ _ _ ", " _ _ _ _ _-_-_-_-_-_ _ _ _ "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "o\no\nY\nZ\n \nz\nz\nY\nZ",
+    "after": "o\no\nY\nZ\n \nu\nu\nY\nZ\n \nz\nz\nY\nZ"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer chunks bounded by short line`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [
+        "     _     _     _     _     _     _ _     _     _     _     _     _     ",
+        "     _     _     _     _     _     _ _-----_-----_-----_-----_-----_-----_-_     _     _     _     _     _     "
+      ]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A====\nB====\no====\no====\nY====\nZ====\n!\nA====\nB====\nz====\nz====\nY====\nZ====",
+    "after": "A====\nB====\no====\no====\nY====\nZ====\n!\nA====\nB====\nu====\nu====\nY====\nZ====\n!\nA====\nB====\nz====\nz====\nY====\nZ===="
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer chunks bounded by short line`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [
+        "     _     _     _     _     _     _ _     _     _ _ _     _     ",
+        "     _     _     _     _     _     _ _-----_-----_-----_-----_-----_-----_-_     _     _ _ _     _     "
+      ]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A====\nB====\no====\no====\nY====\nZ====\n \nA====\nB====\n!\n!\nY====\nZ====",
+    "after": "A====\nB====\no====\no====\nY====\nZ====\n \nA====\nB====\nu====\nu====\nY====\nZ====\n \nA====\nB====\n!\n!\nY====\nZ===="
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer chunks bounded by short line`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [
+        "     _     _     _     _     _     _ _     _     _ _ _     _     ",
+        "     _     _     _     _     _     _ _     _     _-----_-----_-----_-----_-_-----_-----_ _ _     _     "
+      ]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A====\nB====\no====\no====\nY====\nZ====\n!\nA====\nB====\n \n \nY====\nZ====",
+    "after": "A====\nB====\no====\no====\nY====\nZ====\n!\nA====\nB====\nu====\nu====\nY====\nZ====\n!\nA====\nB====\n \n \nY====\nZ===="
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer chunks bounded by empty line - using inserted content`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_ _ _ _ ", " _ _ _-_-_-_-_ "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "e\nx\nA\nB\nz",
+    "after": "x\nA\nB\n \nq\nA\nB\nz"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer smaller amount of chunks`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_-_ _ _", " _ _"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "X\nA\nX\nY\n",
+    "after": "X\nY\n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer smaller amount of chunks`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 3, 0, 0]]
+    },
+    "matchings": {
+      "default": ["-**-*__ ", "__ "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": " \n\nx\n\n\ny",
+    "after": "\n\ny"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test prefer smaller amount of chunks`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [
+        "       _-------_-------_-------_-------_       _       _       _       _-------",
+        "       _       _       _       _       "
+      ]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "U======\nX======\nY======\nz======\nX======\nY======\nX======\nU======\nX======\nz======",
+    "after": "U======\nY======\nX======\nU======\nX======"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - can trim chunks after 'compareTwoSteps'`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-*_ _--*--", "_ "]
+    },
+    "policies": ["default"],
+    "before": "q\n\n7\n 6\n 7",
+    "after": "\n7"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - can trim chunks after 'optimizeLineChunks'`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["      _-------_  _ _      _", "      _  _ _      _"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A=====\n B=====\n }\n}\nB=====\n",
+    "after": "A=====\n }\n}\nB=====\n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test bad cases caused by 'compareTwoStep' logic`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_ ", " _-_-"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n!",
+    "after": "!\nx\ny"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test bad cases caused by 'compareTwoStep' logic`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_ _-", " _-"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "!\nx\ny",
+    "after": "x\n!"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test bad cases caused by 'compareTwoStep' logic`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_--", "-_-_-"],
+      "trim": ["-_  ", " _-_-"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n! ",
+    "after": "!\nx\ny"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test bad cases caused by 'compareTwoStep' logic`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_ _-", " _--"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "!\nx\ny",
+    "after": "x\n! "
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test bad cases caused by 'compareTwoStep' logic`",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 1, 0, 1],
+        [1, 2, 1, 2],
+        [2, 3, 2, 3]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default"],
+    "before": "M===\nX===\nY===",
+    "after": " Y===\nX===\nN"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test bad cases caused by 'compareSmart' logic`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["      _-------_  _ _      ", "      _  _ _      "],
+      "trim": ["      _       _--_-_------", "      _--_-_      "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A=====\n B=====\n }\n}\nB=====",
+    "after": "A=====\n }\n}\nB====="
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test bad cases caused by 'compareSmart' logic`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["      _-------_-_--_-_-_      _", "      _--_-_      _"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A=====\n B=====\nX\n }\n}\nZ\nB=====\n",
+    "after": "A=====\n }\n}\nB=====\n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test trim changed blocks after second step correction`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["     _------_ _     ", "     _ _     "],
+      "ignore": ["     _      _-_-----", "     _-_     "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "====}\n==== }\nY\n====}",
+    "after": "====}\nY\n====}"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test second step correction processes all confusing lines`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-----_      _ _      _-----", "      _ _      "]
+    },
+    "policies": ["default"],
+    "before": "====}\n==== }\nY\n==== }\n====}",
+    "after": "==== }\nY\n==== }"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test ignore whitespace policy does not applies two-step correction`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_-_   ", "   "],
+      "trim": [" _-_---", "   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "1\n \n  1",
+    "after": "  1"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test ignore whitespace policy does not applies two-step correction`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["   _-_-", "   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "  1\n \n1",
+    "after": "  1"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test ignore whitespace policy does not applies two-step correction`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_--_-", "--"],
+      "trim": ["-_  _-", "  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "X\n Y\nX",
+    "after": "Y "
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - second step correction should be performed if there are no ambiguous matchings`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_--", "--_-"],
+      "trim": [" _  ", "  _ "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "}\n }",
+    "after": " }\n}"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - second step correction should be performed if there are no ambiguous matchings`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--_ _--", "-_ _-"],
+      "trim": ["  _ _  ", " _ _ "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": " }\n}\n }",
+    "after": "}\n}\n}"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - second step correction should be performed if there are no ambiguous matchings`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" _--__-", " __-"],
+      "trim": ["-_  __-", " __-"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "X\nX \n\nY",
+    "after": "X\n\nZ"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - second step with too many possible matchings`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _-_-_-_-_-_--", "-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _--"],
+      "trim": ["  _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _-_-_-_-_--", " _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": " X\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\n X",
+    "after": "X\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX\nX "
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - second step correction should search for matchings in its prefix`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_ _-_--__ ", " __ "],
+      "trim": ["-_-_-_  __ ", " __ "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "Z\nX\nZ\nX \n\nY",
+    "after": "X\n\nY"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - second step correction should search for matchings in its prefix`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-_-_-_-_--__ ", "--_-__ "],
+      "trim": ["-_-_ _-_  __ ", "  _ __ "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "Z\nX\nK\nZ\nX \n\nY",
+    "after": "K \nX\n\nY"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - multiple similar braces nearby`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["               _          _        _---_ _", "               _          _        _----_ _"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "function fn() {\n  return {\n    a: 1\n  }\n}\n",
+    "after": "function fn() {\n  return {\n    a: 1\n  };\n}\n"
+  },
+  {
+    "source": "LineComparisonUtilTest",
+    "test": "`test regression - multiple similar braces nearby`",
+    "type": "lines",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["               _          _        _   _-_", "               _          _        _   _--_"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "function fn() {\n  return {\n    a: 1\n  }\n}\n",
+    "after": "function fn() {\n  return {\n    a: 1\n  }\n};\n"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-  ", "-  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x z",
+    "after": "y z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-  ", "-  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x z",
+    "after": "y z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--  ", "-  "],
+      "trim": [" -  ", "-  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": " x z",
+    "after": "y z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-  -", "-  "],
+      "trim": ["-   ", "-  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x z ",
+    "after": "y z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-  -", "-  "],
+      "trim": ["-   ", "-  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x z ",
+    "after": "y z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-  ", "--  -"],
+      "trim": ["-  ", " -   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x z",
+    "after": " y z "
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["  -", "  --"],
+      "trim": ["  -", "  - "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x y",
+    "after": "x z "
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" --", " "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x,y",
+    "after": "x"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-- ", " "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x,y",
+    "after": "y"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" - ", " - "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": ".x=",
+    "after": ".!="
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testSimpleCases",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["  ----  ", "  ----  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "X xyz1 Z",
+    "after": "X xyz2 Z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-  -  -", "    "],
+      "trim": ["   -   ", "    "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": " x.z.x ",
+    "after": "x..x"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["    ", "-  -  -"],
+      "trim": ["    ", "   -   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x..x",
+    "after": " x.z.x "
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-      ", "-      "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x ... z",
+    "after": "y ... z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["      -", "      -"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x ... z",
+    "after": "x ... y"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["  -    -", "      -"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x ,... z",
+    "after": "x ... y"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["   ---   -", "      -"],
+      "ignore": ["    -    -", "      -"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x . , .. z",
+    "after": "x ... y"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["   -   ", "      "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x==y==z",
+    "after": "x====z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["      ", "   -   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x====z",
+    "after": "x==t==z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["         -    ", "   --      -    ----"],
+      "ignore": ["         -    ", "    -      -     ---"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "X Y ) {\n A B C",
+    "after": "X Y Z ) {\n y B C ) {"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" ------------       ", "        "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "@Deprecated @NotNull",
+    "after": "@NotNull"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testPunctuation",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" -------------       ", "        "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "@Deprecated\n @NotNull",
+    "after": "@NotNull"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testOldDiffBug",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["  -- ", "   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x'y'>",
+    "after": "x'>"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testOldDiffBug",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["   ", "  -- "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x'>",
+    "after": "x'y'>"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testOldDiffBug",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["   ", "  -- "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x'>",
+    "after": "x'y'>"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testOldDiffBug",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["  -- ", "   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x'y'>",
+    "after": "x'>"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testWhitespaceOnlyChanges",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" --  ", "  -- "]
+    },
+    "policies": ["default", "trim"],
+    "before": "x  =z",
+    "after": "x=  z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testWhitespaceOnlyChanges",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" -- ", "  ---"],
+      "ignore": ["    ", "    -"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x  =",
+    "after": "x=  z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testNewlines",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["- ------  -", "   "],
+      "trim": ["     -     ", "   "],
+      "ignore": ["     -     ", "   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": " x \n y \n z ",
+    "after": "x z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testNewlines",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["   ", "- ------  -"],
+      "trim": ["   ", "     -     "],
+      "ignore": ["   ", "     -     "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x z",
+    "after": " x \n y \n z "
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testNewlines",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["- ", " -"],
+      "trim": ["  ", "  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "\ni",
+    "after": "i\n"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testNewlines",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["- ", " -"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "i\n",
+    "after": "\ni"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testNewlines",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "ignore": ["   ", "  "]
+    },
+    "policies": ["ignore"],
+    "before": "x\ny",
+    "after": "xy"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testNewlines",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "ignore": ["-------", "------"]
+    },
+    "policies": ["ignore"],
+    "before": "A x\ny B",
+    "after": "a xy b"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testNewlines",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "ignore": ["-    -", "-    -"]
+    },
+    "policies": ["ignore"],
+    "before": "A xy B",
+    "after": "a xy b"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testNewlines",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--- ", "- "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A\nB\n",
+    "after": "X\n"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testFixedBugs",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["  -", " --- "],
+      "trim": ["   ", " --- "],
+      "ignore": ["   ", "   - "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": ".! ",
+    "after": ".  y!"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testFixedBugs",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["   -", "----   -"],
+      "trim": ["   -", " -     -"],
+      "ignore": ["   -", " -     -"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": " x n",
+    "after": " y\n  x m"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testFixedBugs",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" -", " ---"],
+      "trim": ["  ", " -  "],
+      "ignore": ["  ", " -  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n",
+    "after": "x!  "
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testInnerWhitespaces",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["  ---  ", " -  - "],
+      "ignore": ["   -   ", " -  - "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "<< x >>",
+    "after": "<.<>.>"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testInnerWhitespaces",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["  - -  ", "-     -"],
+      "ignore": ["       ", "-     -"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "<< x >>",
+    "after": "y<<x>>y"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testInnerWhitespaces",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["      ", " --     "],
+      "ignore": ["      ", "  -     "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x .. z",
+    "after": "x y .. z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testInnerWhitespaces",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--   -", "   ---"],
+      "trim": ["     -", "   -  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "  x..z",
+    "after": "x..y  "
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testInnerWhitespaces",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["- --  - - --  -", "       "],
+      "trim": ["  --      --   ", "       "],
+      "ignore": ["   -       -   ", "       "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": " x y x \n x z x ",
+    "after": "x x\nx x"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--- ", " ---"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "...x",
+    "after": "x..."
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--   ", "   "],
+      "ignore": ["-    ", "   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x x y",
+    "after": "x y"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["   --", "   "],
+      "ignore": ["    -", "   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "y x x",
+    "after": "y x"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["----   ", "   "],
+      "ignore": ["---    ", "   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A X A B",
+    "after": "A B"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["       ", "   ----    "],
+      "ignore": ["       ", "    ---    "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A.X A.Z",
+    "after": "A.X A.Y A.Z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["       ", "   ----    "],
+      "ignore": ["       ", "    ---    "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "X.A Z.A",
+    "after": "X.A Y.A Z.A"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" ---", "--- "]
+    },
+    "policies": ["default"],
+    "before": ".   ",
+    "after": "   ."
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" -  -- ", " - --  "],
+      "trim": [" -  -- ", "   --  "],
+      "ignore": ["    -  ", "    -  "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "A B\nC D",
+    "after": "A\nB C\nD"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["- - - ", "- - - "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "B\nC\nD\n",
+    "after": "X\nY\nZ\n"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testAlgorithmSpecific",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": [" -    ", "    -- "]
+    },
+    "policies": ["default"],
+    "before": "!x\n!\nz",
+    "after": "!\n!\ny z"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "`test trailing punctuation`",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["        ", "     --   "],
+      "trim": ["        ", "          "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "X = { };",
+    "after": "X = { \n };"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "`test trailing punctuation`",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["      -- ", "       ----"],
+      "trim": ["      -- ", "        -- "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "X = { };\n",
+    "after": "X = { \n };\n"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "`test legacy cases from ByWordTest`",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["---      ---", "--      --"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "abc def, 123",
+    "after": "ab def, 12"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "`test legacy cases from ByWordTest`",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-  --   ", "-     "],
+      "trim": ["   --   ", "-     "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": " a[xy]+1",
+    "after": ",a[]+1"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "`test legacy cases from ByWordTest`",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["------------- ", "---- "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "0987\n  a.g();\n",
+    "after": "yyyy\n"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "`test legacy cases from ByWordTest`",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["      ---- ", " ------     ---- "],
+      "trim": ["      ---- ", "    ---     ---- "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "  abc\n2222\n",
+    "after": "    x = abc\nzzzz\n"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "`test legacy cases from ByWordTest`",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["        ", "    --    "],
+      "trim": ["        ", "          "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "f(a, b);",
+    "after": "f(a,\n  b);"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "`test legacy cases from ByWordTest`",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["-    - ", "  -  -- "],
+      "trim": ["     - ", "  -  -- "],
+      "ignore": ["     - ", "      - "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": " o.f(a)",
+    "after": "o. f( b)"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "`test legacy cases from ByWordTest`",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "trim": [" --- ", "---"]
+    },
+    "policies": ["trim"],
+    "before": " 123 ",
+    "after": "xyz"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testEmptyRangePositions",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[1, 2, 1, 1]]
+    },
+    "matchings": {
+      "default": [" -  ", "   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x? y",
+    "after": "x y"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testEmptyRangePositions",
+    "type": "lines_inner",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[2, 3, 2, 2]]
+    },
+    "matchings": {
+      "default": ["  - ", "   "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "x ?y",
+    "after": "x y"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testContinuousScript",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["----", "----"]
+    },
+    "policies": ["default"],
+    "before": "ABCD",
+    "after": "DABC"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testContinuousScript",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["   -", "-   "]
+    },
+    "policies": ["default"],
+    "before": "汉语漢語",
+    "after": "語汉语漢"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testContinuousScript",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--   ", "--   "]
+    },
+    "policies": ["default"],
+    "before": "AB漢CD",
+    "after": "DA漢CD"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testContinuousScript",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["---  ", "---  "]
+    },
+    "policies": ["default"],
+    "before": "AB漢CD",
+    "after": "DA语CD"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testContinuousScript",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["---", "---"]
+    },
+    "policies": ["default"],
+    "before": "a_c",
+    "after": "x_c"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testContinuousScript",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["  -", "  +"]
+    },
+    "policies": ["default"],
+    "before": "!\n?",
+    "after": "!\n+"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testHighSurrogates",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--      ", "      --"]
+    },
+    "policies": ["default"],
+    "before": "😂🔫🧒🤫",
+    "after": "🔫🧒🤫😂"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testHighSurrogates",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--", "--"]
+    },
+    "policies": ["default"],
+    "before": "😂",
+    "after": "🔫"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testHighSurrogates",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--", "--"]
+    },
+    "policies": ["default"],
+    "before": "🤫",
+    "after": "🔫"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testHighSurrogates",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["---", "---"],
+      "trim": ["-- ", " --"]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "😂 ",
+    "after": " 🔫"
+  },
+  {
+    "source": "WordComparisonUtilTest",
+    "test": "testHighSurrogates",
+    "type": "words",
+    "squash": false,
+    "trim": false,
+    "changes": {},
+    "matchings": {
+      "default": ["--  -  ", "---    -"],
+      "trim": ["--  -  ", " --     "],
+      "ignore": ["--     ", " --     "]
+    },
+    "policies": ["default", "trim", "ignore"],
+    "before": "😂🤫 🧒",
+    "after": " 🔫🤫🧒 "
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x",
+    "after": "z"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 2, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny",
+    "after": "a\nb"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 1, 0, 1],
+        [1, 2, 1, 2]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny",
+    "after": "a\nb y"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x y",
+    "after": "x a\nb y"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 1, 0, 1],
+        [1, 2, 1, 2]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny",
+    "after": "x a\ny b"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 2, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\n",
+    "after": "x a\n..."
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 2, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny\n",
+    "after": "a\nb\n"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 2, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default"],
+    "before": "x\ny",
+    "after": " x \n y "
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 1, 0, 1],
+        [1, 2, 1, 2]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default"],
+    "before": "x\ny",
+    "after": " x \n y."
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 1, 0, 0],
+        [1, 2, 0, 1],
+        [2, 3, 1, 1]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default"],
+    "before": "a\nx\nb\n",
+    "after": " x\n"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 1, 0, 0],
+        [1, 2, 0, 1],
+        [2, 3, 1, 1]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "a\nx\nb\n",
+    "after": "!x\n"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default"],
+    "before": "< i",
+    "after": "<i<\ni"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [
+        [0, 0, 0, 2],
+        [0, 1, 2, 3]
+      ]
+    },
+    "matchings": {},
+    "policies": ["default"],
+    "before": ".l j",
+    "after": "U\n.\nl j+"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSplitter",
+    "type": "splitter",
+    "squash": false,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default"],
+    "before": "      run();",
+    "after": "      //commentary\n      while(run(true));"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSquash",
+    "type": "splitter",
+    "squash": true,
+    "trim": false,
+    "changes": {
+      "default": [[0, 1, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x",
+    "after": "z"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSquash",
+    "type": "splitter",
+    "squash": true,
+    "trim": false,
+    "changes": {
+      "default": [[0, 2, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny",
+    "after": "a\nb"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSquash",
+    "type": "splitter",
+    "squash": true,
+    "trim": false,
+    "changes": {
+      "default": [[0, 2, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny",
+    "after": "a\nb y"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSquash",
+    "type": "splitter",
+    "squash": true,
+    "trim": false,
+    "changes": {
+      "default": [[0, 3, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default"],
+    "before": "a\nx\nb\n",
+    "after": " x\n"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testSquash",
+    "type": "splitter",
+    "squash": true,
+    "trim": false,
+    "changes": {
+      "default": [[0, 3, 0, 1]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "a\nx\nb\n",
+    "after": "!x\n"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testTrim",
+    "type": "splitter",
+    "squash": false,
+    "trim": true,
+    "changes": {
+      "default": [[0, 2, 0, 2]],
+      "trim": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "\n",
+    "after": "     \n    "
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testTrim",
+    "type": "splitter",
+    "squash": false,
+    "trim": true,
+    "changes": {
+      "default": [[0, 1, 0, 2]],
+      "trim": [[1, 1, 1, 2]],
+      "ignore": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "",
+    "after": "     \n    "
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testTrim",
+    "type": "splitter",
+    "squash": false,
+    "trim": true,
+    "changes": {
+      "default": [[0, 2, 0, 1]],
+      "trim": [[1, 2, 1, 1]],
+      "ignore": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "     \n    ",
+    "after": ""
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testTrim",
+    "type": "splitter",
+    "squash": false,
+    "trim": true,
+    "changes": {
+      "default": [[0, 2, 0, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "x\ny",
+    "after": "z\n "
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testTrim",
+    "type": "splitter",
+    "squash": false,
+    "trim": true,
+    "changes": {
+      "default": [[1, 1, 1, 2]],
+      "ignore": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "z",
+    "after": "z\n "
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testTrim",
+    "type": "splitter",
+    "squash": false,
+    "trim": true,
+    "changes": {
+      "default": [[1, 2, 1, 2]]
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "z\n x",
+    "after": "z\n w"
+  },
+  {
+    "source": "SplitComparisonUtilTest",
+    "test": "testTrim",
+    "type": "splitter",
+    "squash": false,
+    "trim": true,
+    "changes": {
+      "default": [
+        [0, 2, 0, 0],
+        [3, 5, 1, 1]
+      ],
+      "ignore": []
+    },
+    "matchings": {},
+    "policies": ["default", "trim", "ignore"],
+    "before": "\n\nz\n\n",
+    "after": "z"
+  }
+]

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { insertNewlineAndIndent } from "@codemirror/commands";
-import { indentService, indentUnit } from "@codemirror/language";
+import { indentService, indentUnit, ensureSyntaxTree } from "@codemirror/language";
 import {
   addCaretsToLineEnds,
   commentLine,
@@ -13,7 +13,7 @@ import {
   toggleCase,
   unselectOccurrence,
 } from "./editing";
-import { commentTokens } from "./languages";
+import { batchLanguage, commentTokens, findLanguageDescription } from "./languages";
 import { toggleCaret } from "./multiCaret";
 import { enterInLineComment, lineCommentStyle } from "./comments";
 import { languages } from "@codemirror/language-data";
@@ -336,5 +336,53 @@ describe("fallback indentation boundaries", () => {
     const v = make(input, fallback(id));
     insertNewlineAndIndent(v);
     expect(show(v)).toBe(expected);
+  });
+});
+
+describe("Batch language mode and @REM comment toggle", () => {
+  it("resolves Batch by uiMode and .bat / .cmd extensions and toggles @REM comments", () => {
+    expect(findLanguageDescription("Batch", "build.bat")?.name).toBe("Batch");
+    expect(findLanguageDescription(null, "deploy.cmd")?.name).toBe("Batch");
+    const v = make("echo| hello\n", batchLanguage);
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe("@REM echo hello\n");
+    v.dispatch({ selection: EditorSelection.cursor(0) });
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe("echo hello\n");
+  });
+
+  it("highlights keywords, labels, variables, strings and :: / REM comments", () => {
+    const src = [
+      ":: header comment",
+      "@REM line comment",
+      "@echo off",
+      "setlocal",
+      'set "APP=demo"',
+      "for %%i in (a b) do if exist %APP% call :sub !COUNT!",
+      ":sub",
+      "rem note",
+      "exit /b 0",
+      "endlocal",
+    ].join("\n");
+    const state = EditorState.create({ doc: src, extensions: batchLanguage });
+    const tree = ensureSyntaxTree(state, state.doc.length, 5000)!;
+    const tokens: Array<[string, string]> = [];
+    tree.iterate({
+      enter: (n) => {
+        if (n.name !== "Document" && n.from < n.to) tokens.push([n.name, state.sliceDoc(n.from, n.to)]);
+      },
+    });
+    const has = (tag: string, text: string) => tokens.some(([n, s]) => n.includes(tag) && s === text);
+    expect(has("comment", ":: header comment")).toBe(true);
+    expect(has("comment", "@REM line comment")).toBe(true);
+    expect(has("comment", "rem note")).toBe(true);
+    for (const kw of ["echo", "setlocal", "set", "for", "in", "do", "if", "exist", "call", "exit", "endlocal"]) {
+      expect(has("keyword", kw)).toBe(true);
+    }
+    expect(has("string", '"APP=demo"')).toBe(true);
+    expect(has("variableName", "%%i")).toBe(true);
+    expect(has("variableName", "%APP%")).toBe(true);
+    expect(has("variableName", "!COUNT!")).toBe(true);
+    expect(has("labelName", ":sub")).toBe(true);
   });
 });

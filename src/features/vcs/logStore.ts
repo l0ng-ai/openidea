@@ -64,9 +64,6 @@ interface LogState {
   generation: number;
 }
 
-/** Fixed content tabs of the Git tool window. */
-export type GitTab = "changes" | "shelf" | "stashes" | "log" | "console" | "worktrees";
-
 /** A log tab of its own (IDEA's "History: file" / "Log: branch" tabs): its own filters and view. */
 export interface LogTab {
   id: string;
@@ -318,13 +315,11 @@ export function setLogFilters(patch: Partial<LogFilters>) {
   void reloadLog();
 }
 
-/** Drops loaded commits and loads the first page. */
-export function reloadLog(): Promise<void> {
+/** Reloads history, optionally keeping the current view until its replacement arrives. */
+export function reloadLog({ preserve = false }: { preserve?: boolean } = {}): Promise<void> {
   useGitLog.setState((s) => ({
-    commits: [],
-    rows: [],
-    graph: emptyGraphState(),
-    done: false,
+    ...(preserve ? {} : { commits: [], rows: [], graph: emptyGraphState(), done: false }),
+    loading: true,
     error: null,
     generation: s.generation + 1,
   }));
@@ -334,7 +329,7 @@ export function reloadLog(): Promise<void> {
   void currentUser().then((user) => {
     if (useGitLog.getState().generation === generation) useGitLog.setState({ user });
   });
-  return loadMore();
+  return loadPage(true);
 }
 
 async function loadOutgoing() {
@@ -376,16 +371,21 @@ export function isPushed(id: string): boolean {
 }
 
 export function loadMore(): Promise<void> {
+  return loadPage(false);
+}
+
+function loadPage(replace: boolean): Promise<void> {
   const s = useGitLog.getState();
-  if (s.done) return Promise.resolve();
+  if (!replace && s.done) return Promise.resolve();
   if (loadPromise) return loadPromise;
   const gen = s.generation;
   const f = s.filters;
   // Settings › Version Control › Limit history to N rows (file / folder history).
   const vcs = workflowSettings().vcs;
   const cap = f.path && vcs.limitHistory ? vcs.historyLimit : Infinity;
-  if (s.commits.length >= cap) {
-    useGitLog.setState({ done: true });
+  const loaded = replace ? 0 : s.commits.length;
+  if (loaded >= cap) {
+    useGitLog.setState({ done: true, loading: false });
     return Promise.resolve();
   }
   useGitLog.setState({ loading: true });
@@ -402,7 +402,7 @@ export function loadMore(): Promise<void> {
             : useVcs.getState().roots.length
               ? useVcs.getState().roots
               : [currentRepo()];
-      const limit = Math.min(PAGE, cap - s.commits.length);
+      const limit = Math.min(replace ? Math.max(PAGE, s.commits.length) : PAGE, cap - loaded);
       const refs = await branchesByRepo(roots.filter((r): r is string => !!r));
       const knownRefs = new Set(
         Object.values(refs)
@@ -430,7 +430,7 @@ export function loadMore(): Promise<void> {
               textRegex: f.regex,
               textMatchCase: f.matchCase,
               range: null,
-              skip: s.commits.filter((c) => commitRepo(c) === repo).length,
+              skip: replace ? 0 : s.commits.filter((c) => commitRepo(c) === repo).length,
               limit,
               order: o.sort,
               firstParent: o.firstParent,
@@ -455,16 +455,21 @@ export function loadMore(): Promise<void> {
       const page = mergeRepoLogs(streams, limit);
       const cur = useGitLog.getState();
       if (cur.generation !== gen) return;
-      const { rows, state } = computeGraph(page.map(graphCommit), cur.graph);
+      if (replace && failures.length === results.length && cur.commits.length) {
+        useGitLog.setState({ error: failures.join("\n") });
+        return;
+      }
+      const { rows, state } = computeGraph(page.map(graphCommit), replace ? emptyGraphState() : cur.graph);
       useGitLog.setState({
-        commits: cur.commits.concat(page),
-        rows: cur.rows.concat(rows),
+        commits: replace ? page : cur.commits.concat(page),
+        rows: replace ? rows : cur.rows.concat(rows),
         graph: state,
-        done: page.length < PAGE || cur.commits.length + page.length >= cap,
+        done: page.length < limit || loaded + page.length >= cap,
         error: failures.join("\n") || null,
       });
     } catch (e) {
-      if (useGitLog.getState().generation === gen) useGitLog.setState({ error: errorMessage(e), done: true });
+      if (useGitLog.getState().generation === gen)
+        useGitLog.setState({ error: errorMessage(e), done: replace && s.commits.length ? s.done : true });
     } finally {
       if (useGitLog.getState().generation === gen) {
         useGitLog.setState({ loading: false });

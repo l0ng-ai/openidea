@@ -32,10 +32,13 @@ pub enum IdeEvent {
         doc: DocId,
         dirty: bool,
     },
-    /// An open document's language changed (Settings › File Types, Override File Type).
+    /// An open document's language changed (Settings › File Types, Override File
+    /// Type), or its UI mode (a framework's root marker appeared or went).
     DocLanguage {
         doc: DocId,
         language: crate::LanguageId,
+        /// See `DocumentInfo::ui_mode`.
+        ui_mode: Option<String>,
     },
     /// Full replacement of diagnostics for one file from one producer.
     Diagnostics {
@@ -116,6 +119,15 @@ pub enum IdeEvent {
     /// Prompt `id` was answered (in any window) or gave up.
     AskpassDone {
         id: u64,
+    },
+    /// The kernel of an open notebook changed state (`starting`, `idle`, `busy`,
+    /// `dead`); `message` says why it failed to start or died.
+    NotebookKernel {
+        /// Backend document incarnation; stale queued events cannot target a reopen.
+        id: String,
+        path: crate::IpcPath,
+        state: String,
+        message: Option<String>,
     },
 }
 

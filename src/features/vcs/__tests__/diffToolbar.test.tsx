@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { EditorInput } from "@/workbench/contributions";
 import { Chunk } from "@codemirror/merge";
 import { Text } from "@codemirror/state";
@@ -27,6 +27,19 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 vi.mock("@/workbench/contributions", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/workbench/contributions")>()),
   editorService: () => ({ openFile }),
+}));
+
+vi.mock("@/editor/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/editor/api")>()),
+  attachDocument: (path: string) =>
+    Promise.resolve({
+      path,
+      text: () => working,
+      readOnly: false,
+      extension: [],
+      save: () => Promise.resolve(),
+      release: () => {},
+    }),
 }));
 
 import { DiffEditor, mapLine } from "../DiffEditor";
@@ -94,7 +107,7 @@ describe("Diff toolbar", () => {
     // Unpadded panes joined by the divider.
     await waitFor(() => expect(document.querySelector(".cm-diffDivider")).not.toBeNull());
     expect(document.querySelector(".cm-changeGutter")).toBeNull();
-    expect(document.querySelector(".cm-merge-b .cm-lineNumbers .cm-diffWholeGutter")?.textContent).toBe("2");
+    expect(document.querySelector(".cm-merge-b .cm-lineNumbers .cm-diffGutter-inserted")?.textContent).toBe("2");
     // The lock turns scrolling together off without rebuilding the panes.
     const divider = document.querySelector(".cm-diffDivider");
     (await screen.findByRole("button", { name: "Synchronize Scrolling" })).click();
@@ -104,9 +117,9 @@ describe("Diff toolbar", () => {
     const item = await screen.findByRole("menuitemcheckbox", { name: "Align Changes" });
     expect(item.getAttribute("aria-checked")).toBe("false");
     item.click();
-    // Padded panes with a change bar.
+    // Padded panes, the changed lines' gutters still tinted as in IDEA.
     await waitFor(() => expect(document.querySelector(".cm-diffDivider")).toBeNull());
-    expect(document.querySelector(".cm-changeGutter")).not.toBeNull();
+    expect(document.querySelector(".cm-merge-b .cm-lineNumbers .cm-diffGutter-inserted")?.textContent).toBe("2");
     expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!)).toMatchObject({
       alignChanges: true,
       syncScroll: false,
@@ -177,4 +190,49 @@ describe("Jump to Source of a revision diff", () => {
     render(<DiffEditor input={input} />);
     expect(await jumpFrom(0, 2)).toEqual(["/p/a.ts", { selection: { line: 5, col: 1 }, focus: true }]);
   });
+});
+
+describe("Unified Revert", () => {
+  for (const control of ["toolbar", "chunk"] as const) {
+    it.each([
+      ["a\nb", "a"],
+      ["same", "same\n"],
+      ["same\n", "same"],
+      ["", "added"],
+      ["deleted", ""],
+    ])(`${control} restores %j from %j`, async (original, changed) => {
+      localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "unified", collapse: false }));
+      texts.HEAD = original;
+      working = changed;
+      const mounted = render(
+        <DiffEditor
+          input={
+            {
+              ...input,
+              data: {
+                path: "/p/a.ts",
+                left: { type: "rev", rev: "HEAD" },
+                right: { type: "worktree" },
+              },
+            } as EditorInput
+          }
+        />,
+      );
+      try {
+        await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(1));
+        const view = EditorView.findFromDOM(document.querySelector<HTMLElement>(".cm-editor")!)!;
+        if (control === "toolbar") {
+          const button = await screen.findByRole("button", { name: "Revert Change" });
+          await waitFor(() => expect(button).not.toBeDisabled());
+          fireEvent.click(button);
+        } else {
+          fireEvent.mouseDown(await screen.findByRole("button", { name: /^Revert$/ }));
+        }
+        await waitFor(() => expect(view.state.doc.toString()).toBe(original));
+      } finally {
+        mounted.unmount();
+        localStorage.clear();
+      }
+    });
+  }
 });

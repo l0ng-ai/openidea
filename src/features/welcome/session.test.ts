@@ -21,7 +21,7 @@ const { provideStartupLaunch, useProject } = await import("@/platform/project");
 
 beforeEach(() => {
   openProject.mockReset();
-  useProject.setState({ project: null });
+  useProject.setState({ project: null, lightEdit: false });
   sessionStorage.clear();
   localStorage.setItem("openidea.session.openProject", "/p/last");
   _resetSessionForTests();
@@ -46,12 +46,21 @@ describe("reopenLastProject", () => {
     expect(openProject).not.toHaveBeenCalled();
   });
 
-  it("leaves files opened at launch in LightEdit", async () => {
-    provideStartupLaunch(Promise.resolve().then(() => useProject.setState({ lightEdit: true })));
-    await reopenLastProject();
-    expect(openProject).not.toHaveBeenCalled();
-    useProject.setState({ lightEdit: false });
-  });
+  it.each(["last session", "window session"])(
+    "keeps launched loose files instead of restoring the %s project",
+    async (remembered) => {
+      if (remembered === "window session") sessionStorage.setItem("openidea.window.project", "/p/window");
+      provideStartupLaunch(
+        Promise.resolve().then(() => {
+          useProject.setState({ lightEdit: true });
+        }),
+      );
+      await reopenLastProject();
+      expect(openProject).not.toHaveBeenCalled();
+      expect(useProject.getState().lightEdit).toBe(true);
+      expect(useProject.getState().project).toBeNull();
+    },
+  );
 
   it("reopens the last project when the launch named none", async () => {
     provideStartupLaunch(Promise.resolve());

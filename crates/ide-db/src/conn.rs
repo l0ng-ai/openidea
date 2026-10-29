@@ -5,6 +5,9 @@
 //! whatever its type.
 
 use crate::source::{DataSource, DbDriver, DbSslMode};
+use bb8::ManageConnection;
+use bb8::Pool as Bb8Pool;
+use futures::StreamExt;
 use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -44,10 +47,47 @@ pub struct QueryResult {
     pub execution_ms: f64,
 }
 
+// bb8-tiberius never marks connections broken; keep an empty slot when discarded.
+pub struct MssqlConnectionManager(bb8_tiberius::ConnectionManager);
+
+pub struct MssqlConnection(Option<bb8_tiberius::rt::Client>);
+
+impl std::ops::Deref for MssqlConnection {
+    type Target = bb8_tiberius::rt::Client;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("live SQL Server connection")
+    }
+}
+
+impl std::ops::DerefMut for MssqlConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("live SQL Server connection")
+    }
+}
+
+impl ManageConnection for MssqlConnectionManager {
+    type Connection = MssqlConnection;
+    type Error = bb8_tiberius::Error;
+
+    async fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        self.0.connect().await.map(|c| MssqlConnection(Some(c)))
+    }
+
+    async fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
+        conn.simple_query("SELECT 1").await?.into_results().await?;
+        Ok(())
+    }
+
+    fn has_broken(&self, conn: &mut Self::Connection) -> bool {
+        conn.0.is_none()
+    }
+}
+
 pub enum Pool {
     Sqlite(SqlitePool),
     Postgres(PgPool),
     Mysql(MySqlPool),
+    SqlServer(Bb8Pool<MssqlConnectionManager>),
 }
 
 /// Runs `$body` with `$p` bound to the concrete pool of each driver.
@@ -57,6 +97,7 @@ macro_rules! with_pool {
             Pool::Sqlite($p) => $body,
             Pool::Postgres($p) => $body,
             Pool::Mysql($p) => $body,
+            Pool::SqlServer(_) => unreachable!(),
         }
     };
 }
@@ -76,6 +117,132 @@ pub(crate) fn db_err(e: sqlx::Error) -> IdeError {
         sqlx::Error::PoolTimedOut => IdeError::new(ErrorKind::Io, "timed out connecting to the database"),
         sqlx::Error::Io(_) | sqlx::Error::Tls(_) => IdeError::new(ErrorKind::Io, e.to_string()),
         _ => IdeError::new(ErrorKind::Protocol, e.to_string()),
+    }
+}
+
+pub(crate) fn mssql_err(e: impl Into<bb8_tiberius::Error>) -> IdeError {
+    match e.into() {
+        bb8_tiberius::Error::Tiberius(e) => match &e {
+            tiberius::error::Error::Server(d) => {
+                let code = d.code();
+                // Wrong login: SQL Server 18456.
+                let auth = matches!(code, 18452 | 18456 | 18470);
+                IdeError::new(
+                    if auth { ErrorKind::PermissionDenied } else { ErrorKind::InvalidInput },
+                    format!("[{code}] {}", d.message()),
+                )
+            }
+            tiberius::error::Error::Io { .. } | tiberius::error::Error::Tls(_) => {
+                IdeError::new(ErrorKind::Io, e.to_string())
+            }
+            _ => IdeError::new(ErrorKind::Protocol, e.to_string()),
+        },
+        bb8_tiberius::Error::Io(e) => IdeError::new(ErrorKind::Io, e.to_string()),
+    }
+}
+
+fn mssql_pool_err(e: bb8::RunError<bb8_tiberius::Error>) -> IdeError {
+    match e {
+        bb8::RunError::User(e) => mssql_err(e),
+        bb8::RunError::TimedOut => IdeError::new(ErrorKind::Io, "timed out connecting to the database"),
+    }
+}
+
+const DAYS_1900_01_01: i64 = 693_595;
+
+/// Formats a proleptic Gregorian date given days since `0001-01-01`.
+fn format_date(days: i64) -> String {
+    let z = days + 306;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{year:04}-{m:02}-{d:02}")
+}
+
+fn format_hms(secs: u64, frac: u64, scale: u8) -> String {
+    let (h, m, s) = (secs / 3600, (secs / 60) % 60, secs % 60);
+    if scale == 0 || frac == 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        let frac = format!("{frac:0width$}", width = usize::from(scale));
+        format!("{h:02}:{m:02}:{s:02}.{}", frac.trim_end_matches('0'))
+    }
+}
+
+fn format_time(t: tiberius::time::Time) -> String {
+    let scale = t.scale().min(7);
+    let div = 10u64.pow(u32::from(scale));
+    format_hms(t.increments() / div, t.increments() % div, scale)
+}
+
+fn format_numeric(n: tiberius::numeric::Numeric) -> String {
+    let scale = u32::from(n.scale());
+    if scale == 0 {
+        return n.value().to_string();
+    }
+    let sign = if n.value() < 0 { "-" } else { "" };
+    let abs = n.value().unsigned_abs();
+    let div = 10u128.pow(scale);
+    format!("{sign}{}.{:0width$}", abs / div, abs % div, width = scale as usize)
+}
+
+fn tiberius_cell(cell: &tiberius::ColumnData<'_>, ty: tiberius::ColumnType) -> Option<String> {
+    use tiberius::ColumnData as C;
+    match cell {
+        C::U8(v) => v.map(|v| v.to_string()),
+        C::I16(v) => v.map(|v| v.to_string()),
+        C::I32(v) => v.map(|v| v.to_string()),
+        C::I64(v) => v.map(|v| v.to_string()),
+        C::F32(v) => v.map(|v| v.to_string()),
+        C::F64(v) if matches!(ty, tiberius::ColumnType::Money | tiberius::ColumnType::Money4) => {
+            // Beyond ~9e11, money precision is limited by the driver's f64 decoding.
+            v.map(|v| format!("{:.4}", v))
+        }
+        C::F64(v) => v.map(|v| v.to_string()),
+        C::Bit(v) => v.map(|v| v.to_string()),
+        C::String(v) => v.as_deref().map(str::to_owned),
+        C::Guid(v) => v.map(|v| v.to_string()),
+        C::Binary(v) => v.as_deref().map(hex),
+        C::Numeric(v) => v.map(format_numeric),
+        C::Xml(v) => v.as_deref().map(|x| x.as_ref().to_owned()),
+        C::Date(v) => v.map(|d| format_date(i64::from(d.days()))),
+        C::Time(v) => v.map(format_time),
+        C::DateTime(v) => v.map(|dt| {
+            let ms = (u64::from(dt.seconds_fragments()) * 1000 + 150) / 300;
+            format!("{} {}", format_date(DAYS_1900_01_01 + i64::from(dt.days())), format_hms(ms / 1000, ms % 1000, 3))
+        }),
+        C::SmallDateTime(v) => v.map(|dt| {
+            let secs = u64::from(dt.seconds_fragments()) * 60;
+            format!("{} {}", format_date(DAYS_1900_01_01 + i64::from(dt.days())), format_hms(secs, 0, 0))
+        }),
+        C::DateTime2(v) => {
+            v.map(|dt| format!("{} {}", format_date(i64::from(dt.date().days())), format_time(dt.time())))
+        }
+        C::DateTimeOffset(v) => v.map(|dto| {
+            let dt = dto.datetime2();
+            let t = dt.time();
+            let scale = t.scale().min(7);
+            let div = 10u64.pow(u32::from(scale));
+            let utc_secs = i64::from(dt.date().days()) * 86_400 + (t.increments() / div) as i64;
+            let local_secs = utc_secs + i64::from(dto.offset()) * 60;
+            let days = local_secs.div_euclid(86_400);
+            let secs = local_secs.rem_euclid(86_400) as u64;
+            let sign = if dto.offset() < 0 { '-' } else { '+' };
+            let off = dto.offset().unsigned_abs();
+            format!(
+                "{} {}{sign}{:02}:{:02}",
+                format_date(days),
+                format_hms(secs, t.increments() % div, scale),
+                off / 60,
+                off % 60
+            )
+        }),
     }
 }
 
@@ -197,6 +364,37 @@ macro_rules! fetch {
 /// Columns, rows, rows affected, more rows beyond the limit, time of the first answer.
 type Fetched = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, Option<u64>, bool, Option<Instant>);
 
+async fn mssql_command(conn: &mut bb8_tiberius::rt::Client, sql: &str) -> IdeResult<()> {
+    // Transaction control must be a batch: sp_executesql rejects a changed transaction count.
+    conn.simple_query(sql).await.map_err(mssql_err)?.into_results().await.map_err(mssql_err)?;
+    Ok(())
+}
+
+async fn mssql_fetch(conn: &mut bb8_tiberius::rt::Client, sql: &str, max: usize) -> IdeResult<Fetched> {
+    let mut stream = conn.simple_query(sql).await.map_err(mssql_err)?;
+    let first = Some(Instant::now());
+    let columns = stream
+        .columns()
+        .await
+        .map_err(mssql_err)?
+        .unwrap_or_default()
+        .iter()
+        .map(|col| ResultColumn { name: col.name().to_owned(), type_name: format!("{:?}", col.column_type()) })
+        .collect();
+    let mut rows = Vec::new();
+    let mut has_more = false;
+    while let Some(item) = stream.next().await {
+        if let tiberius::QueryItem::Row(row) = item.map_err(mssql_err)? {
+            if rows.len() >= max {
+                has_more = true;
+                break;
+            }
+            rows.push(row.cells().map(|(col, cell)| tiberius_cell(cell, col.column_type())).collect());
+        }
+    }
+    Ok((columns, rows, None, has_more, first))
+}
+
 /// The server-side id of a connection (to cancel its statement from another one).
 macro_rules! backend_id {
     ($conn:expr, $sql:expr) => {{
@@ -313,6 +511,7 @@ impl Pool {
             Pool::Sqlite(_) => DbDriver::Sqlite,
             Pool::Postgres(_) => DbDriver::Postgres,
             Pool::Mysql(_) => DbDriver::Mysql,
+            Pool::SqlServer(_) => DbDriver::SqlServer,
         }
     }
 
@@ -453,20 +652,60 @@ impl Pool {
                     .map_err(db_err)?;
                 Ok(Pool::Mysql(pool))
             }
+            DbDriver::SqlServer => {
+                use tiberius::Config;
+                let mut config = Config::new();
+                config.host(&source.host);
+                config.port(source.port.unwrap_or(1433));
+                if !source.user.is_empty() {
+                    config.authentication(tiberius::AuthMethod::sql_server(
+                        source.user.clone(),
+                        password.unwrap_or_default().to_owned(),
+                    ));
+                }
+                if !source.database.is_empty() {
+                    config.database(&source.database);
+                }
+                if matches!(source.ssl, DbSslMode::Disable | DbSslMode::Prefer) {
+                    config.trust_cert();
+                }
+                let manager = MssqlConnectionManager(bb8_tiberius::ConnectionManager::new(config));
+                let pool = bb8::Pool::builder()
+                    .max_size(MAX)
+                    .connection_timeout(timeout)
+                    .build(manager)
+                    .await
+                    .map_err(mssql_err)?;
+                let mut conn = pool.get_owned().await.map_err(mssql_pool_err)?;
+                conn.query("SELECT 1", &[]).await.map_err(mssql_err)?.into_results().await.map_err(mssql_err)?;
+                Ok(Pool::SqlServer(pool))
+            }
         }
     }
 
     pub async fn close(&self) {
-        with_pool!(self, p => p.close().await)
+        match self {
+            Pool::SqlServer(_) => {}
+            _ => with_pool!(self, p => p.close().await),
+        }
     }
 
     pub fn is_closed(&self) -> bool {
-        with_pool!(self, p => p.is_closed())
+        match self {
+            Pool::SqlServer(_) => false,
+            _ => with_pool!(self, p => p.is_closed()),
+        }
     }
 
     /// Runs `sql` (no row limit beyond `max`), for introspection: cells are text (see [`Cells::Text`]).
     pub async fn rows(&self, sql: &str, max: usize) -> IdeResult<Vec<Vec<Option<String>>>> {
-        let fetched: IdeResult<Fetched> = with_pool!(self, p => fetch!(p, sql, max, Cells::Text));
+        let fetched: IdeResult<Fetched> = match self {
+            Pool::SqlServer(p) => {
+                let mut conn = p.get_owned().await.map_err(mssql_pool_err)?;
+                mssql_fetch(&mut conn, sql, max).await
+            }
+            _ => with_pool!(self, p => fetch!(p, sql, max, Cells::Text)),
+        };
         Ok(fetched?.1)
     }
 
@@ -485,21 +724,47 @@ impl Pool {
     /// Runs `statements` in one transaction; each must change `expect_one`
     /// row when flagged (table editor submits).
     pub async fn transaction(&self, statements: &[(String, bool)]) -> IdeResult<u64> {
-        with_pool!(self, p => {
-            let mut tx = p.begin().await.map_err(db_err)?;
-            let mut total = 0;
-            for (sql, expect_one) in statements {
-                let done = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *tx).await.map_err(db_err)?;
-                let n = done.rows_affected();
-                // MySQL reports 0 for an UPDATE that leaves the row unchanged.
-                if *expect_one && (n > 1 || (n == 0 && !matches!(self, Pool::Mysql(_)))) {
-                    return Err(IdeError::invalid(format!("{sql}: expected to change 1 row, changed {n}; nothing was saved")));
+        match self {
+            Pool::SqlServer(p) => {
+                let mut conn = p.get_owned().await.map_err(mssql_pool_err)?;
+                let result = async {
+                    mssql_command(&mut conn, "BEGIN TRAN").await?;
+                    let mut total = 0;
+                    for (sql, expect_one) in statements {
+                        let n = conn.execute(sql, &[]).await.map_err(mssql_err)?.total();
+                        if *expect_one && n != 1 {
+                            return Err(IdeError::invalid(format!(
+                                "{sql}: expected to change 1 row, changed {n}; nothing was saved"
+                            )));
+                        }
+                        total += n;
+                    }
+                    mssql_command(&mut conn, "COMMIT TRAN").await?;
+                    Ok(total)
                 }
-                total += n;
+                .await;
+                if result.is_err() && mssql_command(&mut conn, "IF @@TRANCOUNT > 0 ROLLBACK TRAN").await.is_err() {
+                    // A failed rollback must never return an open transaction to the pool.
+                    conn.0.take();
+                }
+                result
             }
-            tx.commit().await.map_err(db_err)?;
-            Ok(total)
-        })
+            _ => with_pool!(self, p => {
+                let mut tx = p.begin().await.map_err(db_err)?;
+                let mut total = 0;
+                for (sql, expect_one) in statements {
+                    let done = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *tx).await.map_err(db_err)?;
+                    let n = done.rows_affected();
+                    // MySQL reports 0 for an UPDATE that leaves the row unchanged.
+                    if *expect_one && (n > 1 || (n == 0 && !matches!(self, Pool::Mysql(_)))) {
+                        return Err(IdeError::invalid(format!("{sql}: expected to change 1 row, changed {n}; nothing was saved")));
+                    }
+                    total += n;
+                }
+                tx.commit().await.map_err(db_err)?;
+                Ok(total)
+            }),
+        }
     }
 }
 
@@ -509,6 +774,7 @@ pub enum Held {
     Sqlite(PoolConnection<Sqlite>),
     Postgres(PoolConnection<Postgres>),
     Mysql(PoolConnection<MySql>),
+    SqlServer(Box<bb8::PooledConnection<'static, MssqlConnectionManager>>),
 }
 
 impl Held {
@@ -517,18 +783,25 @@ impl Held {
             Pool::Sqlite(p) => Held::Sqlite(p.acquire().await.map_err(db_err)?),
             Pool::Postgres(p) => Held::Postgres(p.acquire().await.map_err(db_err)?),
             Pool::Mysql(p) => Held::Mysql(p.acquire().await.map_err(db_err)?),
+            Pool::SqlServer(p) => Held::SqlServer(Box::new(p.get_owned().await.map_err(mssql_pool_err)?)),
         })
     }
 
     /// Runs a statement without results (`BEGIN`, `COMMIT`, `ROLLBACK`).
     pub async fn command(&mut self, sql: &str) -> IdeResult<()> {
-        let sql = sqlx::AssertSqlSafe(sql.to_owned());
         match self {
-            Held::Sqlite(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
-            Held::Postgres(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
-            Held::Mysql(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
+            Held::SqlServer(c) => mssql_command(c, sql).await,
+            other => {
+                let sql = sqlx::AssertSqlSafe(sql.to_owned());
+                match other {
+                    Held::Sqlite(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
+                    Held::Postgres(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
+                    Held::Mysql(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
+                    Held::SqlServer(_) => unreachable!(),
+                }
+                .map_err(db_err)
+            }
         }
-        .map_err(db_err)
     }
 
     /// Closes the connection instead of returning it to the pool (its statement was
@@ -541,6 +814,9 @@ impl Held {
             }
             Held::Mysql(c) => {
                 let _ = c.detach().close().await;
+            }
+            Held::SqlServer(mut c) => {
+                c.0.take();
             }
         }
     }
@@ -589,6 +865,13 @@ impl Held {
                 run!(c, Some("SELECT pg_backend_pid()"), |b: String| format!("SELECT pg_cancel_backend({b})"))
             }
             Held::Mysql(c) => run!(c, Some("SELECT CONNECTION_ID()"), |b: String| format!("KILL QUERY {b}")),
+            Held::SqlServer(c) => {
+                // Tiberius has no attention/cancel API; stop reading and discard the connection.
+                tokio::select! {
+                    r = mssql_fetch(c, sql, max_rows) => r?,
+                    () = cancel.cancelled() => return Err(IdeError::cancelled()),
+                }
+            }
         };
         let (columns, rows, affected, has_more, first) = fetched;
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -608,6 +891,7 @@ impl Held {
 pub fn begin_statement(driver: DbDriver) -> &'static str {
     match driver {
         DbDriver::Mysql => "START TRANSACTION",
+        DbDriver::SqlServer => "BEGIN TRAN",
         DbDriver::Sqlite | DbDriver::Postgres => "BEGIN",
     }
 }
@@ -623,6 +907,78 @@ fn statement_columns<S: sqlx::Statement>(s: &S) -> Vec<ResultColumn> {
 mod tests {
     use super::*;
     use crate::source::{DbOptions, DbProperty};
+
+    #[test]
+    fn sqlserver_cells_preserve_values_and_nulls() {
+        use std::borrow::Cow;
+        use tiberius::time::{Date, DateTime, DateTime2, DateTimeOffset, SmallDateTime, Time};
+        use tiberius::{ColumnData as C, ColumnType as T, Uuid, numeric::Numeric};
+        let dt = DateTime2::new(Date::new(693_595), Time::new(1234567, 7));
+        let cases = [
+            (C::U8(Some(255)), "255"),
+            (C::I16(Some(-123)), "-123"),
+            (C::I32(Some(-456)), "-456"),
+            (C::I64(Some(i64::MAX)), "9223372036854775807"),
+            (C::F32(Some(1.25)), "1.25"),
+            (C::F64(Some(1.25)), "1.25"),
+            (C::Bit(Some(true)), "true"),
+            (C::String(Some(Cow::Borrowed("hello"))), "hello"),
+            (C::Binary(Some(Cow::Borrowed(&[0, 0xAB, 0xFF]))), "0x00ABFF"),
+            (
+                C::Guid(Some(Uuid::parse_str("ABCDEF01-2345-6789-ABCD-EF0123456789").unwrap())),
+                "abcdef01-2345-6789-abcd-ef0123456789",
+            ),
+            (C::Numeric(Some(Numeric::new_with_scale(-123, 5))), "-0.00123"),
+            (C::Numeric(Some(Numeric::new_with_scale(12300, 4))), "1.2300"),
+            (
+                C::Numeric(Some(Numeric::new_with_scale(10i128.pow(38) - 1, 0))),
+                "99999999999999999999999999999999999999",
+            ),
+            (C::Xml(Some(Cow::Owned(tiberius::xml::XmlData::new("<a/>")))), "<a/>"),
+            (C::Date(Some(Date::new(0))), "0001-01-01"),
+            (C::Date(Some(Date::new(3_652_058))), "9999-12-31"),
+            (C::Time(Some(Time::new(452961234567, 7))), "12:34:56.1234567"),
+            (C::DateTime(Some(DateTime::new(-1, 1))), "1899-12-31 00:00:00.003"),
+            (C::DateTime(Some(DateTime::new(0, 2))), "1900-01-01 00:00:00.007"),
+            (C::SmallDateTime(Some(SmallDateTime::new(0, 754))), "1900-01-01 12:34:00"),
+            (C::DateTime2(Some(dt)), "1900-01-01 00:00:00.1234567"),
+            (C::DateTimeOffset(Some(DateTimeOffset::new(dt, -60))), "1899-12-31 23:00:00.1234567-01:00"),
+            (C::DateTimeOffset(Some(DateTimeOffset::new(dt, 330))), "1900-01-01 05:30:00.1234567+05:30"),
+        ];
+        for (cell, expected) in cases {
+            assert_eq!(tiberius_cell(&cell, T::Null).as_deref(), Some(expected), "{cell:?}");
+        }
+        for cell in [
+            C::U8(None),
+            C::I16(None),
+            C::I32(None),
+            C::I64(None),
+            C::F32(None),
+            C::F64(None),
+            C::Bit(None),
+            C::String(None),
+            C::Guid(None),
+            C::Binary(None),
+            C::Numeric(None),
+            C::Xml(None),
+            C::Date(None),
+            C::Time(None),
+            C::DateTime(None),
+            C::SmallDateTime(None),
+            C::DateTime2(None),
+            C::DateTimeOffset(None),
+        ] {
+            assert_eq!(tiberius_cell(&cell, T::Null), None);
+        }
+        for ty in [T::Money, T::Money4] {
+            for (v, expected) in
+                [(0.0, "0.0000"), (1.2, "1.2000"), (-123.4567, "-123.4567"), (214748.3647, "214748.3647")]
+            {
+                assert_eq!(tiberius_cell(&C::F64(Some(v)), ty).as_deref(), Some(expected));
+            }
+            assert_eq!(tiberius_cell(&C::F64(None), ty), None);
+        }
+    }
 
     fn prop(name: &str, value: &str) -> DbProperty {
         DbProperty { name: name.into(), value: value.into() }

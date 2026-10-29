@@ -21,6 +21,14 @@ pub fn search_path() -> OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
+/// Resolves a command on the shared path, or an explicit path relative to `root`.
+pub fn find_command(command: &str, search: &OsStr, root: &Path) -> Option<PathBuf> {
+    let path = Path::new(command);
+    let explicit = path.parent().is_some_and(|p| !p.as_os_str().is_empty());
+    let command = if explicit { root.join(path) } else { path.to_path_buf() };
+    crate::process::find_executable(command.to_str()?, search)
+}
+
 /// [`search_path`]'s directories, in order and once each. Only absolute ones: a
 /// relative entry (`.`, `node_modules/.bin`) resolves against the project, which
 /// could then supply the tools the IDE runs. One that can't be joined (a `:` in a
@@ -88,6 +96,20 @@ fn version_key(name: &str) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commands_resolve_on_path_and_explicit_paths_under_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let name = if cfg!(windows) { "ngserver.cmd" } else { "ngserver" };
+        std::fs::write(bin.join(name), "").unwrap();
+        let search = std::env::join_paths([&bin]).unwrap();
+        assert_eq!(find_command("ngserver", &search, dir.path()), Some(bin.join(name)));
+        assert_eq!(find_command("bin/ngserver", &search, dir.path()), Some(bin.join(name)));
+        assert_eq!(find_command(bin.join(name).to_str().unwrap(), &search, dir.path()), Some(bin.join(name)));
+        assert_eq!(find_command("absent", &search, dir.path()), None);
+    }
 
     #[cfg(unix)]
     #[test]

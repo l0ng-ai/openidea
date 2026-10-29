@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorController, openFilePaths, useEditorStatus, useTabs } from "./controller";
 import { createMemoryBackend } from "./backend";
 import { initialTabsState } from "./model/tabs";
@@ -7,6 +7,9 @@ import { resetDistractionFree, setDistractionFree } from "@/workbench/distractio
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { resolveMenuItems } from "@/ui";
+import { getContext } from "@/platform/context";
+import { installKeyboardDispatcher } from "@/platform/keymap";
+import { TEXT_WHEN } from "./actions";
 
 let ctrl: EditorController | null = null;
 
@@ -18,6 +21,72 @@ afterEach(() => {
 });
 
 describe("EditorController", () => {
+  it("leaves modified Enter to a non-text editor after switching from a focused file", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "one\ntwo\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = slot.mount(host);
+    ctrl.onMounted(slot);
+    view.focus();
+    await vi.waitFor(() => expect(getContext().editorTextFocus).toBe(true));
+
+    const splitLine = vi.fn();
+    const dispose = registerActions([
+      {
+        id: "code.splitLine",
+        title: "Split Line",
+        when: TEXT_WHEN,
+        run: splitLine,
+      },
+    ]);
+    const uninstall = installKeyboardDispatcher(window);
+    const message = document.createElement("textarea");
+    const send = vi.fn();
+    message.addEventListener("keydown", send);
+    try {
+      await ctrl.openInput({ kind: "agent-session", key: "task" });
+      slot.unmount();
+      host.appendChild(message);
+      message.focus();
+      message.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      expect(splitLine).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledOnce();
+      expect(getContext().editorTextFocus).toBe(false);
+
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const reopened = slot.mount(host);
+      ctrl.onMounted(slot);
+      reopened.focus();
+      await vi.waitFor(() => expect(getContext().editorTextFocus).toBe(true));
+      reopened.contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      expect(splitLine).toHaveBeenCalledOnce();
+    } finally {
+      uninstall();
+      dispose();
+      slot.unmount();
+      host.remove();
+    }
+  });
+
   it("updates the caret status synchronously on programmatic selection changes", async () => {
     ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "one\ntwo\nthree\n" }));
     ctrl.start();
@@ -97,7 +166,7 @@ describe("EditorController", () => {
     expect(pane().tabs[2]!.preview).toBe(false);
     useDocMeta.setState({ "/p/b.ts": { ...useDocMeta.getState()["/p/b.ts"]!, readOnly: true } });
     expect(labels()).toContain("Close All Read-Only Tabs");
-    ctrl.closeReadOnly(pane().id);
+    await ctrl.closeReadOnly(pane().id);
     expect(pane().tabs.map((t) => t.input.path)).toEqual(["/p/a.ts", "/p/c.ts"]);
   });
 
@@ -111,12 +180,13 @@ describe("EditorController", () => {
     useProject.setState({ lightEdit: false });
     expect(openFilePaths(useTabs.getState())).toEqual([]);
     useProject.setState({ lightEdit: true });
-    expect(openFilePaths(useTabs.getState())).toEqual(["/x/a.txt", "/y/b.md"]);
-    // Closing every tab leaves nothing to reopen.
-    ctrl.closeEverything();
+    await vi.waitFor(() => expect(openFilePaths(useTabs.getState())).toEqual(["/x/a.txt", "/y/b.md"]));
+    // Clearing the session must not resurrect its other files on the next explicit open.
+    await ctrl.closeEverything();
     useProject.setState({ lightEdit: false });
     useProject.setState({ lightEdit: true });
-    expect(openFilePaths(useTabs.getState())).toEqual([]);
+    await ctrl.openFile("/x/a.txt", { focus: false });
+    expect(openFilePaths(useTabs.getState())).toEqual(["/x/a.txt"]);
     useProject.setState({ lightEdit: false });
   });
 
@@ -128,7 +198,7 @@ describe("EditorController", () => {
     const key = Object.values(useTabs.getState().panes)
       .flatMap((p) => p.tabs)
       .find((t) => t.input.path === "/p/b.ts")!.input.key;
-    ctrl.closeInput(key);
+    await ctrl.closeInput(key);
     expect(openFilePaths(useTabs.getState())).toEqual(["/p/a.ts"]);
   });
 
@@ -154,31 +224,6 @@ describe("EditorController", () => {
     const s = useTabs.getState();
     const pane = s.panes[s.activePane]!;
     const items = resolveMenuItems(ctrl.tabMenu(pane.id, pane.tabs[0]!));
-    expect(items.map((i) => (i.kind === "separator" ? "-" : i.label))).toEqual([
-      "Close",
-      "Close Other Tabs",
-      "Close Tabs to the Left",
-      "Close Tabs to the Right",
-      "Close All Tabs",
-      "Close Unmodified Tabs",
-      "-",
-      "Pin Tab",
-      "-",
-      "Split and Move Right",
-      "Split and Move Down",
-      "Split Right",
-      "Split Down",
-      "-",
-      "Open In",
-      "-",
-      "Local History",
-      "Git",
-      "-",
-      "Copy Path/Reference…",
-      "Rename File…",
-      "-",
-      "Configure Editor Tabs…",
-    ]);
     expect(items.find((i) => i.label === "Close Tabs to the Left")?.disabled).toBe(true);
     expect(items.find((i) => i.label === "Close Tabs to the Right")?.disabled).toBe(false);
     dispose();

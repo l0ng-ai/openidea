@@ -242,6 +242,33 @@ pub async fn vcs_stage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeRes
     blocking(move || per_repo(&project, &paths, None, |r, paths| r.stage(paths))).await
 }
 
+/// Project-host operation (also registered with the remote dispatcher).
+pub async fn vcs_add_to_ignore(
+    host: &Host,
+    window: &str,
+    paths: Vec<PathBuf>,
+    destination: IgnoreDestination,
+) -> IdeResult<()> {
+    let project = host.project(window)?;
+    blocking(move || {
+        for path in &paths {
+            if path == &project.root || !path.starts_with(&project.root) {
+                return Err(ide_core::IdeError::invalid("Ignore selection is outside the project"));
+            }
+        }
+        apply_git_executable(&project.settings.effective());
+        let result = ide_vcs::add_to_ignore(&paths, destination);
+        // Exclude may live outside a worktree's watched directory. Refresh filters and UI explicitly.
+        project.watcher.reload_ignore_rules();
+        for (_, watcher) in project.content_watchers.lock().iter() {
+            watcher.reload_ignore_rules();
+        }
+        project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
+        result.map(|_| ())
+    })
+    .await
+}
+
 pub async fn vcs_unstage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<()> {
     let project = host.project(window)?;
     blocking(move || per_repo(&project, &paths, None, |r, paths| r.unstage(paths))).await
@@ -800,6 +827,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_branches", |c| async move { vcs_branches(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_stashes", |c| async move { vcs_stashes(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_stage", |c| async move { vcs_stage(&c.host, &c.window, c.arg("paths")?).await });
+    d.add("vcs_add_to_ignore", |c| async move {
+        vcs_add_to_ignore(&c.host, &c.window, c.arg("paths")?, c.arg("destination")?).await
+    });
     d.add("vcs_unstage", |c| async move { vcs_unstage(&c.host, &c.window, c.arg("paths")?).await });
     d.add("vcs_stage_patch", |c| async move { vcs_stage_patch(&c.host, &c.window, c.arg("patch")?).await });
     d.add("vcs_discard", |c| async move { vcs_discard(&c.host, &c.window, c.arg("paths")?).await });

@@ -28,6 +28,19 @@ icon set, copied unmodified (some renamed) from JetBrains' open-source repositor
 
 At render time `src/ui/icons.tsx` may recolour monochrome icons to `currentColor`.
 
+## JetBrains IntelliJ Platform diff algorithm
+
+`src/features/vcs/comparison/**` is a TypeScript port of the text comparison of
+[intellij-community](https://github.com/JetBrains/intellij-community) (Apache-2.0):
+`platform/util/diff` (`com.intellij.util.diff`: Diff, Reindexer, MyersLCS,
+PatienceIntLCS, UniqueLCS; `com.intellij.diff.comparison`: ByLineRt, ByWordRt,
+ByCharRt, ChunkOptimizer, ChangeCorrector, LineFragmentSplitter, TrimUtil,
+ComparisonUtil, iterables) and `platform/diff-impl` (ComparisonManagerImpl's
+`compareLinesInner` and `processBlocks`). `__tests__/ideaCases.json` is converted
+from its tests (`LineComparisonUtilTest`, `WordComparisonUtilTest`,
+`SplitComparisonUtilTest`). Modified from the originals. Copyright 2000-2026
+JetBrains s.r.o. and contributors. Apache License 2.0 (below).
+
 `src/ui/openidea/**` holds OpenIDEA's own file-type icons drawn in the expui style for
 languages whose JetBrains icons are not open source (Go, Rust, Ruby, Dart, Lua, Zig,
 Svelte, …). Those using the page-with-corner-badge layout (`goMod`, `goWork`,
@@ -97,6 +110,18 @@ is derived from the software-terms, typescript, node, rust, fullstack, golang, j
 shell and css dictionaries of [cspell-dicts](https://github.com/streetsidesoftware/cspell-dicts)
 (October 2026): lowercased, filtered and merged by OpenIDEA. Copyright Street Side Software;
 MIT licence, full text in `crates/ide-spell/src/dict/LICENSE-cspell-dicts`.
+
+## CodeMirror Angular template language
+
+`src/editor/core/cm/angular/` (`angular.grammar`, `tokens.ts`, `index.ts` and the
+`parser.ts` generated from them) is derived from
+[@codemirror/lang-angular](https://github.com/codemirror/lang-angular) 0.1.4
+(commit `ecc5038f`). Copyright (C) 2018-2021 by Marijn Haverbeke and others; MIT
+licence, full text in `src/editor/core/cm/angular/LICENSE`. Modifications by
+OpenIDEA: control-flow blocks (`@if`, `@for`, `@switch`, `@defer`, ...) and `@let`
+declarations, key and animation binding names (`(keydown.enter)`, `[@fade]`,
+`(@fade.done)`), runs of text that entities split (`a && b`) parsed as one, and one
+token for `{` and `}`.
 
 ## nvim-treesitter queries
 

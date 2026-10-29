@@ -321,7 +321,7 @@ impl Tools {
     }
 
     fn which(&self, cmd: &str) -> Option<PathBuf> {
-        which::which_in(cmd, Some(&self.system_path), &self.root).ok()
+        ide_core::tool_path::find_command(cmd, &self.system_path, &self.root)
     }
 
     fn which_any(&self, cmds: &[&str]) -> Option<PathBuf> {

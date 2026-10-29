@@ -22,7 +22,7 @@ pub(crate) fn path_with(dirs: &[&Path]) -> String {
 /// Resolves a command name on the search path.
 pub(crate) fn which(name: &str) -> Option<PathBuf> {
     let path = search_path();
-    std::env::split_paths(&path).map(|d| d.join(crate::exe(name))).find(|p| p.is_file())
+    ide_core::process::find_executable(name, &path)
 }
 
 /// Runs `program args` and returns trimmed stdout (stderr when stdout is empty)

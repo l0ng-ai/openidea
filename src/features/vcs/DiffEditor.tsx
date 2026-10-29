@@ -5,15 +5,7 @@ import clsx from "clsx";
 import { EditorView, keymap } from "@codemirror/view";
 import { Prec, Text, type Extension } from "@codemirror/state";
 import { history, historyKeymap } from "@codemirror/commands";
-import {
-  MergeView,
-  getChunks,
-  goToNextChunk,
-  goToPreviousChunk,
-  rejectChunk,
-  unifiedMergeView,
-  Chunk,
-} from "@codemirror/merge";
+import { MergeView, getChunks, goToNextChunk, goToPreviousChunk, unifiedMergeView, Chunk } from "@codemirror/merge";
 import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
 import { setFindOpen } from "@/editor/core/cm/find";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
@@ -23,14 +15,14 @@ import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platfo
 import { tx } from "@/platform/i18n";
 import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
-import { languageFor, viewerBase } from "./cm";
-import { applyChunk, arrowControls, chunkAt, hoverRevert } from "./diffControls";
+import { changedLineGutters, diffWords, languageFor, viewerBase } from "./cm";
+import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
   IGNORE_OPTIONS,
+  ideaDiffConfig,
   loadDiffOptions,
   saveDiffOptions,
-  whitespaceDiff,
   type DiffViewOptions,
   type HighlightPolicy,
   type IgnorePolicy,
@@ -259,8 +251,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         },
       });
     const collapseUnchanged = opts.collapse ? { margin: 3, minSize: 6 } : undefined;
-    const override = whitespaceDiff(opts.ignore);
-    const diffConfig = { override };
+    const diffConfig = ideaDiffConfig(opts.ignore, opts.highlight);
     const highlightChanges = opts.highlight === "words";
     const inclusion = includable ? inclusionGutter(path, textA) : [];
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
@@ -289,11 +280,14 @@ export function DiffEditor({ input }: { input: EditorInput }) {
                 ? { toA: editableA, toB: editableB, apply: (i, source) => merge && applyChunk(merge, i, source) }
                 : undefined,
           });
+      // IDEA's colouring: lines by chunk type, carried into the gutters, and typed word highlights.
+      const colours = [changedLineGutters, highlightChanges ? diffWords : []];
       const mv = new MergeView({
         a: {
           doc: textA,
           extensions: [
             side(attached.a, editableA, "left"),
+            colours,
             panes?.extension ?? [],
             focusTracker("a"),
             findWatch("a"),
@@ -304,6 +298,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           doc: textB,
           extensions: [
             side(attached.b, editableB, "right"),
+            colours,
             panes?.extension ?? [],
             listener,
             focusTracker("b"),
@@ -319,9 +314,9 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           !panes && (editableA || editableB)
             ? arrowControls(() => merge, { toA: editableA, toB: editableB })
             : undefined,
-        highlightChanges,
-        // Unpadded panes tint the gutters of changed lines instead of a change bar.
-        gutter: !panes,
+        // Words are highlighted by type (`diffWords`), and gutters tinted instead of a change bar.
+        highlightChanges: false,
+        gutter: false,
         collapseUnchanged,
         diffConfig,
       });
@@ -353,13 +348,14 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           focusTracker("b"),
           findWatch("b"),
           inclusion,
+          highlightChanges ? diffWords : [],
           unifiedMergeView({
             original: textA,
             highlightChanges,
             gutter: true,
             syntaxHighlightDeletions: true,
             mergeControls: editableB
-              ? (type, action) => {
+              ? (type) => {
                   const btn = document.createElement("button");
                   if (type === "accept") {
                     btn.hidden = true;
@@ -367,7 +363,10 @@ export function DiffEditor({ input }: { input: EditorInput }) {
                   }
                   btn.textContent = "Revert";
                   btn.title = "Revert this change";
-                  btn.onmousedown = action;
+                  btn.onmousedown = (event) => {
+                    event.preventDefault();
+                    revertUnifiedChunk(view, view.posAtDOM(btn));
+                  };
                   return btn;
                 }
               : false,
@@ -536,7 +535,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     const cur = currentChunk();
     if (!views || !cur) return;
     if (views.merge) applyChunk(views.merge, cur.index, "a");
-    else rejectChunk(views.b, cur.chunk.fromB);
+    else revertUnifiedChunk(views.b, cur.chunk.fromB);
   };
 
   const stageChunk = async () => {

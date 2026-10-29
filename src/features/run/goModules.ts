@@ -34,7 +34,3 @@ export async function loadGoModules(root: string | null, configs: readonly RunCo
       }),
   );
 }
-
-export function clearGoModules() {
-  known.clear();
-}

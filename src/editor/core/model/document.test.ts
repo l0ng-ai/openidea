@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
+import { language as languageFacet } from "@codemirror/language";
 import { remoteChange } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
@@ -99,6 +100,57 @@ describe("DocumentManager + slots", () => {
     await settle();
     expect(backend.docs.size).toBe(0);
     expect(manager.get("/p/a.txt")).toBeUndefined();
+  });
+
+  it("loads the document's own mode over its language's (Angular templates)", async () => {
+    const { manager } = setup({ "/p/angular.json": "{}", "/p/src/app.html": '<p [title]="name()"></p>' });
+    const model = await manager.acquire("/p/src/app.html");
+    expect(model.getMeta().uiMode).toBe("Angular Template");
+    await model.loadLanguage();
+    const slot = new EditorSlot(model, "t1", host);
+    expect(slot.currentState().facet(languageFacet)?.name).toBe("angular");
+  });
+
+  it("takes the document's mode from a language change", async () => {
+    const { manager } = setup({ "/p/app.txt": "<p></p>" });
+    const model = await manager.acquire("/p/app.txt");
+    model.setLanguage("html", "Angular Template");
+    expect(model.getMeta().uiMode).toBe("Angular Template");
+  });
+
+  it("follows a change of the document's mode alone", async () => {
+    const { manager } = setup({ "/p/app.html": "<p></p>" });
+    const model = await manager.acquire("/p/app.html");
+    const slot = new EditorSlot(model, "t1", host);
+    model.setLanguage("html", "Angular Template");
+    await model.loadLanguage();
+    expect(model.getMeta().uiMode).toBe("Angular Template");
+    expect(slot.currentState().facet(languageFacet)?.name).toBe("angular");
+    model.setLanguage("html", null);
+    expect(model.getMeta().uiMode).not.toBe("Angular Template");
+    expect(slot.currentState().facet(languageFacet)?.name).not.toBe("angular");
+  });
+
+  it("Save All rejects a failed document save after saving the remaining dirty documents", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" }, { files: { autoSave: false } });
+    try {
+      const a = await manager.acquire("/p/a.txt");
+      const b = await manager.acquire("/p/b.txt");
+      backend.patch(a.doc, [{ from: 0, to: 0, insert: "changed " }]);
+      backend.patch(b.doc, [{ from: 0, to: 0, insert: "changed " }]);
+      const save = backend.save.bind(backend);
+      vi.spyOn(backend, "save").mockImplementation(async (id) => {
+        if (id === a.doc) throw new Error("disk full");
+        await save(id);
+      });
+      await expect(manager.saveAll("explicit")).rejects.toThrow("disk full");
+      expect(backend.files.get("/p/a.txt")).toBe("a\n");
+      expect(backend.files.get("/p/b.txt")).toBe("changed b\n");
+      expect(a.getMeta().dirty).toBe(true);
+      expect(b.getMeta().dirty).toBe(false);
+    } finally {
+      manager.stop();
+    }
   });
 });
 

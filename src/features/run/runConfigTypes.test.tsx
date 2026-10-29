@@ -16,6 +16,7 @@ import { typeRows } from "./AddConfigPopup";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { buildRows } from "./ConfigChooser";
 import { compoundChildren, compoundCycle, formatEnv, parseEnv, validateConfig } from "./configs";
+import { contextConfig } from "./context";
 import { EditConfigsOverlay, moveConfig, treeRows } from "./EditConfigsDialog";
 import { pasteRows } from "./EnvDialog";
 import { CURRENT_FILE, resetRuns, selectConfig, sessionsOf, startCompound, startRun, useRun } from "./store";
@@ -99,6 +100,87 @@ describe("configuration types", () => {
     const scene = { ...detected, cwd: "demo", args: ["--path", ".", "res://a.tscn", "--verbose"] };
     expect(godot.paramsFrom!(scene)).toEqual({ projectDir: "demo", scene: "res://a.tscn", arguments: "--verbose" });
     expect(godot.paramsFrom!(cfg("x", { command: "cargo" }))).toBeNull();
+  });
+
+  it("pytest round-trips commandLine / paramsFrom and opens implicit context configs in the form", () => {
+    const pytest = typeFor("pytest")!;
+    expect(pytest.debugAdapter).toBe("debugpy");
+    expect(newConfigOfType(pytest, [])).toMatchObject({
+      kind: "pytest",
+      command: "pytest",
+      args: [],
+      debugAdapter: "debugpy",
+      params: { command: "pytest" },
+    });
+
+    const cases: Array<{
+      command: string;
+      args: string[];
+      params: { command: string; runnerArgs: string; target: string; options: string };
+    }> = [
+      {
+        command: "pytest",
+        args: ["tests", "-x"],
+        params: { command: "pytest", runnerArgs: "", target: "tests", options: "-x" },
+      },
+      {
+        command: "uv",
+        args: ["run", "pytest", "tests/test_a.py::test_x", "-q"],
+        params: { command: "uv", runnerArgs: "run pytest", target: "tests/test_a.py::test_x", options: "-q" },
+      },
+      {
+        command: "python",
+        args: ["-m", "pytest"],
+        params: { command: "python", runnerArgs: "-m pytest", target: "", options: "" },
+      },
+      {
+        command: ".venv/bin/pytest",
+        args: [],
+        params: { command: ".venv/bin/pytest", runnerArgs: "", target: "", options: "" },
+      },
+      {
+        command: ".venv\\Scripts\\pytest.exe",
+        args: [],
+        params: { command: ".venv\\Scripts\\pytest.exe", runnerArgs: "", target: "", options: "" },
+      },
+    ];
+
+    for (const { command, args, params } of cases) {
+      const c = cfg("pytest", { kind: "pytest", command, args, detected: true });
+      expect(pytest.paramsFrom!(c)).toEqual(params);
+      expect(formParams(c)).toEqual(params);
+      expect(pytest.commandLine(params)).toEqual({ command, args });
+      expect(withParams(c, params)).toMatchObject({ command, args });
+    }
+
+    const implicit = contextConfig("worker/test_worker.py", [])!;
+    expect(implicit).toMatchObject({
+      kind: "pytest",
+      command: "python3",
+      args: ["-m", "pytest", "worker/test_worker.py"],
+    });
+    expect(formParams(implicit)).toEqual({
+      command: "python3",
+      runnerArgs: "-m pytest",
+      target: "worker/test_worker.py",
+      options: "",
+    });
+
+    const uvPy = [cfg("py", { kind: "python", command: "uv", args: ["run", "python", "-m", "app"] })];
+    const uvImplicit = contextConfig("worker/test_worker.py", uvPy)!;
+    expect(uvImplicit).toMatchObject({
+      kind: "pytest",
+      command: "uv",
+      args: ["run", "python", "-m", "pytest", "worker/test_worker.py"],
+    });
+    expect(formParams(uvImplicit)).toEqual({
+      command: "uv",
+      runnerArgs: "run python -m pytest",
+      target: "worker/test_worker.py",
+      options: "",
+    });
+
+    expect(pytest.paramsFrom!(cfg("pytest", { kind: "pytest", command: "tox", args: [] }))).toBeNull();
   });
 
   it("shell script files and text derive the command line", () => {
@@ -317,6 +399,17 @@ describe("Run/Debug Configurations tree", () => {
     fireEvent.click(screen.getByRole("button", { name: /Modify options/ }));
     fireEvent.click(await screen.findByText("Redirect input"));
     expect(screen.getByLabelText("Redirect input from")).toBeTruthy();
+  });
+
+  it("opens Add New Configuration on Ctrl+N by typed letter", () => {
+    useRun.setState({ configs: [], loaded: true, editorOpen: true });
+    render(<EditConfigsOverlay />);
+    const tree = screen.getByRole("tree", { name: "Run configurations" });
+    // Dvorak: physical KeyN types "b", physical KeyL types "n".
+    fireEvent.keyDown(tree, { key: "b", code: "KeyN", ctrlKey: true });
+    expect(screen.queryByLabelText("Search configuration types")).toBeNull();
+    fireEvent.keyDown(tree, { key: "n", code: "KeyL", ctrlKey: true });
+    expect(screen.getByLabelText("Search configuration types")).toBeTruthy();
   });
 });
 

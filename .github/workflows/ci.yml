@@ -82,6 +82,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format:check
+      - run: pnpm knip
       - run: pnpm test
       - run: pnpm build
 

@@ -9,8 +9,10 @@ import {
   LRLanguage,
   LanguageDescription,
   LanguageSupport,
+  StreamLanguage,
   indentService,
   language as languageFacet,
+  type StreamParser,
 } from "@codemirror/language";
 import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
@@ -58,18 +60,95 @@ export function uiModeForPath(path: string): string | null | undefined {
 
 const supports = new Map<string, Promise<LanguageSupport | null>>();
 
+/** Modes replacing `@codemirror/language-data`'s: Angular templates with control-flow blocks. */
+const OWN_MODES = [
+  LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
+];
+
+const BATCH_KEYWORDS = new Set([
+  "echo",
+  "set",
+  "if",
+  "else",
+  "goto",
+  "call",
+  "for",
+  "in",
+  "do",
+  "exit",
+  "setlocal",
+  "endlocal",
+  "not",
+  "exist",
+  "defined",
+  "errorlevel",
+  "shift",
+  "pushd",
+  "popd",
+  "cd",
+  "start",
+  "pause",
+  "title",
+  "cls",
+]);
+
+const batchParser: StreamParser<null> = {
+  name: "bat",
+  startState: () => null,
+  token(stream) {
+    if (stream.eatSpace()) return null;
+    const lineStart = /^\s*$/.test(stream.string.slice(0, stream.start));
+    if (lineStart) {
+      if (stream.match(/^@?::.*$/)) return "comment";
+      if (stream.match(/^@?rem(?:\s.*|$)/i)) return "comment";
+      if (stream.match(/^:[A-Za-z0-9_.-]+/)) return "labelName";
+    }
+    if (stream.match(/^::.*$/)) return "comment";
+    if (stream.match(/^"(?:[^"]|"")*(?:"|$)/)) return "string";
+    if (
+      stream.match(/^%%(?:~[a-zA-Z]*)?[a-zA-Z0-9_]|^%[^%\s]+%|^%(?:~[a-zA-Z]*[0-9]|\*|[0-9])|^![A-Za-z_][A-Za-z0-9_]*!/)
+    )
+      return "variableName";
+    if ((lineStart || /\s/.test(stream.string[stream.start - 1]!)) && stream.match(/^:[A-Za-z0-9_.-]+/))
+      return "labelName";
+    if (stream.eat("@")) return "punctuation";
+    if (stream.match(/^\d+\b/)) return "number";
+    const word =
+      (stream.start === 0 || !/[A-Za-z0-9_.]/.test(stream.string[stream.start - 1]!)) &&
+      stream.match(/^[A-Za-z_][A-Za-z0-9_]*/);
+    if (word) {
+      const lower = (typeof word === "object" ? word[0] : "").toLowerCase();
+      return BATCH_KEYWORDS.has(lower) ? "keyword" : null;
+    }
+    stream.next();
+    return null;
+  },
+  languageData: { commentTokens: { line: "@REM" } },
+};
+
+export const batchLanguage = StreamLanguage.define(batchParser);
+
+const batchLanguageDescription = LanguageDescription.of({
+  name: "Batch",
+  alias: ["bat", "cmd"],
+  extensions: ["bat", "cmd"],
+  support: new LanguageSupport(batchLanguage),
+});
+
+const BUILTIN_MODES: readonly LanguageDescription[] = [...languageData, batchLanguageDescription];
+
 export function findLanguageDescription(uiMode: string | null, path: string): LanguageDescription | null {
   if (uiMode) {
-    const contributed = _languageMode(uiMode);
+    const contributed = _languageMode(uiMode) ?? OWN_MODES.find((l) => l.name === uiMode);
     if (contributed) return contributed;
-    const exact = languageData.find((l) => l.name === uiMode);
+    const exact = BUILTIN_MODES.find((l) => l.name === uiMode);
     if (exact) return exact;
-    const loose = LanguageDescription.matchLanguageName(languageData, uiMode, false);
+    const loose = LanguageDescription.matchLanguageName(BUILTIN_MODES, uiMode, false);
     if (loose) return loose;
   }
   return uiMode === null && infos
     ? null
-    : LanguageDescription.matchFilename(languageData, path.slice(path.lastIndexOf("/") + 1));
+    : LanguageDescription.matchFilename(BUILTIN_MODES, path.slice(path.lastIndexOf("/") + 1));
 }
 
 /** Loads (once) the CodeMirror language for `desc`. */

@@ -267,6 +267,7 @@ export function Tree<T>(props: TreeProps<T>) {
       commitSelection(next, row.key);
     } else {
       const a = anchor != null ? (indexOfKey.get(anchor) ?? i) : leadIndex >= 0 ? leadIndex : i;
+      setAnchor(rows[a]!.key);
       const [s, e] = a < i ? [a, i] : [i, a];
       const next = new Set<string>();
       for (let j = s; j <= e; j++) if (!rows[j]!.loading) next.add(rows[j]!.key);

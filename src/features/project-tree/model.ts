@@ -568,8 +568,3 @@ export function dropListings(listings: Map<string, readonly FileEntry[]>, dirs: 
   if (!dirs.length) return;
   for (const key of [...listings.keys()]) if (dirs.some((d) => isSameOrInside(key, d))) listings.delete(key);
 }
-
-/** Label for a node path used in dialogs: the file name, or the compacted label. */
-export function displayName(node: ProjectNode): string {
-  return node.root ? node.label : nameOf(node.path);
-}

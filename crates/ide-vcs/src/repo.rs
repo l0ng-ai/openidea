@@ -50,7 +50,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     Ok(Some(Repo { root, git_dir, inner: std::sync::Mutex::new(cache), ignored: Default::default() }))
 }
 
-fn absolute(p: &Path) -> IdeResult<PathBuf> {
+pub(crate) fn absolute(p: &Path) -> IdeResult<PathBuf> {
     let p = if p.is_absolute() { p.to_path_buf() } else { std::env::current_dir()?.join(p) };
     // Lexically clean `.`/`..` without resolving symlinks, keeping the caller's spelling.
     let mut out = PathBuf::new();

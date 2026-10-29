@@ -7,10 +7,26 @@
  */
 
 export const BUNDLED_MONO_FAMILY = "JetBrains Mono";
-const BUNDLED_MONO_FACES = ['"JetBrains Mono Variable"', '"JetBrains Mono"'];
+export const BUNDLED_UI_FAMILY = "Inter";
+const BUNDLED_FACES: ReadonlyMap<string, readonly string[]> = new Map([
+  [BUNDLED_MONO_FAMILY.toLowerCase(), ['"JetBrains Mono Variable"', '"JetBrains Mono"']],
+  [BUNDLED_UI_FAMILY.toLowerCase(), ['"Inter Variable"', '"Inter"']],
+]);
 const MONO_STACK_FALLBACK = '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace';
 
-const quote = (f: string) => `"${f.replace(/"/g, "").trim()}"`;
+/** Quote one CSS family safely (including quotes, backslashes and control characters). */
+export const quoteFontFamily = (family: string) =>
+  // oxlint-disable-next-line no-control-regex -- CSS string escaping must cover controls
+  `"${family.trim().replace(/["\\\x00-\x1f\x7f]/g, (char) => `\\${char.codePointAt(0)!.toString(16)} `)}"`;
+
+// Preserve compatibility with previously saved names wrapped in CSS quotes.
+const familyName = (family: string) => family.trim().replace(/^"(.*)"$/, "$1");
+
+/** One resolver for primary, fallback and UI families, matching the bundled CSS registrations. */
+function familyFaces(family: string): readonly string[] {
+  const name = familyName(family);
+  return BUNDLED_FACES.get(name.toLowerCase()) ?? [quoteFontFamily(name)];
+}
 
 /** The `--font-mono` stack, resolved (canvas / xterm can't use `var()`). */
 export function monoStack(): string {
@@ -24,24 +40,10 @@ export function monoStack(): string {
  * bundled face, so it renders without a system install.
  */
 export function monoFontFamily(family: string | undefined, fallback = "", base = monoStack()): string {
-  const name = (family ?? "").replace(/"/g, "").trim();
-  const fb = fallback.replace(/"/g, "").trim();
-  const head = !name || name === BUNDLED_MONO_FAMILY ? BUNDLED_MONO_FACES : [quote(name)];
-  return [...head, ...(fb ? [quote(fb)] : []), base].join(", ");
-}
-
-export const BUNDLED_UI_FAMILY = "Inter";
-const BUNDLED_UI_FACES = ['"Inter Variable"', '"Inter"'];
-
-/**
- * The `--font-ui` stack for a custom UI font. The bundled families map to their
- * bundled faces, like `monoFontFamily`, so they render without a system install.
- */
-export function uiFontFamily(family: string): string {
-  const name = family.replace(/"/g, "").trim();
-  const head =
-    name === BUNDLED_UI_FAMILY ? BUNDLED_UI_FACES : name === BUNDLED_MONO_FAMILY ? BUNDLED_MONO_FACES : [quote(name)];
-  return [...head, "system-ui", "sans-serif"].join(", ");
+  const name = familyName(family ?? "");
+  const fb = familyName(fallback);
+  const head = familyFaces(name || BUNDLED_MONO_FAMILY);
+  return [...head, ...(fb ? familyFaces(fb) : []), base].join(", ");
 }
 
 /**
@@ -56,4 +58,9 @@ export async function fontsLoaded(family: string, size: number): Promise<void> {
   } catch {
     /* an unparsable list measures with whatever is available */
   }
+}
+
+/** Bundled aliases also apply when selected for the interface. */
+export function uiFontFamily(family: string): string {
+  return [...familyFaces(family), "system-ui", "sans-serif"].join(", ");
 }

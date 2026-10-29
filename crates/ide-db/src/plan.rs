@@ -36,6 +36,7 @@ pub fn explain_statement(driver: DbDriver, statement: &str) -> String {
         DbDriver::Sqlite => format!("EXPLAIN QUERY PLAN {s}"),
         DbDriver::Postgres => format!("EXPLAIN (FORMAT JSON) {s}"),
         DbDriver::Mysql => format!("EXPLAIN {s}"),
+        DbDriver::SqlServer => format!("SET SHOWPLAN_TEXT ON; {s}"),
     }
 }
 
@@ -59,6 +60,7 @@ pub fn parse(driver: DbDriver, result: &QueryResult) -> IdeResult<Vec<PlanNode>>
             let names: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();
             Ok(mysql(&names, &result.rows))
         }
+        DbDriver::SqlServer => Ok(Vec::new()),
     }
 }
 
@@ -197,6 +199,7 @@ mod tests {
         assert_eq!(explain_statement(DbDriver::Sqlite, "select 1;"), "EXPLAIN QUERY PLAN select 1");
         assert_eq!(explain_statement(DbDriver::Postgres, " select 1 "), "EXPLAIN (FORMAT JSON) select 1");
         assert_eq!(explain_statement(DbDriver::Mysql, "select 1"), "EXPLAIN select 1");
+        assert_eq!(explain_statement(DbDriver::SqlServer, "select 1"), "SET SHOWPLAN_TEXT ON; select 1");
     }
 
     #[test]

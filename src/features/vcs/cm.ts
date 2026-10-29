@@ -8,6 +8,7 @@ import {
   EditorState,
   RangeSet,
   RangeSetBuilder,
+  StateEffect,
   StateField,
   type Extension,
   type Line,
@@ -21,28 +22,72 @@ import {
   highlightActiveLine,
   keymap,
   lineNumbers,
+  WidgetType,
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
-import { getChunks } from "@codemirror/merge";
+import { getChunks, mergeViewSiblings, type Chunk } from "@codemirror/merge";
 import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
 import { tags as t } from "@lezer/highlight";
 import { findExtension } from "@/editor/core/cm/find";
 import { caretExtension } from "@/editor/core/cm/prefs";
+import { fontExtension } from "@/editor/core/cm/setup";
 import { caretStyles, findLocals, findStyles } from "@/editor/core/cm/theme";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
+import { hasInnerFragments } from "./diffOptions";
 
-const wholeLine = Decoration.line({ class: "cm-diffWholeLine" });
+/** IDEA's change types (TextDiffType): both sides have text, only the new side, only the old side. */
+export type DiffKind = "modified" | "inserted" | "deleted";
+
+const kindOf = (hasA: boolean, hasB: boolean): DiffKind => (hasA && hasB ? "modified" : hasA ? "deleted" : "inserted");
+
+/** A chunk's type (DiffUtil.getLineDiffType), by the sides it has lines on. */
+export const chunkKind = (chunk: Chunk): DiffKind => kindOf(chunk.fromA !== chunk.toA, chunk.fromB !== chunk.toB);
+
+const KINDS: readonly DiffKind[] = ["modified", "inserted", "deleted"];
+
+const byKind = <T>(make: (kind: DiffKind) => T) =>
+  Object.fromEntries(KINDS.map((k) => [k, make(k)])) as Record<DiffKind, T>;
+
+/** Line backgrounds by type; `fine` ones (words compared) are lighter. */
+const lineDecos = byKind((kind) => ({
+  coarse: Decoration.line({ class: `cm-diffLine cm-diffLine-${kind}` }),
+  fine: Decoration.line({ class: `cm-diffLine cm-diffLine-${kind} cm-diffLine-fine` }),
+}));
+
+const wordDecos = byKind((kind) => Decoration.mark({ class: `cm-diffWord cm-diffWord-${kind}` }));
+
+/** A word on the other side only: a thin bar where it would be (DiffEmptyHighlighterRenderer). */
+class EmptyWordMarker extends WidgetType {
+  constructor(readonly kind: DiffKind) {
+    super();
+  }
+  eq(other: EmptyWordMarker) {
+    return other.kind === this.kind;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = `cm-diffWordEmpty cm-diffWord-${this.kind}`;
+    span.setAttribute("aria-hidden", "true");
+    return span;
+  }
+}
+
+const emptyWordDecos = byKind((kind) => Decoration.widget({ widget: new EmptyWordMarker(kind), side: 1 }));
 
 /**
  * Calls `f` for the changed lines of a side-by-side pane between `vpFrom` and
- * `vpTo`, with whether the line has no counterpart on the other side (inserted
- * or deleted as a whole). Lines paired with a line on the other side keep the
- * line tint plus word-level highlights.
+ * `vpTo`, with the type of their chunk (DiffUtil.getLineDiffType): a chunk
+ * with lines on both sides is modified as a whole, however its words changed.
  */
-function forChangedLines(state: EditorState, vpFrom: number, vpTo: number, f: (line: Line, whole: boolean) => void) {
+function forChangedLines(
+  state: EditorState,
+  vpFrom: number,
+  vpTo: number,
+  f: (line: Line, kind: DiffKind, fine: boolean) => void,
+) {
   const info = getChunks(state);
   if (!info || !info.side) return;
   const isA = info.side === "a";
@@ -50,27 +95,57 @@ function forChangedLines(state: EditorState, vpFrom: number, vpTo: number, f: (l
   for (const chunk of info.chunks) {
     const from = isA ? chunk.fromA : chunk.fromB;
     const to = isA ? chunk.toA : chunk.toB;
-    if (from >= vpTo) break;
+    if (from > vpTo) break;
     if (from === to || to < vpFrom) continue;
-    const otherEmpty = isA ? chunk.fromB === chunk.toB : chunk.fromA === chunk.toA;
-    const ranges = chunk.changes.map((c) => (isA ? [c.fromA, c.toA] : [c.fromB, c.toB]).map((p) => p + from));
-    // Covered including the line break after it, or the one before it (a deleted last line).
-    const covered = (line: Line) =>
-      ranges.some(([f = 0, t = 0]) => (f <= line.from && t > line.to) || (f < line.from && t >= line.to));
-    for (let line = doc.lineAt(Math.max(from, vpFrom)); line.from < Math.min(to, vpTo);) {
-      f(line, otherEmpty || covered(line));
+    const kind = chunkKind(chunk);
+    const fine = hasInnerFragments(chunk);
+    // A line starting at `vpTo` is still in view (the empty last line).
+    for (let line = doc.lineAt(Math.max(from, vpFrom)); line.from < to && line.from <= vpTo;) {
+      f(line, kind, fine);
       if (line.number === doc.lines) break;
       line = doc.line(line.number + 1);
     }
   }
 }
 
-/** Solid background for the lines changed as a whole. */
-function wholeLineDeco(view: EditorView): DecorationSet {
+/**
+ * Line backgrounds in the colour of their chunk's type
+ * (DiffDrawUtil.LineHighlighterBuilder). The unified view shows every new
+ * line as inserted, below the old ones as deleted (createUnifiedChunkHighlighters).
+ */
+function lineDeco(view: EditorView): DecorationSet {
+  const unified = !mergeViewSiblings(view);
   const builder = new RangeSetBuilder<Decoration>();
-  forChangedLines(view.state, view.viewport.from, view.viewport.to, (line, whole) => {
-    if (whole) builder.add(line.from, line.from, wholeLine);
+  forChangedLines(view.state, view.viewport.from, view.viewport.to, (line, kind, fine) => {
+    const decos = lineDecos[unified ? "inserted" : kind];
+    builder.add(line.from, line.from, fine ? decos.fine : decos.coarse);
   });
+  return builder.finish();
+}
+
+/**
+ * The inner fragments of chunks whose words were compared, each in the colour
+ * of its own type (SimpleDiffChangeUi.createInlineHighlighter); a fragment
+ * empty on this side is a thin bar.
+ */
+function wordDeco(view: EditorView): DecorationSet {
+  const info = getChunks(view.state);
+  // The unified view highlights words itself (`highlightChanges`).
+  if (!info || !info.side || !mergeViewSiblings(view)) return Decoration.none;
+  const isA = info.side === "a";
+  const { from: vpFrom, to: vpTo } = view.viewport;
+  const builder = new RangeSetBuilder<Decoration>();
+  for (const chunk of info.chunks) {
+    const base = isA ? chunk.fromA : chunk.fromB;
+    if (base > vpTo) break;
+    if ((isA ? chunk.toA : chunk.toB) < vpFrom || !hasInnerFragments(chunk)) continue;
+    for (const c of chunk.changes) {
+      const [from, to] = isA ? [c.fromA, c.toA] : [c.fromB, c.toB];
+      const kind = kindOf(c.fromA !== c.toA, c.fromB !== c.toB);
+      if (from < to) builder.add(base + from, base + to, wordDecos[kind]);
+      else builder.add(base + from, base + from, emptyWordDecos[kind]);
+    }
+  }
   return builder.finish();
 }
 
@@ -80,8 +155,10 @@ class LineClassMarker extends GutterMarker {
   }
 }
 
-const changedGutter = new LineClassMarker("cm-diffChangedGutter");
-const wholeGutter = new LineClassMarker("cm-diffChangedGutter cm-diffWholeGutter");
+const gutterMarkers = byKind((kind) => ({
+  coarse: new LineClassMarker(`cm-diffChangedGutter cm-diffGutter-${kind}`),
+  fine: new LineClassMarker(`cm-diffChangedGutter cm-diffGutter-${kind} cm-diffGutter-fine`),
+}));
 
 /** The line background of changed lines carried into the gutters (line numbers, inclusion boxes), as in IDEA. */
 export const changedLineGutters = StateField.define<RangeSet<GutterMarker>>({
@@ -95,29 +172,42 @@ export const changedLineGutters = StateField.define<RangeSet<GutterMarker>>({
 
 function changedGutterMarkers(state: EditorState): RangeSet<GutterMarker> {
   const builder = new RangeSetBuilder<GutterMarker>();
-  forChangedLines(state, 0, state.doc.length + 1, (line, whole) =>
-    builder.add(line.from, line.from, whole ? wholeGutter : changedGutter),
+  forChangedLines(state, 0, state.doc.length, (line, kind, fine) =>
+    builder.add(line.from, line.from, fine ? gutterMarkers[kind].fine : gutterMarkers[kind].coarse),
   );
   return builder.finish();
 }
 
-const wholeChangedLines = ViewPlugin.fromClass(
-  class {
-    decorations: DecorationSet;
-    constructor(view: EditorView) {
-      this.decorations = wholeLineDeco(view);
-    }
-    update(update: ViewUpdate) {
-      if (
-        update.docChanged ||
-        update.viewportChanged ||
-        getChunks(update.startState)?.chunks !== getChunks(update.state)?.chunks
-      )
-        this.decorations = wholeLineDeco(update.view);
-    }
-  },
-  { decorations: (value) => value.decorations },
-);
+/** Recomputes `build` when the document, viewport or chunks change. */
+const chunkDecorations = (build: (view: EditorView) => DecorationSet) =>
+  ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+      constructor(view: EditorView) {
+        this.decorations = build(view);
+      }
+      update(update: ViewUpdate) {
+        if (
+          update.docChanged ||
+          update.viewportChanged ||
+          getChunks(update.startState)?.chunks !== getChunks(update.state)?.chunks
+        )
+          this.decorations = build(update.view);
+      }
+    },
+    { decorations: (value) => value.decorations },
+  );
+
+const changedLines = chunkDecorations(lineDeco);
+
+/**
+ * IDEA's "Highlight words" for a side-by-side pane: the inner fragments of
+ * chunks whose words were compared, over their lighter line background.
+ */
+export const diffWords: Extension = [
+  chunkDecorations(wordDeco),
+  EditorView.editorAttributes.of({ class: "cm-diffWords" }),
+];
 
 export const viewerHighlight = HighlightStyle.define([
   {
@@ -145,10 +235,16 @@ export const viewerTheme = EditorView.theme(
       height: "100%",
       backgroundColor: "var(--bg-app)",
       color: "var(--fg)",
-      fontSize: "var(--fs-code)",
+      fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
       ...findLocals,
     },
-    ".cm-scroller": { fontFamily: "var(--font-mono)", fontWeight: "var(--fw-code, 400)", lineHeight: "var(--lh-code)" },
+    ".cm-scroller": {
+      fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+      fontWeight: "var(--fw-code, 400)",
+      lineHeight: "var(--openidea-editor-line-height, var(--lh-code))",
+      fontVariantLigatures: "none",
+    },
+    "&.cm-openidea-ligatures .cm-scroller": { fontVariantLigatures: "normal" },
     ".cm-content": { caretColor: "var(--caret, var(--fg-strong))", WebkitUserSelect: "text", userSelect: "text" },
     ...caretStyles,
     "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
@@ -162,44 +258,38 @@ export const viewerTheme = EditorView.theme(
     },
     ".cm-lineNumbers .cm-gutterElement": { padding: "0 8px 0 12px", minWidth: "32px" },
     ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--fg-secondary)" },
-    // @codemirror/merge
-    "&.cm-merge-a .cm-changedLine, .cm-deletedChunk": {
-      backgroundColor: "color-mix(in srgb, var(--gutter-deleted) 12%, transparent)",
+    // Side-by-side panes colour lines by their chunk's type (changedLines) instead of the library's tint.
+    "&.cm-merge-a .cm-changedLine, &.cm-merge-b .cm-changedLine": { backgroundColor: "transparent" },
+    ".cm-line.cm-diffLine-modified, .cm-diffGutter-modified": { backgroundColor: "var(--diff-modified)" },
+    ".cm-line.cm-diffLine-inserted, .cm-diffGutter-inserted": { backgroundColor: "var(--diff-inserted)" },
+    ".cm-line.cm-diffLine-deleted, .cm-diffGutter-deleted": { backgroundColor: "var(--diff-deleted)" },
+    // Chunks whose words were compared take the lighter colour (TextDiffType.getIgnoredColor), their fragments the full one.
+    ...Object.fromEntries(
+      KINDS.map((k) => [
+        `.cm-line.cm-diffLine-fine.cm-diffLine-${k}, .cm-diffGutter-fine.cm-diffGutter-${k}`,
+        { backgroundColor: `color-mix(in srgb, var(--diff-${k}) 40%, var(--bg-app))` },
+      ]),
+    ),
+    // Full line height, as IDEA paints them: an inline background only covers the font's height,
+    // leaving stripes between the lines of a multi-line fragment.
+    ".cm-diffWord": { display: "inline-block" },
+    ".cm-diffWord-modified": { backgroundColor: "var(--diff-modified)" },
+    ".cm-diffWord-inserted": { backgroundColor: "var(--diff-inserted)" },
+    ".cm-diffWord-deleted": { backgroundColor: "var(--diff-deleted)" },
+    ".cm-diffWordEmpty": {
+      display: "inline-block",
+      width: "2px",
+      height: "1lh",
+      margin: "0 -1px",
+      verticalAlign: "top",
     },
-    "&.cm-merge-b .cm-changedLine, .cm-inlineChangedLine": {
-      backgroundColor: "color-mix(in srgb, var(--gutter-added) 12%, transparent)",
+    // The unified view: old lines deleted, new lines inserted.
+    ".cm-deletedChunk": { backgroundColor: "var(--diff-deleted)" },
+    "&.cm-diffWords .cm-deletedChunk": {
+      backgroundColor: "color-mix(in srgb, var(--diff-deleted) 40%, var(--bg-app))",
     },
-    "&.cm-merge-a .cm-changedLine.cm-diffWholeLine": {
-      backgroundColor: "color-mix(in srgb, var(--danger) 26%, transparent)",
-    },
-    "&.cm-merge-b .cm-changedLine.cm-diffWholeLine": {
-      backgroundColor: "color-mix(in srgb, var(--success) 26%, transparent)",
-    },
-    "&.cm-merge-a .cm-diffWholeLine .cm-changedText, &.cm-merge-b .cm-diffWholeLine .cm-changedText": {
-      background: "transparent",
-    },
-    "&.cm-merge-a .cm-changedText, .cm-deletedChunk .cm-deletedText": {
-      background: "color-mix(in srgb, var(--danger) 26%, transparent)",
-    },
-    "&.cm-merge-b .cm-changedText": {
-      background: "color-mix(in srgb, var(--success) 26%, transparent)",
-    },
-    "&.cm-merge-b .cm-changedText, .cm-insertedLine .cm-changedText": {
-      background: "color-mix(in srgb, var(--success) 26%, transparent)",
-    },
-    // Gutters of changed lines take the line background (changedLineGutters).
-    "&.cm-merge-a .cm-diffChangedGutter": {
-      backgroundColor: "color-mix(in srgb, var(--gutter-deleted) 12%, transparent)",
-    },
-    "&.cm-merge-b .cm-diffChangedGutter": {
-      backgroundColor: "color-mix(in srgb, var(--gutter-added) 12%, transparent)",
-    },
-    "&.cm-merge-a .cm-diffWholeGutter": {
-      backgroundColor: "color-mix(in srgb, var(--danger) 26%, transparent)",
-    },
-    "&.cm-merge-b .cm-diffWholeGutter": {
-      backgroundColor: "color-mix(in srgb, var(--success) 26%, transparent)",
-    },
+    ".cm-deletedChunk .cm-deletedText": { background: "var(--diff-deleted)" },
+    "&.cm-merge-b .cm-changedText": { background: "var(--diff-inserted)" },
     ".cm-changeGutter": { width: "3px", paddingLeft: "0" },
     "&.cm-merge-a .cm-changedLineGutter, .cm-deletedLineGutter": { background: "var(--gutter-deleted)" },
     "&.cm-merge-b .cm-changedLineGutter": { background: "var(--gutter-modified)" },
@@ -231,18 +321,33 @@ export const viewerTheme = EditorView.theme(
 );
 
 const caretSlot = new Compartment();
+const fontSlot = new Compartment();
 
-/** The editor's caret (Settings › Editor › General › Appearance), kept in step with the settings. */
-function viewerCaret(): Extension {
+const editorSettings = () => useProject.getState().settings?.editor;
+
+/**
+ * The editor's caret (Settings › Editor › General › Appearance) and font
+ * (Settings › Editor › Font), kept in step with the settings.
+ */
+function viewerEditorLook(): Extension {
   return [
     caretSlot.of(caretExtension(editorPrefs())),
+    fontSlot.of(fontExtension(editorSettings())),
     ViewPlugin.define((view) => {
       let appearance = editorPrefs().appearance;
+      let editor = editorSettings();
       const unsubscribe = useProject.subscribe(() => {
+        const effects: StateEffect<unknown>[] = [];
         const next = editorPrefs();
-        if (JSON.stringify(next.appearance) === JSON.stringify(appearance)) return;
-        appearance = next.appearance;
-        view.dispatch({ effects: caretSlot.reconfigure(caretExtension(next)) });
+        if (JSON.stringify(next.appearance) !== JSON.stringify(appearance)) {
+          appearance = next.appearance;
+          effects.push(caretSlot.reconfigure(caretExtension(next)));
+        }
+        if (editorSettings() !== editor) {
+          editor = editorSettings();
+          effects.push(fontSlot.reconfigure(fontExtension(editor)));
+        }
+        if (effects.length) view.dispatch({ effects });
       });
       return { destroy: unsubscribe };
     }),
@@ -256,14 +361,14 @@ function viewerCaret(): Extension {
 export function viewerBase(opts: { readOnly: boolean; lineNumbers?: boolean; findBar?: boolean }): Extension[] {
   return [
     opts.lineNumbers === false ? [] : lineNumbers(),
-    viewerCaret(),
+    viewerEditorLook(),
     highlightActiveLine(),
     opts.findBar
       ? [findExtension(), keymap.of(defaultKeymap)]
       : [search({ top: true }), keymap.of([...searchKeymap, ...defaultKeymap])],
     syntaxHighlighting(viewerHighlight),
     viewerTheme,
-    wholeChangedLines,
+    changedLines,
     EditorState.readOnly.of(opts.readOnly),
     EditorView.editable.of(!opts.readOnly),
     // Non-editable revision panes still need keyboard selection and copy.

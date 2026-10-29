@@ -73,6 +73,10 @@ html {
   --gutter-modified: #375fad;
   --gutter-added: #549159;
   --gutter-deleted: #868a91;
+  /* diff viewer change types (IDEA DIFF_MODIFIED / INSERTED / DELETED) */
+  --diff-modified: #385570;
+  --diff-inserted: #294436;
+  --diff-deleted: #484a4a;
 
   /* coverage (IDEA LINE_FULL / PARTIAL / NONE_COVERAGE), following the theme's status colours */
   --coverage-covered: var(--gutter-added);
@@ -448,6 +452,9 @@ html {
   --gutter-modified: #88adf7;
   --gutter-added: #7fc784;
   --gutter-deleted: #767a8a;
+  --diff-modified: #c2d8f2;
+  --diff-inserted: #bee6be;
+  --diff-deleted: #d6d6d6;
 
   /* syntax (Light scheme + Default / Python defaults) */
   --syn-keyword: #0033b3;
@@ -699,6 +706,9 @@ html {
   --gutter-modified: #6e95e8;
   --gutter-added: #6fb875;
   --gutter-deleted: #a5a8ae;
+  --diff-modified: #000099;
+  --diff-inserted: #00400f;
+  --diff-deleted: #4d2e08;
 
   --syn-keyword: #e8a885;
   --syn-string: #8ccc94;
@@ -976,6 +986,9 @@ html {
   --info: var(--palette-blue);
   --vcs-modified: var(--palette-blue);
   --gutter-modified: var(--palette-blue);
+  --diff-modified: color-mix(in srgb, var(--palette-blue) 30%, var(--palette-bg));
+  --diff-inserted: color-mix(in srgb, var(--palette-green) 30%, var(--palette-bg));
+  --diff-deleted: color-mix(in srgb, var(--palette-fg) 18%, var(--palette-bg));
   --syn-link: var(--palette-blue);
   --link-hover: var(--palette-cyan);
   --danger: var(--palette-red);

@@ -245,6 +245,7 @@ fn harness_configured(
         block_comment: None,
         indent: None,
         ui_mode: None,
+        framework_ui_modes: Vec::new(),
         tree_sitter: None,
         language_servers: servers
             .iter()

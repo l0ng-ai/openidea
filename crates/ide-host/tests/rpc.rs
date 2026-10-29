@@ -108,6 +108,26 @@ async fn serves_projects_files_documents_search_and_runs() {
     invoke(&peer, "vcs_init", json!({ "dir": project })).await.unwrap();
     until("git repository", || project.join(".git").is_dir()).await;
 
+    // Real project-host ignore writes travel through the remote command dispatcher.
+    assert!(Dispatcher::standard().commands().contains(&"vcs_add_to_ignore"));
+    let ignore_root = dunce::canonicalize(&project).unwrap();
+    for (name, destination) in [("shared.tmp", "gitignore"), ("private.tmp", "localExclude")] {
+        let path = ignore_root.join(name);
+        std::fs::write(&path, "temporary").unwrap();
+        invoke(&peer, "vcs_add_to_ignore", json!({ "paths": [path], "destination": destination })).await.unwrap();
+        let entries = invoke(&peer, "fs_read_dir", json!({ "path": ignore_root })).await.unwrap();
+        let entry = entries.as_array().unwrap().iter().find(|e| e["name"] == name).unwrap();
+        assert_eq!(entry["ignored"], true);
+        assert_eq!(entry["excluded"], false);
+    }
+    assert!(std::fs::read_to_string(project.join(".gitignore")).unwrap().contains("/shared.tmp"));
+    assert!(std::fs::read_to_string(project.join(".git/info/exclude")).unwrap().contains("/private.tmp"));
+    let outside = tmp.path().join("outside.tmp");
+    std::fs::write(&outside, "keep").unwrap();
+    assert!(
+        invoke(&peer, "vcs_add_to_ignore", json!({ "paths": [outside], "destination": "gitignore" })).await.is_err()
+    );
+
     // Unknown commands and bad arguments come back as IdeErrors.
     let e = invoke(&peer, "window_minimize", json!({})).await.unwrap_err();
     assert!(e.message.contains("not available remotely"), "{e:?}");

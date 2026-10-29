@@ -10,15 +10,11 @@
 import { commands, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
 import { t } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
-import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { maybeEditorService, notifications, type EditorCloseSession } from "@/workbench/contributions";
 import { ask, type Ask } from "@/workbench/messages";
 
 /** Document ids the backend reports dirty in this window. */
 const dirtyDocs = new Set<number>();
-
-export function dirtyCount(): number {
-  return dirtyDocs.size;
-}
 
 export function confirmExitEnabled(settings: Settings | null | undefined): boolean {
   return settings?.general?.confirmExit === true;
@@ -37,6 +33,8 @@ export interface CloseDeps {
   saveAll: () => Promise<void>;
   disableConfirmExit: () => Promise<void>;
   onSaveFailed: (e: unknown) => void;
+  /** Stops custom document edits/execution before reading their final dirty state. */
+  prepareClose?: () => Promise<EditorCloseSession | undefined>;
 }
 
 /** Asks whatever must be asked; resolves true when the window may close. */
@@ -51,27 +49,34 @@ export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<b
     if (r.button !== "exit") return false;
     if (r.checked) await deps.disableConfirmExit().catch(() => {});
   }
-  if (input.dirty > 0) {
-    const r = await deps.ask({
-      title: t("app.unsaved.title"),
-      body: t("app.unsaved.body", { count: input.dirty, project: input.project ?? t("app.title.default") }),
-      buttons: [
-        { id: "discard", label: t("app.unsaved.discard") },
-        { id: "save", label: t("app.unsaved.save"), primary: true },
-      ],
-      icon: "warning",
-    });
-    if (r.button === "cancel") return false;
-    if (r.button === "save") {
-      try {
-        await deps.saveAll();
-      } catch (e) {
-        deps.onSaveFailed(e);
-        return false;
-      }
+  let session: EditorCloseSession | undefined;
+  let authorized = false;
+  try {
+    session = await deps.prepareClose?.();
+    const dirty = input.dirty + (session?.dirty ?? 0);
+    if (dirty > 0) {
+      const r = await deps.ask({
+        title: t("app.unsaved.title"),
+        body: t("app.unsaved.body", { count: dirty, project: input.project ?? t("app.title.default") }),
+        buttons: [
+          { id: "discard", label: t("app.unsaved.discard") },
+          { id: "save", label: t("app.unsaved.save"), primary: true },
+        ],
+        icon: "warning",
+      });
+      if (r.button === "save") await deps.saveAll();
+      else if (r.button === "discard") await session?.discard();
+      else return false;
     }
+    session?.commit();
+    authorized = true;
+    return true;
+  } catch (e) {
+    deps.onSaveFailed(e);
+    return false;
+  } finally {
+    if (!authorized) session?.cancel();
   }
-  return true;
 }
 
 const defaultDeps: CloseDeps = {
@@ -79,6 +84,7 @@ const defaultDeps: CloseDeps = {
   saveAll: async () => {
     await maybeEditorService()?.saveAll();
   },
+  prepareClose: async () => maybeEditorService()?.prepareClose?.(),
   disableConfirmExit: async () => {
     const r = await commands.settingsSet("global", "general.confirmExit", "false");
     if (r.status === "ok") useProject.setState({ settings: r.data });
@@ -110,13 +116,17 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
         quitting: ctx.quitting,
         windows: ctx.windows,
         confirmExit: confirmExitEnabled(s.settings),
-        dirty: dirtyCount(),
+        dirty: dirtyDocs.size,
         project: s.project?.name ?? null,
       },
       deps,
     );
     if (!ok && ctx.quitting) await commands.appCancelQuit();
     return ok;
+  } catch (e) {
+    maybeEditorService()?.cancelClose?.();
+    deps.onSaveFailed(e);
+    return false;
   } finally {
     closing = false;
   }
@@ -126,7 +136,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
 export function confirmLeave(deps: CloseDeps = defaultDeps): Promise<boolean> {
   const s = useProject.getState();
   return decideClose(
-    { quitting: false, windows: 2, confirmExit: false, dirty: dirtyCount(), project: s.project?.name ?? null },
+    { quitting: false, windows: 2, confirmExit: false, dirty: dirtyDocs.size, project: s.project?.name ?? null },
     deps,
   );
 }
@@ -135,7 +145,10 @@ export function confirmLeave(deps: CloseDeps = defaultDeps): Promise<boolean> {
 export async function quitApp(deps: CloseDeps = defaultDeps): Promise<void> {
   if (!isTauri()) return;
   if (confirmExitEnabled(useProject.getState().settings)) {
-    const ok = await decideClose({ quitting: false, windows: 1, confirmExit: true, dirty: 0, project: null }, deps);
+    const ok = await decideClose(
+      { quitting: false, windows: 1, confirmExit: true, dirty: 0, project: null },
+      { ...deps, prepareClose: undefined },
+    );
     if (!ok) return;
   }
   await commands.appQuit();
@@ -168,10 +181,4 @@ export function installCloseGuard(deps: CloseDeps = defaultDeps): () => void {
     unlisten?.();
     unsubs.forEach((u) => u());
   };
-}
-
-/** Tests only. */
-export function _setDirtyForTests(ids: number[]) {
-  dirtyDocs.clear();
-  ids.forEach((i) => dirtyDocs.add(i));
 }

@@ -179,7 +179,9 @@
 }
 .noHighlight :global(.cm-changedLine),
 .noHighlight :global(.cm-insertedLine),
-.noHighlight :global(.cm-changedText) {
+.noHighlight :global(.cm-changedText),
+.noHighlight :global(.cm-diffLine),
+.noHighlight :global(.cm-diffChangedGutter) {
   background: none !important;
 }
 /* Side-by-side without alignment (IDEA's default): each pane scrolls itself. */
@@ -216,29 +218,23 @@
   position: absolute;
   inset: 0;
 }
-/* Opaque mixes of the line backgrounds (cm.ts), so bands and their midlines read as one shape. */
+/* The full colours of the change types (cm.ts), so bands and their midlines read as one shape. */
 .host :global(.cm-diffBand-inserted) {
-  --band: color-mix(in srgb, var(--success) 26%, var(--bg-app));
+  --band: var(--diff-inserted);
 }
 .host :global(.cm-diffBand-deleted) {
-  --band: color-mix(in srgb, var(--danger) 26%, var(--bg-app));
+  --band: var(--diff-deleted);
 }
 .host :global(.cm-diffBand-modified) {
-  --band: color-mix(in srgb, var(--gutter-added) 20%, var(--bg-app));
+  --band: var(--diff-modified);
 }
-.host :global(.cm-diffBand:not(.cm-diffBand-modified)) {
+.host :global(.cm-diffBand) {
   fill: var(--band);
 }
 .host :global(.cm-diffBandLine) {
   fill: none;
   stroke: var(--band);
   stroke-width: 1px;
-}
-.host :global(.cm-diffBandStopA) {
-  stop-color: color-mix(in srgb, var(--gutter-deleted) 20%, var(--bg-app));
-}
-.host :global(.cm-diffBandStopB) {
-  stop-color: color-mix(in srgb, var(--gutter-added) 20%, var(--bg-app));
 }
 .host :global(.cm-diffDivider button.cm-diffArrow) {
   position: absolute;
@@ -266,16 +262,16 @@
 }
 /* Where the other pane has lines this one lacks. */
 .host :global(.cm-diffGap-inserted) {
-  box-shadow: inset 0 1px 0 var(--success);
+  box-shadow: inset 0 1px 0 var(--gutter-added);
 }
 .host :global(.cm-diffGap-deleted) {
-  box-shadow: inset 0 1px 0 var(--danger);
+  box-shadow: inset 0 1px 0 var(--gutter-deleted);
 }
 .host :global(.cm-diffGap-inserted.cm-diffGapEnd) {
-  box-shadow: inset 0 -1px 0 var(--success);
+  box-shadow: inset 0 -1px 0 var(--gutter-added);
 }
 .host :global(.cm-diffGap-deleted.cm-diffGapEnd) {
-  box-shadow: inset 0 -1px 0 var(--danger);
+  box-shadow: inset 0 -1px 0 var(--gutter-deleted);
 }
 
 /* Review comments under diff lines (pull requests). */

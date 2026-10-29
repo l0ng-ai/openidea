@@ -35,3 +35,16 @@ test("type-ahead jumps to a matching node", async ({ workbench: page }) => {
   await page.keyboard.type("READ");
   await expect(tree.locator('[role="treeitem"][aria-selected="true"]')).toHaveText("README.md");
 });
+
+test("Git ignore submenu offers shared and local destinations for files and folders", async ({ workbench: page }) => {
+  for (const name of ["README.md", "src"]) {
+    await page.getByRole("treeitem", { name, exact: true }).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Git", exact: true }).hover();
+    await page.getByRole("menuitem", { name: "Add to .gitignore", exact: true }).hover();
+    await expect(page.getByRole("menuitem", { name: ".gitignore", exact: true })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: ".git/info/exclude", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+  }
+});

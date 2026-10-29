@@ -16,6 +16,8 @@ pub enum DbDriver {
     Postgres,
     /// MySQL and MariaDB.
     Mysql,
+    /// Microsoft SQL Server.
+    SqlServer,
 }
 
 impl DbDriver {
@@ -24,6 +26,7 @@ impl DbDriver {
             DbDriver::Sqlite => None,
             DbDriver::Postgres => Some(5432),
             DbDriver::Mysql => Some(3306),
+            DbDriver::SqlServer => Some(1433),
         }
     }
 }
@@ -248,6 +251,7 @@ pub fn scheme_driver(scheme: &str) -> Option<DbDriver> {
         "postgres" | "postgresql" | "pgsql" | "redshift" | "cockroachdb" | "cockroach" | "yugabytedb"
         | "timescaledb" | "greenplum" => Some(DbDriver::Postgres),
         "mysql" | "mariadb" | "tidb" | "singlestore" | "memsql" | "oceanbase" => Some(DbDriver::Mysql),
+        "sqlserver" | "mssql" | "mssqlserver" => Some(DbDriver::SqlServer),
         "sqlite" | "sqlite3" => Some(DbDriver::Sqlite),
         _ => None,
     }
@@ -470,6 +474,14 @@ mod tests {
         };
         save(tmp.path(), std::slice::from_ref(&s)).unwrap();
         assert_eq!(load(tmp.path()).unwrap(), vec![s]);
+    }
+
+    #[test]
+    fn sqlserver_defaults() {
+        assert_eq!(DbDriver::SqlServer.default_port(), Some(1433));
+        assert_eq!(scheme_driver("sqlserver"), Some(DbDriver::SqlServer));
+        assert_eq!(scheme_driver("mssql"), Some(DbDriver::SqlServer));
+        assert_eq!(scheme_driver("mssqlserver"), Some(DbDriver::SqlServer));
     }
 
     #[test]

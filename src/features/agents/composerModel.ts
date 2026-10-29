@@ -109,9 +109,9 @@ export function atEdgeLine(text: string, caret: number, dir: -1 | 1): boolean {
   return dir < 0 ? !text.slice(0, caret).includes("\n") : !text.slice(caret).includes("\n");
 }
 
-/** The settings shown as dropdowns: model, mode, thinking effort, in that order. */
+/** The settings shown as dropdowns: model, mode, approvals, thinking effort, in that order. */
 export function mainOptions(config: readonly AgentConfigOption[]): AgentConfigOption[] {
-  const order = ["model", "mode", "thought_level"];
+  const order = ["model", "mode", "approval", "thought_level"];
   return order.flatMap((c) => config.filter((o) => o.category === c).slice(0, 1));
 }
 

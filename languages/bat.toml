@@ -1,0 +1,6 @@
+id = "bat"
+name = "Batch"
+extensions = ["bat", "cmd"]
+line-comment = "@REM"
+indent = { tab-size = 4, insert-spaces = true }
+ui-mode = "Batch"

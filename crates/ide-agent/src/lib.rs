@@ -114,7 +114,13 @@ impl Shared {
     }
 
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
-        self.known.lock().get(provider).map(|k| k.config.clone()).unwrap_or_default()
+        let mut config = self.known.lock().get(provider).map(|k| k.config.clone()).unwrap_or_default();
+        config::add_client_options(provider, &mut config);
+        // Approval bypass belongs to the conversation, never to another new task.
+        if let Some(o) = config.iter_mut().find(|o| o.id == config::CURSOR_APPROVAL) {
+            o.current = Some("ask".into());
+        }
+        config
     }
 
     /// The commands the agent offered last time in this project.
@@ -516,7 +522,7 @@ impl AgentManager {
             o.clone()
         };
         let live = task.live.lock().clone().filter(|l| !l.peer.is_closed());
-        if let Some(live) = live {
+        if let Some(live) = live.filter(|_| option != config::CURSOR_APPROVAL) {
             let (method, mut params) = config::set_request(&target, &value);
             params["sessionId"] = json!(live.session);
             let reply: Value =
@@ -534,6 +540,7 @@ impl AgentManager {
             }
             s.task.model = model_of(&s.task.config).or(s.task.model.take());
         }
+        task.approve_pending();
         task.persist();
         task.emit_task();
         Ok(())
@@ -789,7 +796,8 @@ impl AgentManager {
 
 impl Task {
     fn restore(file: TaskFile, shared: Arc<Shared>) -> Arc<Self> {
-        let task = file.task;
+        let mut task = file.task;
+        config::add_client_options(&task.provider, &mut task.config);
         let conversation = Conversation::restore(file.entries, file.subagents);
         Arc::new(Self {
             id: task.id.clone(),
@@ -1174,10 +1182,17 @@ impl Task {
             let s = self.state.lock();
             (if known { reported } else { s.task.config.clone() }, s.wanted.clone())
         };
+        config::add_client_options(&provider_id, &mut options);
         self.shared.remember(&provider_id, Some(&options), None);
         for choice in &wanted {
             // An option the session doesn't offer yet is set once it does (`apply_late_choices`).
             let Some(o) = options.iter().find(|o| o.id == choice.id).cloned() else { continue };
+            if o.id == config::CURSOR_APPROVAL {
+                if o.values.iter().any(|v| v.value == choice.value) {
+                    options.iter_mut().find(|o| o.id == choice.id).unwrap().current = Some(choice.value.clone());
+                }
+                continue;
+            }
             let already = known && o.current.as_deref() == Some(choice.value.as_str());
             if already || !o.values.iter().any(|v| v.value == choice.value) {
                 continue;
@@ -1221,7 +1236,7 @@ impl Task {
             s.wanted
                 .iter()
                 .filter_map(|c| {
-                    let o = s.task.config.iter().find(|o| o.id == c.id)?;
+                    let o = s.task.config.iter().find(|o| o.id == c.id && o.id != config::CURSOR_APPROVAL)?;
                     let due = o.current.as_deref() != Some(c.value.as_str())
                         && o.values.iter().any(|v| v.value == c.value)
                         && sent.insert((c.id.clone(), c.value.clone()));
@@ -1400,6 +1415,7 @@ impl Task {
         let entry = self.push_entry(AgentEntry::Permission { id, title, options: options.clone(), chosen: None });
         self.permissions.lock().insert(id, tx);
         self.set_status(AgentStatus::NeedsInput, None);
+        self.approve_pending();
 
         let answer = rx.recv().ok().flatten();
         let name = answer
@@ -1420,6 +1436,22 @@ impl Task {
         match answer {
             Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option } }),
             None => json!({ "outcome": { "outcome": "cancelled" } }),
+        }
+    }
+
+    fn approve_pending(&self) {
+        let s = self.state.lock();
+        if self.cancel_pending.load(Ordering::Acquire) || !config::bypass_approvals(&s.task.provider, &s.task.config) {
+            return;
+        }
+        let mut pending = self.permissions.lock();
+        for entry in s.conversation.main.entries.iter().rev() {
+            if let AgentEntry::Permission { id, options, chosen: None, .. } = entry
+                && let Some(option) = options.iter().find(|o| o.kind == "allow_once")
+                && let Some(reply) = pending.remove(id)
+            {
+                let _ = reply.send(Some(option.id.clone()));
+            }
         }
     }
 

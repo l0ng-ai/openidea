@@ -1,14 +1,13 @@
 /** Agents tool window: tasks grouped by what they need from the user. */
 import { useEffect, useMemo, useState } from "react";
 import type { AgentStatus as Status, AgentTask } from "@/bindings";
-import { executeAction } from "@/platform/actions";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
-import { confirmChecked } from "@/workbench/messages";
-import { EmptyState, Icon, IconButton, Spinner, T, Tree, showContextMenu, type MenuItem } from "@/ui";
-import { SESSION_KIND, age, branchLabel, groupTasks, isBusy, type TaskGroup } from "./model";
-import { archiveTask, deleteTask, openHome, openTask, useAgents } from "./store";
+import { EmptyState, Icon, IconButton, Spinner, T, Tree, showContextMenu } from "@/ui";
+import { SESSION_KIND, age, branchLabel, groupTasks, type TaskGroup } from "./model";
+import { openHome, openTask, useAgents } from "./store";
+import { taskMenu } from "./taskActions";
 import styles from "./Agents.module.css";
-import { tx } from "@/platform/i18n";
+import { useTx } from "@/platform/i18n";
 
 export function AgentsHeaderActions() {
   return (
@@ -44,9 +43,11 @@ export function TaskStatusIcon({ status }: { status: Status }) {
 }
 
 export function AgentsView() {
+  const tx = useTx();
   const loaded = useAgents((s) => s.loaded);
   const error = useAgents((s) => s.error);
   const tasks = useAgents((s) => s.tasks);
+  const unread = useAgents((s) => s.unread);
   const providers = useAgents((s) => s.providers);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["g:archived"]));
   const [selected, setSelected] = useState<Set<string>>(() => {
@@ -59,7 +60,7 @@ export function AgentsView() {
       maybeEditorService()?.onActiveInputChange?.((input) => {
         const task = sessionTask(input);
         if (!task) return;
-        setSelected(new Set([task]));
+        setSelected((current) => (current.has(task) ? current : new Set([task])));
         const group = groupTasks(useAgents.getState().tasks.values()).find((g) => g.tasks.some((t) => t.id === task));
         const key = group && `g:${group.status}`;
         if (key) setCollapsed((c) => (c.has(key) ? new Set([...c].filter((k) => k !== key)) : c));
@@ -100,10 +101,17 @@ export function AgentsView() {
         selected={selected}
         onSelectionChange={(sel, lead) => {
           setSelected(sel);
-          if (lead?.kind === "task") openTask(lead.task.id);
+          if (sel.size === 1 && lead?.kind === "task" && sel.has(lead.task.id)) openTask(lead.task.id);
         }}
         onActivate={(n) => n.kind === "task" && openTask(n.task.id)}
-        onContextMenu={(n, _sel, e) => n?.kind === "task" && showContextMenu(e, taskMenu(n.task))}
+        onContextMenu={(n, sel, e) => {
+          if (n?.kind !== "task") return;
+          const selection = [...sel].flatMap((id) => {
+            const task = tasks.get(id);
+            return task ? [task] : [];
+          });
+          showContextMenu(e, taskMenu(selection));
+        }}
         renderNode={(n) =>
           n.kind === "group" ? (
             <span className={styles.row}>
@@ -115,7 +123,12 @@ export function AgentsView() {
           ) : (
             <span className={styles.row} title={n.task.error ?? n.task.title}>
               <TaskStatusIcon status={n.task.status} />
-              <span className={styles.title}>{n.task.title}</span>
+              <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
+                {n.task.title}
+              </span>
+              {unread.has(n.task.id) && (
+                <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
+              )}
               <span className={styles.detail}>
                 {providerName(n.task.provider)}
                 {n.task.isolation === "worktree" ? ` · ${branchLabel(n.task.branch)}` : ""}
@@ -135,30 +148,4 @@ export function AgentsView() {
       />
     </div>
   );
-}
-
-function taskMenu(task: AgentTask): MenuItem[] {
-  const busy = isBusy(task.status);
-  return [
-    { label: "Open", run: () => openTask(task.id) },
-    { label: "Open in Terminal", icon: "terminal", run: () => void executeAction("terminal.openAt", task.cwd) },
-    { kind: "separator" },
-    { label: "Archive", disabled: busy || task.status === "archived", run: () => void archiveTask(task.id) },
-    { label: "Delete…", run: () => void confirmDelete(task) },
-  ];
-}
-
-async function confirmDelete(task: AgentTask) {
-  const worktree = task.isolation === "worktree";
-  const r = await confirmChecked({
-    title: "Delete Agent Task",
-    message: worktree
-      ? tx`Delete “${task.title}”? Its branch ${task.branch ?? ""} is kept.`
-      : tx`Delete “${task.title}”? Files it changed are kept.`,
-    ok: "Delete",
-    icon: "warning",
-    checkbox: worktree ? "Also remove its worktree folder" : undefined,
-    checked: worktree,
-  });
-  if (r) await deleteTask(task.id, worktree && r.checked);
 }

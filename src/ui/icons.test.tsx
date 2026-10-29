@@ -181,6 +181,8 @@ describe("fileIconName", () => {
     [".envrc", "file-shell"],
     ["run.sh", "file-shell"],
     ["build.ps1", "file-powershell"],
+    ["build.bat", "file-windows"],
+    ["run.cmd", "file-windows"],
     ["server.log", "file-log"],
     ["paper.tex", "file-latex"],
     ["photo.PNG", "file-image"],

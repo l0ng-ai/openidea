@@ -332,6 +332,25 @@ impl Drop for KillOnDrop {
     }
 }
 
+/// The program [`Peer::spawn_framed`] runs: a bare name resolved against the
+/// child's `PATH` (a caller's `env` PATH, else the login shell's, else ours), so
+/// that on Windows `PATHEXT` names (`codex` → `codex.cmd`) start; anything else
+/// is kept as given.
+fn resolve_spawn_program(command: &str, env: &[(String, String)]) -> std::path::PathBuf {
+    let path = std::path::Path::new(command);
+    if path.components().count() > 1 || path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let search = env
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+        .map(|(_, v)| std::ffi::OsString::from(v))
+        .or_else(|| ide_core::process::shell_env().find(|(k, _)| k == "PATH").map(|(_, v)| v))
+        .or_else(|| ide_core::process::host_var_os("PATH"))
+        .unwrap_or_default();
+    ide_core::process::find_executable(command, &search).unwrap_or_else(|| path.to_path_buf())
+}
+
 impl Peer {
     /// Spawns `command` and speaks JSON-RPC over its stdio. Stderr lines, and
     /// stdout lines that are not part of a message (a launcher's own output), are
@@ -360,7 +379,10 @@ impl Peer {
         framing: Framing,
     ) -> std::io::Result<Self> {
         use std::process::Stdio;
-        let mut cmd = tokio::process::Command::new(command);
+        // Windows resolves a bare name only as `.exe`; find the file a child
+        // would (`PATH` × `PATHEXT`, e.g. `codex` → `codex.cmd`) first.
+        let resolved = resolve_spawn_program(command, env);
+        let mut cmd = tokio::process::Command::new(&resolved);
         ide_core::process::prepare(cmd.as_std_mut());
         cmd.args(args)
             .current_dir(cwd)

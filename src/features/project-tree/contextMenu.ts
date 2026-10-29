@@ -321,6 +321,13 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         [
           act("vcs.commit", undefined, dirs || nodes.length > 1 ? "Commit…" : "Commit File…"),
           act("vcs.addToVcs", arg, "Add"),
+          nonRoot.length === nodes.length &&
+            nodes.length > 0 &&
+            nodes.every((n) => !n.placeholder) &&
+            submenu("gitIgnore", "Add to .gitignore", [
+              act("vcs.ignoreShared", arg, ".gitignore"),
+              act("vcs.ignoreLocal", arg, ".git/info/exclude"),
+            ]),
           { kind: "separator" },
           singleFile && act("vcs.annotate", singleFile.path, "Annotate with Git Blame"),
           act("vcs.showDiff", arg, "Show Diff"),

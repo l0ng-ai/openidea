@@ -1,4 +1,7 @@
 fn main() {
+    let root =
+        dunce::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).expect("worktree root");
+    println!("cargo:rustc-env=OPENIDEA_WORKTREE_ROOT={}", root.display());
     // Windows (MSVC): link the Common-Controls v6 manifest into every binary of
     // this package, not only the app's resources, so test executables such as
     // `export_bindings` can load comctl32 and don't exit with

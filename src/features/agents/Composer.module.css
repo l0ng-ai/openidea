@@ -98,21 +98,26 @@
   opacity: 1;
 }
 
-/* `@` / `/` completion, above the box like a code-completion popup. */
-.popup {
-  position: absolute;
+/* `@` / `/` completion; Popup keeps the list within the viewport. */
+.caretMirror {
+  position: fixed;
+  top: 0;
   left: 0;
-  bottom: calc(100% + 4px);
-  z-index: 10;
-  width: min(560px, 100%);
+  box-sizing: border-box;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.popup {
+  width: min(560px, calc(100vw - 12px));
+  border-radius: var(--radius-popup);
+  cursor: default;
+}
+.items {
   max-height: 300px;
   overflow: auto;
   padding: 4px 0;
-  border: 1px solid var(--border-popup);
-  border-radius: var(--radius-popup);
-  background: var(--bg-popup);
-  box-shadow: var(--shadow-popup);
-  cursor: default;
 }
 .item {
   display: flex;

@@ -55,6 +55,7 @@ async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOpti
  * the server's language servers and the local windows read.
  */
 export function remoteRouting(cmd: string, args: InvokeArgs | undefined, served: ReadonlySet<string>) {
+  if (cmd === "system_font_families") return "local";
   if (!served.has(cmd) || cmd === "open_project" || cmd === "close_project") return "local";
   if (cmd === "settings_set" && (args as { scope?: string } | undefined)?.scope === "global") return "both";
   return "remote";

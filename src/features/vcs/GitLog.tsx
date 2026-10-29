@@ -178,7 +178,7 @@ function LogView() {
       .then((all) => {
         if (!live) return;
         const signature = JSON.stringify(all);
-        if (allRefs.current !== null && allRefs.current !== signature) void reloadLog();
+        if (allRefs.current !== null && allRefs.current !== signature) void reloadLog({ preserve: true });
         allRefs.current = signature;
       })
       .catch(() => undefined);
@@ -215,7 +215,8 @@ function LogView() {
     const refs = refsSignature(branch, branches) + JSON.stringify(useVcs.getState().heads);
     const previous = lastRefs.current;
     lastRefs.current = refs;
-    if (previous !== null && previous !== refs && useGitLog.getState().commits.length) void reloadLog();
+    if (previous !== null && previous !== refs && useGitLog.getState().commits.length)
+      void reloadLog({ preserve: true });
   }, [version]);
 
   return (
@@ -742,7 +743,7 @@ function FilterBar() {
         onClear={() => setLogFilters({ path: null })}
       />
       <span className={styles.grow} />
-      <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reloadLog()} />
+      <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reloadLog({ preserve: true })} />
       <IconButton
         icon="sort"
         title="Graph Options"
@@ -1003,7 +1004,7 @@ function CommitList() {
             const c = commits[v.index];
             if (!c)
               return (
-                <div key="loading" className={styles.row} style={{ transform: `translateY(${v.start}px)` }}>
+                <div key="loading" className={styles.row} style={{ top: v.start }}>
                   <Spinner size={12} />{" "}
                   <span className={styles.muted}>
                     <T>Loading…</T>
@@ -1075,7 +1076,7 @@ const CommitRow = memo(function CommitRow({
       role="option"
       aria-selected={selected}
       className={clsx(styles.row, onBranch && styles.currentBranch, selected && styles.selected)}
-      style={{ transform: `translateY(${top}px)` }}
+      style={{ top }}
       onMouseDown={(e) => {
         if (e.shiftKey) e.preventDefault(); // no text selection on range clicks
         onPick(commitKey(c), e);
@@ -1132,6 +1133,7 @@ export function GraphCell({ row, head }: { row: GraphRow; head?: boolean }) {
           key={`u${i}`}
           d={seg(x(s.from), 0, x(s.to), cy) + (s.arrow ? arrowHead(x(s.from), 0, -1) : "")}
           stroke={laneColor(s.color)}
+          strokeLinecap={s.dashed ? "butt" : "square"}
           strokeDasharray={s.dashed ? "2 2" : undefined}
         />
       ))}
@@ -1140,6 +1142,7 @@ export function GraphCell({ row, head }: { row: GraphRow; head?: boolean }) {
           key={`d${i}`}
           d={seg(x(s.from), cy, x(s.to), ROW) + (s.arrow ? arrowHead(x(s.to), ROW, 1) : "")}
           stroke={laneColor(s.color)}
+          strokeLinecap={s.dashed ? "butt" : "square"}
           strokeDasharray={s.dashed ? "2 2" : undefined}
         />
       ))}

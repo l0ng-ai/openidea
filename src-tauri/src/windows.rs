@@ -6,7 +6,7 @@
 //! (`window_take_launch`), and re-taken whenever [`LAUNCH_EVENT`] fires (a
 //! second app instance asking an already-loaded window to open a path).
 //!
-//! Settings open in a native child window `settings-<parent>` (one per project
+//! Settings open in a separate window `settings-<parent>` (one per project
 //! window) that shares its parent's project (see [`AppState::project`]); its
 //! [`Launch::settings_page`] tells it which page to show.
 
@@ -643,7 +643,6 @@ pub fn path_launch(path: PathBuf) -> Launch {
 }
 
 /// Second instance launched: focus this one and open its path argument.
-#[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
     match cli_path(&args, Path::new(&cwd)) {
         Some(path) => open_path(app, &path),
@@ -666,7 +665,7 @@ pub fn cycle(app: &AppHandle, current: &str, forward: bool) {
 }
 
 /// Opens (or focuses) the settings window of `parent` showing `page`: a
-/// native child window centred over its parent, sized like IDEA's Settings.
+/// separate window centred over its parent, sized like IDEA's Settings.
 pub fn open_settings_window(
     app: &AppHandle,
     parent: &WebviewWindow,
@@ -699,13 +698,17 @@ pub fn open_settings_window(
     config.maximized = false;
     config.fullscreen = false;
     config.drag_drop_enabled = false;
-    // macOS shows a child window as soon as it is attached, before the page loads: paint the theme's frame colour.
+    // Paint the theme's frame colour before the page loads.
     if let Some(color) = background.as_deref().and_then(hex_color) {
         config.background_color = Some(color);
     }
     windows.set_launch(&label, Launch { settings_page: page, new_projects, ..Default::default() });
-    let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| b.parent(&parent))
+    let builder = WebviewWindowBuilder::from_config(app, &config);
+    // AppKit child windows can disappear when dragged to another display's Space.
+    // The settings label already tracks ownership and parent-close cleanup.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.and_then(|b| b.parent(&parent));
+    let window = builder
         .and_then(|b| b.build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
     apply_zoom(app, &window);

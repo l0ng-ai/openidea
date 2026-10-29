@@ -330,5 +330,3 @@ export function PythonInterpreterPage() {
     </div>
   );
 }
-
-export default PythonInterpreterPage;

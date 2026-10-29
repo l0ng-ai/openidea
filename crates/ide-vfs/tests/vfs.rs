@@ -321,3 +321,47 @@ fn watcher_reports_changes() {
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(batches.lock().len(), n, "no events after drop");
 }
+
+#[test]
+fn worktree_and_nested_repository_local_excludes_are_reflected_in_listings() {
+    fn git(root: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap().join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    std::fs::write(root.join("initial"), "x").unwrap();
+    git(&root, &["add", "initial"]);
+    git(
+        &root,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+    );
+    let linked = root.parent().unwrap().join("linked");
+    git(&root, &["worktree", "add", "-qb", "linked", linked.to_str().unwrap()]);
+    std::fs::write(linked.join("private"), "x").unwrap();
+    std::fs::write(root.join(".git/info/exclude"), "/private\n").unwrap();
+    let entries = ide_vfs::read_dir(&linked, &[]).unwrap();
+    assert!(entries.iter().find(|e| e.name == "private").unwrap().ignored);
+    assert!(!entries.iter().find(|e| e.name == "private").unwrap().excluded);
+    let nested = linked.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    git(&nested, &["init", "-q"]);
+    std::fs::write(nested.join("private"), "x").unwrap();
+    let entries = ide_vfs::read_dir(&nested, &[]).unwrap();
+    assert!(!entries.iter().find(|e| e.name == "private").unwrap().ignored);
+    std::fs::write(nested.join(".git/info/exclude"), "/private\n").unwrap();
+    let entries = ide_vfs::read_dir(&nested, &[]).unwrap();
+    assert!(entries.iter().find(|e| e.name == "private").unwrap().ignored);
+}

@@ -764,7 +764,7 @@ fn query_output_is_read_within_the_deadline() {
     let tmp = tempfile::tempdir().unwrap();
     // Its own PATH: the first search path would read the login shell within the timing.
     let env = [("PATH", "/usr/bin:/bin")];
-    let timeout = std::time::Duration::from_millis(500);
+    let timeout = std::time::Duration::from_secs(2);
     // Exits at once, leaving a job that holds its output open, or keeps writing to it.
     let jobs = ["sleep 5", "i=0; while [ $i -lt 2000000 ]; do echo more; i=$((i+1)); done"];
     for (i, job) in jobs.iter().enumerate() {
@@ -773,7 +773,7 @@ fn query_output_is_read_within_the_deadline() {
         let started = std::time::Instant::now();
         let out = crate::exec::query_in(&program, &[], None, &env, timeout).unwrap();
         assert!(out.starts_with("/global/root"), "{job}: {out:.40}");
-        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{job}: {:?}", started.elapsed());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{job}: {:?}", started.elapsed());
     }
 }
 

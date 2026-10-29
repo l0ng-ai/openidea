@@ -4,6 +4,7 @@ import { call, commands } from "@/platform/ipc";
 import { confirmLeaveProject, useProject } from "@/platform/project";
 import { connectRemote } from "@/platform/remote";
 import { ask } from "./messages";
+import { maybeEditorService } from "./contributions";
 
 /** "Open project in": `new` | `same` | `ask`. */
 export function openPolicy(): "ask" | "new" | "same" {
@@ -62,6 +63,11 @@ export async function openRemoteProject(
     return true;
   }
   if (!(await confirmLeaveProject())) return false;
-  await here();
-  return true;
+  try {
+    await here();
+    return true;
+  } catch (e) {
+    maybeEditorService()?.cancelClose?.();
+    throw e;
+  }
 }

@@ -1,0 +1,121 @@
+// Angular templates: the text and attributes of HTML parsed by `@lezer/html`.
+// From @codemirror/lang-angular 0.1.4 (MIT, see LICENSE). Changed by OpenIDEA:
+// control-flow blocks (`@if`, `@for`, `@switch`, `@defer`, ...) and `@let`
+// declarations in text, key and animation event names (`(keydown.enter)`,
+// `(@fade.done)`) and animation bindings (`[@fade]`). Regenerate with
+// `pnpm gen:angular-grammar`.
+
+@top Content {
+  (Text | Interpolation | Entity | InvalidEntity | Block | Brace | LetDeclaration)+
+}
+
+@skip { space } {
+  @top Attribute {
+    (BoundAttributeName { "[" bindingName "]" | "[" "(" bindingName ")" "]" } |
+     ReferenceName { "#" Identifier })
+      (Is ExpressionAttributeValue[isolate] { scriptAttributeValue })? |
+    (EventName { "(" bindingName ")" } | DirectiveName { "*" Identifier })
+      (Is StatementAttributeValue[isolate] { scriptAttributeValue })? |
+    AttributeName { Identifier } (Is AttributeValue)?
+  }
+
+  // `class.active`, `keydown.enter`, and animations' `@fade`, `@fade.done`.
+  bindingName { "@"? Identifier ("." Identifier)* }
+
+  // The header of a block, up to its `{`: its body and `}` are content and
+  // HTML elements around it. Both braces are a `Brace`, which CodeMirror
+  // matches like plain text.
+  Block {
+    "@if" BlockParameters<Expression (";" kw<"as"> VariableDefinition)?> Brace |
+    "@else" (kw<"if"> BlockParameters<Expression (";" kw<"as"> VariableDefinition)?>)? Brace |
+    "@for" BlockParameters<VariableDefinition kw<"of"> Expression (";" forOption?)*> Brace |
+    ("@switch" | "@case") BlockParameters<Expression> Brace |
+    ("@default" | "@empty" | "@error") Brace |
+    "@defer" BlockParameters<(deferOption (";" deferOption?)*)?>? Brace |
+    ("@placeholder" | "@loading") BlockParameters<(timingOption (";" timingOption?)*)?>? Brace
+  }
+
+  LetDeclaration {
+    "@let" VariableDefinition Is Expression ";"
+  }
+
+  forOption {
+    kw<"track"> Expression |
+    kw<"let"> ForAlias ("," ForAlias)*
+  }
+
+  ForAlias { VariableDefinition Is VariableName }
+
+  deferOption {
+    (kw<"prefetch"> | kw<"hydrate">)?
+    (kw<"on"> DeferTrigger ("," DeferTrigger)* | kw<"when"> Expression | kw<"never">)
+  }
+
+  DeferTrigger { TriggerName ("(" (Time | Expression)? ")")? }
+
+  timingOption { (kw<"minimum"> | kw<"after">) Time }
+
+  BlockParameters<content> { "(" content ")" }
+
+  VariableDefinition { jsIdentifier }
+
+  VariableName { jsIdentifier }
+
+  TriggerName { jsIdentifier }
+
+  kw<term> { @specialize[@name={term}]<jsIdentifier, term> }
+}
+
+AttributeValue[isolate] {
+  '"' (attributeContentDouble | Entity | InvalidEntity | Interpolation)* '"' |
+  "'" (attributeContentSingle | Entity | InvalidEntity | Interpolation)* "'"
+}
+
+scriptAttributeValue {
+  '"' AttributeInterpolation { scriptAttributeContentDouble } '"' |
+  "'" AttributeInterpolation { scriptAttributeContentSingle } "'"
+}
+
+Interpolation[isolate] {
+  "{{" InterpolationContent? "}}"
+}
+
+@external tokens text from "./tokens" { Text }
+
+@external tokens brace from "./tokens" { Brace }
+
+@external tokens time from "./tokens" { Time }
+
+@external tokens expression from "./tokens" { Expression }
+
+@external tokens attrSingle from "./tokens" { attributeContentSingle }
+@external tokens attrDouble from "./tokens" { attributeContentDouble }
+
+@external tokens scriptAttrSingle from "./tokens" { scriptAttributeContentSingle }
+@external tokens scriptAttrDouble from "./tokens" { scriptAttributeContentDouble }
+
+@tokens {
+  Entity { "&" ![; ]+ ";" }
+
+  InvalidEntity { "&" }
+
+  InterpolationContent { (![}] | "}" ![}]) InterpolationContent? }
+
+  Identifier { (":" | "-" | @asciiLetter | @digit | "_" | $[À-\u{EFFFF}])+ }
+
+  jsIdentifier {
+    (@asciiLetter | "_" | "$" | $[À-\u{EFFFF}]) (@asciiLetter | @digit | "_" | "$" | $[À-\u{EFFFF}])*
+  }
+
+  space { (" " | "\t" | "\r" | "\n")+ }
+
+  Is { "=" }
+
+  "{{" "}}" "[" "]" "(" ")"
+  "*" "#" "@" ";" ","
+
+  "@if" "@else" "@for" "@empty" "@switch" "@case" "@default"
+  "@defer" "@placeholder" "@loading" "@error" "@let"
+}
+
+@detectDelim

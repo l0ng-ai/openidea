@@ -80,20 +80,24 @@ pub(crate) struct GitignoreStack {
     /// `.git/info/exclude` and the global excludes file, rooted at the repo root.
     repo_level: RwLock<Vec<Gitignore>>,
     cache: Mutex<HashMap<PathBuf, Option<Arc<Gitignore>>>>,
+    nested: Mutex<HashMap<PathBuf, Option<Arc<GitignoreStack>>>>,
 }
 
 impl GitignoreStack {
     pub fn new(near: &Path) -> Self {
         let repo_root = find_repo_root(near);
         let repo_level = RwLock::new(Self::load_repo_level(repo_root.as_deref()));
-        Self { repo_root, repo_level, cache: Mutex::default() }
+        Self { repo_root, repo_level, cache: Mutex::default(), nested: Mutex::default() }
     }
 
     fn load_repo_level(repo_root: Option<&Path>) -> Vec<Gitignore> {
         let mut repo_level = Vec::new();
         if let Some(root) = repo_root {
             let mut builder = GitignoreBuilder::new(root);
-            let exclude = root.join(".git").join("info").join("exclude");
+            let exclude = gix::discover(root)
+                .ok()
+                .map(|r| r.common_dir().join("info/exclude"))
+                .unwrap_or_else(|| root.join(".git/info/exclude"));
             if exclude.is_file() {
                 builder.add(exclude);
             }
@@ -115,11 +119,13 @@ impl GitignoreStack {
 
     /// Re-reads `.git/info/exclude` and the global excludes file.
     pub fn reload_repo_level(&self) {
+        self.nested.lock().clear();
         *self.repo_level.write() = Self::load_repo_level(self.repo_root.as_deref());
     }
 
     /// Forgets the cached rules of `dir` and every directory below it.
     pub fn invalidate_tree(&self, dir: &Path) {
+        self.nested.lock().clear();
         let mut cache = self.cache.lock();
         // Lookups always populate every ancestor, so no key below `dir` exists without `dir`.
         if cache.contains_key(dir) {
@@ -133,6 +139,7 @@ impl GitignoreStack {
 
     /// Forgets the cached rules of `dir` (after its `.gitignore` changed).
     pub fn invalidate(&self, dir: &Path) {
+        self.nested.lock().clear();
         self.cache.lock().remove(dir);
     }
 
@@ -169,6 +176,23 @@ impl GitignoreStack {
 
     /// Whether `path` (absolute) is ignored. `is_dir` refers to `path` itself.
     pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        // A project's watcher can span independent nested repositories. Their local
+        // excludes and ignore ancestry must stop at their own repository boundary.
+        if let Some(parent) = path.parent() {
+            let nested = self
+                .nested
+                .lock()
+                .entry(parent.to_path_buf())
+                .or_insert_with(|| {
+                    find_repo_root(parent)
+                        .filter(|root| self.repo_root.as_ref() != Some(root))
+                        .map(|_| Arc::new(Self::new(parent)))
+                })
+                .clone();
+            if let Some(nested) = nested {
+                return nested.is_ignored(path, is_dir);
+            }
+        }
         if self.repo_root.as_deref() == Some(path) {
             return false;
         }

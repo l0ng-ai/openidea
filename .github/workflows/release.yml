@@ -117,6 +117,8 @@ jobs:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tagName: ${{ env.TAG }}
           args: --target ${{ matrix.target }}
+          # The parallel builds would race on one latest.json; `updater-manifest` writes it once.
+          uploadUpdaterJson: false
       # tauri-action notarizes the .app but not the DMG around it; notarize and
       # staple the DMG too, then replace the uploaded asset.
       - name: Notarize DMG
@@ -172,8 +174,65 @@ jobs:
           if command -v sha256sum >/dev/null; then sha256sum "$ASSET"; else shasum -a 256 "$ASSET"; fi > "$ASSET.sha256"
           gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
 
+  # The updater manifest (latest.json), built once from the signed bundles every build uploaded.
+  # Fails when a platform is missing, so a release never ships a manifest without it.
+  updater-manifest:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const release_id = Number(process.env.RELEASE_ID);
+            const tag = process.env.TAG;
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id });
+            const sigs = assets.filter((a) => a.name.endsWith(".sig"));
+            if (sigs.length === 0) {
+              core.notice("no signed bundles (TAURI_SIGNING_PRIVATE_KEY unset): skipping latest.json");
+              return;
+            }
+            // Bundle suffix → updater platform keys, as tauri-action names them.
+            const kinds = [
+              [/_amd64\.AppImage$/, ["linux-x86_64", "linux-x86_64-appimage"]],
+              [/_amd64\.deb$/, ["linux-x86_64-deb"]],
+              [/\.x86_64\.rpm$/, ["linux-x86_64-rpm"]],
+              [/_aarch64\.app\.tar\.gz$/, ["darwin-aarch64", "darwin-aarch64-app"]],
+              [/_x64\.app\.tar\.gz$/, ["darwin-x86_64", "darwin-x86_64-app"]],
+              [/_x64_en-US\.msi$/, ["windows-x86_64", "windows-x86_64-msi"]],
+              [/_x64-setup\.exe$/, ["windows-x86_64-nsis"]],
+            ];
+            const platforms = {};
+            for (const sig of sigs) {
+              const bundle = sig.name.slice(0, -".sig".length);
+              const kind = kinds.find(([re]) => re.test(bundle));
+              if (!kind) continue;
+              const { data } = await github.rest.repos.getReleaseAsset({
+                owner, repo, asset_id: sig.id, headers: { accept: "application/octet-stream" },
+              });
+              const signature = Buffer.from(data).toString("utf8").trim();
+              const url = `https://github.com/${owner}/${repo}/releases/download/${tag}/${encodeURIComponent(bundle)}`;
+              for (const key of kind[1]) platforms[key] = { signature, url };
+            }
+            const missing = kinds.flatMap(([, keys]) => keys).filter((k) => !platforms[k]);
+            if (missing.length) {
+              core.setFailed(`latest.json would miss ${missing.join(", ")}`);
+              return;
+            }
+            const manifest = { version: tag.replace(/^v/, ""), notes: "", pub_date: new Date().toISOString(), platforms };
+            const old = assets.find((a) => a.name === "latest.json");
+            if (old) await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: old.id });
+            await github.rest.repos.uploadReleaseAsset({
+              owner, repo, release_id, name: "latest.json",
+              data: JSON.stringify(manifest, null, 2),
+              headers: { "content-type": "application/json" },
+            });
+            core.info(`latest.json: ${Object.keys(platforms).sort().join(", ")}`);
+
   publish:
-    needs: [create-release, build, server]
+    needs: [create-release, build, server, updater-manifest]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7

@@ -1,8 +1,13 @@
 [package]
 name = "ide-clipboard"
-description = "The OS clipboard's file list (Explorer <-> project view): Windows CF_HDROP read/write, no window or message loop"
+description = "The OS clipboard's file list (Explorer <-> project view): Windows CF_HDROP or macOS NSPasteboard file URLs, no window or message loop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSObject", "NSString", "NSURL", "NSValue"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }

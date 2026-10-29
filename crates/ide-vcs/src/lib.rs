@@ -441,6 +441,7 @@ pub mod changelists;
 mod cli;
 mod diff;
 mod history;
+mod ignore;
 mod manage;
 mod ops;
 mod patch;
@@ -454,6 +455,7 @@ mod write;
 
 pub use cli::{detected_git_executable, git_version, set_askpass_env, set_git_executable};
 pub use diff::build_partial_patch;
+pub use ignore::{IgnoreDestination, add_to_ignore};
 pub use manage::{MergeOptions, RebaseOptions, RemoteEdit, Worktree};
 pub use remotes::Remote;
 pub use roots::Repos;

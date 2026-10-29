@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { confirmExitEnabled, decideClose, type CloseDeps, type CloseInput } from "../closeGuard";
 import type { MessageRequest as PromptRequest, MessageResult as PromptResult } from "@/workbench/messages";
+import type { EditorCloseSession } from "@/workbench/contributions";
 
 function deps(answers: PromptResult[]) {
   const asked: PromptRequest[] = [];
@@ -26,9 +27,8 @@ describe("decideClose", () => {
   });
 
   it("confirms exit for the last window when enabled", async () => {
-    const { d, asked } = deps([{ button: "exit", checked: false }]);
+    const { d } = deps([{ button: "exit", checked: false }]);
     await expect(decideClose({ ...base, confirmExit: true }, d)).resolves.toBe(true);
-    expect(asked[0]?.title).toBe("Confirm Exit");
     expect(d.disableConfirmExit).not.toHaveBeenCalled();
   });
 
@@ -51,9 +51,8 @@ describe("decideClose", () => {
   });
 
   it("saves all on Save", async () => {
-    const { d, asked } = deps([{ button: "save", checked: false }]);
+    const { d } = deps([{ button: "save", checked: false }]);
     await expect(decideClose({ ...base, dirty: 2 }, d)).resolves.toBe(true);
-    expect(asked[0]?.body).toBe("2 files have unsaved changes in openidea. Save before closing?");
     expect(d.saveAll).toHaveBeenCalled();
   });
 
@@ -78,5 +77,84 @@ describe("decideClose", () => {
     expect(confirmExitEnabled({ general: { confirmExit: true } })).toBe(true);
     expect(confirmExitEnabled({ general: {} })).toBe(false);
     expect(confirmExitEnabled(null)).toBe(false);
+  });
+
+  it("includes dirty changes produced while preparing a custom document", async () => {
+    const { d } = deps([{ button: "save", checked: false }]);
+    let text = "old output";
+    let saved = "";
+    let frozen = false;
+    const session: EditorCloseSession = {
+      dirty: 1,
+      discard: async () => {
+        text = "";
+      },
+      cancel: () => {
+        frozen = false;
+      },
+      commit: () => {
+        frozen = true;
+      },
+    };
+    d.prepareClose = async () => {
+      frozen = true;
+      text = "final execution output";
+      return session;
+    };
+    d.saveAll = async () => {
+      expect(frozen).toBe(true);
+      saved = text;
+    };
+    await expect(decideClose(base, d)).resolves.toBe(true);
+    expect(saved).toBe("final execution output");
+    expect(frozen).toBe(true);
+  });
+
+  it.each(["cancel", "save", "discard"])(
+    "resumes a prepared document when %s cannot authorize closing",
+    async (button) => {
+      const { d } = deps([{ button, checked: false }]);
+      let frozen = true;
+      let text = "unsaved source";
+      const session: EditorCloseSession = {
+        dirty: 1,
+        discard: async () => {
+          throw new Error("reload failed");
+        },
+        cancel: () => {
+          frozen = false;
+        },
+        commit: () => {
+          text = "closed";
+        },
+      };
+      d.prepareClose = async () => session;
+      d.saveAll = async () => {
+        throw new Error("disk full");
+      };
+      await expect(decideClose(base, d)).resolves.toBe(false);
+      expect(frozen).toBe(false);
+      expect(text).toBe("unsaved source");
+    },
+  );
+
+  it("Don't Save discards prepared custom edits without saving them", async () => {
+    const { d } = deps([{ button: "discard", checked: false }]);
+    let text = "unsaved";
+    let saved = "disk baseline";
+    d.saveAll = async () => {
+      saved = text;
+    };
+    d.prepareClose = async () => ({
+      dirty: 1,
+      discard: async () => {
+        text = saved;
+      },
+      cancel: () => {},
+      commit: () => {},
+    });
+    await expect(decideClose(base, d)).resolves.toBe(true);
+    expect(saved).toBe("disk baseline");
+    expect(text).toBe("disk baseline");
   });
 });

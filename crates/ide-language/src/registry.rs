@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
+    ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
     ("cmake", include_str!("../../../languages/cmake.toml")),
@@ -276,6 +277,27 @@ impl LanguageRegistry {
         self.languages.iter().find(|l| &l.id == id).cloned()
     }
 
+    /// The `framework-ui-modes` mode of a `language` file at `path`: the first
+    /// whose root marker is in a directory above it, up to `project_root` (any
+    /// directory without one: loose files). `None` keeps the language's own
+    /// `ui-mode`.
+    pub fn framework_ui_mode(&self, language: &LanguageId, path: &Path, project_root: Option<&Path>) -> Option<String> {
+        let cfg = self.languages.iter().find(|l| &l.id == language)?;
+        cfg.framework_ui_modes
+            .iter()
+            .find(|f| crate::marked_root(project_root, path, &f.root_markers).is_some())
+            .map(|f| f.ui_mode.clone())
+    }
+
+    /// Creating or removing `path` can change a file's `framework_ui_mode`:
+    /// it is a framework's root marker.
+    pub fn is_framework_marker(&self, path: &Path) -> bool {
+        self.languages
+            .iter()
+            .flat_map(|l| &l.framework_ui_modes)
+            .any(|f| f.root_markers.iter().any(|m| crate::markers::is_marker_path(path, m)))
+    }
+
     /// Detects by Override File Type, exact file name, then file-name pattern
     /// (`Dockerfile.*`), then extension (longest compound first, e.g. `d.ts`),
     /// then hashbang / first line; falls back to plaintext. The user's patterns
@@ -348,8 +370,10 @@ mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
 
-    /// `name`s exported by `@codemirror/language-data` (the UI resolves `ui-mode` against these).
+    /// `name`s exported by `@codemirror/language-data` or built into `src/editor/core/cm/languages.ts`
+    /// (the UI resolves `ui-mode` against these).
     const UI_MODES: &[&str] = &[
+        "Batch",
         "C",
         "C++",
         "CQL",
@@ -511,6 +535,7 @@ mod tests {
         assert_eq!(reg.detect(Path::new("script"), Some("#!/usr/bin/env python3")).as_str(), "python");
         assert_eq!(detect(&reg, "README"), "plaintext");
         assert_eq!(detect(&reg, "unknown.zzz"), "plaintext");
+        assert_eq!(reg.get(&LanguageId::new("bat")).unwrap().line_comment.as_deref(), Some("@REM"));
         let rust = reg.get(&LanguageId::new("rust")).unwrap();
         assert_eq!(rust.language_servers[0].name, "rust-analyzer");
     }
@@ -550,6 +575,37 @@ mod tests {
             assert!(angular.require_root_marker && !angular.fallback, "{lang}");
             assert_eq!(angular.root_markers, ["angular.json", "node_modules/@angular/core"], "{lang}");
         }
+    }
+
+    #[test]
+    fn html_of_angular_projects_is_an_angular_template() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mode = |lang: &str, file: &str| reg.framework_ui_mode(&LanguageId::new(lang), &root.join(file), Some(root));
+        std::fs::create_dir_all(root.join("apps/web/node_modules/@angular/core")).unwrap();
+        std::fs::create_dir_all(root.join("apps/admin")).unwrap();
+        std::fs::write(root.join("apps/admin/angular.json"), "{}").unwrap();
+        assert_eq!(mode("html", "apps/web/src/app/app.html").as_deref(), Some("Angular Template"));
+        assert_eq!(mode("html", "apps/admin/src/index.html").as_deref(), Some("Angular Template"));
+        assert_eq!(mode("html", "docs/index.html"), None);
+        assert_eq!(mode("typescript", "apps/web/src/app/app.ts"), None);
+        assert!(reg.is_framework_marker(&root.join("apps/admin/angular.json")));
+        assert!(!reg.is_framework_marker(&root.join("apps/admin/package.json")));
+    }
+
+    #[test]
+    fn markers_outside_the_project_do_not_make_angular_templates() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        // A stray `~/node_modules/@angular/core` above an unrelated project.
+        std::fs::create_dir_all(tmp.path().join("node_modules/@angular/core")).unwrap();
+        let project = tmp.path().join("work/site");
+        let page = project.join("index.html");
+        assert_eq!(reg.framework_ui_mode(&LanguageId::new("html"), &page, Some(&project)), None);
+        // Loose files (LightEdit) have no project to stop at.
+        let loose = reg.framework_ui_mode(&LanguageId::new("html"), &page, None);
+        assert_eq!(loose.as_deref(), Some("Angular Template"));
     }
 
     #[test]
@@ -621,7 +677,8 @@ mod tests {
     fn ui_modes_exist_in_codemirror_language_data() {
         for (name, src) in BUILTIN {
             let cfg = parse(src).unwrap();
-            if let Some(mode) = &cfg.ui_mode {
+            let framework_modes = cfg.framework_ui_modes.iter().map(|f| &f.ui_mode);
+            for mode in cfg.ui_mode.iter().chain(framework_modes) {
                 assert!(UI_MODES.contains(&mode.as_str()), "{name}: ui-mode {mode:?} is not a language-data name");
             }
         }
@@ -679,6 +736,8 @@ mod tests {
             ("deploy.sh", "shellscript"),
             (".zshrc", "shellscript"),
             ("Build.ps1", "powershell"),
+            ("build.bat", "bat"),
+            ("run.cmd", "bat"),
             ("schema.sql", "sql"),
             ("api.http", "http"),
             ("api.rest", "http"),

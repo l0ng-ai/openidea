@@ -10,7 +10,7 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
-import { Icon, IconButton, fileIconName } from "@/ui";
+import { Icon, IconButton, Popup, fileIconName } from "@/ui";
 import {
   IMAGE_EXTENSIONS,
   MAX_IMAGE_BYTES,
@@ -27,6 +27,7 @@ import {
   type FileRef,
 } from "./composerModel";
 import { composerDraft, updateComposer, useAgents } from "./store";
+import { useCompletionAnchor } from "./useCompletionAnchor";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
 
@@ -127,13 +128,14 @@ export function Composer(props: ComposerProps) {
       .map((command) => ({ kind: "command", command }));
   }, [completion, files, props.commands]);
   const open = !!completion && items.length > 0;
+  const completionAnchor = useCompletionAnchor(ref, open ? completion.to : null, text);
 
-  const setText = (value: string, caret?: number) => {
+  const setText = (value: string, caret?: number, restoreSelection = true) => {
     updateComposer(id, { text: value });
     const c = caret ?? value.length;
     setCompletion(completionAt(value, c));
     setActive(0);
-    if (caret !== undefined) {
+    if (caret !== undefined && restoreSelection) {
       requestAnimationFrame(() => {
         ref.current?.focus();
         ref.current?.setSelectionRange(caret, caret);
@@ -281,36 +283,49 @@ export function Composer(props: ComposerProps) {
       {...OWNS_FILE_DROP}
       onClick={() => ref.current?.focus()}
     >
-      {open && (
-        <div className={styles.popup} role="listbox" aria-label={tx(completion.kind === "file" ? "Files" : "Commands")}>
-          {items.map((item, i) => (
-            <div
-              key={item.kind === "file" ? item.path : item.command.name}
-              role="option"
-              aria-selected={i === active}
-              className={clsx(styles.item, i === active && styles.active)}
-              onMouseEnter={() => setActive(i)}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                accept(item);
-              }}
-            >
-              {item.kind === "file" ? (
-                <>
-                  <Icon name={fileIconName(basename(item.rel))} size={16} />
-                  <span className={styles.itemName}>{basename(item.rel)}</span>
-                  <span className={styles.itemDetail}>{item.rel}</span>
-                </>
-              ) : (
-                <>
-                  <span className={styles.itemName}>/{item.command.name}</span>
-                  {item.command.hint && <span className={styles.itemHint}>{item.command.hint}</span>}
-                  <span className={styles.itemDetail}>{item.command.description}</span>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
+      {open && completionAnchor && (
+        <Popup
+          open
+          anchor={completionAnchor}
+          placement="bottom-start"
+          autoFocus={false}
+          restoreFocus={false}
+          closeOnOutsideClick={false}
+          onClose={() => setCompletion(null)}
+          className={styles.popup}
+          role="listbox"
+          aria-label={tx(completion.kind === "file" ? "Files" : "Commands")}
+        >
+          <div className={styles.items}>
+            {items.map((item, i) => (
+              <div
+                key={item.kind === "file" ? item.path : item.command.name}
+                role="option"
+                aria-selected={i === active}
+                className={clsx(styles.item, i === active && styles.active)}
+                onMouseEnter={() => setActive(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  accept(item);
+                }}
+              >
+                {item.kind === "file" ? (
+                  <>
+                    <Icon name={fileIconName(basename(item.rel))} size={16} />
+                    <span className={styles.itemName}>{basename(item.rel)}</span>
+                    <span className={styles.itemDetail}>{item.rel}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className={styles.itemName}>/{item.command.name}</span>
+                    {item.command.hint && <span className={styles.itemHint}>{item.command.hint}</span>}
+                    <span className={styles.itemDetail}>{item.command.description}</span>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </Popup>
       )}
       {images.length > 0 && (
         <div className={styles.images} onClick={(e) => e.stopPropagation()}>
@@ -339,7 +354,7 @@ export function Composer(props: ComposerProps) {
         value={text}
         aria-label={tx("Message")}
         placeholder={tx(props.placeholder)}
-        onChange={(e) => setText(e.target.value, undefined)}
+        onChange={(e) => setText(e.target.value, e.target.selectionStart, false)}
         onSelect={(e) => setCompletion(completionAt(e.currentTarget.value, e.currentTarget.selectionStart))}
         onBlur={() => setCompletion(null)}
         onKeyDown={onKeyDown}

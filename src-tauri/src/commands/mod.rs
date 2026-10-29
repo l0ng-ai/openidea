@@ -28,6 +28,7 @@ pub mod http;
 pub mod java;
 pub mod lsp;
 pub mod nav;
+pub mod notebook;
 pub mod perf;
 pub mod plugin;
 pub mod profiler;
@@ -96,6 +97,17 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_delete,
         agent::agent_changes,
         agent::agent_base_text,
+        notebook::notebook_open,
+        notebook::notebook_get,
+        notebook::notebook_edit,
+        notebook::notebook_save,
+        notebook::notebook_reload,
+        notebook::notebook_undo,
+        notebook::notebook_redo,
+        notebook::notebook_close,
+        notebook::notebook_execute,
+        notebook::notebook_interrupt,
+        notebook::notebook_restart,
         fs::fs_read_dir,
         bytes::fs_probe,
         bytes::fs_read_range,
@@ -118,6 +130,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_save,
         doc::doc_save_all,
         doc::doc_snapshot,
+        doc::doc_ui_mode,
         doc::doc_set_encoding,
         doc::doc_set_line_ending,
         doc::doc_outline,
@@ -201,6 +214,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_branches,
         vcs::vcs_stashes,
         vcs::vcs_stage,
+        vcs::vcs_add_to_ignore,
         vcs::vcs_unstage,
         vcs::vcs_stage_patch,
         vcs::vcs_discard,

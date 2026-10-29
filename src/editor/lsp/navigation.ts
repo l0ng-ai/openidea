@@ -46,7 +46,7 @@ import {
   localHighlights,
   type DeclarationTarget,
 } from "./syntaxFallback";
-import { showHint } from "./hint";
+import { showHint, showPendingHint } from "./hint";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
 import { identifierAt, readManyFileLines } from "./files";
 import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
@@ -166,7 +166,12 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   const declaration = kind === "definition" || kind === "declaration";
   let serverDown = false;
   try {
-    locs = dedupeLocations(await gotoAfterEdits(view, () => lspRequest(() => commands.lspGoto(doc.doc, pos, kind))));
+    const done = showPendingHint(view, tx`Finding navigation target…`);
+    try {
+      locs = dedupeLocations(await gotoAfterEdits(view, () => lspRequest(() => commands.lspGoto(doc.doc, pos, kind))));
+    } finally {
+      done();
+    }
   } catch (e) {
     if (isCancelled(e) || !declaration) {
       reportLspError(view, e, true);

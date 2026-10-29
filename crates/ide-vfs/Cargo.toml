@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 dunce.workspace = true
+gix = { workspace = true, features = ["sha1"] }
 ide-core.workspace = true
 serde.workspace = true
 specta.workspace = true

@@ -39,6 +39,17 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.title[data-unread] {
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.unreadDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
 .detail {
   flex: 1 1 0;
   min-width: 0;

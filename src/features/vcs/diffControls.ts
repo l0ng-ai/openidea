@@ -5,7 +5,7 @@
  */
 import { StateEffect, StateField, type Extension, type Range } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet } from "@codemirror/view";
-import { getChunks, type Chunk, type MergeView } from "@codemirror/merge";
+import { getChunks, getOriginalDoc, type Chunk, type MergeView } from "@codemirror/merge";
 import { iconMarkup } from "@/ui";
 import { transferChunk } from "./diffOptions";
 
@@ -15,6 +15,16 @@ export function applyChunk(mv: MergeView, index: number, source: "a" | "b") {
   if (!chunk) return;
   const [src, dst] = source === "a" ? [mv.a, mv.b] : [mv.b, mv.a];
   dst.dispatch({ changes: transferChunk(chunk, source, src.state.doc, dst.state.doc), userEvent: "revert" });
+}
+
+/** Reverts a unified change with the same line-boundary handling as the split viewer. */
+export function revertUnifiedChunk(view: EditorView, pos: number) {
+  const chunk = getChunks(view.state)?.chunks.find((c) => c.fromB <= pos && c.endB >= pos);
+  if (!chunk) return;
+  view.dispatch({
+    changes: transferChunk(chunk, "a", getOriginalDoc(view.state), view.state.doc),
+    userEvent: "revert",
+  });
 }
 
 /** A ">>" / "<<" button; the chunk index comes from the nearest `data-chunk` (itself included). */

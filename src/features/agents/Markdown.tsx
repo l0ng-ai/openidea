@@ -12,7 +12,7 @@ import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { copyText } from "@/ui";
 import { editorService } from "@/workbench/contributions";
-import { pathLink, type PathLink } from "./conversation";
+import { fileHref, pathLink, type PathLink } from "./conversation";
 import styles from "./Session.module.css";
 
 const marked = new Marked({ gfm: true, breaks: true });
@@ -131,7 +131,12 @@ export function Markdown({ text, cwd }: { text: string; cwd: string }) {
         const a = target.closest("a");
         if (!a) return;
         e.preventDefault();
-        if (/^https?:/i.test(a.href)) void openExternalUrl(a.href);
+        const href = a.getAttribute("href") ?? "";
+        if (/^https?:/i.test(href)) void openExternalUrl(href);
+        else {
+          const link = fileHref(href, cwd);
+          if (link) openPathLink(link);
+        }
       }}
       dangerouslySetInnerHTML={{ __html: html }}
     />

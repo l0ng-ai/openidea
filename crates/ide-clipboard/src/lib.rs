@@ -7,9 +7,12 @@
 //! in full rather than rendered on demand, so no window or message loop is
 //! needed and the list survives after `CloseClipboard`.
 //!
-//! Other platforms keep file lists elsewhere (`public.file-url` on macOS,
-//! `text/uri-list` on X11) and are not wired up: [`files`] is empty and
-//! [`set_files`] fails there.
+//! macOS keeps one `public.file-url` item per file on the general
+//! `NSPasteboard`; `NSURL` reads and writes them, so Finder's copies paste here
+//! and ours paste in Finder.
+//!
+//! Other platforms (`text/uri-list` on X11) are not wired up: [`files`] is
+//! empty and [`set_files`] fails there.
 
 use std::path::PathBuf;
 
@@ -218,7 +221,78 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use objc2::ClassType;
+    use objc2::rc::{Retained, autoreleasepool};
+    use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
+    use objc2_app_kit::{
+        NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting,
+    };
+    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSURL};
+    use std::path::PathBuf;
+
+    /// `NSURL` as the one class to read, limited to file URLs: a web link the
+    /// user copied is not a file to paste.
+    fn read_file_urls<R>(
+        f: impl FnOnce(&NSPasteboard, &NSArray<AnyClass>, &NSDictionary<NSPasteboardReadingOptionKey, AnyObject>) -> R,
+    ) -> R {
+        autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            let classes = NSArray::from_slice(&[NSURL::class()]);
+            let yes = NSNumber::new_bool(true);
+            // SAFETY: the key is an AppKit constant, valid for the process' lifetime.
+            let key = unsafe { NSPasteboardURLReadingFileURLsOnlyKey };
+            let options = NSDictionary::from_slices(&[key], &[yes.as_ref() as &AnyObject]);
+            f(&board, &classes, &options)
+        })
+    }
+
+    pub fn has_files() -> bool {
+        // SAFETY: the class list holds `NSURL`, which reads from pasteboards,
+        // and the option takes an `NSNumber`.
+        read_file_urls(|board, classes, options| unsafe {
+            board.canReadObjectForClasses_options(classes, Some(options))
+        })
+    }
+
+    pub fn files() -> Vec<PathBuf> {
+        read_file_urls(|board, classes, options| {
+            // SAFETY: as in `has_files`; every object read for `NSURL` is one.
+            let Some(objects) = (unsafe { board.readObjectsForClasses_options(classes, Some(options)) }) else {
+                return Vec::new();
+            };
+            objects
+                .iter()
+                .filter_map(|object| object.downcast::<NSURL>().ok())
+                .filter_map(|url| url.to_file_path())
+                // Finder ends a folder's URL in `/`; the project view names it without.
+                .map(|path| path.components().collect())
+                .collect()
+        })
+    }
+
+    pub fn set_files(paths: &[PathBuf]) -> bool {
+        autoreleasepool(|_| {
+            // Folders get a directory URL (ending in `/`), as Finder writes them.
+            let urls: Vec<Retained<NSURL>> = paths
+                .iter()
+                .filter_map(|p| if p.is_dir() { NSURL::from_directory_path(p) } else { NSURL::from_file_path(p) })
+                .collect();
+            if urls.is_empty() {
+                return false;
+            }
+            let writers: Vec<&ProtocolObject<dyn NSPasteboardWriting>> =
+                urls.iter().map(|url| ProtocolObject::from_ref(&**url)).collect();
+            let board = NSPasteboard::generalPasteboard();
+            // Replacing the list also drops the text the user copied before.
+            board.clearContents();
+            board.writeObjects(&NSArray::from_slice(&writers))
+        })
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use std::path::PathBuf;
 

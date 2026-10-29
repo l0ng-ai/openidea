@@ -110,6 +110,17 @@ pub async fn vcs_stage(window: Window, state: State<'_, AppState>, paths: Vec<Pa
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_add_to_ignore(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<PathBuf>,
+    destination: IgnoreDestination,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_add_to_ignore(&state.host, window.label(), paths, destination).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_unstage(window: Window, state: State<'_, AppState>, paths: Vec<PathBuf>) -> IdeResult<()> {
     ide_host::ops::vcs::vcs_unstage(&state.host, window.label(), paths).await
 }

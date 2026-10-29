@@ -11,6 +11,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+dunce.workspace = true
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -62,6 +63,7 @@ ide-spell.workspace = true
 ide-ssh.workspace = true
 ide-remote.workspace = true
 ide-host.workspace = true
+ide-notebook.workspace = true
 ide-jsonrpc.workspace = true
 ide-tools = { path = "../crates/ide-tools" }
 ide-plugin = { path = "../crates/ide-plugin" }

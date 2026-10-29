@@ -48,12 +48,17 @@ export interface DocBackend {
   highlights(doc: DocId): Promise<SyntaxHighlights>;
   selectionRanges(doc: DocId, offset: number): Promise<Range[]>;
   languages(): Promise<LanguageInfo[]>;
+  /** The `DocumentInfo.uiMode` a file would open with, without opening it (previews). */
+  uiModeOf?(path: string): Promise<string | null>;
   onPatched(handler: (e: DocPatchedEvent) => void): () => void;
   onDirty(handler: (e: { doc: DocId; dirty: boolean }) => void): () => void;
   /** Files changed on disk (used to refresh nothing but closed-file state). */
   onFsChanged?(handler: (e: { removed: string[] }) => void): () => void;
-  /** An open document's language changed (Settings › File Types, Override File Type). */
-  onLanguage?(handler: (e: { doc: DocId; language: string }) => void): () => void;
+  /**
+   * An open document's language changed (Settings › File Types, Override File
+   * Type), or its own mode (`DocumentInfo.uiMode`).
+   */
+  onLanguage?(handler: (e: { doc: DocId; language: string; uiMode: string | null }) => void): () => void;
 }
 
 export const ipcBackend: DocBackend = {
@@ -70,6 +75,7 @@ export const ipcBackend: DocBackend = {
   highlights: (doc) => call(commands.docHighlights(doc)),
   selectionRanges: (doc, offset) => call(commands.docSelectionRanges(doc, offset)),
   languages: () => commands.languages(),
+  uiModeOf: (path) => call(commands.docUiMode(path)),
   onPatched: (h) => onIdeEvent("docPatched", (e) => h(e)),
   onDirty: (h) => onIdeEvent("docDirty", (e) => h(e)),
   onFsChanged: (h) => onIdeEvent("fsChanged", (e) => h(e)),
@@ -89,6 +95,7 @@ interface MemDoc {
   lineEnding: LineEnding;
   readOnly: boolean;
   language: string;
+  uiMode?: string;
   uri?: string;
 }
 
@@ -115,6 +122,8 @@ const EXT_LANG: Record<string, string> = {
   cpp: "cpp",
   h: "c",
   sh: "shellscript",
+  bat: "bat",
+  cmd: "bat",
   sql: "sql",
   xml: "xml",
 };
@@ -220,6 +229,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     indent: { tabSize: 2, insertSpaces: true },
   },
   {
+    id: "bat",
+    name: "Batch",
+    extensions: ["bat", "cmd"],
+    uiMode: "Batch",
+    lineComment: "@REM",
+    blockComment: null,
+    indent: { tabSize: 4, insertSpaces: true },
+  },
+  {
     id: "plaintext",
     name: "Plain Text",
     extensions: ["txt"],
@@ -316,7 +334,14 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
     readOnly: d.readOnly,
     dirty: d.text !== d.saved,
     ...(d.uri ? { uri: d.uri } : {}),
+    ...(d.uiMode ? { uiMode: d.uiMode } : {}),
   });
+  // An Angular project's templates (an `angular.json` above them), like the backend's `framework-ui-modes`.
+  const uiModeOf = (path: string) =>
+    path.endsWith(".html") &&
+    [...store.keys()].some((f) => f.endsWith("/angular.json") && path.startsWith(f.slice(0, -"angular.json".length)))
+      ? "Angular Template"
+      : null;
   const get = (doc: DocId) => {
     const d = docs.get(doc);
     if (!d) throw new IpcError({ kind: "notFound", message: `document ${doc} is not open` });
@@ -363,6 +388,8 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
         readOnly: false,
         language: EXT_LANG[ext] ?? "plaintext",
       };
+      const uiMode = uiModeOf(path);
+      if (uiMode) d.uiMode = uiMode;
       docs.set(d.id, d);
       byPath.set(path, d.id);
       return info(d);
@@ -500,6 +527,9 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
     async languages() {
       return MEM_LANGUAGES;
     },
+    async uiModeOf(path) {
+      return uiModeOf(path);
+    },
     onPatched(h) {
       patched.add(h);
       return () => patched.delete(h);
@@ -527,9 +557,4 @@ let current: DocBackend | null = null;
 /** The backend in use: IPC inside Tauri, in-memory in a plain browser. */
 export function docBackend(): DocBackend {
   return (current ??= isTauri() ? ipcBackend : createMemoryBackend());
-}
-
-/** Test hook. */
-export function _setDocBackend(b: DocBackend | null) {
-  current = b;
 }

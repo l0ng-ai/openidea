@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { monoFontFamily, uiFontFamily } from "./fonts";
+import { monoFontFamily, quoteFontFamily, uiFontFamily } from "./fonts";
 
 const BASE = "var(--font-mono)";
 
@@ -10,6 +10,10 @@ describe("monoFontFamily", () => {
     ["", "", `"JetBrains Mono Variable", "JetBrains Mono", ${BASE}`],
     [undefined, "", `"JetBrains Mono Variable", "JetBrains Mono", ${BASE}`],
     ["JetBrains Mono", "PingFang SC", `"JetBrains Mono Variable", "JetBrains Mono", "PingFang SC", ${BASE}`],
+    ["Inter", "", `"Inter Variable", "Inter", ${BASE}`],
+    ["Fira Code", "Inter", `"Fira Code", "Inter Variable", "Inter", ${BASE}`],
+    ["Inter", "JetBrains Mono", `"Inter Variable", "Inter", "JetBrains Mono Variable", "JetBrains Mono", ${BASE}`],
+    ["inter", "jetbrains mono", `"Inter Variable", "Inter", "JetBrains Mono Variable", "JetBrains Mono", ${BASE}`],
     ["Fira Code", "", `"Fira Code", ${BASE}`],
     ['"Cascadia Code"', " Microsoft YaHei ", `"Cascadia Code", "Microsoft YaHei", ${BASE}`],
   ])("%j + fallback %j", (family, fallback, expected) => {
@@ -21,6 +25,13 @@ describe("monoFontFamily", () => {
       '"Not Installed", "JetBrains Mono Variable", monospace',
     );
   });
+});
+
+it("escapes CSS special characters without turning a family into a list", () => {
+  expect(quoteFontFamily('A"B\\C,D')).toBe('"A\\22 B\\5c C,D"');
+  expect(quoteFontFamily("A\nB")).toBe('"A\\a B"');
+  expect(uiFontFamily("JetBrains Mono")).toContain('"JetBrains Mono Variable"');
+  expect(uiFontFamily("Inter")).toContain('"Inter Variable"');
 });
 
 describe("uiFontFamily", () => {

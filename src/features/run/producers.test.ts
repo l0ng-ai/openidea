@@ -173,6 +173,17 @@ describe("single-file producers (scratches)", () => {
       "js-debug",
     );
     expect(run(scratch("tool", "#!/usr/bin/env python3\n"))).toMatchObject({ command: "/bin/python3", args: ["tool"] });
+    expect(run(scratch("build.bat"), { ...ALL, windows: true })).toMatchObject({
+      command: "cmd.exe",
+      args: ["/c", "build.bat"],
+      cwd: SCRATCH,
+    });
+    expect(run({ path: `${ROOT}/scripts/run.cmd`, root: ROOT, configs: [] }, { ...ALL, windows: true })).toMatchObject({
+      command: "cmd.exe",
+      args: ["/c", "run.cmd"],
+      cwd: "scripts",
+    });
+    expect(produceContext(scratch("build.bat"), ALL)).toBeNull();
     expect(produceContext(scratch("notes", "just text"), ALL)).toBeNull();
     expect(shebang("#!/usr/bin/env node")).toEqual(["node"]);
   });

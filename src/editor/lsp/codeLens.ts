@@ -9,11 +9,11 @@ import { EditorSelection, MapMode, StateEffect, StateField, type Extension, type
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { codeLenses, type CodeLens } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
-import { commands, nextRequestId, type OutlineItem, type SymbolKind } from "@/platform/ipc";
+import { commands, nextRequestId, type OutlineItem, type RequestId, type SymbolKind } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
 import { posToOffset } from "./positions";
-import { featureBackoff, onLspRefresh } from "./availability";
+import { featureBackoff, onLspRefresh, onServerSettled } from "./availability";
 import { editorPrefs } from "@/platform/editorSettings";
 import { authorLabel, authorSummary, authorTooltip, blameFor, onBlameInvalidated } from "./authorLens";
 import { tx } from "@/platform/i18n";
@@ -106,14 +106,17 @@ function openUsages(view: EditorView, offset: number) {
 }
 
 class UsagesLensPlugin {
-  private refresh = debounce(() => void this.run(), 900);
+  private schedule = debounce(() => void this.run(), 900);
   /** `${line}:${col}:${name}` → count, valid for `cacheDoc`. */
   private cache = new Map<string, number>();
   private cacheDoc: Text | null = null;
   private outline: { doc: Text; targets: LensTarget[] } | null = null;
   private generation = 0;
+  private pending = new Set<RequestId>();
+  private incomplete = false;
   private unsubscribe: () => void;
   private offReady: () => void;
+  private offSettled: () => void;
   private offBlame: () => void;
 
   constructor(private view: EditorView) {
@@ -126,6 +129,9 @@ class UsagesLensPlugin {
       this.cache.clear();
       this.refresh();
     });
+    this.offSettled = onServerSettled(() => {
+      if (this.incomplete) this.refresh();
+    });
     this.offBlame = onBlameInvalidated(() => this.refresh());
   }
 
@@ -133,12 +139,23 @@ class UsagesLensPlugin {
     if (u.docChanged || u.viewportChanged) this.refresh();
   }
 
+  private cancel() {
+    this.generation++;
+    for (const id of this.pending) void commands.cancelRequest(id).catch(() => {});
+    this.pending.clear();
+  }
+
+  private refresh() {
+    this.cancel();
+    this.schedule();
+  }
+
   private async run() {
     const view = this.view;
     if (!view.dom.isConnected) return;
     const doc = docOf(view);
     if (!doc) return;
-    const gen = ++this.generation;
+    const gen = this.generation;
     const usages = usagesEnabled() && !usagesBackoff.active(doc.doc);
     const authors = authorEnabled() && !doc.virtual;
     if (!usages && !authors) {
@@ -146,6 +163,8 @@ class UsagesLensPlugin {
       return;
     }
     const text = view.state.doc;
+    const wanted = () => gen === this.generation && view.state.doc === text;
+    this.incomplete = false;
     // Blame runs beside the reference requests; it never holds up the counts.
     const blame = authors ? blameFor(doc.path, text) : Promise.resolve(null);
     if (this.cacheDoc !== text) {
@@ -154,8 +173,8 @@ class UsagesLensPlugin {
     }
     try {
       if (this.outline?.doc !== text) {
-        const items = await lspRequest(() => commands.docOutline(doc.doc));
-        if (gen !== this.generation || view.state.doc !== text) return;
+        const items = await lspRequest(() => commands.docOutline(doc.doc), wanted);
+        if (!wanted()) return;
         this.outline = { doc: text, targets: lensTargets(items) };
       }
       const { from, to } = view.viewport;
@@ -170,21 +189,30 @@ class UsagesLensPlugin {
       for (let i = 0; i < todo.length && !unavailable; i += CONCURRENCY) {
         await Promise.all(
           todo.slice(i, i + CONCURRENCY).map(async (t) => {
+            const request = nextRequestId();
             try {
-              const { locations: refs } = await lspRequest(() =>
-                commands.lspReferences(nextRequestId(), doc.doc, { line: t.line, col: t.col }, false, true),
-              );
-              this.cache.set(key(t), refs.length);
+              const { locations: refs, incomplete } = await lspRequest(() => {
+                this.pending.add(request);
+                // Opening candidate files for each count triggers expensive server analysis.
+                // Only an explicit Find Usages should widen the server's scope.
+                return commands.lspReferences(request, doc.doc, { line: t.line, col: t.col }, false, false);
+              }, wanted);
+              if (wanted()) {
+                if (incomplete) this.incomplete = true;
+                else this.cache.set(key(t), refs.length);
+              }
             } catch (e) {
-              if (isUnavailable(e)) unavailable = true;
+              if (wanted() && isUnavailable(e)) unavailable = true;
+            } finally {
+              this.pending.delete(request);
             }
           }),
         );
-        if (gen !== this.generation || view.state.doc !== text) return;
+        if (!wanted()) return;
       }
       if (unavailable) usagesBackoff.mark(doc.doc);
       const lines = await blame;
-      if (gen !== this.generation || view.state.doc !== text) return;
+      if (!wanted()) return;
       const lenses: CodeLens[] = [];
       for (const t of visible) {
         const offset = posToOffset(text, { line: t.line, col: t.col });
@@ -196,23 +224,24 @@ class UsagesLensPlugin {
         lenses.push({
           pos: offset,
           title: usagesLabel(n),
-          tooltip: n ? tx`Show usages of ${t.name}` : undefined,
+          tooltip: tx`Show usages of ${t.name}`,
           order: 10,
-          run: n ? (v) => openUsages(v, Math.min(offset, v.state.doc.length)) : undefined,
+          run: (v) => openUsages(v, Math.min(offset, v.state.doc.length)),
         });
       }
       if (!sameLenses(view.state.field(lensField), lenses)) view.dispatch({ effects: setLenses.of(lenses) });
     } catch (e) {
-      if (isUnavailable(e)) usagesBackoff.mark(doc.doc);
+      if (wanted() && isUnavailable(e)) usagesBackoff.mark(doc.doc);
     }
   }
 
   destroy() {
-    this.refresh.cancel();
+    this.schedule.cancel();
     this.unsubscribe();
     this.offReady();
+    this.offSettled();
     this.offBlame();
-    this.generation++;
+    this.cancel();
   }
 }
 
