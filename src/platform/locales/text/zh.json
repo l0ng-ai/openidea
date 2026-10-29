@@ -3459,6 +3459,7 @@
   "'{name}': listening for the remote JVM on port {port}": "'{name}'：正在端口 {port} 上监听远程 JVM",
   "“{name}” can't be debugged": "无法调试“{name}”",
   "It has no debug adapter.": "它没有调试适配器。",
+  "The Java debugger can't start this command itself. Debug an Application, Spring Boot, Maven or Gradle configuration, or start the JVM with a JDWP agent and attach with a Remote JVM Debug configuration.": "Java 调试器无法自行启动此命令。请调试“应用程序”、Spring Boot、Maven 或 Gradle 配置，或者用 JDWP 代理启动 JVM，再用“远程 JVM 调试”配置附加。",
   "Attach the Java debugger to a JVM listening for JDWP (arg: { name, module, hostName, port, process })": "将 Java 调试器附加到监听 JDWP 的 JVM（参数：{ name, module, hostName, port, process }）",
   "'{name}' has compile errors; debugging the last compiled classes": "'{name}' 存在编译错误；将调试上次编译的类",
   "Attach to Godot": "附加到 Godot",

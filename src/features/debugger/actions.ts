@@ -1,5 +1,5 @@
 /** Debugger actions (ids match `keymaps/intellij-macos.ts`). */
-import { registerActions, type Action } from "@/platform/actions";
+import { executeAction, getAction, registerActions, type Action } from "@/platform/actions";
 import { call, commands, isCancelled, isTauri, nextRequestId, type RunConfig, type RunId } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
@@ -242,6 +242,11 @@ async function startConfig(arg: unknown) {
       return;
     }
     config = configs[0]!;
+    // Through Run's debug flow: Maven / Gradle / scripts start the JVM with a JDWP agent there.
+    if (getAction("run.debugConfig")) {
+      await executeAction("run.debugConfig", config);
+      return;
+    }
   }
   if (isRemoteConfig(config)) {
     await startRemote(config, root);

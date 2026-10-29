@@ -139,6 +139,29 @@ pub fn shell_env() -> impl Iterator<Item = (&'static OsStr, &'static OsStr)> {
         .map(|(k, v)| (k.as_os_str(), v.as_os_str()))
 }
 
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+/// File names an executable `name` may have on disk. Unix: the name itself. Windows: the
+/// name when it already ends in a `PATHEXT` extension, else the name with each
+/// extension (an extensionless file is not executable there).
+pub fn executable_names(name: &str, windows: bool, pathext: Option<&str>) -> Vec<String> {
+    if !windows {
+        return vec![name.to_owned()];
+    }
+    let exts: Vec<&str> = pathext
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or(DEFAULT_PATHEXT)
+        .split(';')
+        .map(str::trim)
+        .filter(|e| e.starts_with('.') && e.len() > 1)
+        .collect();
+    let lower = name.to_ascii_lowercase();
+    if exts.iter().any(|e| lower.ends_with(&e.to_ascii_lowercase())) {
+        return vec![name.to_owned()];
+    }
+    exts.iter().map(|e| format!("{name}{}", e.to_ascii_lowercase())).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
