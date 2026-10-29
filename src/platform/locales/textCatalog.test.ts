@@ -128,6 +128,7 @@ const UNTRANSLATED = new Set<string>([
   "Spring Boot",
   "PostgreSQL",
   "Pyright",
+  "pytest",
   "Rust",
   "Rustfmt",
   "SingleStore",
@@ -195,7 +196,9 @@ const UNTRANSLATED = new Set<string>([
   "PascalCase",
   "pyproject.toml, .git",
   "ruff server",
+  "run pytest",
   "snake_case",
+  "tests",
   '{ "section": { "key": "value" } }',
   // Identifiers that only look like text: icon names, error codes, categories, console output
   "app",

@@ -65,15 +65,6 @@ export function resetTemplate(id: string) {
   commit({ templates, deleted: c.deleted.filter((d) => d !== id) });
 }
 
-export function resetAllTemplates() {
-  commit({
-    templates: Object.fromEntries(
-      Object.entries(useLiveTemplates.getState().custom.templates).filter(([id]) => !BUILTIN_IDS.has(id)),
-    ),
-    deleted: [],
-  });
-}
-
 export function isModifiedBuiltin(id: string): boolean {
   return BUILTIN_IDS.has(id) && id in useLiveTemplates.getState().custom.templates;
 }

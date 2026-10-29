@@ -339,5 +339,3 @@ export function ProjectStructurePage() {
     </div>
   );
 }
-
-export default ProjectStructurePage;

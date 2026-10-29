@@ -1350,11 +1350,6 @@ export function editorController(): EditorController {
   return (controller ??= new EditorController());
 }
 
-/** Test hook. */
-export function _setEditorController(c: EditorController | null) {
-  controller = c;
-}
-
 /** "Finder" / "Explorer" / "Files", like IDEA's Open In submenu. */
 function revealLabel(): string {
   const os = usePlatform.getState().os;

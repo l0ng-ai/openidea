@@ -218,6 +218,25 @@ pub fn executable_names(name: &str, windows: bool, pathext: Option<&str>) -> Vec
     exts.iter().map(|e| format!("{name}{}", e.to_ascii_lowercase())).collect()
 }
 
+/// First `search` directory holding `name` (see [`executable_names`]).
+pub fn find_executable_in(
+    name: &str,
+    search: &OsStr,
+    windows: bool,
+    pathext: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let names = executable_names(name, windows, pathext);
+    std::env::split_paths(search)
+        .filter(|d| !d.as_os_str().is_empty())
+        .find_map(|dir| names.iter().map(|n| dir.join(n)).find(|p| p.is_file()))
+}
+
+/// [`find_executable_in`] for this platform (`PATHEXT` from the environment).
+pub fn find_executable(name: &str, search: &OsStr) -> Option<std::path::PathBuf> {
+    let pathext = host_var_os("PATHEXT");
+    find_executable_in(name, search, cfg!(windows), pathext.as_deref().and_then(|p| p.to_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +381,24 @@ mod tests {
         cmd.env("PATH", "/custom");
         prepare(&mut cmd);
         assert_eq!(cmd.get_envs().find(|(k, _)| *k == "PATH").and_then(|(_, v)| v), Some(OsStr::new("/custom")));
+    }
+
+    #[test]
+    fn find_executable_finds_bare_names_on_the_given_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("agent"), "#!/bin/sh\n").unwrap();
+        std::fs::write(b.join("agent.cmd"), "@echo off\n").unwrap();
+        let search = std::env::join_paths([&a, &b]).unwrap();
+        if cfg!(windows) {
+            // The `.cmd` shim wins over a POSIX script `Command` can't start.
+            assert_eq!(find_executable("agent", &search), Some(b.join("agent.cmd")));
+        } else {
+            assert_eq!(find_executable("agent", &search), Some(a.join("agent")));
+        }
+        assert_eq!(find_executable("nope", &search), None);
     }
 }

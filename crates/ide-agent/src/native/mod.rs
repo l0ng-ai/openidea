@@ -21,18 +21,26 @@ use std::sync::Arc;
 /// The newest install of `command` on the `PATH` a child sees, by its `--version`.
 /// Several installs are common (npm, Homebrew, the vendor's own installer), and the first
 /// on `PATH` is often an old one that the service no longer serves the current models to.
-/// A path, or a name found once (or not at all), is used as it is.
+/// A path, or a name not found on `PATH`, is used as it is; a single match returns its
+/// resolved path so Windows `PATHEXT` shims (`claude.cmd`, `codex.cmd`) start.
 pub(crate) fn newest_install(command: &str) -> String {
-    if Path::new(command).components().count() > 1 {
+    let path = ide_core::process::host_var_os("PATH")
+        .or_else(|| ide_core::process::shell_env().find(|(k, _)| *k == "PATH").map(|(_, v)| v.to_owned()))
+        .unwrap_or_default();
+    newest_install_in(command, &path)
+}
+
+fn newest_install_in(command: &str, search: &std::ffi::OsStr) -> String {
+    if Path::new(command).components().count() > 1 || Path::new(command).is_absolute() {
         return command.to_owned();
     }
-    let path = ide_core::process::host_var_os("PATH")
-        .or_else(|| ide_core::process::shell_env().find(|(k, _)| *k == "PATH").map(|(_, v)| v.to_owned()));
+    let pathext = ide_core::process::host_var_os("PATHEXT");
+    let names =
+        ide_core::process::executable_names(command, cfg!(windows), pathext.as_deref().and_then(|p| p.to_str()));
     let mut seen = Vec::new();
-    let candidates: Vec<PathBuf> = path
-        .iter()
-        .flat_map(std::env::split_paths)
-        .map(|dir| dir.join(command))
+    let candidates: Vec<PathBuf> = std::env::split_paths(search)
+        .filter(|d| !d.as_os_str().is_empty())
+        .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
         .filter(|p| p.is_file())
         .filter(|p| {
             let real = dunce::canonicalize(p).unwrap_or_else(|_| p.clone());
@@ -42,7 +50,7 @@ pub(crate) fn newest_install(command: &str) -> String {
         })
         .collect();
     if candidates.len() < 2 {
-        return command.to_owned();
+        return candidates.into_iter().next().map_or_else(|| command.to_owned(), |p| p.to_string_lossy().into_owned());
     }
     candidates
         .into_iter()
@@ -66,16 +74,6 @@ fn parse_version(text: &str) -> Option<Vec<u64>> {
     })
 }
 
-#[cfg(test)]
-#[test]
-fn versions_are_read_from_either_side_of_the_name() {
-    assert_eq!(parse_version("codex-cli 0.164.0\n"), Some(vec![0, 164, 0]));
-    assert_eq!(parse_version("2.1.312 (Claude Code)"), Some(vec![2, 1, 312]));
-    assert_eq!(parse_version("v1.2"), Some(vec![1, 2]));
-    assert_eq!(parse_version("no version here"), None);
-    assert!(parse_version("codex-cli 0.164.0") > parse_version("codex-cli 0.147.0"));
-}
-
 /// The agent side of an in-process ACP connection.
 pub(crate) trait Shim: Handler {
     /// Called once, before any message arrives: the connection to the client, for
@@ -93,4 +91,37 @@ pub(crate) fn serve<S: Shim>(shim: Arc<S>, client: Arc<dyn Handler>) -> Peer {
     let to_client = Peer::connect_framed(tr, tw, shim.clone(), Framing::Lines);
     shim.attach(to_client);
     Peer::connect_framed(or, ow, client, Framing::Lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn versions_are_read_from_either_side_of_the_name() {
+        assert_eq!(parse_version("codex-cli 0.164.0\n"), Some(vec![0, 164, 0]));
+        assert_eq!(parse_version("2.1.312 (Claude Code)"), Some(vec![2, 1, 312]));
+        assert_eq!(parse_version("v1.2"), Some(vec![1, 2]));
+        assert_eq!(parse_version("no version here"), None);
+        assert!(parse_version("codex-cli 0.164.0") > parse_version("codex-cli 0.147.0"));
+    }
+
+    #[test]
+    fn newest_install_resolves_single_candidate_and_keeps_missing_or_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("claude"), "#!/bin/sh\n").unwrap();
+        std::fs::write(b.join("claude.cmd"), "@echo off\n").unwrap();
+        let search = std::env::join_paths([&a, &b]).unwrap();
+        if cfg!(windows) {
+            assert_eq!(newest_install_in("claude", &search), b.join("claude.cmd").to_string_lossy());
+        } else {
+            assert_eq!(newest_install_in("claude", &search), a.join("claude").to_string_lossy());
+        }
+        assert_eq!(newest_install_in("nope", &search), "nope");
+        assert_eq!(newest_install_in("bin/claude", &search), "bin/claude");
+    }
 }

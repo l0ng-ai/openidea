@@ -14,9 +14,6 @@ export type MarkerKind = "implemented" | "overridden" | "implementing" | "overri
 /** Settings › Gutter Icons groups: ↓ markers and ↑ markers. */
 export type MarkerGroup = "inheritors" | "supers";
 
-export const markerGroup = (kind: MarkerKind): MarkerGroup =>
-  kind === "implemented" || kind === "overridden" ? "inheritors" : "supers";
-
 export const MARKER_ICONS: Record<MarkerKind, string> = {
   implemented: "gutter-implemented",
   overridden: "gutter-overridden",

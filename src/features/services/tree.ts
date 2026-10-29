@@ -93,12 +93,3 @@ export function addServiceMenu(providers = serviceProviders()): MenuItem[] {
   const groups = providers.map((p) => p.addMenu?.() ?? []).filter((g) => g.length > 0);
   return groups.flatMap((g, i) => (i === 0 ? g : [{ kind: "separator" } as MenuItem, ...g]));
 }
-
-/** The selected node and its provider. */
-export function selectedService(): (Located & { contribution: ServiceProviderContribution | undefined }) | null {
-  const { roots, selectedKey } = useServicesTree.getState();
-  if (!selectedKey) return null;
-  const found = indexTree(roots).get(selectedKey);
-  if (!found) return null;
-  return { ...found, contribution: serviceProviders().find((p) => p.id === found.provider) };
-}

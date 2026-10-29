@@ -45,23 +45,6 @@ export const invert = (it: DiffIterable): DiffIterable => create(unchanged(it), 
 export const createUnchanged = (ranges: readonly Range[], length1: number, length2: number) =>
   invert(create(ranges, length1, length2));
 
-/** Both changed and unchanged ranges in order, without empty ones (DiffIterableUtil.iterateAll). */
-export function iterateAll(it: DiffIterable): [Range, boolean][] {
-  const out: [Range, boolean][] = [];
-  let last1 = 0;
-  let last2 = 0;
-  for (const c of it.changes) {
-    const gap = range(last1, c.start1, last2, c.start2);
-    if (!isEmptyRange(gap)) out.push([gap, true]);
-    out.push([c, false]);
-    last1 = c.end1;
-    last2 = c.end2;
-  }
-  const tail = range(last1, it.length1, last2, it.length2);
-  if (!isEmptyRange(tail)) out.push([tail, true]);
-  return out;
-}
-
 /** Changes of sequences of keys compared by equality (DiffIterableUtil.diff). */
 export const diffSequences = <T>(a: readonly T[], b: readonly T[]): DiffIterable =>
   create(diffKeys(a, b), a.length, b.length);

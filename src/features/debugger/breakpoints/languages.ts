@@ -21,11 +21,6 @@ function load() {
     .finally(() => (loading = false));
 }
 
-/** For tests: languages that have a debugger (`null` = unknown, allow everything). */
-export function _setDebuggableLanguages(ids: Iterable<string> | null) {
-  debuggable = ids ? new Set(ids) : null;
-}
-
 /** Whether a new breakpoint may be placed in a file of `language`. */
 export function canPlaceBreakpoint(language: string): boolean {
   if (workflowSettings().debugger.breakpointsAnyFile) return true;

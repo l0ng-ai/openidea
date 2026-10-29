@@ -444,5 +444,3 @@ export function LanguageServersPage() {
     </div>
   );
 }
-
-export default LanguageServersPage;

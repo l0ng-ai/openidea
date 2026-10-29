@@ -245,10 +245,6 @@ function persistTemporary() {
   );
 }
 
-export function isTemporary(id: string | null | undefined): boolean {
-  return !!id && useRun.getState().temporary.includes(id);
-}
-
 /**
  * Selects the configuration for a gutter / context run: a saved or detected
  * configuration with the same id is reused, otherwise `config` becomes a

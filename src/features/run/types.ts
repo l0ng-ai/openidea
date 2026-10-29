@@ -4,12 +4,7 @@
  * command line. Other features contribute types with `registerRunConfigType`.
  */
 import type { RunConfig } from "@/platform/ipc";
-import {
-  registerRunConfigType,
-  runConfigTypes,
-  useRunConfigTypes,
-  type RunConfigTypeContribution,
-} from "@/workbench/contributions";
+import { registerRunConfigType, useRunConfigTypes, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { formatArgs, parseArgs, uid, uniqueName } from "./configs";
 import {
   applicationType,
@@ -301,6 +296,75 @@ const compound: RunConfigTypeContribution = {
   commandLine: () => null,
 };
 
+/**
+ * pytest: what comes after the `pytest` invocation — a target (directory, file,
+ * test id) and options. The command itself is one word (`pytest`, `uv`,
+ * `.venv/bin/pytest`, `python`), the runner args its leading arguments
+ * (`run pytest`, `-m pytest`, none).
+ */
+const pytest: RunConfigTypeContribution = {
+  id: "pytest",
+  label: "pytest",
+  icon: "file-python",
+  description: "Run pytest tests",
+  defaults: { command: "pytest" },
+  debugAdapter: "debugpy",
+  fields: [
+    {
+      key: "command",
+      label: "Command",
+      mono: true,
+      placeholder: "pytest",
+      required: true,
+      hint: "e.g. pytest, uv, poetry, .venv/bin/pytest, python",
+    },
+    {
+      key: "runnerArgs",
+      label: "Runner arguments",
+      mono: true,
+      placeholder: "run pytest",
+      hint: "e.g. `run pytest` for uv/poetry, `-m pytest` for python; empty calls the command itself",
+    },
+    {
+      key: "target",
+      label: "Target",
+      mono: true,
+      placeholder: "tests",
+      hint: "Directory, file or test id; empty runs the whole suite",
+    },
+    { key: "options", label: "pytest options", mono: true, placeholder: "e.g. -x -q --tb=short" },
+  ],
+  commandLine(p) {
+    const args = parseArgs(p.runnerArgs ?? "");
+    if (p.target?.trim()) args.push(...parseArgs(p.target.trim()));
+    args.push(...parseArgs(p.options ?? ""));
+    return { command: p.command?.trim() || "pytest", args };
+  },
+  paramsFrom(c) {
+    if (c.kind !== "pytest") return null;
+    // The runner part (`run pytest`, `-m pytest`, none when the command is
+    // pytest itself); what follows is the target and pytest options.
+    const m = c.args.indexOf("-m");
+    const runner =
+      c.args[0] === "run" && c.args[1] === "pytest"
+        ? 2
+        : m >= 0 && c.args[m + 1] === "pytest"
+          ? m + 2
+          : baseName(c.command).replace(/\.exe$/i, "") === "pytest"
+            ? 0
+            : null;
+    if (runner === null) return null;
+    const rest = c.args.slice(runner);
+    const [target, ...options] = rest;
+    return {
+      command: c.command,
+      runnerArgs: formatArgs(c.args.slice(0, runner)),
+      target: target && !target.startsWith("-") ? formatArgs([target]) : "",
+      options: formatArgs(target && !target.startsWith("-") ? options : rest),
+    };
+  },
+};
+
 export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   shell,
   program,
@@ -308,6 +372,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   gradle,
   maven,
   godot,
+  pytest,
   applicationType,
   springBootType,
   compound,
@@ -321,10 +386,6 @@ export function registerBuiltinTypes(): () => void {
 export function typeFor(kind: string): RunConfigTypeContribution | undefined {
   return useRunConfigTypes.getState().types.get(kind);
 }
-
-export { runConfigTypes };
-
-export const isCompound = (c: Pick<RunConfig, "kind">) => c.kind === COMPOUND;
 
 /** Only Debug applies to `c` (Remote JVM Debug, Go Remote…): it attaches and launches no process. */
 export const isDebugOnly = (c: Pick<RunConfig, "kind">, type = typeFor(c.kind)) => !!type?.debugOnly;

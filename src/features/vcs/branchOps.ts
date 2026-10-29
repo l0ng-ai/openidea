@@ -468,7 +468,3 @@ export function toggleFavoriteBranch(b: Branch) {
     // Favorites last for the session only.
   }
 }
-
-export function notifyNotGit() {
-  notifications().notify({ group: "vcs", level: "warning", title: "The project is not under Git version control" });
-}
