@@ -336,6 +336,7 @@ pub fn configure_jdtls(
     {
         cfg.args.push(format!("--jvm-arg=-javaagent:{}", jar.to_string_lossy()));
     }
+    crate::jdtls::add_default_vm_args(&mut cfg.args);
     let mut all: Vec<Jdk> = Vec::new();
     for j in project_jdk.into_iter().chain(jdks).chain(server_jdk) {
         if !all.contains(j) {
@@ -529,9 +530,12 @@ mod tests {
             &bundles,
             None,
         );
-        assert_eq!(cfg.args[0], "-data");
-        assert!(cfg.args[1].starts_with("/data/lsp/jdtls/"), "{}", cfg.args[1]);
-        assert_eq!(cfg.args[2], "--jvm-arg=-Djava.import.generatesMetadataFilesAtProjectRoot=false");
+        let defaults: Vec<String> = crate::jdtls::DEFAULT_VM_ARGS.iter().map(|a| format!("--jvm-arg={a}")).collect();
+        let n = defaults.len();
+        assert_eq!(cfg.args[..n], defaults, "our JVM options come first");
+        assert_eq!(cfg.args[n], "-data");
+        assert!(cfg.args[n + 1].starts_with("/data/lsp/jdtls/"), "{}", cfg.args[n + 1]);
+        assert_eq!(cfg.args[n + 2], "--jvm-arg=-Djava.import.generatesMetadataFilesAtProjectRoot=false");
         let opts = serde_json::to_value(cfg.initialization_options.clone().unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
         assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": "/jdk8" }));
@@ -600,7 +604,8 @@ mod tests {
         assert!(cfg.args.contains(&agent), "{:?}", cfg.args);
         let mut plain = jdtls();
         configure_jdtls(&mut plain, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], None);
-        assert_ne!(cfg.args[1], plain.args[1], "a separate workspace, so everything is rebuilt with the agent");
+        let data = |c: &LanguageServerConfig| c.args[c.args.iter().position(|a| a == "-data").unwrap() + 1].clone();
+        assert_ne!(data(&cfg), data(&plain), "a separate workspace, so everything is rebuilt with the agent");
         let before = cfg.clone();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], Some(jar));
         assert_eq!(cfg, before, "idempotent");

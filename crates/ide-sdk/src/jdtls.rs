@@ -105,6 +105,80 @@ fn split_script_args(args: &[String]) -> ScriptArgs {
     out
 }
 
+/// JVM options jdtls runs with unless the user's set the same thing: a parallel collector
+/// tuned to give memory back to the OS (resident memory stays near what is live instead of
+/// growing to the maximum heap), a 2 GB heap limit (the JVM's own is a quarter of physical
+/// memory), no JVM logging on stdout (the LSP channel), and no scan for installed JDKs at
+/// start (they are passed as `java.configuration.runtimes`).
+pub const DEFAULT_VM_ARGS: &[&str] = &[
+    "-XX:+UseParallelGC",
+    "-XX:GCTimeRatio=4",
+    "-XX:AdaptiveSizePolicyWeight=90",
+    "-Dsun.zip.disableMemoryMapping=true",
+    "-Xmx2G",
+    "-Xms100m",
+    "-Xlog:disable",
+    "-DDetectVMInstallationsJob.disabled=true",
+    "-Daether.dependencyCollector.impl=bf",
+];
+
+/// What a JVM option sets, so two options setting the same thing can be told apart:
+/// `-Xmx2G` and `-XX:MaxRAMPercentage=50` both set the heap limit.
+fn option_key(arg: &str) -> Option<String> {
+    let key = if let Some(name) = arg.strip_prefix("-XX:") {
+        let name = name.trim_start_matches(['+', '-']);
+        let name = name.split_once('=').map_or(name, |(n, _)| n);
+        match name {
+            "MaxHeapSize" | "MaxRAM" | "MaxRAMPercentage" | "MaxRAMFraction" => "Xmx".to_owned(),
+            "InitialHeapSize" | "InitialRAMPercentage" | "InitialRAMFraction" => "Xms".to_owned(),
+            _ if is_collector(name) => "collector".to_owned(),
+            _ => format!("XX:{name}"),
+        }
+    } else if let Some(prop) = arg.strip_prefix("-D") {
+        format!("D:{}", prop.split_once('=').map_or(prop, |(k, _)| k))
+    } else if arg.starts_with("-Xlog") {
+        "Xlog".to_owned()
+    } else if arg.starts_with("-Xmx") {
+        "Xmx".to_owned()
+    } else if arg.starts_with("-Xms") {
+        "Xms".to_owned()
+    } else {
+        return None;
+    };
+    Some(key)
+}
+
+/// `UseParallelGC`, `UseG1GC`, `UseZGC`, `UseShenandoahGC`, `UseSerialGC`, `UseEpsilonGC`…
+fn is_collector(name: &str) -> bool {
+    name.starts_with("Use") && name.ends_with("GC") && name.len() > "UseGC".len()
+}
+
+/// Our tuning of the parallel collector, meaningless (or rejected) with another one.
+const COLLECTOR_TUNING: &[&str] = &["GCTimeRatio", "AdaptiveSizePolicyWeight"];
+
+/// [`DEFAULT_VM_ARGS`] less what `user` (the JVM options already on the command line)
+/// sets itself. Choosing a collector drops our collector and its tuning altogether.
+pub fn default_vm_args(user: &[String]) -> Vec<String> {
+    let user_keys: Vec<String> = user.iter().filter_map(|a| option_key(a)).collect();
+    let own_collector = user_keys.iter().any(|k| k == "collector");
+    DEFAULT_VM_ARGS
+        .iter()
+        .filter(|arg| {
+            let key = option_key(arg).expect("default JVM options are keyed");
+            let tuning = COLLECTOR_TUNING.iter().any(|t| key == format!("XX:{t}"));
+            !user_keys.contains(&key) && !(own_collector && (key == "collector" || tuning))
+        })
+        .map(|a| a.to_string())
+        .collect()
+}
+
+/// Adds the [`DEFAULT_VM_ARGS`] the launch doesn't override to `args` (meant for the
+/// launcher script, so as `--jvm-arg=`), ahead of the user's own.
+pub fn add_default_vm_args(args: &mut Vec<String>) {
+    let defaults = default_vm_args(&split_script_args(args).jvm);
+    args.splice(0..0, defaults.into_iter().map(|a| format!("--jvm-arg={a}")));
+}
+
 /// The JVM command line `bin/jdtls` builds: its system properties and module
 /// options, the user's `--jvm-arg`s, then the Equinox launcher with `-data`.
 pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]) -> Vec<String> {
@@ -127,7 +201,6 @@ pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]
         [
             "-Dosgi.sharedConfiguration.area.readOnly=true",
             "-Dosgi.configuration.cascaded=true",
-            "-Xms1G",
             "--add-modules=ALL-SYSTEM",
             "--add-opens",
             "java.base/java.util=ALL-UNNAMED",
@@ -222,7 +295,6 @@ mod tests {
                 &format!(r"-Dosgi.sharedConfiguration.area={tools}\config_win"),
                 "-Dosgi.sharedConfiguration.area.readOnly=true",
                 "-Dosgi.configuration.cascaded=true",
-                "-Xms1G",
                 "--add-modules=ALL-SYSTEM",
                 "--add-opens",
                 "java.base/java.util=ALL-UNNAMED",
@@ -237,6 +309,81 @@ mod tests {
                 data,
             ])
         );
+    }
+
+    fn keep(user: &[&str]) -> Vec<String> {
+        default_vm_args(&strings(user))
+    }
+
+    fn without(drop: &[&str]) -> Vec<String> {
+        DEFAULT_VM_ARGS.iter().filter(|a| !drop.contains(a)).map(|a| a.to_string()).collect()
+    }
+
+    const PARALLEL: &[&str] = &["-XX:+UseParallelGC", "-XX:GCTimeRatio=4", "-XX:AdaptiveSizePolicyWeight=90"];
+
+    #[test]
+    fn user_options_override_the_defaults() {
+        assert_eq!(keep(&[]), without(&[]));
+        assert_eq!(keep(&["-javaagent:/opt/lombok.jar", "-Dlog.level=ALL"]), without(&[]), "unrelated options");
+        let cases: &[(&[&str], &[&str])] = &[
+            (&["-Xmx4G"], &["-Xmx2G"]),
+            (&["-Xmx512m"], &["-Xmx2G"]),
+            (&["-XX:MaxHeapSize=3g"], &["-Xmx2G"]),
+            (&["-XX:MaxRAMPercentage=40"], &["-Xmx2G"]),
+            (&["-Xms1G"], &["-Xms100m"]),
+            (&["-XX:InitialHeapSize=256m"], &["-Xms100m"]),
+            (&["-XX:+UseG1GC"], PARALLEL),
+            (&["-XX:+UseZGC", "-XX:+ZGenerational"], PARALLEL),
+            (&["-XX:+UseShenandoahGC"], PARALLEL),
+            (&["-XX:+UseSerialGC"], PARALLEL),
+            (&["-XX:-UseParallelGC"], PARALLEL),
+            (&["-XX:+UseParallelGC"], PARALLEL),
+            (&["-XX:GCTimeRatio=9"], &["-XX:GCTimeRatio=4"]),
+            (&["-Xlog:gc*:file=gc.log"], &["-Xlog:disable"]),
+            (&["-Dsun.zip.disableMemoryMapping=false"], &["-Dsun.zip.disableMemoryMapping=true"]),
+            (&["-Daether.dependencyCollector.impl=df"], &["-Daether.dependencyCollector.impl=bf"]),
+        ];
+        for (user, dropped) in cases {
+            assert_eq!(keep(user), without(dropped), "{user:?}");
+        }
+        // Not collectors: they keep ours.
+        assert_eq!(keep(&["-XX:+UseStringDeduplication", "-XX:+UseCompressedOops"]), without(&[]));
+    }
+
+    #[test]
+    fn defaults_go_ahead_of_the_users_options_once() {
+        let user = strings(&["--jvm-arg=-Xmx4G", "-data", "/ws", "--jvm-arg", "-XX:+UseG1GC"]);
+        let mut args = user.clone();
+        add_default_vm_args(&mut args);
+        let dropped: Vec<&str> = PARALLEL.iter().copied().chain(["-Xmx2G"]).collect();
+        let expected: Vec<String> =
+            without(&dropped).into_iter().map(|a| format!("--jvm-arg={a}")).chain(user).collect();
+        assert_eq!(args, expected);
+        add_default_vm_args(&mut args);
+        assert_eq!(args, expected, "idempotent");
+    }
+
+    #[test]
+    fn windows_command_line_with_defaults() {
+        // JDK 25 on Windows, "-Xmx3G" in the settings' JVM options.
+        let tools = r"C:\Users\张 三\AppData\Roaming\ai.l0ng.openidea\tools\jdtls";
+        let install = JdtlsInstall {
+            launcher: PathBuf::from(format!(r"{tools}\plugins\org.eclipse.equinox.launcher_1.7.0.jar")),
+            config: PathBuf::from(format!(r"{tools}\config_win")),
+        };
+        let mut script = strings(&["-data", r"C:\Users\张 三\ws", "--jvm-arg=-Xmx3G"]);
+        add_default_vm_args(&mut script);
+        let args = java_args(&install, 25, &script);
+        let jar = args.iter().position(|a| a == "-jar").unwrap();
+        let jvm = &args[..jar];
+        for flag in ["-XX:+UseParallelGC", "-XX:GCTimeRatio=4", "-Xms100m", "-Xlog:disable", "-Xmx3G"] {
+            assert!(jvm.contains(&flag.to_owned()), "{flag}: {jvm:?}");
+        }
+        let heap: Vec<&String> = jvm.iter().filter(|a| option_key(a).as_deref() == Some("Xmx")).collect();
+        assert_eq!(heap, ["-Xmx3G"], "one heap limit, the user's");
+        assert!(!jvm.iter().any(|a| a == "-Xms1G"), "{jvm:?}");
+        assert_eq!(args[jar + 1], format!(r"{tools}\plugins\org.eclipse.equinox.launcher_1.7.0.jar"));
+        assert_eq!(args[jar + 2..], strings(&["-data", r"C:\Users\张 三\ws"]));
     }
 
     #[test]

@@ -515,6 +515,8 @@ export const commands = {
 	runCloseStdin: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_close_stdin", { id })),
 	/**  Terminal size of a run started with "Emulate terminal in output console". */
 	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
+	/**  Writes the Gradle init script adding `jvm_args` to the JVMs the build forks; returns its path. */
+	runGradleJvmArgsScript: (jvmArgs: string[]) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_jvm_args_script", { jvmArgs })),
 	/**
 	 *  Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
 	 *  `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
@@ -1179,6 +1181,15 @@ export type AgentRegistry = {
 	warning: string | null,
 };
 
+/**  An API request the agent is about to retry. */
+export type AgentRetry = {
+	attempt: number,
+	maxRetries: number | null,
+	/**  When the next attempt starts (ms since the epoch). */
+	retryAtMs: number | null,
+	error: string | null,
+};
+
 /**  Where an agent comes from. */
 export type AgentSource = { kind: "builtin" } | 
 /**  Defined by the user in `<config>/agents/<id>.toml`. */
@@ -1238,6 +1249,11 @@ export type AgentTask = {
 	capabilities?: AgentCapabilities,
 	/**  When a [`AgentStatus::Limited`] task's limit resets (ms since the epoch), if the agent said. */
 	resetsMs?: number | null,
+	/**
+	 *  The agent is retrying a failed API request (connection lost, overloaded…); cleared
+	 *  by its next output or any status change.
+	 */
+	retry?: AgentRetry | null,
 };
 
 export type AgentToolDiff = {

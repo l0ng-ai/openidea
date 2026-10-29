@@ -88,10 +88,46 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
+/// How [`cell`] shows a value whose bytes are not text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cells {
+    /// Result grids: binary values as `0x…` hex.
+    Display,
+    /// Catalog queries: names and definitions, so bytes are read as UTF-8 whatever the
+    /// column's type (MySQL flags `utf8mb3_bin` catalog columns BINARY, and sends every
+    /// column as binary under `character_set_results = binary`).
+    Text,
+}
+
+/// Whether a value of type `ty` is binary data (see [`binary_type`]).
+fn is_binary<DB: sqlx::Database>(ty: &DB::TypeInfo) -> bool
+where
+    String: sqlx::Type<DB>,
+{
+    binary_type(ty.name(), <String as sqlx::Type<DB>>::compatible(ty))
+}
+
+/// A BLOB / BINARY type that the driver does not read as text: MySQL flags text in a
+/// binary collation (`utf8mb4_bin`) BINARY too, and only the `binary` collation is bytes.
+fn binary_type(name: &str, text: bool) -> bool {
+    let name = name.to_ascii_uppercase();
+    (name.contains("BLOB") || name.contains("BINARY")) && !text
+}
+
+/// Bytes as text: UTF-8, else hex (grids) or with invalid sequences replaced (catalog names).
+fn bytes_text(bytes: Vec<u8>, mode: Cells) -> String {
+    match (String::from_utf8(bytes), mode) {
+        (Ok(s), _) => s,
+        (Err(e), Cells::Display) => hex(e.as_bytes()),
+        (Err(e), Cells::Text) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    }
+}
+
 /// The text of column `i` of `row`.
-fn cell<R: Row>(row: &R, i: usize) -> Option<String>
+fn cell<R: Row>(row: &R, i: usize, mode: Cells) -> Option<String>
 where
     usize: ColumnIndex<R>,
+    String: sqlx::Type<R::Database>,
     for<'r> String: Decode<'r, R::Database>,
     for<'r> Vec<u8>: Decode<'r, R::Database>,
 {
@@ -99,18 +135,14 @@ where
     if raw.is_null() {
         return None;
     }
-    let ty = raw.type_info().name().to_ascii_uppercase();
-    if ty.contains("BLOB") || ty.contains("BINARY") {
-        let raw = row.try_get_raw(i).ok()?;
+    if mode == Cells::Display && is_binary::<R::Database>(&raw.type_info()) {
         return <Vec<u8> as Decode<R::Database>>::decode(raw).ok().map(|b| hex(&b));
     }
     match <String as Decode<R::Database>>::decode(raw) {
         Ok(s) => Some(s),
         Err(_) => {
             let raw = row.try_get_raw(i).ok()?;
-            <Vec<u8> as Decode<R::Database>>::decode(raw)
-                .ok()
-                .map(|b| String::from_utf8(b).unwrap_or_else(|e| hex(e.as_bytes())))
+            <Vec<u8> as Decode<R::Database>>::decode(raw).ok().map(|b| bytes_text(b, mode))
         }
     }
 }
@@ -122,9 +154,10 @@ fn result_columns<R: Row>(row: &R) -> Vec<ResultColumn> {
         .collect()
 }
 
-/// Streams the results of `$sql` on executor `$exec`, keeping at most `$max` rows.
+/// Streams the results of `$sql` on executor `$exec`, keeping at most `$max` rows
+/// with their cells read as `$mode`.
 macro_rules! fetch {
-    ($exec:expr, $sql:expr, $max:expr) => {{
+    ($exec:expr, $sql:expr, $max:expr, $mode:expr) => {{
         use futures::StreamExt;
         let mut stream = sqlx::raw_sql(sqlx::AssertSqlSafe($sql.to_owned())).fetch_many($exec);
         let mut columns: Vec<ResultColumn> = Vec::new();
@@ -145,7 +178,7 @@ macro_rules! fetch {
                         has_more = true;
                         break;
                     }
-                    rows.push((0..row.len()).map(|i| cell(&row, i)).collect());
+                    rows.push((0..row.len()).map(|i| cell(&row, i, $mode)).collect());
                 }
                 Err(e) => {
                     failure = Some(db_err(e));
@@ -167,7 +200,7 @@ type Fetched = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, Option<u64>, bool, 
 /// The server-side id of a connection (to cancel its statement from another one).
 macro_rules! backend_id {
     ($conn:expr, $sql:expr) => {{
-        let fetched: IdeResult<Fetched> = fetch!($conn, $sql, 1);
+        let fetched: IdeResult<Fetched> = fetch!($conn, $sql, 1, Cells::Text);
         fetched
             .ok()
             .and_then(|f| f.1.into_iter().next())
@@ -431,9 +464,9 @@ impl Pool {
         with_pool!(self, p => p.is_closed())
     }
 
-    /// Runs `sql` (no row limit beyond `max`), for introspection.
+    /// Runs `sql` (no row limit beyond `max`), for introspection: cells are text (see [`Cells::Text`]).
     pub async fn rows(&self, sql: &str, max: usize) -> IdeResult<Vec<Vec<Option<String>>>> {
-        let fetched: IdeResult<Fetched> = with_pool!(self, p => fetch!(p, sql, max));
+        let fetched: IdeResult<Fetched> = with_pool!(self, p => fetch!(p, sql, max, Cells::Text));
         Ok(fetched?.1)
     }
 
@@ -530,7 +563,7 @@ impl Held {
                     None => None,
                 };
                 let r = tokio::select! {
-                    r = async { fetch!(&mut **$conn, sql, max_rows) } => r,
+                    r = async { fetch!(&mut **$conn, sql, max_rows, Cells::Display) } => r,
                     () = cancel.cancelled() => Err(IdeError::cancelled()),
                 };
                 if cancel.is_cancelled() {
@@ -648,5 +681,36 @@ mod tests {
     fn sqlite_properties_become_pragmas() {
         let s = DataSource { properties: vec![prop("cache_size", "-2000")], ..Default::default() };
         assert_eq!(Setup::of(&s).unwrap().params, [("cache_size".to_owned(), "-2000".to_owned())]);
+    }
+
+    #[test]
+    fn only_bytes_typed_values_are_binary() {
+        // (type name as the driver reports it, the driver reads it as text, binary)
+        let cases = [
+            ("VARBINARY", false, true),
+            ("BLOB", false, true),
+            ("LONGBLOB", false, true),
+            ("BINARY", false, true),
+            // MySQL catalog columns (`utf8mb3_bin`) and `utf8mb4_bin` text: flagged BINARY.
+            ("VARBINARY", true, false),
+            ("BLOB", true, false),
+            ("VARCHAR", true, false),
+            ("TEXT", true, false),
+            ("BYTEA", false, false),
+            ("INT", false, false),
+        ];
+        for (name, text, binary) in cases {
+            assert_eq!(binary_type(name, text), binary, "{name} text={text}");
+        }
+    }
+
+    #[test]
+    fn catalog_bytes_are_names_and_grid_bytes_are_hex() {
+        // `oi_数据` as MySQL sends it under `character_set_results = binary`.
+        let name = "oi_数据".as_bytes().to_vec();
+        assert_eq!(bytes_text(name.clone(), Cells::Text), "oi_数据");
+        assert_eq!(bytes_text(name, Cells::Display), "oi_数据");
+        assert_eq!(bytes_text(vec![0xCA, 0xFE], Cells::Display), "0xCAFE");
+        assert_eq!(bytes_text(vec![b'a', 0xFF], Cells::Text), "a\u{FFFD}");
     }
 }

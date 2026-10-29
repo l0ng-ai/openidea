@@ -709,3 +709,14 @@ async fn usage_limits_and_late_settings() {
     let config = mgr.task(&task.id).unwrap().state.lock().task.config.clone();
     assert_eq!(config.iter().find(|o| o.id == "effort").unwrap().current.as_deref(), Some("high"));
 }
+
+#[test]
+fn retry_updates_become_a_countdown() {
+    let update =
+        json!({"sessionUpdate": RETRY_UPDATE, "attempt": 2, "maxRetries": 10, "retryDelayMs": 1500, "error": ""});
+    assert_eq!(
+        retry_of(&update, 1000.0),
+        Some(AgentRetry { attempt: 2, max_retries: Some(10), retry_at_ms: 2500.0, error: None })
+    );
+    assert_eq!(retry_of(&json!({"sessionUpdate": RETRY_UPDATE}), 0.0), None, "no attempt");
+}
