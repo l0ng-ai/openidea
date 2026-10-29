@@ -14,6 +14,8 @@ import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
 import { ColorSwatches, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
+import { FontSelect } from "../components/FontSelect";
+import { BUNDLED_MONO_FAMILY, BUNDLED_UI_FAMILY } from "@/platform/fonts";
 import {
   ZOOM_LIMITS,
   IDLE_LIMITS,
@@ -174,35 +176,20 @@ function ZoomRow() {
   );
 }
 
-export const UI_FONTS = ["Inter", "SF Pro Text", "Helvetica Neue", "PingFang SC", "Arial", "Verdana", "JetBrains Mono"];
+const UI_BUNDLED = [BUNDLED_UI_FAMILY, BUNDLED_MONO_FAMILY];
 
 function CustomFontRow() {
   const [on, setOn] = useSetting<boolean>("appearance.useCustomFont");
   const [family, setFamily] = useSetting<string>("appearance.uiFontFamily");
   const [size, setSize] = useSetting<number>("appearance.uiFontSize");
-  const [draft, setDraft] = useState<string | null>(null);
   const id = useId();
   const matched = useLabelMatch("Use custom font");
   return (
     <div className={clsx(styles.fontRow, matched && styles.matched)}>
       <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
-      <Input
-        list={`${id}-fonts`}
-        className={styles.fontInput}
-        aria-label="UI font"
-        disabled={!on}
-        value={draft ?? family}
-        onChange={(e) => {
-          setDraft(e.target.value);
-          if (e.target.value.trim()) setFamily(e.target.value.trim());
-        }}
-        onBlur={() => setDraft(null)}
-      />
-      <datalist id={`${id}-fonts`}>
-        {UI_FONTS.map((f) => (
-          <option key={f} value={f} />
-        ))}
-      </datalist>
+      <span className={styles.fontInput}>
+        <FontSelect value={family} onChange={setFamily} bundled={UI_BUNDLED} disabled={!on} aria-label="UI font" />
+      </span>
       <label className={clsx(styles.sizeLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
         <SearchLabel text="Size:" />
       </label>

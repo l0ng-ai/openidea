@@ -4104,6 +4104,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-fonts"
+version = "0.1.23"
+dependencies = [
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "serde",
+ "specta",
+ "windows",
+]
+
+[[package]]
 name = "ide-github"
 version = "0.1.23"
 dependencies = [
@@ -5987,6 +5998,7 @@ dependencies = [
  "ide-dap",
  "ide-db",
  "ide-docker",
+ "ide-fonts",
  "ide-github",
  "ide-host",
  "ide-http",

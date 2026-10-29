@@ -14,6 +14,7 @@ import {
 } from "@/platform/workflowSettings";
 import { Button, Checkbox, IconButton, Input, Menu, type SelectOption, T } from "@/ui";
 import { NumberInput, Row, SearchLabel, Section, Select } from "../components/Form";
+import { FontSelect } from "../components/FontSelect";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage, setQuery } from "../model/staging";
 import type { PageSpec } from "./spec";
@@ -231,8 +232,8 @@ function TerminalFont() {
   const [fallback, setFallback] = useSetting<string>("terminal.fallbackFontFamily");
   const [columnWidth, setColumnWidth] = useSetting<number>("terminal.columnWidth");
   const matched = useLabelMatch("Use editor font");
-  const familyId = useId();
-  const fallbackId = useId();
+  const monoMatched = useLabelMatch("Show only monospaced fonts");
+  const [monoOnly, setMonoOnly] = useState(true);
   return (
     <>
       <div className={clsx(styles.inlineRow, matched && styles.matched)}>
@@ -245,14 +246,24 @@ function TerminalFont() {
         </span>
       </div>
       <Indented>
-        <Row label="Font" htmlFor={familyId}>
-          <Input
-            id={familyId}
-            className={styles.medium}
-            disabled={useEditor}
-            value={family}
-            onChange={(e) => e.target.value.trim() && setFamily(e.target.value)}
-          />
+        <Row label="Font">
+          <span className={styles.fontFamily}>
+            <FontSelect
+              value={family}
+              onChange={setFamily}
+              monospacedOnly={monoOnly}
+              disabled={useEditor}
+              aria-label="Terminal font"
+            />
+            <span className={monoMatched ? styles.matched : undefined}>
+              <Checkbox
+                checked={monoOnly}
+                onChange={setMonoOnly}
+                disabled={useEditor}
+                label={<SearchLabel text="Show only monospaced fonts" />}
+              />
+            </span>
+          </span>
         </Row>
         <Row label="Size">
           <NumberInput
@@ -274,14 +285,8 @@ function TerminalFont() {
           aria-label="Terminal line height"
         />
       </Row>
-      <Row label="Fallback font" htmlFor={fallbackId} hint="Used for characters the main font lacks.">
-        <Input
-          id={fallbackId}
-          className={styles.medium}
-          value={fallback}
-          placeholder="None"
-          onChange={(e) => setFallback(e.target.value)}
-        />
+      <Row label="Fallback font" hint="Used for characters the main font lacks.">
+        <FontSelect value={fallback} onChange={setFallback} none aria-label="Terminal fallback font" />
       </Row>
       <Row label="Column width">
         <NumberInput
@@ -588,7 +593,7 @@ export const TOOLS_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Use editor font",
-            keywords: ["Font", "Size", "Line height", "Fallback font", "Column width"],
+            keywords: ["Font", "Show only monospaced fonts", "Size", "Line height", "Fallback font", "Column width"],
             component: TerminalFont,
           },
         ],
