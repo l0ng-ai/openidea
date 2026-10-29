@@ -121,6 +121,12 @@ describe("log options", () => {
     });
   });
 
+  it("previews the selected file's diff by default and remembers turning it off", () => {
+    expect(DEFAULT_LOG_OPTIONS.diffPreview).toBe(true);
+    expect(parseLogOptions({ diffPreview: false }).diffPreview).toBe(false);
+    expect(setLogOptions({ diffPreview: false })).toBe(false);
+  });
+
   it("reloads only for options that change the query", () => {
     expect(setLogOptions({ compactRefs: false })).toBe(false);
     expect(setLogOptions({ noMerges: true })).toBe(true);

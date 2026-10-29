@@ -84,6 +84,7 @@ impl AppState {
             }),
             owner: Self::owner_window,
             runtime: tauri::async_runtime::handle().inner().clone(),
+            project_environment: false,
         }));
         Ok(Self {
             recent: RecentProjects::load(&config_dir),

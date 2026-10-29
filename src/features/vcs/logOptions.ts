@@ -26,6 +26,8 @@ export interface LogOptions {
   showBranches: boolean;
   /** Changed files grouped by directory (else a flat list). */
   groupByDirectory: boolean;
+  /** Selecting a changed file shows its diff in the editor's preview tab. */
+  diffPreview: boolean;
 }
 
 /** IDEA's defaults. */
@@ -47,6 +49,7 @@ export const DEFAULT_LOG_OPTIONS: LogOptions = {
   highlightCurrentBranch: true,
   showBranches: true,
   groupByDirectory: true,
+  diffPreview: true,
 };
 
 /** Options that change which commits the backend returns (a reload is needed). */

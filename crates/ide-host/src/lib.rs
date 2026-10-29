@@ -3,8 +3,10 @@
 //! wraps one [`Host`] and adds windows, menus and plugins; `openidea-server`
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
+pub mod environment;
 pub mod ops;
 mod project;
+mod requests;
 pub mod rpc;
 pub mod shell_env;
 
@@ -15,7 +17,7 @@ use ide_language::{LanguageRegistry, Syntax};
 use ide_run::ProcessManager;
 use ide_terminal::TerminalManager;
 use ide_workspace::SettingsStore;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -33,6 +35,9 @@ pub struct HostConfig {
     /// The window that owns what `window` starts (e.g. a settings window's parent).
     pub owner: fn(&str) -> &str,
     pub runtime: tokio::runtime::Handle,
+    /// Apply the open project's `devcontainer.json` (`remoteEnv`, `postStartCommand`) to
+    /// this process's children: the remote server, which has one project.
+    pub project_environment: bool,
 }
 
 pub struct Host {
@@ -49,23 +54,27 @@ pub struct Host {
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
     pub remote: Arc<ide_remote::RemoteService>,
+    /// What child processes get beyond this process's environment (Reload Environment, `remoteEnv`).
+    pub environment: environment::Environment,
     pub(crate) sink_for: SinkFactory,
     owner: fn(&str) -> &str,
     pub runtime: tokio::runtime::Handle,
     /// One project per window, keyed by window label.
     projects: RwLock<HashMap<String, Arc<Project>>>,
-    requests: Mutex<HashMap<RequestId, CancellationToken>>,
+    requests: requests::Requests,
 }
 
 impl Host {
     pub fn new(config: HostConfig) -> Self {
-        let HostConfig { config_dir, data_dir, languages, syntax, sink_for, owner, runtime } = config;
+        let HostConfig { config_dir, data_dir, languages, syntax, sink_for, owner, runtime, project_environment } =
+            config;
         let global_settings = SettingsStore::load(&config_dir, None);
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         Self {
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
+            environment: environment::Environment::new(project_environment, data_dir.clone()),
             global_settings,
             // Sessions, runs and terminals report to the window that started them (`window_sink`).
             terminals: TerminalManager::new(),
@@ -79,7 +88,7 @@ impl Host {
             owner,
             runtime,
             projects: RwLock::default(),
-            requests: Mutex::default(),
+            requests: Default::default(),
         }
     }
 
@@ -118,6 +127,9 @@ impl Host {
 
     pub fn close_project(&self, window: &str) {
         if let Some(project) = self.projects.write().remove(window) {
+            if !project.light {
+                self.environment.project_closed();
+            }
             project.agents.shutdown();
             let lsp = project.lsp.clone();
             self.runtime.spawn(async move { lsp.shutdown_all().await });
@@ -127,6 +139,7 @@ impl Host {
     /// Stops what this host started: language servers, agents, runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
     pub async fn shutdown(&self) {
+        self.environment.shutdown();
         self.processes.kill_all();
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
@@ -139,21 +152,16 @@ impl Host {
     // ---- cancellable requests: the UI allocates ids, `cancel_request` cancels ----
 
     pub fn begin_request(&self, id: RequestId) -> CancellationToken {
-        let token = CancellationToken::new();
-        if let Some(old) = self.requests.lock().insert(id, token.clone()) {
-            old.cancel();
-        }
-        token
+        self.requests.begin(id)
     }
 
     pub fn end_request(&self, id: RequestId) {
-        self.requests.lock().remove(&id);
+        self.requests.end(id);
     }
 
+    /// Cancels request `id`, also when it has not begun yet (it then starts out cancelled).
     pub fn cancel_request(&self, id: RequestId) {
-        if let Some(token) = self.requests.lock().remove(&id) {
-            token.cancel();
-        }
+        self.requests.cancel(id);
     }
 
     pub(crate) fn insert_project(&self, window: &str, project: Arc<Project>) {

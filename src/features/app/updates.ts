@@ -39,9 +39,13 @@ export function checkForUpdates(): Promise<void> {
 
 async function runCheck() {
   const title = t("app.update.checking");
-  upsertTask({ id: CHECK_TASK_ID, title, message: null, fraction: null, done: false });
+  // The check only reads: cancelling drops its answer (the request finishes on its own).
+  let abandon = () => {};
+  const abandoned = new Promise<"cancelled">((resolve) => (abandon = () => resolve("cancelled")));
+  upsertTask({ id: CHECK_TASK_ID, title, message: null, fraction: null, done: false, cancel: () => abandon() });
   try {
-    const r = await call(commands.appCheckUpdate());
+    const r = await Promise.race([call(commands.appCheckUpdate()), abandoned]);
+    if (r === "cancelled") return;
     if (!r.enabled) {
       notifications().notify({
         level: "info",
@@ -122,6 +126,8 @@ async function runInstall(version: string) {
       fraction,
       done: false,
       cancel: p.type === "installing" ? undefined : cancel,
+      // Replacing the app happens in one step that must not be cut short.
+      uncancellable: p.type === "installing" ? t("app.update.installUncancellable") : undefined,
     });
   };
   // The notification's action is spent: progress lives in the status bar from here.

@@ -67,6 +67,8 @@ pub struct Progress {
     pub task: TaskId,
     pub title: String,
     pub message: Option<String>,
+    /// Set while the server accepts `window/workDoneProgress/cancel` for it.
+    pub cancel: Option<ide_core::task::CancelHandle>,
 }
 
 pub struct Server {

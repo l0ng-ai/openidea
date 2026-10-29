@@ -149,18 +149,24 @@ fn managed_bin_dir(root: &Path, spec: &ToolSpec, platform: Platform) -> Option<P
 /// debug adapters and terminals find managed tools. Call once at startup,
 /// before other threads start (it mutates the process environment).
 pub fn extend_process_path(app_data: &Path) {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let extended = path_with_tools(app_data, &current);
+    if extended != current {
+        // SAFETY: documented to run at startup before any other thread reads the environment.
+        unsafe { std::env::set_var("PATH", extended) };
+    }
+}
+
+/// `path` (a `PATH` value) with [`tools_bin_dirs`] in front, those it lacks.
+pub fn path_with_tools(app_data: &Path, path: &std::ffi::OsStr) -> OsString {
     let mut dirs = tools_bin_dirs(app_data);
-    let current: Vec<PathBuf> =
-        std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    let current: Vec<PathBuf> = if path.is_empty() { Vec::new() } else { std::env::split_paths(path).collect() };
     dirs.retain(|d| !current.contains(d));
     if dirs.is_empty() {
-        return;
+        return path.to_owned();
     }
     dirs.extend(current);
-    if let Ok(joined) = std::env::join_paths(dirs) {
-        // SAFETY: documented to run at startup before any other thread reads the environment.
-        unsafe { std::env::set_var("PATH", joined) };
-    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| path.to_owned())
 }
 
 /// `PATH` plus the usual per-user tool locations (GUI apps on macOS start with a minimal `PATH`).
@@ -985,9 +991,9 @@ impl Tools {
         let exe_name = self.platform.exe(main);
         match kind {
             archive::ArchiveKind::Gz | archive::ArchiveKind::Raw => {
-                archive::extract(&archive, kind, &pkg.join("bin"), &exe_name)?
+                archive::extract(&archive, kind, &pkg.join("bin"), &exe_name, cancel)?
             }
-            _ => archive::extract(&archive, kind, &pkg, &exe_name)?,
+            _ => archive::extract(&archive, kind, &pkg, &exe_name, cancel)?,
         }
         let names: Vec<String> = locate
             .iter()

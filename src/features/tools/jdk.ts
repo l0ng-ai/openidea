@@ -17,10 +17,12 @@ import {
   requiredJdk,
   TEMURIN,
   type DownloadJdkArgs,
+  type JdkDownload,
 } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
-import { upsertTask } from "@/workbench/tasks";
+import { queueTask, upsertTask } from "@/workbench/tasks";
+import { DOWNLOAD_QUEUE } from "./store";
 import { tx } from "@/platform/i18n";
 
 const JAVA_SETTINGS = "languages.java";
@@ -42,16 +44,19 @@ export function downloadJdkFor(args: DownloadJdkArgs): Promise<Sdk | null> {
   const title = `Downloading JDK ${args.version}`;
   const taskId = `jdk-download:${args.version}`;
   const key = `jdk-download-${args.version}`;
-  const cancel = () => job.cancel();
-  const job = downloadJdk(TEMURIN, args.version, null, (e) => {
-    const message = e.type === "line" ? e.text : e.message;
-    const fraction = e.type === "progress" ? e.fraction : null;
-    upsertTask({ id: taskId, title, message, fraction, done: false, cancel });
-  });
-  upsertTask({ id: taskId, title, message: "Eclipse Temurin", fraction: null, done: false, cancel });
   const p = (async () => {
     try {
-      const sdk = await job.promise;
+      // Waits for the downloads ahead of it; cancelling it there means it never starts.
+      const sdk = await queueTask(DOWNLOAD_QUEUE, { id: taskId, title }, () => {
+        const cancel = () => job.cancel();
+        upsertTask({ id: taskId, title, message: "Eclipse Temurin", fraction: null, done: false, cancel });
+        const job: JdkDownload = downloadJdk(TEMURIN, args.version, null, (e) => {
+          const message = e.type === "line" ? e.text : e.message;
+          const fraction = e.type === "progress" ? e.fraction : null;
+          upsertTask({ id: taskId, title, message, fraction, done: false, cancel });
+        });
+        return job.promise;
+      });
       if (args.languageServer) await chooseForLanguageServer(sdk.path);
       notifications().notify({
         group: "tools",

@@ -124,8 +124,11 @@ export function changesArg(arg: unknown): LogChange[] {
   return useLogChanges.getState().selected;
 }
 
-/** Show Diff: the first file, with every file of the pane in the chain (F7 moves along). */
-export async function showChangesDiff(changes: readonly LogChange[]) {
+/**
+ * Show Diff: the first file, with every file of the pane in the chain (F7 moves along).
+ * `preview`: in the editor's preview tab without taking focus (selection in the pane).
+ */
+export async function showChangesDiff(changes: readonly LogChange[], preview = false) {
   const first = changes[0];
   if (!first) return;
   const all = useLogChanges.getState().all;
@@ -135,6 +138,7 @@ export async function showChangesDiff(changes: readonly LogChange[]) {
       chain.map((c) => c.diff),
       Math.max(0, chain.indexOf(first)),
     ),
+    preview ? { preview: true, focus: false } : {},
   );
 }
 

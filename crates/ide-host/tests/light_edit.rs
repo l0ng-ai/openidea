@@ -14,6 +14,7 @@ fn host(base: &std::path::Path) -> Arc<Host> {
         sink_for: Box::new(|_| Arc::new(NullSink)),
         owner: |w| w,
         runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
     }))
 }
 

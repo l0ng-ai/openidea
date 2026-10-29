@@ -56,7 +56,7 @@ import {
   updateLogOptions,
   useGitLog,
 } from "./logStore";
-import { refLabels, useLogOptions, type LogOptions } from "./logOptions";
+import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
 import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
 import { currentRepo, loadBranches, useVcs } from "./store";
@@ -420,6 +420,19 @@ export function BranchesPanel() {
 // --- filters ----------------------------------------------------------------
 
 const DAY = 86_400_000;
+/** Keyboard moves through several files quickly: preview the one the selection settles on. */
+const PREVIEW_DELAY = 120;
+
+function fileNodeAt<F>(nodes: readonly FileTreeNode<F>[], key: string): FileTreeNode<F> | null {
+  for (const n of nodes) {
+    if (n.key === key) return n.file ? n : null;
+    if (!n.file) {
+      const hit = fileNodeAt(n.children, key);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
 const DATE_OPTIONS: { label: string; days: number }[] = [
   { label: "Last 24 Hours", days: 1 },
   { label: "Last 7 Days", days: 7 },
@@ -1103,6 +1116,18 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const ordered = useMemo(() => filesUnder(tree), [tree]);
   const chosenChanges = useMemo(() => filesUnder(tree, selectedKeys), [tree, selectedKeys]);
 
+  // Show Diff Preview: a single selected file follows into the editor's preview tab.
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(previewTimer.current), []);
+  const previewSelection = (sel: ReadonlySet<string>) => {
+    clearTimeout(previewTimer.current);
+    if (!logOptions().diffPreview || sel.size !== 1) return;
+    const file = fileNodeAt(tree, [...sel][0]!)?.file;
+    // A preview that cannot open (no editor yet, the file went away) is just skipped.
+    if (file)
+      previewTimer.current = setTimeout(() => void showChangesDiff([file], true).catch(() => undefined), PREVIEW_DELAY);
+  };
+
   useEffect(() => {
     useLogChanges.setState({ commits: chosen, all: ordered, selected: chosenChanges });
   }, [chosen, ordered, chosenChanges]);
@@ -1121,6 +1146,8 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     menuBelow(e, [
       { kind: "header", label: "Group By" },
       { kind: "action", action: "vcs.log.changes.groupByDirectory" },
+      { kind: "separator" },
+      { kind: "action", action: "vcs.log.changes.diffPreview" },
     ]);
 
   const onFileMenu = (node: FileTreeNode<LogChange> | null, sel: ReadonlySet<string>, e: ReactMouseEvent) => {
@@ -1190,7 +1217,10 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
                 expanded={expanded ?? new Set(allDirs)}
                 onExpandedChange={(next) => setExpanded(next)}
                 selected={selectedKeys}
-                onSelectionChange={(sel) => setSelectedKeys(sel)}
+                onSelectionChange={(sel) => {
+                  setSelectedKeys(sel);
+                  previewSelection(sel);
+                }}
                 renderNode={(n) => <ChangedFileRow node={n} flat={!groupByDirectory} />}
                 onActivate={(n) => n.file && void showChangesDiff([n.file])}
                 onContextMenu={onFileMenu}

@@ -61,6 +61,7 @@ async fn serves_projects_files_documents_search_and_runs() {
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
         owner: |w| w,
         runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
     }));
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
     let (sr, sw) = tokio::io::split(server_io);

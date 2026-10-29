@@ -1,6 +1,7 @@
 //! The project model that ties documents, settings and history together.
 
 pub mod caches;
+pub mod devcontainer;
 pub mod documents;
 pub mod editorconfig;
 pub mod file_defaults;

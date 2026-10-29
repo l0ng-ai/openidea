@@ -1,20 +1,30 @@
 use crate::state::AppState;
-use ide_core::{IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
+use ide_core::{CancellationToken, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
 use ide_remote::{DeployedPath, SyncEntry, SyncStep, TransferReport};
 use ide_ssh::RemoteEntry;
 use std::path::PathBuf;
 use tauri::{State, Window};
 
-/// Reports a transfer as a background task (status bar progress).
-fn progress(sink: SharedSink, title: &str) -> (impl FnMut(&str, usize, usize) + Send, impl FnOnce()) {
+/// Reports a transfer as a background task (status bar progress) whose Cancel fires `token`.
+fn progress(
+    sink: SharedSink,
+    title: &str,
+    token: CancellationToken,
+) -> (impl FnMut(&str, usize, usize) + Send, impl FnOnce()) {
     let id = TaskId::next();
+    let cancel = token;
+    let handle = ide_core::task::on_cancel(id, move || cancel.cancel());
     let title = title.to_owned();
     let (s, t) = (sink.clone(), title.clone());
     let report = move |path: &str, i: usize, n: usize| {
         let fraction = if n == 0 { None } else { Some(i as f32 / n as f32) };
-        s.emit(IdeEvent::Task { id, title: t.clone(), message: Some(path.to_owned()), fraction, done: false });
+        let message = Some(path.to_owned());
+        s.emit(IdeEvent::Task { id, title: t.clone(), message, fraction, done: false, cancellable: true });
     };
-    let done = move || sink.emit(IdeEvent::Task { id, title, message: None, fraction: Some(1.0), done: true });
+    let done = move || {
+        drop(handle);
+        sink.emit(IdeEvent::Task { id, title, message: None, fraction: Some(1.0), done: true, cancellable: false })
+    };
     (report, done)
 }
 
@@ -34,7 +44,7 @@ pub async fn deploy_upload(
 ) -> IdeResult<TransferReport> {
     let project = state.project(window.label())?;
     let token = state.begin_request(request);
-    let (mut report, done) = progress(project.sink.clone(), "Uploading");
+    let (mut report, done) = progress(project.sink.clone(), "Uploading", token.clone());
     let r = state
         .remote
         .upload(&project.settings.effective(), &project.root, server.as_deref(), &local(paths), token, &mut report)
@@ -56,7 +66,7 @@ pub async fn deploy_download(
 ) -> IdeResult<TransferReport> {
     let project = state.project(window.label())?;
     let token = state.begin_request(request);
-    let (mut report, done) = progress(project.sink.clone(), "Downloading");
+    let (mut report, done) = progress(project.sink.clone(), "Downloading", token.clone());
     let r = state
         .remote
         .download(&project.settings.effective(), &project.root, server.as_deref(), &local(paths), token, &mut report)
@@ -108,7 +118,7 @@ pub async fn deploy_sync(
 ) -> IdeResult<TransferReport> {
     let project = state.project(window.label())?;
     let token = state.begin_request(request);
-    let (mut report, done) = progress(project.sink.clone(), "Synchronizing");
+    let (mut report, done) = progress(project.sink.clone(), "Synchronizing", token.clone());
     let r = state
         .remote
         .sync(&project.settings.effective(), &project.root, server.as_deref(), &steps, token, &mut report)

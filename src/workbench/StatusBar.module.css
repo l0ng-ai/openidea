@@ -90,6 +90,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.taskCancelOff {
+  display: inline-flex;
+}
+.taskCancelOff > button {
+  pointer-events: none;
+}
 .taskPct {
   font-family: var(--font-mono);
   font-size: var(--fs-small);

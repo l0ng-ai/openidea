@@ -227,83 +227,11 @@ fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
 
 // ---------------------------------------------------------------- deno
 
-/// Strips `//` and `/* */` comments and trailing commas so JSONC parses as JSON.
-pub(crate) fn strip_jsonc(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    let mut chars = src.chars().peekable();
-    let mut in_str = false;
-    while let Some(c) = chars.next() {
-        if in_str {
-            out.push(c);
-            if c == '\\' {
-                if let Some(n) = chars.next() {
-                    out.push(n);
-                }
-            } else if c == '"' {
-                in_str = false;
-            }
-            continue;
-        }
-        match c {
-            '"' => {
-                in_str = true;
-                out.push(c);
-            }
-            '/' if chars.peek() == Some(&'/') => {
-                for n in chars.by_ref() {
-                    if n == '\n' {
-                        out.push('\n');
-                        break;
-                    }
-                }
-            }
-            '/' if chars.peek() == Some(&'*') => {
-                chars.next();
-                let mut prev = '\0';
-                for n in chars.by_ref() {
-                    if prev == '*' && n == '/' {
-                        break;
-                    }
-                    prev = n;
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    // Remove trailing commas before `}` / `]` (outside strings).
-    let mut cleaned = String::with_capacity(out.len());
-    let bytes: Vec<char> = out.chars().collect();
-    let mut in_str = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if in_str {
-            cleaned.push(c);
-            if c == '\\' && i + 1 < bytes.len() {
-                cleaned.push(bytes[i + 1]);
-                i += 1;
-            } else if c == '"' {
-                in_str = false;
-            }
-        } else if c == '"' {
-            in_str = true;
-            cleaned.push(c);
-        } else if c == ',' {
-            let next = bytes[i + 1..].iter().find(|ch| !ch.is_whitespace());
-            if !matches!(next, Some('}') | Some(']')) {
-                cleaned.push(c);
-            }
-        } else {
-            cleaned.push(c);
-        }
-        i += 1;
-    }
-    cleaned
-}
-
 fn detect_deno(root: &Path, out: &mut Vec<RunConfig>) {
     let Some(path) = first_existing(root, &["deno.json", "deno.jsonc"]) else { return };
-    let Some(json) = read(&path).and_then(|s| serde_json::from_str::<Json>(&strip_jsonc(&s)).ok()) else { return };
+    let Some(json) = read(&path).and_then(|s| serde_json::from_str::<Json>(&ide_core::jsonc::strip(&s)).ok()) else {
+        return;
+    };
     let Some(tasks) = json.get("tasks").and_then(Json::as_object) else { return };
     let mut names: Vec<&String> = tasks.keys().collect();
     names.sort();

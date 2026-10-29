@@ -504,7 +504,7 @@ fn install_binary(b: &Binary, dir: &Path, cancel: &CancellationToken, emit: Emit
         ArchiveKind::Raw | ArchiveKind::Gz => parents.iter().fold(dir.to_path_buf(), |p, s| p.join(s)),
         _ => dir.to_path_buf(),
     };
-    archive::extract(&file, kind, &dest, exe_name)?;
+    archive::extract(&file, kind, &dest, exe_name, cancel)?;
     let _ = fs::remove_dir_all(&downloads);
     let exe = segments.iter().fold(dir.to_path_buf(), |p, s| p.join(s));
     if !exe.is_file() {

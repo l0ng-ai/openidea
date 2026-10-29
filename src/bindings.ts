@@ -56,6 +56,11 @@ export const commands = {
 	 */
 	projectRoots: () => typedError<ProjectRoots, IdeError>(__TAURI_INVOKE("project_roots")),
 	cancelRequest: (id: RequestId) => __TAURI_INVOKE<void>("cancel_request", { id }),
+	/**
+	 *  Stops a background task the backend reported with `cancellable` set; false when it
+	 *  has ended or can't be cancelled.
+	 */
+	cancelTask: (id: TaskId) => __TAURI_INVOKE<boolean>("cancel_task", { id }),
 	/**  Routes frontend logs into the backend `tracing` pipeline. */
 	logFrontend: (level: LogLevel, message: string) => __TAURI_INVOKE<void>("log_frontend", { level, message }),
 	/**  Streams the project's agent events to this window; returns every task. */
@@ -923,6 +928,11 @@ export const commands = {
 	 *  `on_channel` tagged with the id.
 	 */
 	remoteInvoke: (cmd: string, args: string, onChannel: Channel<ChannelFrame>) => typedError<string, IdeError>(__TAURI_INVOKE("remote_invoke", { cmd, args, onChannel })),
+	/**
+	 *  Reload Environment: new child processes get the login shell's current environment
+	 *  (and the project's `remoteEnv` on a remote host); running ones keep theirs.
+	 */
+	envReload: () => typedError<EnvReloaded, IdeError>(__TAURI_INVOKE("env_reload")),
 	/**  Test Connection: connects with unsaved settings and returns the server version. */
 	dbTest: (source: DataSource, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
@@ -2239,6 +2249,8 @@ export type DebuggerSettings = {
 	/**  Data Views: list variables by name instead of the adapter's order. */
 	sortValues?: boolean,
 	valueTooltip?: boolean,
+	/**  While suspended, selecting an expression shows its value. */
+	valueTooltipOnSelection?: boolean,
 	valueTooltipDelay?: number,
 	/**  Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`). */
 	skipLibraryCode?: boolean,
@@ -2731,6 +2743,16 @@ export type EncodingSettings = {
 };
 
 export type EntryKind = "file" | "dir" | "symlink";
+
+/**  What Reload Environment changed. */
+export type EnvReloaded = {
+	/**  Names of the variables new child processes now get differently (added, changed or removed). */
+	changed: string[],
+	/**  The `devcontainer.json` whose `remoteEnv` applies, if any. */
+	devcontainer: string | null,
+	/**  Whether the login shell was read (it isn't on Windows). */
+	shellRead: boolean,
+};
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  Document version mismatch; the UI must resync the full text. */
@@ -3237,7 +3259,9 @@ export type IdeEvent =
 /**  Full replacement of diagnostics for one file from one producer. */
 { type: "diagnostics"; path: IpcPath; source: string; items: Diagnostic[] } | 
 /**  Progress of a background task; `fraction` is `None` when indeterminate. */
-{ type: "task"; id: TaskId; title: string; message: string | null; fraction: number | null; done: boolean } | 
+{ type: "task"; id: TaskId; title: string; message: string | null; fraction: number | null; done: boolean; 
+/**  The UI may stop it with `cancel_task(id)` (see [`crate::task`]). */
+cancellable: boolean } | 
 /**  Project indexing state changed (dumb mode on/off). */
 { type: "indexState"; indexing: boolean; files: number; symbols: number } | 
 /**  Git status / branch information should be refreshed. */

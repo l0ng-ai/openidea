@@ -8,7 +8,7 @@ import { notify } from "./notificationStore";
 import { NOTIFICATIONS_TOOL_WINDOW } from "./Notifications";
 import { activateToolWindow } from "./toolwindows/store";
 import { toggleTheme } from "./theme";
-import { useTasks } from "./tasks";
+import { cancelTask, canCancel, useTasks } from "./tasks";
 import { showStatusInfo } from "./contributions";
 
 export async function openProjectDialog() {
@@ -39,13 +39,13 @@ export async function openProjectDialog() {
 
 /** Stop Background Processes (⇧⌘F2): the one running cancellable task, else a choice of them. */
 export function stopBackgroundProcesses() {
-  const running = useTasks.getState().tasks.filter((t) => t.cancel && !t.done);
+  const running = useTasks.getState().tasks.filter(canCancel);
   if (!running.length) return showStatusInfo("No background processes to stop");
-  if (running.length === 1) return running[0]!.cancel!();
+  if (running.length === 1) return cancelTask(running[0]!.id);
   showContextMenu({ x: window.innerWidth / 2 - 160, y: 96 }, [
-    ...running.map((t) => ({ id: String(t.id), label: t.title, icon: "stop", run: () => t.cancel!() })),
+    ...running.map((t) => ({ id: String(t.id), label: t.title, icon: "stop", run: () => cancelTask(t.id) })),
     { kind: "separator" as const },
-    { id: "all", label: "Stop All", run: () => running.forEach((t) => t.cancel!()) },
+    { id: "all", label: "Stop All", run: () => running.forEach((t) => cancelTask(t.id)) },
   ]);
 }
 

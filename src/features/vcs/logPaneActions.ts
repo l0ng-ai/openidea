@@ -207,5 +207,14 @@ export function registerLogPaneActions(): () => void {
       toggled: () => logOptions().groupByDirectory,
       run: () => updateLogOptions({ groupByDirectory: !logOptions().groupByDirectory }),
     },
+    {
+      id: "vcs.log.changes.diffPreview",
+      title: "Show Diff Preview",
+      category: "Git Log",
+      description: "Selecting a changed file shows its diff in the editor's preview tab",
+      when: VCS,
+      toggled: () => logOptions().diffPreview,
+      run: () => updateLogOptions({ diffPreview: !logOptions().diffPreview }),
+    },
   ]);
 }

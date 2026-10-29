@@ -117,8 +117,8 @@ export function diffTitle(data: DiffData): string {
   return `${baseName(data.path)} (${sideLabel(data.left)} ↔ ${sideLabel(data.right)})`;
 }
 
-export async function openDiff(data: DiffData, opts: { preview?: boolean } = {}) {
-  await editorService().openInput(diffInput(data), { preview: opts.preview, focus: true });
+export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
+  await editorService().openInput(diffInput(data), { preview: opts.preview, focus: opts.focus ?? true });
 }
 
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */

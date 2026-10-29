@@ -4,11 +4,13 @@ import type { RequestId, ToolInfo } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
-import { upsertTask } from "@/workbench/tasks";
+import { cancelTask, queueTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { toolsBackend } from "./backend";
 import { tx } from "@/platform/i18n";
 
 export const SETTINGS_PAGE_ID = "languages.servers";
+/** Tool installs and JDK downloads take turns (one network download / package manager at a time). */
+export const DOWNLOAD_QUEUE = "downloads";
 const MAX_LOG_LINES = 400;
 
 export interface InstallJob {
@@ -100,24 +102,25 @@ export function installTool(name: string, opts: { notificationKey?: string } = {
   const taskId = `tools:${name}`;
   const key = opts.notificationKey ?? `tools-install-${name}`;
   useTools.setState((s) => ({ jobs: { ...s.jobs, [name]: { request, lines: [], fraction: null, message: null } } }));
-  upsertTask({ id: taskId, title: tx`Installing ${display}`, message: null, fraction: null, done: false });
+  const title = tx`Installing ${display}`;
+  const cancel = () => toolsBackend().cancel(request);
+  const task = (message: string | null, fraction: number | null) =>
+    upsertTask({ id: taskId, title, message, fraction, done: false, cancel });
 
   const p = (async () => {
     try {
-      const info = await toolsBackend().install(name, request, (e) => {
-        if (e.type === "line") {
-          patchJob(name, (j) => ({ ...j, lines: [...j.lines, e.text].slice(-MAX_LOG_LINES), message: e.text }));
-          upsertTask({ id: taskId, title: tx`Installing ${display}`, message: e.text, fraction: null, done: false });
-        } else {
-          patchJob(name, (j) => ({ ...j, fraction: e.fraction, message: e.message }));
-          upsertTask({
-            id: taskId,
-            title: tx`Installing ${display}`,
-            message: e.message,
-            fraction: e.fraction,
-            done: false,
-          });
-        }
+      // Downloads and package managers run one at a time; the rest wait, cancellable.
+      const info = await queueTask(DOWNLOAD_QUEUE, { id: taskId, title }, () => {
+        task(null, null);
+        return toolsBackend().install(name, request, (e) => {
+          if (e.type === "line") {
+            patchJob(name, (j) => ({ ...j, lines: [...j.lines, e.text].slice(-MAX_LOG_LINES), message: e.text }));
+            task(e.text, null);
+          } else {
+            patchJob(name, (j) => ({ ...j, fraction: e.fraction, message: e.message }));
+            task(e.message, e.fraction);
+          }
+        });
       });
       upsertTool(info);
       endJob(name, null);
@@ -151,7 +154,7 @@ export function installTool(name: string, opts: { notificationKey?: string } = {
       });
       return null;
     } finally {
-      upsertTask({ id: taskId, title: tx`Installing ${display}`, message: null, fraction: 1, done: true });
+      upsertTask({ id: taskId, title, message: null, fraction: 1, done: true });
       running.delete(name);
     }
   })();
@@ -159,7 +162,10 @@ export function installTool(name: string, opts: { notificationKey?: string } = {
   return p;
 }
 
+/** Cancels the install of `name`, queued or running (as the task's Cancel does). */
 export function cancelInstall(name: string) {
+  const taskId = `tools:${name}`;
+  if (useTasks.getState().tasks.some((t) => t.id === taskId)) return cancelTask(taskId);
   const job = useTools.getState().jobs[name];
   if (job) toolsBackend().cancel(job.request);
 }

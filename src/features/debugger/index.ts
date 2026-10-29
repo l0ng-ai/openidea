@@ -6,7 +6,7 @@
 import { lazyComponent } from "@/ui";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { valueTooltip } from "./editor/valueTooltip";
+import { selectionValueTooltip, valueTooltip } from "./editor/valueTooltip";
 import { registerEditorContribution } from "@/editor/api";
 import {
   registerMenuGroup,
@@ -65,6 +65,7 @@ export function activate(): () => void {
         executionPoint(ctx),
         runToCursorInlay(ctx),
         valueTooltip(),
+        selectionValueTooltip(),
         smartStepTargets(ctx),
       ],
     }),

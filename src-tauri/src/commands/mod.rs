@@ -19,6 +19,7 @@ pub mod debug;
 pub mod deploy;
 pub mod doc;
 pub mod docker;
+pub mod env;
 pub mod fs;
 pub mod github;
 pub mod history;
@@ -71,6 +72,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::project_rename,
         app::project_roots,
         app::cancel_request,
+        app::cancel_task,
         app::log_frontend,
         agent::agent_subscribe,
         agent::agent_providers,
@@ -422,6 +424,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         crate::remote_dev::remote_current,
         crate::remote_dev::remote_disconnect,
         crate::remote_dev::remote_invoke,
+        env::env_reload,
         db::db_test,
         db::db_connected,
         db::db_connect,

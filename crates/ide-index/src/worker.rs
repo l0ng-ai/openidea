@@ -199,6 +199,7 @@ impl Shared {
             message: None,
             fraction: None,
             done: true,
+            cancellable: false,
         });
         self.emit_state();
     }
@@ -214,6 +215,7 @@ impl Shared {
             message: Some("Scanning files…".into()),
             fraction: None,
             done: false,
+            cancellable: false,
         });
 
         let filter = self.filter();
@@ -260,6 +262,7 @@ impl Shared {
                     message: Some(format!("{done} / {total} files")),
                     fraction: Some(done as f32 / total.max(1) as f32),
                     done: false,
+                    cancellable: false,
                 });
             }
         }
@@ -271,6 +274,7 @@ impl Shared {
             message: None,
             fraction: Some(1.0),
             done: true,
+            cancellable: false,
         });
         self.emit_state();
         let d = self.data.read();
