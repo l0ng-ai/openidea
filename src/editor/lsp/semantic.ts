@@ -14,7 +14,9 @@ import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate
 import { commands, type SemanticTokens } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
-import { onLspRefresh, serverBackoff } from "./availability";
+import { featureBackoff, onLspRefresh } from "./availability";
+
+const semanticBackoff = featureBackoff();
 
 const TYPE_CLASS: Record<string, string> = {
   type: "type",
@@ -180,14 +182,14 @@ const semanticPlugin = ViewPlugin.fromClass(
     async run() {
       const view = this.view;
       const doc = docOf(view);
-      if (!doc || serverBackoff.active(doc.doc) || !view.dom.isConnected) return;
+      if (!doc || semanticBackoff.active(doc.doc) || !view.dom.isConnected) return;
       const state = view.state;
       try {
         const tokens = await lspRequest(() => commands.lspSemanticTokens(doc.doc));
         if (view.state.doc !== state.doc) return this.refresh();
         this.decorate(state.doc, tokens);
       } catch (e) {
-        if (isUnavailable(e)) serverBackoff.mark(doc.doc);
+        if (isUnavailable(e)) semanticBackoff.mark(doc.doc);
       }
     }
     destroy() {

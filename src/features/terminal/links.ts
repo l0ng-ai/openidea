@@ -8,7 +8,7 @@ const URL_RE = /\b(?:https?|file):\/\/[^\s<>"'`]+/g;
 
 // `src/main.rs:10:5`, `./a/b.ts:3`, `/abs/x.py:12`, `foo.go(12,3)`, `Foo.kt:22`.
 const FILE_RE =
-  /(?<![\w/.~-])((?:~|\.{1,2})?\/?(?:[\w.@+-]+\/)*[\w@+-][\w.@+-]*\.[A-Za-z][\w]{0,9})(?::(\d+)(?::(\d+))?|\((\d+)(?:[,:](\d+))?\))/g;
+  /((?:~|\.{1,2})?\/?(?:[\w.@+-]+\/)*[\w@+-][\w.@+-]*\.[A-Za-z][\w]{0,9})(?::(\d+)(?::(\d+))?|\((\d+)(?:[,:](\d+))?\))/g;
 
 /** Strips trailing punctuation that is almost never part of a URL (keeps balanced parens). */
 export function trimUrl(url: string): string {
@@ -42,6 +42,7 @@ export function findTerminalLinks(text: string): TerminalLink[] {
   const overlaps = (s: number, e: number) => links.some((l) => s < l.end && e > l.start);
   for (const m of text.matchAll(FILE_RE)) {
     const start = m.index;
+    if (start > 0 && /[\w/.~-]/.test(text[start - 1]!)) continue;
     const end = start + m[0].length;
     if (overlaps(start, end)) continue;
     const line = Number(m[2] ?? m[4]);

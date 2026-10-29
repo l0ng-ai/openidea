@@ -4,7 +4,8 @@ import { Dialog, HighlightedText, Icon, List, SearchField, fuzzyMatch, listNavig
 import { sortLocal, sortRemote } from "./branches";
 import { openDialog } from "./dialogs";
 import { call, commands } from "@/platform/ipc";
-import { currentRepo, loadBranches, useVcs } from "./store";
+import type { Branch } from "@/bindings";
+import { currentRepo } from "./store";
 import styles from "./common.module.css";
 
 interface Item {
@@ -43,17 +44,21 @@ function Chooser({
   options: ChooseRevisionOptions;
   onDone: (rev: string | null) => void;
 }) {
-  const branches = useVcs((s) => s.branches);
+  const [repo] = useState(currentRepo);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [tags, setTags] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   useEffect(() => {
-    void loadBranches().catch(() => undefined);
-    if (!options.tags) return;
     let alive = true;
-    call(commands.vcsTags(currentRepo()))
-      .then((t) => alive && setTags(t))
+    void call(commands.vcsBranches(repo))
+      .then((b) => alive && setBranches(b))
       .catch(() => undefined);
+    if (options.tags) {
+      void call(commands.vcsTags(repo))
+        .then((t) => alive && setTags(t))
+        .catch(() => undefined);
+    }
     return () => {
       alive = false;
     };

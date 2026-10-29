@@ -1,3 +1,4 @@
+import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
 import type { Commit, FileStatus, PatchFile, PatchSource } from "@/bindings";
@@ -12,7 +13,7 @@ import { KIND_COLOR, baseName, dirName, stripSlash } from "./model";
 import { errorMessage, logConsole, runOp, saveAll } from "./ops";
 import { FileChecklist, defaultChangeFiles, reportApply } from "./shelf";
 import { activeList, useChangelists } from "./changelists";
-import { useVcs } from "./store";
+import { currentRepoRoot, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -76,6 +77,9 @@ async function afterPatchSaved(path: string) {
 
 function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: () => void }) {
   const root = useVcs((s) => s.root) ?? "";
+  const [repo] = useState(() =>
+    origin.kind === "commits" ? (commitRepo(origin.commits[0]!) ?? currentRepoRoot()) : currentRepoRoot(),
+  );
   const listName = useChangelists((s) => activeList(s.state).name);
   const [selected, setSelected] = useState(
     () => new Set(origin.kind === "changes" ? origin.files.map((f) => f.path) : []),
@@ -103,7 +107,7 @@ function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: 
     const done = await runOp(
       "Create patch",
       async () => {
-        const patch = await call(commands.vcsCreatePatch(source));
+        const patch = await call(commands.vcsCreatePatch(repo, source));
         if (toFile) await call(commands.vcsWritePatch(file.trim(), patch));
         else await navigator.clipboard.writeText(patch);
         return true;
@@ -212,12 +216,13 @@ export async function showApplyPatch(from: "file" | "clipboard", path?: string) 
 }
 
 function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: string; onClose: () => void }) {
+  const [repo] = useState(currentRepoRoot);
   const [files, setFiles] = useState<PatchFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     void saveAll().then(() =>
-      call(commands.vcsPatchPreview(patch))
+      call(commands.vcsPatchPreview(repo, patch))
         .then((f) => alive && setFiles(f))
         .catch((e) => alive && setError(errorMessage(e))),
     );
@@ -229,7 +234,7 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
   const run = async () => {
     onClose();
     await saveAll();
-    const outcome = await runOp(`Apply patch (${source})`, () => call(commands.vcsApplyPatch(patch)), {
+    const outcome = await runOp(`Apply patch (${source})`, () => call(commands.vcsApplyPatch(repo, patch)), {
       refresh: false,
     });
     if (outcome) await reportApply(outcome, "Patch applied");

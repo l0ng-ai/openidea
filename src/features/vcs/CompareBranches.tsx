@@ -24,7 +24,7 @@ const commitsBetween = (from: string, to: string, repo: string | null = currentR
       skip: 0,
       limit: LIMIT,
     }),
-  );
+  ).then((commits) => commits.map((c) => ({ ...c, repo })));
 
 export function showCompareBranches(branch: string) {
   const current = useVcs.getState().branch?.head ?? "HEAD";
@@ -89,7 +89,7 @@ function CommitList({
           }
           onActivate={(c) => {
             onClose();
-            void executeAction("vcs.showCommit", c.id);
+            void executeAction("vcs.showCommit", c);
           }}
           renderItem={(c) => (
             <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
@@ -106,12 +106,13 @@ function CommitList({
 }
 
 function CompareDialog({ branch, current, onClose }: { branch: string; current: string; onClose: () => void }) {
+  const [repo] = useState(currentRepo);
   const [data, setData] = useState<{ incoming: Commit[]; outgoing: Commit[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState("incoming");
   useEffect(() => {
     let alive = true;
-    Promise.all([commitsBetween("HEAD", branch), commitsBetween(branch, "HEAD")])
+    Promise.all([commitsBetween("HEAD", branch, repo), commitsBetween(branch, "HEAD", repo)])
       .then(([incoming, outgoing]) => {
         if (alive) setData({ incoming, outgoing });
       })

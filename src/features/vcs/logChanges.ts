@@ -20,6 +20,7 @@ import { confirmDialog } from "./dialogs";
 export interface LogChange {
   /** Repository-relative path (after the change). */
   path: string;
+  repo?: string | null;
   oldPath: string | null;
   kind: ChangedFile["kind"];
   /** `null`: the file did not exist before. */
@@ -30,27 +31,33 @@ export interface LogChange {
 }
 
 /** One commit's files (`commit` given) or several commits' combined changes. */
-export function toLogChanges(files: readonly (ChangedFile | RevisionChange)[], commit: Commit | null): LogChange[] {
+export function toLogChanges(
+  files: readonly (ChangedFile | RevisionChange)[],
+  commit: Commit | null,
+  repo = currentRepoRoot(),
+): LogChange[] {
   return files.map((f) => {
     if (commit) {
       const parent = commit.parents[0] ?? null;
       return {
+        repo,
         path: f.path,
         oldPath: f.oldPath,
         kind: f.kind,
         before: f.kind === "added" ? null : parent,
         after: f.kind === "deleted" ? null : commit.id,
-        diff: commitFileDiffData(commit, f),
+        diff: commitFileDiffData({ ...commit, repo }, f),
       };
     }
     const r = f as RevisionChange;
     return {
+      repo,
       path: r.path,
       oldPath: r.oldPath,
       kind: r.kind,
       before: r.before,
       after: r.after,
-      diff: revisionChangeDiffData(r),
+      diff: revisionChangeDiffData(r, repo),
     };
   });
 }
@@ -101,8 +108,7 @@ export function filterPatch(patch: string, paths: ReadonlySet<string>): string {
 }
 
 /** Absolute path of a repository-relative one. */
-export function absolutePath(rel: string): string {
-  const root = currentRepoRoot();
+export function absolutePath(rel: string, root = currentRepoRoot()): string {
   return root ? `${root}/${rel}` : rel;
 }
 
@@ -146,9 +152,9 @@ export async function showChangesDiff(changes: readonly LogChange[], preview = f
 export async function compareChangeWithLocal(change: LogChange, side: "after" | "before" = "after") {
   const rev = side === "after" ? change.after : change.before;
   if (!rev) return;
-  const revPath = side === "before" && change.oldPath ? absolutePath(change.oldPath) : undefined;
+  const revPath = side === "before" && change.oldPath ? absolutePath(change.oldPath, change.repo) : undefined;
   await openDiff({
-    path: absolutePath(change.path),
+    path: absolutePath(change.path, change.repo),
     left: { type: "rev", rev, path: revPath, label: rev.slice(0, 8) },
     right: { type: "worktree" },
   });
@@ -156,7 +162,7 @@ export async function compareChangeWithLocal(change: LogChange, side: "after" | 
 
 /** Jump to Source: the working file. */
 export async function openChangeSource(change: LogChange) {
-  await editorService().openFile(absolutePath(change.path), { focus: true });
+  await editorService().openFile(absolutePath(change.path, change.repo), { focus: true });
 }
 
 /**
@@ -180,7 +186,7 @@ export async function getFromRevision(changes: readonly LogChange[]) {
     "Get from Revision",
     async () => {
       for (const c of changes) {
-        const path = absolutePath(c.path);
+        const path = absolutePath(c.path, c.repo);
         if (!c.after) {
           if ((await readWorkingText(path)) !== null) await call(commands.fsDelete(path));
           continue;
@@ -207,11 +213,17 @@ export async function revertSelectedChanges(changes: readonly LogChange[], commi
     "Revert selected changes",
     async () => {
       const patch = filterPatch(
-        await call(commands.vcsCreatePatch({ from: "commits", commits: ids, reverse: true })),
+        await call(
+          commands.vcsCreatePatch(changes[0]!.repo ?? currentRepoRoot(), {
+            from: "commits",
+            commits: ids,
+            reverse: true,
+          }),
+        ),
         paths,
       );
       if (!patch.trim()) throw new Error(tx("Nothing to revert"));
-      return call(commands.vcsApplyPatch(patch));
+      return call(commands.vcsApplyPatch(changes[0]!.repo ?? currentRepoRoot(), patch));
     },
     { refresh: false },
   );

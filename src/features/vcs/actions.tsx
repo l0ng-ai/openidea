@@ -1,3 +1,4 @@
+import { commitRepo } from "./multiRoot";
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
 import { registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
@@ -448,9 +449,11 @@ export function registerVcsActions(): () => void {
       when: VCS,
       hidden: true,
       run: ({ arg }) => {
-        if (typeof arg !== "string") return;
+        const commit = arg && typeof arg === "object" && "id" in arg ? (arg as import("@/bindings").Commit) : null;
+        const id = typeof arg === "string" ? arg : commit?.id;
+        if (!id) return;
         showGitWindow();
-        void revealCommit(arg);
+        void revealCommit(id, commit ? commitRepo(commit) : undefined);
       },
     },
     {

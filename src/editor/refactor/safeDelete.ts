@@ -360,11 +360,12 @@ export function textOccurrences(
   exclude: { from: number; to: number },
 ): { from: number; to: number }[] {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`(?<![\\p{L}\\p{N}_$])${escaped}(?![\\p{L}\\p{N}_$])`, "gu");
+  const re = new RegExp(`${escaped}(?![\\p{L}\\p{N}_$])`, "gu");
   const ids = new Set(identifiers.map((o) => o.from));
   const out: { from: number; to: number }[] = [];
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const from = m.index;
+    if (/[\p{L}\p{N}_$]$/u.test(text.slice(Math.max(0, from - 2), from))) continue;
     if (ids.has(from) || (from >= exclude.from && from < exclude.to)) continue;
     out.push({ from, to: from + name.length });
   }

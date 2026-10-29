@@ -1202,3 +1202,60 @@
   color: var(--fg-strong);
   font-weight: 600;
 }
+
+.sqlCompletion {
+  width: 300px;
+  max-height: 240px;
+  padding: 4px;
+}
+.sqlCompletionOption {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 4px 8px;
+  text-align: left;
+}
+.sqlCompletionOption[aria-selected="true"],
+.sqlCompletionOption:hover {
+  background: var(--bg-toolbar-selected);
+}
+.sqlCompletionOption span {
+  flex: 1;
+}
+.sqlCompletionOption small {
+  color: var(--fg-muted);
+}
+
+.sqlInputWrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.sqlInputWrap > input {
+  width: 100%;
+  position: relative;
+}
+.sqlInputText {
+  color: transparent !important;
+  caret-color: var(--fg-strong);
+}
+.sqlHighlight {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  white-space: pre;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  color: var(--fg-strong);
+}
+/* The input's scroll width includes room for the caret; match it so both stop at the same scrollLeft. */
+.sqlHighlight::after {
+  content: "";
+  flex: none;
+  width: 2px;
+}

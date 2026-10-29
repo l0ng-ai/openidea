@@ -136,17 +136,16 @@ export function workingDiffData(path: string, line?: number): DiffData {
 }
 
 /** A path of the selected repository's log (repository-relative) made absolute. */
-function joinRoot(rel: string): string {
-  const root = currentRepoRoot();
+function joinRoot(rel: string, root = currentRepoRoot()): string {
   return root ? `${root}/${rel}` : rel;
 }
 
 /** Diff of one file changed by `commit` (first parent ↔ commit). */
 export function commitFileDiffData(
-  commit: { id: string; shortId: string; parents: string[] },
+  commit: { id: string; shortId: string; parents: string[]; repo?: string | null },
   file: ChangedFile,
 ): DiffData {
-  const path = joinRoot(file.path);
+  const path = joinRoot(file.path, commit.repo ?? currentRepoRoot());
   const parent = commit.parents[0];
   const left: DiffSide =
     !parent || file.kind === "added"
@@ -154,7 +153,7 @@ export function commitFileDiffData(
       : {
           type: "rev",
           rev: parent,
-          path: file.oldPath ? joinRoot(file.oldPath) : undefined,
+          path: file.oldPath ? joinRoot(file.oldPath, commit.repo ?? currentRepoRoot()) : undefined,
           label: parent.slice(0, 8),
         };
   const right: DiffSide =
@@ -165,14 +164,14 @@ export function commitFileDiffData(
 }
 
 /** Diff of one file of several commits' combined changes (`before` ↔ `after`). */
-export function revisionChangeDiffData(change: RevisionChange): DiffData {
-  const path = joinRoot(change.path);
+export function revisionChangeDiffData(change: RevisionChange, root = currentRepoRoot()): DiffData {
+  const path = joinRoot(change.path, root);
   const { before, after } = change;
   const left: DiffSide = before
     ? {
         type: "rev",
         rev: before,
-        path: change.oldPath ? joinRoot(change.oldPath) : undefined,
+        path: change.oldPath ? joinRoot(change.oldPath, root) : undefined,
         label: before.slice(0, 8),
       }
     : { type: "text", text: "", label: "(does not exist)" };

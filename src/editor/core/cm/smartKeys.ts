@@ -47,7 +47,7 @@ export const tabKeymap: Extension = keymap.of([{ key: "Tab", run: insertTab }]);
 // --- Backspace -------------------------------------------------------------------------------
 
 /** Languages whose layout is indentation: IDEA keeps "to nearest indent position" there. */
-const NEAREST_INDENT_LANGS = new Set(["python", "yaml", "shellscript"]);
+const NEAREST_INDENT_LANGS = new Set(["python", "gdscript", "yaml", "shellscript"]);
 
 export function smartBackspaceApplies(mode: string, language: string | undefined): boolean {
   return mode === "autoindent" && !NEAREST_INDENT_LANGS.has(language ?? "");

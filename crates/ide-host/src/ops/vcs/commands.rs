@@ -680,13 +680,17 @@ pub async fn vcs_diff_revisions(
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.diff_revisions(&from, &to))).await
 }
 
-pub async fn vcs_create_patch(host: &Host, window: &str, source: PatchSource) -> IdeResult<String> {
+pub async fn vcs_create_patch(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    source: PatchSource,
+) -> IdeResult<String> {
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo(|r| match source {
+        project.with_repo_at(repo.as_deref(), |r| match source {
             PatchSource::Changes { paths, reverse } => {
                 let paths: Vec<PathBuf> = paths.into_iter().map(Into::into).collect();
-                in_primary_repo(&project, &paths)?;
                 r.create_patch(&paths, reverse)
             }
             PatchSource::Commits { commits, reverse } => r.create_commits_patch(&commits, reverse),
@@ -695,14 +699,24 @@ pub async fn vcs_create_patch(host: &Host, window: &str, source: PatchSource) ->
     .await
 }
 
-pub async fn vcs_patch_preview(host: &Host, window: &str, patch: String) -> IdeResult<Vec<PatchFile>> {
+pub async fn vcs_patch_preview(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    patch: String,
+) -> IdeResult<Vec<PatchFile>> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo(|r| r.patch_preview(&patch))).await
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.patch_preview(&patch))).await
 }
 
-pub async fn vcs_apply_patch(host: &Host, window: &str, patch: String) -> IdeResult<ApplyOutcome> {
+pub async fn vcs_apply_patch(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    patch: String,
+) -> IdeResult<ApplyOutcome> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo(|r| r.apply_patch(&patch))).await
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.apply_patch(&patch))).await
 }
 
 /// Shelve Changes: saves the changes of `paths` as a patch on the shelf and reverts them.
@@ -901,9 +915,16 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_diff_revisions", |c| async move {
         vcs_diff_revisions(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?).await
     });
-    d.add("vcs_create_patch", |c| async move { vcs_create_patch(&c.host, &c.window, c.arg("source")?).await });
-    d.add("vcs_patch_preview", |c| async move { vcs_patch_preview(&c.host, &c.window, c.arg("patch")?).await });
-    d.add("vcs_apply_patch", |c| async move { vcs_apply_patch(&c.host, &c.window, c.arg("patch")?).await });
+    d.add("vcs_create_patch", |c| async move {
+        vcs_create_patch(&c.host, &c.window, c.arg("repo")?, c.arg("source")?).await
+    });
+    d.add("vcs_patch_preview", |c| async move {
+        vcs_patch_preview(&c.host, &c.window, c.arg("repo")?, c.arg("patch")?).await
+    });
+    d.add(
+        "vcs_apply_patch",
+        |c| async move { vcs_apply_patch(&c.host, &c.window, c.arg("repo")?, c.arg("patch")?).await },
+    );
     d.add("vcs_shelve", |c| async move { vcs_shelve(&c.host, &c.window, c.arg("name")?, c.arg("paths")?).await });
     d.add("vcs_shelves", |c| async move { vcs_shelves(&c.host, &c.window) });
     d.add("vcs_unshelve", |c| async move { vcs_unshelve(&c.host, &c.window, c.arg("id")?, c.arg("remove")?).await });

@@ -355,7 +355,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     tabKeymap,
     keymap.of([...closeBracketsKeymap, ...editorBaseKeymap, indentWithTab]),
     compartments.language.of(o.language ?? []),
-    compartments.comments.of(commentTokens(o.info)),
+    compartments.comments.of(commentTokens(o.info, o.ctx.language)),
     compartments.indent.of(indentExtension(o.indent ?? effectiveIndent(o.settings, o.info))),
     compartments.readOnly.of(readOnlyExtension(o.ctx.readOnly)),
     compartments.wrap.of(wrapExtension(o.settings, o.ctx.path, o.wrapOverride)),

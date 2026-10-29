@@ -69,9 +69,8 @@ export function expressionPattern(expr: string): string {
     if (k > 0 && t !== "\\s+" && tokens[k - 1] !== "\\s+") src += "\\s*";
     src += t;
   });
-  const head = WORD.test(norm[0] ?? "") ? "(?<![\\w$])" : "";
   const tail = WORD.test(norm[norm.length - 1] ?? "") ? "(?![\\w$])" : "";
-  return head + src + tail;
+  return src + tail;
 }
 
 /** Spans in `text[from, to)` matching `expr` (absolute offsets), at most `limit`. */
@@ -86,7 +85,12 @@ export function findTextOccurrences(
   const scope = text.slice(from, to);
   const want = normalizeExpression(expr.trim());
   const out: { from: number; to: number }[] = [];
-  for (const m of scope.matchAll(re)) {
+  for (let m = re.exec(scope); m; m = re.exec(scope)) {
+    if (!m[0].length) re.lastIndex = m.index + 1;
+    if (WORD.test(want[0] ?? "") && m.index > 0 && WORD.test(scope[m.index - 1]!)) {
+      re.lastIndex = m.index + 1;
+      continue;
+    }
     if (normalizeExpression(m[0]) !== want) continue;
     out.push({ from: from + m.index!, to: from + m.index! + m[0].length });
     if (out.length >= limit) break;

@@ -539,6 +539,7 @@ export const SEMICOLON_LANGS = new Set([
 /** Blocks close with a keyword (`end`) or by indentation: never complete them with braces. */
 export const KEYWORD_BLOCK_LANGS = new Set([
   "python",
+  "gdscript",
   "ruby",
   "lua",
   "elixir",
@@ -621,7 +622,11 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
   }
   let insert = "";
   if (SEMICOLON_LANGS.has(language) && !comment && text.trim() && !/[;{},:]$/.test(text)) insert = ";";
-  if (language === "python" && BLOCK_HEAD.test(text.replace(/^\s*(def|elif)\b/, "if")) && !text.endsWith(":"))
+  if (
+    (language === "python" || language === "gdscript") &&
+    BLOCK_HEAD.test(text.replace(/^\s*(def|elif|static\s+func)\b/, "if")) &&
+    !text.endsWith(":")
+  )
     insert = ":";
   const opensBlock =
     text.endsWith("{") ||

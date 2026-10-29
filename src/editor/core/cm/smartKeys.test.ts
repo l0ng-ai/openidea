@@ -101,6 +101,7 @@ describe("smart backspace", () => {
   it("applies in 'proper indent' mode except in indentation-based languages", () => {
     expect(smartBackspaceApplies("autoindent", "java")).toBe(true);
     expect(smartBackspaceApplies("autoindent", "python")).toBe(false);
+    expect(smartBackspaceApplies("autoindent", "gdscript")).toBe(false);
     expect(smartBackspaceApplies("nearest", "java")).toBe(false);
   });
 

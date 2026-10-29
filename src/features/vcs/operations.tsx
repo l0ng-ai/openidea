@@ -1,3 +1,4 @@
+import { commitKey, commitRepo } from "./multiRoot";
 /**
  * Operations on history: Continue / Abort / Skip of a stopped merge, rebase,
  * cherry-pick or revert, and the Git Log commit actions (Cherry-Pick, Revert
@@ -219,10 +220,10 @@ export function newestFirst(
   commits: readonly Commit[],
   log: readonly Commit[] = useGitLog.getState().commits,
 ): Commit[] {
-  const pos = new Map(log.map((c, i) => [c.id, i]));
+  const pos = new Map(log.map((c, i) => [commitKey(c), i]));
   return [...commits].sort((a, b) => {
-    const pa = pos.get(a.id);
-    const pb = pos.get(b.id);
+    const pa = pos.get(commitKey(a));
+    const pb = pos.get(commitKey(b));
     if (pa !== undefined && pb !== undefined) return pa - pb;
     return (b.timeMs ?? 0) - (a.timeMs ?? 0);
   });
@@ -242,6 +243,7 @@ export async function cherryPick(commits: Commit[]) {
       failure: "Cherry-pick failed",
       onError: conflictsInstead,
     },
+    commitRepo(commits[0]!) ?? currentRepo(),
   );
 }
 
@@ -253,6 +255,7 @@ export async function revertCommits(commits: Commit[]) {
   await runGitOperation(
     { op: "revert", commits: ordered.map((c) => c.id) },
     { progress: "Reverting", success: `Reverted ${label}`, failure: "Revert failed", onError: conflictsInstead },
+    commitRepo(commits[0]!) ?? currentRepo(),
   );
 }
 
@@ -277,6 +280,7 @@ export function showResetDialog(commit?: Commit) {
 }
 
 function ResetDialog({ commit, onClose }: { commit?: Commit; onClose: () => void }) {
+  const [repo] = useState(() => (commit && commitRepo(commit)) || currentRepo());
   const head = useVcs((s) => s.branch?.head ?? "HEAD");
   const [mode, setMode] = useState<ResetMode>("mixed");
   const [target, setTarget] = useState(commit?.id ?? "HEAD");
@@ -291,6 +295,7 @@ function ResetDialog({ commit, onClose }: { commit?: Commit; onClose: () => void
         success: `Reset ${head} to ${commit ? short(commit.id) : rev} (${mode})`,
         failure: "Reset failed",
       },
+      repo,
     );
   };
   return (
@@ -356,7 +361,8 @@ export function validateTagName(name: string, existing: readonly string[] = []):
 
 /** Log › New Tag…: a lightweight tag on the selected commit. */
 export async function newTagOn(commit: Commit) {
-  const existing = await call(commands.vcsTags(currentRepo())).catch(() => [] as string[]);
+  const repo = commitRepo(commit) ?? currentRepo();
+  const existing = await call(commands.vcsTags(repo)).catch(() => [] as string[]);
   const r = await promptText({
     title: tx`Create New Tag On ${short(commit.id)}`,
     label: "Enter the name of new tag:",
@@ -365,7 +371,7 @@ export async function newTagOn(commit: Commit) {
     validate: (v) => validateTagName(v, existing),
   });
   if (!r) return;
-  const create = () => call(commands.vcsCreateTag(currentRepo(), r.value, commit.id, null, false));
+  const create = () => call(commands.vcsCreateTag(repo, r.value, commit.id, null, false));
   const ok = await runOp(`Create tag ${r.value}`, create, {
     success: `Created tag ${r.value} on ${short(commit.id)}`,
   });
@@ -379,13 +385,14 @@ export function showTagDialog() {
 }
 
 function TagDialog({ onClose }: { onClose: () => void }) {
+  const [repo] = useState(currentRepo);
   const [name, setName] = useState("");
   const [commit, setCommit] = useState("HEAD");
   const [message, setMessage] = useState("");
   const [force, setForce] = useState(false);
   const [existing, setExisting] = useState<string[]>([]);
   useEffect(() => {
-    void call(commands.vcsTags(currentRepo())).then(setExisting, () => undefined);
+    void call(commands.vcsTags(repo)).then(setExisting, () => undefined);
   }, []);
   const error = validateTagName(name, force ? [] : existing);
   const run = async () => {
@@ -394,7 +401,7 @@ function TagDialog({ onClose }: { onClose: () => void }) {
     const tag = name.trim();
     const ok = await runOp(
       `Create tag ${tag}`,
-      () => call(commands.vcsCreateTag(currentRepo(), tag, commit.trim() || "HEAD", message || null, force)),
+      () => call(commands.vcsCreateTag(repo, tag, commit.trim() || "HEAD", message || null, force)),
       { success: `Created tag ${tag}` },
     );
     if (ok !== undefined && useGitLog.getState().commits.length) void reloadLog();
@@ -472,7 +479,8 @@ interface Revision {
 
 /** Files that differ between `from` and `to` (`null`: the working tree). */
 function ChangesBetweenDialog({ from, to, onClose }: { from: Revision; to: Revision | null; onClose: () => void }) {
-  const root = useVcs((s) => s.root) ?? "";
+  const [root] = useState(currentRepoRoot);
+  const [repo] = useState(currentRepo);
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [active, setActive] = useState(0);
@@ -480,7 +488,6 @@ function ChangesBetweenDialog({ from, to, onClose }: { from: Revision; to: Revis
   const toRev = to?.rev ?? null;
   useEffect(() => {
     let alive = true;
-    const repo = currentRepo();
     call(toRev ? commands.vcsDiffRevisions(repo, fromRev, toRev) : commands.vcsDiffWithWorktree(repo, fromRev))
       .then((f) => alive && setFiles(f))
       .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
@@ -489,7 +496,7 @@ function ChangesBetweenDialog({ from, to, onClose }: { from: Revision; to: Revis
     };
   }, [fromRev, toRev]);
   const open = (f: ChangedFile) => {
-    const repoRoot = currentRepoRoot() ?? root;
+    const repoRoot = root;
     const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
     void openDiff({
       path: `${repoRoot}/${f.path}`,

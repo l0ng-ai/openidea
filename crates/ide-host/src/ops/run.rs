@@ -43,7 +43,10 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
     }
     let encoding = settings.console.encoding;
-    let options = StartOptions { encoding: Some(encoding).filter(|e| !e.trim().is_empty()) };
+    let options = StartOptions {
+        encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
+        python_paths: super::python::paths(&project),
+    };
     host.processes.start(&project.root, &config, &options, project.sink.clone(), Box::new(move |c| on_output(c)))
 }
 

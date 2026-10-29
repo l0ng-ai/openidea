@@ -16,6 +16,7 @@ pub mod java;
 pub mod lsp;
 pub mod nav;
 pub mod project;
+mod python;
 pub mod refactor;
 pub mod run;
 pub mod sdk;

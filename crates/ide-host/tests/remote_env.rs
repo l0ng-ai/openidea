@@ -109,7 +109,13 @@ fn server_environment_from_login_shell_and_devcontainer() {
     let started = project.join("started.txt");
     wait_for("postStartCommand", || std::fs::read_to_string(&started).is_ok_and(|s| s.ends_with('\n')));
     assert_eq!(std::fs::read_to_string(&started).unwrap(), "two-demo\n");
-    wait_for("the task to end", || events.0.lock().iter().any(|e| matches!(e, IdeEvent::Task { done: true, .. })));
+    wait_for("postStartCommand to end", || {
+        events
+            .0
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "postStartCommand"))
+    });
     assert!(events.0.lock().iter().any(
         |e| matches!(e, IdeEvent::Task { message: Some(m), title, .. } if m == "post-start-output" && title == "postStartCommand")
     ));

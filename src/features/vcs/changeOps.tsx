@@ -1,6 +1,6 @@
 /** Local change operations: commit, rollback, add, stash. */
-import { useState } from "react";
-import type { FileStatus, PartialCommitFile } from "@/bindings";
+import { useEffect, useState } from "react";
+import type { FileStatus, PartialCommitFile, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, Icon, Input, T, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
@@ -290,7 +290,7 @@ export async function addToVcs(paths: readonly string[]) {
 }
 
 /** Stash Changes dialog: message, Keep index (staged changes stay), include untracked files. */
-export function stashChanges(): Promise<void> {
+export function stashChanges(repo = currentRepo()): Promise<void> {
   return new Promise((resolve) => {
     const close = openDialog(() => (
       <StashDialog
@@ -300,7 +300,7 @@ export function stashChanges(): Promise<void> {
             await saveAll();
             await runOp(
               "Stash changes",
-              () => call(commands.vcsStashPush(currentRepo(), r.message || null, r.includeUntracked, r.keepIndex)),
+              () => call(commands.vcsStashPush(repo, r.message || null, r.includeUntracked, r.keepIndex)),
               { success: "Changes stashed" },
             );
             void loadStashes().catch(() => undefined);
@@ -378,27 +378,35 @@ export function unstashTitles(o: UnstashOptions): { title: string; success: stri
     : { title: tx`Apply ${ref}`, success: `Applied ${ref}` };
 }
 
-export async function unstash(o: UnstashOptions) {
+export async function unstash(o: UnstashOptions, repo = currentRepo()) {
   await saveAll();
   const { title, success } = unstashTitles(o);
-  await runOp(title, () => call(commands.vcsStashApply(currentRepo(), o.index, o.pop, o.reinstateIndex, o.branch)), {
+  await runOp(title, () => call(commands.vcsStashApply(repo, o.index, o.pop, o.reinstateIndex, o.branch)), {
     success,
   });
   void loadStashes().catch((e) => logConsole("err", String(e)));
 }
 
-export function applyStash(index: number, pop: boolean) {
-  return unstash({ index, pop, reinstateIndex: false, branch: null });
+export function applyStash(index: number, pop: boolean, repo = currentRepo()) {
+  return unstash({ index, pop, reinstateIndex: false, branch: null }, repo);
 }
 
 /** Unstash Changes dialog: pick a stash; Pop, Reinstate index, or As new branch. */
-export function showUnstashDialog(index = 0) {
-  void loadStashes().catch(() => undefined);
-  openDialog((close) => <UnstashDialog initial={index} onClose={close} />);
+export function showUnstashDialog(index = 0, repo = currentRepo()) {
+  openDialog((close) => <UnstashDialog initial={index} repo={repo} onClose={close} />);
 }
 
-function UnstashDialog({ initial, onClose }: { initial: number; onClose: () => void }) {
-  const stashes = useVcs((s) => s.stashes);
+function UnstashDialog({ initial, repo, onClose }: { initial: number; repo: string | null; onClose: () => void }) {
+  const [stashes, setStashes] = useState<Stash[]>([]);
+  useEffect(() => {
+    let live = true;
+    void call(commands.vcsStashes(repo))
+      .then((value) => live && setStashes(value))
+      .catch((e) => logConsole("err", String(e)));
+    return () => {
+      live = false;
+    };
+  }, [repo]);
   const [index, setIndex] = useState(initial);
   const [pop, setPop] = useState(false);
   const [reinstateIndex, setReinstateIndex] = useState(false);
@@ -408,7 +416,7 @@ function UnstashDialog({ initial, onClose }: { initial: number; onClose: () => v
   const submit = () => {
     if (!chosen) return;
     onClose();
-    void unstash({ index: chosen.index, pop, reinstateIndex, branch: asBranch || null });
+    void unstash({ index: chosen.index, pop, reinstateIndex, branch: asBranch || null }, repo);
   };
   return (
     <Dialog
@@ -464,7 +472,7 @@ function UnstashDialog({ initial, onClose }: { initial: number; onClose: () => v
   );
 }
 
-export async function dropStash(index: number, message: string) {
+export async function dropStash(index: number, message: string, repo = currentRepo()) {
   const ok = await confirmDialog({
     title: "Drop Stash",
     message: message
@@ -474,7 +482,7 @@ export async function dropStash(index: number, message: string) {
     danger: true,
   });
   if (!ok) return;
-  await runOp(`Drop stash@{${index}}`, () => call(commands.vcsStashDrop(currentRepo(), index)), {
+  await runOp(`Drop stash@{${index}}`, () => call(commands.vcsStashDrop(repo, index)), {
     success: `Dropped stash@{${index}}`,
   });
   void loadStashes().catch((e) => logConsole("err", String(e)));

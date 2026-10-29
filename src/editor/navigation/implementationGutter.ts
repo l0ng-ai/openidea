@@ -14,7 +14,7 @@ import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@c
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import type { EditorDocContext } from "@/editor/api";
 import { docOf, debounce, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
-import { onServerSettled, serverBackoff } from "@/editor/lsp/availability";
+import { featureBackoff, onServerSettled } from "@/editor/lsp/availability";
 import { readManyFileLines, withDocument } from "@/editor/lsp/files";
 import { locationItems, navigateTo, pinToFind } from "@/editor/lsp/navigation";
 import { openPopup } from "@/editor/lsp/popupStore";
@@ -49,6 +49,7 @@ import styles from "./LineMarkers.module.css";
 const MARGIN_LINES = 60;
 const MAX_PER_PASS = 60;
 const DEBOUNCE_MS = 500;
+const gutterBackoff = featureBackoff();
 
 /** Settings › Editor › General › Gutter Icons groups that are on. */
 export function enabledGroups(prefs: Pick<EditorExtras, "showGutterIcons" | "gutterIconsDisabled">): Set<MarkerGroup> {
@@ -279,7 +280,7 @@ class MarkersPlugin {
     const gen = ++this.generation;
     this.cancelRequest();
     const groups = enabledGroups(editorPrefs());
-    if (!groups.size || serverBackoff.active(ctx.doc)) {
+    if (!groups.size || gutterBackoff.active(ctx.doc)) {
       if (!groups.size) this.show([]);
       return;
     }
@@ -310,7 +311,7 @@ class MarkersPlugin {
       if (stale()) return;
       this.show(place(text, cachedMarkers(candidates, groups, this.cache)));
     } catch (e) {
-      if (isUnavailable(e)) serverBackoff.mark(ctx.doc);
+      if (isUnavailable(e)) gutterBackoff.mark(ctx.doc);
       else if (!isCancelled(e)) console.debug("[lineMarkers]", e);
     }
   }

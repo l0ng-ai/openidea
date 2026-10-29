@@ -10,7 +10,7 @@ import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
-import { currentRepo, loadBranches, refreshNow, useVcs } from "./store";
+import { currentRepo, loadBranches, refreshNow, repoName, selectRepo, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -82,9 +82,16 @@ function MergeFlags({
 }
 
 function useBranches(): Branch[] {
-  const branches = useVcs((s) => s.branches);
+  const [repo] = useState(currentRepo);
+  const [branches, setBranches] = useState<Branch[]>([]);
   useEffect(() => {
-    void loadBranches().catch(() => undefined);
+    let live = true;
+    void call(commands.vcsBranches(repo))
+      .then((b) => live && setBranches(b))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
   }, []);
   return branches;
 }
@@ -107,7 +114,8 @@ export function showPullDialog() {
 }
 
 function PullDialog({ onClose }: { onClose: () => void }) {
-  const info = useVcs((s) => s.branch);
+  const [repo] = useState(currentRepo);
+  const [info] = useState(() => useVcs.getState().branch);
   const branches = useBranches();
   const [remotes, setRemotes] = useState<Remote[] | null>(null);
   const [remote, setRemote] = useState<string | null>(null);
@@ -117,7 +125,7 @@ function PullDialog({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let alive = true;
-    call(commands.vcsRemotes(currentRepo()))
+    call(commands.vcsRemotes(repo))
       .then((list) => {
         if (!alive) return;
         setRemotes(list);
@@ -154,6 +162,7 @@ function PullDialog({ onClose }: { onClose: () => void }) {
         options: mergeOptionsOf(rebase ? new Set() : flags),
       },
       `${info?.head ?? "HEAD"} ← ${remote}${branch ? `/${branch}` : ""}`,
+      [repo],
     );
   };
 
@@ -211,7 +220,8 @@ export function showMergeDialog() {
 }
 
 function MergeDialog({ onClose }: { onClose: () => void }) {
-  const head = useVcs((s) => s.branch?.head ?? null);
+  const [repo] = useState(currentRepo);
+  const [head] = useState(() => useVcs.getState().branch?.head ?? null);
   const branches = useBranches();
   const [branch, setBranch] = useState<string | null>(null);
   const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
@@ -229,7 +239,7 @@ function MergeDialog({ onClose }: { onClose: () => void }) {
     const target = head ?? "HEAD";
     await runOp(
       `Merge ${branch} into ${target}`,
-      () => call(commands.vcsMergeWith(currentRepo(), [branch], mergeOptionsOf(flags, withMessage ? message : null))),
+      () => call(commands.vcsMergeWith(repo, [branch], mergeOptionsOf(flags, withMessage ? message : null))),
       { success: `Merged ${branch} into ${target}`, errorActions: conflictActions, onError: openConflictsInstead },
     );
     await refreshNow();
@@ -282,7 +292,8 @@ export function showRebaseDialog() {
 }
 
 function RebaseDialog({ onClose }: { onClose: () => void }) {
-  const head = useVcs((s) => s.branch?.head ?? null);
+  const [repo] = useState(currentRepo);
+  const [head] = useState(() => useVcs.getState().branch?.head ?? null);
   const branches = useBranches();
   const [upstream, setUpstream] = useState<string | null>(null);
   const [useOnto, setUseOnto] = useState(false);
@@ -305,7 +316,7 @@ function RebaseDialog({ onClose }: { onClose: () => void }) {
       `Rebase ${current} onto ${target}`,
       () =>
         call(
-          commands.vcsRebaseWith(currentRepo(), upstream, {
+          commands.vcsRebaseWith(repo, upstream, {
             onto: useOnto ? onto : null,
             rebaseMerges,
             keepEmpty,
@@ -368,11 +379,12 @@ export function showManageRemotes() {
 }
 
 function RemotesDialog({ onClose }: { onClose: () => void }) {
+  const [repo] = useState(currentRepo);
   const [remotes, setRemotes] = useState<Remote[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const reload = () =>
-    call(commands.vcsRemotes(currentRepo()))
+    call(commands.vcsRemotes(repo))
       .then((list) => {
         setRemotes(list);
         setSelected((s) => (s && list.some((r) => r.name === s) ? s : (list[0]?.name ?? null)));
@@ -384,7 +396,7 @@ function RemotesDialog({ onClose }: { onClose: () => void }) {
 
   const apply = async (edit: Parameters<typeof commands.vcsEditRemote>[1]) => {
     try {
-      await call(commands.vcsEditRemote(currentRepo(), edit));
+      await call(commands.vcsEditRemote(repo, edit));
       setError(null);
     } catch (e) {
       setError(errorMessage(e));
@@ -563,11 +575,12 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
  */
 export function WorktreesPanel({ className, listClassName }: { className?: string; listClassName?: string }) {
   const repo = useVcs((s) => s.repo);
+  const repos = useVcs((s) => s.roots);
   const [list, setList] = useState<Worktree[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const reload = () =>
-    call(commands.vcsWorktrees(currentRepo()))
+    call(commands.vcsWorktrees(repo))
       .then((l) => {
         setList(l);
         setError(null);
@@ -588,7 +601,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
     });
     if (!ok) return;
     try {
-      await call(commands.vcsRemoveWorktree(currentRepo(), current.path, false));
+      await call(commands.vcsRemoveWorktree(repo, current.path, false));
     } catch (e) {
       const force = await confirmDialog({
         title: "Remove Worktree",
@@ -597,9 +610,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
         danger: true,
       });
       if (force)
-        await call(commands.vcsRemoveWorktree(currentRepo(), current.path, true)).catch((x) =>
-          setError(errorMessage(x)),
-        );
+        await call(commands.vcsRemoveWorktree(repo, current.path, true)).catch((x) => setError(errorMessage(x)));
     }
     setSelected(null);
     await reload();
@@ -608,6 +619,14 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
   return (
     <div className={className}>
       <div className={styles.manageBar} role="toolbar" aria-label={tx("Worktrees")}>
+        {repos.length > 1 && (
+          <Select
+            aria-label="Repository"
+            value={repo}
+            options={repos.map((r) => ({ value: r, label: repoName(r) }))}
+            onChange={(r) => void selectRepo(r)}
+          />
+        )}
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
         <IconButton
           icon="plus"
@@ -655,7 +674,8 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
 }
 
 function NewWorktreeDialog({ onClose }: { onClose: (created: boolean) => void }) {
-  const root = useVcs((s) => s.repo ?? s.root) ?? "";
+  const [repo] = useState(currentRepo);
+  const [root] = useState(() => useVcs.getState().repo ?? useVcs.getState().root ?? "");
   const branches = useBranches();
   const [source, setSource] = useState<string | null>(null);
   const [createBranch, setCreateBranch] = useState(true);
@@ -683,7 +703,7 @@ function NewWorktreeDialog({ onClose }: { onClose: (created: boolean) => void })
   const create = async () => {
     if (invalid || !source) return;
     try {
-      await call(commands.vcsAddWorktree(currentRepo(), target.trim(), source, createBranch ? branchName : null));
+      await call(commands.vcsAddWorktree(repo, target.trim(), source, createBranch ? branchName : null));
       notifications().notify({ group: "vcs", level: "info", title: `Created worktree at ${target.trim()}` });
       void loadBranches().catch(() => undefined);
       onClose(true);

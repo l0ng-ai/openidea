@@ -1,3 +1,4 @@
+import { commitRepo } from "./multiRoot";
 /**
  * Git Log history rewriting: Undo Commit, Edit Commit Message, Drop Commit and
  * Interactively Rebase from Here (IDEA's Git.Log.ContextMenu).
@@ -46,6 +47,7 @@ const pushedWarning = (what: string) =>
 // Undo Commit
 
 export async function undoCommit(commit: Commit) {
+  const repo = commitRepo(commit) ?? currentRepo();
   await refreshNow();
   const branch = useVcs.getState().branch;
   const problem = undoCommitProblem(commit, branch);
@@ -59,7 +61,7 @@ export async function undoCommit(commit: Commit) {
     });
     if (!ok) return;
   }
-  const undo = () => call(commands.vcsUndoCommit(currentRepo(), commit.id));
+  const undo = () => call(commands.vcsUndoCommit(repo, commit.id));
   const message = await runOp(`Undo commit ${short(commit.id)}`, undo, {
     success: `Undid commit ${short(commit.id)} “${commit.summary}”; its changes are staged`,
   });
@@ -71,7 +73,8 @@ export async function undoCommit(commit: Commit) {
 // Rebase-based actions
 
 /** The commits from `target` to HEAD, or a warning when they cannot be rewritten. */
-async function rangeFrom(target: Commit, verb: string): Promise<RebaseRange | null> {
+async function rangeFrom(target: Commit, verb: string): Promise<(RebaseRange & { repo: string | null }) | null> {
+  const repo = commitRepo(target) ?? currentRepo();
   await refreshNow();
   const branch = useVcs.getState().branch;
   const op = inProgress(branch?.operation);
@@ -82,7 +85,7 @@ async function rangeFrom(target: Commit, verb: string): Promise<RebaseRange | nu
   const parent = target.parents[0];
   try {
     const history = await call(
-      commands.vcsLog(currentRepo(), {
+      commands.vcsLog(repo, {
         branch: "HEAD",
         path: null,
         author: null,
@@ -106,14 +109,14 @@ async function rangeFrom(target: Commit, verb: string): Promise<RebaseRange | nu
       });
       if (!ok) return null;
     }
-    return range;
+    return { ...range, repo };
   } catch (e) {
     refuse(`Cannot ${verb}`, e instanceof Error ? e.message : String(e));
     return null;
   }
 }
 
-async function runRebase(base: string | null, entries: RebaseEntry[], done: string) {
+async function runRebase(base: string | null, entries: RebaseEntry[], done: string, repo: string | null) {
   await saveAll();
   await runGitOperation(
     { op: "interactiveRebase", base, entries },
@@ -123,6 +126,7 @@ async function runRebase(base: string | null, entries: RebaseEntry[], done: stri
       failure: "Rebase failed",
       onError: conflictsInstead,
     },
+    repo,
   );
 }
 
@@ -136,6 +140,7 @@ export async function editCommitMessage(commit: Commit) {
     range.base,
     singleCommitPlan(range, commit.id, "reword", message),
     `Commit message of ${short(commit.id)} changed`,
+    range.repo,
   );
 }
 
@@ -158,7 +163,7 @@ export async function dropCommits(commits: Commit[]) {
     action: ids.has(c.id) ? ("drop" as const) : ("pick" as const),
     message: null,
   }));
-  await runRebase(range.base, plan, `Dropped ${commits.length} commits`);
+  await runRebase(range.base, plan, `Dropped ${commits.length} commits`, range.repo);
 }
 
 async function dropCommit(commit: Commit) {
@@ -171,7 +176,12 @@ async function dropCommit(commit: Commit) {
     tx`Drop commit ${short(commit.id)} “${commit.summary}” from the current branch? Its changes are removed.`,
   );
   if (!ok) return;
-  await runRebase(range.base, singleCommitPlan(range, commit.id, "drop"), `Dropped commit ${short(commit.id)}`);
+  await runRebase(
+    range.base,
+    singleCommitPlan(range, commit.id, "drop"),
+    `Dropped commit ${short(commit.id)}`,
+    range.repo,
+  );
 }
 
 /** Settings › Version Control › Confirmation › Ask for confirmation to drop commits, with "Don't ask again". */
@@ -190,7 +200,7 @@ async function confirmDrop(title: string, body: string): Promise<boolean> {
 }
 
 /** The range from the oldest of `commits`, when all of them are on the current branch. */
-async function rangeFor(commits: Commit[], verb: string): Promise<RebaseRange | null> {
+async function rangeFor(commits: Commit[], verb: string): Promise<(RebaseRange & { repo: string | null }) | null> {
   // Log order is newest first: the last selected row is the oldest commit.
   const oldest = commits[commits.length - 1]!;
   const range = await rangeFrom(oldest, verb);
@@ -215,7 +225,7 @@ export async function squashCommits(commits: Commit[]) {
     oldestFirst.map((c) => c.message.trim()).join("\n\n"),
   );
   if (message === null || !message.trim()) return;
-  await runRebase(range.base, squashPlan(range, ids, message), `Squashed ${commits.length} commits`);
+  await runRebase(range.base, squashPlan(range, ids, message), `Squashed ${commits.length} commits`, range.repo);
 }
 
 /**
@@ -293,7 +303,13 @@ const ACTIONS: Array<{ value: RebaseAction; label: string }> = [
   { value: "drop", label: "Drop" },
 ];
 
-function InteractiveRebaseDialog({ range, onClose }: { range: RebaseRange; onClose: () => void }) {
+function InteractiveRebaseDialog({
+  range,
+  onClose,
+}: {
+  range: RebaseRange & { repo: string | null };
+  onClose: () => void;
+}) {
   const [rows, setRows] = useState<RebaseRow[]>(() => initialRows(range.commits));
   const problem = planProblem(rows);
   const noop = planIsNoop(rows, range.commits);
@@ -302,7 +318,7 @@ function InteractiveRebaseDialog({ range, onClose }: { range: RebaseRange; onClo
   const start = () => {
     if (problem || noop) return;
     onClose();
-    void runRebase(range.base, toEntries(rows), "Rebase finished");
+    void runRebase(range.base, toEntries(rows), "Rebase finished", range.repo);
   };
   return (
     <Dialog

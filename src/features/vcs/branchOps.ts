@@ -144,6 +144,7 @@ export async function checkoutBranch(name: string) {
 
 /** New Branch: creates a branch from HEAD (or `from`) and, by default, checks it out. */
 export async function newBranch(from?: string) {
+  const repo = currentRepo();
   const suggestion = from ? (from.includes("/") ? shortRemoteName(from) : `${from}-copy`) : "";
   const r = await promptText({
     title: from ? tx`Create New Branch from ${from}` : "Create New Branch",
@@ -158,7 +159,7 @@ export async function newBranch(from?: string) {
   const checkout = r.checked;
   const previous = useVcs.getState().branch?.head;
   if (checkout) await saveAll();
-  const create = () => call(commands.vcsCreateBranch(currentRepo(), r.value, from ?? null, checkout));
+  const create = () => call(commands.vcsCreateBranch(repo, r.value, from ?? null, checkout));
   const ok = await runOp(`Create branch ${r.value}`, create, {
     success: checkout ? `Created and checked out ${r.value}` : `Created branch ${r.value}`,
   });
@@ -198,9 +199,10 @@ export async function openConflictsInstead(): Promise<boolean> {
 }
 
 export async function mergeIntoCurrent(branch: string) {
+  const repo = currentRepo();
   const current = useVcs.getState().branch?.head ?? "HEAD";
   await saveAll();
-  await runOp(`Merge ${branch} into ${current}`, () => call(commands.vcsMerge(currentRepo(), branch)), {
+  await runOp(`Merge ${branch} into ${current}`, () => call(commands.vcsMerge(repo, branch)), {
     success: `Merged ${branch} into ${current}`,
     errorActions: conflictActions,
     onError: openConflictsInstead,
@@ -208,9 +210,10 @@ export async function mergeIntoCurrent(branch: string) {
 }
 
 export async function rebaseOnto(branch: string) {
+  const repo = currentRepo();
   const current = useVcs.getState().branch?.head ?? "HEAD";
   await saveAll();
-  await runOp(`Rebase ${current} onto ${branch}`, () => call(commands.vcsRebase(currentRepo(), branch)), {
+  await runOp(`Rebase ${current} onto ${branch}`, () => call(commands.vcsRebase(repo, branch)), {
     success: `Rebased ${current} onto ${branch}`,
     errorActions: conflictActions,
     onError: openConflictsInstead,
@@ -218,6 +221,7 @@ export async function rebaseOnto(branch: string) {
 }
 
 export async function renameBranch(name: string) {
+  const repo = currentRepo();
   const r = await promptText({
     title: tx`Rename Branch ${name}`,
     label: "New branch name:",
@@ -228,7 +232,7 @@ export async function renameBranch(name: string) {
   });
   if (!r) return;
   const to = r.value.trim();
-  const ok = await runOp(`Rename branch ${name}`, () => call(commands.vcsRenameBranch(currentRepo(), name, to)), {
+  const ok = await runOp(`Rename branch ${name}`, () => call(commands.vcsRenameBranch(repo, name, to)), {
     success: `Renamed branch ${name} to ${to}`,
   });
   if (ok !== undefined) {

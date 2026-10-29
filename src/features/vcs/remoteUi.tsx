@@ -282,8 +282,9 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
 }
 
 function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClose: () => void }) {
-  const branch = useVcs((s) => s.branch);
-  const branches = useVcs((s) => s.branches);
+  const [repo] = useState(currentRepo);
+  const [branch] = useState(() => useVcs.getState().branch);
+  const [branches] = useState(() => useVcs.getState().branches);
   const [commits, setCommits] = useState<Commit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [force, setForce] = useState(false);
@@ -305,10 +306,10 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
       if (!head) return [];
       if (!explicit) {
         const q = outgoingQuery(upstream);
-        return logOf(q.branch, q.limit, q.range);
+        return logOf(q.branch, q.limit, q.range, repo);
       }
       const tip = revision ?? head;
-      return upstream ? logOf(tip, 1000, `${upstream}..${tip}`) : logOf(tip, 50);
+      return upstream ? logOf(tip, 1000, `${upstream}..${tip}`, repo) : logOf(tip, 50, null, repo);
     })()
       .then((c) => alive && setCommits(c))
       .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
@@ -339,6 +340,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
           target: retarget ? edited : null,
         },
         `${revision ? `${head} up to ${revision.slice(0, 8)}` : head} → ${targetLabel}`,
+        [repo],
       );
       return;
     }
@@ -350,6 +352,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
         tags: pushTags ? tagsMode : null,
       },
       upstream ? `${head} → ${upstream}` : `${head} → new remote branch`,
+      repo,
     );
   };
 

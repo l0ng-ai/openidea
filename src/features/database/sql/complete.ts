@@ -47,6 +47,12 @@ export interface SqlCandidate {
   doc?: string;
 }
 
+/** Match the console's automatic trigger: a word or a qualifier followed by a dot. */
+export function shouldAutoCompleteSql(analysis: Analysis): boolean {
+  const typed = analysis.prefix.text;
+  return analysis.context.kind !== "none" && (!!typed || !!analysis.qualifier) && !/^\d/.test(typed);
+}
+
 const MAX_ALL_COLUMNS = 3000;
 
 const eq = (a: string | null | undefined, b: string | null | undefined) =>
@@ -62,7 +68,10 @@ export function quoteIdent(name: string, driver: DbDriver): string {
 
 /** A short alias for `table` not in `taken`: `order_items` → `oi`, `users` → `u`. */
 export function aliasFor(table: string, taken: ReadonlySet<string>): string {
-  const words = table.split(/[_\s.$-]+|(?<=[a-z])(?=[A-Z])/).filter(Boolean);
+  const words = table
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[_\s.$-]+/)
+    .filter(Boolean);
   let base =
     words
       .map((w) => w[0]!)

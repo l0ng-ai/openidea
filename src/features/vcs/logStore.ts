@@ -1,4 +1,5 @@
 /** Git log tool window state: filters, paged commits, graph, selection. */
+import { branchesByRepo, commitKey, commitRepo, graphCommit, mergeRepoLogs, type RepoCommit } from "./multiRoot";
 import { create } from "zustand";
 import type { Branch, BranchInfo, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
@@ -6,7 +7,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { collapseLinear, computeGraph, emptyGraphState, type GraphRow, type GraphState } from "./graph";
 import { logOptions, setLogOptions, type LogOptions } from "./logOptions";
 import { clearConsole, errorMessage } from "./ops";
-import { currentRepo, currentRepoRoot, repoOf, selectRepo, useVcs } from "./store";
+import { currentRepo, currentRepoRoot, repoName, repoOf, useVcs } from "./store";
 
 /** Date filter: commits made (committer time) after / before the given times (epoch ms). */
 export interface LogDateFilter {
@@ -21,6 +22,7 @@ export const ME = "me";
 export interface LogFilters {
   /** Branches / revisions to show; empty = all. */
   branches: string[];
+  repositories?: string[];
   /** Author names or emails (any matches); `ME` = the current user. */
   authors: string[];
   text: string;
@@ -34,7 +36,7 @@ export interface LogFilters {
 
 interface LogState {
   filters: LogFilters;
-  commits: Commit[];
+  commits: RepoCommit[];
   rows: GraphRow[];
   graph: GraphState;
   loading: boolean;
@@ -46,6 +48,7 @@ interface LogState {
   selection: string[];
   /** Commits of HEAD not on its upstream (`@{u}..HEAD`); null without an upstream. */
   outgoing: Set<string> | null;
+  tracked: Set<string>;
   /** Content tab of the Git tool window (a `GitTab`, or the id of a log tab). */
   tab: string;
   /** Closable log tabs (History: file, Log: branch) next to the main Log. */
@@ -70,6 +73,7 @@ export interface LogTab {
   kind: "history" | "branch";
   /** What it shows (the file path or the branch); opening the same again selects the tab. */
   target: string;
+  repo?: string | null;
 }
 
 export const PAGE = 300;
@@ -86,7 +90,7 @@ export const emptyFilters = (): LogFilters => ({
 
 /** Any filter other than the text field's toggles is set. */
 export function hasFilters(f: LogFilters): boolean {
-  return !!(f.branches.length || f.authors.length || f.text || f.path || f.date);
+  return !!(f.repositories?.length || f.branches.length || f.authors.length || f.text || f.path || f.date);
 }
 
 /** `ME` replaced by the current user's email (or name); duplicates and blanks dropped. */
@@ -137,6 +141,7 @@ const initialLog = (): Omit<LogState, "generation"> => ({
   selected: null,
   selection: [],
   outgoing: null,
+  tracked: new Set(),
   tab: "log",
   logTabs: [],
   shownLog: "log",
@@ -185,6 +190,7 @@ function rememberLogBranches(repo: string, branches: readonly string[]) {
  */
 export function initLogBranchFilter(): boolean {
   const s = useGitLog.getState();
+  if (useVcs.getState().roots.length > 1) return false;
   const repo = currentRepoRoot();
   if (s.shownLog !== "log" || !repo || s.branchScope === repo) return false;
   const names = useVcs
@@ -258,7 +264,8 @@ let tabSeq = 0;
  * they are: Show History for a file, Show Git Log for a branch.
  */
 export function openLogTab(kind: LogTab["kind"], target: string): string {
-  const existing = useGitLog.getState().logTabs.find((t) => t.kind === kind && t.target === target);
+  const repo = kind === "history" ? repoOf(target) : currentRepoRoot();
+  const existing = useGitLog.getState().logTabs.find((t) => t.kind === kind && t.target === target && t.repo === repo);
   if (existing) {
     selectGitTab(existing.id);
     return existing.id;
@@ -266,11 +273,8 @@ export function openLogTab(kind: LogTab["kind"], target: string): string {
   const id = `${kind}:${++tabSeq}`;
   const filters = { ...emptyFilters(), ...(kind === "history" ? { path: target } : { branches: [target] }) };
   parked.set(id, freshView(filters));
-  useGitLog.setState((s) => ({ logTabs: [...s.logTabs, { id, kind, target }] }));
+  useGitLog.setState((s) => ({ logTabs: [...s.logTabs, { id, kind, target, repo }] }));
   selectGitTab(id);
-  // History of a file in another repository: that repository's log.
-  const repo = kind === "history" ? repoOf(target) : null;
-  if (repo && repo !== currentRepo()) void selectRepo(repo);
   return id;
 }
 
@@ -288,7 +292,7 @@ export function closeLogTab(id: string) {
 
 /**
  * Another project (the window switched projects): forget its commits, filters, selection
- * and console. Another repository of the project selected: show its log.
+ * and console. Repository selection does not change the log or its history tabs.
  */
 export function installGitLog(): () => void {
   return useVcs.subscribe((s, prev) => {
@@ -301,33 +305,9 @@ export function installGitLog(): () => void {
         generation: l.generation + 1,
       }));
       clearConsole();
-    } else if (s.repo !== prev.repo && prev.repo !== null) {
-      // The parked log tabs load again when shown.
+    } else if (s.roots !== prev.roots) {
       for (const [id, view] of parked) parked.set(id, freshView(view.filters));
-      // Drops a page still loading for the old repository (its generation no longer matches).
-      loadPromise = null;
-      useGitLog.setState((l) => ({
-        // The shown log belonged to the old repository: it loads again once the new
-        // repository's branch filter is settled (see LogView).
-        commits: [],
-        rows: [],
-        graph: emptyGraphState(),
-        loading: false,
-        done: false,
-        error: null,
-        selected: null,
-        selection: [],
-        branchScope: null,
-        generation: l.generation + 1,
-        filters: {
-          ...l.filters,
-          // The main Log's branch filter belonged to the old repository; show all
-          // until the new repository's remembered/current branch is settled.
-          ...(l.shownLog === "log" ? { branches: [] } : {}),
-          // A path filter belongs to the repository it is in.
-          ...(l.filters.path && repoOf(l.filters.path) !== s.repo ? { path: null } : {}),
-        },
-      }));
+      void reloadLog();
     }
   });
 }
@@ -335,9 +315,7 @@ export function installGitLog(): () => void {
 export function setLogFilters(patch: Partial<LogFilters>) {
   useGitLog.setState((s) => ({ filters: { ...s.filters, ...patch } }));
   // History of a file in another repository: that repository's log.
-  const repo = patch.path ? repoOf(patch.path) : null;
-  if (repo && repo !== currentRepo()) void selectRepo(repo);
-  else void reloadLog();
+  void reloadLog();
 }
 
 /** Drops loaded commits and loads the first page. */
@@ -352,35 +330,49 @@ export function reloadLog(): Promise<void> {
   }));
   loadPromise = null;
   void loadOutgoing();
-  void currentUser().then((user) => useGitLog.setState({ user }));
+  const generation = useGitLog.getState().generation;
+  void currentUser().then((user) => {
+    if (useGitLog.getState().generation === generation) useGitLog.setState({ user });
+  });
   return loadMore();
 }
 
 async function loadOutgoing() {
-  const upstream = useVcs.getState().branch?.upstream;
-  if (!upstream) return useGitLog.setState({ outgoing: null });
-  try {
-    const commits = await call(
-      commands.vcsLog(currentRepo(), {
-        branch: "HEAD",
-        path: null,
-        author: null,
-        text: null,
-        range: "@{u}..HEAD",
-        skip: 0,
-        limit: 0,
-      }),
-    );
-    useGitLog.setState({ outgoing: new Set(commits.map((c) => c.id)) });
-  } catch {
-    useGitLog.setState({ outgoing: null });
-  }
+  const generation = useGitLog.getState().generation;
+  const roots = useVcs.getState().roots.length ? useVcs.getState().roots : [currentRepo()];
+  const outgoing = new Set<string>();
+  const tracked = new Set<string>();
+  await Promise.all(
+    roots.map(async (repo) => {
+      try {
+        const info = await call(commands.vcsBranchInfo(repo));
+        if (!info.upstream) return;
+        const commits = await call(
+          commands.vcsLog(repo, {
+            branch: "HEAD",
+            path: null,
+            author: null,
+            text: null,
+            range: "@{u}..HEAD",
+            skip: 0,
+            limit: 0,
+          }),
+        );
+        tracked.add(repo ?? "");
+        for (const c of commits) outgoing.add(commitKey({ ...c, repo }));
+      } catch {
+        /* A missing upstream does not prevent browsing history. */
+      }
+    }),
+  );
+  if (useGitLog.getState().generation === generation) useGitLog.setState({ outgoing, tracked });
 }
 
 /** The commit is on the upstream of the current branch (rewriting it needs a force push). */
 export function isPushed(id: string): boolean {
-  const { outgoing } = useGitLog.getState();
-  return !!outgoing && !outgoing.has(id);
+  const { outgoing, tracked, commits } = useGitLog.getState();
+  const c = commits.find((c) => commitKey(c) === id);
+  return !!c && tracked.has(commitRepo(c) ?? "") && !!outgoing && !outgoing.has(id);
 }
 
 export function loadMore(): Promise<void> {
@@ -399,42 +391,77 @@ export function loadMore(): Promise<void> {
   useGitLog.setState({ loading: true });
   const p = (async () => {
     try {
-      const authors = resolveAuthors(f.authors, f.authors.includes(ME) ? await currentUser() : null);
-      if (f.authors.length && !authors.length) {
-        if (useGitLog.getState().generation === gen) useGitLog.setState({ done: true });
-        return;
-      }
       const o = logOptions();
-      const page = await call(
-        commands.vcsLog(currentRepo(), {
-          branch: null,
-          branches: f.branches,
-          authors,
-          path: f.path,
-          author: null,
-          text: f.text.trim() || null,
-          textRegex: f.regex,
-          textMatchCase: f.matchCase,
-          range: null,
-          skip: s.commits.length,
-          limit: Math.min(PAGE, cap - s.commits.length),
-          order: o.sort,
-          firstParent: o.firstParent,
-          noMerges: o.noMerges,
-          // The date filter runs in the backend so the graph stays connected.
-          sinceMs: f.date?.after ?? null,
-          untilMs: f.date?.before ?? null,
+      const tab = s.logTabs.find((t) => t.id === s.shownLog);
+      const roots = tab?.repo
+        ? [tab.repo]
+        : f.path
+          ? [repoOf(f.path)]
+          : f.repositories?.length
+            ? f.repositories
+            : useVcs.getState().roots.length
+              ? useVcs.getState().roots
+              : [currentRepo()];
+      const limit = Math.min(PAGE, cap - s.commits.length);
+      const refs = await branchesByRepo(roots.filter((r): r is string => !!r));
+      const knownRefs = new Set(
+        Object.values(refs)
+          .flat()
+          .map((b) => b.name),
+      );
+      const results = await Promise.allSettled(
+        roots.map(async (repo) => {
+          const branches = f.branches.filter(
+            (ref) => !knownRefs.has(ref) || (repo && refs[repo]?.some((b) => b.name === ref)),
+          );
+          if (f.branches.length && !branches.length) return [];
+          const config = (key: string) => call(commands.vcsConfigGet(repo, key)).catch(() => null);
+          const user = (await config("user.email")) || (await config("user.name"));
+          const ownAuthors = resolveAuthors(f.authors, user);
+          if (f.authors.length && !ownAuthors.length) return [];
+          const page = await call(
+            commands.vcsLog(repo, {
+              branch: null,
+              branches,
+              authors: ownAuthors,
+              path: f.path,
+              author: null,
+              text: f.text.trim() || null,
+              textRegex: f.regex,
+              textMatchCase: f.matchCase,
+              range: null,
+              skip: s.commits.filter((c) => commitRepo(c) === repo).length,
+              limit,
+              order: o.sort,
+              firstParent: o.firstParent,
+              noMerges: o.noMerges,
+              // The date filter runs in the backend so the graph stays connected.
+              sinceMs: f.date?.after ?? null,
+              untilMs: f.date?.before ?? null,
+            }),
+          );
+          return page.map((c) => ({
+            ...c,
+            repo,
+            user,
+            remoteNames: repo ? refs[repo]?.filter((b) => b.remote).map((b) => b.name) : undefined,
+          }));
         }),
       );
+      const streams = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      const failures = results.flatMap((r, i) =>
+        r.status === "rejected" ? [`${roots[i] ? repoName(roots[i]!) : "Git"}: ${errorMessage(r.reason)}`] : [],
+      );
+      const page = mergeRepoLogs(streams, limit);
       const cur = useGitLog.getState();
       if (cur.generation !== gen) return;
-      const { rows, state } = computeGraph(page, cur.graph);
+      const { rows, state } = computeGraph(page.map(graphCommit), cur.graph);
       useGitLog.setState({
         commits: cur.commits.concat(page),
         rows: cur.rows.concat(rows),
         graph: state,
         done: page.length < PAGE || cur.commits.length + page.length >= cap,
-        error: null,
+        error: failures.join("\n") || null,
       });
     } catch (e) {
       if (useGitLog.getState().generation === gen) useGitLog.setState({ error: errorMessage(e), done: true });
@@ -469,8 +496,10 @@ export function selectCommit(id: string | null, reveal = false) {
 /** Cmd/Ctrl-click: toggles `id` in the selection. */
 export function toggleCommitSelection(id: string) {
   useGitLog.setState((s) => {
-    const on = s.selection.includes(id);
-    const selection = on ? s.selection.filter((x) => x !== id) : [...s.selection, id];
+    const repo = commitRepo(s.commits.find((c) => commitKey(c) === id)!);
+    const existing = s.selection.filter((key) => commitRepo(s.commits.find((c) => commitKey(c) === key)!) === repo);
+    const on = existing.includes(id);
+    const selection = on ? existing.filter((x) => x !== id) : [...existing, id];
     return { selection, selected: on ? (selection[selection.length - 1] ?? null) : id };
   });
 }
@@ -479,13 +508,19 @@ export function toggleCommitSelection(id: string) {
 export function extendCommitSelection(id: string, visible: readonly Commit[]) {
   useGitLog.setState((s) => {
     const anchor = s.selection[0] ?? s.selected;
-    const a = anchor ? visible.findIndex((c) => c.id === anchor) : -1;
-    const b = visible.findIndex((c) => c.id === id);
+    const a = anchor ? visible.findIndex((c) => commitKey(c) === anchor) : -1;
+    const b = visible.findIndex((c) => commitKey(c) === id);
     if (a < 0 || b < 0) return { selected: id, selection: [id] };
     const [from, to] = a <= b ? [a, b] : [b, a];
-    const range = visible.slice(from, to + 1).map((c) => c.id);
+    const range = visible
+      .slice(from, to + 1)
+      .filter((c) => commitRepo(c) === commitRepo(visible[b]!))
+      .map(commitKey);
     // Keep the anchor first so further extensions pivot on it.
-    return { selected: id, selection: [anchor!, ...range.filter((x) => x !== anchor)] };
+    return {
+      selected: id,
+      selection: range.includes(anchor!) ? [anchor!, ...range.filter((x) => x !== anchor)] : range,
+    };
   });
 }
 
@@ -493,17 +528,20 @@ export function extendCommitSelection(id: string, visible: readonly Commit[]) {
 export function selectedCommits(): Commit[] {
   const { commits, selection } = useGitLog.getState();
   const ids = new Set(selection);
-  return commits.filter((c) => ids.has(c.id));
+  return commits.filter((c) => ids.has(commitKey(c)));
 }
 
 const MAX_SEARCH_PAGES = 30;
 
 /** Selects `id` in the log, clearing filters and paging until it is loaded. */
-export async function revealCommit(id: string) {
+export async function revealCommit(id: string, repo = currentRepo()) {
   selectGitTab("log");
   const f = useGitLog.getState().filters;
   const filtered = hasFilters(f);
-  const find = () => useGitLog.getState().commits.find((c) => c.id === id || c.id.startsWith(id));
+  const find = () =>
+    useGitLog
+      .getState()
+      .commits.find((c) => (!commitRepo(c) || commitRepo(c) === repo) && (c.id === id || c.id.startsWith(id)));
   if (filtered) {
     useGitLog.setState({ filters: emptyFilters() });
     await reloadLog();
@@ -512,24 +550,25 @@ export async function revealCommit(id: string) {
   }
   for (let i = 0; i < MAX_SEARCH_PAGES && !find() && !useGitLog.getState().done; i++) await loadMore();
   const hit = find();
-  if (hit) selectCommit(hit.id, true);
+  if (hit) selectCommit(commitKey(hit), true);
 }
 
 /** Go to Parent Commit: selects the first parent, paging the log until it is loaded. */
 export async function goToParent(c: Commit) {
   const parent = c.parents[0];
   if (!parent) return;
-  const find = () => useGitLog.getState().commits.find((x) => x.id === parent);
+  const find = () => useGitLog.getState().commits.find((x) => x.id === parent && commitRepo(x) === commitRepo(c));
   for (let i = 0; i < MAX_SEARCH_PAGES && !find() && !useGitLog.getState().done; i++) await loadMore();
-  if (find()) selectCommit(parent, true);
+  if (find()) selectCommit(commitKey(find()!), true);
 }
 
 /** Go to Child Commit: the nearest newer loaded commit having `c` as a parent. */
 export function goToChild(c: Commit) {
   const { commits } = useGitLog.getState();
-  const index = commits.findIndex((x) => x.id === c.id);
+  const index = commits.findIndex((x) => commitKey(x) === commitKey(c));
   for (let i = index - 1; i >= 0; i--) {
-    if (commits[i]!.parents.includes(c.id)) return selectCommit(commits[i]!.id, true);
+    if (commitRepo(commits[i]!) === commitRepo(c) && commits[i]!.parents.includes(c.id))
+      return selectCommit(commitKey(commits[i]!), true);
   }
 }
 
@@ -540,6 +579,7 @@ export function updateLogOptions(patch: Partial<LogOptions>) {
 
 /** Highlight › My Commits: authored by the current user. */
 export function isMine(c: Commit, user: string | null): boolean {
+  if ("user" in c) user = (c as RepoCommit).user ?? null;
   if (!user) return false;
   const u = user.toLowerCase();
   return c.email.toLowerCase() === u || c.author.toLowerCase() === u;
@@ -550,12 +590,13 @@ export function isMine(c: Commit, user: string | null): boolean {
  * loaded (and clearing the filters when they hide it). False when there is no such commit.
  */
 export async function goToRef(rev: string): Promise<boolean> {
+  const repo = currentRepo();
   const target = rev.trim();
   if (!target) return false;
   let id: string | undefined;
   try {
     const [hit] = await call(
-      commands.vcsLog(currentRepo(), {
+      commands.vcsLog(repo, {
         branch: target,
         path: null,
         author: null,
@@ -572,17 +613,24 @@ export async function goToRef(rev: string): Promise<boolean> {
   if (!id) return false;
   const tab = useGitLog.getState().tab;
   selectGitTab(isLogTab(tab) ? tab : "log");
-  const find = () => useGitLog.getState().commits.some((c) => c.id === id);
+  const find = () =>
+    useGitLog.getState().commits.some((c) => c.id === id && (!commitRepo(c) || commitRepo(c) === repo));
   if (!useGitLog.getState().commits.length) await reloadLog();
   for (let i = 0; i < MAX_SEARCH_PAGES && !find() && !useGitLog.getState().done; i++) await loadMore();
-  if (!find()) await revealCommit(id);
+  if (!find()) await revealCommit(id, repo);
   if (!find()) return false;
   // A commit inside a collapsed linear branch: expand them (IDEA does the same).
   if (logOptions().collapseLinear) {
-    const head = useVcs.getState().branch?.headCommit;
-    const shown = collapseLinear(useGitLog.getState().commits, new Set(head ? [head] : [])).commits;
-    if (!shown.some((c) => c.id === id)) setLogOptions({ collapseLinear: false });
+    const commits = useGitLog.getState().commits;
+    const heads = useVcs.getState().heads;
+    const headKeys = new Set(commits.filter((c) => c.id === heads[commitRepo(c) ?? ""]?.headCommit).map(commitKey));
+    const shown = collapseLinear(commits.map(graphCommit), headKeys).commits;
+    if (!shown.some((c) => c.id === commitKey({ id: id!, repo }))) {
+      setLogOptions({ collapseLinear: false });
+    }
   }
-  selectCommit(id, true);
+  const hit = useGitLog.getState().commits.find((c) => c.id === id && (!commitRepo(c) || commitRepo(c) === repo));
+  if (!hit) return false;
+  selectCommit(commitKey(hit), true);
   return true;
 }

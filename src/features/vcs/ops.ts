@@ -321,7 +321,11 @@ export interface GitOperationOptions {
  * Runs a long local git operation like `runRemote`: progress in the status bar,
  * output in the Git console, a sticky balloon with Cancel.
  */
-export async function runGitOperation(op: GitOperation, opts: GitOperationOptions): Promise<boolean> {
+export async function runGitOperation(
+  op: GitOperation,
+  opts: GitOperationOptions,
+  repo = currentRepo(),
+): Promise<boolean> {
   if (useVcs.getState().remoteBusy) {
     notifications().notify({ group: "vcs", level: "warning", title: "Another Git operation is in progress" });
     return false;
@@ -351,7 +355,7 @@ export async function runGitOperation(op: GitOperation, opts: GitOperationOption
     task(line.trim() || null, false);
   };
   try {
-    await call(commands.vcsOperation(currentRepo(), request, op, channel));
+    await call(commands.vcsOperation(repo, request, op, channel));
     let success = opts.success;
     if (typeof success === "function") {
       await refreshNow();

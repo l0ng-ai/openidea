@@ -158,6 +158,7 @@ pub fn path_with_shims(managers: &[Manager], path: &OsStr) -> OsString {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn mkdir(p: &Path) {
         std::fs::create_dir_all(p).unwrap();
     }

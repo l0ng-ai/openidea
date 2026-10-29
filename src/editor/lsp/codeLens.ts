@@ -13,7 +13,7 @@ import { commands, nextRequestId, type OutlineItem, type SymbolKind } from "@/pl
 import { useProject } from "@/platform/project";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
 import { posToOffset } from "./positions";
-import { onLspRefresh, serverBackoff } from "./availability";
+import { featureBackoff, onLspRefresh } from "./availability";
 import { editorPrefs } from "@/platform/editorSettings";
 import { authorLabel, authorSummary, authorTooltip, blameFor, onBlameInvalidated } from "./authorLens";
 import { tx } from "@/platform/i18n";
@@ -35,6 +35,7 @@ const MAX_PER_PASS = 40;
 const CONCURRENCY = 4;
 /** Lines above/below the viewport that are counted too, so scrolling feels instant. */
 const MARGIN_LINES = 60;
+const usagesBackoff = featureBackoff();
 
 export interface LensTarget {
   name: string;
@@ -138,7 +139,7 @@ class UsagesLensPlugin {
     const doc = docOf(view);
     if (!doc) return;
     const gen = ++this.generation;
-    const usages = usagesEnabled() && !serverBackoff.active(doc.doc);
+    const usages = usagesEnabled() && !usagesBackoff.active(doc.doc);
     const authors = authorEnabled() && !doc.virtual;
     if (!usages && !authors) {
       if (view.state.field(lensField).length) view.dispatch({ effects: setLenses.of([]) });
@@ -181,7 +182,7 @@ class UsagesLensPlugin {
         );
         if (gen !== this.generation || view.state.doc !== text) return;
       }
-      if (unavailable) serverBackoff.mark(doc.doc);
+      if (unavailable) usagesBackoff.mark(doc.doc);
       const lines = await blame;
       if (gen !== this.generation || view.state.doc !== text) return;
       const lenses: CodeLens[] = [];
@@ -202,7 +203,7 @@ class UsagesLensPlugin {
       }
       if (!sameLenses(view.state.field(lensField), lenses)) view.dispatch({ effects: setLenses.of(lenses) });
     } catch (e) {
-      if (isUnavailable(e)) serverBackoff.mark(doc.doc);
+      if (isUnavailable(e)) usagesBackoff.mark(doc.doc);
     }
   }
 

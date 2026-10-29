@@ -6,7 +6,13 @@ use std::path::PathBuf;
 
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
-    let config = match_java_debug_encoding(config, cfg!(windows));
+    let mut config = match_java_debug_encoding(config, cfg!(windows));
+    if config.adapter == "debugpy"
+        && config.request == "launch"
+        && let Ok(project) = host.project(window)
+    {
+        super::python::prepare_debug(&mut config, &super::python::paths(&project))?;
+    }
     let label = window;
     let owner = SessionOwner::new(host.owner_window(label), host.window_sink(label));
     let settings = match host.project(label) {

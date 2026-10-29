@@ -500,3 +500,11 @@
   min-height: 0;
   overflow: auto;
 }
+
+.colRepository {
+  flex: 0 0 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-secondary);
+}

@@ -422,7 +422,7 @@ export class DocModel {
       compartments.wrap.reconfigure(wrapExtension(editor, this.path, this.softWrapOverride)),
       compartments.sticky.reconfigure(stickyExtension(editor)),
       compartments.font.reconfigure(fontExtension(editor)),
-      compartments.comments.reconfigure(commentTokens(this.info)),
+      compartments.comments.reconfigure(commentTokens(this.info, this.meta.language)),
       compartments.lineNumbers.reconfigure(lineNumbersExtension(editor)),
       compartments.folding.reconfigure(foldingFor(editor)),
       compartments.caret.reconfigure(caretFor(editor)),

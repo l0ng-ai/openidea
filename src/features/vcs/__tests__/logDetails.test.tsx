@@ -1,3 +1,4 @@
+import { commitKey } from "../multiRoot";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { Commit } from "@/bindings";
@@ -68,5 +69,15 @@ describe("Git Log commit details", () => {
     expect(screen.getByText("First")).toBeInTheDocument();
     expect(screen.getByText("Third")).toBeInTheDocument();
     expect(screen.queryByText("Second")).toBeNull();
+  });
+  it("loads the selected root even when two repositories contain the same SHA", async () => {
+    const front = { ...commit("Front", "1"), repo: "/front" };
+    const back = { ...commit("Back", "1"), repo: "/back" };
+    vcsCommitFiles.mockResolvedValue({ status: "ok", data: [{ path: "same.ts", kind: "modified", oldPath: null }] });
+    useGitLog.setState({ commits: [front, back], selected: commitKey(back), selection: [commitKey(back)] });
+    render(<CommitDetails commits={[front, back]} />);
+    expect(await screen.findByText("1 file")).toBeInTheDocument();
+    expect(vcsCommitFiles).toHaveBeenCalledWith("/back", back.id);
+    expect(screen.getByText("Body of Back")).toBeInTheDocument();
   });
 });

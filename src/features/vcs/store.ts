@@ -225,14 +225,16 @@ export function applyStatus(status: FileStatus[], branch: BranchInfo | null) {
 }
 
 export async function loadBranches(): Promise<Branch[]> {
-  const branches = await call(commands.vcsBranches(currentRepo()));
-  useVcs.setState({ branches, branchesLoaded: true });
+  const repo = currentRepo();
+  const branches = await call(commands.vcsBranches(repo));
+  if (repo === currentRepo()) useVcs.setState({ branches, branchesLoaded: true });
   return branches;
 }
 
 export async function loadStashes(): Promise<Stash[]> {
-  const stashes = await call(commands.vcsStashes(currentRepo()));
-  useVcs.setState({ stashes, stashesLoaded: true });
+  const repo = currentRepo();
+  const stashes = await call(commands.vcsStashes(repo));
+  if (repo === currentRepo()) useVcs.setState({ stashes, stashesLoaded: true });
   return stashes;
 }
 

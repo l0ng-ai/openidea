@@ -520,20 +520,35 @@ pub async fn vcs_diff_revisions(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn vcs_create_patch(window: Window, state: State<'_, AppState>, source: PatchSource) -> IdeResult<String> {
-    ide_host::ops::vcs::vcs_create_patch(&state.host, window.label(), source).await
+pub async fn vcs_create_patch(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    source: PatchSource,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_create_patch(&state.host, window.label(), repo, source).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn vcs_patch_preview(window: Window, state: State<'_, AppState>, patch: String) -> IdeResult<Vec<PatchFile>> {
-    ide_host::ops::vcs::vcs_patch_preview(&state.host, window.label(), patch).await
+pub async fn vcs_patch_preview(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    patch: String,
+) -> IdeResult<Vec<PatchFile>> {
+    ide_host::ops::vcs::vcs_patch_preview(&state.host, window.label(), repo, patch).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn vcs_apply_patch(window: Window, state: State<'_, AppState>, patch: String) -> IdeResult<ApplyOutcome> {
-    ide_host::ops::vcs::vcs_apply_patch(&state.host, window.label(), patch).await
+pub async fn vcs_apply_patch(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    patch: String,
+) -> IdeResult<ApplyOutcome> {
+    ide_host::ops::vcs::vcs_apply_patch(&state.host, window.label(), repo, patch).await
 }
 
 /// Shelve Changes: saves the changes of `paths` as a patch on the shelf and reverts them.

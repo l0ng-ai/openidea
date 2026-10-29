@@ -1,16 +1,19 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { insertNewlineAndIndent } from "@codemirror/commands";
 import { indentService, indentUnit } from "@codemirror/language";
 import {
   addCaretsToLineEnds,
   commentLine,
+  completeStatement,
   joinLines,
   startNewLine,
   startNewLineBefore,
   toggleCase,
   unselectOccurrence,
 } from "./editing";
+import { commentTokens } from "./languages";
 import { toggleCaret } from "./multiCaret";
 import { enterInLineComment, lineCommentStyle } from "./comments";
 import { languages } from "@codemirror/language-data";
@@ -42,7 +45,7 @@ function make(text: string, extensions: Extension = []) {
     state: EditorState.create({
       doc,
       selection: EditorSelection.create(ranges.length ? ranges : [EditorSelection.cursor(0)]),
-      extensions: [EditorState.allowMultipleSelections.of(true), indentUnit.of("  "), extensions],
+      extensions: [EditorState.allowMultipleSelections.of(true), extensions, indentUnit.of("  ")],
     }),
     parent: document.body,
   });
@@ -257,5 +260,81 @@ describe("enter in a line comment", async () => {
   it("does nothing at the end of the comment or outside one", () => {
     expect(enterInLineComment(make("// one|", ext))).toBe(false);
     expect(enterInLineComment(make("f(|x)", ext))).toBe(false);
+  });
+});
+
+describe("fallback indentation for GDScript", () => {
+  const gd = [
+    EditorState.tabSize.of(4),
+    indentUnit.of("\t"),
+    commentTokens({
+      id: "gdscript",
+      name: "GDScript",
+      extensions: ["gd"],
+      uiMode: null,
+      lineComment: "#",
+      blockComment: null,
+      indent: { tabSize: 4, insertSpaces: false },
+    }),
+  ];
+
+  it("indents with a tab after a function header ending in a colon", () => {
+    const v = make("func test() -> void:|", gd);
+    insertNewlineAndIndent(v);
+    expect(show(v)).toBe("func test() -> void:\n\t|");
+  });
+
+  it("indents nested blocks and ignores trailing comments", () => {
+    const v = make("func test() -> void:\n\tif x > 0: # check|", gd);
+    insertNewlineAndIndent(v);
+    expect(show(v)).toBe("func test() -> void:\n\tif x > 0: # check\n\t\t|");
+  });
+
+  it("does not indent after a comment ending in a colon", () => {
+    const v = make("\t# note:|", gd);
+    insertNewlineAndIndent(v);
+    expect(show(v)).toBe("\t# note:\n\t|");
+  });
+
+  it("dedents after pass, return, break, and continue", () => {
+    const v = make("func test() -> void:\n\tpass|", gd);
+    insertNewlineAndIndent(v);
+    expect(show(v)).toBe("func test() -> void:\n\tpass\n|");
+
+    const w = make("func test() -> int:\n\tif ready:\n\t\treturn 1|", gd);
+    insertNewlineAndIndent(w);
+    expect(show(w)).toBe("func test() -> int:\n\tif ready:\n\t\treturn 1\n\t|");
+  });
+
+  it("completes a GDScript function header with a colon and indents the next line", () => {
+    const v = make("func test() -> void|", gd);
+    completeStatement("gdscript")(v);
+    expect(show(v)).toBe("func test() -> void:\n\t|");
+  });
+});
+
+describe("fallback indentation boundaries", () => {
+  const fallback = (id: string, lineComment = "#") =>
+    commentTokens({
+      id,
+      name: id,
+      extensions: [],
+      uiMode: null,
+      lineComment,
+      blockComment: null,
+      indent: null,
+    });
+  it.each([
+    ["gdscript", "var items = {|}", "var items = {\n  |\n}"],
+    ["gdscript", 'var text = "unfinished:|', 'var text = "unfinished:\n|'],
+    ["gdscript", 'var text = "unfinished {|', 'var text = "unfinished {\n|'],
+    ["gdscript", 'var text = "#" # comment:|', 'var text = "#" # comment:\n|'],
+    ["gdscript", "if ready: # note|", "if ready: # note\n  |"],
+    ["elixir", "if ready, do: value|", "if ready, do: value\n|"],
+    ["lua", "if ready then work() end|", "if ready then work() end\n|"],
+  ])("handles %s: %s", (id, input, expected) => {
+    const v = make(input, fallback(id));
+    insertNewlineAndIndent(v);
+    expect(show(v)).toBe(expected);
   });
 });

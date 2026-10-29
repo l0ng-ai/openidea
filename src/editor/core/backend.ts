@@ -102,6 +102,7 @@ const EXT_LANG: Record<string, string> = {
   kts: "kotlin",
   java: "java",
   py: "python",
+  gd: "gdscript",
   go: "go",
   json: "json",
   md: "markdown",
@@ -181,6 +182,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     lineComment: "#",
     blockComment: null,
     indent: null,
+  },
+  {
+    id: "gdscript",
+    name: "GDScript",
+    extensions: ["gd"],
+    uiMode: null,
+    lineComment: "#",
+    blockComment: null,
+    indent: { tabSize: 4, insertSpaces: false },
   },
   {
     id: "json",

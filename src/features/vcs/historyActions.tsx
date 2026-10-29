@@ -1,3 +1,4 @@
+import { commitKey, commitRepo } from "./multiRoot";
 /**
  * Actions for operations in progress, Git Log commits, change lists, the shelf
  * and patches (ids are bound in keymaps/intellij-macos.ts where IDEA binds them).
@@ -45,7 +46,7 @@ import {
 } from "./rebase";
 import { showApplyPatch, showCreatePatchForChanges, showCreatePatchForCommits } from "./patches";
 import { deleteShelf, renameShelf, shelveChanges, showShelf, unshelve, useShelf } from "./shelf";
-import { currentRepo, useVcs } from "./store";
+import { currentRepo, focusRepo, useVcs } from "./store";
 
 const VCS = "vcsAvailable";
 const IN_GIT_LOG = "vcsAvailable && activeToolWindow == git";
@@ -57,7 +58,7 @@ export function commitArg(arg: unknown): Commit | null {
   if (arg && typeof arg === "object" && "id" in arg && "summary" in arg) return arg as Commit;
   const id = typeof arg === "string" ? arg : selected;
   if (!id) return null;
-  return commits.find((c) => c.id === id) ?? null;
+  return commits.find((c) => commitKey(c) === id) ?? null;
 }
 
 /** Commits an action refers to: its argument (commit list or commit), else the Git Log selection. */
@@ -72,12 +73,15 @@ export function commitsArg(arg: unknown): Commit[] {
 }
 
 function withCommits(fn: (cs: Commit[]) => unknown) {
-  return ({ arg }: { arg?: unknown }) => {
+  return async ({ arg }: { arg?: unknown }) => {
     const cs = commitsArg(arg);
     if (!cs.length) {
       notifications().notify({ group: "vcs", level: "info", title: "Select a commit in the Git log" });
       return;
     }
+    if (new Set(cs.map(commitRepo)).size > 1) return;
+    const repo = commitRepo(cs[0]!);
+    if (repo) await focusRepo(repo);
     void fn(cs);
   };
 }
@@ -93,12 +97,14 @@ async function openCommitInBrowser(c: Commit) {
 }
 
 function withCommit(fn: (c: Commit) => unknown) {
-  return ({ arg }: { arg?: unknown }) => {
+  return async ({ arg }: { arg?: unknown }) => {
     const c = commitArg(arg);
     if (!c) {
       notifications().notify({ group: "vcs", level: "info", title: "Select a commit in the Git log" });
       return;
     }
+    const repo = commitRepo(c);
+    if (repo) await focusRepo(repo);
     void fn(c);
   };
 }

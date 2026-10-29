@@ -1,3 +1,4 @@
+import { focusRepo } from "./store";
 /**
  * Actions of the Git Log's inner panes: the Branches pane toolbar, Graph Options'
  * linear-branch actions and the changed-files pane (toolbar and context menu).
@@ -24,6 +25,7 @@ const VCS = "vcsAvailable";
 /** A ref selected in the Branches pane. */
 export interface BranchTarget {
   ref: string;
+  repo?: string;
   branch?: Branch;
 }
 
@@ -37,8 +39,10 @@ function branchArg(arg: unknown): BranchTarget | null {
 
 const withBranch =
   (fn: (b: Branch) => unknown): Action["run"] =>
-  ({ arg }) => {
-    const b = branchArg(arg)?.branch;
+  async ({ arg }) => {
+    const target = branchArg(arg);
+    if (target?.repo) await focusRepo(target.repo);
+    const b = target?.branch;
     if (b) void fn(b);
   };
 
@@ -90,8 +94,9 @@ export function registerLogPaneActions(): () => void {
       icon: "plus",
       when: VCS,
       hidden: true,
-      run: ({ arg }) => {
+      run: async ({ arg }) => {
         const t = branchArg(arg);
+        if (t?.repo) await focusRepo(t.repo);
         void newBranch(t && t.ref !== "HEAD" && !t.branch?.current ? t.ref : undefined);
       },
     },
@@ -134,6 +139,7 @@ export function registerLogPaneActions(): () => void {
       hidden: true,
       run: async ({ arg }) => {
         const t = branchArg(arg);
+        if (t?.repo) await focusRepo(t.repo);
         if (t && !(await goToRef(t.ref)))
           notifications().notify({ group: "vcs", level: "warning", title: `'${t.ref}' was not found in the log` });
       },

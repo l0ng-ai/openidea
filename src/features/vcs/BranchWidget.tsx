@@ -1,3 +1,4 @@
+import { branchesByRepo } from "./multiRoot";
 /** Title bar branch widget (branch name + incoming / outgoing markers) + Branches popup. */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import clsx from "clsx";
@@ -533,14 +534,9 @@ function MultiRepoPanel({ onClose }: { onClose: () => void }) {
   // Every repository's branches (common ones, submenus, search); refreshed after operations.
   useEffect(() => {
     let live = true;
-    void Promise.all(
-      roots.map((r) =>
-        call(commands.vcsBranches(r)).then(
-          (list) => [r, list] as const,
-          () => [r, [] as Branch[]] as const,
-        ),
-      ),
-    ).then((entries) => live && setAll(Object.fromEntries(entries)));
+    void branchesByRepo(roots)
+      .then((entries) => live && setAll(entries))
+      .catch(() => undefined);
     return () => {
       live = false;
     };

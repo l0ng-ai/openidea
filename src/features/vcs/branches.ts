@@ -297,7 +297,8 @@ export function isFavoriteBranch(b: Pick<Branch, "name" | "remote">, stored: rea
 export interface BranchTreeNode {
   key: string;
   label: string;
-  kind: "head" | "group" | "remote" | "folder" | "branch" | "tag";
+  repo?: string;
+  kind: "repository" | "head" | "group" | "remote" | "folder" | "branch" | "tag";
   /** Branch name for `branch` / `head` (`HEAD`), tag name for `tag`. */
   ref: string | null;
   branch?: Branch;
@@ -394,6 +395,43 @@ export function buildBranchTree(
         .map((t): BranchTreeNode => ({ key: `t:${t}`, label: t, kind: "tag", ref: t })),
     });
   return out;
+}
+
+/** Local / remote / tag groups contain a subtree for each registered repository. */
+export function buildRepositoryBranchTree(
+  repositories: readonly { root: string; name: string; branches: Branch[]; tags: string[] }[],
+  favorites: readonly string[] | null,
+): BranchTreeNode[] {
+  const scope = (nodes: BranchTreeNode[], repo: string): BranchTreeNode[] =>
+    nodes.map((n) => ({
+      ...n,
+      repo,
+      key: `${repo}:${n.key}`,
+      children: n.children && scope(n.children, repo),
+    }));
+  const trees = repositories.map((r) => ({ ...r, nodes: buildBranchTree(r.branches, favorites, r.tags) }));
+  const groups = [
+    { key: "g:local", label: "Local" },
+    { key: "g:remote", label: "Remote" },
+    { key: "g:tags", label: "Tags" },
+  ];
+  return [
+    { key: "head", label: "HEAD (Current Branch)", kind: "head", ref: "HEAD" },
+    ...groups.map(({ key, label }): BranchTreeNode => ({
+      key,
+      label,
+      kind: "group",
+      ref: null,
+      children: trees.map((r) => ({
+        key: `${key}:${r.root}`,
+        label: r.name,
+        kind: "repository",
+        ref: null,
+        repo: r.root,
+        children: scope(r.nodes.find((n) => n.key === key)?.children ?? [], r.root),
+      })),
+    })),
+  ];
 }
 
 /** Keys of the nodes on the way to branch `name` (to reveal it). */

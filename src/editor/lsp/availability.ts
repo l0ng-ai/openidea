@@ -1,29 +1,45 @@
 /**
- * Per-document back-off after `unavailable` errors, so background features
- * (completion while typing, lightbulb, inlay hints…) don't hammer the backend
- * for files without a language server. Cleared when any server becomes ready.
+ * Per-document, per-feature back-off after `unavailable` errors, so background
+ * features (completion while typing, lightbulb, inlay hints…) don't hammer the
+ * backend for files without a language server, or for a feature the server
+ * doesn't offer. Each feature owns its back-off: a server lacking one
+ * capability (Godot has no inlay hints, say) must not switch off the others.
+ * All of them are cleared when any server becomes ready.
  */
 import { isTauri, onIdeEvent } from "@/platform/ipc";
 import type { LspRefreshKind } from "@/bindings";
 
-const BACKOFF_MS = 15_000;
-const until = new Map<number, number>();
+const DEFAULT_BACKOFF_MS = 15_000;
+const all = new Set<Map<number, number>>();
 
-export const serverBackoff = {
-  mark(doc: number) {
-    until.set(doc, Date.now() + BACKOFF_MS);
-  },
-  active(doc: number): boolean {
-    const t = until.get(doc);
-    if (t === undefined) return false;
-    if (t > Date.now()) return true;
-    until.delete(doc);
-    return false;
-  },
-  clear() {
-    until.clear();
-  },
-};
+export interface FeatureBackoff {
+  /** Stop asking about `doc` for a while. */
+  mark(doc: number): void;
+  /** Whether `doc` is still being left alone. */
+  active(doc: number): boolean;
+}
+
+/** A back-off for one feature; give each feature its own. */
+export function featureBackoff(ms = DEFAULT_BACKOFF_MS): FeatureBackoff {
+  const until = new Map<number, number>();
+  all.add(until);
+  return {
+    mark(doc) {
+      until.set(doc, Date.now() + ms);
+    },
+    active(doc) {
+      const t = until.get(doc);
+      if (t === undefined) return false;
+      if (t > Date.now()) return true;
+      until.delete(doc);
+      return false;
+    },
+  };
+}
+
+function clearBackoffs() {
+  for (const until of all) until.clear();
+}
 
 /**
  * Calls `fn` when data of `kind` fetched earlier may be stale: the server asked
@@ -85,6 +101,6 @@ export function onServerSettled(fn: () => void): () => void {
 
 export function installAvailabilityEvents(): () => void {
   return onIdeEvent("languageServer", (e) => {
-    if (e.status === "ready") serverBackoff.clear();
+    if (e.status === "ready") clearBackoffs();
   });
 }

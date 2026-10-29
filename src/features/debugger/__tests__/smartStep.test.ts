@@ -56,6 +56,16 @@ describe("locating Smart Step Into targets", () => {
     expect(locateStepTargets(line, 3, [target(1, "missing()")])).toBeNull();
   });
 
+  it("rejects identifier suffixes, preserving UTF-16 offsets and nested calls", () => {
+    const line = "𐐀foo() αfoo() $foo() _foo() foo(foo())";
+    const from = line.indexOf("foo(foo");
+    expect(locateStepTargets(line, 0, [target(1, "foo()"), target(2, "foo()")])).toEqual([
+      { id: 1, from, to: from + 3 },
+      { id: 2, from: from + 4, to: from + 7 },
+    ]);
+    expect(targetsOnLine("𐐀foo() bar()", 0, [target(1, "foo()"), target(2, "bar()")]).map((t) => t.id)).toEqual([2]);
+  });
+
   it("keeps only the paused line's calls when the adapter lists the whole function", () => {
     const line = "        total = add(total, square(i))";
     const all = [target(0, "square(i)"), target(1, "add(total, square(i))"), target(2, 'print("total", total)')];
