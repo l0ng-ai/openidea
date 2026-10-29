@@ -701,9 +701,11 @@ fn angular_language_server_is_found_behind_version_manager_shims() {
     std::fs::write(&shim, format!("#!/bin/sh\n{script}")).unwrap();
     assert_eq!(probes(&shim, &Settings::default(), &[]), with_project(&dunce::canonicalize(&package).unwrap()));
 
-    // Volta: the package's image, next to the shim's directory.
+    // Volta: the package's image, next to the shim's directory. Joined as the lookup
+    // joins it: the probe locations compare as text, and Windows keeps a `/` as given.
     let volta = tmp.path().join("volta");
-    let package = install(&volta.join("tools/image/packages/@angular/language-server/lib/node_modules"));
+    let image = volta.join("tools").join("image").join("packages").join("@angular/language-server");
+    let package = install(&image.join("lib").join("node_modules"));
     let shim = npm_shim(&volta.join("bin"), "ngserver");
     assert_eq!(probes(&shim, &Settings::default(), &[]), with_project(&package));
 
