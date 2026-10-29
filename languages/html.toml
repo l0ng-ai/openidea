@@ -7,6 +7,12 @@ indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "HTML"
 tree-sitter = "html"
 
+# Angular projects: component templates, with bindings and interpolations
+# highlighted as expressions.
+[[framework-ui-modes]]
+ui-mode = "Angular Template"
+root-markers = ["angular.json", "node_modules/@angular/core"]
+
 # Angular projects only: component templates. First, so that hover, rename and
 # document symbols of templates come from it rather than plain HTML.
 [[language-servers]]

@@ -35,6 +35,10 @@ pub struct DocumentInfo {
     /// provides, e.g. `jdt://…`); `path` then holds the same URI.
     #[specta(optional)]
     pub uri: Option<String>,
+    /// CodeMirror mode replacing the language's own one (an Angular project's
+    /// HTML templates).
+    #[specta(optional)]
+    pub ui_mode: Option<String>,
 }
 
 /// Current text and identity of a document, for analyses (outline, folding).
@@ -49,6 +53,9 @@ pub struct TextSnapshot {
 /// Language of a file from its path and first line (hashbangs).
 pub type DetectLanguage = dyn Fn(&Path, Option<&str>) -> LanguageId + Send + Sync;
 
+/// CodeMirror mode of a file replacing its language's own one; `None` keeps it.
+pub type DetectUiMode = dyn Fn(&Path, &LanguageId) -> Option<String> + Send + Sync;
+
 /// Registry of open documents keyed by path, with ref-counting so split
 /// editors on the same file share one buffer.
 ///
@@ -59,6 +66,7 @@ pub struct Documents {
     observers: RwLock<Vec<Arc<dyn DocumentObserver>>>,
     sink: SharedSink,
     detect_language: Box<DetectLanguage>,
+    detect_ui_mode: Box<DetectUiMode>,
     editorconfig: EditorConfig,
     defaults: RwLock<FileDefaults>,
 }
@@ -107,6 +115,7 @@ struct DocState {
     path: PathBuf,
     doc: Document,
     language: LanguageId,
+    ui_mode: Option<String>,
     encoding: String,
     has_bom: bool,
     read_only: bool,
@@ -157,9 +166,22 @@ impl Documents {
             observers: RwLock::default(),
             sink,
             detect_language,
+            detect_ui_mode: Box::new(|_, _| None),
             editorconfig: EditorConfig::new(),
             defaults: RwLock::default(),
         }
+    }
+
+    /// Detects per-file CodeMirror modes (framework templates) besides languages.
+    pub fn with_ui_mode_detection(mut self, detect_ui_mode: Box<DetectUiMode>) -> Self {
+        self.detect_ui_mode = detect_ui_mode;
+        self
+    }
+
+    /// The `DocumentInfo::ui_mode` `path` gets when opened, without opening it
+    /// (previews of other files).
+    pub fn ui_mode_of(&self, path: &Path) -> Option<String> {
+        (self.detect_ui_mode)(path, &(self.detect_language)(path, None))
     }
 
     /// Settings-derived defaults for new files, fallback decoding and EditorConfig support.
@@ -221,6 +243,7 @@ impl Documents {
             large: st.large,
             editorconfig: st.editorconfig.clone(),
             uri: st.uri.clone(),
+            ui_mode: st.ui_mode.clone(),
         }
     }
 
@@ -242,6 +265,7 @@ impl Documents {
         let defaults = self.file_defaults();
         let loaded = ide_vfs::load_text_with_fallback(path, defaults.fallback_for(&absolute(path)))?;
         let language = (self.detect_language)(path, loaded.text.lines().next());
+        let ui_mode = (self.detect_ui_mode)(path, &language);
         // Archive entries (`<jar>!/<entry>`) are read-only and kept from language
         // servers and Local History, which only know real files.
         let in_archive = ide_vfs::is_archive_path(path);
@@ -278,6 +302,7 @@ impl Documents {
             path: path.to_path_buf(),
             doc,
             language,
+            ui_mode,
             encoding,
             has_bom,
             read_only: !observed || !writable,
@@ -334,6 +359,7 @@ impl Documents {
             path: key.clone(),
             doc: Document::new(text),
             language,
+            ui_mode: None,
             encoding: "utf-8".into(),
             has_bom: false,
             read_only: true,
@@ -586,10 +612,12 @@ impl Documents {
         self.registry.lock().docs.keys().copied().collect()
     }
 
-    /// Detects the language of every open file again (file type associations
-    /// changed). A document whose language changes is reopened for the
-    /// observers, so it moves to the matching language servers and syntax tree,
-    /// and reported as [`IdeEvent::DocLanguage`]. Returns the changed documents.
+    /// Detects the language and UI mode of every open file again (file type
+    /// associations changed, a framework's root marker appeared or went). A
+    /// document whose language or mode changes is reported as
+    /// [`IdeEvent::DocLanguage`]; one whose language changes is also reopened
+    /// for the observers, so it moves to the matching language servers and
+    /// syntax tree. Returns the changed documents.
     pub fn redetect_languages(&self) -> Vec<DocId> {
         let slots: Vec<(DocId, Slot)> = self.registry.lock().docs.iter().map(|(id, e)| (*id, e.slot.clone())).collect();
         let mut changed = Vec::new();
@@ -600,18 +628,22 @@ impl Documents {
             }
             let text = st.doc.text();
             let language = (self.detect_language)(&st.path, text.lines().next());
-            if language == st.language {
+            let ui_mode = (self.detect_ui_mode)(&st.path, &language);
+            if language == st.language && ui_mode == st.ui_mode {
                 continue;
             }
-            st.language = language.clone();
-            if st.observed {
-                let info = Self::info_with_text(id, &st, text);
-                for o in self.observers() {
-                    o.closed(id, &st.path);
-                    o.opened(&info);
+            st.ui_mode = ui_mode;
+            if language != st.language {
+                st.language = language.clone();
+                if st.observed {
+                    let info = Self::info_with_text(id, &st, text);
+                    for o in self.observers() {
+                        o.closed(id, &st.path);
+                        o.opened(&info);
+                    }
                 }
             }
-            self.sink.emit(IdeEvent::DocLanguage { doc: id, language });
+            self.sink.emit(IdeEvent::DocLanguage { doc: id, language, ui_mode: st.ui_mode.clone() });
             changed.push(id);
         }
         changed

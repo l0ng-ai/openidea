@@ -111,6 +111,18 @@ shell and css dictionaries of [cspell-dicts](https://github.com/streetsidesoftwa
 (October 2026): lowercased, filtered and merged by OpenIDEA. Copyright Street Side Software;
 MIT licence, full text in `crates/ide-spell/src/dict/LICENSE-cspell-dicts`.
 
+## CodeMirror Angular template language
+
+`src/editor/core/cm/angular/` (`angular.grammar`, `tokens.ts`, `index.ts` and the
+`parser.ts` generated from them) is derived from
+[@codemirror/lang-angular](https://github.com/codemirror/lang-angular) 0.1.4
+(commit `ecc5038f`). Copyright (C) 2018-2021 by Marijn Haverbeke and others; MIT
+licence, full text in `src/editor/core/cm/angular/LICENSE`. Modifications by
+OpenIDEA: control-flow blocks (`@if`, `@for`, `@switch`, `@defer`, ...) and `@let`
+declarations, key and animation binding names (`(keydown.enter)`, `[@fade]`,
+`(@fade.done)`), runs of text that entities split (`a && b`) parsed as one, and one
+token for `{` and `}`.
+
 ## nvim-treesitter queries
 
 `crates/ide-syntax/queries/<grammar>/locals.scm` are derived from the `locals.scm`

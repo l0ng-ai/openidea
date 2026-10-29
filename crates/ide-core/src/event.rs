@@ -32,10 +32,13 @@ pub enum IdeEvent {
         doc: DocId,
         dirty: bool,
     },
-    /// An open document's language changed (Settings › File Types, Override File Type).
+    /// An open document's language changed (Settings › File Types, Override File
+    /// Type), or its UI mode (a framework's root marker appeared or went).
     DocLanguage {
         doc: DocId,
         language: crate::LanguageId,
+        /// See `DocumentInfo::ui_mode`.
+        ui_mode: Option<String>,
     },
     /// Full replacement of diagnostics for one file from one producer.
     Diagnostics {

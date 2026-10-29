@@ -58,9 +58,14 @@ export function uiModeForPath(path: string): string | null | undefined {
 
 const supports = new Map<string, Promise<LanguageSupport | null>>();
 
+/** Modes replacing `@codemirror/language-data`'s: Angular templates with control-flow blocks. */
+const OWN_MODES = [
+  LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
+];
+
 export function findLanguageDescription(uiMode: string | null, path: string): LanguageDescription | null {
   if (uiMode) {
-    const contributed = _languageMode(uiMode);
+    const contributed = _languageMode(uiMode) ?? OWN_MODES.find((l) => l.name === uiMode);
     if (contributed) return contributed;
     const exact = languageData.find((l) => l.name === uiMode);
     if (exact) return exact;

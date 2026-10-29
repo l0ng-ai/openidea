@@ -22,6 +22,13 @@ pub async fn doc_open_virtual(host: &Host, window: &str, uri: String) -> IdeResu
     blocking(move || project.documents.open_virtual(&vd.uri, vd.language_id, &vd.text)).await
 }
 
+/// The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
+/// without opening it: previews of closed files.
+pub async fn doc_ui_mode(host: &Host, window: &str, path: PathBuf) -> IdeResult<Option<String>> {
+    let project = host.project(window)?;
+    blocking(move || Ok(project.documents.ui_mode_of(&path))).await
+}
+
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
 pub fn doc_set_encoding(host: &Host, window: &str, doc: DocId, encoding: String, reload: bool) -> IdeResult<String> {
     host.project(window)?.documents.set_encoding(doc, &encoding, reload)
@@ -108,6 +115,7 @@ pub fn history_content(host: &Host, window: &str, id: String) -> IdeResult<Strin
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("doc_open_virtual", |c| async move { doc_open_virtual(&c.host, &c.window, c.arg("uri")?).await });
+    d.add("doc_ui_mode", |c| async move { doc_ui_mode(&c.host, &c.window, c.arg("path")?).await });
     d.add("doc_set_encoding", |c| async move {
         doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?)
     });

@@ -176,6 +176,11 @@ export const commands = {
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
+	/**
+	 *  The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
+	 *  without opening it: previews of closed files.
+	 */
+	docUiMode: (path: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("doc_ui_mode", { path })),
 	/**  "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label. */
 	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
 	docSetLineEnding: (doc: DocId, lineEnding: LineEnding) => typedError<null, IdeError>(__TAURI_INVOKE("doc_set_line_ending", { doc, lineEnding })),
@@ -2516,6 +2521,11 @@ export type DocumentInfo = {
 	 *  provides, e.g. `jdt://…`); `path` then holds the same URI.
 	 */
 	uri?: string | null,
+	/**
+	 *  CodeMirror mode replacing the language's own one (an Angular project's
+	 *  HTML templates).
+	 */
+	uiMode?: string | null,
 };
 
 /**
@@ -3290,8 +3300,13 @@ export type IdeEvent =
 { type: "docPatched"; doc: DocId; baseVersion: number; version: number; changes: TextChange[] } | 
 /**  A document's dirty flag changed (saved / modified externally). */
 { type: "docDirty"; doc: DocId; dirty: boolean } | 
-/**  An open document's language changed (Settings › File Types, Override File Type). */
-{ type: "docLanguage"; doc: DocId; language: LanguageId } | 
+/**
+ *  An open document's language changed (Settings › File Types, Override File
+ *  Type), or its UI mode (a framework's root marker appeared or went).
+ */
+{ type: "docLanguage"; doc: DocId; language: LanguageId; 
+/**  See `DocumentInfo::ui_mode`. */
+uiMode: string | null } | 
 /**  Full replacement of diagnostics for one file from one producer. */
 { type: "diagnostics"; path: IpcPath; source: string; items: Diagnostic[] } | 
 /**  Progress of a background task; `fraction` is `None` when indeterminate. */
