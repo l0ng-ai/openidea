@@ -918,6 +918,20 @@ fn pending_starts_round_trip() {
 }
 
 #[test]
+fn api_retries_are_announced() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), true);
+    let out = t.on_message(&json!({"type": "system", "subtype": "api_retry", "attempt": 3, "max_retries": 10,
+        "retry_delay_ms": 4000, "error_status": null, "error": "Connection error."}));
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].session, "s");
+    assert_eq!(
+        out[0].update,
+        json!({"sessionUpdate": crate::RETRY_UPDATE, "attempt": 3, "maxRetries": 10, "retryDelayMs": 4000,
+            "error": "Connection error."})
+    );
+}
+
+#[test]
 fn streamed_text_is_not_sent_twice() {
     let mut t = Translator::new("s", PathBuf::from("/w"), true);
     let se = |event: Value| json!({"type": "stream_event", "parent_tool_use_id": null, "event": event});
