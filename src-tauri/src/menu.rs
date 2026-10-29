@@ -798,6 +798,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         window.extend([
             accel("window.next", "Next Project Window", "Cmd+`"),
             accel("window.previous", "Previous Project Window", "Cmd+Shift+`"),
+            act("window.mergeAllWindows", "Merge All Project Windows"),
         ]);
     } else {
         window.extend([act("window.next", "Next Project Window"), act("window.previous", "Previous Project Window")]);
@@ -1313,6 +1314,7 @@ mod tests {
                 assert!(ids.contains(&required), "{required} missing on {os:?}");
             }
         }
+        assert!(action_ids(&spec(Os::Mac)).contains(&"window.mergeAllWindows"));
     }
 
     #[test]

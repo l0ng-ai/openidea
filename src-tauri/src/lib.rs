@@ -154,6 +154,11 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
 fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id().as_ref();
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
+    if route.action == "window.mergeAllWindows"
+        && let Some(target) = windows::target_window(app)
+    {
+        windows::merge_all_windows(&target);
+    }
     match windows::target_window(app) {
         Some(w) => {
             // Settings is modal for its project window: only app-level items get through, to the parent.

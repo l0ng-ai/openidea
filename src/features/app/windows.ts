@@ -282,6 +282,13 @@ export function windowActions(): Action[] {
       run: () => (isTauri() ? commands.windowCycle(false) : undefined),
     },
     {
+      id: "window.mergeAllWindows",
+      title: t("app.action.mergeAllWindows"),
+      category: t("app.category.window"),
+      keywords: ["merge", "merge all windows", "merge all project windows", "tabs"],
+      run: () => (isTauri() ? commands.windowMergeAllWindows() : undefined),
+    },
+    {
       id: "window.toggleFullScreen",
       title: t("app.action.toggleFullScreen"),
       category: t("app.category.view"),

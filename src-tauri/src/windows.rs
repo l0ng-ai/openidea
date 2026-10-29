@@ -259,6 +259,9 @@ fn hex_color(hex: &str) -> Option<Color> {
 /// Builds a project window painted in the saved theme's frame colour, so it
 /// doesn't flash the light default before its page (and splash) loads.
 fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<WebviewWindow> {
+    if config.tabbing_identifier.is_none() {
+        config.tabbing_identifier = Some("OpenIDEA".to_string());
+    }
     let state = app.try_state::<AppState>();
     let appearance = state.as_ref().map(|s| s.global_settings.effective().appearance);
     // A plugin theme replaces the built-in one in either OS mode; the UI records its resolved frame.
@@ -665,6 +668,30 @@ pub fn cycle(app: &AppHandle, current: &str, forward: bool) {
     }
 }
 
+/// Merges all project windows into tabs (macOS).
+#[cfg(target_os = "macos")]
+pub fn merge_all_windows(window: &WebviewWindow) {
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn objc_msgSend();
+        fn sel_registerName(name: *const std::ffi::c_char) -> *const std::ffi::c_void;
+    }
+    if let Ok(ptr) = window.ns_window()
+        && !ptr.is_null()
+    {
+        type MsgSend = unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, *mut std::ffi::c_void);
+        unsafe {
+            let send: MsgSend = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            let sel = sel_registerName(c"mergeAllWindows:".as_ptr());
+            send(ptr, sel, std::ptr::null_mut());
+        }
+    }
+}
+
+/// Merges all project windows into tabs (macOS). No-op on non-macOS platforms.
+#[cfg(not(target_os = "macos"))]
+pub fn merge_all_windows(_window: &WebviewWindow) {}
+
 /// Opens (or focuses) the settings window of `parent` showing `page`: a
 /// native child window centred over its parent, sized like IDEA's Settings.
 pub fn open_settings_window(
@@ -690,6 +717,7 @@ pub fn open_settings_window(
     let mut config = window_config(app)?;
     config.label = label.clone();
     config.title = "Settings".into();
+    config.tabbing_identifier = None;
     // Frameless on Windows like project windows (tauri.windows.conf.json): the page draws
     // the title bar in the app theme instead of a system caption that follows the OS theme.
     (config.width, config.height) = SETTINGS_SIZE;

@@ -26,7 +26,8 @@
           "y": 22
         },
         "backgroundColor": "#E9EAEE",
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "tabbingIdentifier": "OpenIDEA"
       }
     ],
     "security": {

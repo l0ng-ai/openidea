@@ -161,6 +161,7 @@ describe("Open Containing Folder as Project", () => {
     const action = windowActions().find((a) => a.id === "lightEdit.openProject");
     expect(action?.when).toBe("lightEdit");
     expect(windowActions().some((a) => a.id === "file.openFile")).toBe(true);
+    expect(windowActions().some((a) => a.id === "window.mergeAllWindows")).toBe(true);
   });
 
   it("opens the folder in a new window with the file, per 'Open project in'", async () => {

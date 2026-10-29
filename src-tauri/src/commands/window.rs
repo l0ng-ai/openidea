@@ -81,6 +81,13 @@ pub fn window_cycle(app: AppHandle, window: WebviewWindow, forward: bool) {
     windows::cycle(&app, window.label(), forward);
 }
 
+/// Merges all project windows into tabs (macOS).
+#[tauri::command]
+#[specta::specta]
+pub fn window_merge_all_windows(window: WebviewWindow) {
+    windows::merge_all_windows(&window);
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
