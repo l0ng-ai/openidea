@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEven
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, type RunConfig } from "@/platform/ipc";
+import { letterOf } from "@/platform/keymap";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Dialog, Icon, IconButton, Input, T } from "@/ui";
 import {
@@ -312,7 +313,8 @@ function EditConfigsDialog() {
   // IDEA: ⌘N / Alt+Insert adds a configuration, ⌥M opens "Modify options".
   const onKeyDown = (e: KeyboardEvent) => {
     const add =
-      (e.code === "KeyN" && (isMac() ? e.metaKey || e.ctrlKey : e.ctrlKey)) || (e.altKey && e.key === "Insert");
+      (letterOf(e) === "N" && !e.altKey && (isMac() ? e.metaKey || e.ctrlKey : e.ctrlKey)) ||
+      (e.altKey && e.key === "Insert");
     if (add && mode === "configs") {
       e.preventDefault();
       openAdd();
