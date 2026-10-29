@@ -585,6 +585,8 @@
   "Duplicate groups": "重复组",
   "Duplicates": "重复项",
   "Duplicate…": "复制…",
+  "Eclipse": "Eclipse",
+  "Eclipse (macOS)": "Eclipse (macOS)",
   "Edit": "编辑",
   "Edit Cell": "编辑单元格",
   "Edit Changelist": "编辑更改列表",
@@ -4730,5 +4732,10 @@
   "Proxy host is empty": "代理主机为空",
   "Invalid proxy host": "代理主机无效",
   "Proxy port must be between 1 and 65535": "代理端口必须介于 1 和 65535 之间",
-  "Proxy login is empty": "代理登录名为空"
+  "Proxy login is empty": "代理登录名为空",
+  "No interpreter": "无解释器",
+  "Add New Interpreter…": "添加新的解释器…",
+  "Interpreter Settings…": "解释器设置…",
+  "Cannot select Python interpreter": "无法选择 Python 解释器",
+  "Python Interpreter: {label}": "Python 解释器：{label}"
 }

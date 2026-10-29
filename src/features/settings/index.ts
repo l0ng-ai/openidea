@@ -35,6 +35,7 @@ import { trackRuntimeSettings } from "./runtime";
 import { installActionProxies, installSettingsHost } from "./window/bridge";
 import { AssignShortcutOverlay, showAssignShortcut } from "./keymap/AssignShortcut";
 import { settingsSearchEntries } from "./searchIndex";
+import { activatePythonStatus } from "./languages/PythonStatus";
 import { isImeKey } from "@/platform/ime";
 
 export { settingsWindowParent } from "./window/bridge";
@@ -100,6 +101,7 @@ async function showSettings(page?: string, newProjects = false) {
 export function activate(): () => void {
   const disposers = [
     trackRuntimeSettings(),
+    activatePythonStatus(),
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
     registerActions(zoomActions()),
