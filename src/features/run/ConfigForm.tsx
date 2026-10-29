@@ -648,7 +648,7 @@ function TypeField({
         spellCheck={false}
         value={value}
         placeholder={tx(field.placeholder)}
-        rows={4}
+        rows={field.rows ?? 4}
         onChange={(e) => onChange(e.target.value)}
       />
     );

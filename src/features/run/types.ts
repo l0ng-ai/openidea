@@ -1,6 +1,6 @@
 /**
  * Built-in run configuration types (Shell Script, Program, npm, Gradle, Maven,
- * Compound) and the helpers that turn a type's params into the launched
+ * Application, Spring Boot, Compound) and the helpers that turn a type's params into the launched
  * command line. Other features contribute types with `registerRunConfigType`.
  */
 import type { RunConfig } from "@/platform/ipc";
@@ -11,11 +11,18 @@ import {
   type RunConfigTypeContribution,
 } from "@/workbench/contributions";
 import { formatArgs, parseArgs, uid, uniqueName } from "./configs";
+import {
+  applicationType,
+  gradleForkedJvm,
+  isWindows,
+  mavenForkedJvm,
+  springBootType,
+  type ForkedJvm,
+} from "./jvmTypes";
 import { tx } from "@/platform/i18n";
 
 export const COMPOUND = "compound";
 
-const isWindows = () => typeof navigator !== "undefined" && /win/i.test(navigator.platform);
 const on = (v: string | undefined) => v === "true";
 const baseName = (p: string) => p.replace(/\\/g, "/").split("/").pop() ?? p;
 const dirOf = (cwd: string | null | undefined) => cwd ?? "";
@@ -213,6 +220,7 @@ function buildToolType(
   icon: string,
   tasks: { label: string; description: string },
   wrapper: { unix: string; windows: string; plain: string; label: string; byDefault: boolean },
+  jvm: ForkedJvm,
 ): RunConfigTypeContribution {
   return {
     id,
@@ -231,13 +239,15 @@ function buildToolType(
         suggestions: (configs) => argsOf(configs, id, 0),
       },
       { key: "arguments", label: "Arguments", mono: true },
+      ...jvm.fields,
       { key: "wrapper", label: wrapper.label, control: "checkbox" },
     ],
     commandLine: (p) => ({
       command: wrapperCommand(wrapper.unix, wrapper.windows, wrapper.plain, on(p.wrapper)),
-      args: [...parseArgs(p.tasks ?? ""), ...parseArgs(p.arguments ?? "")],
+      args: [...parseArgs(p.tasks ?? ""), ...parseArgs(p.arguments ?? ""), ...jvm.args(p)],
       cwd: p.projectDir?.trim() || null,
     }),
+    ...(jvm.prepareLaunch ? { prepareLaunch: jvm.prepareLaunch } : {}),
     paramsFrom(c) {
       const name = baseName(c.command);
       const usesWrapper = name === wrapper.unix || name === wrapper.windows;
@@ -264,6 +274,7 @@ const gradle = buildToolType(
     label: "Use the Gradle wrapper",
     byDefault: true,
   },
+  gradleForkedJvm,
 );
 
 const maven = buildToolType(
@@ -278,6 +289,7 @@ const maven = buildToolType(
     label: "Use the Maven wrapper",
     byDefault: false,
   },
+  mavenForkedJvm,
 );
 
 const compound: RunConfigTypeContribution = {
@@ -296,6 +308,8 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   gradle,
   maven,
   godot,
+  applicationType,
+  springBootType,
   compound,
 ];
 

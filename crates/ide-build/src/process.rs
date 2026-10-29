@@ -45,8 +45,12 @@ pub(crate) fn run(
     mut on_line: impl FnMut(Stream, &str),
 ) -> IdeResult<Output> {
     tracing::info!("build: {program} {} (in {})", args.join(" "), cwd.display());
+    // Output is read as UTF-8: JVMs on Windows are told to write it (see `ide_core::output_encoding`).
+    let encoding =
+        ide_core::output_encoding::fix(program, args, env, |k| std::env::var(k).ok(), "UTF-8", cfg!(windows));
     let mut command = Command::new(program);
-    command.args(args).current_dir(cwd).envs(env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(args).current_dir(cwd).envs(env).envs(encoding.env).stdin(Stdio::null());
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -86,6 +90,7 @@ pub(crate) fn run(
             return Err(IdeError::cancelled());
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok((_, line)) if encoding.notice.as_ref() == Some(&line) => {}
             Ok((stream, line)) => {
                 on_line(stream, &line);
                 text.push_str(&line);

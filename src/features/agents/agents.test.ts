@@ -13,6 +13,7 @@ import {
   nextValue,
   recall,
   toPrompt,
+  retryParts,
   usageLabel,
   workTime,
 } from "./composerModel";
@@ -262,5 +263,13 @@ describe("turns", () => {
       [0, 0],
       [3, 1],
     ]);
+  });
+});
+
+describe("retryParts", () => {
+  it("counts down to the next attempt and shows the limit when known", () => {
+    const retry = { attempt: 3, maxRetries: 10, retryAtMs: 5_400, error: "Connection error." };
+    expect(retryParts(retry, 1_000)).toEqual({ attempt: "3/10", wait: 5 });
+    expect(retryParts({ ...retry, maxRetries: null }, 9_000)).toEqual({ attempt: "3", wait: 0 });
   });
 });

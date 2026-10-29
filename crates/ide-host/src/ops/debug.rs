@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
+    let config = match_java_debug_encoding(config, cfg!(windows));
     let label = window;
     let owner = SessionOwner::new(host.owner_window(label), host.window_sink(label));
     let settings = match host.project(label) {
@@ -18,6 +19,26 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         Some(path.to_string_lossy().into_owned())
     };
     host.debugger.start_with(config, owner, custom).await
+}
+
+/// A JVM launched by java-debug writes what java-debug decodes its output as
+/// (see [`ide_core::output_encoding::java_debug_vm_args`]).
+fn match_java_debug_encoding(mut config: LaunchConfig, windows: bool) -> LaunchConfig {
+    if config.adapter != "java-debug" || config.request != "launch" {
+        return config;
+    }
+    let Some(serde_json::Value::Object(mut extra)) =
+        config.extra_json.as_deref().and_then(|e| serde_json::from_str(e).ok())
+    else {
+        return config;
+    };
+    let vm_args = extra.get("vmArgs").and_then(|v| v.as_str()).unwrap_or_default();
+    let encoding = extra.get("encoding").and_then(|v| v.as_str());
+    if let Some(vm_args) = ide_core::output_encoding::java_debug_vm_args(vm_args, encoding, windows) {
+        extra.insert("vmArgs".into(), vm_args.into());
+        config.extra_json = Some(serde_json::Value::Object(extra).to_string());
+    }
+    config
 }
 
 pub async fn debug_set_breakpoints(
@@ -354,4 +375,47 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "debug_redefine_classes",
         |c| async move { debug_redefine_classes(&c.host, &c.window, c.arg("session")?).await },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn launch(adapter: &str, request: &str, extra: serde_json::Value) -> LaunchConfig {
+        LaunchConfig {
+            name: "DromaraApplication".into(),
+            adapter: adapter.into(),
+            request: request.into(),
+            program: None,
+            args: vec![],
+            cwd: None,
+            env: Default::default(),
+            extra_json: Some(extra.to_string()),
+        }
+    }
+
+    fn vm_args(config: &LaunchConfig) -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()["vmArgs"].clone()
+    }
+
+    #[test]
+    fn java_debug_launches_on_windows_write_utf8() {
+        let extra =
+            serde_json::json!({"mainClass": "org.dromara.DromaraApplication", "vmArgs": "-Xmx1g", "debugServer": 1});
+        let fixed = match_java_debug_encoding(launch("java-debug", "launch", extra.clone()), true);
+        assert_eq!(
+            vm_args(&fixed),
+            "-Xmx1g -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(fixed.extra_json.as_deref().unwrap()).unwrap()["mainClass"],
+            "org.dromara.DromaraApplication"
+        );
+        // Attaching, other adapters and other platforms are left alone.
+        for (adapter, request, windows) in
+            [("java-debug", "attach", true), ("debugpy", "launch", true), ("java-debug", "launch", false)]
+        {
+            assert_eq!(vm_args(&match_java_debug_encoding(launch(adapter, request, extra.clone()), windows)), "-Xmx1g");
+        }
+    }
 }

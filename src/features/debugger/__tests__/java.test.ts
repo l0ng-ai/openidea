@@ -75,6 +75,23 @@ describe("Java debugging (java-debug through jdtls)", () => {
     });
   });
 
+  it("passes the configuration's VM options to java-debug's vmArgs, before the main class", async () => {
+    const args = [
+      "-Ddemo.flag=on",
+      "--add-opens",
+      "java.base/java.lang=ALL-UNNAMED",
+      "-Dname=a b",
+      "-cp",
+      "${classpath}",
+    ];
+    const l = await javaLaunchConfig({ ...app, args: [...args, "a.App", "--spring.profiles.active=dev"] }, "/p");
+    expect(JSON.parse(l.extraJson!)).toMatchObject({
+      mainClass: "a.App",
+      vmArgs: '-Ddemo.flag=on --add-opens java.base/java.lang=ALL-UNNAMED "-Dname=a b"',
+      args: "--spring.profiles.active=dev",
+    });
+  });
+
   it("lets java-debug shorten a classpath too long for the OS, as Run does", async () => {
     for (const how of ["jarmanifest", "argfile"]) {
       shortenCommandLine = how;

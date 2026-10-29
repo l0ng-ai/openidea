@@ -21,6 +21,18 @@ pub fn run_system_env(_host: &Host, _window: &str) -> std::collections::BTreeMap
     ide_run::system_env()
 }
 
+/// Writes the Gradle init script that adds `jvm_args` to the JVMs the build forks
+/// (`bootRun`, `run`, tests) and returns its path, for `--init-script`.
+pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: Vec<String>) -> IdeResult<String> {
+    tokio::task::spawn_blocking(move || {
+        ide_run::gradle_jvm::write_init_script(&ide_run::gradle_jvm::default_dir(), &jvm_args)
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| IdeError::internal(format!("cannot write the Gradle init script: {e}")))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 /// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
 /// `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
 pub async fn run_test_reports(
@@ -42,6 +54,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("run_templates", |c| async move { run_templates(&c.host, &c.window) });
     d.add("run_save_templates", |c| async move { run_save_templates(&c.host, &c.window, c.arg("templates")?) });
     d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });
+    d.add("run_gradle_jvm_args_script", |c| async move {
+        run_gradle_jvm_args_script(&c.host, &c.window, c.arg("jvmArgs")?).await
+    });
     d.add("run_test_reports", |c| async move {
         run_test_reports(&c.host, &c.window, c.arg("module")?, c.arg("sinceMs")?).await
     });

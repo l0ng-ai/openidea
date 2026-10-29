@@ -4035,6 +4035,7 @@ dependencies = [
  "serde_json",
  "specta",
  "specta-typescript",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio-util",
 ]
