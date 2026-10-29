@@ -13,7 +13,7 @@
 import type { EditorView } from "@codemirror/view";
 import type { Text } from "@codemirror/state";
 import type { LocalSymbol, Location, OutlineItem, Pos, Range, SyntaxNode } from "@/bindings";
-import { call, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
+import { call, commands, isCancelled, isTauri, nextRequestId, unavailableText } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { basename } from "@/platform/project";
 import { editorsFor, whenSynced, type EditorDocContext } from "@/editor/api";
@@ -482,7 +482,12 @@ export async function safeDelete(view: EditorView): Promise<void> {
     applyDeletion(view, docBefore, target, comments);
   } catch (e) {
     if (isCancelled(e)) return;
-    showHint(view, isUnavailable(e) ? cannotPerform("No language server is available") : cannotPerform(errorText(e)));
+    showHint(
+      view,
+      isUnavailable(e)
+        ? cannotPerform(unavailableText(e, "No language server is available"))
+        : cannotPerform(errorText(e)),
+    );
   } finally {
     running = null;
   }

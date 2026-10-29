@@ -21,6 +21,7 @@ import {
   type Command,
   type InlineCompletionItem,
   type RequestId,
+  unavailableText,
 } from "@/platform/ipc";
 import { activeEditor } from "@/editor/api";
 import { docOf, isUnavailable, lspRequest } from "./lsp";
@@ -312,7 +313,7 @@ export function registerInlineCompletionActions(): () => void {
         try {
           if (!(await requestInline(v, false))) showHint(v, "No inline suggestions");
         } catch (e) {
-          showHint(v, isUnavailable(e) ? "No language server provides inline completion" : String(e));
+          showHint(v, isUnavailable(e) ? unavailableText(e) : String(e));
         }
       }),
     },

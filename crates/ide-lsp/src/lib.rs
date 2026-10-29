@@ -218,8 +218,17 @@ fn user_did_open(server: &Server, run: &Running, path: &Path, uri: &lsp::Uri, pa
     }
 }
 
-fn unsupported(feature: &str) -> IdeError {
-    IdeError::unavailable(format!("no running language server supports {feature}"))
+/// No target for `feature`: names the running servers that lack it, so the UI can
+/// tell "the server can't do this" from "no server is running" (the UI's
+/// `unavailableText` matches the "… doesn't support …" wording).
+fn unsupported(servers: &[Arc<Server>], feature: &str) -> IdeError {
+    let running: Vec<&str> = servers.iter().filter(|s| s.running().is_some()).map(|s| s.name.as_str()).collect();
+    if running.is_empty() {
+        IdeError::unavailable(format!("no running language server supports {feature}"))
+    } else {
+        let servers = running.join(", ");
+        IdeError::unavailable(format!("{servers} doesn't support {feature}"))
+    }
 }
 
 /// Folds per-server results: any success wins over errors; errors surface only
@@ -830,7 +839,7 @@ impl LspManager {
         let snap = self.snapshot(doc)?;
         let targets = self.ready_targets(&snap.servers, pred).await;
         if targets.is_empty() {
-            return Err(unsupported(feature));
+            return Err(unsupported(&snap.servers, feature));
         }
         Ok((snap, targets))
     }
@@ -1183,7 +1192,7 @@ impl LspManager {
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         let targets = self.ready_targets(&servers, |c| c.has("workspaceSymbolProvider")).await;
         if targets.is_empty() {
-            return Err(unsupported("workspace symbols"));
+            return Err(unsupported(&servers, "workspace symbols"));
         }
         let requests = targets.iter().map(|t| {
             let cancel = &cancel;
