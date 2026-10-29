@@ -11,8 +11,6 @@ import {
   cursorGroupRight,
   cursorLineBoundaryBackward,
   cursorLineBoundaryForward,
-  cursorLineDown,
-  cursorLineUp,
   cursorPageDown,
   cursorPageUp,
   deleteCharBackward,
@@ -30,12 +28,11 @@ import {
   selectGroupRight,
   selectLineBoundaryBackward,
   selectLineBoundaryForward,
-  selectLineDown,
-  selectLineUp,
   selectPageDown,
   selectPageUp,
 } from "@codemirror/commands";
 import type { Command } from "@codemirror/view";
+import { cursorLineDown, cursorLineUp, selectLineDown, selectLineUp } from "@/editor/core/cm/verticalMotion";
 
 /** Recorded key name (`Shift+ArrowLeft`, `Alt+Backspace`) → command. */
 export const EDITOR_KEY_COMMANDS: Record<string, Command> = {

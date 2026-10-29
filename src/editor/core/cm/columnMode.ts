@@ -7,14 +7,14 @@ import {
   Prec,
   StateEffect,
   StateField,
-  countColumn,
-  findColumn,
   type EditorState,
   type Extension,
+  type SelectionRange,
 } from "@codemirror/state";
-import { EditorView, keymap, rectangularSelection } from "@codemirror/view";
+import { EditorView, keymap, type MouseSelectionStyle } from "@codemirror/view";
+import { offsetAtVisibleColumn, stepVisibleColumn, visibleColumn, visibleWidth } from "./visibleColumn";
 
-/** A block between two visual columns (tabs expanded) of two lines. */
+/** A block between two visible columns (tabs expanded, wide characters 2) of two lines. */
 interface Block {
   anchorLine: number;
   anchorCol: number;
@@ -53,28 +53,17 @@ export function toggleColumnMode(view: EditorView): boolean {
   return true;
 }
 
-/** One range per line from the anchor column to the head column (visual columns, clamped to each line). */
+/** One range per line from the anchor column to the head column (visible columns, clamped to each line). */
 export function blockSelection(state: EditorState, b: Block): EditorSelection {
   const ranges = [];
   const step = b.headLine >= b.anchorLine ? 1 : -1;
-  const at = (text: string, col: number) => findColumn(text, col, state.tabSize);
+  const at = (text: string, col: number) => offsetAtVisibleColumn(text, col, state.tabSize);
   for (let n = b.anchorLine; ; n += step) {
     const line = state.doc.line(n);
     ranges.push(EditorSelection.range(line.from + at(line.text, b.anchorCol), line.from + at(line.text, b.headCol)));
     if (n === b.headLine) break;
   }
   return EditorSelection.create(ranges, ranges.length - 1);
-}
-
-/** The visual column one character left / right of `col` (a tab is one step; past the line end, one column). */
-export function stepColumn(text: string, col: number, d: number, tabSize: number): number {
-  if (!d) return col;
-  const width = countColumn(text, tabSize);
-  if (d > 0 ? col >= width : col > width) return Math.max(0, col + d);
-  const pos = findColumn(text, col, tabSize);
-  const at = countColumn(text, tabSize, pos);
-  if (d > 0) return at > col ? at : countColumn(text, tabSize, pos + 1);
-  return pos === 0 ? 0 : countColumn(text, tabSize, pos - 1);
 }
 
 /** ⇧+arrow in column mode: moves the block's head by a line / column. */
@@ -87,7 +76,7 @@ export function extendBlock(view: EditorView, dLine: number, dCol: number): bool
     const main = state.selection.main;
     const a = state.doc.lineAt(main.anchor);
     const h = state.doc.lineAt(main.head);
-    const col = (text: string, offset: number) => countColumn(text, state.tabSize, offset);
+    const col = (text: string, offset: number) => visibleColumn(text, offset, state.tabSize);
     b = {
       anchorLine: a.number,
       anchorCol: col(a.text, main.anchor - a.from),
@@ -96,7 +85,11 @@ export function extendBlock(view: EditorView, dLine: number, dCol: number): bool
     };
   }
   const headLine = Math.max(1, Math.min(state.doc.lines, b.headLine + dLine));
-  const next = { ...b, headLine, headCol: stepColumn(state.doc.line(b.headLine).text, b.headCol, dCol, state.tabSize) };
+  const next = {
+    ...b,
+    headLine,
+    headCol: stepVisibleColumn(state.doc.line(b.headLine).text, b.headCol, dCol, state.tabSize),
+  };
   view.dispatch({
     selection: blockSelection(state, next),
     effects: setBlock.of(next),
@@ -106,18 +99,73 @@ export function extendBlock(view: EditorView, dLine: number, dCol: number): bool
   return true;
 }
 
+interface BlockPoint {
+  line: number;
+  col: number;
+}
+
+/** The line and visible column under the pointer; past the line end, columns of the default character width. */
+function blockPointAt(view: EditorView, e: MouseEvent): BlockPoint {
+  const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+  const line = view.state.doc.lineAt(pos);
+  let col = visibleColumn(line.text, pos - line.from, view.state.tabSize);
+  if (pos === line.to) {
+    const end = view.coordsAtPos(line.to, -1);
+    if (end) col += Math.max(0, Math.round((e.clientX - end.left) / view.defaultCharacterWidth));
+  }
+  return { line: line.number, col };
+}
+
+/** One range per line of the rectangle between two pointer points; lines ending left of it get a caret at their end. */
+export function rectangleRanges(state: EditorState, a: BlockPoint, b: BlockPoint): SelectionRange[] {
+  const from = Math.min(a.col, b.col);
+  const to = Math.max(a.col, b.col);
+  const ranges: SelectionRange[] = [];
+  for (let n = Math.min(a.line, b.line); n <= Math.max(a.line, b.line); n++) {
+    const line = state.doc.line(n);
+    if (visibleWidth(line.text, state.tabSize) < from) {
+      ranges.push(EditorSelection.cursor(line.to));
+      continue;
+    }
+    const start = offsetAtVisibleColumn(line.text, from, state.tabSize);
+    const end = offsetAtVisibleColumn(line.text, to, state.tabSize);
+    ranges.push(EditorSelection.range(line.from + start, line.from + end));
+  }
+  return ranges;
+}
+
+/** Mouse rectangular (block) selection in visible columns, for the drags `filter` accepts. */
+export function blockMouseSelection(filter: (e: MouseEvent) => boolean): Extension {
+  return EditorView.mouseSelectionStyle.of((view, event): MouseSelectionStyle | null => {
+    if (!filter(event)) return null;
+    let start = blockPointAt(view, event);
+    let startSel = view.state.selection;
+    return {
+      update(update) {
+        if (!update.docChanged) return;
+        const from = update.changes.mapPos(update.startState.doc.line(start.line).from);
+        start = { line: update.state.doc.lineAt(from).number, col: start.col };
+        startSel = startSel.map(update.changes);
+      },
+      get(e, _extend, multiple) {
+        const ranges = rectangleRanges(view.state, start, blockPointAt(view, e));
+        if (!ranges.length) return startSel;
+        return EditorSelection.create(multiple ? ranges.concat(startSel.ranges) : ranges);
+      },
+    };
+  });
+}
+
 function viewOf(e: MouseEvent): EditorView | null {
   return e.target instanceof HTMLElement ? EditorView.findFromDOM(e.target) : null;
 }
 
 export const columnModeExtension: Extension = [
   columnModeField,
-  rectangularSelection({
-    eventFilter: (e) => {
-      if (e.button !== 0 || e.altKey || e.metaKey || e.ctrlKey) return false;
-      const view = viewOf(e);
-      return !!view && isColumnMode(view.state);
-    },
+  blockMouseSelection((e) => {
+    if (e.button !== 0 || e.altKey || e.metaKey || e.ctrlKey) return false;
+    const view = viewOf(e);
+    return !!view && isColumnMode(view.state);
   }),
   Prec.high(
     keymap.of([
