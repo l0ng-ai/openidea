@@ -50,6 +50,8 @@ pub enum IdeEvent {
         message: Option<String>,
         fraction: Option<f32>,
         done: bool,
+        /// The UI may stop it with `cancel_task(id)` (see [`crate::task`]).
+        cancellable: bool,
     },
     /// Project indexing state changed (dumb mode on/off).
     IndexState {

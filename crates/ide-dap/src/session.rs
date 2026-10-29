@@ -378,6 +378,7 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, body: 
                 message: str_("message"),
                 fraction: body.get("percentage").and_then(Value::as_f64).map(|p| (p / 100.0) as f32),
                 done,
+                cancellable: false,
             });
         }
         "hotcodereplace" => s.emit(DebugEvent::HotCodeReplace {

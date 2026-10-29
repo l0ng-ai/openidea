@@ -1,7 +1,7 @@
 //! Archive extraction (zip / vsix, tar.gz, tar.xz, single-file gzip) and
 //! executable discovery inside extracted trees.
 
-use ide_core::{IdeError, IdeResult};
+use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::fs::{self, File};
 use std::io::{self, BufReader};
 use std::path::{Component, Path, PathBuf};
@@ -41,18 +41,29 @@ fn io_err(context: &str, e: impl std::fmt::Display) -> IdeError {
     IdeError::new(ide_core::error::ErrorKind::Io, format!("{context}: {e}"))
 }
 
+fn check(cancel: &CancellationToken) -> IdeResult<()> {
+    if cancel.is_cancelled() { Err(IdeError::cancelled()) } else { Ok(()) }
+}
+
 /// Unpacks `archive` into `dest` (created if needed). `Gz` / `Raw` payloads
-/// are written to `dest/<single_name>`.
-pub fn extract(archive: &Path, kind: ArchiveKind, dest: &Path, single_name: &str) -> IdeResult<()> {
+/// are written to `dest/<single_name>`. Stops between entries once `cancel` fires.
+pub fn extract(
+    archive: &Path,
+    kind: ArchiveKind,
+    dest: &Path,
+    single_name: &str,
+    cancel: &CancellationToken,
+) -> IdeResult<()> {
+    check(cancel)?;
     fs::create_dir_all(dest)?;
     match kind {
-        ArchiveKind::Zip => extract_zip(archive, dest),
+        ArchiveKind::Zip => extract_zip(archive, dest, cancel),
         ArchiveKind::TarGz => {
             let gz = flate2::read::GzDecoder::new(BufReader::new(File::open(archive)?));
-            extract_tar(tar::Archive::new(gz), dest)
+            extract_tar(tar::Archive::new(gz), dest, cancel)
         }
-        ArchiveKind::TarXz => extract_with_tar(archive, dest, "-xJf"),
-        ArchiveKind::TarBz2 => extract_with_tar(archive, dest, "-xjf"),
+        ArchiveKind::TarXz => extract_with_tar(archive, dest, "-xJf", cancel),
+        ArchiveKind::TarBz2 => extract_with_tar(archive, dest, "-xjf", cancel),
         ArchiveKind::Gz => {
             let mut gz = flate2::read::GzDecoder::new(BufReader::new(File::open(archive)?));
             let target = dest.join(single_name);
@@ -68,10 +79,11 @@ pub fn extract(archive: &Path, kind: ArchiveKind, dest: &Path, single_name: &str
     }
 }
 
-fn extract_tar<R: io::Read>(mut archive: tar::Archive<R>, dest: &Path) -> IdeResult<()> {
+fn extract_tar<R: io::Read>(mut archive: tar::Archive<R>, dest: &Path, cancel: &CancellationToken) -> IdeResult<()> {
     archive.set_preserve_permissions(true);
     archive.set_overwrite(true);
     for entry in archive.entries().map_err(|e| io_err("reading archive", e))? {
+        check(cancel)?;
         let mut entry = entry.map_err(|e| io_err("reading archive", e))?;
         // `unpack_in` refuses entries escaping `dest` (returns Ok(false)).
         entry.unpack_in(dest).map_err(|e| io_err("extracting", e))?;
@@ -79,9 +91,10 @@ fn extract_tar<R: io::Read>(mut archive: tar::Archive<R>, dest: &Path) -> IdeRes
     Ok(())
 }
 
-fn extract_zip(archive: &Path, dest: &Path) -> IdeResult<()> {
+fn extract_zip(archive: &Path, dest: &Path, cancel: &CancellationToken) -> IdeResult<()> {
     let mut zip = zip::ZipArchive::new(BufReader::new(File::open(archive)?)).map_err(|e| io_err("reading zip", e))?;
     for i in 0..zip.len() {
+        check(cancel)?;
         let mut file = zip.by_index(i).map_err(|e| io_err("reading zip", e))?;
         let Some(rel) = file.enclosed_name() else { continue };
         if !is_safe_relative(&rel) {
@@ -116,17 +129,13 @@ fn extract_zip(archive: &Path, dest: &Path) -> IdeResult<()> {
 
 /// `.tar.xz` / `.tar.bz2` go through the system `tar` (bsdtar on macOS/Windows, GNU tar
 /// + xz / bzip2 on Linux).
-fn extract_with_tar(archive: &Path, dest: &Path, flags: &str) -> IdeResult<()> {
+fn extract_with_tar(archive: &Path, dest: &Path, flags: &str, cancel: &CancellationToken) -> IdeResult<()> {
     let tar = which::which("tar").map_err(|_| IdeError::unavailable("`tar` is required to unpack this archive"))?;
-    let out = ide_core::process::prepare(&mut std::process::Command::new(tar))
-        .arg(flags)
-        .arg(archive)
-        .arg("-C")
-        .arg(dest)
-        .output()
-        .map_err(|e| io_err("running tar", e))?;
-    if !out.status.success() {
-        return Err(io_err("tar failed", String::from_utf8_lossy(&out.stderr).trim()));
+    let mut cmd = std::process::Command::new(tar);
+    cmd.arg(flags).arg(archive).arg("-C").arg(dest);
+    let (ok, output, _) = crate::process::run_collect(cmd, cancel, &|_| {})?;
+    if !ok {
+        return Err(io_err("tar failed", output.trim()));
     }
     Ok(())
 }
@@ -270,6 +279,21 @@ mod tests {
     }
 
     #[test]
+    fn extraction_stops_when_cancelled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("a.tar.gz");
+        tar_gz(&archive, &[("one", b"1", 0o644), ("two", b"2", 0o644)]);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let dest = tmp.path().join("out");
+        for kind in [ArchiveKind::TarGz, ArchiveKind::Zip, ArchiveKind::TarXz, ArchiveKind::Raw] {
+            let err = extract(&archive, kind, &dest, "x", &cancel).unwrap_err();
+            assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled, "{kind:?}");
+        }
+        assert!(!dest.join("one").exists());
+    }
+
+    #[test]
     fn extracts_tar_gz_and_locates_binary() {
         let tmp = tempfile::tempdir().unwrap();
         let archive = tmp.path().join("lua.tar.gz");
@@ -282,7 +306,7 @@ mod tests {
             ],
         );
         let dest = tmp.path().join("out");
-        extract(&archive, ArchiveKind::TarGz, &dest, "x").unwrap();
+        extract(&archive, ArchiveKind::TarGz, &dest, "x", &CancellationToken::new()).unwrap();
         assert_eq!(fs::read_to_string(dest.join("main.lua")).unwrap(), "-- entry");
         let found = locate(&dest, &["lua-language-server".into()]).unwrap();
         assert_eq!(found, dest.join("bin/lua-language-server"));
@@ -306,7 +330,7 @@ mod tests {
             ],
         );
         let dest = tmp.path().join("out");
-        extract(&archive, ArchiveKind::Zip, &dest, "x").unwrap();
+        extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).unwrap();
         let found = locate(&dest, &["codelldb".into()]).unwrap();
         assert_eq!(found, dest.join("extension/adapter/codelldb"));
         #[cfg(unix)]
@@ -323,7 +347,7 @@ mod tests {
         let archive = tmp.path().join("evil.zip");
         zip_file(&archive, &[("../escape.txt", b"x", 0o644), ("ok.txt", b"y", 0o644)]);
         let dest = tmp.path().join("out");
-        extract(&archive, ArchiveKind::Zip, &dest, "x").unwrap();
+        extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).unwrap();
         assert!(!tmp.path().join("escape.txt").exists());
         assert!(dest.join("ok.txt").exists());
     }
@@ -336,12 +360,12 @@ mod tests {
         gz.write_all(b"taplo-binary").unwrap();
         gz.finish().unwrap();
         let dest = tmp.path().join("bin");
-        extract(&gz_path, ArchiveKind::Gz, &dest, "taplo").unwrap();
+        extract(&gz_path, ArchiveKind::Gz, &dest, "taplo", &CancellationToken::new()).unwrap();
         assert_eq!(fs::read(dest.join("taplo")).unwrap(), b"taplo-binary");
 
         let raw = tmp.path().join("marksman-macos");
         fs::write(&raw, b"mm").unwrap();
-        extract(&raw, ArchiveKind::Raw, &dest, "marksman").unwrap();
+        extract(&raw, ArchiveKind::Raw, &dest, "marksman", &CancellationToken::new()).unwrap();
         assert_eq!(fs::read(dest.join("marksman")).unwrap(), b"mm");
         #[cfg(unix)]
         {

@@ -985,9 +985,9 @@ impl Tools {
         let exe_name = self.platform.exe(main);
         match kind {
             archive::ArchiveKind::Gz | archive::ArchiveKind::Raw => {
-                archive::extract(&archive, kind, &pkg.join("bin"), &exe_name)?
+                archive::extract(&archive, kind, &pkg.join("bin"), &exe_name, cancel)?
             }
-            _ => archive::extract(&archive, kind, &pkg, &exe_name)?,
+            _ => archive::extract(&archive, kind, &pkg, &exe_name, cancel)?,
         }
         let names: Vec<String> = locate
             .iter()

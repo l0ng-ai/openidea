@@ -56,6 +56,11 @@ export const commands = {
 	 */
 	projectRoots: () => typedError<ProjectRoots, IdeError>(__TAURI_INVOKE("project_roots")),
 	cancelRequest: (id: RequestId) => __TAURI_INVOKE<void>("cancel_request", { id }),
+	/**
+	 *  Stops a background task the backend reported with `cancellable` set; false when it
+	 *  has ended or can't be cancelled.
+	 */
+	cancelTask: (id: TaskId) => __TAURI_INVOKE<boolean>("cancel_task", { id }),
 	/**  Routes frontend logs into the backend `tracing` pipeline. */
 	logFrontend: (level: LogLevel, message: string) => __TAURI_INVOKE<void>("log_frontend", { level, message }),
 	/**  Streams the project's agent events to this window; returns every task. */
@@ -3237,7 +3242,9 @@ export type IdeEvent =
 /**  Full replacement of diagnostics for one file from one producer. */
 { type: "diagnostics"; path: IpcPath; source: string; items: Diagnostic[] } | 
 /**  Progress of a background task; `fraction` is `None` when indeterminate. */
-{ type: "task"; id: TaskId; title: string; message: string | null; fraction: number | null; done: boolean } | 
+{ type: "task"; id: TaskId; title: string; message: string | null; fraction: number | null; done: boolean; 
+/**  The UI may stop it with `cancel_task(id)` (see [`crate::task`]). */
+cancellable: boolean } | 
 /**  Project indexing state changed (dumb mode on/off). */
 { type: "indexState"; indexing: boolean; files: number; symbols: number } | 
 /**  Git status / branch information should be refreshed. */

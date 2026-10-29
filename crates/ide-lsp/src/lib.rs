@@ -553,7 +553,14 @@ impl LspManager {
     /// Ends progress tasks and withdraws diagnostics of a dead instance.
     fn clear_server_state(&self, server: &Server) {
         for (id, title) in server.take_progress() {
-            self.sink.emit(ide_core::IdeEvent::Task { id, title, message: None, fraction: None, done: true });
+            self.sink.emit(ide_core::IdeEvent::Task {
+                id,
+                title,
+                message: None,
+                fraction: None,
+                done: true,
+                cancellable: false,
+            });
         }
         server.progress_ended();
         for path in server.take_diagnostic_paths() {

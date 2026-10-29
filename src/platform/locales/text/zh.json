@@ -4644,5 +4644,10 @@
   "Couldn't copy the task": "无法复制任务",
   "Copy to a New Task From Here": "从此处复制为新任务",
   "Run Again From Here": "从此处重新运行",
-  "The messages after this one are replaced. Files the agent changed stay as they are.": "这条之后的消息会被替换。Agent 改动过的文件保持不变。"
+  "The messages after this one are replaced. Files the agent changed stay as they are.": "这条之后的消息会被替换。Agent 改动过的文件保持不变。",
+  "Cancelling…": "正在取消…",
+  "Code insight needs the index; it can't be stopped": "代码洞察依赖索引，无法停止",
+  "Waiting for other tasks": "正在等待其他任务",
+  "This task can't be cancelled": "此任务无法取消",
+  "Cancelled": "已取消"
 }

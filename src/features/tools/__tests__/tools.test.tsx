@@ -70,6 +70,22 @@ describe("tools store", () => {
     expect(useTools.getState().tools.find((t) => t.name === "gopls")?.status).toBe("missing");
   });
 
+  it("installs one at a time; one cancelled while it waits never starts", async () => {
+    backend.stepMs = 10;
+    await refreshTools();
+    const install = vi.spyOn(backend, "install");
+    const first = installTool("gopls");
+    const queued = installTool("vtsls");
+    expect(useTasks.getState().tasks.find((t) => t.id === "tools:vtsls")).toMatchObject({ queued: true });
+    cancelInstall("vtsls");
+    expect(useTasks.getState().tasks.find((t) => t.id === "tools:vtsls")).toBeUndefined();
+    expect(await queued).toBeNull();
+    expect(useTools.getState().logs["vtsls"]?.error).toBe("Cancelled");
+    expect((await first)?.status).toBe("installed");
+    expect(install.mock.calls.map((c) => c[0])).toEqual(["gopls"]);
+    expect(notes.filter((n) => n.level === "error")).toHaveLength(0);
+  });
+
   it("uninstalls", async () => {
     await refreshTools();
     expect(await uninstallTool("rust-analyzer")).toBe(true);

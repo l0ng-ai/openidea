@@ -71,6 +71,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::project_rename,
         app::project_roots,
         app::cancel_request,
+        app::cancel_task,
         app::log_frontend,
         agent::agent_subscribe,
         agent::agent_providers,

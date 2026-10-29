@@ -86,12 +86,29 @@ describe("background tasks", () => {
         message: null,
         fraction: null,
         done: false,
+        cancellable: false,
       });
-      emitLocalIdeEvent({ type: "task", id: 7, title: "Building index", message: null, fraction: 0.5, done: false });
+      emitLocalIdeEvent({
+        type: "task",
+        id: 7,
+        title: "Building index",
+        message: null,
+        fraction: 0.5,
+        done: false,
+        cancellable: false,
+      });
     });
     expect(screen.queryByText("Building index")).toBeNull();
     act(() => {
-      emitLocalIdeEvent({ type: "task", id: 6, title: "Publish Diagnostics", message: null, fraction: 1, done: true });
+      emitLocalIdeEvent({
+        type: "task",
+        id: 6,
+        title: "Publish Diagnostics",
+        message: null,
+        fraction: 1,
+        done: true,
+        cancellable: false,
+      });
       vi.advanceTimersByTime(600);
     });
     expect(screen.queryByText("Publish Diagnostics")).toBeNull();

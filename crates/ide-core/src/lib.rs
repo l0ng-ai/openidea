@@ -15,6 +15,7 @@ pub mod process;
 pub mod project_dir;
 pub mod remote_settings;
 pub mod settings;
+pub mod task;
 pub mod text;
 pub mod workflow_settings;
 

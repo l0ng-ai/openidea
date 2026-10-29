@@ -5,6 +5,7 @@
 
 pub mod ops;
 mod project;
+mod requests;
 pub mod rpc;
 pub mod shell_env;
 
@@ -15,7 +16,7 @@ use ide_language::{LanguageRegistry, Syntax};
 use ide_run::ProcessManager;
 use ide_terminal::TerminalManager;
 use ide_workspace::SettingsStore;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -54,7 +55,7 @@ pub struct Host {
     pub runtime: tokio::runtime::Handle,
     /// One project per window, keyed by window label.
     projects: RwLock<HashMap<String, Arc<Project>>>,
-    requests: Mutex<HashMap<RequestId, CancellationToken>>,
+    requests: requests::Requests,
 }
 
 impl Host {
@@ -79,7 +80,7 @@ impl Host {
             owner,
             runtime,
             projects: RwLock::default(),
-            requests: Mutex::default(),
+            requests: Default::default(),
         }
     }
 
@@ -139,21 +140,16 @@ impl Host {
     // ---- cancellable requests: the UI allocates ids, `cancel_request` cancels ----
 
     pub fn begin_request(&self, id: RequestId) -> CancellationToken {
-        let token = CancellationToken::new();
-        if let Some(old) = self.requests.lock().insert(id, token.clone()) {
-            old.cancel();
-        }
-        token
+        self.requests.begin(id)
     }
 
     pub fn end_request(&self, id: RequestId) {
-        self.requests.lock().remove(&id);
+        self.requests.end(id);
     }
 
+    /// Cancels request `id`, also when it has not begun yet (it then starts out cancelled).
     pub fn cancel_request(&self, id: RequestId) {
-        if let Some(token) = self.requests.lock().remove(&id) {
-            token.cancel();
-        }
+        self.requests.cancel(id);
     }
 
     pub(crate) fn insert_project(&self, window: &str, project: Arc<Project>) {

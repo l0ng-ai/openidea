@@ -4479,6 +4479,7 @@ dependencies = [
  "hex",
  "ide-core",
  "ide-language",
+ "libc",
  "parking_lot",
  "serde",
  "serde_json",
