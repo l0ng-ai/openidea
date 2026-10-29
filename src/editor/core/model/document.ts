@@ -271,7 +271,6 @@ export class DocModel {
       },
       manager.scheduler,
     );
-    if (this.desc && !this.language) void this.loadLanguage();
     this.scheduleRefresh(0);
   }
 
@@ -692,6 +691,8 @@ export class DocumentManager {
           return raced;
         }
         const model = new DocModel(this, info);
+        // The first slot must include the lazy mode, not briefly render plain text.
+        await model.loadLanguage();
         this.byPath.set(path, model);
         this.byId.set(model.doc, model);
         _emitEditorEvent({ type: "docOpened", doc: model.doc, path, language: info.language });

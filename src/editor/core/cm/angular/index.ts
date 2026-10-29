@@ -27,7 +27,7 @@ const baseParser = parser.configure({
       "EventName/Identifier EventName/@": t.special(t.attributeName),
       "ReferenceName/Identifier": t.variableName,
       "DirectiveName/Identifier": t.keyword,
-      "{{ }}": t.brace,
+      "{{ }}": t.special(t.brace),
       "( )": t.paren,
       "[ ]": t.bracket,
       "# '*'": t.punctuation,
