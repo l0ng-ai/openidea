@@ -1,6 +1,6 @@
-//! Saved SSH passwords / key passphrases of SSH configurations, in the app's
-//! data directory rather than the OS credential store (no system prompts).
-//! One JSON object, configuration id → secret; owner-only on Unix.
+//! Saved passwords (SSH passwords / key passphrases by configuration id, the HTTP
+//! proxy's), in the app's data directory rather than the OS credential store (no
+//! system prompts). One JSON object, key → secret; owner-only on Unix.
 
 use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
@@ -35,14 +35,14 @@ impl SecretFile {
         if all.remove(key).is_some()
             && let Err(e) = self.write(&all)
         {
-            tracing::warn!("saved SSH passwords: {}", e.message);
+            tracing::warn!("{}", e.message);
         }
     }
 
     fn read(&self) -> BTreeMap<String, String> {
         match std::fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-                tracing::warn!("saved SSH passwords: {}: {e}", self.path.display());
+                tracing::warn!("saved passwords: {}: {e}", self.path.display());
                 BTreeMap::new()
             }),
             Err(_) => BTreeMap::new(),
@@ -50,7 +50,7 @@ impl SecretFile {
     }
 
     fn write(&self, all: &BTreeMap<String, String>) -> IdeResult<()> {
-        let err = |e: std::io::Error| IdeError::unavailable(format!("saved SSH passwords: {e}"));
+        let err = |e: std::io::Error| IdeError::unavailable(format!("saved passwords: {}: {e}", self.path.display()));
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir).map_err(err)?;
         }

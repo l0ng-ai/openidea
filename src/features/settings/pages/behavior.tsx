@@ -1,6 +1,6 @@
 /**
  * Appearance & Behavior pages, laid out like IntelliJ IDEA / PyCharm:
- * Appearance, System Settings (+ Language and Region, Date Formats) and
+ * Appearance, System Settings (+ Language and Region, Date Formats, HTTP Proxy) and
  * Notifications. Every option is wired (see `appearanceRuntime`, workbench
  * theme / tool windows / notifications, app title / windows, `platform/dateFormat`).
  */
@@ -26,6 +26,7 @@ import {
 } from "../model/behaviorSchema";
 import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
+import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
 import { tx, useT } from "@/platform/i18n";
 
@@ -673,6 +674,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       },
     ],
   },
+  HTTP_PROXY_PAGE,
   {
     id: "notifications",
     title: "Notifications",

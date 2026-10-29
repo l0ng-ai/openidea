@@ -30,7 +30,8 @@ pub fn prepare(cmd: &mut Command) -> &mut Command {
 /// `GST_PLUGIN_*`, ... into the mounted image for the IDE itself; a host program that
 /// inherits them loads the image's (older) libraries and plugins next to its own, e.g.
 /// `curl: symbol lookup error ... nghttp2_...`. The IDE process keeps its environment
-/// (WebKit and GTK still need it). Then applies the [`set_env_overlay`] variables.
+/// (WebKit and GTK still need it). Then applies the [`set_env_overlay`] variables and
+/// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]).
 /// Variables the call site has already set are kept. A no-op outside an AppImage
 /// without an overlay.
 pub fn host_env(cmd: &mut Command) -> &mut Command {
@@ -89,12 +90,16 @@ fn apply_changes(
     vars
 }
 
-/// The AppImage fixes, then the overlay (which wins for a name both change); one entry per name.
+/// The AppImage fixes, the overlay, then the manual proxy's (a later one wins); one entry per name.
 fn child_env_changes() -> Vec<(OsString, Option<OsString>)> {
     let mut changes = appimage_fixes();
     let overlay = env_overlay();
     changes.retain(|(k, _)| !overlay.iter().any(|(o, _)| o == k));
     changes.extend(overlay.iter().cloned());
+    // A manual HTTP proxy reaches tools that read `HTTP_PROXY` (language servers, git, curl).
+    let proxy = crate::proxy_settings::proxy().child_env();
+    changes.retain(|(k, _)| !proxy.iter().any(|(p, _)| p == k));
+    changes.extend(proxy);
     changes
 }
 
