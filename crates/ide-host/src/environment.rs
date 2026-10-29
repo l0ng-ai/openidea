@@ -211,8 +211,12 @@ const TITLE: &str = "postStartCommand";
 /// reporting progress as a background task and a failure as an error notification.
 fn run_post_start(cmd: &LifecycleCommand, root: &Path, sink: &SharedSink, cancel: &CancellationToken) {
     let task = TaskId::next();
+    let _cancel_handle = ide_core::task::on_cancel(task, {
+        let cancel = cancel.clone();
+        move || cancel.cancel()
+    });
     let progress = |message: Option<String>, done: bool| {
-        sink.emit(IdeEvent::Task { id: task, title: TITLE.into(), message, fraction: None, done });
+        sink.emit(IdeEvent::Task { id: task, title: TITLE.into(), message, fraction: None, done, cancellable: !done });
     };
     progress(Some("Starting…".into()), false);
     let tail = Arc::new(Mutex::new(Vec::<String>::new()));
