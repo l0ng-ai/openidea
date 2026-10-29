@@ -22,7 +22,6 @@
   color: var(--fg-strong);
   outline: none;
   overflow: hidden;
-  animation: rise var(--dur) var(--ease);
 }
 /* macOS / Windows window: 10px corners, hairline frame, large soft window shadow. */
 .window {
@@ -247,18 +246,6 @@
 }
 .messageFooter {
   padding: 16px 24px 20px;
-}
-
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(4px) scale(0.995);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .dialog {
-    animation: none;
-  }
 }
 @media (forced-colors: active) {
   .dialog {

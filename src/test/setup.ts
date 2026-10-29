@@ -1,8 +1,19 @@
 import "@testing-library/jest-dom/vitest";
-import { afterEach } from "vitest";
+import type { ReactNode } from "react";
+import { afterEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
+import { MotionGlobalConfig } from "motion/react";
 
 afterEach(() => cleanup());
+
+// Enter animations finish at once; exit animations (AnimatePresence, ui/exitGhost.ts)
+// would keep closed dialogs, popups and balloons in the DOM for a few frames, so
+// they are skipped entirely.
+MotionGlobalConfig.skipAnimations = true;
+vi.mock("motion/react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("motion/react")>()),
+  AnimatePresence: ({ children }: { children?: ReactNode }) => children,
+}));
 
 // jsdom has no layout: give elements a size so virtualized lists render rows.
 if (typeof window !== "undefined") {

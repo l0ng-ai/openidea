@@ -6,6 +6,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
+import { motion } from "motion/react";
 import {
   autoUpdate,
   flip,
@@ -16,6 +17,8 @@ import {
   type Placement,
   type VirtualElement,
 } from "@floating-ui/react-dom";
+import { useExitGhost } from "./exitGhost";
+import { FAST } from "./motion";
 import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
 import styles from "./Popup.module.css";
 
@@ -61,6 +64,8 @@ export function Popup(props: PopupProps) {
   return <PopupInner {...props} />;
 }
 
+const HIDDEN = { opacity: 0, y: -2 };
+
 function PopupInner({
   onClose,
   anchor,
@@ -104,6 +109,7 @@ function PopupInner({
     whileElementsMounted: autoUpdate,
   });
   const elRef = useRef<HTMLDivElement | null>(null);
+  useExitGhost({ root: elRef, keyframes: { opacity: 0 }, transition: FAST });
   const onCloseRef = useRef(onClose);
   useLayoutEffect(() => {
     onCloseRef.current = onClose;
@@ -162,8 +168,8 @@ function PopupInner({
   }, [autoFocus]);
 
   return createPortal(
-    <div
-      ref={(node) => {
+    <motion.div
+      ref={(node: HTMLDivElement | null) => {
         elRef.current = node;
         refs.setFloating(node);
       }}
@@ -173,10 +179,14 @@ function PopupInner({
       tabIndex={-1}
       className={clsx(styles.popup, !unstyled && styles.surface, className)}
       data-positioned={isPositioned || undefined}
+      initial={HIDDEN}
+      // Stay hidden until floating-ui has placed it, so it never flashes at 0,0.
+      animate={isPositioned ? { opacity: 1, y: 0 } : HIDDEN}
+      transition={FAST}
       style={{ ...floatingStyles, ...style }}
     >
       {children}
-    </div>,
+    </motion.div>,
     document.body,
   );
 }

@@ -1,14 +1,9 @@
 .popup {
   z-index: var(--z-popup);
   overflow: auto;
-  opacity: 0;
 }
 .popup:focus-visible {
   outline: none;
-}
-.popup[data-positioned] {
-  opacity: 1;
-  animation: popIn var(--dur-fast) var(--ease);
 }
 .popup::-webkit-scrollbar {
   width: 10px;
@@ -31,15 +26,4 @@
   border-radius: var(--radius-popup-large, 10px);
   box-shadow: var(--shadow-popup);
   color: var(--fg-strong);
-}
-@keyframes popIn {
-  from {
-    opacity: 0;
-    transform: translateY(-2px);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .popup[data-positioned] {
-    animation: none;
-  }
 }

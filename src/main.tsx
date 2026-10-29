@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { MotionConfig } from "motion/react";
 import "./styles/global.css";
 import { Workbench } from "./workbench/Workbench";
 import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
@@ -41,7 +42,10 @@ if (settingsParent !== null) {
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>{settingsParent !== null ? <SettingsWindow /> : <Workbench />}</React.StrictMode>,
+  <React.StrictMode>
+    {/* Honour the OS "reduce motion" setting: no movement, only fades. */}
+    <MotionConfig reducedMotion="user">{settingsParent !== null ? <SettingsWindow /> : <Workbench />}</MotionConfig>
+  </React.StrictMode>,
 );
 hideSplash();
 // Views split out of the start-up bundle load in the background once the UI is up.

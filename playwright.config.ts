@@ -23,6 +23,8 @@ export default defineConfig({
     // The workbench keeps indeterminate progress animations running; screenshots
     // are taken explicitly with `animations: "disabled"` instead.
     screenshot: "off",
+    // Closed dialogs and popups leave a fading copy behind (ui/exitGhost.ts); skip it.
+    reducedMotion: "reduce",
   },
   projects: [
     {

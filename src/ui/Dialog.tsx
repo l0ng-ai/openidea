@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { motion } from "motion/react";
 import clsx from "clsx";
 import { usePlatform } from "@/platform/platformInfo";
 import { Button, IconButton } from "./Button";
@@ -9,6 +10,8 @@ import { useTx } from "@/platform/i18n";
 import { selectableText } from "./selectableText";
 import styles from "./Dialog.module.css";
 import { isImeKey } from "@/platform/ime";
+import { useExitGhost } from "./exitGhost";
+import { NORMAL } from "./motion";
 
 /**
  * `default`: filled accent button, triggered by Enter. `cancel`: Esc / close
@@ -182,6 +185,8 @@ export function Dialog(props: DialogProps) {
   return <DialogInner {...props} />;
 }
 
+const HIDDEN = { opacity: 0, y: 4, scale: 0.995 };
+
 const ENTER_OWNERS =
   'textarea, button, a[href], select, form, [contenteditable=""], [contenteditable="true"], [role="listbox"], [role="tree"], [role="grid"], [role="menu"], [role="combobox"][aria-expanded="true"]';
 
@@ -203,6 +208,8 @@ function DialogInner({
   ...aria
 }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
+  useExitGhost({ root: backdropRef, target: ref, keyframes: HIDDEN, transition: NORMAL });
   const platform = useDialogPlatform(platformOverride);
   const tx = useTx();
   if (typeof title === "string") title = tx(title);
@@ -312,13 +319,17 @@ function DialogInner({
 
   return createPortal(
     <div
+      ref={backdropRef}
       className={clsx(styles.backdrop, position === "top" && styles.top)}
       onPointerDown={(e) => {
         if ((dismissOnBackdrop ?? popup) && e.target === e.currentTarget) onClose();
       }}
     >
-      <div
+      <motion.div
         ref={ref}
+        initial={HIDDEN}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={NORMAL}
         role="dialog"
         aria-modal="true"
         aria-label={label}
@@ -392,7 +403,7 @@ function DialogInner({
                 {!!buttons?.length && <DialogButtons buttons={buttons} onCancel={onClose} platform={platform} />}
               </div>
             )}
-      </div>
+      </motion.div>
     </div>,
     document.body,
   );

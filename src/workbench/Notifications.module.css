@@ -13,18 +13,6 @@
 }
 .balloon {
   pointer-events: auto;
-  animation: slideIn var(--dur) var(--ease);
-}
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(12px);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .balloon {
-    animation: none;
-  }
 }
 .list {
   flex: 1;
