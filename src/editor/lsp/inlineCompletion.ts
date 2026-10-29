@@ -27,6 +27,7 @@ import { activeEditor } from "@/editor/api";
 import { docOf, isUnavailable, lspRequest } from "./lsp";
 import { offsetToPos, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
+import { featureBackoff } from "./availability";
 
 /** A suggestion in document offsets: `text` replaces `[from, to)`. */
 export interface Suggestion {
@@ -144,7 +145,7 @@ function enabledFor(language: string): boolean {
   return p.enabled && !p.disabledLanguages.includes(language);
 }
 
-const backoff = new Map<number, number>();
+const backoff = featureBackoff(BACKOFF_MS);
 let focused: EditorView | null = null;
 let inflight: RequestId | null = null;
 
@@ -159,7 +160,7 @@ export async function requestInline(view: EditorView, automatic: boolean): Promi
   const state = view.state;
   const sel = state.selection;
   if (!doc || sel.ranges.length !== 1 || !sel.main.empty || view.state.readOnly) return false;
-  if (automatic && (backoff.get(doc.doc) ?? 0) > Date.now()) return false;
+  if (automatic && backoff.active(doc.doc)) return false;
   cancelInflight();
   const id = (inflight = nextRequestId());
   const caret = sel.main.head;
@@ -173,7 +174,7 @@ export async function requestInline(view: EditorView, automatic: boolean): Promi
     view.dispatch({ effects: setGhost.of(suggestions.length ? { items: suggestions, index: 0, caret } : null) });
     return suggestions.length > 0;
   } catch (e) {
-    if (isUnavailable(e)) backoff.set(doc.doc, Date.now() + BACKOFF_MS);
+    if (isUnavailable(e)) backoff.mark(doc.doc);
     else if (!isCancelled(e)) console.debug("[lsp] inline completion", e);
     if (!automatic && !isCancelled(e)) throw e;
     return false;

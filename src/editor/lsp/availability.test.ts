@@ -14,7 +14,7 @@ vi.mock("@/platform/ipc", async (orig) => {
   };
 });
 
-const { onServerSettled } = await import("./availability");
+const { onServerSettled, featureBackoff, installAvailabilityEvents } = await import("./availability");
 
 const status = (s: string) => {
   for (const fn of listeners) fn({ type: "languageServer", server: 1, status: s } as unknown as IdeEvent);
@@ -55,5 +55,45 @@ describe("onServerSettled", () => {
     vi.advanceTimersByTime(100);
     status("ready");
     expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("featureBackoff", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    listeners.clear();
+  });
+
+  it("leaves a document alone until the back-off expires", () => {
+    vi.useFakeTimers();
+    const backoff = featureBackoff(1000);
+    expect(backoff.active(1)).toBe(false);
+    backoff.mark(1);
+    expect(backoff.active(1)).toBe(true);
+    expect(backoff.active(2)).toBe(false);
+    vi.advanceTimersByTime(1001);
+    expect(backoff.active(1)).toBe(false);
+  });
+
+  it("keeps features independent: one feature backing off does not stop another", () => {
+    const inlay = featureBackoff();
+    const completion = featureBackoff();
+    inlay.mark(1);
+    expect(inlay.active(1)).toBe(true);
+    expect(completion.active(1)).toBe(false);
+  });
+
+  it("is cleared for every feature when a server becomes ready", () => {
+    const a = featureBackoff();
+    const b = featureBackoff();
+    const off = installAvailabilityEvents();
+    a.mark(1);
+    b.mark(2);
+    status("starting");
+    expect(a.active(1)).toBe(true);
+    status("ready");
+    expect(a.active(1)).toBe(false);
+    expect(b.active(2)).toBe(false);
+    off();
   });
 });

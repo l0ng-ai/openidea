@@ -18,7 +18,7 @@ import { formatLines } from "./format";
 import { pythonMemberIntentions } from "./pythonMembers";
 import { caretAnchor, openPopup, type ListPopupItem, type ListPreview } from "./popupStore";
 import { editPreviewLines } from "./workspaceEdit";
-import { serverBackoff } from "./availability";
+import { featureBackoff } from "./availability";
 import { iconNode } from "./iconMarkup";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
@@ -26,6 +26,8 @@ import { inspectionsAt } from "./diagnostics";
 import { SPELLING_INSPECTION } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { tx } from "@/platform/i18n";
+
+const codeActionBackoff = featureBackoff();
 
 const isQuickFix = (a: CodeAction) => !!a.kind && (a.kind === "quickfix" || a.kind.startsWith("quickfix."));
 
@@ -512,14 +514,14 @@ const bulbPlugin = ViewPlugin.fromClass(
       const state = this.view.state;
       const typoFix = spellingIntentions(this.view).length > 0;
       const local = typoFix || contributedIntentions(this.view).length > 0;
-      const backoff = serverBackoff.active(doc.doc);
+      const backoff = codeActionBackoff.active(doc.doc);
       if (backoff && !local) return;
       let actions: CodeAction[] = [];
       if (!backoff) {
         try {
           actions = await fetchIntentions(this.view);
         } catch (e) {
-          if (isUnavailable(e)) serverBackoff.mark(doc.doc);
+          if (isUnavailable(e)) codeActionBackoff.mark(doc.doc);
           if (!local) return;
         }
       }
