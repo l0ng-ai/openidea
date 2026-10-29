@@ -47,6 +47,12 @@ export interface SqlCandidate {
   doc?: string;
 }
 
+/** Match the console's automatic trigger: a word or a qualifier followed by a dot. */
+export function shouldAutoCompleteSql(analysis: Analysis): boolean {
+  const typed = analysis.prefix.text;
+  return analysis.context.kind !== "none" && (!!typed || !!analysis.qualifier) && !/^\d/.test(typed);
+}
+
 const MAX_ALL_COLUMNS = 3000;
 
 const eq = (a: string | null | undefined, b: string | null | undefined) =>
