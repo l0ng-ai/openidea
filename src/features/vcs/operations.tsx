@@ -362,7 +362,7 @@ export function validateTagName(name: string, existing: readonly string[] = []):
 /** Log › New Tag…: a lightweight tag on the selected commit. */
 export async function newTagOn(commit: Commit) {
   const repo = commitRepo(commit) ?? currentRepo();
-  const existing = await call(commands.vcsTags(currentRepo())).catch(() => [] as string[]);
+  const existing = await call(commands.vcsTags(repo)).catch(() => [] as string[]);
   const r = await promptText({
     title: tx`Create New Tag On ${short(commit.id)}`,
     label: "Enter the name of new tag:",
@@ -392,7 +392,7 @@ function TagDialog({ onClose }: { onClose: () => void }) {
   const [force, setForce] = useState(false);
   const [existing, setExisting] = useState<string[]>([]);
   useEffect(() => {
-    void call(commands.vcsTags(currentRepo())).then(setExisting, () => undefined);
+    void call(commands.vcsTags(repo)).then(setExisting, () => undefined);
   }, []);
   const error = validateTagName(name, force ? [] : existing);
   const run = async () => {
