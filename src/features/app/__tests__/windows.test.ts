@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const windowOpenProject = vi.fn();
 const windowOpenFiles = vi.fn();
@@ -35,6 +35,7 @@ vi.mock("@/platform/project", async (orig) => {
 const { openProjectInWindow, consumeLaunch, openFiles, openPaths, openLightEditFileAsProject, windowActions } =
   await import("../windows");
 const { useProject } = await import("@/platform/project");
+const { usePlatform } = await import("@/platform/platformInfo");
 const { provideEditorService } = await import("@/workbench/contributions");
 
 const opened: string[] = [];
@@ -161,7 +162,6 @@ describe("Open Containing Folder as Project", () => {
     const action = windowActions().find((a) => a.id === "lightEdit.openProject");
     expect(action?.when).toBe("lightEdit");
     expect(windowActions().some((a) => a.id === "file.openFile")).toBe(true);
-    expect(windowActions().some((a) => a.id === "window.mergeAllWindows")).toBe(true);
   });
 
   it("opens the folder in a new window with the file, per 'Open project in'", async () => {
@@ -215,5 +215,23 @@ describe("launch", () => {
     expect(openProject).toHaveBeenCalledWith("/x/notes");
     expect(lightEditOpen).not.toHaveBeenCalled();
     expect(opened).toEqual(["/x/notes/a.txt (focus)"]);
+  });
+});
+
+describe("windowActions", () => {
+  const savedOs = usePlatform.getState().os;
+  afterEach(() => usePlatform.setState({ os: savedOs }));
+
+  it("includes window.mergeAllWindows on macOS", () => {
+    usePlatform.setState({ os: "macos" });
+    expect(windowActions().some((a) => a.id === "window.mergeAllWindows")).toBe(true);
+  });
+
+  it("omits window.mergeAllWindows on non-macOS platforms", () => {
+    usePlatform.setState({ os: "windows" });
+    expect(windowActions().some((a) => a.id === "window.mergeAllWindows")).toBe(false);
+
+    usePlatform.setState({ os: "linux" });
+    expect(windowActions().some((a) => a.id === "window.mergeAllWindows")).toBe(false);
   });
 });

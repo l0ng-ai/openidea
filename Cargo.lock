@@ -6010,6 +6010,7 @@ dependencies = [
  "ide-vfs",
  "ide-web",
  "ide-workspace",
+ "objc2 0.6.5",
  "parking_lot",
  "serde",
  "serde_json",

@@ -10,6 +10,7 @@
 import type { Action } from "@/platform/actions";
 import { t } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import {
   basename,
   confirmLeaveProject,
@@ -196,6 +197,7 @@ export async function consumeLaunch(): Promise<void> {
 }
 
 export function windowActions(): Action[] {
+  const isMac = usePlatform.getState().os === "macos";
   return [
     {
       id: "file.openInNewWindow",
@@ -281,13 +283,17 @@ export function windowActions(): Action[] {
       category: t("app.category.window"),
       run: () => (isTauri() ? commands.windowCycle(false) : undefined),
     },
-    {
-      id: "window.mergeAllWindows",
-      title: t("app.action.mergeAllWindows"),
-      category: t("app.category.window"),
-      keywords: ["merge", "merge all windows", "merge all project windows", "tabs"],
-      run: () => (isTauri() ? commands.windowMergeAllWindows() : undefined),
-    },
+    ...(isMac
+      ? [
+          {
+            id: "window.mergeAllWindows",
+            title: t("app.action.mergeAllWindows"),
+            category: t("app.category.window"),
+            keywords: ["merge", "merge all windows", "merge all project windows", "tabs"],
+            run: () => (isTauri() ? commands.windowMergeAllWindows() : undefined),
+          },
+        ]
+      : []),
     {
       id: "window.toggleFullScreen",
       title: t("app.action.toggleFullScreen"),

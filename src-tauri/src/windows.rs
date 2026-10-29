@@ -671,19 +671,12 @@ pub fn cycle(app: &AppHandle, current: &str, forward: bool) {
 /// Merges all project windows into tabs (macOS).
 #[cfg(target_os = "macos")]
 pub fn merge_all_windows(window: &WebviewWindow) {
-    #[link(name = "objc")]
-    unsafe extern "C" {
-        fn objc_msgSend();
-        fn sel_registerName(name: *const std::ffi::c_char) -> *const std::ffi::c_void;
-    }
     if let Ok(ptr) = window.ns_window()
         && !ptr.is_null()
     {
-        type MsgSend = unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, *mut std::ffi::c_void);
+        let obj = ptr as *mut objc2::runtime::AnyObject;
         unsafe {
-            let send: MsgSend = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-            let sel = sel_registerName(c"mergeAllWindows:".as_ptr());
-            send(ptr, sel, std::ptr::null_mut());
+            let () = objc2::msg_send![obj, mergeAllWindows: std::ptr::null_mut::<objc2::runtime::AnyObject>()];
         }
     }
 }
