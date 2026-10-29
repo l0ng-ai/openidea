@@ -76,3 +76,11 @@ pub fn http_history_get(window: Window, state: State<'_, AppState>, id: String) 
 pub fn http_history_clear(window: Window, state: State<'_, AppState>) -> IdeResult<()> {
     state.project(window.label())?.http_history.clear()
 }
+
+/// System Settings › HTTP Proxy › Check connection: GETs `url` through `proxy` as
+/// edited (not yet applied); the response status, or why there was none.
+#[tauri::command]
+#[specta::specta]
+pub async fn proxy_check_connection(proxy: ide_core::settings::ProxySettings, url: String) -> IdeResult<String> {
+    ide_http::client::check_connection(&proxy, &url, &ide_core::CancellationToken::new()).await
+}

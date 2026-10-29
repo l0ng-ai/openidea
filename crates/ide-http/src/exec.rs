@@ -1,5 +1,6 @@
 //! Preparing (substitution, body includes) and executing requests.
 
+use crate::client::describe;
 use crate::env::{Environments, Resolver};
 use crate::parse::{BodyPart, RawRequest};
 use ide_core::{CancellationToken, IdeError, IdeResult};
@@ -7,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 /// Bodies above this are cut (the full size is still reported).
@@ -98,29 +98,6 @@ pub fn prepare(
     })
 }
 
-fn client() -> IdeResult<reqwest::Client> {
-    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            use rustls_platform_verifier::BuilderVerifierExt;
-            let provider = Arc::new(rustls::crypto::ring::default_provider());
-            let tls = rustls::ClientConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .map_err(|e| e.to_string())?
-                .with_platform_verifier()
-                .map_err(|e| e.to_string())?
-                .with_no_client_auth();
-            reqwest::Client::builder()
-                .tls_backend_preconfigured(tls)
-                .connect_timeout(std::time::Duration::from_secs(30))
-                .user_agent(concat!("OpenIDEA-HttpClient/", env!("CARGO_PKG_VERSION")))
-                .build()
-                .map_err(|e| e.to_string())
-        })
-        .clone()
-        .map_err(|e| IdeError::internal(format!("HTTP client: {e}")))
-}
-
 fn looks_textual(content_type: Option<&str>, bytes: &[u8]) -> bool {
     if let Some(ct) = content_type {
         let ct = ct.to_ascii_lowercase();
@@ -148,7 +125,7 @@ fn looks_textual(content_type: Option<&str>, bytes: &[u8]) -> bool {
 
 /// Sends `req`; cancelled when `cancel` fires.
 pub async fn execute(req: &PreparedRequest, cancel: &CancellationToken) -> IdeResult<HttpResponse> {
-    let client = client()?;
+    let client = crate::client::shared()?;
     let method = reqwest::Method::from_bytes(req.method.as_bytes())
         .map_err(|_| IdeError::invalid(format!("invalid method {}", req.method)))?;
     let mut builder = client.request(method, &req.url);
@@ -203,22 +180,6 @@ pub async fn execute(req: &PreparedRequest, cancel: &CancellationToken) -> IdeRe
         ttfb_ms: ttfb.as_secs_f64() * 1000.0,
         total_ms: total.as_secs_f64() * 1000.0,
     })
-}
-
-/// reqwest errors with their causes ("error sending request: … connection refused").
-fn describe(e: &reqwest::Error) -> String {
-    use std::error::Error;
-    let mut msg = e.to_string();
-    let mut source = e.source();
-    while let Some(s) = source {
-        let s_msg = s.to_string();
-        if !msg.contains(&s_msg) {
-            msg.push_str(": ");
-            msg.push_str(&s_msg);
-        }
-        source = s.source();
-    }
-    msg
 }
 
 #[cfg(test)]

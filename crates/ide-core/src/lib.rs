@@ -14,6 +14,7 @@ pub mod ipc_path;
 pub mod jsonc;
 pub mod process;
 pub mod project_dir;
+pub mod proxy_settings;
 pub mod remote_settings;
 pub mod settings;
 pub mod task;

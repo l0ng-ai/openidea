@@ -395,6 +395,8 @@ mod tests {
         assert_eq!(changed_names(&before, &after), ["B", "C", "D"]);
     }
 
+    // Used by the Unix-only post-start tests.
+    #[cfg_attr(not(unix), allow(dead_code))]
     #[derive(Default)]
     struct Events(Mutex<Vec<IdeEvent>>);
     impl EventSink for Events {
@@ -403,6 +405,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn run(cmd: LifecycleCommand, root: &Path) -> Vec<IdeEvent> {
         let events = Arc::new(Events::default());
         let sink: SharedSink = events.clone();
@@ -410,6 +413,7 @@ mod tests {
         events.0.lock().clone()
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn failure(events: &[IdeEvent]) -> Option<String> {
         events.iter().find_map(|e| match e {
             IdeEvent::Notify { level: NotifyLevel::Error, body, .. } => body.clone(),

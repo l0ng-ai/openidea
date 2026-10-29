@@ -2,8 +2,10 @@
 //!
 //! [`parse`] splits a file into requests, [`env`] resolves `{{variables}}` from
 //! `http-client(.private).env.json`, [`exec`] sends a request (cancellable,
-//! timed) and [`history`] keeps the responses.
+//! timed) and [`history`] keeps the responses. [`client`] builds every HTTP client
+//! of the backend, with the proxy of System Settings › HTTP Proxy.
 
+pub mod client;
 pub mod env;
 pub mod exec;
 pub mod history;

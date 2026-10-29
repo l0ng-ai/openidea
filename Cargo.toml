@@ -87,7 +87,7 @@ tree-sitter = "0.25"
 lsp-types = "0.97"
 gix = { version = "0.89", default-features = false }
 portable-pty = "0.9"
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "charset", "gzip", "deflate", "brotli"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "charset", "socks", "gzip", "deflate", "brotli"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "sqlite", "postgres", "mysql"] }

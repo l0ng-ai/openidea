@@ -49,7 +49,7 @@ export function activate(): () => void {
       id: TOOL_WINDOW,
       title: "Agents",
       icon: "toolwindow-agents",
-      anchor: "left",
+      anchor: "right",
       order: 0.5,
       component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
