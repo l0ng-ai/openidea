@@ -2278,6 +2278,7 @@
   "cargo run configurations and rust-analyzer use this toolchain (PATH, RUSTUP_TOOLCHAIN).": "cargo 运行配置和 rust-analyzer 使用此工具链（PATH、RUSTUP_TOOLCHAIN）。",
   "chord prefix": "组合键前缀",
   "command line tool. Install it, then run": "命令行工具。请安装它，然后运行",
+  "compact the conversation": "压缩对话上下文",
   "configured in": "配置位置：",
   "const declaration": "const 声明",
   "current branch": "当前分支",

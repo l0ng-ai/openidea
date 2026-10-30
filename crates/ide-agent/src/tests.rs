@@ -210,7 +210,7 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     let names = |c: Vec<AgentCommand>| c.into_iter().map(|c| c.name).collect::<Vec<_>>();
 
     let mgr_a = manager_at(&a, &models, Arc::new(FakeAgent::default()));
-    // Before any session: the skills on disk.
+    // Before any session: only the skills on disk.
     assert_eq!(names(mgr_a.commands("claude", None).await.unwrap()), ["triage"]);
     let task = mgr_a
         .create(NewAgentTask {
@@ -237,6 +237,42 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     assert!(mgr_b.commands("claude", None).await.unwrap().is_empty());
     let mgr_a = manager_at(&a, &models, Arc::new(FakeAgent::default()));
     assert_eq!(names(mgr_a.providers().into_iter().find(|p| p.id == "claude").unwrap().commands), ["review"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn builtin_commands_only_fill_verified_gaps_and_preserve_advertised_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager_at(tmp.path(), &tmp.path().join("models.json"), agent);
+    for provider in ["claude", "claude-acp", "opencode2", "codex", "custom"] {
+        assert!(mgr.commands(provider, None).await.unwrap().is_empty(), "{provider}");
+    }
+    let commands = mgr.commands("opencode", None).await.unwrap();
+    assert_eq!(commands.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["compact"]);
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("Hello"),
+            provider: "opencode".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let advertised = AgentCommand {
+        name: "compact".into(),
+        description: "Agent supplied description".into(),
+        hint: Some("instructions".into()),
+    };
+    mgr.task(&task.id).unwrap().state.lock().task.commands = vec![advertised.clone()];
+    // The task's provider wins over the caller's provider; metadata is not replaced.
+    let commands = mgr.commands("claude", Some(&task.id)).await.unwrap();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].name, advertised.name);
+    assert_eq!(commands[0].description, advertised.description);
+    assert_eq!(commands[0].hint, advertised.hint);
+    mgr.shutdown();
 }
 
 async fn wait_for(mgr: &AgentManager, id: &str, status: AgentStatus) {

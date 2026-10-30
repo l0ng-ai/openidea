@@ -20,6 +20,7 @@ import {
   copyText,
   fileIconName,
   selectableText,
+  useSelectionBoundary,
   showContextMenu,
 } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
@@ -325,6 +326,7 @@ interface StreamProps {
 
 function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
+  useSelectionBoundary(ref);
   const stick = useRef(true);
   useLayoutEffect(() => {
     const el = ref.current;

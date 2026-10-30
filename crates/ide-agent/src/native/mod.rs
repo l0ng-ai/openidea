@@ -124,4 +124,24 @@ mod tests {
         assert_eq!(newest_install_in("nope", &search), "nope");
         assert_eq!(newest_install_in("bin/claude", &search), "bin/claude");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn newest_install_compares_versions_across_path_entries() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        for (path, version) in [(&old, "2.9.0"), (&new, "2.10.0")] {
+            std::fs::create_dir_all(path).unwrap();
+            let executable = path.join("agent");
+            std::fs::write(&executable, format!("#!/bin/sh\necho {version}\n")).unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for paths in [[&old, &new], [&new, &old]] {
+            let search = std::env::join_paths(paths).unwrap();
+            assert_eq!(newest_install_in("agent", &search), new.join("agent").to_string_lossy());
+        }
+    }
 }
