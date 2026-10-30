@@ -11,7 +11,9 @@ import type {
   RequestId,
 } from "@/platform/ipc";
 import { call, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
+import { loadLastSearch, rememberSearch, saveLastSearch, sameQuery } from "./searchHistory";
 
 export type DetailTab = "overview" | "files" | "commits" | "conversation";
 
@@ -30,6 +32,8 @@ interface GithubState {
   tab: DetailTab;
   /** Running gh operation (checkout, create, fetch for diff), with its last output line. */
   busy: { title: string; line: string; request: RequestId } | null;
+  /** Files tab: under their directories (IDEA's Group by Directory) or a flat list. */
+  groupFilesByDirectory: boolean;
 }
 
 export const DEFAULT_QUERY: PrListQuery = {
@@ -55,7 +59,27 @@ export const useGithub = create<GithubState>(() => ({
   reviewComments: [],
   tab: "overview",
   busy: null,
+  groupFilesByDirectory: loadGrouping(),
 }));
+
+const GROUPING_KEY = "openidea.github.groupFilesByDirectory.v1";
+
+function loadGrouping(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(GROUPING_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function setGroupFilesByDirectory(groupFilesByDirectory: boolean) {
+  useGithub.setState({ groupFilesByDirectory });
+  try {
+    globalThis.localStorage?.setItem(GROUPING_KEY, String(groupFilesByDirectory));
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 export const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -104,9 +128,37 @@ export async function refreshAll(): Promise<void> {
   if (n !== null) await loadDetails(n);
 }
 
-export function setQuery(patch: Partial<PrListQuery>) {
-  useGithub.setState((s) => ({ query: { ...s.query, ...patch } }));
+const projectRoot = () => useProject.getState().project?.root ?? null;
+
+/** IDEA waits before keeping a filter-only change in the history (the user may still be toggling). */
+const FILTER_HISTORY_DELAY = 10_000;
+/** Typed text is kept once it stops changing (the list follows each pause in typing). */
+const TEXT_HISTORY_DELAY = 2_000;
+let historyTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Applies `patch` to the list query and reloads. The query becomes the project's last
+ * search, and enters the search history once it has stayed for a moment (`now`: at once,
+ * as on Enter or when picked from the history).
+ */
+export function setQuery(patch: Partial<PrListQuery>, opts: { now?: boolean } = {}) {
+  const prev = useGithub.getState().query;
+  const query = { ...prev, ...patch };
+  useGithub.setState({ query });
   void loadList();
+  const root = projectRoot();
+  saveLastSearch(root, query);
+  clearTimeout(historyTimer);
+  const remember = () => {
+    if (projectRoot() === root && sameQuery(useGithub.getState().query, query))
+      rememberSearch(root, query, DEFAULT_QUERY);
+  };
+  if (opts.now) remember();
+  else
+    historyTimer = setTimeout(
+      remember,
+      prev.search.trim() === query.search.trim() ? FILTER_HISTORY_DELAY : TEXT_HISTORY_DELAY,
+    );
 }
 
 let detailSeq = 0;
@@ -182,16 +234,17 @@ export function cancelBusy() {
 
 const diffCache = new Map<string, PrDiffRevisions>();
 
-/** Another project: start over. */
-export function resetGithub() {
+/** Another project: start over, from the filter its list showed last. */
+export function resetGithub(root: string | null) {
   diffCache.clear();
+  clearTimeout(historyTimer);
   useGithub.setState({
     availability: null,
     list: [],
     selected: null,
     details: null,
     reviewComments: [],
-    query: DEFAULT_QUERY,
+    query: loadLastSearch(root, DEFAULT_QUERY) ?? DEFAULT_QUERY,
   });
 }
 

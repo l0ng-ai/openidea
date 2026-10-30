@@ -107,7 +107,7 @@ pub fn availability(root: &Path) -> GhAvailability {
     }
     let (repo, login) = std::thread::scope(|s| {
         let repo = s.spawn(|| {
-            let cmd = command(root, &["repo", "view", "--json", "nameWithOwner,url,defaultBranchRef"])?;
+            let cmd = command(root, &["repo", "view", "--json", REPO_FIELDS])?;
             process::run(cmd, QUICK, None)
         });
         let login = s.spawn(|| run(root, &["api", "user", "--jq", ".login"]));
@@ -276,6 +276,151 @@ pub fn add_comment(root: &Path, number: u32, body: &str) -> IdeResult<()> {
     }
     let n = number.to_string();
     run(root, &["pr", "comment", &n, "--body", body]).map(drop)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MergeMethod {
+    Merge,
+    Squash,
+    Rebase,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MergePullRequest {
+    pub method: MergeMethod,
+    /// Commit subject and body (merge / squash; ignored for rebase). Empty: GitHub's default.
+    pub subject: String,
+    pub body: String,
+    /// The head the user saw: the merge fails if the branch moved since.
+    pub head_oid: String,
+    /// Merge with administrator privileges although requirements are not met.
+    pub admin: bool,
+}
+
+/// `gh pr merge` arguments for `req`.
+pub fn merge_args(number: u32, req: &MergePullRequest) -> Vec<String> {
+    let mut args: Vec<String> = vec!["pr".into(), "merge".into(), number.to_string()];
+    args.push(
+        match req.method {
+            MergeMethod::Merge => "--merge",
+            MergeMethod::Squash => "--squash",
+            MergeMethod::Rebase => "--rebase",
+        }
+        .into(),
+    );
+    if req.method != MergeMethod::Rebase {
+        if !req.subject.trim().is_empty() {
+            args.push("--subject".into());
+            args.push(req.subject.trim().into());
+        }
+        if !req.body.trim().is_empty() {
+            args.push("--body".into());
+            args.push(req.body.trim_end().into());
+        }
+    }
+    if !req.head_oid.is_empty() {
+        args.push("--match-head-commit".into());
+        args.push(req.head_oid.clone());
+    }
+    if req.admin {
+        args.push("--admin".into());
+    }
+    args
+}
+
+pub fn merge(root: &Path, number: u32, req: &MergePullRequest) -> IdeResult<()> {
+    let args = merge_args(number, req);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run(root, &refs).map(drop)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PrStateChange {
+    Close,
+    Reopen,
+    /// Draft → ready for review.
+    Ready,
+}
+
+/// Closes, reopens or marks a draft ready for review (`gh pr close|reopen|ready`).
+pub fn change_state(root: &Path, number: u32, change: PrStateChange) -> IdeResult<()> {
+    let n = number.to_string();
+    let verb = match change {
+        PrStateChange::Close => "close",
+        PrStateChange::Reopen => "reopen",
+        PrStateChange::Ready => "ready",
+    };
+    run(root, &["pr", verb, &n]).map(drop)
+}
+
+/// Requests reviews from `logins` (`gh pr edit --add-reviewer`).
+pub fn add_reviewers(root: &Path, number: u32, logins: &[String]) -> IdeResult<()> {
+    let logins: Vec<&str> = logins.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    if logins.is_empty() {
+        return Err(IdeError::invalid("choose a reviewer"));
+    }
+    if let Some(bad) = logins.iter().find(|l| l.starts_with('-') || l.contains(',')) {
+        return Err(IdeError::invalid(format!("not a GitHub login: {bad}")));
+    }
+    let n = number.to_string();
+    let list = logins.join(",");
+    run(root, &["pr", "edit", &n, "--add-reviewer", &list]).map(drop)
+}
+
+/// Users a review can be requested from (the repository's assignable users).
+pub fn potential_reviewers(root: &Path) -> IdeResult<Vec<String>> {
+    let out = run(root, &["api", "--paginate", "repos/{owner}/{repo}/assignees?per_page=100", "--jq", ".[].login"])?;
+    Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect())
+}
+
+/// A GitHub API call through `gh api`: GraphQL (`endpoint` `graphql`, `body`
+/// `{"query", "variables"}`) or REST (`repos/{owner}/{repo}/…`, gh fills in the
+/// placeholders from the project's remote).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GhApiRequest {
+    /// `GET`, `POST`, `PATCH`, `PUT`, `DELETE`.
+    pub method: String,
+    pub endpoint: String,
+    /// JSON request body, sent on stdin.
+    pub body: Option<String>,
+    /// Follow REST `Link` pages; the result is the array of all pages (`--slurp`).
+    pub paginate: bool,
+}
+
+const METHODS: &[&str] = &["GET", "POST", "PATCH", "PUT", "DELETE"];
+
+/// `gh api` arguments for `req`.
+pub fn api_args(req: &GhApiRequest) -> IdeResult<Vec<String>> {
+    let method = req.method.to_ascii_uppercase();
+    if !METHODS.contains(&method.as_str()) {
+        return Err(IdeError::invalid(format!("unsupported HTTP method {}", req.method)));
+    }
+    let endpoint = req.endpoint.trim();
+    if endpoint.is_empty() || endpoint.starts_with('-') || endpoint.contains("://") {
+        return Err(IdeError::invalid(format!("not a GitHub API endpoint: {endpoint}")));
+    }
+    let mut args: Vec<String> = vec!["api".into(), "--method".into(), method, endpoint.into()];
+    if req.body.is_some() {
+        args.push("--input".into());
+        args.push("-".into());
+    }
+    if req.paginate {
+        args.push("--paginate".into());
+        args.push("--slurp".into());
+    }
+    Ok(args)
+}
+
+/// Runs `req`; returns the response body (JSON text, empty for `204 No Content`).
+pub fn api(root: &Path, req: &GhApiRequest) -> IdeResult<String> {
+    let args = api_args(req)?;
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = process::run_with_input(command(root, &refs)?, req.body.as_deref(), QUICK, None)?;
+    if out.success { Ok(out.stdout) } else { Err(failure(&out.stderr, &out.stdout)) }
 }
 
 /// Revisions to diff a pull request's files with, present in the local repository.

@@ -237,22 +237,30 @@
   color: var(--link-hover);
   text-decoration: underline;
 }
+.filesPane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.filesBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 8px 2px 12px;
+}
+.fileTree {
+  flex: 1;
+  min-height: 0;
+}
 .fileRow {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  min-height: var(--h-row);
-  padding: 0 4px;
-  border: none;
-  border-radius: var(--radius-row);
-  background: none;
-  color: var(--fg);
-  font: inherit;
-  text-align: left;
-}
-.fileRow:hover {
-  background: var(--bg-tree-hover);
+  min-width: 0;
+  padding-right: 8px;
 }
 .fileName {
   flex: none;
@@ -368,4 +376,41 @@
 .textarea:focus {
   outline: none;
   border-color: var(--focus-ring);
+}
+.statusBox {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.statusLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.status-success {
+  color: var(--success);
+}
+.status-failure {
+  color: var(--danger);
+}
+.status-pending,
+.status-warning {
+  color: var(--warning);
+}
+.statusActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+.reviewerList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow: auto;
 }

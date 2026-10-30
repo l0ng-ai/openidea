@@ -73,8 +73,9 @@ export function activate(): () => void {
       },
     ]),
     useProject.subscribe((s, prev) => {
-      if (s.project?.root !== prev.project?.root) resetGithub();
+      if (s.project?.root !== prev.project?.root) resetGithub(s.project?.root ?? null);
     }),
   ];
+  resetGithub(useProject.getState().project?.root ?? null);
   return () => disposers.reverse().forEach((d) => d());
 }

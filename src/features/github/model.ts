@@ -1,6 +1,7 @@
 /** Pure helpers of the Pull Requests view (labels, check summaries, review threads, diff inputs). */
 import type {
   ChangedFile,
+  GhRepo,
   PrCheck,
   PrDiffRevisions,
   PrFile,
@@ -176,4 +177,98 @@ export function fileDiffData(
     title: `#${n}: ${name}`,
     annotations: diffNotes(file.path, comments),
   };
+}
+
+const CAN_WRITE = new Set(["ADMIN", "MAINTAIN", "WRITE"]);
+const CAN_TRIAGE = new Set([...CAN_WRITE, "TRIAGE"]);
+/** Merge box states GitHub lets anyone with write access merge in (IDEA's `canMerge`). */
+const MERGEABLE_STATES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
+/** States an administrator can still merge in, bypassing the requirements. */
+const ADMIN_STATES = new Set(["BEHIND", "BLOCKED"]);
+
+/** Which pull request actions apply, as IDEA's review flow decides them. */
+export interface PrActions {
+  merge: boolean;
+  squash: boolean;
+  rebase: boolean;
+  /** Merging needs administrator privileges (`gh pr merge --admin`). */
+  asAdmin: boolean;
+  close: boolean;
+  reopen: boolean;
+  ready: boolean;
+  requestReview: boolean;
+  setMyselfAsReviewer: boolean;
+}
+
+/**
+ * Actions of `pr` for the signed-in `login` in `repo`. An unknown permission is not held
+ * against the user: gh reports what GitHub refuses.
+ */
+export function prActions(pr: PullRequestDetails, repo: GhRepo, login: string | null): PrActions {
+  const s = pr.summary;
+  const open = s.state === "open";
+  const perm = repo.viewerPermission;
+  const isAuthor = !!login && login === s.author;
+  const canManage = !perm || CAN_TRIAGE.has(perm) || isAuthor;
+  const canWrite = !perm || CAN_WRITE.has(perm);
+  const asAdmin = perm === "ADMIN" && ADMIN_STATES.has(pr.mergeStateStatus);
+  const canBeMerged = open && canWrite && (MERGEABLE_STATES.has(pr.mergeStateStatus) || asAdmin);
+  return {
+    merge: canBeMerged && repo.mergeCommitAllowed,
+    squash: canBeMerged && repo.squashMergeAllowed,
+    rebase: canBeMerged && repo.rebaseMergeAllowed && pr.mergeable === "MERGEABLE",
+    asAdmin,
+    close: open && canManage,
+    reopen: s.state === "closed" && canManage,
+    ready: open && s.isDraft && canManage,
+    requestReview: open && canManage,
+    setMyselfAsReviewer: open && !!login && !isAuthor && !pr.reviewers.some((r) => r.login === login),
+  };
+}
+
+/** Default merge commit message: GitHub's subject, IDEA's body (the title; the commit list when squashing). */
+export function mergeMessage(pr: PullRequestDetails, squash: boolean): { subject: string; body: string } {
+  const s = pr.summary;
+  if (squash)
+    return {
+      subject: `${s.title} (#${s.number})`,
+      body: pr.commits.map((c) => `* ${c.headline}`).join("\n\n"),
+    };
+  return { subject: `Merge pull request #${s.number} from ${s.headRef}`, body: s.title };
+}
+
+export interface StatusLine {
+  status: "success" | "failure" | "pending" | "warning";
+  text: string;
+}
+
+/** The merge box of the details: checks, conflicts and reviews, as IDEA shows them under the changes. */
+export function statusLines(pr: PullRequestDetails): StatusLine[] {
+  const lines: StatusLine[] = [];
+  if (pr.summary.state !== "open") return lines;
+  if (pr.summary.isDraft) lines.push({ status: "warning", text: tx("This pull request is still a draft") });
+  const c = checksSummary(pr.checks);
+  if (c.failed) lines.push({ status: "failure", text: checksText(c) });
+  else if (c.pending) lines.push({ status: "pending", text: checksText(c) });
+  else if (c.passed) lines.push({ status: "success", text: tx("All checks have passed") });
+  if (pr.mergeable === "CONFLICTING")
+    lines.push({ status: "failure", text: tx("This branch has conflicts that must be resolved") });
+  else if (pr.mergeStateStatus === "BEHIND")
+    lines.push({ status: "warning", text: tx("This branch is out of date with the base branch") });
+  const by = (state: string) =>
+    pr.reviewers
+      .filter((r) => r.state === state)
+      .map((r) => r.login)
+      .join(", ");
+  const changes = by("CHANGES_REQUESTED");
+  if (changes) lines.push({ status: "failure", text: tx`Changes requested by ${changes}` });
+  const approved = by("APPROVED");
+  if (approved) lines.push({ status: "success", text: tx`Approved by ${approved}` });
+  const waiting = by("REQUESTED");
+  if (waiting) lines.push({ status: "warning", text: tx`Waiting for review from ${waiting}` });
+  if (!pr.reviewers.length && pr.summary.reviewDecision === "REVIEW_REQUIRED")
+    lines.push({ status: "warning", text: tx("Review required") });
+  if (pr.mergeStateStatus === "BLOCKED" && !changes && !c.failed)
+    lines.push({ status: "warning", text: tx("Merging is blocked") });
+  return lines;
 }

@@ -1,5 +1,5 @@
-/** Create Pull Request, Submit Review and Checkout-by-number dialogs, rendered by one overlay. */
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+/** Create Pull Request, Submit Review, Merge, Request Review and Checkout-by-number dialogs, rendered by one overlay. */
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import type { ReviewEvent } from "@/platform/ipc";
 import { call, commands } from "@/platform/ipc";
@@ -239,6 +239,134 @@ function NumberDialog(props: { title: string; onDone: (v: number | null) => void
           onChange={(e) => setValue(e.target.value)}
         />
       </form>
+    </Dialog>
+  );
+}
+
+/** IDEA's merge commit message dialog: the message to merge (or squash and merge) with. */
+export function mergeDialog(opts: { title: string; number: number; subject: string; body: string; ok: string }) {
+  return open<{ subject: string; body: string }>((done) => <MergeDialog {...opts} onDone={done} />);
+}
+
+function MergeDialog(props: {
+  title: string;
+  number: number;
+  subject: string;
+  body: string;
+  ok: string;
+  onDone: (v: { subject: string; body: string } | null) => void;
+}) {
+  const [subject, setSubject] = useState(props.subject);
+  const [body, setBody] = useState(props.body);
+  return (
+    <Dialog
+      open
+      title={props.title}
+      onClose={() => props.onDone(null)}
+      width={560}
+      buttons={[
+        { label: props.ok, role: "default", onClick: () => props.onDone({ subject, body }) },
+        { label: "Cancel", role: "cancel" },
+      ]}
+    >
+      <div className={styles.form}>
+        <label className={styles.fieldLabel}>{tx`Commit message for #${props.number}:`}</label>
+        <Input
+          data-autofocus
+          aria-label="Commit subject"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+        />
+        <textarea
+          aria-label={tx("Commit description")}
+          className={styles.textarea}
+          rows={8}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+        />
+      </div>
+    </Dialog>
+  );
+}
+
+/** Asks whom to request a review from; resolves with the chosen logins. */
+export function reviewersDialog(opts: { number: number; load: () => Promise<string[]>; exclude: readonly string[] }) {
+  return open<string[]>((done) => <ReviewersDialog {...opts} onDone={done} />);
+}
+
+function ReviewersDialog(props: {
+  number: number;
+  load: () => Promise<string[]>;
+  exclude: readonly string[];
+  onDone: (v: string[] | null) => void;
+}) {
+  const [users, setUsers] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set());
+  const { load, exclude } = props;
+  useEffect(() => {
+    let alive = true;
+    load()
+      .then((all) => alive && setUsers(all.filter((u) => !exclude.includes(u))))
+      .catch((e: unknown) => alive && setError(e instanceof Error ? e.message : String(e)));
+    return () => {
+      alive = false;
+    };
+  }, [load, exclude]);
+  const shown = useMemo(() => {
+    const f = filter.trim().toLowerCase();
+    return (users ?? []).filter((u) => !f || u.toLowerCase().includes(f));
+  }, [users, filter]);
+  const toggle = (u: string, on: boolean) =>
+    setChosen((cur) => {
+      const next = new Set(cur);
+      if (on) next.add(u);
+      else next.delete(u);
+      return next;
+    });
+  return (
+    <Dialog
+      open
+      title={tx`Request Review on #${props.number}`}
+      onClose={() => props.onDone(null)}
+      width={400}
+      buttons={[
+        {
+          label: "Request Review",
+          role: "default",
+          disabled: chosen.size === 0,
+          onClick: () => props.onDone([...chosen]),
+        },
+        { label: "Cancel", role: "cancel" },
+      ]}
+    >
+      <div className={styles.form}>
+        <Input
+          data-autofocus
+          aria-label="Filter reviewers"
+          placeholder="Filter"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <div className={styles.reviewerList} role="group" aria-label={tx("Reviewers")}>
+          {error ? (
+            <div className={styles.error}>{error}</div>
+          ) : users === null ? (
+            <div className={styles.dim}>
+              <T>Loading…</T>
+            </div>
+          ) : shown.length === 0 ? (
+            <div className={styles.dim}>
+              <T>No users to request a review from</T>
+            </div>
+          ) : (
+            shown.map((u) => (
+              <Checkbox key={u} checked={chosen.has(u)} onChange={(on) => toggle(u, on)} label={<span>{u}</span>} />
+            ))
+          )}
+        </div>
+      </div>
     </Dialog>
   );
 }

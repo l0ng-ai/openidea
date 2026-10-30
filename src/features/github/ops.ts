@@ -1,10 +1,12 @@
 /** Pull request operations shared by the view and the `github.*` actions. */
-import type { PrFile, PullRequestDetails, ReviewEvent } from "@/platform/ipc";
+import type { MergeMethod, PrFile, PrStateChange, PullRequestDetails, ReviewEvent } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
 import { notifications, toolWindowService } from "@/workbench/contributions";
-import { createPullRequestDialog, numberDialog, reviewDialog } from "./dialogs";
-import { fileDiffData } from "./model";
+import { confirm } from "@/workbench/messages";
+import { createPullRequestDialog, mergeDialog, numberDialog, reviewDialog, reviewersDialog } from "./dialogs";
+import { fileDiffData, mergeMessage, prActions } from "./model";
 import {
   diffRevisions,
   errorMessage,
@@ -177,4 +179,104 @@ export async function openInBrowser() {
   const { details } = useGithub.getState();
   const url = details?.summary.url ?? readyRepo()?.url;
   if (url) await openUrl(url);
+}
+
+function signedIn(): string | null {
+  const a = useGithub.getState().availability;
+  return a?.kind === "ready" ? (a.login ?? null) : null;
+}
+
+/** What the details' actions may do with `pr` right now. */
+function actionsFor(pr: PullRequestDetails) {
+  const repo = readyRepo();
+  return repo ? prActions(pr, repo, signedIn()) : null;
+}
+
+/** Runs a pull request change, then shows its outcome and reloads the list and the details. */
+async function change(number: number, failed: string, done: string, run: () => Promise<unknown>) {
+  try {
+    await run();
+  } catch (e) {
+    notifications().notify({ group: "vcs", level: "error", title: failed, body: errorMessage(e), key: "github-op" });
+    return;
+  }
+  notifications().notify({ group: "vcs", level: "info", title: done, key: "github-op" });
+  await Promise.all([loadList(), loadDetails(number)]);
+}
+
+const MERGE_TITLE: Record<MergeMethod, string> = {
+  merge: "Merge Pull Request",
+  squash: "Squash and Merge Pull Request",
+  rebase: "Rebase and Merge Pull Request",
+};
+
+/** Merge…, Squash and Merge… (asking for the commit message) and Rebase (after confirming). */
+export async function mergePullRequest(pr: PullRequestDetails, method: MergeMethod) {
+  const s = pr.summary;
+  let subject = "";
+  let body = "";
+  if (method === "rebase") {
+    const ok = await confirm({
+      title: MERGE_TITLE.rebase,
+      message: tx`Rebase the commits of #${s.number} onto ${s.baseRef}?`,
+      ok: "Rebase and Merge",
+    });
+    if (!ok) return;
+  } else {
+    const message = await mergeDialog({
+      title: MERGE_TITLE[method],
+      number: s.number,
+      ok: method === "squash" ? "Squash and Merge" : "Merge",
+      ...mergeMessage(pr, method === "squash"),
+    });
+    if (!message) return;
+    ({ subject, body } = message);
+  }
+  const asAdmin = actionsFor(pr)?.asAdmin ?? false;
+  await change(s.number, tx`Could not merge #${s.number}`, tx`Pull request #${s.number} merged`, () =>
+    call(commands.ghPrMerge(s.number, { method, subject, body, headOid: pr.headOid, admin: asAdmin })),
+  );
+}
+
+/** Close Pull Request (after confirming), Reopen Pull Request, Ready for Review. */
+export async function changePullRequestState(pr: PullRequestDetails, state: PrStateChange) {
+  const number = pr.summary.number;
+  if (state === "close") {
+    const ok = await confirm({
+      title: "Close Pull Request",
+      message: tx`Close #${number} without merging it?`,
+      ok: "Close Pull Request",
+    });
+    if (!ok) return;
+  }
+  const done =
+    state === "close"
+      ? tx`Pull request #${number} closed`
+      : state === "reopen"
+        ? tx`Pull request #${number} reopened`
+        : tx`Pull request #${number} is ready for review`;
+  await change(number, tx`Could not update #${number}`, done, () => call(commands.ghPrChangeState(number, state)));
+}
+
+/** Request Review…: picks reviewers among the repository's assignable users. */
+export async function requestReview(pr: PullRequestDetails) {
+  const number = pr.summary.number;
+  const logins = await reviewersDialog({
+    number,
+    load: () => call(commands.ghPotentialReviewers()),
+    exclude: [pr.summary.author, ...pr.reviewers.filter((r) => r.state === "REQUESTED").map((r) => r.login)],
+  });
+  if (!logins?.length) return;
+  await change(number, tx`Could not request a review on #${number}`, tx`Review requested on #${number}`, () =>
+    call(commands.ghPrAddReviewers(number, logins)),
+  );
+}
+
+export async function setMyselfAsReviewer(pr: PullRequestDetails) {
+  const login = signedIn();
+  if (!login) return;
+  const number = pr.summary.number;
+  await change(number, tx`Could not request a review on #${number}`, tx`You are a reviewer of #${number}`, () =>
+    call(commands.ghPrAddReviewers(number, [login])),
+  );
 }

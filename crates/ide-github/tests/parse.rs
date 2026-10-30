@@ -22,6 +22,7 @@ fn pr_view() {
     assert_eq!(pr.summary.number, 14768);
     assert_eq!(pr.summary.head_ref, "babakks/refresh-token-bump-deps");
     assert_eq!(pr.head_oid, "6ec1ba54542baca6cc5932582634104c83f36a28");
+    assert_eq!(pr.merge_state_status, "UNKNOWN");
     assert_eq!(pr.files.len(), 2);
     assert_eq!(pr.files[0].change_type, "MODIFIED");
     assert_eq!(pr.commits[0].headline, "chore(deps): bump github.com/cli/oauth to v1.3.0");
@@ -69,6 +70,16 @@ fn repo_view() {
         .unwrap();
     assert_eq!(r.name_with_owner, "l0ng-ai/openidea");
     assert_eq!(r.default_branch.as_deref(), Some("main"));
+    assert!(r.merge_commit_allowed && r.squash_merge_allowed && r.rebase_merge_allowed, "unknown: allowed");
+    assert_eq!(r.viewer_permission, "");
+
+    let r = parse_repo(
+        r#"{"mergeCommitAllowed":true,"nameWithOwner":"o/r","url":"","rebaseMergeAllowed":false,"squashMergeAllowed":false,"viewerPermission":"WRITE"}"#,
+    )
+    .unwrap();
+    assert!(r.merge_commit_allowed);
+    assert!(!r.squash_merge_allowed && !r.rebase_merge_allowed);
+    assert_eq!(r.viewer_permission, "WRITE");
 }
 
 #[test]
@@ -86,4 +97,54 @@ fn list_arguments() {
     assert!(joined.starts_with("pr list --json number,title"));
     assert!(joined.contains("--limit 500 --state merged --author @me"));
     assert_eq!(args.last().map(String::as_str), Some("review-requested:@me fix login"));
+}
+
+#[test]
+fn merge_arguments() {
+    let mut req = MergePullRequest {
+        method: MergeMethod::Squash,
+        subject: " Fix login (#7) ".into(),
+        body: "* one\n\n* two\n".into(),
+        head_oid: "abc123".into(),
+        admin: false,
+    };
+    assert_eq!(
+        merge_args(7, &req),
+        [
+            "pr",
+            "merge",
+            "7",
+            "--squash",
+            "--subject",
+            "Fix login (#7)",
+            "--body",
+            "* one\n\n* two",
+            "--match-head-commit",
+            "abc123"
+        ]
+    );
+    req.method = MergeMethod::Rebase;
+    req.admin = true;
+    assert_eq!(merge_args(7, &req), ["pr", "merge", "7", "--rebase", "--match-head-commit", "abc123", "--admin"]);
+}
+
+#[test]
+fn api_arguments() {
+    let req =
+        GhApiRequest { method: "post".into(), endpoint: "graphql".into(), body: Some("{}".into()), paginate: false };
+    assert_eq!(api_args(&req).unwrap(), ["api", "--method", "POST", "graphql", "--input", "-"]);
+    let req = GhApiRequest {
+        method: "GET".into(),
+        endpoint: "repos/{owner}/{repo}/labels".into(),
+        body: None,
+        paginate: true,
+    };
+    assert_eq!(
+        api_args(&req).unwrap(),
+        ["api", "--method", "GET", "repos/{owner}/{repo}/labels", "--paginate", "--slurp"]
+    );
+    for bad in ["--hostname", "https://evil.example/x", ""] {
+        assert!(api_args(&GhApiRequest { endpoint: bad.into(), ..req.clone() }).is_err(), "{bad}");
+    }
+    assert!(api_args(&GhApiRequest { method: "TRACE".into(), ..req }).is_err());
 }

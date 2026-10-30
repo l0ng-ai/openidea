@@ -1,7 +1,16 @@
 /** The Pull Requests tool window: filterable list on the left, the selected pull request on the right. */
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
-import type { GhAvailability, PrCheck, PrStateFilter, PullRequestDetails, PullRequestSummary } from "@/platform/ipc";
+import type {
+  GhAvailability,
+  PrCheck,
+  PrFile,
+  PrStateFilter,
+  PullRequestDetails,
+  PullRequestSummary,
+} from "@/platform/ipc";
+import { buildFileTree, dirKeys, type FileTreeNode } from "@/features/vcs/fileTree";
+import { fileCount } from "@/features/vcs/model";
 import { executeAction } from "@/platform/actions";
 import { useMarkupHtml } from "@/editor/lsp/markdown";
 import {
@@ -19,6 +28,8 @@ import {
   SplitPanel,
   Spinner,
   Tabs,
+  Tree,
+  fileIconName,
   showContextMenu,
   type MenuItem,
   T,
@@ -26,14 +37,40 @@ import {
 import {
   checksSummary,
   checksText,
+  prActions,
   relativeTime,
+  statusLines,
+  type StatusLine,
   reviewDecisionLabel,
   reviewStateLabel,
   reviewThreads,
   stateLabel,
 } from "./model";
-import { addComment, checkoutPullRequest, openCommentLocation, openFileDiff, openUrl, submitReview } from "./ops";
-import { cancelBusy, loadDetails, refreshAll, select, setQuery, useGithub, type DetailTab } from "./store";
+import {
+  addComment,
+  changePullRequestState,
+  checkoutPullRequest,
+  mergePullRequest,
+  openCommentLocation,
+  openFileDiff,
+  openUrl,
+  requestReview,
+  setMyselfAsReviewer,
+  submitReview,
+} from "./ops";
+import {
+  cancelBusy,
+  DEFAULT_QUERY,
+  loadDetails,
+  refreshAll,
+  select,
+  setGroupFilesByDirectory,
+  setQuery,
+  useGithub,
+  type DetailTab,
+} from "./store";
+import { clearSearchHistory, loadSearchHistory, queryText } from "./searchHistory";
+import { useProject } from "@/platform/project";
 import styles from "./Github.module.css";
 import { t, tx } from "@/platform/i18n";
 
@@ -118,20 +155,47 @@ function Filters() {
   const query = useGithub((s) => s.query);
   const loading = useGithub((s) => s.listLoading);
   const [search, setSearch] = useState(query.search);
+  const field = useRef<HTMLDivElement>(null);
+  // The query can change from outside the field: a picked history entry, another project.
+  const [shown, setShown] = useState(query.search);
+  if (shown !== query.search) {
+    setShown(query.search);
+    setSearch(query.search);
+  }
   useEffect(() => {
     if (search === useGithub.getState().query.search) return;
     const t = setTimeout(() => setQuery({ search }), 400);
     return () => clearTimeout(t);
   }, [search]);
+  const showHistory = () => {
+    const root = useProject.getState().project?.root ?? null;
+    const history = loadSearchHistory(root, DEFAULT_QUERY);
+    const r = field.current?.getBoundingClientRect();
+    const items: MenuItem[] = history.length
+      ? [
+          { kind: "header", label: "Recent Searches" },
+          ...history.map((q) => ({ label: queryText(q), verbatim: true, run: () => setQuery(q, { now: true }) })),
+          { kind: "separator" },
+          { label: "Clear Search History", run: () => clearSearchHistory(root) },
+        ]
+      : [{ label: "No recent searches", disabled: true }];
+    showContextMenu({ x: r?.left ?? 0, y: (r?.bottom ?? 0) + 2 }, items);
+  };
   return (
     <div className={styles.filters}>
-      <SearchField
-        value={search}
-        onChange={setSearch}
-        placeholder="Search (GitHub syntax)"
-        aria-label="Search pull requests"
-        className={styles.search}
-      />
+      <div ref={field}>
+        <SearchField
+          value={search}
+          onChange={setSearch}
+          onHistory={showHistory}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") setQuery({ search }, { now: true });
+          }}
+          placeholder="Search (GitHub syntax)"
+          aria-label="Search pull requests"
+          className={styles.search}
+        />
+      </div>
       <div className={styles.filterRow}>
         <Select
           value={query.state}
@@ -310,36 +374,97 @@ function Overview({ pr }: { pr: PullRequestDetails }) {
   );
 }
 
+const NONE: ReadonlySet<string> = new Set();
+const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+
+function FileRow({ node, flat, comments }: { node: FileTreeNode<PrFile>; flat: boolean; comments: number }) {
+  if (!node.file)
+    return (
+      <span className={styles.fileRow}>
+        <Icon name="folder" size={14} />
+        <span className={styles.fileName}>{node.name}</span>
+        <span className={styles.dim}>{fileCount(node.count)}</span>
+      </span>
+    );
+  const f = node.file;
+  const slash = f.path.lastIndexOf("/");
+  return (
+    <span className={styles.fileRow} title={f.path}>
+      <Icon name={fileIconName(node.name)} size={14} />
+      <span className={clsx(styles.fileName, styles[`change-${f.changeType}`])}>{node.name}</span>
+      {flat && slash > 0 && <span className={clsx(styles.dim, styles.ellipsis)}>{f.path.slice(0, slash)}</span>}
+      <span className={styles.flex} />
+      {comments ? <span className={styles.dim}>{tx`${comments} comments`}</span> : null}
+      <span className={styles.added}>+{f.additions}</span>
+      <span className={styles.deleted}>−{f.deletions}</span>
+    </span>
+  );
+}
+
 function Files({ pr }: { pr: PullRequestDetails }) {
   const comments = useGithub((s) => s.reviewComments);
+  const grouped = useGithub((s) => s.groupFilesByDirectory);
   const counts = useMemo(() => {
     const m = new Map<string, number>();
     for (const c of comments) m.set(c.path, (m.get(c.path) ?? 0) + 1);
     return m;
   }, [comments]);
+  const tree = useMemo(
+    () =>
+      grouped
+        ? buildFileTree(pr.files, (f) => f.path)
+        : pr.files.map((f) => ({ key: `f:${f.path}`, name: fileName(f.path), file: f, children: [], count: 1 })),
+    [pr.files, grouped],
+  );
+  const allDirs = useMemo(() => dirKeys(tree), [tree]);
+  // Everything starts expanded, as in IDEA; a new pull request starts over.
+  const [collapsed, setCollapsed] = useState<{ pr: number; keys: ReadonlySet<string> }>({ pr: 0, keys: new Set() });
+  const closed = collapsed.pr === pr.summary.number ? collapsed.keys : NONE;
+  const expanded = useMemo(() => new Set(allDirs.filter((k) => !closed.has(k))), [allDirs, closed]);
+  const setExpanded = (next: ReadonlySet<string>) =>
+    setCollapsed({ pr: pr.summary.number, keys: new Set(allDirs.filter((k) => !next.has(k))) });
+  const viewOptions = (e: MouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    showContextMenu({ x: r.left, y: r.bottom + 2 }, [
+      { kind: "header", label: "Group By" },
+      { label: "Directory", checked: grouped, run: () => setGroupFilesByDirectory(!grouped) },
+    ]);
+  };
   return (
-    <div className={styles.scroll} role="list" aria-label={tx("Changed files")}>
-      {pr.files.map((f) => {
-        const slash = f.path.lastIndexOf("/");
-        return (
-          <button
-            key={f.path}
-            type="button"
-            role="listitem"
-            className={styles.fileRow}
-            onClick={(e) => e.detail <= 1 && void openFileDiff(pr, f)}
-            title={f.path}
-          >
-            <Icon name="diff" size={14} className={styles[`change-${f.changeType}`]} />
-            <span className={clsx(styles.fileName, styles[`change-${f.changeType}`])}>{f.path.slice(slash + 1)}</span>
-            <span className={clsx(styles.dim, styles.ellipsis)}>{slash > 0 ? f.path.slice(0, slash) : ""}</span>
-            <span className={styles.flex} />
-            {counts.get(f.path) ? <span className={styles.dim}>{tx`${counts.get(f.path)} comments`}</span> : null}
-            <span className={styles.added}>+{f.additions}</span>
-            <span className={styles.deleted}>−{f.deletions}</span>
-          </button>
-        );
-      })}
+    <div className={styles.filesPane}>
+      <div className={styles.filesBar} role="toolbar" aria-label={tx("Changed files")}>
+        <span className={styles.dim}>{fileCount(pr.files.length)}</span>
+        <span className={styles.flex} />
+        <IconButton icon="eye" title="View Options" size="small" aria-haspopup="menu" onClick={viewOptions} />
+        <IconButton
+          icon="expand-all"
+          title="Expand All"
+          size="small"
+          disabled={!allDirs.length}
+          onClick={() => setExpanded(new Set(allDirs))}
+        />
+        <IconButton
+          icon="collapse-all"
+          title="Collapse All"
+          size="small"
+          disabled={!allDirs.length}
+          onClick={() => setExpanded(new Set())}
+        />
+      </div>
+      <Tree<FileTreeNode<PrFile>>
+        roots={tree}
+        getKey={(n) => n.key}
+        getLabel={(n) => n.name}
+        getChildren={(n) => (n.file ? undefined : n.children)}
+        isExpandable={(n) => !n.file}
+        expanded={expanded}
+        onExpandedChange={setExpanded}
+        renderNode={(n) => <FileRow node={n} flat={!grouped} comments={n.file ? (counts.get(n.file.path) ?? 0) : 0} />}
+        onActivate={(n) => n.file && void openFileDiff(pr, n.file)}
+        speedSearch
+        aria-label="Changed files"
+        className={styles.fileTree}
+      />
     </div>
   );
 }
@@ -452,6 +577,67 @@ function Conversation({ pr }: { pr: PullRequestDetails }) {
   );
 }
 
+const STATUS_ICON: Record<StatusLine["status"], string> = {
+  success: "success",
+  failure: "error",
+  pending: "clock",
+  warning: "warning",
+};
+
+/** IDEA's merge box under the changes: checks, conflicts and reviews, then the review and merge actions. */
+function StatusBox({ pr }: { pr: PullRequestDetails }) {
+  const availability = useGithub((s) => s.availability);
+  const actions = availability?.kind === "ready" ? prActions(pr, availability.repo, availability.login ?? null) : null;
+  const lines = statusLines(pr);
+  if (!actions) return null;
+  const merges: MenuItem[] = [
+    { label: "Merge…", disabled: !actions.merge, run: () => void mergePullRequest(pr, "merge") },
+    { label: "Squash and Merge…", disabled: !actions.squash, run: () => void mergePullRequest(pr, "squash") },
+    { label: "Rebase", disabled: !actions.rebase, run: () => void mergePullRequest(pr, "rebase") },
+  ];
+  const items: MenuItem[] = [
+    ...(actions.requestReview ? [{ label: "Request Review…", run: () => void requestReview(pr) }] : []),
+    ...(pr.summary.state === "open" ? [{ label: "Merge Review", submenu: merges }] : []),
+    ...(actions.ready ? [{ label: "Ready for Review", run: () => void changePullRequestState(pr, "ready") }] : []),
+    ...(actions.close
+      ? [{ label: "Close Pull Request", danger: true, run: () => void changePullRequestState(pr, "close") }]
+      : []),
+    ...(actions.reopen ? [{ label: "Reopen Pull Request", run: () => void changePullRequestState(pr, "reopen") }] : []),
+  ];
+  const primary = actions.setMyselfAsReviewer
+    ? { label: "Set Myself as Reviewer", run: () => void setMyselfAsReviewer(pr) }
+    : actions.requestReview
+      ? { label: "Request Review…", run: () => void requestReview(pr) }
+      : null;
+  if (!lines.length && !items.length && !primary) return null;
+  const more = (e: MouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    showContextMenu({ x: r.left, y: r.bottom + 2 }, items);
+  };
+  return (
+    <section className={styles.statusBox} aria-label={tx("Merge status")}>
+      {lines.map((l, i) => (
+        <div key={i} className={styles.statusLine}>
+          <Icon name={STATUS_ICON[l.status]} size={14} className={styles[`status-${l.status}`]} />
+          <span>{l.text}</span>
+        </div>
+      ))}
+      {(primary || items.length > 0) && (
+        <div className={styles.statusActions}>
+          {primary && (
+            <Button size="small" onClick={primary.run}>
+              {tx(primary.label)}
+            </Button>
+          )}
+          {items.length > 0 && (
+            <IconButton icon="more" size="small" title="More Actions" aria-haspopup="menu" onClick={more} />
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Details() {
   const pr = useGithub((s) => s.details);
   const loading = useGithub((s) => s.detailsLoading);
@@ -529,6 +715,7 @@ function Details() {
       {tab === "files" && <Files pr={pr} />}
       {tab === "commits" && <Commits pr={pr} />}
       {tab === "conversation" && <Conversation pr={pr} />}
+      <StatusBox pr={pr} />
     </div>
   );
 }
