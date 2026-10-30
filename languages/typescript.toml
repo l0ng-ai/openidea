@@ -21,7 +21,7 @@ fallback = true
 command = "typescript-language-server"
 args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
-install-hint = "npm i -g typescript@\"<7\" typescript-language-server"
+install-hint = "npm i -g typescript@6 typescript-language-server"
 
 # Angular projects only: templates inline in components (`template: ...`),
 # and their usages and renames in templates. Last: TypeScript's own hover,

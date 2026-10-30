@@ -100,7 +100,7 @@ struct Manifest {
 
 const MANIFEST: &str = ".openidea-tool.json";
 
-/// `typescript@<7` → `typescript`, `@vue/language-server` unchanged.
+/// `typescript@6` → `typescript`, `@vue/language-server` unchanged.
 fn npm_name(spec: &str) -> &str {
     match spec[1..].find('@') {
         Some(i) => &spec[..i + 1],

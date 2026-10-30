@@ -38,7 +38,7 @@ pub(crate) fn tsserver_plugin(package: &Path) -> serde_json::Value {
 
 pub(crate) fn missing_typescript_message() -> String {
     "Vue Language Server needs TypeScript 5 or 6 (TypeScript 7 has no language service API). \
-     Reinstall it in Settings › Languages & Frameworks › Language Servers, add typescript@\"<7\" \
+     Reinstall it in Settings › Languages & Frameworks › Language Servers, add typescript@6 \
      to the project, or pick a TypeScript version in Settings › Languages & Frameworks › TypeScript."
         .to_owned()
 }
