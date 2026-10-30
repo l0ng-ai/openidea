@@ -65,8 +65,8 @@ fn everything_missing_on_an_empty_system() {
     let ra = find(&list, "rust-analyzer");
     assert_eq!(ra.status, ToolStatus::Missing);
     assert_eq!(ra.languages, vec!["Rust".to_string()]);
-    assert!(!ra.can_install, "rustup is not on the fake PATH");
-    assert!(ra.unavailable_reason.as_deref().unwrap().contains("rustup"));
+    assert!(!ra.can_install, "curl is not on the fake PATH");
+    assert!(ra.unavailable_reason.as_deref().unwrap().contains("curl"));
     let vtsls = find(&list, "vtsls");
     assert!(vtsls.languages.iter().any(|l| l == "TypeScript"));
     assert!(vtsls.unavailable_reason.as_deref().unwrap().contains("npm"));
@@ -551,4 +551,75 @@ fn the_installing_request_can_still_cancel_its_shared_install() {
     owner.cancel();
     assert!(slot.cancel.is_cancelled());
     release_install_slot("taplo", &slot);
+}
+
+#[cfg(unix)]
+#[test]
+fn rust_analyzer_selects_openvsx_without_rustup() {
+    let env = Env::new();
+    env.script(&env.sys, "curl", "exit 0");
+    let tools = env.tools();
+    let spec = registry::find("rust-analyzer").unwrap();
+    assert!(matches!(
+        tools.install_method(spec),
+        Method::Release { source: ReleaseSource::OpenVsx { namespace: "rust-lang", extension: "rust-analyzer" }, .. }
+    ));
+    let info = tools.info("rust-analyzer", &langs()).unwrap();
+    assert_eq!(info.status, ToolStatus::Missing);
+    assert_eq!(info.install_method.as_deref(), Some("Open VSX"));
+    assert!(info.can_install);
+    assert!(info.unavailable_reason.is_none());
+    assert!(bin_dirs_in(&env.root, Platform::current()).contains(&env.root.join("rust-analyzer/bin")));
+}
+
+#[cfg(unix)]
+static RUST_ANALYZER_INSTALL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+#[cfg(unix)]
+#[test]
+fn rust_analyzer_prefers_rustup_and_installs_component() {
+    let _guard = RUST_ANALYZER_INSTALL.lock();
+    let env = Env::new();
+    env.script(&env.sys, "rustup", "test \"$*\" = 'component add rust-analyzer'");
+    env.script(&env.sys, "rust-analyzer", "echo 'rust-analyzer 1.0.0'");
+    let tools = env.tools();
+    assert!(matches!(
+        tools.install_method(registry::find("rust-analyzer").unwrap()),
+        Method::Rustup { component: "rust-analyzer" }
+    ));
+    let info = tools.info("rust-analyzer", &langs()).unwrap();
+    assert_eq!(info.install_method.as_deref(), Some("rustup"));
+    assert!(info.can_install, "rustup does not require curl");
+    let mut lines = Vec::new();
+    let emit = parking_lot::Mutex::new(&mut lines);
+    tools
+        .install("rust-analyzer", &langs(), &CancellationToken::new(), &|event| {
+            if let InstallEvent::Line { text } = event {
+                emit.lock().push(text);
+            }
+        })
+        .unwrap();
+    assert!(lines.iter().any(|line| line.contains("via rustup")));
+}
+
+#[cfg(unix)]
+#[test]
+fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
+    let _guard = RUST_ANALYZER_INSTALL.lock();
+    let env = Env::new();
+    let bin = env.root.join("rust-analyzer/bin");
+    env.script(&bin, "rust-analyzer", "echo 'rust-analyzer 1.0.0'");
+    for with_rustup in [false, true] {
+        if with_rustup {
+            env.script(&env.sys, "rustup", "exit 1");
+            env.script(&env.sys, "rust-analyzer", "exit 1");
+        }
+        let info = env.tools().info("rust-analyzer", &langs()).unwrap();
+        assert_eq!(info.status, ToolStatus::Installed);
+        assert_eq!(info.path.as_deref(), Some(bin.join("rust-analyzer").as_path()));
+        assert_eq!(info.install_method.as_deref(), Some(if with_rustup { "rustup" } else { "Open VSX" }));
+        assert!(info.can_uninstall);
+    }
+    env.tools().uninstall("rust-analyzer", &langs()).unwrap();
+    assert!(!env.root.join("rust-analyzer").exists());
 }

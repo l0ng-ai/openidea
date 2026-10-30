@@ -177,6 +177,8 @@ pub fn jdtls_download(version: &str, latest_txt: &str) -> IdeResult<Download> {
 #[derive(Deserialize)]
 struct VsxExtension {
     version: String,
+    #[serde(default)]
+    downloads: std::collections::BTreeMap<String, String>,
     files: VsxFiles,
 }
 
@@ -191,7 +193,22 @@ pub fn openvsx_latest_url(namespace: &str, extension: &str) -> String {
     format!("https://open-vsx.org/api/{namespace}/{extension}/latest")
 }
 
-/// The `.vsix` of an Open VSX `…/latest` response (platform-independent extensions only).
+/// Select platform metadata when the universal package does not match the asset rules.
+pub fn openvsx_platform_url(json: &str, rules: &[AssetRule], platform: Platform) -> IdeResult<Option<String>> {
+    let ext: VsxExtension =
+        serde_json::from_str(json).map_err(|e| proto(format!("unexpected Open VSX response: {e}")))?;
+    if select_asset(&[file_name(&ext.files.download)], rules, platform).is_some() {
+        return Ok(None);
+    }
+    let names: Vec<&str> = ext.downloads.values().map(|url| file_name(url)).collect();
+    let name = select_asset(&names, rules, platform)
+        .ok_or_else(|| IdeError::unavailable("No Open VSX package for this platform"))?;
+    let url = ext.downloads.values().find(|url| file_name(url) == name).expect("selected download");
+    let (metadata, _) = url.rsplit_once("/file/").ok_or_else(|| proto("unexpected Open VSX download URL"))?;
+    Ok(Some(metadata.to_string()))
+}
+
+/// The `.vsix` of an Open VSX `…/latest` response.
 pub fn openvsx_pick(json: &str, rules: &[AssetRule], platform: Platform) -> IdeResult<Download> {
     let ext: VsxExtension =
         serde_json::from_str(json).map_err(|e| proto(format!("unexpected Open VSX response: {e}")))?;
@@ -353,6 +370,56 @@ mod tests {
         assert!(d.checksum_url.unwrap().ends_with(".sha256"));
         let other = json.replace("vscjava.vscode-java-debug-0.60.0.vsix", "something-else.zip");
         assert!(openvsx_pick(&other, rules, LINUX).is_err());
+    }
+
+    #[test]
+    fn openvsx_rust_analyzer_platform_packages() {
+        use crate::platform::{Arch, Os};
+        let crate::registry::Method::Release { assets, .. } = find("rust-analyzer").unwrap().fallback.unwrap() else {
+            panic!("expected release fallback")
+        };
+        let targets = [
+            (Os::Mac, Arch::Arm64, "darwin-arm64"),
+            (Os::Mac, Arch::X64, "darwin-x64"),
+            (Os::Linux, Arch::Arm64, "linux-arm64"),
+            (Os::Linux, Arch::X64, "linux-x64"),
+            (Os::Windows, Arch::Arm64, "win32-arm64"),
+            (Os::Windows, Arch::X64, "win32-x64"),
+        ];
+        let base = "https://open-vsx.org/api/rust-lang/rust-analyzer";
+        let downloads: serde_json::Map<String, serde_json::Value> = targets
+            .iter()
+            .map(|(_, _, target)| {
+                (
+                    target.to_string(),
+                    format!("{base}/{target}/1.0.0/file/rust-lang.rust-analyzer-1.0.0@{target}.vsix").into(),
+                )
+            })
+            .collect();
+        let universal = serde_json::json!({
+            "version": "1.0.0", "downloads": downloads,
+            "files": {"download": format!("{base}/1.0.0/file/rust-lang.rust-analyzer-1.0.0.vsix")}
+        })
+        .to_string();
+        for (os, arch, target) in targets {
+            let platform = Platform { os, arch };
+            assert_eq!(
+                openvsx_platform_url(&universal, assets, platform).unwrap(),
+                Some(format!("{base}/{target}/1.0.0"))
+            );
+            let json = serde_json::json!({
+                "version": "1.0.0",
+                "files": {
+                    "download": downloads[target],
+                    "sha256": format!("{base}/{target}/1.0.0/file/rust-lang.rust-analyzer-1.0.0@{target}.sha256")
+                }
+            })
+            .to_string();
+            let download = openvsx_pick(&json, assets, platform).unwrap();
+            assert!(download.name.ends_with(&format!("@{target}.vsix")));
+            assert!(download.checksum_url.unwrap().ends_with(&format!("@{target}.sha256")));
+        }
+        assert!(openvsx_platform_url(&universal.replace("downloads", "unused"), assets, MAC_ARM).is_err());
     }
 
     #[test]
