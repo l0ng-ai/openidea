@@ -18,7 +18,10 @@ pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
         .collect();
     all.extend(user);
     // Project interpreter / package manager / toolchains from Languages & Frameworks.
-    ide_sdk::apply::apply_to_run_configs(&mut all, &root, &settings);
+    // Keep Gradle choices unmodified in the editor: derived defaults must not be saved as explicit env.
+    for config in all.iter_mut().filter(|c| c.kind != "gradle") {
+        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(config), &root, &settings);
+    }
     Ok(all)
 }
 
@@ -48,7 +51,11 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     let settings = project.settings.effective();
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
     let mut config = config;
-    ide_sdk::apply::resolve_run_command(&mut config, &project.root, &settings);
+    if config.kind == "gradle" {
+        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), &project.root, &settings);
+    } else {
+        ide_sdk::apply::resolve_run_command(&mut config, &project.root, &settings);
+    }
     if config.command == ide_sdk::godot::COMMAND {
         return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
     }

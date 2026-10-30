@@ -563,6 +563,29 @@ pub struct JavaSettings {
     pub jdtls_vm_args: String,
     /// Build Tools › Maven.
     pub maven: MavenSettings,
+    /// Build Tools › Gradle.
+    pub gradle: GradleSettings,
+}
+
+/// Build Tools › Gradle.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GradleSettings {
+    /// Empty = Project JDK; otherwise a JDK home.
+    pub jvm: String,
+    pub distribution: GradleDistribution,
+    /// Used only for the local distribution.
+    pub home: String,
+    /// Empty = Gradle's default user home.
+    pub user_home: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GradleDistribution {
+    #[default]
+    Wrapper,
+    Local,
 }
 
 /// Build Tools › Maven.
@@ -707,5 +730,27 @@ mod maven_linkage_tests {
         let encoded = serde_json::to_string(&settings).unwrap();
         assert!(encoded.contains("unlinkedProjects"));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
+}
+
+#[cfg(test)]
+mod gradle_settings_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_and_round_trip() {
+        let old: JavaSettings = serde_json::from_str(r#"{"jdk":"/jdk"}"#).unwrap();
+        assert_eq!(old.gradle, GradleSettings::default());
+        for distribution in [GradleDistribution::Wrapper, GradleDistribution::Local] {
+            let mut settings = Settings::default();
+            settings.languages.java.gradle = GradleSettings {
+                jvm: "/jdk21".into(),
+                distribution,
+                home: "/gradle".into(),
+                user_home: "/cache/gradle".into(),
+            };
+            let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);
+        }
     }
 }

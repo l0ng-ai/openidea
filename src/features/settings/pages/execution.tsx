@@ -1,12 +1,12 @@
 /**
- * Build, Execution, Deployment pages: Maven, Console, Debugger (+ Data Views,
+ * Build, Execution, Deployment pages: Gradle, Maven, Console, Debugger (+ Data Views,
  * Stepping), Python Debugger and Run/Debug. Consumed by the run and debugger
  * features (and `ide-run` for encoding / termination timeout).
  */
 import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
 import type { SelectOption } from "@/ui";
 import { GlobListEditor, NumberInput, Row } from "../components/Form";
-import { MavenPage } from "../languages/LanguagePages";
+import { GradlePage, MavenPage } from "../languages/LanguagePages";
 import { useSetting } from "../components/context";
 import type { PageSpec } from "./spec";
 import { Indented, ToggleNumber } from "./workflowControls";
@@ -90,6 +90,29 @@ function TooltipDelayRow() {
 }
 
 export const EXECUTION_PAGES: PageSpec[] = [
+  {
+    id: "build.gradle",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Gradle",
+    group: BUILD_GROUP,
+    order: 358,
+    keywords: [
+      "Gradle JVM",
+      "JDK",
+      "JAVA_HOME",
+      "distribution",
+      "wrapper",
+      "gradlew",
+      "local installation",
+      "Gradle home",
+      "Gradle user home",
+      "GRADLE_USER_HOME",
+      "mise",
+      "asdf",
+    ],
+    component: GradlePage,
+  },
   {
     id: "build.maven",
     projectScope: true,

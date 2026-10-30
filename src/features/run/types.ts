@@ -15,6 +15,7 @@ import {
   type ForkedJvm,
 } from "./jvmTypes";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 
 export const COMPOUND = "compound";
 
@@ -483,9 +484,17 @@ export function blankTemplate(type: RunConfigTypeContribution): RunConfig {
       isTest: false,
       debugAdapter: type.debugAdapter ?? null,
     },
-    { ...type.defaults },
+    newConfigDefaults(type),
     type,
   );
+}
+
+function newConfigDefaults(type: RunConfigTypeContribution): Record<string, string> {
+  const defaults = { ...type.defaults };
+  if (type.id === "gradle" && useProject.getState().settings?.languages?.java?.gradle?.distribution === "local") {
+    defaults.wrapper = "false";
+  }
+  return defaults;
 }
 
 /** A new configuration of `type`, with the type's defaults and then its template applied. */
@@ -516,7 +525,7 @@ export function newConfigOfType(
       if (v !== undefined) (copied as Record<string, unknown>)[key] = structuredClone(v);
     }
   }
-  const params = { ...type.defaults, ...(template?.params ?? {}) };
+  const params = { ...newConfigDefaults(type), ...(template?.params ?? {}) };
   const next = withParams({ ...base, ...copied }, params, type);
   return type.debugAdapter ? { ...next, debugAdapter: type.debugAdapter } : next;
 }

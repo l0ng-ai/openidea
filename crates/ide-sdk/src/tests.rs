@@ -698,3 +698,58 @@ fn max_java_picks_an_older_jdk() {
     crate::java::cap_java_home(&mut free, &jdks);
     assert_eq!(free.env["JAVA_HOME"], j25.home.to_string_lossy());
 }
+
+#[test]
+fn gradle_settings_precedence() {
+    use crate::apply::{gradle_command, gradle_env};
+    use ide_core::settings::GradleDistribution;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let plain = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    let wrapper = root.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
+    let mut settings = Settings::default();
+    assert_eq!(gradle_command(root, root, &settings), std::path::PathBuf::from(plain));
+    std::fs::write(&wrapper, "").unwrap();
+    assert_eq!(gradle_command(root, root, &settings), wrapper);
+    let fallback = std::collections::BTreeMap::from([("JAVA_HOME".into(), "project-jdk".into())]);
+    assert_eq!(gradle_env(root, &settings, fallback.clone()), fallback);
+    settings.languages.java.gradle.jvm = "gradle-jdk".into();
+    settings.languages.java.gradle.user_home = "gradle-cache".into();
+    settings.languages.java.gradle.home = "local-gradle".into();
+    let env = gradle_env(root, &settings, fallback);
+    assert_eq!(env["JAVA_HOME"], root.join("gradle-jdk").to_string_lossy());
+    assert_eq!(env["GRADLE_USER_HOME"], root.join("gradle-cache").to_string_lossy());
+    // A stored local home is inactive in wrapper mode.
+    assert_eq!(gradle_command(root, root, &settings), wrapper);
+    for local in [false, true] {
+        settings.languages.java.gradle.distribution =
+            if local { GradleDistribution::Local } else { GradleDistribution::Wrapper };
+        let expected = if local { root.join("local-gradle/bin").join(plain) } else { plain.into() };
+        for explicit_java in [false, true] {
+            for is_test in [false, true] {
+                let mut configs =
+                    [run("gradle", wrapper.to_str().unwrap(), &["test"]), run("gradle", plain, &["test"])];
+                for c in &mut configs {
+                    c.is_test = is_test;
+                    if explicit_java {
+                        c.env.insert("JAVA_HOME".into(), "explicit-jdk".into());
+                    }
+                }
+                apply_to_run_configs(&mut configs, root, &settings);
+                assert_eq!(configs[0].command, wrapper.to_string_lossy());
+                assert_eq!(configs[1].command, expected.to_string_lossy());
+                for c in &configs {
+                    assert_eq!(
+                        c.env["JAVA_HOME"],
+                        if explicit_java {
+                            "explicit-jdk".into()
+                        } else {
+                            root.join("gradle-jdk").to_string_lossy().into_owned()
+                        }
+                    );
+                }
+            }
+        }
+        assert_eq!(gradle_command(root, root, &settings), if local { expected } else { wrapper.clone() });
+    }
+}

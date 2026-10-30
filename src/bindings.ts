@@ -3139,6 +3139,8 @@ export type GoSettings = {
 
 export type GotoKind = "definition" | "declaration" | "typeDefinition" | "implementation";
 
+export type GradleDistribution = "wrapper" | "local";
+
 export type GradleModel = {
 	/**  Project-relative directory of the build (where `settings.gradle` is); `""` = project root. */
 	dir: string,
@@ -3164,6 +3166,17 @@ export type GradleProject = {
 	/**  Project-relative build script, if any. */
 	buildFile: string | null,
 	tasks: GradleTask[],
+};
+
+/**  Build Tools › Gradle. */
+export type GradleSettings = {
+	/**  Empty = Project JDK; otherwise a JDK home. */
+	jvm?: string,
+	distribution?: GradleDistribution,
+	/**  Used only for the local distribution. */
+	home?: string,
+	/**  Empty = Gradle's default user home. */
+	userHome?: string,
 };
 
 export type GradleTask = {
@@ -3614,6 +3627,8 @@ export type JavaSettings = {
 	jdtlsVmArgs?: string,
 	/**  Build Tools › Maven. */
 	maven?: MavenSettings,
+	/**  Build Tools › Gradle. */
+	gradle?: GradleSettings,
 };
 
 /**  Java versions a vendor publishes. */

@@ -1,3 +1,4 @@
+import { useProject } from "@/platform/project";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
@@ -22,6 +23,7 @@ import { pasteRows } from "./EnvDialog";
 import { CURRENT_FILE, resetRuns, selectConfig, sessionsOf, startCompound, startRun, useRun } from "./store";
 import {
   BUILTIN_TYPES,
+  blankTemplate,
   formParams,
   missingParams,
   newConfigOfType,
@@ -467,4 +469,24 @@ describe("Current File", () => {
     selectConfig(CURRENT_FILE);
     expect(useRun.getState().selectedId).toBe(CURRENT_FILE);
   });
+});
+
+describe("new Gradle wrapper default", () => {
+  it.each(["wrapper", "local"] as const)(
+    "follows %s distribution without changing existing choices",
+    (distribution) => {
+      const previous = useProject.getState().settings;
+      useProject.setState({ settings: { languages: { java: { gradle: { distribution } } } } as never });
+      try {
+        const type = BUILTIN_TYPES.find((t) => t.id === "gradle")!;
+        const config = newConfigOfType(type, [], blankTemplate(type));
+        expect(config.params?.wrapper).toBe(distribution === "local" ? "false" : "true");
+        expect(type.fields.some((f) => f.key === "wrapper")).toBe(true);
+        const template = { ...config, params: { wrapper: "true" } };
+        expect(newConfigOfType(type, [], template).params?.wrapper).toBe("true");
+      } finally {
+        useProject.setState({ settings: previous });
+      }
+    },
+  );
 });

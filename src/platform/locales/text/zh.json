@@ -4816,5 +4816,18 @@
   "busy": "忙碌",
   "dead": "已终止",
   "idle": "空闲",
-  "starting": "正在启动"
+  "starting": "正在启动",
+  "Gradle JVM": "Gradle JVM",
+  "Distribution": "分发",
+  "Gradle wrapper": "使用 Gradle 包装器",
+  "Local installation": "本地安装",
+  "Gradle home": "Gradle 主路径",
+  "Gradle user home": "Gradle 用户主目录",
+  "Gradle installation directory": "Gradle 安装目录",
+  "Select Gradle Home Directory": "选择 Gradle 主目录",
+  "Select Gradle User Home Directory": "选择 Gradle 用户主目录",
+  "JDK used for Gradle sync, tasks, run configurations and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "用于 Gradle 同步、任务、运行配置和测试的 JDK。运行配置中显式设置的 JAVA_HOME 优先。",
+  "Uses the Gradle wrapper when present, otherwise the project-pinned mise/asdf Gradle, then Gradle on PATH.": "优先使用 Gradle 包装器，否则使用项目通过 mise/asdf 固定的 Gradle，最后使用 PATH 中的 Gradle。",
+  "Uses bin/gradle (bin/gradle.bat on Windows) instead of the wrapper or pinned toolchain.": "使用 bin/gradle（Windows 上为 bin/gradle.bat），覆盖包装器或固定的工具链。",
+  "Sets GRADLE_USER_HOME. Empty uses Gradle's default.": "设置 GRADLE_USER_HOME。留空则使用 Gradle 默认值。"
 }

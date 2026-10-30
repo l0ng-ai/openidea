@@ -116,6 +116,43 @@ pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
     found
 }
 
+/// Project launcher policy for sync and tool-window tasks.
+pub fn gradle_command(root: &Path, build_dir: &Path, s: &Settings) -> PathBuf {
+    resolve_gradle_command(root, build_dir, s, true)
+}
+
+fn resolve_gradle_command(root: &Path, build_dir: &Path, s: &Settings, use_wrapper: bool) -> PathBuf {
+    let g = &s.languages.java.gradle;
+    let name = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    if g.distribution == ide_core::settings::GradleDistribution::Local
+        && let Some(home) = setting_path(root, &g.home)
+    {
+        return home.join("bin").join(name);
+    }
+    let wrapper = build_dir.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
+    if use_wrapper && wrapper.is_file() {
+        return wrapper;
+    }
+    pinned::pinned_install(build_dir, Tool::Gradle)
+        .map(|(home, _)| home.join("bin").join(name))
+        .unwrap_or_else(|| name.into())
+}
+
+/// Gradle JVM overrides Project JDK; model callers supply the module's fallback environment.
+pub fn gradle_env(
+    root: &Path,
+    s: &Settings,
+    mut env: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    if let Some(home) = setting_path(root, &s.languages.java.gradle.jvm) {
+        env.insert("JAVA_HOME".into(), home.to_string_lossy().into_owned());
+    }
+    if let Some(home) = setting_path(root, &s.languages.java.gradle.user_home) {
+        env.insert("GRADLE_USER_HOME".into(), home.to_string_lossy().into_owned());
+    }
+    env
+}
+
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`
 /// and `-Dmaven.repo.local=<dir>`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
@@ -532,7 +569,6 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let jdk = project_jdk(root, s);
     let mvn = maven_command(root, s);
     let mvn_options = maven_options(root, s);
-    let gradle = pinned::pinned_install(root, Tool::Gradle).map(|(dir, _)| dir.join("bin"));
 
     for c in configs.iter_mut() {
         resolve_run_command(c, root, s);
@@ -600,15 +636,26 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     c.env.entry("GOPATH".into()).or_insert_with(|| gopath.to_string_lossy().into_owned());
                 }
             }
-            "maven" | "gradle" => {
+            "gradle" => {
+                let build_dir = c.cwd.as_ref().map(|p| root.join(p.as_ref())).unwrap_or_else(|| root.to_path_buf());
+                if matches!(c.command.as_str(), "gradle" | "gradle.bat") {
+                    c.command = resolve_gradle_command(root, &build_dir, s, false).to_string_lossy().into_owned();
+                }
+                let defaults = jdk
+                    .as_ref()
+                    .map(|j| {
+                        std::collections::BTreeMap::from([("JAVA_HOME".into(), j.home.to_string_lossy().into_owned())])
+                    })
+                    .unwrap_or_default();
+                for (key, value) in gradle_env(root, s, defaults) {
+                    c.env.entry(key).or_insert(value);
+                }
+            }
+            "maven" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
-                if c.kind == "gradle"
-                    && let Some(bin) = gradle.as_ref().filter(|b| b.is_dir())
-                {
-                    path_dirs.push(bin.clone());
-                }
+
                 if c.kind == "maven" && c.detected {
                     if let Some(mvn) = &mvn {
                         c.command = mvn.to_string_lossy().into_owned();
