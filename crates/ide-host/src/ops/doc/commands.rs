@@ -127,7 +127,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?).await
     });
     d.add("doc_set_line_ending", |c| async move {
-        doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)
+        blocking(move || doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)).await
     });
     d.add("doc_outline", |c| async move { doc_outline(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_folding", |c| async move { doc_folding(&c.host, &c.window, c.arg("doc")?).await });
