@@ -32,6 +32,10 @@ describe("Find in Files module and custom scopes", () => {
   const base = useFindPopup.getState();
 
   it("a module searches its folder, the root module the project", () => {
+    expect(resolveFindScope({ ...base, scopeTab: "module", module: "/member" }, inputs)).toEqual({
+      kind: "directory",
+      path: "/member",
+    });
     expect(resolveFindScope({ ...base, scopeTab: "module", module: "web" }, inputs)).toEqual({
       kind: "directory",
       path: "/p/web",

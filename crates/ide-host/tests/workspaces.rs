@@ -29,11 +29,16 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
         runtime: tokio::runtime::Handle::current(),
         project_environment: false,
     });
+    std::fs::write(root.join("internal-needle.txt"), "needle").unwrap();
     let project = host.open_project("main", &root).unwrap();
     assert_eq!(ops::project::info(&project).name, "Full stack");
     assert_eq!(ops::project::attach_workspace(&host, "main", &roots[1]).unwrap().as_ref(), root.as_path());
     ops::project::attach_workspace(&host, "main", &roots[1]).unwrap();
     assert_eq!(project.content_roots(), roots);
+    assert!(project.index.wait_idle(Duration::from_secs(10)));
+    assert!(project.index.find_files("internal-needle", 100).is_empty());
+    assert!(project.index.find_files("workspace.json", 100).is_empty());
+    assert_eq!(project.index.find_files("same.txt", 100).len(), 2);
     for _ in 0..500 {
         if project.repos().all().len() == 2 {
             break;
@@ -98,5 +103,12 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     assert_eq!(automatic.content_roots(), roots);
     assert_eq!(ops::project::info(&automatic).name, "frontend");
     assert!(automatic.root.starts_with(base.join("data/workspaces")));
+    assert!(automatic.index.wait_idle(Duration::from_secs(10)));
+    assert!(automatic.index.find_files("workspace.json", 100).is_empty());
+    let updated = ops::project::save_workspace(&host, "main", "frontend", vec![roots[1].clone()]).unwrap();
+    assert_eq!(updated.workspace.unwrap().projects, vec![roots[1].clone()]);
+    assert_eq!(automatic.root, updated.root.as_ref());
+    assert!(automatic.index.wait_idle(Duration::from_secs(10)));
+    assert_eq!(automatic.index.find_files("same.txt", 100).len(), 1);
     host.close_project("main");
 }

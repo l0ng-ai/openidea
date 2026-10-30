@@ -37,7 +37,7 @@ export interface FindOptions {
   maskEnabled: boolean;
   mask: string;
   scopeTab: ScopeTab;
-  /** Module tab: project-relative folder of the module (`""`: the project's root module). */
+  /** Module tab: relative module folder or absolute workspace member (`""`: plain project root). */
   module: string;
   directory: string;
   namedScope: NamedScope;
@@ -186,7 +186,9 @@ export function resolveFindScope(o: FindOptions, inputs: ScopeInputs): SearchSco
   if (o.scopeTab === "directory" && o.directory.trim())
     return { kind: "directory", path: resolveDirectory(o.directory, root) };
   if (o.scopeTab === "module")
-    return o.module && root ? { kind: "directory", path: `${root}/${o.module}` } : { kind: "project" };
+    return o.module && root
+      ? { kind: "directory", path: o.module.startsWith("/") ? o.module : `${root}/${o.module}` }
+      : { kind: "project" };
   if (o.scopeTab !== "scope") return { kind: "project" };
   const custom = customScopeName(o.namedScope);
   if (custom !== null) {

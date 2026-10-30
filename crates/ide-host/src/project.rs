@@ -106,7 +106,7 @@ impl Host {
         let index = ProjectIndex::open(
             &root,
             &self.data_dir.join("index").join(&project_key),
-            extra_roots.clone(),
+            index_roots(&root, extra_roots.clone()),
             excludes.clone(),
             languages.clone(),
             self.syntax(),
@@ -256,7 +256,10 @@ impl Host {
                         if *detected_roots.read() != fresh {
                             // Detected excluded folders (`target`, `build`) leave the index too.
                             let effective = settings.effective();
-                            index.set_scope(content_roots(&effective, &root), exclude_globs(&root, &effective, &fresh));
+                            index.set_scope(
+                                index_roots(&root, content_roots(&effective, &root)),
+                                exclude_globs(&root, &effective, &fresh),
+                            );
                             *detected_roots.write() = fresh;
                             sink.emit(IdeEvent::ProjectRootsChanged { root: root.clone().into() });
                         }
@@ -716,7 +719,7 @@ impl Project {
         }
         let (roots, excludes) = (self.content_roots(), self.exclude_globs());
         self.lsp.set_content_roots(roots.clone());
-        self.index.set_scope(roots.clone(), excludes.clone());
+        self.index.set_scope(index_roots(&self.root, roots.clone()), excludes.clone());
         self.watcher.set_excludes(&excludes);
         let mut watchers = self.content_watchers.lock();
         watchers.retain(|(p, _)| roots.contains(p));
@@ -820,8 +823,16 @@ pub fn history_retention(settings: &ide_core::settings::Settings) -> ide_workspa
     }
 }
 
-/// Project Structure content roots outside `root` (existing absolute directories).
+/// A workspace uses its root only for state, never as indexed content.
+fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
+    ide_index::IndexRoots { include_root: !root.join(ide_workspace::workspace::FILE).is_file(), folders }
+}
+
+/// Workspace members in manifest order, or extra Project Structure directories.
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path) -> Vec<PathBuf> {
+    if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
+        return workspace.projects;
+    }
     let mut out: Vec<PathBuf> = Vec::new();
     for r in &settings.project_structure.content_roots {
         let p = PathBuf::from(r.trim());

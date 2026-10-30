@@ -508,3 +508,38 @@ fn unindexed_index_never_scans_or_persists() {
     assert!(!fx.cache.exists());
     assert!(!events.lock().iter().any(|e| matches!(e, IdeEvent::Task { .. })), "no indexing task");
 }
+
+#[test]
+fn workspace_scope_excludes_state_from_scans_updates_and_cached_results() {
+    let fx = Fixture::new(&[(".openidea/workspace.json", "{}"), ("internal.rs", "fn hidden() {}")]);
+    // Simulate a cache produced before the settings root was excluded.
+    let old = fx.open();
+    old.mark_recent(&fx.root.join("internal.rs"));
+    assert!(old.wait_idle(WAIT));
+    drop(old);
+    let member = fx.root.join("member");
+    std::fs::create_dir_all(&member).unwrap();
+    std::fs::write(member.join("visible.rs"), "fn visible() {}").unwrap();
+    let idx = ProjectIndex::open(
+        &fx.root,
+        &fx.cache,
+        crate::IndexRoots { include_root: false, folders: vec![member.clone()] },
+        Vec::new(),
+        Arc::new(LanguageRegistry::load(None).unwrap()),
+        Arc::new(Syntax::new()),
+        Arc::new(NullSink),
+    )
+    .unwrap();
+    assert!(idx.wait_idle(WAIT));
+    assert!(idx.find_files("internal", 100).is_empty());
+    assert!(idx.find_files("workspace.json", 100).is_empty());
+    assert!(idx.recent_files().is_empty());
+    assert_eq!(idx.find_files("visible", 100).len(), 1);
+    idx.update(&[fx.root.join("internal.rs"), fx.root.join(".openidea/workspace.json")], &[]);
+    assert!(idx.wait_idle(WAIT));
+    assert!(symbols(&idx, "hidden", SymbolFilter::All).is_empty());
+    assert_eq!(symbols(&idx, "visible", SymbolFilter::All), ["visible"]);
+    idx.set_scope(crate::IndexRoots { include_root: false, folders: Vec::new() }, Vec::new());
+    assert!(idx.wait_idle(WAIT));
+    assert!(idx.find_files("", 100).is_empty());
+}

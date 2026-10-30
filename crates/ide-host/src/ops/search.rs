@@ -42,13 +42,16 @@ pub async fn start(
     let cancel = host.begin_request(request);
     let documents = project.documents.clone();
     let root = project.root.clone();
+    let workspace = ide_workspace::workspace::Workspace::load(&root)?.is_some();
     // The whole project also covers the Project Structure content roots.
     let content_roots = match query.scope {
-        ide_search::SearchScope::Project | ide_search::SearchScope::FileSet { set: ProjectFileSet::All } => {
-            project.content_roots()
-        }
+        ide_search::SearchScope::Project
+        | ide_search::SearchScope::FileSet { .. }
+        | ide_search::SearchScope::Pattern { .. } => project.content_roots(),
         _ => Vec::new(),
     };
+    let include_root = !workspace
+        || matches!(query.scope, ide_search::SearchScope::Directory { .. } | ide_search::SearchScope::Files { .. });
     let languages = project.languages.clone();
     let syntax = host.syntax();
     let events = on_event.clone();
@@ -66,7 +69,7 @@ pub async fn start(
                 Some(found.into_iter().map(literal_range).collect())
             };
             let mut total = SearchSummary::default();
-            for dir in std::iter::once(&root).chain(&content_roots) {
+            for dir in std::iter::once(&root).filter(|_| include_root).chain(&content_roots) {
                 let s = ide_search::search_in_context(
                     dir,
                     &query,

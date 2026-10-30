@@ -229,7 +229,7 @@ export function windowActions(): Action[] {
       when: "workspaceOpen",
       run: async ({ arg }) => {
         const workspace = useProject.getState().project?.workspace;
-        if (typeof arg !== "string" || !workspace || workspace.projects.indexOf(arg) <= 0) return;
+        if (typeof arg !== "string" || !workspace || !workspace.projects.includes(arg)) return;
         const project = await call(
           commands.workspaceUpdate(
             workspace.name,

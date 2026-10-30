@@ -605,7 +605,6 @@ export function ProjectView() {
   };
 
   const cutPaths = useMemo(() => new Set(clipboard?.cut ? clipboard.paths : []), [clipboard]);
-  const rootDetail = root ? tildify(root, home) : null;
 
   const renderNode = useCallback(
     (node: ProjectNode, state: TreeRowState) => (
@@ -615,14 +614,14 @@ export function ProjectView() {
         editing={editing}
         cut={cutPaths.has(node.path)}
         dropTarget={dropTarget === node.key}
-        detail={node.root && !node.icon ? rootDetail : (node.detail ?? null)}
+        detail={node.root && !node.icon ? tildify(node.path, home) : (node.detail ?? null)}
         onEditDone={focusTree}
         onClick={onRowClick}
         onDoubleClick={onRowDoubleClick}
         onPointerDown={onRowPointerDown}
       />
     ),
-    [editing, cutPaths, dropTarget, rootDetail, focusTree, onRowClick, onRowDoubleClick, onRowPointerDown],
+    [editing, cutPaths, dropTarget, home, focusTree, onRowClick, onRowDoubleClick, onRowPointerDown],
   );
 
   if (!root) return null;

@@ -191,7 +191,7 @@ describe("project view context menu", () => {
   });
 });
 
-it("offers workspace removal only for a non-first linked root", () => {
+it("offers workspace removal for every member root", () => {
   useProject.setState({
     project: {
       root: "/workspace",
@@ -207,7 +207,7 @@ it("offers workspace removal only for a non-first linked root", () => {
     arg: "/b",
   };
   expect(contextMenuItems([node("/b", true, true)])).toContainEqual(removal);
-  expect(contextMenuItems([node("/a", true, true)])).not.toContainEqual(
+  expect(contextMenuItems([node("/a", true, true)])).toContainEqual(
     expect.objectContaining({ action: "workspace.removeProject" }),
   );
   expect(contextMenuItems([node("/b/src", true)])).not.toContainEqual(

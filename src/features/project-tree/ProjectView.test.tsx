@@ -243,3 +243,11 @@ describe("ProjectView", () => {
     expect(rendered).toBeLessThan(80);
   });
 });
+
+it("renders workspace member roots with their own paths, without the settings directory", async () => {
+  fs = new MemoryFs({ "/z/first.txt": "", "/a/second.txt": "", "/workspace/.openidea/workspace.json": "{}" });
+  setProjectFsForTests(fs, "/workspace");
+  initProjectTree("/workspace", "Workspace", ["/z", "/a"]);
+  const { rows } = setup();
+  await waitFor(() => expect(rows()).toEqual(["z/z", "first.txt", "a/a", "second.txt"]));
+});

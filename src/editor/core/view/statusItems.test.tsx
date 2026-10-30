@@ -74,3 +74,21 @@ describe("caret-driven status widgets", () => {
     expect(commits).toBeGreaterThan(0);
   });
 });
+
+it("shows the member and its directories in workspace breadcrumbs", async () => {
+  const { useProject } = await import("@/platform/project");
+  useProject.setState({
+    project: {
+      root: "/workspace",
+      name: "Workspace",
+      settings: {},
+      isGit: false,
+      workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
+    },
+  });
+  useEditorStatus.setState({ status: { ...caret(0, 0), path: "/b/src/file.ts" } });
+  const view = render(<Breadcrumbs />);
+  expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("bsrcfile.ts");
+  view.unmount();
+  useProject.setState({ project: null });
+});

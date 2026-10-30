@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const workspaceAttach = vi.fn();
+const workspaceUpdate = vi.fn();
 const projectCurrent = vi.fn();
 const windowOpenProject = vi.fn();
 const windowOpenFiles = vi.fn();
@@ -22,6 +23,7 @@ vi.mock("@/platform/ipc", async (orig) => {
     commands: {
       ...real.commands,
       workspaceAttach: (...a: unknown[]) => workspaceAttach(...a),
+      workspaceUpdate: (...a: unknown[]) => workspaceUpdate(...a),
       projectCurrent: () => projectCurrent(),
       windowOpenProject: (...a: unknown[]) => windowOpenProject(...a),
       windowOpenFiles: (...a: unknown[]) => windowOpenFiles(...a),
@@ -261,4 +263,22 @@ describe("Attach", () => {
     expect(useProject.getState().project?.workspace?.projects).toEqual(["/p/a", "/p/b"]);
     expect(openProject).not.toHaveBeenCalled();
   });
+});
+
+it("removes the first workspace member while retaining the workspace state root", async () => {
+  const project = {
+    root: "/workspace",
+    name: "A",
+    isGit: false,
+    settings: {},
+    workspace: { version: 1, name: "A", projects: ["/a", "/b"] },
+  };
+  useProject.setState({ project });
+  workspaceUpdate.mockResolvedValue(ok({ ...project, workspace: { ...project.workspace, projects: ["/b"] } }));
+  await windowActions()
+    .find((a) => a.id === "workspace.removeProject")!
+    .run({ arg: "/a" } as never);
+  expect(workspaceUpdate).toHaveBeenCalledWith("A", ["/b"]);
+  expect(useProject.getState().project?.root).toBe("/workspace");
+  expect(useProject.getState().project?.workspace?.projects).toEqual(["/b"]);
 });
