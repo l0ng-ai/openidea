@@ -154,7 +154,8 @@ impl Host {
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
-                ide_sdk::apply::configure_maven_import(cfg, &root, &effective);
+                let excluded_poms = unlinked_maven_poms(&root, &effective);
+                ide_sdk::apply::configure_maven_import(cfg, &root, &excluded_poms);
             }));
         }
         {
@@ -793,6 +794,10 @@ fn content_root_watcher(
     .ok()
 }
 
+pub(crate) fn unlinked_maven_poms(root: &Path, settings: &ide_core::settings::Settings) -> Vec<PathBuf> {
+    ide_build::maven::UnlinkedProjects::load(root, &settings.languages.java.maven).poms().map(PathBuf::from).collect()
+}
+
 fn linked_roots(root: &Path, settings: &ide_core::settings::Settings, detected: &[SourceFolder]) -> ProjectRoots {
     let unlinked = ide_build::maven::UnlinkedProjects::load(root, &settings.languages.java.maven);
     let detected = detected
@@ -946,9 +951,32 @@ mod maven_linkage_tests {
             std::fs::create_dir_all(tmp.path().join(name).join("src/main/java")).unwrap();
             std::fs::write(tmp.path().join(name).join("pom.xml"), "<project/>").unwrap();
         }
+        std::fs::create_dir_all(tmp.path().join("a/child/src/main/java")).unwrap();
+        std::fs::write(tmp.path().join("a/pom.xml"), "<project><modules><module>child</module></modules></project>")
+            .unwrap();
+        std::fs::write(tmp.path().join("a/child/pom.xml"), "<project/>").unwrap();
         let detected = ide_workspace::roots::detect(tmp.path());
         let mut settings = ide_core::settings::Settings::default();
         settings.languages.java.maven.unlinked_projects.push("a/pom.xml".into());
+        let excluded_poms = super::unlinked_maven_poms(tmp.path(), &settings);
+        assert_eq!(excluded_poms, vec![std::path::PathBuf::from("a/child/pom.xml"), "a/pom.xml".into()]);
+        let configs = ide_run::detect_excluding(tmp.path(), &excluded_poms);
+        assert!(configs.iter().any(|c| c.kind == "maven"));
+        assert!(
+            configs
+                .iter()
+                .filter(|c| c.kind == "maven")
+                .all(|c| { c.cwd.as_ref().is_some_and(|dir| dir.as_ref() == std::path::Path::new("b")) })
+        );
+        let mut server = serde_json::from_value::<ide_language::LanguageServerConfig>(
+            serde_json::json!({"name": "jdtls", "command": "jdtls"}),
+        )
+        .unwrap();
+        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms);
+        let options = serde_json::to_value(server.initialization_options).unwrap();
+        let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
+        assert!(exclusions.contains(&serde_json::json!(tmp.path().join("a").to_string_lossy())));
+        assert!(exclusions.contains(&serde_json::json!(tmp.path().join("a/child").to_string_lossy())));
         let roots = super::linked_roots(tmp.path(), &settings, &detected);
         assert!(roots.roots.iter().any(|r| r.path == "b/src/main/java"));
         assert!(!roots.roots.iter().any(|r| r.path.starts_with("a/")));

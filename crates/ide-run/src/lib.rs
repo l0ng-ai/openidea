@@ -189,10 +189,9 @@ pub fn detect(root: &Path) -> Vec<RunConfig> {
     detect::detect(root)
 }
 
-/// Detects configurations using the project's Maven linkage state.
-pub fn detect_linked(root: &Path, maven: &ide_core::settings::MavenSettings) -> Vec<RunConfig> {
-    let unlinked = ide_build::maven::UnlinkedProjects::load(root, maven);
-    detect::detect_with_unlinked(root, &unlinked)
+/// Detects configurations excluding the supplied project-relative Maven POM paths.
+pub fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<RunConfig> {
+    detect::detect_excluding(root, excluded_poms)
 }
 
 /// Reads `<root>/.openidea/run.toml`; a missing file yields no configs.
@@ -249,9 +248,7 @@ mod linkage_tests {
             std::fs::create_dir(tmp.path().join(name)).unwrap();
             std::fs::write(tmp.path().join(name).join("pom.xml"), "<project/>").unwrap();
         }
-        let maven =
-            ide_core::settings::MavenSettings { unlinked_projects: vec!["a/pom.xml".into()], ..Default::default() };
-        let configs = super::detect_linked(tmp.path(), &maven);
+        let configs = super::detect_excluding(tmp.path(), &["a/pom.xml".into()]);
         assert!(configs.iter().any(|c| c.kind == "maven"));
         assert!(
             configs
