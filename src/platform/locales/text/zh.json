@@ -4817,7 +4817,7 @@
   "dead": "已终止",
   "idle": "空闲",
   "starting": "正在启动",
-  "Gradle JVM": "Gradle JVM",
+  "Gradle JVM": "Gradle 使用的 JVM",
   "Distribution": "分发",
   "Gradle wrapper": "使用 Gradle 包装器",
   "Local installation": "本地安装",
