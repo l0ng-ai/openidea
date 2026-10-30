@@ -3,7 +3,7 @@
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
   background: var(--bg-editor);
   color: var(--fg);
 }
@@ -118,7 +118,7 @@
   outline: none;
 }
 /* Skip off-screen output layout; editable messages must repaint immediately when focus/content changes. */
-.stream > :not(.message) {
+.stream > :not(.message):not(details) {
   content-visibility: auto;
   contain-intrinsic-block-size: auto 80px;
 }
@@ -499,6 +499,46 @@
   background: var(--fg-muted);
 }
 
+.images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.imageItem {
+  position: relative;
+  display: inline-flex;
+}
+.imageButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+.image {
+  display: block;
+  max-width: 240px;
+  max-height: 160px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.removeImage {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--bg-popup);
+  color: var(--fg);
+  cursor: pointer;
+}
+
 .attachments {
   display: flex;
   flex-wrap: wrap;
@@ -518,6 +558,7 @@
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  width: 280px;
 }
 .changesHeader {
   display: flex;
@@ -767,4 +808,31 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.changesToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg-subtle);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+.changesToggle:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.changesToggle[aria-pressed="true"] {
+  background: var(--bg-selected);
+  color: var(--fg-strong);
+}
+.changesToggle:disabled {
+  opacity: 0.4;
+  cursor: default;
 }

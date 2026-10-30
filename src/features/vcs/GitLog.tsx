@@ -1,3 +1,4 @@
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } from "./multiRoot";
 /** Git tool window: Log (graph, filters, commit details) and Console tabs. */
 import { IssueText } from "./issueLinks";
@@ -17,6 +18,7 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, ChangedFile, Commit, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
+import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
@@ -31,6 +33,7 @@ import {
   fileIconName,
   showContextMenu,
   type MenuItem,
+  type TreeHandle,
   T,
   copyText,
 } from "@/ui";
@@ -75,6 +78,7 @@ import {
 } from "./branches";
 import { chooseDateRange, chooseMany, promptText } from "./dialogs";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
+import { DIFF_KIND, diffInput } from "./diffInput";
 import {
   absolutePath,
   filesUnder,
@@ -1235,6 +1239,9 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
 
   const groupByDirectory = useLogOptions((s) => s.groupByDirectory);
   const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const treeRef = useRef<TreeHandle>(null);
+  const [diffToReveal, setDiffToReveal] = useState<{ key: string } | null>(null);
+  const syncingDiff = useRef(false);
   const changes = useMemo(
     () => (files && commit ? toLogChanges(files, many ? null : commit, commitRoot) : []),
     [files, commit, many, commitRoot],
@@ -1255,12 +1262,43 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   useEffect(() => () => clearTimeout(previewTimer.current), []);
   const previewSelection = (sel: ReadonlySet<string>) => {
     clearTimeout(previewTimer.current);
+    if (syncingDiff.current) return;
     if (!logOptions().diffPreview || sel.size !== 1) return;
     const file = fileNodeAt(tree, [...sel][0]!)?.file;
     // A preview that cannot open (no editor yet, the file went away) is just skipped.
     if (file)
       previewTimer.current = setTimeout(() => void showChangesDiff([file], true).catch(() => undefined), PREVIEW_DELAY);
   };
+
+  // Follow only this pane's exact diff (path AND revisions); another commit or
+  // Compare with Local must not move its selection. Never take focus from F7.
+  useEffect(() => {
+    const editor = maybeEditorService();
+    const followDiff = (input: EditorInput | null) => {
+      if (input?.kind !== DIFF_KIND) return;
+      const change = ordered.find((c) => diffInput(c.diff).key === input.key);
+      if (!change) return;
+      clearTimeout(previewTimer.current);
+      const rel = relTo(root, change.path);
+      setExpanded((current) => {
+        const next = new Set(current ?? allDirs);
+        for (const key of allDirs) if (rel.startsWith(key.slice(2) + "/")) next.add(key);
+        return next;
+      });
+      setDiffToReveal({ key: `f:${rel}` });
+    };
+    followDiff(editor?.activeInput?.() ?? null);
+    return editor?.onActiveInputChange?.(followDiff);
+  }, [ordered, allDirs, root]);
+
+  // Tree.reveal needs the expanded rows to have rendered. Suppress the reverse
+  // preview update so it cannot reopen the diff and lose its requested chunk.
+  useLayoutEffect(() => {
+    if (!diffToReveal) return;
+    syncingDiff.current = true;
+    treeRef.current?.reveal(diffToReveal.key);
+    syncingDiff.current = false;
+  }, [diffToReveal]);
 
   useEffect(() => {
     useLogChanges.setState({ commits: chosen, all: ordered, selected: chosenChanges });
@@ -1343,6 +1381,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
             )}
             {files && (
               <Tree<FileTreeNode<LogChange>>
+                handleRef={treeRef}
                 roots={tree}
                 getKey={(n) => n.key}
                 getLabel={(n) => n.name}
@@ -1486,7 +1525,9 @@ function ConsoleView() {
       <div
         ref={ref}
         className={styles.console}
+        tabIndex={0}
         role="log"
+        onKeyDown={copySelectionOnKeyDown}
         aria-label={tx("Git console")}
         onScroll={(e) => {
           const el = e.currentTarget;

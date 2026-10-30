@@ -23,7 +23,7 @@ pub fn find(custom: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(p) = custom {
         return Some(p);
     }
-    find_in(&crate::search_path(), &install_locations(crate::home_dir().as_deref()))
+    find_in(&crate::exec::search_path(), &install_locations(crate::home_dir().as_deref()))
 }
 
 pub(crate) fn find_in(search: &OsStr, locations: &[PathBuf]) -> Option<PathBuf> {

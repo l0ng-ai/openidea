@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
-import { DEFAULT_TYPES, readTypes, runServiceItems, sessionDetail, sessionStatus } from "./services";
+import { DEFAULT_TYPES, readRan, readTypes, runServiceItems, sessionDetail, sessionStatus } from "./services";
 import { startedPort } from "./serverPort";
 import type { RunSession } from "./store";
 
@@ -50,7 +50,7 @@ describe("run configurations in Services", () => {
       config("py-a", "python"),
       config("py-b", "python"),
     ];
-    const items = runServiceItems(configs, [], ["spring-boot", "npm", "python"], {
+    const items = runServiceItems(configs, [], ["spring-boot", "npm", "python"], [], {
       "spring-boot": ["java-b", "java-a"],
       npm: ["node-b", "node-a"],
       python: ["py-b", "py-a"],
@@ -63,12 +63,28 @@ describe("run configurations in Services", () => {
     expect(configs.map((c) => c.id)).toEqual(["java-a", "java-b", "node-a", "node-b", "py-a", "py-b"]);
   });
 
+  it.each(["tomcat", "application", "compound"])("orders %s configurations across workspace members", (kind) => {
+    const first = { ...config("workspace:one:app", kind), cwd: "/workspace/one", module: "one" };
+    const second = { ...config("workspace:two:app", kind), cwd: "/workspace/two", module: "two" };
+    const fresh = config("workspace:two:new", kind);
+    const configs = [first, second, fresh];
+    const items = runServiceItems(configs, [], [kind], [], { [kind]: [second.id, first.id] });
+    expect(items[0]!.children!.map((c) => c.key)).toEqual([second, first, fresh].map((c) => `run:config:${c.id}`));
+    expect(configs).toEqual([first, second, fresh]);
+  });
+
+  it("orders remembered configurations when their type was not explicitly added", () => {
+    const items = runServiceItems([build, test], [], [], ["build", "test"], { cargo: ["test", "build"] });
+    expect(items[0]!.children!.map((c) => c.key)).toEqual(["run:config:test", "run:config:build"]);
+  });
+
   it("keeps stable service identity and session details after refresh and rename", () => {
     const renamed = { ...build, name: "Renamed build" };
     const items = runServiceItems(
       [renamed, test],
       [session("s1", renamed, "running", 1, { httpPort: 8080 })],
       ["cargo"],
+      [],
       { cargo: ["test", "build"] },
     );
     expect(items[0]!.children!.map((c) => [c.key, c.label, c.detail])).toEqual([
@@ -139,6 +155,38 @@ describe("types added to Services", () => {
     localStorage.setItem("openidea.services.runTypes:/p", "[]");
     expect(readTypes("/p")).toEqual([]);
     expect(readTypes("/q")).toEqual(["spring-boot"]);
+  });
+});
+
+describe("configurations that ran", () => {
+  const dev = config("dev", "npm");
+  const scratch = config("context:file", "python");
+  beforeEach(() => localStorage.clear());
+
+  it("persists the ran configuration ids per project", () => {
+    expect(readRan("/p")).toEqual([]);
+    localStorage.setItem("openidea.services.ran:/p", JSON.stringify(["dev"]));
+    expect(readRan("/p")).toEqual(["dev"]);
+    expect(readRan("/q")).toEqual([]);
+  });
+
+  it("lists previously run configurations without a session", () => {
+    const items = runServiceItems([dev, scratch], [], [], ["dev", "context:file"]);
+    expect(items.map((i) => [i.key, i.label])).toEqual([
+      ["run:type:npm", "npm"],
+      ["run:type:python", "Python"],
+    ]);
+    expect(items[0]!.children!.map((c) => [c.label, c.dim])).toEqual([["dev", true]]);
+    expect(items[1]!.children!.map((c) => c.key)).toEqual(["run:config:context:file"]);
+  });
+
+  it("ignores ran ids whose configuration is gone and merges sessions", () => {
+    const gone = runServiceItems([dev], [], [], ["missing"]);
+    expect(gone).toEqual([]);
+    const running = session("s1", dev, "running", 1);
+    const items = runServiceItems([dev], [running], [], ["dev"]);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.children!.map((c) => [c.label, c.detail])).toEqual([["dev", "Running"]]);
   });
 });
 

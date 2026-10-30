@@ -87,8 +87,14 @@ pub fn entries(host: &Host, window: &str, task: String, subagent: Option<String>
     host.project(window)?.agents.entries(&task, subagent)
 }
 
-pub async fn create(host: &Host, window: &str, request: NewAgentTask) -> IdeResult<AgentTask> {
-    host.project(window)?.agents.create(request).await
+pub async fn create(host: &Host, window: &str, mut request: NewAgentTask) -> IdeResult<AgentTask> {
+    let project = host.project(window)?;
+    let root = project.root.clone();
+    let requested = request.project_root.take();
+    request.project_root = Some(IpcPath(
+        host.blocking(move || validate_project_root(&root, requested.as_ref().map(|p| p.0.as_path()))).await?,
+    ));
+    project.agents.create(request).await
 }
 
 /// Sends a message; while the agent works it is queued, or with `now` it interrupts the turn.
@@ -140,6 +146,10 @@ pub fn archive(host: &Host, window: &str, task: String) -> IdeResult<()> {
     host.project(window)?.agents.archive(&task)
 }
 
+pub fn unarchive(host: &Host, window: &str, task: String) -> IdeResult<()> {
+    host.project(window)?.agents.unarchive(&task)
+}
+
 pub async fn delete(host: &Host, window: &str, task: String, remove_worktree: bool) -> IdeResult<()> {
     host.project(window)?.agents.delete(&task, remove_worktree).await
 }
@@ -183,6 +193,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_respond", |c| async move {
         respond(&c.host, &c.window, c.arg("task")?, c.arg("permission")?, c.arg("option")?)
     });
+    d.add("agent_unarchive", |c| async move { unarchive(&c.host, &c.window, c.arg("task")?) });
     d.add("agent_archive", |c| async move { archive(&c.host, &c.window, c.arg("task")?) });
     d.add(
         "agent_delete",
@@ -190,4 +201,44 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("agent_changes", |c| async move { changes(&c.host, &c.window, c.arg("task")?).await });
     d.add("agent_base_text", |c| async move { base_text(&c.host, &c.window, c.arg("task")?, c.arg("path")?).await });
+}
+
+fn validate_project_root(root: &std::path::Path, requested: Option<&std::path::Path>) -> IdeResult<std::path::PathBuf> {
+    let Some(requested) = requested else {
+        return Ok(root.to_path_buf());
+    };
+    if !requested.is_absolute() {
+        return Err(IdeError::invalid("Choose an absolute project root"));
+    }
+    let requested = dunce::canonicalize(requested)?;
+    let window_root = dunce::canonicalize(root)?;
+    if requested == window_root
+        || ide_workspace::workspace::Workspace::load(root)?.is_some_and(|w| w.projects.contains(&requested))
+    {
+        return Ok(requested);
+    }
+    Err(IdeError::invalid("Agent project must be the window project or a workspace member"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn agent_roots_are_exact_window_or_workspace_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("workspace");
+        let member = tmp.path().join("member");
+        let other = tmp.path().join("other");
+        for dir in [&root, &member, &other, &member.join("child")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        assert_eq!(validate_project_root(&root, None).unwrap(), root);
+        assert_eq!(validate_project_root(&root, Some(&root)).unwrap(), dunce::canonicalize(&root).unwrap());
+        assert!(validate_project_root(&root, Some(&member)).is_err());
+        ide_workspace::workspace::Workspace::save(&root, "Workspace", vec![member.clone()], true).unwrap();
+        assert_eq!(validate_project_root(&root, Some(&member)).unwrap(), dunce::canonicalize(&member).unwrap());
+        for rejected in [other, member.join("child"), member.join("../other"), "relative".into()] {
+            assert!(validate_project_root(&root, Some(&rejected)).is_err(), "{rejected:?}");
+        }
+    }
 }

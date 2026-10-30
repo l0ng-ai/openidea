@@ -22,7 +22,7 @@ import {
   type Variable,
 } from "@/platform/ipc";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
-import { breakpointsOf, consumeTemporary, refreshStates, resetStatuses } from "./breakpoints/store";
+import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
 import { refreshExceptionFilters } from "./breakpoints/exceptions";
@@ -95,10 +95,20 @@ interface ExecutionPoint {
 
 export const useExecutionPoint = create<ExecutionPoint>(() => ({ path: null, line: 0, top: true, values: {} }));
 
-const MAX_CONSOLE_LINES = 5000;
+/** Console buffer: at most this many physical lines per session. */
+const MAX_CONSOLE_LINES = 50_000;
 let lineSeq = 0;
 /** ANSI state per session and output category (a colour can span several output events). */
 const ansiStreams = new Map<DebugSessionId, Map<string, AnsiStream>>();
+
+/** Streamed output buffered until the next animation frame (one setState per frame). */
+interface PendingOutput {
+  session: DebugSessionId;
+  category: string;
+  raw: string;
+}
+const pendingOutput: PendingOutput[] = [];
+let outputFlushHandle: number | null = null;
 
 function ansiStream(session: DebugSessionId, category: string): AnsiStream {
   let streams = ansiStreams.get(session);
@@ -252,22 +262,103 @@ export function publishContext() {
 
 export function appendConsole(session: DebugSessionId, category: string, raw: string) {
   if (!raw) return;
+  flushConsoleOutput();
   const spans = ansiStream(session, category).parse(raw);
   const text = spans.map((sp) => sp.text).join("");
   if (!text) return;
   useDebug.setState((s) => {
     const prev = s.console[session] ?? [];
     const next = [...prev];
-    const last = next[next.length - 1];
-    // Merge partial lines of the same category.
-    if (last && last.category === category && !last.text.endsWith("\n")) {
-      next[next.length - 1] = { ...last, text: last.text + text, spans: appendSpans(last.spans, spans) };
-    } else {
-      next.push({ id: ++lineSeq, category, text, spans });
-    }
-    if (next.length > MAX_CONSOLE_LINES) next.splice(0, next.length - MAX_CONSOLE_LINES);
+    appendConsoleLines(next, category, spans);
+    trimConsole(next);
     return { console: { ...s.console, [session]: next } };
   });
+}
+
+/**
+ * Queues streamed debuggee output: ANSI parsing and the console store update happen
+ * once per animation frame with all pending chunks merged per
+ * (session, category), so a flood of `output` events can't saturate React.
+ */
+export function appendConsoleQueued(session: DebugSessionId, category: string, raw: string) {
+  if (!raw) return;
+  const last = pendingOutput[pendingOutput.length - 1];
+  if (last && last.session === session && last.category === category) {
+    last.raw += raw;
+  } else {
+    pendingOutput.push({ session, category, raw });
+  }
+  if (outputFlushHandle === null) {
+    outputFlushHandle = requestAnimationFrame(() => {
+      outputFlushHandle = null;
+      flushConsoleOutput();
+    });
+  }
+}
+
+function flushConsoleOutput() {
+  if (pendingOutput.length === 0) return;
+  const chunks = pendingOutput.splice(0);
+  useDebug.setState((s) => {
+    const consoleBySession = { ...s.console };
+    for (const { session, category, raw } of chunks) {
+      if (!s.sessions[session]) continue;
+      const spans = ansiStream(session, category).parse(raw);
+      const text = spans.map((sp) => sp.text).join("");
+      if (!text) continue;
+      const prev = consoleBySession[session] ?? [];
+      const next = [...prev];
+      appendConsoleLines(next, category, spans);
+      trimConsole(next);
+      consoleBySession[session] = next;
+    }
+    return { console: consoleBySession };
+  });
+}
+
+/** Split styled output at real line breaks, retaining partial lines across events. */
+function appendConsoleLines(lines: ConsoleLine[], category: string, spans: Span[]) {
+  const last = lines.at(-1);
+  let line =
+    last && last.category === category && !last.text.endsWith("\n") ? { ...last, spans: [...last.spans] } : undefined;
+  if (line) lines[lines.length - 1] = line;
+  for (const span of spans) {
+    let start = 0;
+    while (start < span.text.length) {
+      const newline = span.text.indexOf("\n", start);
+      const end = newline < 0 ? span.text.length : newline + 1;
+      const text = span.text.slice(start, end);
+      if (!line) {
+        line = { id: ++lineSeq, category, text: "", spans: [] };
+        lines.push(line);
+      }
+      line.text += text;
+      line.spans = appendSpans(line.spans, [{ ...span, text }]);
+      if (newline >= 0) line = undefined;
+      start = end;
+    }
+  }
+}
+
+/** Drops the oldest lines once past the line or configured character cap. */
+function trimConsole(lines: ConsoleLine[]) {
+  let drop = 0;
+  if (lines.length > MAX_CONSOLE_LINES) {
+    drop = lines.length - MAX_CONSOLE_LINES + Math.ceil(MAX_CONSOLE_LINES / 10);
+  }
+  const c = workflowSettings().console;
+  if (c.overrideBuffer) {
+    const limit = c.bufferKb * 1024;
+    let chars = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      chars += lines[i]!.text.length + 1;
+      if (chars > limit) {
+        drop = Math.max(drop, i + 1);
+        break;
+      }
+    }
+  }
+  if (drop > 0) lines.splice(0, drop);
 }
 
 export function clearConsole(session: DebugSessionId) {
@@ -306,6 +397,7 @@ export async function startSession(
   const startedAt = Date.now();
   pendingStarts++;
   try {
+    await flushBreakpoints();
     const id = await call(commands.debugStart(launch));
     owned.add(id);
     useDebug.setState((s) => {
@@ -684,7 +776,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     }
     case "output":
-      appendConsole(id, event.category, event.output);
+      appendConsoleQueued(id, event.category, event.output);
       break;
     case "thread":
       if (s.status === "paused") void loadThreads(id);
@@ -706,6 +798,11 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
 export function resetSessions() {
   const { sessions } = useDebug.getState();
   for (const s of Object.values(sessions)) if (s.parent == null && isLive(s)) void stopSession(s.id);
+  pendingOutput.length = 0;
+  if (outputFlushHandle !== null) {
+    cancelAnimationFrame(outputFlushHandle);
+    outputFlushHandle = null;
+  }
   ansiStreams.clear();
   useDebug.setState({ sessions: {}, active: null, console: {}, stopSeq: 0 });
   useExecutionPoint.setState({ path: null, line: 0, top: true, values: {} });

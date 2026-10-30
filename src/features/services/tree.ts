@@ -13,12 +13,14 @@ interface TreeState {
   /** Root nodes per provider id (reported by each provider's `useRoots`). */
   roots: Record<string, ServiceTreeItem[]>;
   selectedKey: string | null;
+  selectedKeys: Set<string>;
   expanded: Set<string>;
 }
 
 export const useServicesTree = create<TreeState>(() => ({
   roots: {},
   selectedKey: null,
+  selectedKeys: new Set(),
   expanded: new Set(["docker:default", "docker:default:group:containers"]),
 }));
 

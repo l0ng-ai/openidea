@@ -3,6 +3,7 @@
  * Application, Spring Boot, Compound) and the helpers that turn a type's params into the launched
  * command line. Other features contribute types with `registerRunConfigType`.
  */
+import { isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
 import type { RunConfig } from "@/platform/ipc";
 import { registerRunConfigType, useRunConfigTypes, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { formatArgs, parseArgs, uid, uniqueName } from "./configs";
@@ -17,6 +18,8 @@ import {
 } from "./jvmTypes";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+
+import { tomcatType } from "./tomcat";
 
 export const COMPOUND = "compound";
 
@@ -394,6 +397,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   pytest,
   applicationType,
   springBootType,
+  tomcatType,
   compound,
 ];
 
@@ -438,6 +442,9 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     params,
     command: line.command,
     args: line.args,
+    ...(isJvmApplication(config) && parseJavaArgs(config.args).mainClass !== parseJavaArgs(line.args).mainClass
+      ? { module: undefined }
+      : {}),
     ...(type?.ownsWorkingDirectory ? { cwd: line.cwd ?? null } : {}),
     ...(line.stop ? { stopCommand: line.stop } : {}),
   };

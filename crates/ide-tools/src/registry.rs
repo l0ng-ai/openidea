@@ -114,7 +114,7 @@ const fn ver(cmd: &'static str) -> Option<(&'static str, &'static [&'static str]
 
 /// The TypeScript these npm servers load as a library (`tsserver.js`, `ts.server`):
 /// TypeScript 7 (the native port) ships neither, and `@latest` resolves to it.
-pub const TYPESCRIPT: &str = "typescript@<7";
+pub const TYPESCRIPT: &str = "typescript@6";
 
 pub static TOOLS: &[ToolSpec] = &[
     ToolSpec {

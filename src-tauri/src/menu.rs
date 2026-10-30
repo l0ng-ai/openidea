@@ -204,6 +204,9 @@ pub fn spec(os: Os) -> Vec<Entry> {
 
     let mut file = vec![
         act("file.newProject", "New Project…"),
+        act("workspace.create", "New Workspace…"),
+        act("workspace.open", "Open Workspace…"),
+        act("workspace.manage", "Manage Workspace…"),
         act("file.new", "New…"),
         act("file.newScratchFile", "New Scratch File…"),
         act("file.openProject", "Open…"),
@@ -571,6 +574,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("run.chooseDebugConfig", "Debug…"),
             act("runAnything.show", "Run Anything…"),
             act("run.editConfigs", "Edit Configurations…"),
+            act("run.updateApplication", "Update Application"),
             act("debug.attachToProcess", "Attach to Process…"),
             SEP,
             act("debug.resume", "Resume Program"),
@@ -791,6 +795,10 @@ pub fn spec(os: Os) -> Vec<Entry> {
         ),
         SEP,
         act("window.new", "New Window"),
+        act("window.mergeAllWindows", "Merge All Project Windows"),
+        act("window.detachTab", "Move Tab to New Window"),
+        act("window.nextTab", "Next Project Tab"),
+        act("window.previousTab", "Previous Project Tab"),
     ]);
     // ⌘` is macOS's window cycling; elsewhere Ctrl+` is Quick Switch Scheme and the keymap's
     // Ctrl+Alt+] / Ctrl+Alt+[ switch windows.

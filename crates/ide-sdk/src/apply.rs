@@ -519,8 +519,8 @@ fn configure_vue_typescript(cfg: &mut LanguageServerConfig, root: &Path, server_
 fn configure_angular(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
     // Found as the launcher finds it; missing, it asks to be installed.
     let path = cfg.env.get("PATH").map_or_else(search_path, OsString::from);
-    let Ok(bin) = which::which_in(&cfg.command, Some(path), server_root) else { return };
-    let Some(package) = angular::server_package(&bin) else {
+    let Some(bin) = ide_core::tool_path::find_command(&cfg.command, &path, server_root) else { return };
+    let Some(package) = angular::server_package(&bin, &path, server_root, &cfg.env) else {
         cfg.launch_error = Some(angular::missing_package_message(&bin));
         return;
     };
@@ -651,7 +651,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     c.env.entry(key).or_insert(value);
                 }
             }
-            "maven" => {
+            "maven" | "tomcat" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
@@ -662,6 +662,17 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     if !c.args.starts_with(&mvn_options) {
                         c.args.splice(0..0, mvn_options.iter().cloned());
                     }
+                } else if c.kind == "maven"
+                    && matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat")
+                    && let Some(mvn) = &mvn
+                {
+                    // A goal configuration saved from the tool window keeps the
+                    // literal `mvn` / `mvn.cmd` the launcher resolved to; without a
+                    // wrapper it cannot start when Maven lives on a version
+                    // manager's shims or a configured home (#328). Detected configs
+                    // take the Maven options too, but the saved ones already baked
+                    // them into `args`.
+                    c.command = mvn.to_string_lossy().into_owned();
                 }
             }
             _ => {}

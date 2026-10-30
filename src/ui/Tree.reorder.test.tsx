@@ -97,6 +97,22 @@ describe("Tree pointer reordering", () => {
     expect(labels()).toEqual(["group", "a", "b", "c", "other", "d"]);
   });
 
+  it("leaves pointer transport and activation untouched without reordering", () => {
+    const listeners = vi.spyOn(window, "addEventListener");
+    const frames = vi.spyOn(window, "requestAnimationFrame");
+    render(<Harness enabled={false} />);
+    listeners.mockClear();
+    frames.mockClear();
+    drag(row("b"), row("a"));
+    expect(
+      listeners.mock.calls.filter(([type]) => ["pointermove", "pointerup", "pointercancel"].includes(type)),
+    ).toEqual([]);
+    expect(frames).not.toHaveBeenCalled();
+    expect(document.querySelector('[aria-hidden="true"][role="treeitem"]')).toBeNull();
+    fireEvent.doubleClick(row("b"));
+    expect(screen.getByRole("status")).toHaveTextContent("b");
+  });
+
   it("cancels with Escape or pointercancel and never activates after a drag", () => {
     render(<Harness />);
     for (const cancel of ["Escape", "pointercancel"]) {

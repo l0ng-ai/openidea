@@ -1,15 +1,18 @@
 //! Angular Language Server (`ngserver`): its package, where TypeScript and
 //! `@angular/language-service` come from, and the project's Angular version.
 
-use crate::npm::package_dir;
+use crate::npm::{package_dir, shim_package};
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 pub(crate) const SERVER: &str = "angular-language-server";
 const PACKAGE: &str = "@angular/language-server";
 
-/// `@angular/language-server`'s directory for an `ngserver` executable.
-pub(crate) fn server_package(bin: &Path) -> Option<PathBuf> {
-    package_dir(bin, PACKAGE)
+/// `@angular/language-server`'s directory for an `ngserver` executable found on
+/// `path` and run in `cwd` with `env`.
+pub(crate) fn server_package(bin: &Path, path: &OsStr, cwd: &Path, env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    package_dir(bin, PACKAGE).or_else(|| shim_package(bin, PACKAGE, path, cwd, env))
 }
 
 /// Why an `ngserver` whose package isn't found can't start: it loads TypeScript

@@ -1,11 +1,12 @@
 //! Starting server processes: binary resolution and the [`Launcher`] seam.
 
 use ide_core::CancellationToken;
+use ide_core::tool_path::search_path;
 use ide_jsonrpc::{Handler, Peer};
 use ide_language::LanguageServerConfig;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum LaunchError {
@@ -72,8 +73,7 @@ impl Launcher for ProcessLauncher {
         cancel: &CancellationToken,
     ) -> Result<Peer, LaunchError> {
         let search = server_search_path(config);
-        let binary = which::which_in(&config.command, Some(&search), root)
-            .ok()
+        let binary = ide_core::tool_path::find_command(&config.command, &search, root)
             .and_then(|b| resolve_rustup_proxy(&config.command, b));
         let mut env: Vec<(String, String)> = vec![("PATH".into(), search.to_string_lossy().into_owned())];
         env.extend(config.env.iter().filter(|(k, _)| *k != "PATH").map(|(k, v)| (k.clone(), v.clone())));
@@ -95,7 +95,7 @@ impl Launcher for ProcessLauncher {
     }
 
     fn available(&self, config: &LanguageServerConfig, root: &Path) -> bool {
-        which::which_in(&config.command, Some(server_search_path(config)), root).is_ok()
+        ide_core::tool_path::find_command(&config.command, &server_search_path(config), root).is_some()
     }
 }
 
@@ -104,9 +104,6 @@ fn server_search_path(config: &LanguageServerConfig) -> OsString {
     config.env.get("PATH").map(OsString::from).unwrap_or_else(search_path)
 }
 
-/// `PATH` plus the login shell's `PATH` and common tool directories, so
-/// servers resolve even when the app is launched from a GUI shell with a
-/// minimal environment.
 /// `~/.cargo/bin/<tool>` is usually a rustup proxy that fails when the active
 /// toolchain lacks the component (common for rust-analyzer). In that case use
 /// the newest installed toolchain that ships the binary; with none, the tool is
@@ -153,74 +150,6 @@ fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> Option<PathBuf> {
     }
 }
 
-pub fn search_path() -> OsString {
-    static PATH: OnceLock<OsString> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let mut dirs: Vec<PathBuf> =
-            std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-        if let Some(shell_path) = login_shell_path() {
-            dirs.extend(std::env::split_paths(&shell_path));
-        }
-        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) {
-            for rel in [".cargo/bin", ".local/bin", "go/bin", ".bun/bin", ".deno/bin", ".npm-global/bin", ".volta/bin"]
-            {
-                dirs.push(home.join(rel));
-            }
-            // nvm: newest installed node's bin.
-            if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
-                let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path().join("bin")).collect();
-                versions.sort();
-                dirs.extend(versions.into_iter().rev());
-            }
-        }
-        for d in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
-            dirs.push(PathBuf::from(d));
-        }
-        let mut seen = std::collections::HashSet::new();
-        dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()));
-        std::env::join_paths(dirs).unwrap_or_default()
-    })
-    .clone()
-}
-
-#[cfg(unix)]
-fn login_shell_path() -> Option<OsString> {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
-    let shell = std::env::var_os("SHELL")?;
-    const MARK: &str = "__OPENIDEA_PATH__";
-    let mut child = ide_core::process::prepare(&mut Command::new(shell))
-        .args(["-l", "-c", &format!("printf '{MARK}%s{MARK}' \"$PATH\"")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-    let mut out = String::new();
-    child.stdout.take()?.read_to_string(&mut out).ok()?;
-    let start = out.find(MARK)? + MARK.len();
-    let end = start + out[start..].find(MARK)?;
-    Some(OsString::from(&out[start..end]))
-}
-
-#[cfg(not(unix))]
-fn login_shell_path() -> Option<OsString> {
-    None
-}
-
 /// Workspace root for `file`: the outermost ancestor within `project_root`
 /// containing a root marker (so a Cargo/npm workspace gets one server, not one
 /// per member), else `project_root`. `None` when `file` is outside the project.
@@ -259,10 +188,25 @@ mod tests {
     }
 
     #[test]
+    fn marked_root_needs_a_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let file = root.join("apps/web/src/app.ts");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let markers = vec!["angular.json".to_string(), "node_modules/@angular/core".to_string()];
+        assert_eq!(marked_root(root, &file, &markers), None);
+        std::fs::create_dir_all(root.join("apps/web/node_modules/@angular/core")).unwrap();
+        assert_eq!(marked_root(root, &file, &markers), Some(root.join("apps/web")));
+        assert_eq!(marked_root(root, &root.join("apps/api/main.ts"), &markers), None);
+    }
+
+    #[test]
     fn search_path_contains_env_path() {
         let p = search_path();
         let dirs: Vec<PathBuf> = std::env::split_paths(&p).collect();
-        assert!(dirs.contains(&PathBuf::from("/usr/bin")));
+        // The process's own `PATH` starts the search, then per-user and system dirs.
+        let first_env = std::env::split_paths(&std::env::var_os("PATH").unwrap()).find(|d| d.is_absolute()).unwrap();
+        assert_eq!(dirs.first(), Some(&first_env), "{dirs:?}");
     }
 }
 

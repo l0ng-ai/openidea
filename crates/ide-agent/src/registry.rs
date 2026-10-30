@@ -335,7 +335,7 @@ pub fn mark_updates(paths: &RegistryPaths, providers: &mut [AgentProvider]) {
 
 /// HTTPS only, redirects included. Tests serve downloads over `file://`.
 fn http() -> IdeResult<Http> {
-    let http = Http::new(&ide_tools::default_search_path())?;
+    let http = Http::new(&ide_core::tool_path::search_path())?;
     Ok(if cfg!(test) { http } else { http.https_only() })
 }
 

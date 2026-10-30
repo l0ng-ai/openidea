@@ -1,6 +1,8 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { executeAction, getAction } from "@/platform/actions";
 import { evaluateWhen, useContextKeys } from "@/platform/context";
 import { basename, useProject } from "@/platform/project";
@@ -549,15 +551,28 @@ function ConsoleView({ session }: { session: DebugSession }) {
   const lines = useDebug((s) => s.console[session.id]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const programmatic = useRef(false);
   const [input, setInput] = useState("");
   const history = useRef<string[]>(readHistory("console"));
   const historyPos = useRef(-1);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
+  const virtualizer = useVirtualizer({
+    count: lines?.length ?? 0,
+    getScrollElement: () => scroller.current,
+    estimateSize: () => 18,
+    overscan: 30,
+    getItemKey: (i) => lines?.[i]?.id ?? i,
+  });
+
+  useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+    if (!el || !stick.current || !lines?.length) return;
+    programmatic.current = true;
+    virtualizer.scrollToIndex(lines.length - 1, { align: "end" });
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => (programmatic.current = false));
+  }, [lines, virtualizer]);
 
   const submit = async () => {
     const e = input.trim();
@@ -613,6 +628,7 @@ function ConsoleView({ session }: { session: DebugSession }) {
         ref={scroller}
         className={clsx(styles.consoleOutput, ansi.palette)}
         onScroll={(e) => {
+          if (programmatic.current) return;
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
         }}
@@ -621,18 +637,31 @@ function ConsoleView({ session }: { session: DebugSession }) {
           showContextMenu(e, [{ label: "Clear All", icon: "trash", run: () => clearConsole(session.id) }]);
         }}
         role="log"
+        onKeyDown={copySelectionOnKeyDown}
         aria-label={tx("Debug console")}
         tabIndex={0}
       >
-        {(lines ?? []).map((l) => (
-          <span key={l.id} className={clsx(styles.out, styles[`cat-${l.category}`])}>
-            {l.spans.map((sp, i) => (
-              <span key={i} style={spanStyle(sp)}>
-                {sp.text}
+        <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+          {virtualizer.getVirtualItems().map((item) => {
+            const l = lines?.[item.index];
+            if (!l) return null;
+            return (
+              <span
+                key={item.key}
+                data-index={item.index}
+                ref={virtualizer.measureElement}
+                className={clsx(styles.out, styles[`cat-${l.category}`])}
+                style={{ transform: `translateY(${item.start}px)` }}
+              >
+                {l.spans.map((sp, i) => (
+                  <span key={i} style={spanStyle(sp)}>
+                    {sp.text}
+                  </span>
+                ))}
               </span>
-            ))}
-          </span>
-        ))}
+            );
+          })}
+        </div>
       </div>
       <label className={styles.repl}>
         <span className={styles.prompt} aria-hidden>

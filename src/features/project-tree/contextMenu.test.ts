@@ -129,6 +129,22 @@ describe("project view context menu", () => {
     }
   });
 
+  it("offers Show History for files, directories, multi-selection and the project root", () => {
+    const dispose = registerActions([{ id: "vcs.showHistory", title: "Show History", run: () => undefined }]);
+    try {
+      for (const nodes of [
+        [node("/p/a.py")],
+        [node("/p/src", true)],
+        [node("/p/a.py"), node("/p/src", true)],
+        [node("/p", true, true)],
+      ]) {
+        expect(sub(contextMenuItems(nodes), "Git")).toContain("Show History");
+      }
+    } finally {
+      dispose();
+    }
+  });
+
   it("shows Mark Directory as for folders, without file-only items", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
     expect(l).toContain("Mark Directory as");
@@ -161,6 +177,17 @@ describe("project view context menu", () => {
     expect(l).not.toContain("Compare With…");
   });
 
+  it("offers Compare With… in a non-git project too", () => {
+    useProject.setState({
+      project: { name: "p", root: ROOT, isGit: false, settings: {} } as never,
+      settings: {} as never,
+    });
+    const l = labels(contextMenuItems([node(`${ROOT}/a.py`)]));
+    expect(l).not.toContain("Git");
+    expect(l).toContain("Compare With…");
+    expect(labels(contextMenuItems([node(`${ROOT}/a.py`), node(`${ROOT}/b.py`)]))).toContain("Compare Files");
+  });
+
   it("never shows an empty submenu", () => {
     disposers.forEach((d) => d());
     disposers = [];
@@ -173,4 +200,28 @@ describe("project view context menu", () => {
     expect(l).not.toContain("Local History");
     expect(l).not.toContain("Find in Files…");
   });
+});
+
+it("offers workspace removal for every member root", () => {
+  useProject.setState({
+    project: {
+      root: "/workspace",
+      name: "A",
+      settings: {},
+      isGit: false,
+      workspace: { version: 1, name: "A", projects: ["/a", "/b"] },
+    },
+  });
+  const removal = {
+    kind: "action",
+    action: "workspace.removeProject",
+    arg: "/b",
+  };
+  expect(contextMenuItems([node("/b", true, true)])).toContainEqual(removal);
+  expect(contextMenuItems([node("/a", true, true)])).toContainEqual(
+    expect.objectContaining({ action: "workspace.removeProject" }),
+  );
+  expect(contextMenuItems([node("/b/src", true)])).not.toContainEqual(
+    expect.objectContaining({ action: "workspace.removeProject" }),
+  );
 });

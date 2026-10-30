@@ -1,3 +1,4 @@
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import {
   memo,
   useEffect,
@@ -20,6 +21,7 @@ import { findOutputLinks, type OutputLink } from "./links";
 import { openTarget, openUrl } from "./navigate";
 import { segmentLine } from "./segments";
 import styles from "./Run.module.css";
+import { hostBinding, formatBinding } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 
 const ROW = 20;
@@ -203,7 +205,7 @@ export function ConsoleView({
       {
         label: "Copy",
         icon: "copy",
-        shortcut: "⌘C",
+        shortcut: formatBinding(hostBinding("Meta+C")),
         disabled: !selection,
         run: () => void navigator.clipboard?.writeText(selection).catch(() => undefined),
       },
@@ -216,7 +218,8 @@ export function ConsoleView({
     ]);
   };
 
-  const onKeyDown = (e: KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (copySelectionOnKeyDown(e)) return;
     if (!input || e.nativeEvent.isComposing) return;
     if (e.key === "d" && e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();

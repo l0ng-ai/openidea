@@ -87,6 +87,7 @@ export interface Clipboard {
 interface ProjectTreeState {
   root: string | null;
   name: string;
+  members: readonly string[] | null;
   listings: ReadonlyMap<string, readonly FileEntry[]>;
   expanded: ReadonlySet<string>;
   selected: ReadonlySet<string>;
@@ -130,6 +131,7 @@ function writeJson(key: string, value: unknown) {
 export const useProjectTree = create<ProjectTreeState>(() => ({
   root: null,
   name: "",
+  members: null,
   listings: new Map(),
   expanded: new Set(),
   selected: new Set(),
@@ -158,6 +160,7 @@ const set = (patch: Partial<ProjectTreeState>) => useProjectTree.setState(patch)
 let memo: {
   root: string | null;
   name: string;
+  members: readonly string[] | null;
   listings: ProjectTreeState["listings"];
   options: ViewOptions;
   editing: Editing | null;
@@ -178,6 +181,7 @@ export function selectModel(s: ProjectTreeState): TreeModel {
     memo &&
     memo.root === s.root &&
     memo.name === s.name &&
+    memo.members === s.members &&
     memo.listings === s.listings &&
     memo.options === s.options &&
     memo.editing === s.editing &&
@@ -190,7 +194,16 @@ export function selectModel(s: ProjectTreeState): TreeModel {
     s.editing?.kind === "new" ? { parent: s.editing.parent, kind: s.editing.nodeKind } : null;
   const extras = useProjectViewRoots.getState().roots;
   const contributed = projectViewRoots(extras);
-  const project = () => buildModel({ path: s.root!, name: s.name }, s.listings, s.options, placeholder);
+  const memberRoots = s.members?.map((path) => ({
+    path,
+    label: path.slice(path.lastIndexOf("/") + 1),
+    icon: "",
+    detail: path,
+  }));
+  const project = () =>
+    memberRoots
+      ? withExtraRoots(EMPTY_MODEL, memberRoots, s.listings, s.options, placeholder)
+      : buildModel({ path: s.root!, name: s.name }, s.listings, s.options, placeholder);
   let model = EMPTY_MODEL;
   if (s.root) {
     if (s.mode === "projectFiles") model = project();
@@ -204,7 +217,7 @@ export function selectModel(s: ProjectTreeState): TreeModel {
       );
     else if (files)
       model = buildPathsModel(
-        [{ path: s.root, label: s.name, icon: "" }, ...extraFolders(contributed)],
+        [...(memberRoots ?? [{ path: s.root, label: s.name, icon: "" }]), ...extraFolders(contributed)],
         files,
         s.options.foldersFirst,
       );
@@ -217,6 +230,7 @@ export function selectModel(s: ProjectTreeState): TreeModel {
   memo = {
     root: s.root,
     name: s.name,
+    members: s.members,
     listings: s.listings,
     options: s.options,
     editing: s.editing,
@@ -238,7 +252,7 @@ const inflight = new Map<string, Promise<void>>();
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** Resets the view for a newly opened project, restoring its expansion state. */
-export function initProjectTree(root: string | null, name = "") {
+export function initProjectTree(root: string | null, name = "", members: readonly string[] | null = null) {
   generation++;
   inflight.clear();
   clearTimeout(persistTimer);
@@ -247,8 +261,9 @@ export function initProjectTree(root: string | null, name = "") {
   set({
     root,
     name,
+    members,
     listings: new Map(),
-    expanded: initialExpanded(root, get().mode),
+    expanded: initialExpanded(root, get().mode, members),
     selected: new Set(),
     lead: null,
     editing: null,
@@ -264,7 +279,7 @@ const modeExpanded = new Map<ViewMode, ReadonlySet<string>>();
 const autoExpanded = new Set<string>();
 
 /** "Project" restores the persisted expansion; other panes start with their roots open. */
-function initialExpanded(root: string | null, mode: ViewMode): Set<string> {
+function initialExpanded(root: string | null, mode: ViewMode, members = get().members): Set<string> {
   if (!root || isFilteredMode(mode)) return new Set();
   if (mode === "scratches")
     return new Set(
@@ -273,8 +288,9 @@ function initialExpanded(root: string | null, mode: ViewMode): Set<string> {
       ),
     );
   const persisted = mode === "project" ? (readJson<string[]>(expandedKey(root)) ?? []) : [];
-  const expanded = new Set(persisted.filter((p) => isSameOrInside(p, root)));
-  expanded.add(root);
+  const roots = members ?? [root];
+  const expanded = new Set(persisted.filter((p) => roots.some((r) => isSameOrInside(p, r))));
+  roots.forEach((r) => expanded.add(r));
   return expanded;
 }
 

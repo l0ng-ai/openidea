@@ -221,7 +221,25 @@ impl Http {
 
     /// GETs `url` as text, failing when the response is larger than `max_bytes`.
     pub fn get_text_limited(&self, url: &str, max_bytes: Option<u64>, cancel: &CancellationToken) -> IdeResult<String> {
+        self.get_text_response(url, max_bytes, false, cancel)
+    }
+
+    /// Adoptium uses 404 as well as an empty array for absent platform builds.
+    pub fn get_text_or_empty_on_404(&self, url: &str, cancel: &CancellationToken) -> IdeResult<String> {
+        self.get_text_response(url, None, true, cancel)
+    }
+
+    fn get_text_response(
+        &self,
+        url: &str,
+        max_bytes: Option<u64>,
+        empty_on_404: bool,
+        cancel: &CancellationToken,
+    ) -> IdeResult<String> {
         let mut cmd = self.base(url);
+        if empty_on_404 {
+            cmd.args(["--write-out", "\n%{http_code}"]);
+        }
         if let Some(max) = max_bytes {
             cmd.arg("--max-filesize").arg(max.to_string());
         }
@@ -246,7 +264,14 @@ impl Http {
                 None => std::thread::sleep(Duration::from_millis(30)),
             }
         };
-        let body = out_t.join().unwrap_or_default();
+        let mut body = out_t.join().unwrap_or_default();
+        if empty_on_404 && let Some(split) = body.iter().rposition(|b| *b == b'\n') {
+            let code = &body[split + 1..];
+            if code == b"404" {
+                return Ok("[]".into());
+            }
+            body.truncate(split);
+        }
         if let Some(max) = max_bytes
             && body.len() as u64 > max
         {
@@ -360,6 +385,25 @@ mod tests {
         assert!(err.message.contains("failed"), "{}", err.message);
         let lines = lines.into_inner().unwrap();
         assert!(lines.contains(&"one".to_string()) && lines.contains(&"two".to_string()), "{lines:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absent_build_is_empty_but_http_failures_are_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let curl = tmp.path().join("curl");
+        let http = Http { curl: curl.clone(), https_only: false };
+        for (code, exit, expected) in [(404, 22, Some("[]")), (200, 0, Some("payload")), (403, 22, None), (0, 7, None)]
+        {
+            std::fs::write(&curl, format!("#!/bin/sh\nprintf 'payload\\n{code:03}'\nexit {exit}\n")).unwrap();
+            std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let result = http.get_text_or_empty_on_404("https://example.test/build", &CancellationToken::new());
+            match expected {
+                Some(body) => assert_eq!(result.unwrap(), body),
+                None => assert!(result.is_err()),
+            }
+        }
     }
 
     #[cfg(unix)]

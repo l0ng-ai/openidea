@@ -13,6 +13,8 @@ use std::sync::Arc;
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum IdeEvent {
+    /// Project window membership or selection changed.
+    WindowGroupsChanged,
     /// Files or directories changed on disk (after debouncing, ignore rules applied).
     FsChanged {
         created: Vec<crate::IpcPath>,

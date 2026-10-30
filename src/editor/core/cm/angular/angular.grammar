@@ -2,7 +2,8 @@
 // From @codemirror/lang-angular 0.1.4 (MIT, see LICENSE). Changed by OpenIDEA:
 // control-flow blocks (`@if`, `@for`, `@switch`, `@defer`, ...) and `@let`
 // declarations in text, key and animation event names (`(keydown.enter)`,
-// `(@fade.done)`) and animation bindings (`[@fade]`). Regenerate with
+// `(@fade.done)`), animation bindings (`[@fade]`) and structural directives'
+// microsyntax (`*ngFor="let item of items; index as i"`). Regenerate with
 // `pnpm gen:angular-grammar`.
 
 @top Content {
@@ -22,12 +23,29 @@
   // `class.active`, `keydown.enter`, and animations' `@fade`, `@fade.done`.
   bindingName { "@"? Identifier ("." Identifier)* }
 
+  // A structural directive's value: an expression, then `let` declarations,
+  // `as` aliases and keyed expressions (`of items`, `trackBy: byId`). A key's
+  // expression is optional, like Angular's at the end and before `let`.
+  @top Microsyntax {
+    (BindingExpression alias?)? (binding | ";" | ",")*
+  }
+
+  binding {
+    reserved<"let"> VariableDefinition (Is VariableName)? |
+    VariableName alias |
+    BindingKey (":"? BindingExpression alias?)?
+  }
+
+  alias { reserved<"as"> VariableDefinition }
+
+  BindingKey { jsIdentifier }
+
   // The header of a block, up to its `{`: its body and `}` are content and
   // HTML elements around it. Both braces are a `Brace`, which CodeMirror
   // matches like plain text.
   Block {
-    "@if" BlockParameters<Expression (";" kw<"as"> VariableDefinition)?> Brace |
-    "@else" (kw<"if"> BlockParameters<Expression (";" kw<"as"> VariableDefinition)?>)? Brace |
+    "@if" BlockParameters<Expression (";" alias)?> Brace |
+    "@else" (kw<"if"> BlockParameters<Expression (";" alias)?>)? Brace |
     "@for" BlockParameters<VariableDefinition kw<"of"> Expression (";" forOption?)*> Brace |
     ("@switch" | "@case") BlockParameters<Expression> Brace |
     ("@default" | "@empty" | "@error") Brace |
@@ -41,7 +59,7 @@
 
   forOption {
     kw<"track"> Expression |
-    kw<"let"> ForAlias ("," ForAlias)*
+    reserved<"let"> ForAlias ("," ForAlias)*
   }
 
   ForAlias { VariableDefinition Is VariableName }
@@ -63,7 +81,12 @@
 
   TriggerName { jsIdentifier }
 
-  kw<term> { @specialize[@name={term}]<jsIdentifier, term> }
+  // Keywords that are also names where a keyword can't be (`@if (x; as
+  // after)`). `let` and `as` never are: in microsyntax, `let x` and `as x`
+  // would also read as a key and its expression.
+  kw<term> { @extend[@name={term}]<jsIdentifier, term> }
+
+  reserved<term> { @specialize[@name={term}]<jsIdentifier, term> }
 }
 
 AttributeValue[isolate] {
@@ -86,7 +109,7 @@ Interpolation[isolate] {
 
 @external tokens time from "./tokens" { Time }
 
-@external tokens expression from "./tokens" { Expression }
+@external tokens expression from "./tokens" { Expression, BindingExpression }
 
 @external tokens attrSingle from "./tokens" { attributeContentSingle }
 @external tokens attrDouble from "./tokens" { attributeContentDouble }
@@ -101,7 +124,8 @@ Interpolation[isolate] {
 
   InterpolationContent { (![}] | "}" ![}]) InterpolationContent? }
 
-  Identifier { (":" | "-" | @asciiLetter | @digit | "_" | $[À-\u{EFFFF}])+ }
+  // `%` for unit bindings: `[style.width.%]`.
+  Identifier { (":" | "-" | "%" | @asciiLetter | @digit | "_" | $[À-\u{EFFFF}])+ }
 
   jsIdentifier {
     (@asciiLetter | "_" | "$" | $[À-\u{EFFFF}]) (@asciiLetter | @digit | "_" | "$" | $[À-\u{EFFFF}])*
@@ -112,7 +136,7 @@ Interpolation[isolate] {
   Is { "=" }
 
   "{{" "}}" "[" "]" "(" ")"
-  "*" "#" "@" ";" ","
+  "*" "#" "@" ";" "," ":"
 
   "@if" "@else" "@for" "@empty" "@switch" "@case" "@default"
   "@defer" "@placeholder" "@loading" "@error" "@let"

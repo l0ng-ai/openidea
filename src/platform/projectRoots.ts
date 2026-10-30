@@ -15,7 +15,7 @@ import {
   validateProjectStructure,
   type RootFolder,
 } from "./languageSettings";
-import { useProject } from "./project";
+import { basename, projectFolder, useProject } from "./project";
 
 interface RootsState {
   /** Project the roots belong to. */
@@ -108,7 +108,7 @@ const EMPTY: RootFolder[] = [];
 
 /** Project-relative path of an absolute `path`, or null outside the project. */
 export function projectRelative(path: string): string | null {
-  const root = useProject.getState().project?.root;
+  const root = projectFolder(useProject.getState().project, path)?.root;
   if (!root) return null;
   if (path === root) return "";
   return path.startsWith(root + "/") ? path.slice(root.length + 1) : null;
@@ -142,7 +142,7 @@ export function inFileSet(set: ProjectFileSet, path: string, roots: readonly Roo
 /** A module: the project itself or a folder with a build file roots were detected from. */
 export interface ProjectModule {
   name: string;
-  /** Project-relative, `/`-separated; `""` is the project root. */
+  /** Project-relative, or absolute for a workspace member; `""` is a plain project root. */
   path: string;
 }
 
@@ -162,6 +162,12 @@ export function projectModules(detected: readonly RootFolder[], projectName: str
 /** Modules of the open project (reactive). */
 export function useProjectModules(): ProjectModule[] {
   const detected = useDetectedRoots();
-  const name = useProject((s) => s.project?.name ?? "");
-  return useMemo(() => projectModules(detected, name), [detected, name]);
+  const project = useProject((s) => s.project);
+  return useMemo(
+    () =>
+      project?.workspace
+        ? project.workspace.projects.map((path) => ({ path, name: basename(path) }))
+        : projectModules(detected, project?.name ?? ""),
+    [detected, project],
+  );
 }

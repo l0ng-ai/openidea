@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const workspaceAttach = vi.fn();
+const workspaceUpdate = vi.fn();
+const projectCurrent = vi.fn();
 const windowOpenProject = vi.fn();
 const windowOpenFiles = vi.fn();
 const windowTakeLaunch = vi.fn();
@@ -19,6 +22,9 @@ vi.mock("@/platform/ipc", async (orig) => {
     isTauri: () => true,
     commands: {
       ...real.commands,
+      workspaceAttach: (...a: unknown[]) => workspaceAttach(...a),
+      workspaceUpdate: (...a: unknown[]) => workspaceUpdate(...a),
+      projectCurrent: () => projectCurrent(),
       windowOpenProject: (...a: unknown[]) => windowOpenProject(...a),
       windowOpenFiles: (...a: unknown[]) => windowOpenFiles(...a),
       windowTakeLaunch: () => windowTakeLaunch(),
@@ -32,8 +38,15 @@ vi.mock("@/platform/project", async (orig) => {
   return { ...real, openProject: (p: string) => openProject(p) };
 });
 
-const { openProjectInWindow, consumeLaunch, openFiles, openPaths, openLightEditFileAsProject, windowActions } =
-  await import("../windows");
+const {
+  openProjectInWindow,
+  consumeLaunch,
+  openFiles,
+  openPaths,
+  openLightEditFileAsProject,
+  openProjectWithPolicy,
+  windowActions,
+} = await import("../windows");
 const { useProject } = await import("@/platform/project");
 const { provideEditorService } = await import("@/workbench/contributions");
 
@@ -215,4 +228,57 @@ describe("launch", () => {
     expect(lightEditOpen).not.toHaveBeenCalled();
     expect(opened).toEqual(["/x/notes/a.txt (focus)"]);
   });
+});
+
+describe("Attach", () => {
+  it("switches a plain project to the automatic workspace in place", async () => {
+    useProject.setState({
+      ...projectState("/p/a"),
+      settings: { general: { openProjectIn: "attach" } },
+    } as never);
+    workspaceAttach.mockResolvedValue(ok("/data/workspaces/a"));
+    await openProjectWithPolicy("/p/b");
+    expect(workspaceAttach).toHaveBeenCalledWith("/p/b");
+    expect(openProject).toHaveBeenCalledWith("/data/workspaces/a");
+    expect(windowOpenProject).not.toHaveBeenCalled();
+  });
+  it("refreshes an existing workspace without reopening its editor session", async () => {
+    const before = {
+      root: "/workspace",
+      name: "A",
+      isGit: false,
+      settings: {},
+      workspace: { version: 1, name: "A", projects: ["/p/a"] },
+    };
+    useProject.setState({
+      project: before,
+      settings: { general: { openProjectIn: "attach" } },
+    } as never);
+    workspaceAttach.mockResolvedValue(ok("/workspace"));
+    projectCurrent.mockResolvedValue({
+      ...before,
+      workspace: { ...before.workspace, projects: ["/p/a", "/p/b"] },
+    });
+    await openProjectWithPolicy("/p/b");
+    expect(useProject.getState().project?.workspace?.projects).toEqual(["/p/a", "/p/b"]);
+    expect(openProject).not.toHaveBeenCalled();
+  });
+});
+
+it("removes the first workspace member while retaining the workspace state root", async () => {
+  const project = {
+    root: "/workspace",
+    name: "A",
+    isGit: false,
+    settings: {},
+    workspace: { version: 1, name: "A", projects: ["/a", "/b"] },
+  };
+  useProject.setState({ project });
+  workspaceUpdate.mockResolvedValue(ok({ ...project, workspace: { ...project.workspace, projects: ["/b"] } }));
+  await windowActions()
+    .find((a) => a.id === "workspace.removeProject")!
+    .run({ arg: "/a" } as never);
+  expect(workspaceUpdate).toHaveBeenCalledWith("A", ["/b"]);
+  expect(useProject.getState().project?.root).toBe("/workspace");
+  expect(useProject.getState().project?.workspace?.projects).toEqual(["/b"]);
 });

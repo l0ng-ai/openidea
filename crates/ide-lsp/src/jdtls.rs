@@ -8,8 +8,7 @@
 use crate::LspManager;
 use crate::server::{Running, Server};
 use ide_core::error::ErrorKind;
-use ide_core::{IdeError, IdeResult, LanguageId};
-use ide_jsonrpc::RpcError;
+use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use specta::Type;
@@ -20,7 +19,9 @@ use std::time::{Duration, Instant};
 const SERVER: &str = "jdtls";
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
-const BUILD_TIMEOUT: Duration = Duration::from_secs(300);
+/// A workspace build of a large multi-module project can take far longer than
+/// an editor request; the user can always cancel the launch waiting on it.
+const BUILD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long to retry while the project is still being imported.
 const IMPORT_WAIT: Duration = Duration::from_secs(90);
@@ -163,10 +164,19 @@ fn missing_bundle(e: &IdeError) -> bool {
     m.contains("no delegatecommandhandler") || m.contains("unsupported command") || m.contains("not supported")
 }
 
+/// Cancel local waits without interrupting a shared server's startup or import.
+async fn cancellable_wait<T>(cancel: &CancellationToken, wait: impl std::future::Future<Output = T>) -> IdeResult<T> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(IdeError::cancelled()),
+        result = wait => Ok(result),
+    }
+}
+
 impl LspManager {
     /// The jdtls instance serving `path` (a module directory or source file),
     /// started if needed and waited for.
-    async fn jdtls(&self, path: &Path) -> IdeResult<(Arc<Server>, Running)> {
+    async fn jdtls(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<(Arc<Server>, Running)> {
         let java = LanguageId::new("java");
         let server = self
             .servers_for(&java, path)
@@ -174,7 +184,7 @@ impl LspManager {
             .find(|s| s.name == SERVER)
             .ok_or_else(|| IdeError::unavailable("no Java language server (jdtls) is configured"))?;
         self.ensure_started(&server);
-        match server.wait_ready(READY_TIMEOUT).await {
+        match cancellable_wait(cancel, server.wait_ready(READY_TIMEOUT)).await? {
             Some(run) => Ok((server, run)),
             None => {
                 let status = server.status();
@@ -191,79 +201,146 @@ impl LspManager {
         }
     }
 
-    async fn jdtls_request(&self, path: &Path, method: &str, params: Value, timeout: Duration) -> IdeResult<Value> {
-        let (server, run) = self.jdtls(path).await?;
-        let fut = run.peer.request::<Value, Value>(method, params, None);
+    async fn jdtls_request(
+        &self,
+        path: &Path,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Value> {
+        let (server, run) = self.jdtls(path, cancel).await?;
+        let fut = run.peer.request::<Value, Value>(method, params, Some(cancel.clone()));
         match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| crate::rpc_err(&server.name, method, e)),
-            Err(_) => Err(crate::rpc_err(&server.name, method, RpcError::Timeout)),
+            Err(_) => Err(IdeError::new(
+                ErrorKind::Protocol,
+                format!(
+                    "{SERVER}: {method} timed out after {} s; retry, or check that jdtls is not stuck",
+                    timeout.as_secs()
+                ),
+            )),
         }
     }
 
     /// `workspace/executeCommand` on the jdtls serving `path`.
     pub async fn jdtls_command(&self, path: &Path, command: &str, arguments: Vec<Value>) -> IdeResult<Value> {
+        self.jdtls_command_cancellable(path, command, arguments, &CancellationToken::new()).await
+    }
+
+    async fn jdtls_command_cancellable(
+        &self,
+        path: &Path,
+        command: &str,
+        arguments: Vec<Value>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Value> {
         self.jdtls_request(
             path,
             "workspace/executeCommand",
             json!({ "command": command, "arguments": arguments }),
             COMMAND_TIMEOUT,
+            cancel,
         )
         .await
     }
 
     /// Like [`jdtls_command`](Self::jdtls_command), retried while the project is still importing.
-    async fn jdtls_project_command(&self, path: &Path, command: &str, arguments: Vec<Value>) -> IdeResult<Value> {
+    async fn jdtls_project_command(
+        &self,
+        path: &Path,
+        command: &str,
+        arguments: Vec<Value>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Value> {
         let deadline = Instant::now() + IMPORT_WAIT;
         loop {
-            match self.jdtls_command(path, command, arguments.clone()).await {
+            match self.jdtls_command_cancellable(path, command, arguments.clone(), cancel).await {
                 Err(e) if not_imported(&e) && Instant::now() < deadline => {
                     tracing::debug!("{command}: {e}; waiting for the project import");
-                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    cancellable_wait(cancel, tokio::time::sleep(Duration::from_millis(1500))).await?;
                 }
                 r => return r,
             }
         }
     }
 
+    /// Tells jdtls the build files of `uris` changed (`java/projectConfigurationsUpdate`),
+    /// so it re-imports their projects (e.g. after `~/.m2` gained an artifact it could
+    /// not resolve). Best-effort: skipped while jdtls is not already running.
+    pub async fn java_update_project_configs(&self, path: &Path, uris: Vec<String>) -> IdeResult<()> {
+        if uris.is_empty() {
+            return Ok(());
+        }
+        let java = LanguageId::new("java");
+        let Some(server) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER) else {
+            return Ok(());
+        };
+        let Some(run) = server.running() else { return Ok(()) };
+        let identifiers: Vec<Value> = uris.iter().map(|u| json!({ "uri": u })).collect();
+        run.peer
+            .notify("java/projectConfigurationsUpdate", json!({ "identifiers": identifiers }))
+            .map_err(|e| crate::rpc_err(&server.name, "java/projectConfigurationsUpdate", e))
+    }
+
     /// Incremental build of the jdtls workspace (`java/buildWorkspace`), so
     /// class files are up to date before a launch.
-    pub async fn java_build(&self, path: &Path) -> IdeResult<JavaBuildStatus> {
-        let v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT).await?;
+    pub async fn java_build(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<JavaBuildStatus> {
+        let v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT, cancel).await?;
         Ok(JavaBuildStatus::from_code(v.as_i64().unwrap_or(0)))
     }
 
     /// Runtime (`test == false`) or test classpath of the project containing `path`.
-    pub async fn java_classpath(&self, path: &Path, test: bool) -> IdeResult<JavaClasspath> {
+    pub async fn java_classpath(
+        &self,
+        path: &Path,
+        test: bool,
+        cancel: &CancellationToken,
+    ) -> IdeResult<JavaClasspath> {
         let uri = crate::uri::path_to_uri_string(path);
         let options = json!({ "scope": if test { "test" } else { "runtime" } }).to_string();
-        let v =
-            self.jdtls_project_command(path, "java.project.getClasspaths", vec![json!(uri), json!(options)]).await?;
+        let v = self
+            .jdtls_project_command(path, "java.project.getClasspaths", vec![json!(uri), json!(options)], cancel)
+            .await?;
         Ok(parse_classpaths(&v))
     }
 
     /// The JDK home jdtls uses for the project containing `path`.
-    pub async fn java_vm_location(&self, path: &Path) -> IdeResult<Option<PathBuf>> {
+    pub async fn java_vm_location(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<Option<PathBuf>> {
         let uri = crate::uri::path_to_uri_string(path);
         let v = self
             .jdtls_project_command(
                 path,
                 "java.project.getSettings",
                 vec![json!(uri), json!(["org.eclipse.jdt.ls.core.vm.location"])],
+                cancel,
             )
             .await?;
         Ok(parse_vm_location(&v))
     }
 
     /// Builds (when asked), then resolves the classpath and JDK of the module at `module`.
-    pub async fn java_launch(&self, module: &Path, test: bool, build: bool) -> IdeResult<JavaLaunchInfo> {
-        let build = if build { Some(self.java_build(module).await?) } else { None };
+    pub async fn java_launch(
+        &self,
+        module: &Path,
+        test: bool,
+        build: bool,
+        cancel: &CancellationToken,
+    ) -> IdeResult<JavaLaunchInfo> {
+        let build = if build { Some(self.java_build(module, cancel).await?) } else { None };
+        if build == Some(JavaBuildStatus::Cancelled) {
+            return Err(IdeError::cancelled());
+        }
         let (errors, error_count) = match build {
-            Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed) => self.java_compile_errors(module).await,
+            Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed) => {
+                cancellable_wait(cancel, self.java_compile_errors(module)).await?
+            }
             _ => (Vec::new(), 0),
         };
-        let cp = self.java_classpath(module, test).await?;
-        let java_home = match self.java_vm_location(module).await {
+        let cp = self.java_classpath(module, test, cancel).await?;
+        let java_home = match self.java_vm_location(module, cancel).await {
             Ok(home) => home,
+            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
             Err(e) => {
                 tracing::debug!("java.project.getSettings: {e}");
                 None
@@ -285,7 +362,7 @@ impl LspManager {
 
     /// Compile errors jdtls reports for its workspace (all modules it imported).
     async fn java_compile_errors(&self, module: &Path) -> (Vec<JavaCompileError>, u32) {
-        let Ok((server, _)) = self.jdtls(module).await else { return (Vec::new(), 0) };
+        let Ok((server, _)) = self.jdtls(module, &CancellationToken::new()).await else { return (Vec::new(), 0) };
         let collect = || compile_errors(server.diagnostics_snapshot(), MAX_LAUNCH_ERRORS);
         let found = collect();
         if found.1 > 0 {
@@ -322,6 +399,20 @@ impl LspManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancellation_ends_a_pending_wait() {
+        let cancel = CancellationToken::new();
+        let waiting = cancellable_wait(&cancel, std::future::pending::<()>());
+        let cancelling = async {
+            tokio::task::yield_now().await;
+            cancel.cancel();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async { tokio::join!(waiting, cancelling) })
+            .await
+            .expect("cancelled wait must finish");
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+    }
 
     #[test]
     fn launch_errors_are_sorted_and_capped() {

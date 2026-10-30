@@ -185,7 +185,15 @@ impl SettingsStore {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
             }
         }
-        serde_json::from_value(merged).unwrap_or_default()
+        let mut settings: Settings = serde_json::from_value(merged).unwrap_or_default();
+        if let Some(root) = self.project_file.as_deref().and_then(Path::parent).and_then(Path::parent)
+            && let Ok(Some(workspace)) = crate::workspace::Workspace::load(root)
+        {
+            settings.general.project_name = workspace.name;
+            settings.project_structure.content_roots =
+                workspace.projects.iter().map(|p| ide_core::ipc_path::to_ipc(p)).collect();
+        }
+        settings
     }
 
     /// Effective (merged) settings.

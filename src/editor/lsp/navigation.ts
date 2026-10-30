@@ -51,11 +51,11 @@ import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
 import { identifierAt, readManyFileLines } from "./files";
 import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
 import { featureBackoff } from "./availability";
-import { requestHover } from "./hover";
+import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
-import { shortcutLabel } from "@/platform/keymap";
+import { dispatchMouseShortcut, shortcutLabel } from "@/platform/keymap";
 import { isNavigationGesture, onNavigationModifier } from "@/platform/navigationModifier";
 import { create } from "zustand";
 import { tx } from "@/platform/i18n";
@@ -157,6 +157,7 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   if (kind === "definition" || kind === "declaration") {
     const own = contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
     if (own?.(view, offset)) return;
+    if (showPhpConstructDocumentation(view, offset)) return;
   }
   const doc = docOf(view);
   if (!doc) return;
@@ -488,7 +489,20 @@ const linkPlugin = ViewPlugin.fromClass(
         this.show(false);
       },
       mousedown(e, view) {
-        if (e.button !== 0 || !isNavigationGesture(e)) return false;
+        if (e.button !== 0) return false;
+        if (
+          dispatchMouseShortcut(e, () => {
+            const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+            if (pos == null) return false;
+            view.dispatch({ selection: EditorSelection.cursor(pos), effects: setLink.of(null) });
+            view.focus();
+            return true;
+          })
+        ) {
+          e.preventDefault();
+          return true;
+        }
+        if (!isNavigationGesture(e)) return false;
         const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
         if (pos == null) return false;
         e.preventDefault();

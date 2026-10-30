@@ -8,6 +8,7 @@ pub mod java_cmdline;
 pub mod junit;
 mod process;
 pub mod python_path;
+pub mod tomcat;
 mod utf8;
 pub mod which;
 pub mod wrap;
@@ -69,6 +70,10 @@ fn is_true(b: &bool) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RunExtras {
+    /// Module supplying a JVM application's classpath; empty means the project root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub module: Option<String>,
     /// Values of the configuration type's own form fields (the command line derives from them).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(optional)]
@@ -136,6 +141,7 @@ pub struct RunExtras {
 impl Default for RunExtras {
     fn default() -> Self {
         Self {
+            module: None,
             params: BTreeMap::new(),
             folder: None,
             local: false,

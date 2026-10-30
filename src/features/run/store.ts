@@ -9,12 +9,22 @@ import {
   call,
   commands,
   isTauri,
+  isCancelled,
+  nextRequestId,
+  type RequestId,
   type OutputChunk,
   type RunConfig,
   type RunId,
   type TestCaseReport,
 } from "@/platform/ipc";
-import { formatCompileErrors, isJvmApplication, parseJavaArgs, resolveJavaCommand } from "@/platform/javaLaunch";
+import {
+  findJavaModule,
+  formatCompileErrors,
+  isJvmApplication,
+  parseJavaArgs,
+  resolveJavaCommand,
+  resolveJavaModule,
+} from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -37,7 +47,10 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
+import { tomcatBrowserUrl } from "./tomcat";
+import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
@@ -65,11 +78,13 @@ export interface RunSession {
 }
 
 interface SessionRuntime {
+  resolveRequest?: { id: RequestId; cancelled: boolean };
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
   queue: OutputChunk[];
-  flushHandle: number | null;
+  /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
+  flushHandle: { raf: number } | { timeout: number } | null;
   /** Bumped per start so output from a previous run in the same tab is ignored. */
   generation: number;
   /** Called with every complete output line (e.g. waiting for a JDWP agent). */
@@ -311,6 +326,11 @@ export async function deleteConfig(id: string): Promise<void> {
 
 /** Persists user configurations and reloads the merged list. */
 export async function saveUserConfigs(user: RunConfig[], removedDetectedIds: string[] = []): Promise<void> {
+  user = await Promise.all(
+    user.map(async (config) =>
+      isJvmApplication(config) && config.module == null ? { ...config, module: await findJavaModule(config) } : config,
+    ),
+  );
   await call(
     commands.runSaveConfigs(
       user.map((c) => ({ ...c, detected: false })),
@@ -338,10 +358,7 @@ function getSession(id: string): RunSession | undefined {
 function flush(sessionId: string) {
   const rt = runtimes.get(sessionId);
   if (!rt) return;
-  if (rt.flushHandle !== null) {
-    cancelAnimationFrame(rt.flushHandle);
-    rt.flushHandle = null;
-  }
+  cancelFlush(rt);
   if (rt.queue.length === 0) return;
   const chunks = rt.queue.splice(0);
   for (const c of chunks) rt.console.append(c);
@@ -356,7 +373,39 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
     return;
   }
   rt.queue.push(chunk);
-  if (rt.flushHandle === null) rt.flushHandle = requestAnimationFrame(() => flush(sessionId));
+  if (rt.flushHandle === null) {
+    // rAF pauses in background tabs; a timeout keeps consuming output so it doesn't
+    // pile up until the console is shown again (issue #319: the console "kept
+    // scrolling" the previous run's backlog after switching back to it).
+    rt.flushHandle = document.hidden
+      ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
+      : { raf: requestAnimationFrame(() => flush(sessionId)) };
+  }
+}
+
+function cancelFlush(rt: SessionRuntime) {
+  if (rt.flushHandle === null) return;
+  if ("raf" in rt.flushHandle) cancelAnimationFrame(rt.flushHandle.raf);
+  else clearTimeout(rt.flushHandle.timeout);
+  rt.flushHandle = null;
+}
+
+/**
+ * `visibilitychange`: rAF stops firing while the page is hidden, so any pending
+ * rAF flush is moved to a timeout (and back on return) — otherwise output that
+ * arrives while a background tab is hidden would only land when it is shown.
+ */
+export function rescheduleConsoleFlushes() {
+  for (const [id, rt] of runtimes) {
+    if (rt.flushHandle === null) continue;
+    const hidden = document.hidden;
+    const isTimeout = "timeout" in rt.flushHandle;
+    if (hidden === isTimeout) continue;
+    cancelFlush(rt);
+    rt.flushHandle = hidden
+      ? { timeout: window.setTimeout(() => flush(id), 100) }
+      : { raf: requestAnimationFrame(() => flush(id)) };
+  }
 }
 
 /** Settings › Console › Override console cycle buffer size, in characters (null = line cap only). */
@@ -502,7 +551,7 @@ export async function startRun(
     const prev = runtimes.get(session.id);
     const rt = newRuntime(config);
     rt.generation = (prev?.generation ?? 0) + 1;
-    if (prev?.flushHandle != null) cancelAnimationFrame(prev.flushHandle);
+    if (prev) cancelFlush(prev);
     runtimes.set(session.id, rt);
     session = {
       ...session,
@@ -539,11 +588,21 @@ export async function startRun(
     useRun.setState((s) => ({ sessions: [...s.sessions, created], activeSession: created.id }));
   }
   bump(session.id);
+  // The Services tool window lists the configuration again after a restart.
+  recordRun(config.id);
   const sessionId = session.id;
   const rt = runtimes.get(sessionId)!;
   const generation = rt.generation;
   if (options.onLine) rt.lineListeners.push(options.onLine);
+  let browserOpened = false;
   rt.lineListeners.push((line) => {
+    if (config.kind === "tomcat" && /Server startup in/.test(line)) {
+      patchSession(sessionId, { httpPort: Number(config.params?.httpPort || "8080") });
+      if (!browserOpened && config.params?.openBrowser === "true") {
+        browserOpened = true;
+        void openUrl(tomcatBrowserUrl(config));
+      }
+    }
     const port = startedPort(line);
     if (port !== null && runtimes.get(sessionId)?.generation === generation && getSession(sessionId)?.httpPort !== port)
       patchSession(sessionId, { httpPort: port });
@@ -577,7 +636,10 @@ export async function startRun(
       const resolved = await resolveJvmApplication(sessionId, launch);
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
       if (!resolved) {
-        patchSession(sessionId, { status: "failed", endedAt: Date.now() });
+        patchSession(sessionId, {
+          status: getSession(sessionId)?.stopped ? "finished" : "failed",
+          endedAt: Date.now(),
+        });
         return getSession(sessionId) ?? null;
       }
       launch = resolved;
@@ -585,6 +647,7 @@ export async function startRun(
     const prepare = typeFor(launch.kind)?.prepareLaunch;
     if (prepare) {
       launch = await prepare(launch);
+      if (launch.kind === "tomcat") useRun.setState({ activeSession: sessionId });
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     }
     // Debug launches read the agent's output lines: never through a terminal.
@@ -646,8 +709,14 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
   }
   if (!parsed.classpath) return config;
   say(`Building and resolving the classpath of ${parsed.mainClass}…\n`);
+  const rt = runtime(sessionId)!;
+  const request = { id: nextRequestId(), cancelled: false };
+  rt.resolveRequest = request;
   try {
-    const info = await call(commands.javaResolveLaunch(config.cwd ?? "", parsed.classpath === "test", true));
+    const module = await resolveJavaModule(config);
+    if (request.cancelled) return null;
+    const info = await call(commands.javaResolveLaunch(module, parsed.classpath === "test", true, request.id));
+    if (request.cancelled) return null;
     if (info.build === "withErrors")
       say("Build completed with errors; launching with the last compiled classes.\n", "stderr");
     if (info.build === "failed") say("Build failed; launching with the last compiled classes.\n", "stderr");
@@ -671,6 +740,10 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     return resolveJavaCommand(config, info, pathSeparator());
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    if (request.cancelled || isCancelled(e)) {
+      if (runtimes.get(sessionId) === rt && rt.resolveRequest === request) patchSession(sessionId, { stopped: true });
+      return null;
+    }
     say(`Cannot resolve the classpath: ${message}\n`, "stderr");
     // jdtls can't start without a newer JDK: "Download JDK 25".
     const actions = downloadJdkActions(message);
@@ -682,6 +755,8 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       actions,
     });
     return null;
+  } finally {
+    if (rt.resolveRequest === request) delete rt.resolveRequest;
   }
 }
 
@@ -791,7 +866,15 @@ export function onRunExited(runId: RunId, code: number | null) {
 
 export async function stopSession(sessionId: string): Promise<void> {
   const session = getSession(sessionId);
-  if (!session || session.runId === null || session.status !== "running") return;
+  if (!session) return;
+  const request = runtimes.get(sessionId)?.resolveRequest;
+  if (session.status === "starting" && request) {
+    request.cancelled = true;
+    patchSession(sessionId, { stopped: true });
+    await commands.cancelRequest(request.id);
+    return;
+  }
+  if (session.runId === null || session.status !== "running") return;
   patchSession(sessionId, { stopped: true });
   try {
     await call(commands.runStop(session.runId));
@@ -806,7 +889,7 @@ export async function stopSession(sessionId: string): Promise<void> {
 }
 
 /** Resolves once the given sessions' processes exited (or after `timeoutMs`). */
-function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): Promise<void> {
+export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): Promise<void> {
   const live = () =>
     sessionIds.some((id) => {
       const s = getSession(id);
@@ -951,9 +1034,9 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
 export function closeSession(sessionId: string) {
   const session = getSession(sessionId);
   if (!session) return;
-  if (session.status === "running") void stopSession(sessionId);
+  if (session.status === "running" || session.status === "starting") void stopSession(sessionId);
   const rt = runtimes.get(sessionId);
-  if (rt?.flushHandle != null) cancelAnimationFrame(rt.flushHandle);
+  if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);
   useRun.setState((s) => {
     const index = s.sessions.findIndex((x) => x.id === sessionId);
@@ -973,7 +1056,7 @@ export function runningSessions(): RunSession[] {
 /** Stops everything and forgets sessions (project closed). */
 export function resetRuns() {
   for (const s of runningSessions()) void stopSession(s.id);
-  for (const rt of runtimes.values()) if (rt.flushHandle != null) cancelAnimationFrame(rt.flushHandle);
+  for (const rt of runtimes.values()) cancelFlush(rt);
   runtimes.clear();
   pendingExits.clear();
   useRun.setState({

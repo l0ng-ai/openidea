@@ -3,12 +3,30 @@
  * common ones, the options added through "Modify options" (⌥M) and the
  * Before launch list.
  */
-import { useRef, useState, type ReactNode } from "react";
+import { parseJavaArgs } from "@/platform/javaLaunch";
+import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
 import type { BeforeLaunchTask, RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useTx, useTxTemplate } from "@/platform/i18n";
-import { Button, Checkbox, Icon, IconButton, Input, Menu, Select, T, type MenuItem, type SelectOption } from "@/ui";
+import {
+  Button,
+  Checkbox,
+  HighlightedText,
+  Icon,
+  IconButton,
+  Input,
+  List,
+  listNavigate,
+  Menu,
+  Popup,
+  SearchField,
+  Select,
+  T,
+  fuzzyMatch,
+  type MenuItem,
+  type SelectOption,
+} from "@/ui";
 import { useContributions, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { TASK_LABELS, taskLabel, type BeforeLaunchKind } from "./beforeLaunch";
 import {
@@ -25,6 +43,7 @@ import {
 import { EnvDialog } from "./EnvDialog";
 import { withTarget } from "./remote";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
+import { TomcatSettings } from "./TomcatSettings";
 import styles from "./Run.module.css";
 
 /**
@@ -35,6 +54,7 @@ import styles from "./Run.module.css";
  */
 const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "java-debug", label: "java-debug (Java)" },
+  { id: "kotlin-debug-adapter", label: "kotlin-debug-adapter (Kotlin)" },
   { id: "debugpy", label: "debugpy (Python)" },
   { id: "js-debug", label: "js-debug (Node.js / TypeScript)" },
   { id: "delve", label: "Delve (Go)" },
@@ -331,7 +351,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         </Field>
       )}
       <div className={styles.formSection}>
-        <span className={styles.formSectionTitle}>{tx(type?.label ?? kindLabel(config.kind))}</span>
+        <span className={styles.formSectionTitle}>{tx(kindLabel(config.kind))}</span>
         <button
           ref={modifyRef}
           type="button"
@@ -351,6 +371,8 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
           onClose={() => setModifyOpen(false)}
         />
       </div>
+
+      {config.kind === "tomcat" && <TomcatSettings config={config} onChange={onChange} />}
 
       {compound ? (
         template ? null : (
@@ -407,7 +429,10 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
               placeholder="Space separated; quote with ' or &quot;"
               onChange={(e) => {
                 setArgsText(e.target.value);
-                update({ args: parseArgs(e.target.value), params: {} });
+                const args = parseArgs(e.target.value);
+                const module =
+                  parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass ? config.module : undefined;
+                update({ args, params: {}, module });
               }}
             />
           </Field>
@@ -708,6 +733,26 @@ function OutputField({ label, text }: { label: string; text: string }) {
   );
 }
 
+/** Candidate rows for a compound's member picker: every config except itself and ones already added. */
+export function memberRows(
+  config: RunConfig,
+  all: readonly RunConfig[],
+  members: readonly string[],
+  query: string,
+): Array<{ config: RunConfig; indices: number[] | null }> {
+  const q = query.trim();
+  return all
+    .filter(
+      (c) =>
+        c.id !== config.id &&
+        !members.includes(c.id) &&
+        !compoundCycle({ ...config, compound: [...members, c.id] }, all),
+    )
+    .map((c) => ({ c, indices: q ? fuzzyMatch(c.name, q) : null }))
+    .filter((x) => !q || x.indices)
+    .map(({ c, indices }) => ({ config: c, indices }));
+}
+
 function CompoundMembers({
   config,
   all,
@@ -721,10 +766,9 @@ function CompoundMembers({
 }) {
   const tx = useTx();
   const members = config.compound ?? [];
-  const candidates = all.filter(
-    (c) =>
-      c.id !== config.id && !members.includes(c.id) && !compoundCycle({ ...config, compound: [...members, c.id] }, all),
-  );
+  const addRef = useRef<HTMLButtonElement>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const hasCandidates = memberRows(config, all, members, "").length > 0;
   return (
     <Field label="Configurations" error={error} top>
       <div className={styles.taskList} role="list" aria-label={tx("Configurations of the compound")}>
@@ -744,16 +788,128 @@ function CompoundMembers({
             </div>
           );
         })}
-        <Select
-          value={null}
-          placeholder="Add configuration…"
-          options={candidates.map((c) => ({ value: c.id, label: c.name }))}
-          onChange={(id) => onChange([...members, id])}
-          disabled={!candidates.length}
-          aria-label="Add configuration"
-        />
+        <Button
+          ref={addRef}
+          size="small"
+          variant="ghost"
+          icon="plus"
+          aria-haspopup="listbox"
+          aria-expanded={addOpen}
+          disabled={!hasCandidates}
+          onClick={() => setAddOpen(true)}
+        >
+          <T>Add configuration…</T>
+        </Button>
+        {addOpen && (
+          <MemberPicker
+            anchor={addRef}
+            config={config}
+            all={all}
+            members={members}
+            onAdd={(id) => onChange([...members, id])}
+            onClose={() => setAddOpen(false)}
+          />
+        )}
       </div>
     </Field>
+  );
+}
+
+const MEMBER_ROW = 24;
+
+/** "Add configuration" picker for a compound: stays open while configs are picked, so several can be added. */
+function MemberPicker({
+  anchor,
+  config,
+  all,
+  members,
+  onAdd,
+  onClose,
+}: {
+  anchor: RefObject<HTMLButtonElement | null>;
+  config: RunConfig;
+  all: readonly RunConfig[];
+  members: readonly string[];
+  onAdd: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const rows = useMemo(() => memberRows(config, all, members, query), [config, all, members, query]);
+  const [active, setActive] = useState(0);
+  const clamped = Math.min(active, rows.length - 1);
+
+  const pick = (row: { config: RunConfig } | undefined) => {
+    if (!row) return;
+    onAdd(row.config.id);
+    setQuery("");
+    setActive(0);
+  };
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      pick(rows[clamped]);
+      return;
+    }
+    const next = listNavigate(e.key, { items: rows, active: clamped, wrap: true });
+    if (next !== null) {
+      e.preventDefault();
+      setActive(next);
+    }
+  };
+
+  return (
+    <Popup
+      open
+      anchor={anchor}
+      onClose={onClose}
+      placement="bottom-start"
+      aria-label="Add configuration"
+      className={styles.chooser}
+      trapFocus
+    >
+      <div className={styles.chooserSearch}>
+        <SearchField
+          value={query}
+          onChange={(v) => {
+            setQuery(v);
+            setActive(0);
+          }}
+          placeholder="Search configurations"
+          aria-label="Search configurations"
+          data-autofocus=""
+          onKeyDown={onKeyDown}
+          variant="bare"
+        />
+      </div>
+      <div style={{ height: Math.max(MEMBER_ROW, Math.min(rows.length * MEMBER_ROW, 10 * MEMBER_ROW)) }}>
+        <List
+          aria-label="Configurations"
+          className={styles.chooserList}
+          items={rows}
+          getKey={(r) => r.config.id}
+          activeIndex={clamped}
+          onActiveChange={setActive}
+          focusable={false}
+          hoverSelects
+          rowHeight={MEMBER_ROW}
+          onActivate={(r) => pick(r)}
+          empty={
+            <span className={styles.chooserMuted}>
+              <T>Nothing found</T>
+            </span>
+          }
+          renderItem={(r) => (
+            <span className={styles.chooserRow}>
+              <Icon name={configIcon(r.config)} size={13} className={styles.chooserIcon} />
+              <span className={styles.chooserName}>
+                {r.indices?.length ? <HighlightedText text={r.config.name} indices={r.indices} /> : r.config.name}
+              </span>
+            </span>
+          )}
+        />
+      </div>
+    </Popup>
   );
 }
 

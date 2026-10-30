@@ -121,13 +121,16 @@ fn extract_zip(archive: &Path, dest: &Path, cancel: &CancellationToken) -> IdeRe
         if let Some(parent) = out.parent() {
             fs::create_dir_all(parent)?;
         }
-        #[cfg(unix)]
         if file.is_symlink() {
             let mut target = String::new();
             io::Read::read_to_string(&mut file, &mut target)?;
             validate_link(dest, &rel, Path::new(&target))?;
             let _ = fs::remove_file(&out);
-            std::os::unix::fs::symlink(target, &out)?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &out)?;
+            // Windows can't create symlinks without SeCreateSymbolicLinkPrivilege
+            // (os error 1314), so we drop in-archive links there rather than fail
+            // the whole extraction. Validation above still rejects escapes.
             continue;
         }
         let mut w = File::create(&out)?;
@@ -485,6 +488,11 @@ mod tests {
             assert!(extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).is_err());
             assert!(fs::symlink_metadata(dest.join("link")).is_err());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_internal_symlink_is_created() {
         // A link inside the archive (e.g. a framework's Versions/Current) still extracts.
         let tmp = tempfile::tempdir().unwrap();
         let archive = tmp.path().join("ok.zip");

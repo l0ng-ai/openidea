@@ -108,8 +108,28 @@ fn adoptium_arch(arch: Arch) -> &'static str {
 
 /// The latest Temurin JDK build of Java `feature` for `platform`.
 pub fn adoptium_assets_url(feature: u32, platform: Platform) -> String {
+    assets_url(feature, platform, ImageType::Jdk)
+}
+
+#[derive(Clone, Copy)]
+enum ImageType {
+    Jdk,
+    Jre,
+}
+
+impl ImageType {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Jdk => "jdk",
+            Self::Jre => "jre",
+        }
+    }
+}
+
+fn assets_url(feature: u32, platform: Platform, image: ImageType) -> String {
+    let image = image.name();
     format!(
-        "{ADOPTIUM_API}/assets/latest/{feature}/hotspot?architecture={}&image_type=jdk&os={}&vendor=eclipse",
+        "{ADOPTIUM_API}/assets/latest/{feature}/hotspot?architecture={}&image_type={image}&os={}&vendor=eclipse",
         adoptium_arch(platform.arch),
         adoptium_os(platform.os),
     )
@@ -170,12 +190,16 @@ impl AssetVersion {
 /// The JDK archive (`.tar.gz` on macOS / Linux, `.zip` on Windows) in an Adoptium
 /// `assets/latest` response; `None` when there is no build for the platform.
 pub fn adoptium_pick(json: &str, platform: Platform) -> IdeResult<Option<(Download, u32)>> {
+    pick_image(json, platform, ImageType::Jdk)
+}
+
+fn pick_image(json: &str, platform: Platform, image: ImageType) -> IdeResult<Option<(Download, u32)>> {
     let assets: Vec<Asset> =
         serde_json::from_str(json).map_err(|e| proto(format!("unexpected Adoptium response: {e}")))?;
     let ext = if platform.os == Os::Windows { ".zip" } else { ".tar.gz" };
     let os = adoptium_os(platform.os);
     let found = assets.into_iter().find(|a| {
-        a.binary.image_type.as_deref().is_none_or(|t| t == "jdk")
+        a.binary.image_type.as_deref().is_none_or(|t| t == image.name())
             && a.binary.heap_size.as_deref().is_none_or(|h| h == "normal")
             && a.binary.os.as_deref().is_none_or(|o| o == os)
             && a.binary.package.name.ends_with(ext)
@@ -256,13 +280,49 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<DownloadedJdk> {
+        self.download_java(vendor, feature, location, false, cancel, emit)
+    }
+
+    /// Downloads a runtime for a language server, preferring a JRE. Only a
+    /// platform without a JRE build falls back to a full JDK.
+    pub fn download_java_runtime(
+        &self,
+        feature: u32,
+        location: &Path,
+        cancel: &CancellationToken,
+        emit: Emit,
+    ) -> IdeResult<DownloadedJdk> {
+        self.download_java(TEMURIN, feature, Some(location), true, cancel, emit)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn download_java(
+        &self,
+        vendor: &str,
+        feature: u32,
+        location: Option<&Path>,
+        runtime: bool,
+        cancel: &CancellationToken,
+        emit: Emit,
+    ) -> IdeResult<DownloadedJdk> {
         vendor_or_err(vendor)?;
         let _guard = InstallGuard::acquire(&format!("jdk-{vendor}-{feature}"))?;
         let http = self.http()?;
         let location = location.map(Path::to_path_buf).unwrap_or_else(|| self.root.join("jdks"));
         emit(InstallEvent::Line { text: format!("Resolving the latest Eclipse Temurin {feature}…") });
-        let mut picked =
-            adoptium_pick(&http.get_text(&adoptium_assets_url(feature, self.platform), cancel)?, self.platform)?;
+        let mut picked = if runtime {
+            pick_image(
+                &http.get_text_or_empty_on_404(&assets_url(feature, self.platform, ImageType::Jre), cancel)?,
+                self.platform,
+                ImageType::Jre,
+            )?
+        } else {
+            None
+        };
+        if picked.is_none() {
+            picked =
+                adoptium_pick(&http.get_text(&adoptium_assets_url(feature, self.platform), cancel)?, self.platform)?;
+        }
         if picked.is_none() && self.platform.os == Os::Mac && self.platform.arch == Arch::Arm64 {
             // Java 8 has no Apple Silicon build: the Intel one runs under Rosetta.
             let intel = Platform { os: Os::Mac, arch: Arch::X64 };
@@ -377,6 +437,22 @@ mod tests {
     }
 
     #[test]
+    fn runtime_assets_use_jre_without_changing_jdk_downloads() {
+        for platform in [MAC_ARM, LINUX_X64, WIN_X64] {
+            assert!(assets_url(25, platform, ImageType::Jre).contains("image_type=jre"));
+            assert!(adoptium_assets_url(25, platform).contains("image_type=jdk"));
+            let ext = if platform.os == Os::Windows { "zip" } else { "tar.gz" };
+            let jdk = asset(&format!("java.{ext}"), adoptium_os(platform.os), "normal", "");
+            let jre = jdk.replace("\"image_type\":\"jdk\"", "\"image_type\":\"jre\"");
+            assert!(pick_image(&format!("[{jre}]"), platform, ImageType::Jre).unwrap().is_some());
+            assert!(adoptium_pick(&format!("[{jre}]"), platform).unwrap().is_none());
+            assert!(pick_image(&format!("[{jdk}]"), platform, ImageType::Jre).unwrap().is_none());
+            assert!(pick_image("[]", platform, ImageType::Jre).unwrap().is_none());
+            assert!(pick_image("offline", platform, ImageType::Jre).is_err());
+        }
+    }
+
+    #[test]
     fn java_8_versions_and_dir_names() {
         let v = AssetVersion { major: 8, minor: 0, security: 472, openjdk_version: Some("1.8.0_472-b08".into()) };
         assert_eq!(v.display(), "1.8.0_472");
@@ -448,7 +524,7 @@ mod tests {
             _ => None,
         };
         if let Some(platform) = other {
-            let tools = Tools::with_paths(crate::tools_dir(tmp.path()), crate::default_search_path(), platform);
+            let tools = Tools::with_paths(crate::tools_dir(tmp.path()), ide_core::tool_path::search_path(), platform);
             let jdk = tools.download_jdk(TEMURIN, feature, None, &CancellationToken::new(), &|_| {}).unwrap();
             let home = jdk.home.into_path_buf();
             eprintln!("{}", home.display());

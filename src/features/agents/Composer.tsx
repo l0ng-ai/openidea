@@ -29,6 +29,7 @@ import {
   type FileRef,
 } from "./composerModel";
 import { composerDraft, updateComposer, useAgents } from "./store";
+import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useCompletionAnchor } from "./useCompletionAnchor";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
@@ -69,6 +70,7 @@ export function Composer(props: ComposerProps) {
   const draft = useAgents((s) => s.composers.get(id));
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
+  const [preview, setPreview] = useState<AgentImage | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -361,7 +363,9 @@ export function Composer(props: ComposerProps) {
         <div className={styles.images} onClick={(e) => e.stopPropagation()}>
           {images.map((img, i) => (
             <span key={i} className={styles.image} title={img.name ?? undefined}>
-              <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name ?? tx("Image")} />
+              <button type="button" className={styles.previewImage} onClick={() => setPreview(img)}>
+                <img src={imageSrc(img)} alt={img.name ?? tx("Image")} />
+              </button>
               <button
                 type="button"
                 className={styles.removeImage}
@@ -372,6 +376,7 @@ export function Composer(props: ComposerProps) {
               </button>
             </span>
           ))}
+          <ImagePreview image={preview} onClose={() => setPreview(null)} />
         </div>
       )}
       <textarea

@@ -67,6 +67,8 @@ impl Host {
             lap = std::time::Instant::now();
         };
         let root = dunce::canonicalize(root)?;
+        // Reject a damaged manifest before replacing the currently open project.
+        ide_workspace::workspace::Workspace::load(&root)?;
         // The window reloaded (or asked again) for the project it already has: keep
         // it, with its warm index, language servers and unsaved documents.
         if let Ok(current) = self.project(window)
@@ -104,7 +106,7 @@ impl Host {
         let index = ProjectIndex::open(
             &root,
             &self.data_dir.join("index").join(&project_key),
-            extra_roots.clone(),
+            index_roots(&root, extra_roots.clone()),
             excludes.clone(),
             languages.clone(),
             self.syntax(),
@@ -112,31 +114,40 @@ impl Host {
         )?;
         mark("index");
         let lsp = LspManager::new(root.clone(), languages.clone(), sink.clone());
+        lsp.set_content_roots(extra_roots.clone());
         let settings = Arc::new(settings);
         {
             let settings = settings.clone();
             let root = root.clone();
             let data_dir = self.data_dir.clone();
+            let config_dir = self.config_dir.clone();
             lsp.set_config_hook(Box::new(move |cfg, server_root| {
-                let effective = settings.effective();
+                let member = ide_workspace::workspace::Workspace::load(&root).ok().flatten().and_then(|w| {
+                    w.projects.into_iter().filter(|p| server_root.starts_with(p)).max_by_key(|p| p.components().count())
+                });
+                let effective = member
+                    .as_ref()
+                    .map(|p| SettingsStore::load(&config_dir, Some(p)).effective())
+                    .unwrap_or_else(|| settings.effective());
+                let root = member.as_ref().unwrap_or(&root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
-                ide_sdk::apply::configure_server(cfg, &root, server_root, &effective);
+                ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {
                     let bundles: Vec<PathBuf> =
                         ide_tools::managed_bundle(&data_dir, "java-debug").into_iter().collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
-                    let jdks = ide_sdk::java::jdtls_jdks(min_java);
+                    let jdks = ide_sdk::java::jdtls_jdks(min_java, &data_dir);
                     let lombok = ide_sdk::lombok::lombok_agent(
                         server_root,
                         ide_sdk::lombok::agent_in_args(cfg.args.iter().map(String::as_str)),
                         ide_tools::managed_bundle(&data_dir, "lombok"),
-                        ide_sdk::apply::maven_local_repository(&root, &effective),
+                        ide_sdk::apply::maven_local_repository(root, &effective),
                     );
                     if let Some(problem) = lombok.problem() {
                         tracing::warn!("{problem}");
                     }
-                    let server_jdk = ide_sdk::apply::jdtls_jdk(&root, &effective).unwrap_or_else(|e| {
+                    let server_jdk = ide_sdk::apply::jdtls_jdk(root, &effective).unwrap_or_else(|e| {
                         cfg.launch_error = Some(e);
                         None
                     });
@@ -145,7 +156,7 @@ impl Host {
                         server_root,
                         &data_dir,
                         &jdks,
-                        ide_sdk::apply::project_jdk(&root, &effective).as_ref(),
+                        ide_sdk::apply::project_jdk(root, &effective).as_ref(),
                         server_jdk.as_ref(),
                         min_java,
                         &bundles,
@@ -154,8 +165,27 @@ impl Host {
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
-                let excluded_poms = unlinked_maven_poms(&root, &effective);
-                ide_sdk::apply::configure_maven_import(cfg, &root, &excluded_poms);
+                let excluded_poms = unlinked_maven_poms(root, &effective);
+                ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms);
+            }));
+        }
+        {
+            let settings = settings.clone();
+            let root = root.clone();
+            let data_dir = self.data_dir.clone();
+            let sink = sink.clone();
+            lsp.set_prepare_hook(Box::new(move |cfg, _, cancel| {
+                let effective = settings.effective();
+                if cfg.name == "jdtls" {
+                    crate::java_runtime::prepare(
+                        cfg,
+                        &data_dir,
+                        !effective.languages.java.jdtls_jdk.trim().is_empty()
+                            || ide_sdk::apply::jdtls_jdk(&root, &effective).is_err(),
+                        &sink,
+                        cancel,
+                    );
+                }
             }));
         }
         {
@@ -226,7 +256,10 @@ impl Host {
                         if *detected_roots.read() != fresh {
                             // Detected excluded folders (`target`, `build`) leave the index too.
                             let effective = settings.effective();
-                            index.set_scope(content_roots(&effective, &root), exclude_globs(&root, &effective, &fresh));
+                            index.set_scope(
+                                index_roots(&root, content_roots(&effective, &root)),
+                                exclude_globs(&root, &effective, &fresh),
+                            );
                             *detected_roots.write() = fresh;
                             sink.emit(IdeEvent::ProjectRootsChanged { root: root.clone().into() });
                         }
@@ -234,7 +267,7 @@ impl Host {
                     // A repository was cloned / initialised / removed below the project: its
                     // `.git/HEAD` (the watcher reports nothing else of `.git`) appeared or went.
                     let known = repos.read().roots();
-                    let git_dirs = changed.iter().chain(&batch.removed).any(|p| {
+                    let git_dirs = changed.iter().chain(&batch.removed).chain(&batch.vcs).any(|p| {
                         let Some(dir) = p.ends_with(".git/HEAD").then(|| p.parent().and_then(Path::parent)).flatten()
                         else {
                             return false;
@@ -244,7 +277,10 @@ impl Host {
                     if git_dirs {
                         scan_repositories(&root, &repos, &settings, &sink);
                     }
-                    sink.emit(IdeEvent::VcsChanged { root: root.clone().into() });
+                    let vcs_moved = batch.vcs.iter().any(|p| vcs_path_changed(p));
+                    if git_dirs || vcs_moved {
+                        sink.emit(IdeEvent::VcsChanged { root: root.clone().into() });
+                    }
                 }),
             )?
         };
@@ -486,7 +522,9 @@ fn light_watcher(
 fn scan_repositories(root: &Path, repos: &RwLock<Repos>, settings: &SettingsStore, sink: &SharedSink) {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| p.file_name().is_some_and(|n| ignored.is_ignored_name(&n.to_string_lossy()));
-    match Repos::discover(root, &skip) {
+    let mut roots = vec![root.to_path_buf()];
+    roots.extend(content_roots(&settings.effective(), root));
+    match Repos::discover_roots(&roots, &skip) {
         Ok(found) => {
             if found.roots() != repos.read().roots() {
                 *repos.write() = found;
@@ -498,6 +536,10 @@ fn scan_repositories(root: &Path, repos: &RwLock<Repos>, settings: &SettingsStor
 }
 
 impl Project {
+    pub fn refresh_repositories(&self) {
+        scan_repositories(&self.root, &self.repos, &self.settings, &self.sink);
+    }
+
     /// The project's git repositories.
     pub fn repos(&self) -> Repos {
         self.repos.read().clone()
@@ -623,17 +665,23 @@ impl Project {
         q: &ide_lsp::CandidateQuery,
         cancel: &CancellationToken,
     ) -> ide_lsp::CandidateFiles {
-        if !q.root.starts_with(&self.root) {
+        let root = self
+            .content_roots()
+            .into_iter()
+            .chain(std::iter::once(self.root.clone()))
+            .filter(|root| q.root.starts_with(root))
+            .max_by_key(|root| root.components().count());
+        let Some(root) = root else {
             return ide_lsp::CandidateFiles::default();
-        }
+        };
         let query = ide_search::WordQuery {
             word: q.word.clone(),
             dir: q.root.clone(),
             exclude: self.search_excludes(),
             limit: q.limit,
         };
-        let filter = |rel: &str| q.languages.contains(&self.languages.detect(&self.root.join(rel), None));
-        match ide_search::files_with_word(&self.root, &query, Some(&filter), &|p| self.documents.text_of(p), cancel) {
+        let filter = |rel: &str| q.languages.contains(&self.languages.detect(&root.join(rel), None));
+        match ide_search::files_with_word(&root, &query, Some(&filter), &|p| self.documents.text_of(p), cancel) {
             Ok(found) => ide_lsp::CandidateFiles { files: found.files, limit_hit: found.limit_hit },
             Err(e) => {
                 tracing::debug!("reference candidates: {}", e.message);
@@ -670,7 +718,8 @@ impl Project {
             return;
         }
         let (roots, excludes) = (self.content_roots(), self.exclude_globs());
-        self.index.set_scope(roots.clone(), excludes.clone());
+        self.lsp.set_content_roots(roots.clone());
+        self.index.set_scope(index_roots(&self.root, roots.clone()), excludes.clone());
         self.watcher.set_excludes(&excludes);
         let mut watchers = self.content_watchers.lock();
         watchers.retain(|(p, _)| roots.contains(p));
@@ -774,8 +823,16 @@ pub fn history_retention(settings: &ide_core::settings::Settings) -> ide_workspa
     }
 }
 
-/// Project Structure content roots outside `root` (existing absolute directories).
+/// A workspace uses its root only for state, never as indexed content.
+fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
+    ide_index::IndexRoots { include_root: !root.join(ide_workspace::workspace::FILE).is_file(), folders }
+}
+
+/// Workspace members in manifest order, or extra Project Structure directories.
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path) -> Vec<PathBuf> {
+    if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
+        return workspace.projects;
+    }
     let mut out: Vec<PathBuf> = Vec::new();
     for r in &settings.project_structure.content_roots {
         let p = PathBuf::from(r.trim());
@@ -832,7 +889,7 @@ fn exclude_globs(root: &Path, settings: &ide_core::settings::Settings, detected:
     globs
 }
 
-fn project_key(root: &Path) -> String {
+pub(crate) fn project_key(root: &Path) -> String {
     // Stable FNV-1a directory name per project for caches.
     let s = root.to_string_lossy();
     let mut h: u64 = 0xcbf29ce484222325;
@@ -1006,5 +1063,51 @@ mod maven_linkage_tests {
         settings.languages.java.maven.unlinked_projects.push("b/pom.xml".into());
         let model = crate::ops::build::load(tmp.path(), &tmp.path().join("cache"), &settings);
         assert!(model.maven.unwrap().projects.is_empty());
+    }
+}
+
+fn vcs_path_changed(path: &Path) -> bool {
+    !path.ends_with(".git/index") || !ide_vcs::is_own_index_write(path)
+}
+
+#[cfg(test)]
+mod index_event_tests {
+    use super::vcs_path_changed;
+
+    #[test]
+    fn status_write_is_suppressed_but_external_index_and_refs_refresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        };
+        git(&["init", "-q"]);
+        let file = dir.join("file.txt");
+        std::fs::write(&file, "original\n").unwrap();
+        git(&["add", "file.txt"]);
+        // Same contents, different stat data: status must refresh the index.
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        let index = dir.join(".git/index");
+        let before = std::fs::read(&index).unwrap();
+        let repo = ide_vcs::Repo::discover(dir).unwrap().unwrap();
+        repo.status().unwrap();
+        assert_ne!(before, std::fs::read(&index).unwrap(), "status must actually write the index");
+        assert!(!vcs_path_changed(&index));
+        assert!(!vcs_path_changed(&index), "duplicate notifications for the same identity");
+        for path in [".git/HEAD", ".git/refs/heads/main", ".git/packed-refs"] {
+            assert!(vcs_path_changed(&dir.join(path)));
+        }
+        std::fs::write(&file, "external staged change\n").unwrap();
+        git(&["add", "file.txt"]);
+        assert!(vcs_path_changed(&index));
+        assert!(vcs_path_changed(&index));
+        std::fs::remove_file(&index).unwrap();
+        assert!(vcs_path_changed(&index));
     }
 }

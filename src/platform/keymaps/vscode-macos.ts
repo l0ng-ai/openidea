@@ -188,6 +188,9 @@ export const vscodeMacos: Record<string, string[]> = {
   "editor.splitRight": ["Meta+\\"],
   "editor.toggleZen": ["Meta+K Z"],
   "window.toggleFullScreen": ["Meta+Ctrl+F"],
+  // Project window groups are an IntelliJ concept; VS Code has no counterpart.
+  "window.nextTab": [],
+  "window.previousTab": [],
   "window.next": [],
   "window.previous": [],
   "file.reloadFromDisk": [],
@@ -254,6 +257,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "run.stop": ["Shift+F5"],
   "run.chooseConfig": [],
   "run.editConfigs": [],
+  "run.updateApplication": [],
   "run.rerun": [],
   "coverage.manageReports": [],
   "web.openInBrowser": [],

@@ -220,6 +220,12 @@ pub fn agent_archive(window: Window, state: State<'_, AppState>, task: String) -
 
 #[tauri::command]
 #[specta::specta]
+pub fn agent_unarchive(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<()> {
+    agent::unarchive(&state.host, window.label(), task)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn agent_delete(
     window: Window,
     state: State<'_, AppState>,

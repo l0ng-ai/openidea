@@ -552,10 +552,10 @@ export function Tree<T>(props: TreeProps<T>) {
                   reordering.drop?.key === row.key && styles[reordering.drop.position],
                 )}
                 style={style}
-                onPointerDown={(e) => reordering.start(e, row)}
+                onPointerDown={props.reorder ? (e) => reordering.start(e, row) : undefined}
                 onMouseDown={(e) => onRowMouseDown(e, v.index)}
                 onDoubleClick={(e) => {
-                  if (!reordering.suppressActivation.current) activate(row, e);
+                  if (!props.reorder || !reordering.suppressActivation.current) activate(row, e);
                 }}
               >
                 <span

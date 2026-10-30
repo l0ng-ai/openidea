@@ -38,7 +38,7 @@ pub(crate) fn tsserver_plugin(package: &Path) -> serde_json::Value {
 
 pub(crate) fn missing_typescript_message() -> String {
     "Vue Language Server needs TypeScript 5 or 6 (TypeScript 7 has no language service API). \
-     Reinstall it in Settings › Languages & Frameworks › Language Servers, add typescript@\"<7\" \
+     Reinstall it in Settings › Languages & Frameworks › Language Servers, add typescript@6 \
      to the project, or pick a TypeScript version in Settings › Languages & Frameworks › TypeScript."
         .to_owned()
 }
@@ -72,6 +72,10 @@ mod tests {
             assert_eq!(found, Some(t.join(pkg).parent().unwrap().to_path_buf()), "{bin}");
         }
         let path = std::env::join_paths([t.join("tools/node_modules/.bin")]).unwrap();
+        // npm's `.bin` shims on Windows get a `.cmd` (or `.exe`) name; the bare
+        // name is not executable there.
+        let shim = if cfg!(windows) { "vue-language-server.cmd" } else { SERVER };
+        touch(&t.join("tools/node_modules/.bin").join(shim));
         assert_eq!(server_package(SERVER, &path), Some(t.join("tools/node_modules/@vue/language-server")));
         assert_eq!(server_package("not-installed", &path), None);
     }

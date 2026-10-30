@@ -210,10 +210,11 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     let names = |c: Vec<AgentCommand>| c.into_iter().map(|c| c.name).collect::<Vec<_>>();
 
     let mgr_a = manager_at(&a, &models, Arc::new(FakeAgent::default()));
-    // Before any session: the skills on disk.
+    // Before any session: only the skills on disk.
     assert_eq!(names(mgr_a.commands("claude", None).await.unwrap()), ["triage"]);
     let task = mgr_a
         .create(NewAgentTask {
+            project_root: None,
             prompt: text("Fix the lexer"),
             provider: "claude".into(),
             config: Vec::new(),
@@ -227,6 +228,8 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     assert_eq!(names(mgr_a.commands("claude", Some(&task.id)).await.unwrap()), ["review", "triage"]);
     // Other agents get only what they offered.
     assert!(mgr_a.commands("codex", None).await.unwrap().is_empty());
+    mgr_a.cancel(&task.id, None).unwrap();
+    wait_for(&mgr_a, &task.id, AgentStatus::Ready).await;
     mgr_a.shutdown();
 
     // Another project shares the settings but not the commands.
@@ -237,6 +240,46 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     assert!(mgr_b.commands("claude", None).await.unwrap().is_empty());
     let mgr_a = manager_at(&a, &models, Arc::new(FakeAgent::default()));
     assert_eq!(names(mgr_a.providers().into_iter().find(|p| p.id == "claude").unwrap().commands), ["review"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn builtin_commands_only_fill_verified_gaps_and_preserve_advertised_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager_at(tmp.path(), &tmp.path().join("models.json"), agent);
+    for provider in ["claude", "claude-acp", "opencode2", "codex", "custom"] {
+        assert!(mgr.commands(provider, None).await.unwrap().is_empty(), "{provider}");
+    }
+    let commands = mgr.commands("opencode", None).await.unwrap();
+    assert_eq!(commands.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["compact"]);
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Hello"),
+            provider: "opencode".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let advertised = AgentCommand {
+        name: "compact".into(),
+        description: "Agent supplied description".into(),
+        hint: Some("instructions".into()),
+    };
+    mgr.task(&task.id).unwrap().state.lock().task.commands = vec![advertised.clone()];
+    // The task's provider wins over the caller's provider; metadata is not replaced.
+    let commands = mgr.commands("claude", Some(&task.id)).await.unwrap();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].name, advertised.name);
+    assert_eq!(commands[0].description, advertised.description);
+    assert_eq!(commands[0].hint, advertised.hint);
+    // Finish the in-process agent before Tokio stops driving its permission response.
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.shutdown();
 }
 
 async fn wait_for(mgr: &AgentManager, id: &str, status: AgentStatus) {
@@ -268,6 +311,7 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
 
     let task = mgr
         .create(NewAgentTask {
+            project_root: None,
             prompt: text("Fix the lexer\nmore detail"),
             provider: "claude".into(),
             config: vec![AgentConfigChoice { id: "model".into(), value: "small".into() }],
@@ -374,6 +418,7 @@ async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
     let mgr = manager(tmp.path(), agent.clone());
     let task = mgr
         .create(NewAgentTask {
+            project_root: None,
             prompt: text("wait"),
             provider: "claude".into(),
             config: vec![],
@@ -428,6 +473,7 @@ async fn subagents_get_their_own_conversation() {
     let mgr = manager(tmp.path(), agent.clone());
     let task = mgr
         .create(NewAgentTask {
+            project_root: None,
             prompt: text("delegate"),
             provider: "claude".into(),
             config: vec![],
@@ -521,6 +567,7 @@ async fn cancelling_resolves_the_open_permission_and_delete_forgets_the_task() {
     let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
     let task = mgr
         .create(NewAgentTask {
+            project_root: None,
             prompt: text("do it"),
             provider: "codex".into(),
             config: vec![],
@@ -542,6 +589,7 @@ async fn cancelling_resolves_the_open_permission_and_delete_forgets_the_task() {
     assert!(!tmp.path().join("store").join(format!("{}.json", task.id)).exists());
     assert!(
         mgr.create(NewAgentTask {
+            project_root: None,
             prompt: text(" "),
             provider: "codex".into(),
             config: vec![],
@@ -587,6 +635,7 @@ async fn real_claude_task_in_a_worktree() {
     );
     let task = mgr
         .create(NewAgentTask {
+            project_root: None,
             prompt: text("Create a file named hello.txt containing the single word hi. Do nothing else."),
             provider: "claude".into(),
             config: vec![AgentConfigChoice { id: "model".into(), value: "haiku".into() }],
@@ -635,6 +684,7 @@ async fn forks_rollbacks_and_steering() {
     let agent = Arc::new(FakeAgent::default());
     let mgr = manager(tmp.path(), agent.clone());
     let new = |prompt: &str| NewAgentTask {
+        project_root: None,
         prompt: text(prompt),
         provider: "claude".into(),
         config: Vec::new(),
@@ -685,6 +735,7 @@ async fn usage_limits_and_late_settings() {
     let mgr = manager(tmp.path(), agent.clone());
     let task = mgr
         .create(NewAgentTask {
+            project_root: None,
             prompt: text("limit"),
             provider: "claude".into(),
             // `effort` isn't offered until the session runs.
@@ -727,6 +778,7 @@ async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
     let agent = Arc::new(FakeAgent::default());
     let mgr = manager(tmp.path(), agent.clone());
     let new = || NewAgentTask {
+        project_root: None,
         prompt: text("Fix"),
         provider: "cursor".into(),
         config: Vec::new(),
@@ -752,15 +804,17 @@ async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
     mgr.prompt(&task.id, text("Fix again"), false).await.unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     assert!(!agent.calls.lock().iter().any(|c| c.contains("bypass")));
-    assert!(!config::bypass_approvals("cursor", &mgr.shared.known_config("cursor")));
+    assert!(config::bypass_approvals("cursor", &mgr.shared.known_config("cursor")));
     mgr.set_config(&task.id, config::CURSOR_APPROVAL, "ask".into()).await.unwrap();
     mgr.prompt(&task.id, text("Fix once more"), false).await.unwrap();
     wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
     mgr.cancel(&task.id, None).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
-    // An unrelated new conversation still asks, even after the cache was updated.
+    // A task created without choosing approvals still asks; the New Task page sends the default.
     let other = mgr.create(new()).await.unwrap();
     wait_for(&mgr, &other.id, AgentStatus::NeedsInput).await;
+    mgr.cancel(&other.id, None).unwrap();
+    wait_for(&mgr, &other.id, AgentStatus::Ready).await;
     mgr.shutdown();
 }
 
@@ -770,6 +824,7 @@ async fn cursor_approval_choice_applies_before_first_prompt() {
     let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
     let task = mgr
         .create(NewAgentTask {
+            project_root: None,
             prompt: text("Fix"),
             provider: "cursor".into(),
             config: vec![AgentConfigChoice { id: config::CURSOR_APPROVAL.into(), value: "bypass".into() }],
@@ -780,4 +835,110 @@ async fn cursor_approval_choice_applies_before_first_prompt() {
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archived_tasks_can_be_restored_and_continue_their_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    mgr.archive(&task.id).unwrap();
+    assert!(mgr.prompt(&task.id, text("again"), false).await.is_err());
+    mgr.unarchive(&task.id).unwrap();
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready);
+    assert!(mgr.task(&task.id).unwrap().live.lock().is_none());
+    assert_eq!(mgr.entries(&task.id, None).unwrap().len(), entries.len());
+    drop(mgr);
+    let mgr = manager(tmp.path(), agent.clone());
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready);
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(agent.calls.lock().iter().any(|call| call == "session/load"));
+    assert_eq!(mgr.entries(&task.id, None).unwrap().len(), entries.len() + 2);
+    mgr.unarchive(&task.id).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn task_project_root_controls_local_and_worktree_repositories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    let member = root.join("project-b");
+    std::fs::create_dir(&member).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&member)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(&["init", "-q", "-b", "member-main"]);
+    std::fs::write(member.join("file.txt"), "original\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "initial"]);
+    let mgr = manager(&root, Arc::new(FakeAgent::default()));
+    for isolation in [Isolation::Local, Isolation::Worktree] {
+        let task = mgr
+            .create(NewAgentTask {
+                project_root: Some(IpcPath(member.clone())),
+                prompt: text("member task"),
+                provider: "claude".into(),
+                config: vec![],
+                isolation,
+                base: None,
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+        let permission = mgr
+            .entries(&task.id, None)
+            .unwrap()
+            .iter()
+            .find_map(|e| match e {
+                AgentEntry::Permission { id, .. } => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        assert_eq!(task.project_root, Some(IpcPath(member.clone())));
+        assert_eq!(task.base.as_deref(), Some("member-main"));
+        if isolation == Isolation::Local {
+            assert_eq!(task.cwd.0, member);
+        } else {
+            assert_ne!(task.cwd.0, member);
+            assert_eq!(std::fs::read_to_string(task.cwd.0.join("file.txt")).unwrap(), "original\n");
+        }
+        std::fs::write(task.cwd.0.join("file.txt"), "changed\n").unwrap();
+        let changes = mgr.changes(&task.id).await.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path.0, task.cwd.0.join("file.txt"));
+        assert_eq!(mgr.base_text(&task.id, changes[0].path.0.clone()).await.unwrap().as_deref(), Some("original\n"));
+        let saved = std::fs::read(root.join("store").join(format!("{}.json", task.id))).unwrap();
+        assert!(String::from_utf8(saved).unwrap().contains("projectRoot"));
+        let mut old = serde_json::to_value(&task).unwrap();
+        old.as_object_mut().unwrap().remove("projectRoot");
+        assert!(serde_json::from_value::<AgentTask>(old).unwrap().project_root.is_none());
+        mgr.delete(&task.id, true).await.unwrap();
+        if isolation == Isolation::Worktree {
+            assert!(!task.cwd.0.exists());
+        }
+        std::fs::write(member.join("file.txt"), "original\n").unwrap();
+    }
+    assert_eq!(git(&["worktree", "list", "--porcelain"]).matches("worktree ").count(), 1);
 }

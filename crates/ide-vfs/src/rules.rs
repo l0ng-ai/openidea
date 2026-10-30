@@ -224,6 +224,58 @@ impl GitignoreStack {
         }
         false
     }
+
+    /// Like [`is_ignored`], but only checks whether `path` itself matches —
+    /// ignored ancestors do not count. Lets a directory like `target/` (itself
+    /// ignored) still emit its own create/remove so the tree can show it
+    /// appearing marked as ignored, while files inside it stay filtered out.
+    pub fn is_ignored_self(&self, path: &Path, is_dir: bool) -> bool {
+        if let Some(parent) = path.parent() {
+            let nested = self
+                .nested
+                .lock()
+                .entry(parent.to_path_buf())
+                .or_insert_with(|| {
+                    find_repo_root(parent)
+                        .filter(|root| self.repo_root.as_ref() != Some(root))
+                        .map(|_| Arc::new(Self::new(parent)))
+                })
+                .clone();
+            if let Some(nested) = nested {
+                return nested.is_ignored_self(path, is_dir);
+            }
+        }
+        if self.repo_root.as_deref() == Some(path) {
+            return false;
+        }
+        for dir in path.ancestors().skip(1) {
+            if let Some(m) = self.matcher_for(dir)
+                && let Ok(rel) = path.strip_prefix(dir)
+            {
+                match m.matched(rel, is_dir) {
+                    Match::Ignore(_) => return true,
+                    Match::Whitelist(_) => return false,
+                    Match::None => {}
+                }
+            }
+            if self.repo_root.as_deref() == Some(dir) {
+                break;
+            }
+        }
+        if let Some(root) = &self.repo_root
+            && let Ok(rel) = path.strip_prefix(root)
+            && !rel.as_os_str().is_empty()
+        {
+            for gi in self.repo_level.read().iter() {
+                match gi.matched(rel, is_dir) {
+                    Match::Ignore(_) => return true,
+                    Match::Whitelist(_) => return false,
+                    Match::None => {}
+                }
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]

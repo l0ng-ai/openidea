@@ -4,26 +4,12 @@
  * belongs to, and test configurations scoped to one class or method.
  */
 import type { RunConfig } from "@/platform/ipc";
-import { CLASSPATH, TEST_CLASSPATH } from "@/platform/javaLaunch";
+import { CLASSPATH, TEST_CLASSPATH, jvmModuleDir } from "@/platform/javaLaunch";
 import { isTestPath } from "@/platform/languageSettings";
 import { currentRoots } from "@/platform/projectRoots";
 import { simpleClassName } from "./jvmTargets";
 
-/**
- * Module directory (relative to the project root, `""` for the root) of a JVM
- * source file: the part before `src/{main,test}/…`, else the working directory
- * of the closest Maven / Gradle configuration.
- */
-export function jvmModuleDir(relPath: string, configs: readonly RunConfig[] = []): string {
-  const m = /^(?:(.*)\/)?src\/(?:main|test|[\w-]+)\/(?:java|kotlin|scala|groovy)\//.exec(relPath);
-  if (m) return m[1] ?? "";
-  const cwds = configs
-    .filter((c) => c.kind === "maven" || c.kind === "gradle")
-    .map((c) => (c.cwd ?? "").replace(/^\.\/?/, "").replace(/\/+$/, ""))
-    .filter((cwd) => !cwd || relPath.startsWith(cwd + "/"))
-    .sort((a, b) => b.length - a.length);
-  return cwds[0] ?? "";
-}
+export { jvmModuleDir } from "@/platform/javaLaunch";
 
 /** In a test source root (detected or marked in Project Structure), or Maven's `src/test`. */
 const isTestSource = (relPath: string) => /(^|\/)src\/test\//.test(relPath) || isTestPath(currentRoots(), relPath);
@@ -42,10 +28,11 @@ export function applicationConfig(
     command: "java",
     args: ["-cp", isTestSource(relPath) ? TEST_CLASSPATH : CLASSPATH, target.className],
     cwd: module || null,
+    module,
     env: {},
     detected: true,
     isTest: false,
-    debugAdapter: "java-debug",
+    debugAdapter: relPath.endsWith(".kt") ? "kotlin-debug-adapter" : "java-debug",
   };
 }
 

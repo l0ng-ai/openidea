@@ -178,7 +178,7 @@ pub struct CustomKeymap {
 pub struct GeneralSettings {
     pub reopen_last_project: bool,
     pub confirm_exit: bool,
-    /// Where Open… puts a project while one is open: `ask` | `new` | `same`.
+    /// Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`.
     pub open_project_in: String,
     /// Initial folder of the Open / Clone dialogs; empty = the OS default.
     pub default_project_directory: String,

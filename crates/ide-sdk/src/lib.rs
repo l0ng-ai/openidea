@@ -25,7 +25,6 @@ use specta::Type;
 use std::path::{Path, PathBuf};
 
 pub use discover::{detect, jdk_sdk};
-pub use exec::search_path;
 
 /// What [`detect`] looks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

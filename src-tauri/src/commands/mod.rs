@@ -44,6 +44,8 @@ pub mod tools;
 pub mod vcs;
 pub mod web;
 pub mod window;
+pub mod window_group;
+pub mod workspace;
 
 use tauri_specta::collect_commands;
 
@@ -62,6 +64,16 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::recent_projects,
         app::remove_recent_project,
         app::open_project,
+        workspace::workspace_create,
+        workspace::workspace_attach,
+        workspace::workspace_update,
+        window_group::window_group_current,
+        window_group::window_group_merge,
+        window_group::window_group_select,
+        window_group::window_group_detach,
+        window_group::window_group_close,
+        window_group::window_group_reorder,
+        window_group::window_group_restore,
         app::light_edit_open,
         app::project_current,
         app::close_project,
@@ -94,6 +106,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_cancel,
         agent::agent_respond,
         agent::agent_archive,
+        agent::agent_unarchive,
         agent::agent_delete,
         agent::agent_changes,
         agent::agent_base_text,
@@ -283,6 +296,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_close_stdin,
         run::run_resize,
         run::run_gradle_jvm_args_script,
+        run::run_tomcat_home,
+        run::run_tomcat_artifacts,
+        run::run_tomcat_build,
+        run::run_tomcat_update,
         run::run_test_reports,
         build::build_model,
         build::build_sync,
@@ -323,6 +340,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         sdk::sdk_python_pip,
         window::window_open_project,
         window::window_open_files,
+        window::window_open_file_in_new_window,
         window::window_open_remote,
         window::window_new,
         window::window_open_settings,

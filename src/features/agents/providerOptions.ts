@@ -21,7 +21,7 @@ export function providerOptions(
   const missing = providers.filter((p) => !p.installed);
   return [
     ...installed.map((p) => ({ value: p.id, label: p.name, icon: icon(p.id), detail: version(p) })),
-    ...(missing.length ? [{ value: "__missing__", label: tx("Not installed"), disabled: true }] : []),
+    ...(missing.length ? [{ value: "__missing__", label: tx("Not installed"), section: true }] : []),
     ...missing.map((p) => ({ value: p.id, label: p.name, icon: icon(p.id), detail: p.command })),
     { value: ADD_AGENT, label: tx("More agents…") },
   ];

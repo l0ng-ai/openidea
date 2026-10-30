@@ -21,6 +21,7 @@ function makeView(doc: string) {
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+const flushFrame = () => new Promise((r) => requestAnimationFrame(r));
 
 function gutterClasses(view: EditorView): string[] {
   return [...view.dom.querySelectorAll(".cm-lineNumbers .cm-gutterElement")].map((e) => e.className);
@@ -154,11 +155,12 @@ describe("execution point", () => {
 });
 
 describe("session events", () => {
-  it("tracks pause / continue / termination and publishes context keys", () => {
+  it("tracks pause / continue / termination and publishes context keys", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     adoptSession(77);
     handleDebugEvent(77, { kind: "output", category: "stdout", output: "hel" });
     handleDebugEvent(77, { kind: "output", category: "stdout", output: "lo\n" });
+    await flushFrame();
     expect(useDebug.getState().console[77]!.map((l) => l.text)).toEqual(["hello\n"]);
     expect(getContext().debugSessionActive).toBe(true);
     handleDebugEvent(77, {
@@ -181,7 +183,7 @@ describe("session events", () => {
     expect(getContext().debugSessionActive).toBe(false);
   });
 
-  it("ignores sessions this window did not start, but adopts children of its own", () => {
+  it("ignores sessions this window did not start, but adopts children of its own", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     adoptSession(90, { name: "app", adapter: "js-debug" });
     // Another window's session: no session, no console, no tool window.
@@ -202,6 +204,7 @@ describe("session events", () => {
     // A child the adapter of our session started is adopted with its parent.
     handleDebugEvent(92, { kind: "started", name: "worker", adapter: "js-debug", parent: 90 });
     handleDebugEvent(92, { kind: "output", category: "stdout", output: "child\n" });
+    await flushFrame();
     const child = useDebug.getState().sessions[92]!;
     expect([child.name, child.parent, child.status]).toEqual(["worker", 90, "running"]);
     expect(useDebug.getState().console[92]!.map((l) => l.text)).toEqual(["child\n"]);

@@ -237,6 +237,19 @@ pub enum PushTags {
     CurrentBranch,
 }
 
+/// Options of [`Repo::push_branch_to`]: which commits to push and where to.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PushBranchOptions<'a> {
+    /// Push only up to this commit of the branch (`None`: the whole branch).
+    pub revision: Option<&'a str>,
+    /// Remote branch name (`None` keeps the upstream's / the local name).
+    pub target: Option<&'a str>,
+    /// Remote to push to (`None` keeps the upstream's / the default remote).
+    pub remote: Option<&'a str>,
+    /// `git push --force-with-lease`.
+    pub force_with_lease: bool,
+}
+
 /// What an interactive rebase does with one commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -443,6 +456,7 @@ mod cli;
 mod diff;
 mod history;
 mod ignore;
+mod index_writes;
 mod manage;
 mod ops;
 mod patch;
@@ -452,6 +466,7 @@ mod repo;
 mod roots;
 pub mod shelf;
 mod status;
+pub use index_writes::is_own_index_write;
 mod text_encoding;
 mod write;
 
@@ -576,13 +591,16 @@ impl Repo {
     }
     /// One entry per line of the current text (`current_text`, or the file on disk).
     /// Lines not yet committed carry an all-zero commit id and author "Not Committed Yet".
+    /// `revision` is the history to blame against (default `HEAD`); the merge view
+    /// blames each side pane on the branch it belongs to (e.g. `MERGE_HEAD`).
     pub fn blame(
         &self,
         path: &Path,
         current_text: Option<&str>,
+        revision: Option<&str>,
         encoding: &'static Encoding,
     ) -> IdeResult<Vec<BlameLine>> {
-        write::blame(self, path, current_text, encoding)
+        write::blame(self, path, current_text, revision, encoding)
     }
     /// Commits newest-first in topological order (children before parents).
     ///
@@ -779,20 +797,25 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        write::push_branch(self, branch, revision, None, force_with_lease, cancel, on_output)
+        write::push_branch(
+            self,
+            branch,
+            PushBranchOptions { revision, force_with_lease, ..Default::default() },
+            cancel,
+            on_output,
+        )
     }
-    /// [`Repo::push_branch`] to remote branch `target` instead of the upstream's name (the
-    /// Push dialog's editable target).
+    /// [`Repo::push_branch`] to remote branch `target` (None keeps the upstream's name)
+    /// and/or remote `remote` (None keeps the upstream's remote). The Push dialog's
+    /// editable target and remote picker.
     pub fn push_branch_to(
         &self,
         branch: &str,
-        revision: Option<&str>,
-        target: &str,
-        force_with_lease: bool,
+        options: PushBranchOptions<'_>,
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        write::push_branch(self, branch, revision, Some(target), force_with_lease, cancel, on_output)
+        write::push_branch(self, branch, options, cancel, on_output)
     }
     /// Fast-forwards a local branch that is not checked out to its upstream (Branches ›
     /// Update). Fails when the branch has diverged.

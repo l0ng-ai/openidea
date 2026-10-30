@@ -44,6 +44,7 @@ beforeEach(() => {
   useServicesTree.setState({
     roots: {},
     selectedKey: null,
+    selectedKeys: new Set(),
     expanded: new Set(["run:type:spring-boot", "run:type:npm"]),
   });
   dispose = [
@@ -91,6 +92,16 @@ describe("service reordering integration", () => {
     expect(screen.queryByRole("button", { name: "Move Up" })).toBeNull();
     select("Spring Boot");
     expect(screen.queryByRole("button", { name: "Move Up" })).toBeNull();
+  });
+
+  it("preserves multi-selection without offering single-row moves", () => {
+    render(<ServicesTreeView />);
+    select("Portal");
+    fireEvent.mouseDown(within(tree()).getByText("Gateway").closest('[role="treeitem"]')!, { metaKey: true });
+    expect(useServicesTree.getState().selectedKeys.size).toBe(2);
+    expect(screen.queryByRole("button", { name: "Move Up" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Move Down" })).toBeNull();
+    expect(names()).toEqual(["Spring Boot", "Gateway", "Portal", "npm", "Web", "Worker", "Docker"]);
   });
 
   it("cancels an active drag when the project changes", () => {

@@ -216,6 +216,7 @@ fn builds_nested_in_a_folder_of_repositories() {
     assert_eq!(app.kind, "spring-boot");
     assert_eq!(cmdline(app), "java -cp ${classpath} org.dromara.DromaraApplication");
     assert_eq!(app.cwd.as_deref(), Some(Path::new("RuoYi-Vue-Plus/ruoyi-admin")));
+    assert_eq!(app.extras.module.as_deref(), Some("RuoYi-Vue-Plus/ruoyi-admin"));
     assert_eq!(app.debug_adapter.as_deref(), Some("java-debug"));
     let package = find(&c, "maven:package:RuoYi-Vue-Plus");
     assert_eq!(package.name, "RuoYi-Vue-Plus: mvn package");

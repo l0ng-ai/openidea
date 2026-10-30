@@ -297,7 +297,7 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
 
 /// Vue Language Server 3 in hybrid mode: its `tsserver/request`s go through the
 /// client to vtsls with `@vue/typescript-plugin` (issue #25). Set
-/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vue/language-server typescript@"<7" @vtsls/language-server`.
+/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vue/language-server typescript@6 @vtsls/language-server`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires @vue/language-server and @vtsls/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
 async fn vue_hybrid_mode_end_to_end() {
@@ -444,13 +444,13 @@ async fn angular_language_server_end_to_end() {
     let count = Pos::new(4, 20);
     let range = mgr.prepare_rename(inline, count).await.unwrap();
     assert_eq!(range, Some(Range::new(Pos::new(4, 19), Pos::new(4, 24))));
-    let edit = mgr.rename(inline, count, "total".into()).await.unwrap();
+    let edit = mgr.rename(inline, count, "total".into(), Default::default()).await.unwrap().edit;
     assert_eq!(edited_lines(&edit, &inline_ts), [4, 7], "{edit:?}");
 
     // `title` in the class, which both servers rename: vtsls's edit and the
     // template's from the Angular server.
     let title = Pos::new(7, 3);
-    let edit = mgr.rename(ts, title, "heading".into()).await.unwrap();
+    let edit = mgr.rename(ts, title, "heading".into(), Default::default()).await.unwrap().edit;
     assert_eq!((edited_lines(&edit, &app_ts), edited_lines(&edit, &app_html)), (vec![7], vec![0]), "{edit:?}");
     // Its usage in the template, the declaration left out, from either file.
     for (doc, pos) in [(ts, title), (html, Pos::new(0, 8))] {

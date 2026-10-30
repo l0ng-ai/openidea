@@ -4,7 +4,8 @@ use crate::cli::{self, run};
 use crate::repo::{gx, resolve};
 use crate::text_encoding::{decode, encode, has_bom, is_binary};
 use crate::{
-    BlameLine, CheckoutMode, CheckoutOptions, CheckoutOutcome, CommitOptions, DeletedBranch, DivergedLocal, Repo,
+    BlameLine, CheckoutMode, CheckoutOptions, CheckoutOutcome, CommitOptions, DeletedBranch, DivergedLocal,
+    PushBranchOptions, Repo,
 };
 use encoding_rs::Encoding;
 use gix::bstr::{BStr, ByteSlice};
@@ -30,25 +31,28 @@ impl Repo {
     }
 }
 
-/// Runs a path-taking git command with literal pathspecs.
+/// Runs a path-taking git command with literal pathspecs, in as many invocations as
+/// the platform's command-line limit needs (a large rollback would otherwise fail with
+/// `os error 206` on Windows).
 fn run_paths(r: &Repo, args: &[&str], paths: &[String]) -> IdeResult<()> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    let mut full: Vec<&str> = vec!["--literal-pathspecs"];
-    full.extend_from_slice(args);
-    full.push("--");
-    full.extend(paths.iter().map(String::as_str));
-    run(r.root(), &full, None).map(|_| ())
+    let mut base: Vec<&str> = vec!["--literal-pathspecs"];
+    base.extend_from_slice(args);
+    base.push("--");
+    cli::run_paths(r.root(), &base, paths).map(|_| ())
 }
 
 pub(crate) fn blame(
     r: &Repo,
     path: &Path,
     current_text: Option<&str>,
+    revision: Option<&str>,
     encoding: &'static Encoding,
 ) -> IdeResult<Vec<BlameLine>> {
     let rel = r.rel_path(path)?;
+    let revision = match revision {
+        Some(rev) => check_rev(rev)?,
+        None => "HEAD",
+    };
     let disk = match std::fs::read(r.abs_path(&rel)) {
         Ok(bytes) => bytes,
         Err(_) if current_text.is_some() => Vec::new(),
@@ -73,14 +77,14 @@ pub(crate) fn blame(
     let line_count = text.split_inclusive('\n').count();
     let tracked_in_head = {
         let repo = r.gix()?;
-        crate::repo::blob_at(&repo, &rel, "HEAD")?.is_some()
+        crate::repo::blob_at(&repo, &rel, revision)?.is_some()
     };
     if !tracked_in_head {
         return Ok(uncommitted_lines(line_count));
     }
     let out = run(
         r.root(),
-        &["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", "--", &rel],
+        &["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", revision, "--", &rel],
         Some(&contents),
     )?;
     let mut lines = crate::blame::parse_porcelain(&out.stdout_str());
@@ -750,22 +754,25 @@ fn check_local_branch(r: &Repo, branch: &str) -> IdeResult<()> {
         .map_err(|_| IdeError::invalid(format!("'{branch}' is not a local branch")))
 }
 
-/// Pushes local `branch` (or only up to `revision`) to its upstream; a branch without
-/// one goes to the default remote under the same name and, when pushed whole, gets it
-/// as upstream.
+/// Pushes local `branch` (or only up to `opts.revision`) to its upstream; a branch
+/// without one goes to the default remote under the same name and, when pushed whole,
+/// gets it as upstream.
 pub(crate) fn push_branch(
     r: &Repo,
     branch: &str,
-    revision: Option<&str>,
-    target: Option<&str>,
-    force_with_lease: bool,
+    opts: PushBranchOptions<'_>,
     cancel: &CancellationToken,
     on_output: &dyn Fn(String),
 ) -> IdeResult<()> {
+    let PushBranchOptions { revision, target, remote: remote_override, force_with_lease } = opts;
     check_local_branch(r, branch)?;
-    let (remote, mut name, set_upstream) = match branch_upstream(r, branch) {
-        Some((remote, name)) => (remote, name, false),
-        None => (push_remote(r)?, branch.to_string(), revision.is_none()),
+    let remote_override = remote_override.map(str::trim).filter(|s| !s.is_empty());
+    let (remote, mut name, set_upstream) = match (remote_override, branch_upstream(r, branch)) {
+        // An explicit remote keeps the upstream's branch name but pushes elsewhere.
+        (Some(remote), Some((_, name))) => (check_rev(remote)?.to_string(), name, false),
+        (Some(remote), None) => (check_rev(remote)?.to_string(), branch.to_string(), revision.is_none()),
+        (None, Some((remote, name))) => (remote, name, false),
+        (None, None) => (push_remote(r)?, branch.to_string(), revision.is_none()),
     };
     if let Some(t) = target.map(str::trim).filter(|t| !t.is_empty()) {
         let valid =

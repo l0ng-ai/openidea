@@ -3,35 +3,13 @@
 
 use ide_core::output_encoding::decode_tool_output;
 use ide_core::{CancellationToken, IdeError, IdeResult};
-use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// The process `PATH` (already the login shell's in the app) plus common tool dirs.
-pub fn search_path() -> OsString {
-    let mut dirs: Vec<PathBuf> =
-        std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-    if let Some(home) = crate::home_dir() {
-        for rel in [".cargo/bin", ".local/bin", "go/bin", ".pyenv/shims", ".bun/bin", ".npm-global/bin", ".volta/bin"] {
-            dirs.push(home.join(rel));
-        }
-        // nvm: newest installed node's bin, as language servers are launched.
-        if let Ok(entries) = std::fs::read_dir(home.join(".nvm/versions/node")) {
-            let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path().join("bin")).collect();
-            versions.sort();
-            dirs.extend(versions.into_iter().rev());
-        }
-    }
-    for d in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
-        dirs.push(PathBuf::from(d));
-    }
-    let mut seen = std::collections::HashSet::new();
-    dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()));
-    std::env::join_paths(dirs).unwrap_or_default()
-}
+pub(crate) use ide_core::tool_path::search_path;
 
 /// `dir` in front of the search path, as a `PATH` value.
 pub(crate) fn path_with(dirs: &[&Path]) -> String {
@@ -45,7 +23,7 @@ pub(crate) fn path_with(dirs: &[&Path]) -> String {
 /// Resolves a command name on the search path.
 pub(crate) fn which(name: &str) -> Option<PathBuf> {
     let path = search_path();
-    std::env::split_paths(&path).map(|d| d.join(crate::exe(name))).find(|p| p.is_file())
+    ide_core::process::find_executable(name, &path)
 }
 
 /// Runs `program args` and returns trimmed stdout (stderr when stdout is empty)
@@ -66,27 +44,41 @@ pub(crate) fn query_in(
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
+    if !env.iter().any(|(k, _)| *k == "PATH") {
+        cmd.env("PATH", search_path());
+    }
     let mut child = ide_core::process::prepare(&mut cmd)
         .args(args)
-        .env("PATH", search_path())
         .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let mut stderr = child.stderr.take()?;
-    let out = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        let _ = stdout.read_to_end(&mut s);
-        decode_tool_output(&s)
-    });
-    let err = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        let _ = stderr.read_to_end(&mut s);
-        decode_tool_output(&s)
-    });
+    // Chunks as they come, `None` at the end of a pipe. A reader stops once the query
+    // has returned, closing the pipe on whatever still writes to it.
+    let (tx, rx) = mpsc::channel::<(bool, Option<Vec<u8>>)>();
+    let pipes: [(bool, Box<dyn Read + Send>); 2] =
+        [(true, Box::new(child.stdout.take()?)), (false, Box::new(child.stderr.take()?))];
+    for (is_out, mut pipe) in pipes {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                let chunk = match pipe.read(&mut buf) {
+                    Ok(0) => None,
+                    Ok(n) => Some(buf[..n].to_vec()),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => None,
+                };
+                let end = chunk.is_none();
+                if tx.send((is_out, chunk)).is_err() || end {
+                    return;
+                }
+            }
+        });
+    }
+    drop(tx);
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -99,12 +91,27 @@ pub(crate) fn query_in(
             }
         }
     };
-    let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
     if !status.success() {
         return None;
     }
-    let text = if out.trim().is_empty() { err } else { out };
-    Some(text.trim().to_owned())
+    // Up to the deadline, or briefly past it for a program that exited just before:
+    // a process it left running (a wrapper's background job) can hold the pipes
+    // open, or keep writing to them, after it exits.
+    let until = deadline.max(Instant::now() + Duration::from_millis(100));
+    let (mut out, mut err, mut open) = (Vec::new(), Vec::new(), 2);
+    while open > 0 {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(left) {
+            Ok((is_out, Some(chunk))) => if is_out { &mut out } else { &mut err }.extend(chunk),
+            Ok((_, None)) => open -= 1,
+            Err(_) => break,
+        }
+    }
+    let text = if out.trim_ascii().is_empty() { err } else { out };
+    Some(decode_tool_output(&text).trim().to_owned())
 }
 
 /// Runs a command to completion, reporting every output line (stdout and

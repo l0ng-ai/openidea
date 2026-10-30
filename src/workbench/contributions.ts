@@ -500,6 +500,8 @@ export interface EditorService {
   activeCursor(): { doc: number; path: string; line: number; col: number; offset: number } | null;
   /** Save all dirty documents; rejects with the failures once every save was tried. */
   saveAll(): Promise<void>;
+  /** Includes local edits not yet acknowledged by the backend. */
+  dirtyDocumentIds?(): number[];
   /** Move keyboard focus to the active editor (used by Escape from tool windows). */
   focus?(): void;
   /** Paths of the documents open in editor tabs (all panes, tab order). */

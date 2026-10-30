@@ -42,13 +42,16 @@ pub async fn start(
     let cancel = host.begin_request(request);
     let documents = project.documents.clone();
     let root = project.root.clone();
+    let workspace = ide_workspace::workspace::Workspace::load(&root)?.is_some();
     // The whole project also covers the Project Structure content roots.
     let content_roots = match query.scope {
-        ide_search::SearchScope::Project | ide_search::SearchScope::FileSet { set: ProjectFileSet::All } => {
-            project.content_roots()
-        }
+        ide_search::SearchScope::Project
+        | ide_search::SearchScope::FileSet { .. }
+        | ide_search::SearchScope::Pattern { .. } => project.content_roots(),
         _ => Vec::new(),
     };
+    let include_root = !workspace
+        || matches!(query.scope, ide_search::SearchScope::Directory { .. } | ide_search::SearchScope::Files { .. });
     let languages = project.languages.clone();
     let syntax = host.syntax();
     let events = on_event.clone();
@@ -66,7 +69,7 @@ pub async fn start(
                 Some(found.into_iter().map(literal_range).collect())
             };
             let mut total = SearchSummary::default();
-            for dir in std::iter::once(&root).chain(&content_roots) {
+            for dir in std::iter::once(&root).filter(|_| include_root).chain(&content_roots) {
                 let s = ide_search::search_in_context(
                     dir,
                     &query,
@@ -74,7 +77,13 @@ pub async fn start(
                     Some(&literals),
                     &|p| documents.text_of(p),
                     &cancel,
-                    &|file| events(SearchEvent::File { file }),
+                    &|mut file| {
+                        if dir != &root {
+                            let name = dir.file_name().unwrap_or_default().to_string_lossy();
+                            file.rel_path = format!("{name}/{}", file.rel_path);
+                        }
+                        events(SearchEvent::File { file });
+                    },
                 )?;
                 total.files += s.files;
                 total.matches += s.matches;

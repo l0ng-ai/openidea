@@ -2,7 +2,7 @@
 //! version publishes one per supported host platform (see `release.yml`).
 
 use crate::process::Http;
-use crate::{InstallEvent, default_search_path, fetch_verified, sources};
+use crate::{InstallEvent, fetch_verified, sources};
 use ide_core::CancellationToken;
 use ide_core::{IdeError, IdeResult};
 use std::path::{Path, PathBuf};
@@ -46,7 +46,7 @@ pub fn fetch(
     std::fs::create_dir_all(dir)?;
     let staging = tempfile_dir(dir)?;
     let result = (|| {
-        let http = Http::new(&default_search_path())?;
+        let http = Http::new(&ide_core::tool_path::search_path())?;
         // The binary runs on the remote host: never install it unverified.
         let checksum_url = format!("{url}.sha256");
         let sha256 = sources::parse_checksum(&http.get_text(&checksum_url, cancel)?, &name)

@@ -12,9 +12,11 @@ import { OverlayHost } from "./OverlayHost";
 import { projectColorVars } from "./projectColor";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
+import { WindowGroupTabs } from "./WindowGroupTabs";
 import { useApplyTheme } from "./theme";
 import { ToolWindowLayout } from "./toolwindows/ToolWindows";
 import { Welcome } from "./Welcome";
+import { WindowResizeHandles } from "./WindowResizeHandles";
 import styles from "./Workbench.module.css";
 
 /** LightEdit: editor tabs only; no tool windows, toolbar widgets or project status items. */
@@ -51,6 +53,7 @@ export function Workbench() {
         <>
           {/* Distraction Free Mode keeps the bar for the traffic lights and window dragging only. */}
           <TitleBar bare={distractionFree} />
+          {!distractionFree && <WindowGroupTabs />}
           <ToolWindowLayout key={root} editor={<EditorArea />} />
           {!distractionFree && <StatusBar />}
         </>
@@ -60,6 +63,7 @@ export function Workbench() {
         <Welcome />
       )}
       <OverlayHost />
+      <WindowResizeHandles />
     </div>
   );
 }
