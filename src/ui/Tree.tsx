@@ -117,20 +117,72 @@ export interface TreeProps<T> {
   reorder?: TreeReorder<T>;
 }
 
-/** Widest row seen since `rows` last changed; rows are virtualised, so the scroll range must outlive them. */
-function useContentWidth(scroller: RefObject<HTMLDivElement | null>, rows: unknown, enabled: boolean): number {
+/** Remember intrinsic widths by identity, including rows outside the virtual window. */
+function useContentWidth<T>(
+  scroller: RefObject<HTMLDivElement | null>,
+  rows: readonly Row<T>[],
+  enabled: boolean,
+): number {
   const [width, setWidth] = useState(0);
-  const measuredRows = useRef(rows);
+  const cache = useRef(new Map<string, number>());
+  const measuredRows = useRef<readonly Row<T>[] | null>(null);
+  const maximum = useRef(0);
   useLayoutEffect(() => {
-    if (!enabled) return;
-    let widest = 0;
-    scroller.current?.querySelectorAll<HTMLElement>("[data-row]").forEach((row) => {
-      widest = Math.max(widest, row.offsetWidth);
-    });
-    const kept = measuredRows.current === rows;
-    measuredRows.current = rows;
-    setWidth((current) => (kept ? Math.max(current, widest) : widest));
+    if (!enabled) {
+      cache.current.clear();
+      measuredRows.current = null;
+      maximum.current = 0;
+      return;
+    }
+    const element = scroller.current;
+    if (!element) return;
+    const mounted = [...element.querySelectorAll<HTMLElement>("[data-row]")];
+    const measure = () => {
+      // Hidden tool windows have no layout. Keep their estimates until shown;
+      // the observer remains attached so showing the window resumes measurement.
+      if (element.clientWidth === 0) return;
+      let recompute = false;
+      if (measuredRows.current !== rows) {
+        const keys = new Set(rows.map((row) => row.key));
+        for (const [key, value] of cache.current) {
+          if (!keys.has(key)) {
+            cache.current.delete(key);
+            if (value === maximum.current) recompute = true;
+          }
+        }
+        measuredRows.current = rows;
+      }
+      // Measure max-content, not the viewport's min-width floor. Batch writes and
+      // restore before paint so selection backgrounds still fill the viewport.
+      const minimums = mounted.map((row) => row.style.minWidth);
+      for (const row of mounted) row.style.minWidth = "0";
+      const widths = mounted.map((row) => row.offsetWidth);
+      mounted.forEach((row, index) => {
+        row.style.minWidth = minimums[index]!;
+        const key = rows[Number(row.dataset.row)]!.key;
+        const value = widths[index]!;
+        if (cache.current.get(key) === maximum.current && value < maximum.current) recompute = true;
+        cache.current.set(key, value);
+        maximum.current = Math.max(maximum.current, value);
+      });
+      // Ordinary scrolling only touches mounted rows. Scan cached widths only
+      // when the previous maximum was removed or actually became narrower.
+      if (recompute) {
+        maximum.current = 0;
+        for (const value of cache.current.values()) maximum.current = Math.max(maximum.current, value);
+        recompute = false;
+      }
+      // Reconcile and measure together: never publish an intermediate shrink.
+      setWidth(maximum.current);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    for (const row of mounted) observer.observe(row);
+    return () => observer.disconnect();
   });
+  // Offscreen widths are estimates after label/font/indent changes; mounting
+  // measures them afresh, including decreases for the same key.
   return width;
 }
 
