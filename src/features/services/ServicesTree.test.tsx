@@ -143,3 +143,14 @@ it("disables actions when no selected row can run them", () => {
   fireEvent.mouseDown(row("three"));
   expect(within(toolbar).getByRole("button", { name: "Stop" })).toBeDisabled();
 });
+
+it("disables dialog entries for a multi-selection", () => {
+  const providers = [{ id: "a", useRoots: () => [], menu: () => [{ label: "Edit Configuration…", run }] }];
+  const one = selectionMenu([{ provider: "a", item: roots[0]! }], providers)[0] as { disabled?: boolean };
+  const many = selectionMenu(
+    roots.slice(0, 2).map((item) => ({ provider: "a", item })),
+    providers,
+  )[0] as { disabled?: boolean };
+  expect(one.disabled).toBeFalsy();
+  expect(many.disabled).toBe(true);
+});

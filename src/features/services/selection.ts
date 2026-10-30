@@ -59,6 +59,8 @@ function commonMenu(groups: MenuItem[][]): MenuItem[] {
       })
       .filter((entry) => entry.kind !== "separator" && entry.kind !== "header");
     const combined = batch(entries);
+    // An ellipsis entry opens a dialog for one service; don't open one per selected row.
+    if (groups.length > 1 && combined.label?.endsWith("…")) combined.disabled = true;
     if (entries.some((entry) => entry.submenu)) {
       combined.submenu = commonMenu(entries.map((entry) => (entry.disabled ? [] : (entry.submenu ?? []))));
     }
