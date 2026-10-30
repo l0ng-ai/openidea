@@ -200,8 +200,15 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
 
+// @lezer/javascript styles `.` as a deref operator, but not `?.`.
+const JS_TAGS: Parameters<typeof styleTags>[0] = { "?.": t.derefOperator };
+
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
+  JavaScript: JS_TAGS,
+  TypeScript: JS_TAGS,
+  JSX: JS_TAGS,
+  TSX: JS_TAGS,
   // @lezer/java tags annotations as plain identifiers.
   Java: { "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation },
   CSS: CSS_TAGS,
