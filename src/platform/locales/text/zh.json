@@ -1409,7 +1409,6 @@
   "Rerun Search": "重新运行搜索",
   "Right Bottom": "右下",
   "Right Top": "右上",
-  "Runs jdtls only, like IDEA's JDK for importer; the project keeps compiling and running with the Project JDK. jdtls needs JDK 21 or newer (recent releases 25); Download JDK… in the list fetches one. The jdtls executable itself is set in Language Servers.": "仅用于运行 jdtls（类似 IDEA 的「导入器 JDK」）；项目仍使用项目 JDK 编译和运行。jdtls 需要 JDK 21 或更高版本（较新版本需要 25）；可通过列表中的「下载 JDK…」获取。jdtls 可执行文件本身在「语言服务器」中设置。",
   "Language server JDK": "语言服务器 JDK",
   "Password": "密码",
   "Password:": "密码：",
