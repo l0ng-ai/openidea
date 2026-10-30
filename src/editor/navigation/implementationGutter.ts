@@ -30,7 +30,7 @@ import {
 } from "@/platform/ipc";
 import { editorPrefs, type EditorExtras } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
-import { iconMarkup } from "@/ui";
+import { gutterIconMarkup } from "@/ui";
 import {
   MARKER_ICONS,
   candidateKey,
@@ -206,7 +206,7 @@ class InheritanceMarker extends GutterMarker {
     el.title = this.marker.tooltip;
     el.setAttribute("role", "button");
     el.setAttribute("aria-label", this.marker.tooltip);
-    el.innerHTML = iconMarkup(MARKER_ICONS[this.marker.kind], 14) ?? "";
+    el.innerHTML = gutterIconMarkup(MARKER_ICONS[this.marker.kind]) ?? "";
     return el;
   }
 }

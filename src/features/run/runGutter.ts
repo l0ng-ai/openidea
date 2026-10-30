@@ -10,7 +10,7 @@ import type { EditorDocContext } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
-import { iconMarkup, showContextMenu, type MenuItem } from "@/ui";
+import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { notifications, runExecutors } from "@/workbench/contributions";
 import { choiceItems, executeContext, launchProduced, modifyContext, produceResolved } from "./contextRun";
 import { goModulePath, loadGoModules } from "./goModules";
@@ -166,7 +166,7 @@ class RunMarker extends GutterMarker {
     el.title = `${targetTitle(this.target)} '${label(this.target)}'`;
     el.setAttribute("role", "button");
     el.setAttribute("aria-label", el.title);
-    el.innerHTML = iconMarkup(markerIcon(this.target.kind, this.state), 14) ?? "";
+    el.innerHTML = gutterIconMarkup(markerIcon(this.target.kind, this.state)) ?? "";
     return el;
   }
 }

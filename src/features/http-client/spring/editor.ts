@@ -18,7 +18,7 @@ import { tx } from "@/platform/i18n";
 import { call, commands, emitLocalIdeEvent, IpcError } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
-import { iconMarkup, showContextMenu, type MenuItem } from "@/ui";
+import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { editorService, notifications, type MenuGroupContext } from "@/workbench/contributions";
 import { springAt, springControllers, type Controller, type Endpoint } from "./endpoints";
 import { appendRequests, bodyLookup, findHost, renderRequest, skeleton, type SourceReader } from "./request";
@@ -258,7 +258,7 @@ class SpringMarker extends GutterMarker {
     el.title = this.mark.title;
     el.setAttribute("role", "button");
     el.setAttribute("aria-label", this.mark.title);
-    el.innerHTML = iconMarkup("file-http", 14) ?? "";
+    el.innerHTML = gutterIconMarkup("file-http") ?? "";
     return el;
   }
 }
