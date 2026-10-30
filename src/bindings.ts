@@ -377,7 +377,7 @@ export const commands = {
 	end: Pos,
 } | null, IdeError>(__TAURI_INVOKE("lsp_prepare_rename", { doc, pos })),
 	/**  Computes the rename edit without applying it, so the UI can preview conflicts. */
-	lspRename: (doc: DocId, pos: Pos, newName: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("lsp_rename", { doc, pos, newName })),
+	lspRename: (request: RequestId, doc: DocId, pos: Pos, newName: string) => typedError<Renamed, IdeError>(__TAURI_INVOKE("lsp_rename", { request, doc, pos, newName })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -392,7 +392,7 @@ export const commands = {
 	lspCodeLens: (doc: DocId) => typedError<CodeLens[], IdeError>(__TAURI_INVOKE("lsp_code_lens", { doc })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
-	lspCallHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_call_hierarchy", { doc, pos, direction })),
+	lspCallHierarchy: (request: RequestId, doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<CallHierarchy, IdeError>(__TAURI_INVOKE("lsp_call_hierarchy", { request, doc, pos, direction })),
 	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
 	lspServers: () => typedError<ServerInfo[], IdeError>(__TAURI_INVOKE("lsp_servers")),
 	/**  Re-emits the language servers' current diagnostics (the UI loaded after they arrived). */
@@ -1586,6 +1586,11 @@ export type ByteRange = {
 	offset: number,
 	data: string,
 	total: number,
+};
+
+export type CallHierarchy = {
+	items: HierarchyItem[],
+	incomplete: ReferencesIncomplete | null,
 };
 
 /**
@@ -4814,7 +4819,9 @@ export type ReferencesIncomplete =
 /**  A language server was still indexing. */
 "indexing" | 
 /**  More project files mention the name than were checked. */
-"tooManyFiles";
+"tooManyFiles" | 
+/**  Files that mention the name were too large or unreadable to check. */
+"filesSkipped";
 
 /**  A registry agent this machine can run (or has installed). */
 export type RegistryAgent = {
@@ -4938,6 +4945,11 @@ export type RemoteSession = {
 
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
 export type RemoteStage = "connecting" | "checking" | "downloading" | "uploading" | "starting" | "opening";
+
+export type Renamed = {
+	edit: WorkspaceEdit,
+	incomplete: ReferencesIncomplete | null,
+};
 
 export type ReplaceEvent = 
 /**  A file was changed (`replacements` > 0) or had nothing left to replace. */

@@ -111,7 +111,7 @@ function HierarchyToolbar() {
 }
 
 export function HierarchyView() {
-  const { mode, direction, root, children, failed, loading, generation } = useHierarchy();
+  const { mode, direction, root, children, failed, notes, loading, generation } = useHierarchy();
   const projectRoot = useProject((s) => s.project?.root ?? "");
   const roots = useMemo<Node[]>(() => (root ? [{ kind: "root", id: ROOT_ID }] : []), [root]);
 
@@ -183,6 +183,11 @@ export function HierarchyView() {
           {basename(item.path)}:{item.selectionRange.start.line + 1}
         </span>
         {calls > 1 && <span className={styles.muted}>{tx`(${calls} calls)`}</span>}
+        {notes.has(n.id) && (
+          <span className={styles.muted} title={notes.get(n.id)}>
+            {notes.get(n.id)}
+          </span>
+        )}
         {failed.has(n.id) && (
           <span className={styles.error}>
             <T>failed to load</T>
@@ -195,6 +200,11 @@ export function HierarchyView() {
   return (
     <div className={styles.view}>
       <HierarchyToolbar />
+      {notes.has(ROOT_ID) && (
+        <div className={styles.note} role="note">
+          {notes.get(ROOT_ID)}
+        </div>
+      )}
       <div className={styles.body}>
         <Tree<Node>
           key={generation}
