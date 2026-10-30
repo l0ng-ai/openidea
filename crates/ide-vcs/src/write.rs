@@ -31,16 +31,14 @@ impl Repo {
     }
 }
 
-/// Runs a path-taking git command with literal pathspecs.
+/// Runs a path-taking git command with literal pathspecs, in as many invocations as
+/// the platform's command-line limit needs (a large rollback would otherwise fail with
+/// `os error 206` on Windows).
 fn run_paths(r: &Repo, args: &[&str], paths: &[String]) -> IdeResult<()> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    let mut full: Vec<&str> = vec!["--literal-pathspecs"];
-    full.extend_from_slice(args);
-    full.push("--");
-    full.extend(paths.iter().map(String::as_str));
-    run(r.root(), &full, None).map(|_| ())
+    let mut base: Vec<&str> = vec!["--literal-pathspecs"];
+    base.extend_from_slice(args);
+    base.push("--");
+    cli::run_paths(r.root(), &base, paths).map(|_| ())
 }
 
 pub(crate) fn blame(

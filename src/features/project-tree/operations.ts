@@ -90,7 +90,7 @@ export function topLevelPaths(nodes: ProjectNode[] = selectedNodes()): string[] 
 export function targetFolder(node: ProjectNode | null = leadNode()): string | null {
   const { root } = get();
   if (!root) return null;
-  if (!node) return root;
+  if (!node) return get().members?.[0] ?? (get().members ? null : root);
   return node.dir ? node.path : parentOf(node.path);
 }
 

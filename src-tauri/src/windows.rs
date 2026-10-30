@@ -59,6 +59,9 @@ pub struct RemoteLaunch {
 
 #[derive(Default)]
 pub struct WindowsState {
+    pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
+    pub groups_restored: AtomicBool,
+    pub groups_persist: tokio::sync::Mutex<()>,
     launches: Mutex<HashMap<String, Launch>>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
@@ -84,7 +87,7 @@ impl WindowsState {
         launch.files.extend(files.into_iter().map(Into::into));
     }
 
-    fn pending(&self, label: &str) -> Option<Launch> {
+    pub(crate) fn pending(&self, label: &str) -> Option<Launch> {
         self.launches.lock().get(label).cloned()
     }
 
@@ -193,9 +196,31 @@ pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
 }
 
 pub fn focus(window: &WebviewWindow) {
+    if crate::window_groups::select(window.app_handle(), window.label(), window.label()).is_ok() {
+        return;
+    }
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+}
+
+/// Present one project's save prompt at a time, including hidden group members.
+pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
+    if !app.state::<WindowsState>().quitting() {
+        return;
+    }
+    let next = project_window_labels(app)
+        .into_iter()
+        .filter(|label| Some(label.as_str()) != closed)
+        .find_map(|label| app.get_webview_window(&label));
+    if let Some(window) = next {
+        focus(&window);
+        if window.close().is_err() {
+            app.state::<WindowsState>().set_quitting(false);
+        }
+    } else {
+        app.exit(0);
+    }
 }
 
 /// The window whose open project is `root` (already canonical).

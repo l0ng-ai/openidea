@@ -55,7 +55,7 @@ import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
-import { shortcutLabel } from "@/platform/keymap";
+import { dispatchMouseShortcut, shortcutLabel } from "@/platform/keymap";
 import { isNavigationGesture, onNavigationModifier } from "@/platform/navigationModifier";
 import { create } from "zustand";
 import { tx } from "@/platform/i18n";
@@ -489,7 +489,20 @@ const linkPlugin = ViewPlugin.fromClass(
         this.show(false);
       },
       mousedown(e, view) {
-        if (e.button !== 0 || !isNavigationGesture(e)) return false;
+        if (e.button !== 0) return false;
+        if (
+          dispatchMouseShortcut(e, () => {
+            const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+            if (pos == null) return false;
+            view.dispatch({ selection: EditorSelection.cursor(pos), effects: setLink.of(null) });
+            view.focus();
+            return true;
+          })
+        ) {
+          e.preventDefault();
+          return true;
+        }
+        if (!isNavigationGesture(e)) return false;
         const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
         if (pos == null) return false;
         e.preventDefault();

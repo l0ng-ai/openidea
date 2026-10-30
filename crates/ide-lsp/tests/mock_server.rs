@@ -360,6 +360,29 @@ fn change(range: Range, text: &str) -> AppliedChange {
 // ------------------------------------------------------------------ tests
 
 #[tokio::test(flavor = "multi_thread")]
+async fn linked_projects_initialize_separate_language_server_roots() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let roots = vec![first.path().to_path_buf(), second.path().to_path_buf()];
+    h.mgr.set_content_roots(roots.clone());
+    for root in &roots {
+        let file = root.join("same.mk");
+        std::fs::write(&file, "hello").unwrap();
+        h.mgr.did_open(DocId::next(), &file, &h.lang, 1, "hello");
+    }
+    let server = h.launcher.state("mock");
+    eventually(|| server.requested("initialize").len() == 2).await;
+    let mut actual: Vec<_> =
+        server.requested("initialize").iter().map(|r| r["rootUri"].as_str().unwrap().to_owned()).collect();
+    let mut expected: Vec<_> = roots.iter().map(|p| uri_of(p)).collect();
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn initialize_and_incremental_sync() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "fn main() {\n}\n");
@@ -1145,7 +1168,7 @@ async fn navigation_rename_format_and_decorations() {
     s.respond("textDocument/prepareRename", json!({ "range": r(1,0,1,3), "placeholder": "foo" }));
     assert_eq!(h.mgr.prepare_rename(doc, Pos::new(1, 1)).await.unwrap(), Some(rng(1, 0, 1, 3)));
     s.respond("textDocument/rename", json!({ "changes": { uri.clone(): [{ "range": r(0,3,0,6), "newText": "bar" }, { "range": r(1,0,1,3), "newText": "bar" }] } }));
-    let edit = h.mgr.rename(doc, Pos::new(1, 1), "bar".into()).await.unwrap();
+    let edit = h.mgr.rename(doc, Pos::new(1, 1), "bar".into(), Default::default()).await.unwrap().edit;
     assert!(matches!(&edit.files[0], FileEdit::Edit { edits, .. } if edits.len() == 2));
     assert_eq!(s.requested("textDocument/rename")[0]["newName"], "bar");
 
@@ -1182,13 +1205,19 @@ async fn navigation_rename_format_and_decorations() {
 
     // Nothing to prepare at the position: NotFound, so the UI can retry at the enclosing declaration.
     s.respond("textDocument/prepareCallHierarchy", json!(null));
-    let err = h.mgr.call_hierarchy(doc, Pos::new(0, 1), HierarchyDirection::Incoming).await.unwrap_err();
+    let err =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 1), HierarchyDirection::Incoming, Default::default()).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::NotFound);
 
     let item = json!({ "name": "foo", "kind": 12, "uri": uri, "range": r(0,0,0,11), "selectionRange": r(0,3,0,6), "data": "id" });
     s.respond("textDocument/prepareCallHierarchy", json!([item]));
     s.respond("callHierarchy/incomingCalls", json!([{ "from": { "name": "main", "kind": 12, "uri": uri, "range": r(1,0,1,6), "selectionRange": r(1,0,1,3) }, "fromRanges": [r(1,0,1,3)] }]));
-    let calls = h.mgr.call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming).await.unwrap();
+    let calls = h
+        .mgr
+        .call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming, Default::default())
+        .await
+        .unwrap()
+        .items;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "main");
     assert_eq!(calls[0].from_ranges, vec![rng(1, 0, 1, 3)]);
@@ -1233,7 +1262,7 @@ async fn rename_merges_the_servers_that_can_rename_there() {
     );
 
     assert_eq!(h.mgr.prepare_rename(doc, Pos::new(0, 15)).await.unwrap(), Some(rng(0, 14, 0, 19)));
-    let edit = h.mgr.rename(doc, Pos::new(0, 15), "heading".into()).await.unwrap();
+    let edit = h.mgr.rename(doc, Pos::new(0, 15), "heading".into(), Default::default()).await.unwrap().edit;
     assert_eq!(edits_in(&edit, &path).len(), 2);
     assert!(h.launcher.state("ts").requested("textDocument/rename").is_empty());
 
@@ -1245,7 +1274,7 @@ async fn rename_merges_the_servers_that_can_rename_there() {
         "textDocument/rename",
         json!({ "changes": { uri: [{ "range": r(1, 0, 5), "newText": "heading: x" }] } }),
     );
-    let edit = h.mgr.rename(doc, Pos::new(1, 2), "heading".into()).await.unwrap();
+    let edit = h.mgr.rename(doc, Pos::new(1, 2), "heading".into(), Default::default()).await.unwrap().edit;
     assert_eq!(edits_in(&edit, &path), [(rng(0, 14, 0, 19), "heading".into()), (rng(1, 0, 1, 5), "heading: x".into())]);
     assert_eq!(edits_in(&edit, &html), [(rng(0, 3, 0, 8), "heading".into())]);
 }
@@ -1781,7 +1810,7 @@ fn occurrences(uri: &str, text: &str) -> Vec<Value> {
 /// A server that only analyses its open documents (minus `blind` URIs), like
 /// Pyright for files outside its `include`.
 fn open_files_only(blind: Vec<String>) -> Responder {
-    Arc::new(move |s, method, _| {
+    Arc::new(move |s, method, params| {
         let docs: Vec<(String, String)> =
             s.docs.lock().iter().filter(|(u, _)| !blind.contains(u)).map(|(u, t)| (u.clone(), t.clone())).collect();
         let locs = || docs.iter().flat_map(|(u, t)| occurrences(u, t));
@@ -1795,6 +1824,19 @@ fn open_files_only(blind: Vec<String>) -> Responder {
                 }
                 Some(json!({ "changes": changes }))
             }
+            "textDocument/prepareCallHierarchy" => {
+                let uri = &params["textDocument"]["uri"];
+                let at = json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } });
+                Some(json!([{ "name": WORD, "kind": 12, "uri": uri, "range": at, "selectionRange": at }]))
+            }
+            "callHierarchy/incomingCalls" => Some(Value::Array(
+                locs()
+                    .map(|l| {
+                        let from = json!({ "name": "caller", "kind": 12, "uri": l["uri"], "range": l["range"], "selectionRange": l["range"] });
+                        json!({ "from": from, "fromRanges": [l["range"]] })
+                    })
+                    .collect(),
+            )),
             _ => None,
         }
     })
@@ -1914,6 +1956,113 @@ async fn references_report_a_capped_candidate_search() {
     let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
+}
+
+/// What each search widened with candidate files reports for the symbol at the start of `doc`.
+async fn incomplete_reports(h: &Harness, doc: DocId) -> Vec<(&'static str, Option<ReferencesIncomplete>)> {
+    let at = Pos::new(0, 5);
+    let cancel = ide_core::CancellationToken::new;
+    vec![
+        ("references", h.mgr.references(doc, at, true, true, cancel()).await.unwrap().incomplete),
+        ("rename", h.mgr.rename(doc, at, "renamed".into(), cancel()).await.unwrap().incomplete),
+        ("callers", h.mgr.call_hierarchy(doc, at, HierarchyDirection::Incoming, cancel()).await.unwrap().incomplete),
+    ]
+}
+
+fn expect_all(reports: Vec<(&'static str, Option<ReferencesIncomplete>)>, want: Option<ReferencesIncomplete>) {
+    for (search, got) in reports {
+        assert_eq!(got, want, "{search}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_widened_search_reports_a_capped_candidate_search() {
+    let (h, s) = scope_harness();
+    h.mgr.set_candidates_hook(Box::new(|q, _| ide_lsp::CandidateFiles {
+        files: vec![q.root.join("b.mk")],
+        limit_hit: true,
+    }));
+    std::fs::write(h.root.join("b.mk"), "target\n").unwrap();
+    let (doc, _) = h.open("a.mk", "def target\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    expect_all(incomplete_reports(&h, doc).await, Some(ReferencesIncomplete::TooManyFiles));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_widened_search_reports_candidates_it_could_not_open() {
+    let oversized = "target\n".repeat(200_000);
+    // Name, content (`None`: not on disk), whether the search misses it.
+    let cases: [(&str, Option<&[u8]>, bool); 4] = [
+        ("large.mk", Some(oversized.as_bytes()), true),
+        ("binary.mk", Some(b"target \xff\xfe\n"), true),
+        ("deleted.mk", None, false),
+        ("small.mk", Some(b"target\n"), false),
+    ];
+    for (name, content, missed) in cases {
+        let (h, s) = scope_harness();
+        let file = h.root.join(name);
+        if let Some(content) = content {
+            std::fs::write(&file, content).unwrap();
+        }
+        let listed = file.clone();
+        h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+            files: vec![listed.clone()],
+            limit_hit: false,
+        }));
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        eventually(|| s.docs.lock().len() == 1).await;
+        let want = missed.then_some(ReferencesIncomplete::FilesSkipped);
+        for (search, got) in incomplete_reports(&h, doc).await {
+            assert_eq!(got, want, "{name}: {search}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_file_the_user_has_open_is_not_reported_as_skipped() {
+    let (h, s) = scope_harness();
+    let large = "target\n".repeat(200_000);
+    let (_, path) = h.open("large.mk", &large);
+    let (doc, _) = h.open("a.mk", "def target\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 2).await;
+    h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+        files: vec![path.clone()],
+        limit_hit: false,
+    }));
+    // `covered` would hide the file: answer as if the server had not listed it.
+    *s.responder.lock() = Some(open_files_only(vec![uri_of(&h.root.join("large.mk"))]));
+    expect_all(incomplete_reports(&h, doc).await, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rename_and_callers_can_be_cancelled() {
+    let (h, s) = scope_harness();
+    h.mgr.set_candidates_hook(Box::new(|_, cancel| {
+        while !cancel.is_cancelled() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        ide_lsp::CandidateFiles::default()
+    }));
+    let (doc, _) = h.open("a.mk", "def target\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let cancel_later = || {
+        let cancel = ide_core::CancellationToken::new();
+        let later = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            later.cancel();
+        });
+        cancel
+    };
+    let err = h.mgr.rename(doc, Pos::new(0, 5), "renamed".into(), cancel_later()).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    let err =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 5), HierarchyDirection::Incoming, cancel_later()).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2096,7 +2245,7 @@ async fn rename_edits_files_outside_the_analysis_scope() {
     let (doc, a) = h.open("a.mk", "def target\n");
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
-    let edit = h.mgr.rename(doc, Pos::new(0, 5), "renamed".into()).await.unwrap();
+    let edit = h.mgr.rename(doc, Pos::new(0, 5), "renamed".into(), Default::default()).await.unwrap().edit;
     let mut paths: Vec<PathBuf> = edit
         .files
         .iter()

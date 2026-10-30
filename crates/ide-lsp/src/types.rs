@@ -331,11 +331,27 @@ pub enum ReferencesIncomplete {
     Indexing,
     /// More project files mention the name than were checked.
     TooManyFiles,
+    /// Files that mention the name were too large or unreadable to check.
+    FilesSkipped,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct References {
     pub locations: Vec<Location>,
+    pub incomplete: Option<ReferencesIncomplete>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Renamed {
+    pub edit: WorkspaceEdit,
+    pub incomplete: Option<ReferencesIncomplete>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CallHierarchy {
+    pub items: Vec<HierarchyItem>,
     pub incomplete: Option<ReferencesIncomplete>,
 }

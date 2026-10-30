@@ -12,6 +12,8 @@ import type {
   AgentTask,
   Isolation,
 } from "@/bindings";
+import { useProject } from "@/platform/project";
+import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications } from "@/workbench/contributions";
 import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
@@ -29,6 +31,7 @@ import {
 
 /** New Task page settings (its text lives in the `HOME` composer). */
 export interface Draft {
+  projectRoot?: string | null;
   provider: string;
   /** Settings chosen for the next task, by option id (reset when the agent changes). */
   config: Record<string, string>;
@@ -343,18 +346,28 @@ export function openTask(task: string) {
 
 /** Opens the New Task page; `prompt` pre-fills it. */
 export function openHome(prompt?: string) {
+  const project = useProject.getState().project;
+  if (project?.workspace) {
+    const previous = useAgents.getState().draft.projectRoot;
+    const projectRoot = defaultTaskProject(project, editorService().activePath(), previous);
+    updateDraft({ projectRoot, ...(projectRoot !== previous ? { base: null } : {}) });
+  }
   if (prompt !== undefined) updateComposer(HOME, { text: prompt });
   void editorService().openInput({ kind: HOME_KIND, key: HOME_KEY, data: {} }, { focus: true });
 }
 
 /** `isolation` overrides the draft's (a project without git can only use the local checkout). */
-export async function startTask(isolation: Isolation = useAgents.getState().draft.isolation): Promise<void> {
+export async function startTask(
+  isolation: Isolation = useAgents.getState().draft.isolation,
+  projectRoot: string | null = null,
+): Promise<void> {
   const { draft, providers } = useAgents.getState();
   const composer = composerDraft(HOME);
   if (!canSend(composer)) return;
   const config = { ...bypassDefaults(providers.find((p) => p.id === draft.provider)?.config ?? []), ...draft.config };
   const task = await call(
     commands.agentCreate({
+      projectRoot,
       prompt: toPrompt(composer),
       provider: draft.provider,
       config: Object.entries(config).map(([id, value]) => ({ id, value })),
@@ -367,6 +380,7 @@ export async function startTask(isolation: Isolation = useAgents.getState().draf
     tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
     entries: new Map(s.entries).set(task.id, s.entries.get(task.id) ?? []),
   }));
+  updateDraft({ projectRoot });
   remember(composer.text.trim());
   updateComposer(HOME, emptyDraft());
   if ((await editorService().closeInput?.(HOME_KEY)) !== false) openTask(task.id);

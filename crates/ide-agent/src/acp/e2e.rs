@@ -147,6 +147,7 @@ async fn a_task_runs_on_a_v2_agent_and_resumes_its_session() {
     let mgr = manager(tmp.path(), agent.clone());
     let task = mgr
         .create(NewAgentTask {
+            project_root: None,
             prompt: text("Use the TodoWrite tool"),
             provider: "claude-acp".into(),
             config: vec![AgentConfigChoice { id: "model".into(), value: "haiku".into() }],

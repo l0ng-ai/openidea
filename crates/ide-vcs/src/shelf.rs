@@ -2,7 +2,7 @@
 //! `.idea/shelf`. Each shelved change list is `<shelf>/<id>/shelved.patch` plus
 //! `<shelf>/<id>/shelf.json` with its name, date and files.
 
-use crate::cli::run;
+use crate::cli::run_paths;
 use crate::{ApplyOutcome, ChangeKind, Repo, ShelvedChangeList};
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
@@ -152,15 +152,14 @@ pub(crate) fn shelve(r: &Repo, shelf: &Path, name: &str, rel_paths: &[String]) -
 fn revert_files(r: &Repo, files: &[crate::ChangedFile]) -> IdeResult<()> {
     let has_head = r.has_head()?;
     let (in_head, new): (Vec<_>, Vec<_>) = files.iter().partition(|f| has_head && f.kind != ChangeKind::Added);
+    let paths = |files: &[&crate::ChangedFile]| -> Vec<String> { files.iter().map(|f| f.path.clone()).collect() };
     if !in_head.is_empty() {
-        let mut args = vec!["--literal-pathspecs", "restore", "--source=HEAD", "--staged", "--worktree", "--"];
-        args.extend(in_head.iter().map(|f| f.path.as_str()));
-        run(r.root(), &args, None)?;
+        let args = ["--literal-pathspecs", "restore", "--source=HEAD", "--staged", "--worktree", "--"];
+        run_paths(r.root(), &args, &paths(&in_head))?;
     }
     if !new.is_empty() {
-        let mut args = vec!["--literal-pathspecs", "rm", "--cached", "-q", "-r", "--ignore-unmatch", "--"];
-        args.extend(new.iter().map(|f| f.path.as_str()));
-        run(r.root(), &args, None)?;
+        let args = ["--literal-pathspecs", "rm", "--cached", "-q", "-r", "--ignore-unmatch", "--"];
+        run_paths(r.root(), &args, &paths(&new))?;
         for f in new {
             let abs = r.abs_path(&f.path);
             if abs.is_file() || abs.is_symlink() {

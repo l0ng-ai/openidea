@@ -67,7 +67,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
     expect(isJavaDebuggable({ ...app, kind: "maven" })).toBe(false);
     const l = await javaLaunchConfig(app, "/p");
     expect(invoked).toEqual([
-      ["javaResolveLaunch", ["api", false, true]],
+      ["javaResolveLaunch", ["api", false, true, expect.any(Number)]],
       ["javaDebugServer", ["api"]],
     ]);
     expect(l).toMatchObject({ adapter: "java-debug", request: "launch", cwd: "/p/api", args: [], env: { A: "1" } });

@@ -1,13 +1,14 @@
 //! IPC commands of `ide_host::ops::java` (the shared implementation).
 
 use crate::state::AppState;
-use ide_core::IdeResult;
+use ide_core::{IdeResult, RequestId};
 #[allow(unused_imports)]
 pub use ide_host::ops::java::*;
 use ide_lsp::jdtls::JavaLaunchInfo;
 use std::path::PathBuf;
 use tauri::{State, Window};
 
+/// Cancellable with `cancel_request(request)`.
 /// Builds the workspace (when `build`), then resolves the runtime (or test)
 /// classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 /// A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
@@ -19,8 +20,9 @@ pub async fn java_resolve_launch(
     module: PathBuf,
     test: bool,
     build: bool,
+    request: RequestId,
 ) -> IdeResult<JavaLaunchInfo> {
-    ide_host::ops::java::java_resolve_launch(&state.host, window.label(), module, test, build).await
+    ide_host::ops::java::java_resolve_launch(&state.host, window.label(), module, test, build, request).await
 }
 
 /// Port of java-debug's DAP server inside the jdtls serving `module` (started on demand).

@@ -52,6 +52,7 @@ import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { openDiff, withChain, workingDiffData } from "./diffInput";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
+import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
@@ -172,7 +173,9 @@ function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
   void openDiff(withChain(items, Math.max(0, paths.indexOf(n.path))), { preview: true });
 }
 
-function listMenu(id: string, active: boolean, paths: string[]): MenuItem[] {
+/** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
+export function listMenu(id: string, active: boolean, files: readonly FileStatus[]): MenuItem[] {
+  const paths = files.map((f) => stripSlash(f.path));
   const count = paths.length;
   return [
     ...(count ? [{ kind: "action" as const, action: "vcs.changelist.commit", arg: id, label: "Commit…" }] : []),
@@ -185,6 +188,22 @@ function listMenu(id: string, active: boolean, paths: string[]): MenuItem[] {
           { kind: "action" as const, action: "vcs.changelist.setActive", arg: id },
           { kind: "action" as const, action: "vcs.changelist.delete", arg: id },
         ]),
+    { kind: "separator" },
+    // The whole list's files, as IDEA offers on a change list's header and as file
+    // and directory nodes below it already offer (issue #473).
+    { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…", disabled: !count },
+    {
+      label: "Stage",
+      icon: "plus",
+      disabled: !files.some((f) => f.unstaged),
+      run: () => void call(commands.vcsStage(paths)).finally(() => void refreshNow()),
+    },
+    {
+      label: "Unstage",
+      icon: "minus",
+      disabled: !files.some((f) => f.staged),
+      run: () => void call(commands.vcsUnstage(paths)).finally(() => void refreshNow()),
+    },
     { kind: "separator" },
     ...(count
       ? [
@@ -486,8 +505,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           onContextMenu={(node, sel, e: MouseEvent) => {
             if (!node) return;
             if (node.type === "group" && node.changelist) {
-              const paths = node.files.map((f) => stripSlash(f.path));
-              showContextMenu(e, listMenu(node.changelist, !!node.active, paths));
+              showContextMenu(e, listMenu(node.changelist, !!node.active, node.files));
               return;
             }
             const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);

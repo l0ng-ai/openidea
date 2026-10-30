@@ -47,9 +47,7 @@ pub(crate) fn working_patch(r: &Repo, rel_paths: &[String], reverse: bool) -> Id
     } else {
         run_env(r.root(), &["read-tree", "--empty"], None, &env)?;
     }
-    let mut add: Vec<&str> = vec!["--literal-pathspecs", "add", "-A", "--"];
-    add.extend(rel_paths.iter().map(String::as_str));
-    run_env(r.root(), &add, None, &env)?;
+    cli::run_paths_env(r.root(), &["--literal-pathspecs", "add", "-A", "--"], rel_paths, None, &env)?;
     let mut diff =
         vec!["diff", "--cached", "--binary", "--full-index", "-M", "--no-color", "--no-ext-diff", "--no-textconv"];
     if reverse {
@@ -155,9 +153,7 @@ pub(crate) fn apply(r: &Repo, patch: &str) -> IdeResult<ApplyOutcome> {
     // `--3way` stages what it applied; keep the index as it was for the clean files.
     let clean: Vec<String> = paths.iter().filter(|p| !conflicts.contains(p)).cloned().collect();
     if !clean.is_empty() && r.has_head()? {
-        let mut args = vec!["--literal-pathspecs", "reset", "-q", "--"];
-        args.extend(clean.iter().map(String::as_str));
-        run(r.root(), &args, None)?;
+        cli::run_paths(r.root(), &["--literal-pathspecs", "reset", "-q", "--"], &clean)?;
     }
     Ok(ApplyOutcome { applied: clean, conflicts })
 }

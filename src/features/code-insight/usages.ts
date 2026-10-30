@@ -1,7 +1,8 @@
 /** Find Usages (⌥F7 → "usages" tool window) and Show Usages (⌥⌘F7 → popup). */
 import { create } from "zustand";
-import type { Location, ReferencesIncomplete, RequestId } from "@/bindings";
+import type { Location, RequestId } from "@/bindings";
 import { clearLineTokens } from "@/editor/lineTokens";
+import { incompleteNote } from "@/editor/lsp/lsp";
 import { commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import { toolWindowService } from "@/workbench/contributions";
 import {
@@ -156,12 +157,6 @@ export const useUsagesPopup = create<UsagesPopupState>(() => ({
 interface FetchedUsages {
   groups: UsageGroup[];
   note: string | null;
-}
-
-/** Why the server's answer may miss usages, for the results' note. */
-export function incompleteNote(reason: ReferencesIncomplete, word: string | null): string {
-  if (reason === "indexing") return "May be incomplete: the language server is still indexing";
-  return `May be incomplete: too many files mention ${word ? `'${word}'` : "the name"} to search them all`;
 }
 
 /**

@@ -32,9 +32,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.rootLabel {
+.rootName {
   flex: none;
   max-width: 60%;
+}
+.rootLabel {
   color: var(--fg-strong);
   font-weight: 600;
 }

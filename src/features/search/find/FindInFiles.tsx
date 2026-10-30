@@ -105,7 +105,9 @@ function displayDirectory(dir: string, root: string | null): string {
 function FindInFilesDialog() {
   const s = useFindPopup();
   const txt = useTxTemplate();
-  const root = useProject((p) => p.project?.root ?? null);
+  const project = useProject((p) => p.project);
+  const root = project?.workspace?.projects[0] ?? (project?.workspace ? null : (project?.root ?? null));
+  const workspace = useProject((p) => !!p.project?.workspace);
   const editors = useEditorRegistry((r) => r.editors);
   const modules = useProjectModules();
   const customScopes = useCustomScopeList();
@@ -133,6 +135,10 @@ function FindInFilesDialog() {
   const set = (patch: Partial<FindOptions>) => useFindPopup.setState(patch);
 
   useEffect(() => () => session.dispose(), [session]);
+  useEffect(() => {
+    if (modules.length && !modules.some((m) => m.path === s.module))
+      useFindPopup.setState({ module: modules[0]!.path });
+  }, [modules, s.module]);
 
   // Hidden popup actions (⌘G, F4, ⌥↓ …) win over the editor's bindings while this is set.
   useEffect(() => {
@@ -590,7 +596,8 @@ function FindInFilesDialog() {
               // IDEA starts the Directory scope at the current file's folder.
               if (id === "directory" && !s.directory.trim()) {
                 const active = maybeEditorService()?.activePath();
-                const dir = active && root && active.startsWith(root + "/") ? dirname(active) : root;
+                const folders = project?.workspace?.projects ?? (root ? [root] : []);
+                const dir = active && folders.some((r) => active.startsWith(r + "/")) ? dirname(active) : root;
                 set({ scopeTab: "directory", directory: dir ?? "" });
               } else set({ scopeTab: id as ScopeTab });
             }}
@@ -698,7 +705,7 @@ function FindInFilesDialog() {
                         <T>replaced ·</T>{" "}
                       </span>
                     )}
-                    {basename(r.relPath)} <span className={styles.rowLine}>{r.line + 1}</span>
+                    {workspace ? r.relPath : basename(r.relPath)} <span className={styles.rowLine}>{r.line + 1}</span>
                   </span>
                 </>
               );

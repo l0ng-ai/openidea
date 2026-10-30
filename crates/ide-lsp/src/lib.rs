@@ -157,6 +157,7 @@ impl DocSnap {
 pub struct LspManager {
     me: Weak<LspManager>,
     project_root: PathBuf,
+    content_roots: RwLock<Vec<PathBuf>>,
     languages: Arc<LanguageRegistry>,
     sink: SharedSink,
     launcher: Arc<dyn Launcher>,
@@ -286,6 +287,7 @@ impl LspManager {
         Arc::new_cyclic(|me| Self {
             me: me.clone(),
             project_root,
+            content_roots: RwLock::new(Vec::new()),
             languages,
             sink,
             launcher,
@@ -306,9 +308,24 @@ impl LspManager {
 
     // ---- server lookup & lifecycle ----
 
+    pub fn set_content_roots(&self, roots: Vec<PathBuf>) {
+        *self.content_roots.write() = roots;
+    }
+
+    fn project_root_for(&self, path: &Path) -> PathBuf {
+        self.content_roots
+            .read()
+            .iter()
+            .chain(std::iter::once(&self.project_root))
+            .filter(|root| path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
+            .unwrap_or_else(|| self.project_root.clone())
+    }
+
     fn server_for(&self, cfg: &LanguageServerConfig, language: &LanguageId, path: &Path) -> Arc<Server> {
         let mut servers = self.servers.lock();
-        let root = launch::find_root(&self.project_root, path, &cfg.root_markers).unwrap_or_else(|| {
+        let root = launch::find_root(&self.project_root_for(path), path, &cfg.root_markers).unwrap_or_else(|| {
             // Outside the project (library sources, …): reuse a running instance.
             servers
                 .iter()
@@ -336,7 +353,9 @@ impl LspManager {
             if sc.fallback && available_before {
                 continue;
             }
-            if sc.require_root_marker && launch::marked_root(&self.project_root, path, &sc.root_markers).is_none() {
+            if sc.require_root_marker
+                && launch::marked_root(&self.project_root_for(path), path, &sc.root_markers).is_none()
+            {
                 continue;
             }
             let server = self.server_for(sc, language, path);
@@ -1393,21 +1412,34 @@ impl LspManager {
     /// server's analysis scope that mention the name are opened for the request.
     /// Every server that can rename there does: the Angular server adds the
     /// templates to vtsls's edit, whose own edits win where both change the same text.
-    pub async fn rename(&self, doc: DocId, pos: Pos, new_name: String) -> IdeResult<WorkspaceEdit> {
+    pub async fn rename(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        new_name: String,
+        cancel: CancellationToken,
+    ) -> IdeResult<Renamed> {
         let (snap, targets) = self.doc_targets(doc, "rename", |c| c.has("renameProvider")).await?;
         let renaming = self.rename_targets(&snap, &targets, pos).await;
-        let edits = join_all(renaming.into_iter().map(|t| self.rename_on(&snap, t, pos, &new_name))).await;
+        let edits = join_all(renaming.into_iter().map(|t| self.rename_on(&snap, t, pos, &new_name, &cancel))).await;
         let mut out = Outcome::new();
+        let mut incomplete = None;
         for edit in edits {
             match edit {
-                Ok(edit) => match &mut out.value {
-                    Some(merged) => convert::merge_workspace_edit(merged, edit),
-                    None => out.value = Some(edit),
-                },
+                Ok(renamed) => {
+                    incomplete = incomplete.or(renamed.incomplete);
+                    match &mut out.value {
+                        Some(merged) => convert::merge_workspace_edit(merged, renamed.edit),
+                        None => out.value = Some(renamed.edit),
+                    }
+                }
                 Err(e) => out.fail(e),
             }
         }
-        out.finish(WorkspaceEdit::default())
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        Ok(Renamed { edit: out.finish(WorkspaceEdit::default())?, incomplete })
     }
 
     /// The servers that can rename at `pos`, the first one when none can (a
@@ -1424,16 +1456,27 @@ impl LspManager {
         vec![&targets[0]]
     }
 
-    async fn rename_on(&self, snap: &DocSnap, t: &Target, pos: Pos, new_name: &str) -> IdeResult<WorkspaceEdit> {
+    async fn rename_on(
+        &self,
+        snap: &DocSnap,
+        t: &Target,
+        pos: Pos,
+        new_name: &str,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Renamed> {
         let query = || async {
             let mut params = snap.pos_params(t, pos);
             params["newName"] = json!(new_name);
-            let r: Option<lsp::WorkspaceEdit> = self.call(t, "textDocument/rename", params, None, LONG_TIMEOUT).await?;
+            let r: Option<lsp::WorkspaceEdit> =
+                self.call(t, "textDocument/rename", params, Some(cancel), LONG_TIMEOUT).await?;
             Ok(r.map(|e| convert::workspace_edit(&self.conv(t.enc()), e)).unwrap_or_default())
         };
         // The Angular server renames in the file's own project only, whatever is open.
         if t.server.name == angular::SERVER {
-            return query().await;
+            let edit = query().await?;
+            let empty = edit.files.is_empty();
+            let w = scope::Widened::only((), empty, &t.server);
+            return Ok(Renamed { edit, incomplete: w.incomplete });
         }
         let files = |e: &WorkspaceEdit| {
             e.files
@@ -1444,9 +1487,9 @@ impl LspManager {
                 })
                 .collect()
         };
-        let w = self.widened(snap, t, pos, &CancellationToken::new(), query, files).await?;
+        let w = self.widened(snap, t, pos, cancel, query, files).await?;
         // The second edit covers the first: its files stay analysed.
-        Ok(w.second.unwrap_or(w.first))
+        Ok(Renamed { edit: w.second.unwrap_or(w.first), incomplete: w.incomplete })
     }
 
     // ---- file operations (`workspace/willRenameFiles`, `workspace/didRenameFiles`) ----
@@ -1741,11 +1784,14 @@ impl LspManager {
         doc: DocId,
         pos: Pos,
         direction: HierarchyDirection,
-    ) -> IdeResult<Vec<HierarchyItem>> {
+        cancel: CancellationToken,
+    ) -> IdeResult<CallHierarchy> {
         let (snap, targets) = self.doc_targets(doc, "call hierarchy", |c| c.has("callHierarchyProvider")).await?;
         let t = &targets[0];
-        let items: Option<Vec<lsp::CallHierarchyItem>> =
-            self.call(t, "textDocument/prepareCallHierarchy", snap.pos_params(t, pos), None, DEFAULT_TIMEOUT).await?;
+        let cancel = &cancel;
+        let items: Option<Vec<lsp::CallHierarchyItem>> = self
+            .call(t, "textDocument/prepareCallHierarchy", snap.pos_params(t, pos), Some(cancel), DEFAULT_TIMEOUT)
+            .await?;
         let items = items.filter(|i| !i.is_empty()).ok_or_else(no_hierarchy_target)?;
         let query = || async {
             let mut out = Vec::new();
@@ -1754,7 +1800,7 @@ impl LspManager {
                 match direction {
                     HierarchyDirection::Incoming => {
                         let calls: Option<Vec<lsp::CallHierarchyIncomingCall>> =
-                            self.call(t, "callHierarchy/incomingCalls", params, None, LONG_TIMEOUT).await?;
+                            self.call(t, "callHierarchy/incomingCalls", params, Some(cancel), LONG_TIMEOUT).await?;
                         let conv = self.conv(t.enc());
                         for c in calls.unwrap_or_default() {
                             let (path, _) = uri_target(c.from.uri.as_str());
@@ -1764,7 +1810,7 @@ impl LspManager {
                     }
                     HierarchyDirection::Outgoing => {
                         let calls: Option<Vec<lsp::CallHierarchyOutgoingCall>> =
-                            self.call(t, "callHierarchy/outgoingCalls", params, None, LONG_TIMEOUT).await?;
+                            self.call(t, "callHierarchy/outgoingCalls", params, Some(cancel), LONG_TIMEOUT).await?;
                         let conv = self.conv(t.enc());
                         let (src, _) = uri_target(item.uri.as_str());
                         for c in calls.unwrap_or_default() {
@@ -1776,19 +1822,22 @@ impl LspManager {
             }
             Ok(out)
         };
-        let out = match direction {
+        let (out, incomplete) = match direction {
             // Callers are references: they may sit in files outside the server's scope.
             HierarchyDirection::Incoming => {
                 let files = |v: &Vec<HierarchyItem>| {
                     v.iter().filter(|i| i.uri.is_none()).map(|i| i.path.to_path_buf()).collect()
                 };
-                let w = self.widened(&snap, t, pos, &CancellationToken::new(), query, files).await?;
-                w.second.unwrap_or(w.first)
+                let w = self.widened(&snap, t, pos, cancel, query, files).await?;
+                (w.second.unwrap_or(w.first), w.incomplete)
             }
-            HierarchyDirection::Outgoing => query().await?,
+            HierarchyDirection::Outgoing => (query().await?, None),
         };
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         self.note_virtual(&t.server, out.iter().map(|i| i.uri.as_deref()));
-        Ok(out)
+        Ok(CallHierarchy { items: out, incomplete })
     }
 
     pub async fn type_hierarchy(
@@ -2246,7 +2295,7 @@ mod send_check {
         assert_send(m.hover(doc, Pos::default(), CancellationToken::new()));
         assert_send(m.code_lens(doc));
         assert_send(m.workspace_symbols("", CancellationToken::new()));
-        assert_send(m.call_hierarchy(doc, Pos::default(), HierarchyDirection::Incoming));
+        assert_send(m.call_hierarchy(doc, Pos::default(), HierarchyDirection::Incoming, CancellationToken::new()));
         assert_send(m.restart(ide_core::ServerId(1)));
         assert_send(m.shutdown_all());
         assert_send(m.semantic_tokens(doc));

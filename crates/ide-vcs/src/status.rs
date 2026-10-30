@@ -20,6 +20,12 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     let mut conflicts: HashSet<String> = HashSet::new();
     let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
 
+    // Stamp before status can read the index: stamping after the load could capture
+    // an external `git switch`, `add` or commit's new index and allow the stale
+    // snapshot to overwrite it. A change between the stamp and the read only skips
+    // one stat refresh, which is safe.
+    let index_path = repo.index_path();
+    let opened = crate::index_writes::stamp(&index_path);
     let platform = repo
         .status(gix::progress::Discard)
         .map_err(gx)?
@@ -95,10 +101,20 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
         && outcome.has_changes()
     {
         let mut writes = crate::index_writes::lock();
-        match outcome.write_changes() {
-            Some(Ok(_)) => writes.record(&repo.index_path()),
-            Some(Err(e)) => tracing::debug!("could not write refreshed index: {e}"),
-            None => {}
+        // Another process rewrote the index while this status run was reading it
+        // (a branch switch rewriting thousands of worktree files is the usual case).
+        // Writing the stale snapshot back would restore the previous branch's tree,
+        // so drop the refresh and let the next status re-read the current index.
+        #[cfg(test)]
+        run_between_read_and_write();
+        if opened.still_holds(&index_path) {
+            match outcome.write_changes() {
+                Some(Ok(_)) => writes.record(&index_path),
+                Some(Err(e)) => tracing::debug!("could not write refreshed index: {e}"),
+                None => {}
+            }
+        } else {
+            tracing::debug!("index changed during status; skipping the stat refresh write-back");
         }
     }
 
@@ -124,4 +140,91 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
             }
         })
         .collect())
+}
+
+/// Lets a test land an external index write in the window between the status run
+/// reading the index and its write-back — the interleaving issue #471 describes.
+#[cfg(test)]
+fn run_between_read_and_write() {
+    let mut hook = BETWEEN_READ_AND_WRITE.with(|h| h.borrow_mut().take());
+    if let Some(hook) = hook.take() {
+        hook();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static BETWEEN_READ_AND_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "init.defaultBranch=main", "-c", "core.autocrlf=false"])
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn commit_all(dir: &Path, msg: &str) {
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", msg]);
+    }
+
+    /// #471: a status run that read the index before an external `git switch`
+    /// finished must not write its stale snapshot back over the new index.
+    #[test]
+    fn an_external_index_write_during_status_is_not_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.name", "Test User"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("base.txt"), "base\n").unwrap();
+        commit_all(dir, "base");
+        // A branch that differs by a file and a deletion, so a switch rewrites the index.
+        git(dir, &["checkout", "-q", "-b", "other"]);
+        std::fs::write(dir.join("other.txt"), "other\n").unwrap();
+        std::fs::remove_file(dir.join("base.txt")).unwrap();
+        commit_all(dir, "other");
+        git(dir, &["checkout", "-q", "main"]);
+        // Rewrite a file with identical content: its stat info no longer matches the
+        // index, so the status run refreshes it and has an index write-back to make.
+        std::fs::write(dir.join("base.txt"), "base\n").unwrap();
+
+        let repo = Repo::discover(dir).unwrap().expect("repository found");
+        let switched = dir.to_path_buf();
+        let hook_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran = hook_ran.clone();
+        BETWEEN_READ_AND_WRITE.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                git(&switched, &["switch", "-q", "--force", "other"]);
+            }));
+        });
+        // The status result itself describes the tree as it was when it read the index
+        // (base.txt still modified there); what matters is that it does not write that
+        // snapshot back over the index `git switch` produced.
+        repo.status().expect("status runs");
+        assert!(hook_ran.load(std::sync::atomic::Ordering::SeqCst), "the external write landed mid-status");
+
+        // The index on disk is the one `git switch` wrote: its entries match the new branch.
+        let listed = Command::new("git").current_dir(dir).args(["ls-files"]).output().unwrap();
+        let files = String::from_utf8_lossy(&listed.stdout);
+        assert!(files.contains("other.txt"), "{files}");
+        assert!(!files.contains("base.txt"), "{files}");
+        // Nothing staged: HEAD and index agree.
+        let staged = Command::new("git").current_dir(dir).args(["diff", "--cached", "--stat"]).output().unwrap();
+        assert!(staged.stdout.is_empty(), "{}", String::from_utf8_lossy(&staged.stdout));
+    }
 }

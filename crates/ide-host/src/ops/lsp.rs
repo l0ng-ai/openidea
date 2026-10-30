@@ -186,8 +186,19 @@ pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 /// Computes the rename edit without applying it, so the UI can preview conflicts.
-pub async fn lsp_rename(host: &Host, window: &str, doc: DocId, pos: Pos, new_name: String) -> IdeResult<WorkspaceEdit> {
-    host.project(window)?.lsp.rename(doc, pos, new_name).await
+pub async fn lsp_rename(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    new_name: String,
+) -> IdeResult<Renamed> {
+    let lsp = host.project(window)?.lsp.clone();
+    let cancel = host.begin_request(request);
+    let result = lsp.rename(doc, pos, new_name, cancel).await;
+    host.end_request(request);
+    result
 }
 
 pub async fn lsp_format(
@@ -220,11 +231,16 @@ pub async fn lsp_document_links(host: &Host, window: &str, doc: DocId) -> IdeRes
 pub async fn lsp_call_hierarchy(
     host: &Host,
     window: &str,
+    request: RequestId,
     doc: DocId,
     pos: Pos,
     direction: HierarchyDirection,
-) -> IdeResult<Vec<HierarchyItem>> {
-    host.project(window)?.lsp.call_hierarchy(doc, pos, direction).await
+) -> IdeResult<CallHierarchy> {
+    let lsp = host.project(window)?.lsp.clone();
+    let cancel = host.begin_request(request);
+    let result = lsp.call_hierarchy(doc, pos, direction, cancel).await;
+    host.end_request(request);
+    result
 }
 
 pub async fn lsp_type_hierarchy(
@@ -335,7 +351,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         lsp_prepare_rename(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await
     });
     d.add("lsp_rename", |c| async move {
-        lsp_rename(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("newName")?).await
+        lsp_rename(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("newName")?).await
     });
     d.add("lsp_format", |c| async move {
         lsp_format(&c.host, &c.window, c.arg("doc")?, c.arg("range")?, c.arg("options")?).await
@@ -348,7 +364,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_code_lens", |c| async move { lsp_code_lens(&c.host, &c.window, c.arg("doc")?).await });
     d.add("lsp_document_links", |c| async move { lsp_document_links(&c.host, &c.window, c.arg("doc")?).await });
     d.add("lsp_call_hierarchy", |c| async move {
-        lsp_call_hierarchy(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("direction")?).await
+        lsp_call_hierarchy(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("direction")?)
+            .await
     });
     d.add("lsp_type_hierarchy", |c| async move {
         lsp_type_hierarchy(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("direction")?).await

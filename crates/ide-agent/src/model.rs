@@ -47,6 +47,9 @@ pub enum Isolation {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTask {
+    /// Original project folder; absent in tasks saved before per-task roots.
+    #[serde(default)]
+    pub project_root: Option<IpcPath>,
     pub id: String,
     pub title: String,
     /// [`AgentProvider::id`].
@@ -364,6 +367,9 @@ pub struct AgentProbe {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct NewAgentTask {
+    /// Validated by the host; defaults to the window project root.
+    #[serde(default)]
+    pub project_root: Option<IpcPath>,
     pub prompt: AgentPrompt,
     pub provider: String,
     /// Settings for the new session (model, mode…).

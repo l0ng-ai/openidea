@@ -58,6 +58,11 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
         .map_err(|e| IdeError::internal(e.to_string()))??;
     let info = project_info(&project);
     let _ = window.set_title(&info.name);
+    window.state::<AppState>().sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
+    let grouped = window.state::<crate::windows::WindowsState>().groups.lock().group(window.label()).is_some();
+    if grouped {
+        crate::window_groups::persist(window.app_handle()).await?;
+    }
     Ok(info)
 }
 
@@ -70,6 +75,8 @@ pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Setting
     let label = window.label().to_owned();
     if app.state::<AppState>().project(&label).is_ok_and(|p| !p.light) {
         crate::windows::close_settings_window(&app, &label);
+        crate::window_groups::detach(&app, &label)?;
+        crate::window_groups::persist(&app).await?;
     }
     let project = tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().open_light(&label, &path))
         .await
@@ -88,6 +95,9 @@ fn project_info(project: &crate::state::Project) -> ProjectInfo {
 pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<ProjectInfo> {
     let project = state.project(window.label())?;
     let name = name.trim();
+    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)? {
+        return ide_host::ops::project::save_workspace(&state.host, window.label(), name, workspace.projects);
+    }
     let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
     project.settings.set(SettingsScope::Project, "general.projectName", value)?;
     state.recent.rename(&project.root, (!name.is_empty()).then_some(name))?;
@@ -98,7 +108,12 @@ pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) 
 #[specta::specta]
 pub fn close_project(window: Window, state: State<'_, AppState>) {
     crate::windows::close_settings_window(window.app_handle(), window.label());
+    let _ = crate::window_groups::detach(window.app_handle(), window.label());
     state.close_project(window.label());
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::window_groups::persist(&app).await;
+    });
 }
 
 #[tauri::command]

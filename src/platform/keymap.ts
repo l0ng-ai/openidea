@@ -7,7 +7,7 @@
  * Shift, `Ctrl Ctrl`…); pressed twice and held, then a key, `Alt Alt+Up`.
  * Keys are matched by physical position (`KeyboardEvent.code`), so ⌥-letter
  * combos work on macOS where `event.key` would be a symbol. Mouse shortcuts
- * name the button 1-based (`Button4` = back side button, `Button5` = forward),
+ * name the button 1-based (`Button1` = left, `Button4` = back side button, `Button5` = forward),
  * optionally with modifiers (`Alt+Button4`); they are single strokes.
  */
 import { create } from "zustand";
@@ -83,14 +83,14 @@ export function isMouseBinding(binding: string): boolean {
 }
 
 /**
- * The mouse stroke of a press of a non-primary button: DOM `button` 3 / 4
- * (back / forward side buttons) → `Button4` / `Button5`. Left, middle and
- * right buttons have their own meaning everywhere, so they are not shortcuts.
+ * Side buttons, or a left click with Ctrl/Alt/Meta. Plain and Shift-only
+ * left clicks keep selection semantics; middle/right clicks keep their own meaning.
  */
 export function mouseStrokeOf(
   e: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ): string | null {
-  if (!Number.isInteger(e.button) || e.button < 3) return null;
+  if (!Number.isInteger(e.button) || e.button < 0) return null;
+  if (e.button < 3 && !(e.button === 0 && (e.ctrlKey || e.altKey || e.metaKey))) return null;
   const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Meta"].filter(Boolean);
   return [...mods, `Button${e.button + 1}`].join("+");
 }
@@ -317,7 +317,8 @@ const KEY_LABELS: Record<string, string> = {
 export function formatBinding(binding: string, mac = isMacHost()): string {
   if (isMouseBinding(binding)) {
     const parts = normalizeBinding(binding).split("+");
-    const button = `${parts.pop()} Click`;
+    const key = parts.pop();
+    const button = key === "Button1" ? "Left Click" : `${key} Click`;
     return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + button : [...parts, button].join("+");
   }
   if (!mac)
@@ -403,6 +404,19 @@ function runIfEnabled(id: string): boolean {
   if (!action || !isActionKeyEnabled(action)) return false;
   void executeAction(id);
   return true;
+}
+
+/** Run a configured mouse binding; editors prepare the clicked caret and focus first. */
+export function dispatchMouseShortcut(e: MouseEvent, prepare?: () => boolean): boolean {
+  if (suspended > 0) return false;
+  const stroke = mouseStrokeOf(e);
+  if (!stroke) return false;
+  const ids = effectiveBindings()
+    .filter(([b]) => b === stroke)
+    .map(([, id]) => id);
+  if (!ids.length || (prepare && !prepare())) return false;
+  for (const id of ids.reverse()) if (runIfEnabled(id)) return true;
+  return false;
 }
 
 /**
@@ -551,6 +565,15 @@ export function installKeyboardDispatcher(
     if (suspended > 0) return;
     const stroke = mouseStrokeOf(e);
     if (!stroke) return;
+    if (e.button === 0) {
+      // The editor sets the caret under the pointer before dispatching the action.
+      if (e.target instanceof Element && e.target.closest(".cm-content")) return;
+      if (!dispatchMouseShortcut(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      reset();
+      return;
+    }
     // Side buttons never reach the target (no editor selection, no focus change).
     e.preventDefault();
     e.stopPropagation();

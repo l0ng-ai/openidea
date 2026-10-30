@@ -113,3 +113,27 @@ describe("project roots store", () => {
     expect(currentRoots().map((r) => r.path)).toEqual(["out"]);
   });
 });
+
+it("lists workspace members as scopes and admits their files without admitting workspace state", async () => {
+  const { renderHook } = await import("@testing-library/react");
+  const { useProjectModules } = await import("./projectRoots");
+  useProject.setState({
+    project: {
+      root: "/workspace",
+      name: "Workspace",
+      settings: {},
+      isGit: false,
+      workspace: { version: 1, name: "Workspace", projects: ["/z", "/a"] },
+    },
+    settings: {} as never,
+  });
+  const hook = renderHook(() => useProjectModules());
+  expect(hook.result.current).toEqual([
+    { name: "z", path: "/z" },
+    { name: "a", path: "/a" },
+  ]);
+  expect(inFileSet("all", "/z/src/main.ts")).toBe(true);
+  expect(inFileSet("all", "/workspace/.openidea/workspace.json")).toBe(false);
+  hook.unmount();
+  useProject.setState({ project: null });
+});

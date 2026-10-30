@@ -98,3 +98,13 @@ export function dirname(path: string): string {
   const i = path.lastIndexOf("/");
   return i <= 0 ? "/" : path.slice(0, i);
 }
+
+/** The user-visible folder containing a file; workspace state is never a content root. */
+export function projectFolder(project: ProjectInfo | null, path: string): { root: string; name: string } | null {
+  if (!project) return null;
+  if (!project.workspace) return project;
+  const root = project.workspace.projects
+    .filter((r) => path === r || path.startsWith(r + "/"))
+    .sort((a, b) => b.length - a.length)[0];
+  return root ? { root, name: basename(root) } : null;
+}

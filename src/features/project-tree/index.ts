@@ -29,7 +29,8 @@ export function activate(): () => void {
   const sync = () => {
     const p = useProject.getState().project;
     const s = useProjectTree.getState();
-    if ((p?.root ?? null) !== s.root) initProjectTree(p?.root ?? null, p?.name ?? "");
+    if ((p?.root ?? null) !== s.root || p?.workspace?.projects !== (s.members ?? undefined))
+      initProjectTree(p?.root ?? null, p?.name ?? "", p?.workspace?.projects ?? null);
     else if (p && p.name !== s.name) useProjectTree.setState({ name: p.name });
   };
   sync();
@@ -60,7 +61,8 @@ export function activate(): () => void {
   let shownRoots = "";
   const syncContentRoots = () => {
     const { project, settings } = useProject.getState();
-    const paths = project ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
+    const paths =
+      project && !project.workspace ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
     const key = JSON.stringify(paths);
     if (key === shownRoots) return;
     shownRoots = key;
