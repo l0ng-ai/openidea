@@ -5,6 +5,7 @@
  */
 import type { Mermaid } from "mermaid";
 import { resolveTokenColor, toRgb } from "@/platform/cssColor";
+import { attachPanZoom } from "../panZoom";
 
 export const MERMAID_SELECTOR = "[data-mermaid]";
 const OUTPUT_CLASS = "mermaid-output";
@@ -146,6 +147,7 @@ function show(block: HTMLElement, result: Result | null, stale?: Node) {
     return;
   }
   block.append(out);
+  if (block.getAttribute(RENDERED_ATTR) === "ok") attachPanZoom(out);
 }
 
 export const hasMermaid = (root: ParentNode) => root.querySelector(MERMAID_SELECTOR) !== null;
@@ -175,7 +177,8 @@ export function renderMermaidIn(root: HTMLElement, previous: Node[] = []): Merma
     const cached = cache.get(k);
     const keep = () => {
       const out = block.querySelector(`:scope > .${OUTPUT_CLASS}`);
-      if (out && block.getAttribute(RENDERED_ATTR) === "ok") previous[i] = out.firstChild ?? out;
+      if (out && block.getAttribute(RENDERED_ATTR) === "ok")
+        previous[i] = out.querySelector("svg") ?? out.firstChild ?? out;
     };
     if (cached) {
       show(block, cached);

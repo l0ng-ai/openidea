@@ -64,14 +64,21 @@
 .canvas {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  display: grid;
-  /* `safe` keeps the top-left reachable when the image overflows. */
-  place-items: safe center;
-  padding: 16px;
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.dragging {
+  cursor: grabbing;
 }
 .image {
-  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: none;
+  transform-origin: 0 0;
   image-rendering: auto;
   box-shadow: 0 0 0 1px var(--border-strong);
 }
