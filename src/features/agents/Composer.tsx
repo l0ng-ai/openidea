@@ -77,10 +77,7 @@ export function Composer(props: ComposerProps) {
   const [completion, setCompletion] = useState<Completion | null>(null);
   const [files, setFiles] = useState<Item[]>([]);
   const [active, setActive] = useState(0);
-  const recalled = useRef<{ index: number; stash: string }>({
-    index: -1,
-    stash: "",
-  });
+  const recalled = useRef<{ index: number; stash: string }>({ index: -1, stash: "" });
 
   useEffect(() => {
     if (props.autoFocus) ref.current?.focus();
@@ -123,12 +120,7 @@ export function Composer(props: ComposerProps) {
                 .slice(0, MAX_ITEMS)
                 .map((f) => {
                   const rel = `${dirPart}${f.name}`;
-                  return {
-                    kind: "file",
-                    rel,
-                    dir: f.dir,
-                    path: resolveTyped(root, rel),
-                  };
+                  return { kind: "file", rel, dir: f.dir, path: resolveTyped(root, rel) };
                 }),
             );
           })
@@ -189,9 +181,7 @@ export function Composer(props: ComposerProps) {
       const mention = mentionOf(item.rel);
       const next = applyCompletion(text, completion, mention);
       const current = composerDraft(id);
-      updateComposer(id, {
-        files: [...current.files, { path: item.path, rel: item.rel } satisfies FileRef],
-      });
+      updateComposer(id, { files: [...current.files, { path: item.path, rel: item.rel } satisfies FileRef] });
       setText(next.text, next.caret);
     } else {
       const next = applyCompletion(text, completion, `/${item.command.name}`);
@@ -208,11 +198,7 @@ export function Composer(props: ComposerProps) {
     for (const file of picked) {
       if (!file.type.startsWith("image/")) continue;
       if (file.size > MAX_IMAGE_BYTES) {
-        notifications().notify({
-          level: "warning",
-          title: "Image too large",
-          body: tx`${file.name} is over 5 MB.`,
-        });
+        notifications().notify({ level: "warning", title: "Image too large", body: tx`${file.name} is over 5 MB.` });
         continue;
       }
       const reader = new FileReader();
@@ -246,20 +232,14 @@ export function Composer(props: ComposerProps) {
                 if (image) addImages([image]);
               });
             } else {
-              refs.push({
-                path,
-                rel: path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path,
-              });
+              refs.push({ path, rel: path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path });
             }
           }
           if (refs.length) {
             const current = composerDraft(id);
             const mentions = refs.map((r) => mentionOf(r.rel)).join(" ");
             const glue = current.text && !/\s$/.test(current.text) ? " " : "";
-            updateComposer(id, {
-              text: `${current.text}${glue}${mentions} `,
-              files: [...current.files, ...refs],
-            });
+            updateComposer(id, { text: `${current.text}${glue}${mentions} `, files: [...current.files, ...refs] });
           }
         })
         .then((u) => {
@@ -390,11 +370,7 @@ export function Composer(props: ComposerProps) {
                 type="button"
                 className={styles.removeImage}
                 aria-label={tx("Remove Image")}
-                onClick={() =>
-                  updateComposer(id, {
-                    images: images.filter((_, j) => j !== i),
-                  })
-                }
+                onClick={() => updateComposer(id, { images: images.filter((_, j) => j !== i) })}
               >
                 <Icon name="close" size={10} />
               </button>

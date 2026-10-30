@@ -82,12 +82,7 @@ function save(key: string, value: unknown) {
   }
 }
 
-const fallbackDraft: Draft = {
-  provider: "claude",
-  config: {},
-  isolation: "worktree",
-  base: null,
-};
+const fallbackDraft: Draft = { provider: "claude", config: {}, isolation: "worktree", base: null };
 
 export const useAgents = create<AgentsState>(() => ({
   loaded: false,
@@ -114,10 +109,7 @@ export const composerDraft = (key: string) => useAgents.getState().composers.get
 
 export function updateComposer(key: string, patch: Partial<ComposerDraft>) {
   useAgents.setState((s) => ({
-    composers: new Map(s.composers).set(key, {
-      ...(s.composers.get(key) ?? emptyDraft()),
-      ...patch,
-    }),
+    composers: new Map(s.composers).set(key, { ...(s.composers.get(key) ?? emptyDraft()), ...patch }),
     lastComposer: key,
   }));
 }
@@ -172,11 +164,7 @@ export async function connect(): Promise<void> {
   try {
     [tasks, providers] = await Promise.all([call(commands.agentSubscribe(channel)), call(commands.agentProviders())]);
   } catch (e) {
-    if (gen === generation)
-      useAgents.setState({
-        loaded: true,
-        error: e instanceof Error ? e.message : String(e),
-      });
+    if (gen === generation) useAgents.setState({ loaded: true, error: e instanceof Error ? e.message : String(e) });
     return;
   }
   if (gen !== generation) return;
@@ -237,10 +225,7 @@ function onEvent(e: AgentEvent) {
     }
     case "truncated": {
       const current = s.entries.get(e.task);
-      if (current)
-        useAgents.setState({
-          entries: new Map(s.entries).set(e.task, current.slice(0, e.length)),
-        });
+      if (current) useAgents.setState({ entries: new Map(s.entries).set(e.task, current.slice(0, e.length)) });
       scheduleChanges(e.task);
       break;
     }
@@ -284,29 +269,20 @@ function notifyChange(prev: AgentTask | undefined, task: AgentTask) {
     key: `agent:${task.id}`,
     group: "tools",
     sticky: change !== "finished",
-    actions: [
-      {
-        label: change === "finished" ? "Review" : "Open",
-        run: () => openTask(task.id),
-      },
-    ],
+    actions: [{ label: change === "finished" ? "Review" : "Open", run: () => openTask(task.id) }],
   });
 }
 
 /** Loads the entries of the task's conversation, or of its subagent `subagent`'s. */
 export async function loadEntries(task: string, subagent: string | null = null): Promise<void> {
   const entries = await call(commands.agentEntries(task, subagent));
-  useAgents.setState((s) => ({
-    entries: new Map(s.entries).set(entriesKey(task, subagent), entries),
-  }));
+  useAgents.setState((s) => ({ entries: new Map(s.entries).set(entriesKey(task, subagent), entries) }));
 }
 
 export async function refreshChanges(task: string): Promise<void> {
   try {
     const changes = await call(commands.agentChanges(task));
-    useAgents.setState((s) => ({
-      changes: new Map(s.changes).set(task, changes),
-    }));
+    useAgents.setState((s) => ({ changes: new Map(s.changes).set(task, changes) }));
   } catch {
     // The worktree is gone or not a repository: nothing to list.
     useAgents.setState((s) => ({ changes: new Map(s.changes).set(task, []) }));
@@ -343,10 +319,7 @@ export function useAgentCommands(
   task: string | null,
   offered: readonly AgentCommand[],
 ): readonly AgentCommand[] {
-  const [found, setFound] = useState<{
-    for: unknown[];
-    list: readonly AgentCommand[];
-  } | null>(null);
+  const [found, setFound] = useState<{ for: unknown[]; list: readonly AgentCommand[] } | null>(null);
   useEffect(() => {
     if (!provider || !isTauri()) return;
     let alive = true;
@@ -449,9 +422,7 @@ export async function rerunFrom(task: string, turn: number, text: string, images
   } catch (e) {
     // Rollback removes the inline editor; recover its text in the session composer.
     const current = composerDraft(task);
-    updateComposer(task, {
-      text: current.text ? `${text}\n${current.text}` : text,
-    });
+    updateComposer(task, { text: current.text ? `${text}\n${current.text}` : text });
     focusComposer(task);
     throw e;
   }
@@ -508,10 +479,7 @@ export function addReferences(refs: Array<{ path: string; rel: string; mention: 
   const current = composerDraft(key);
   // A worktree task sees the same files under its own directory.
   const root = task?.isolation === "worktree" ? task.cwd : null;
-  const files: FileRef[] = refs.map((r) => ({
-    path: root ? `${root}/${r.rel}` : r.path,
-    rel: r.rel,
-  }));
+  const files: FileRef[] = refs.map((r) => ({ path: root ? `${root}/${r.rel}` : r.path, rel: r.rel }));
   const mentions = refs.map((r) => r.mention).join(" ");
   const text =
     current.text && !/\s$/.test(current.text) ? `${current.text} ${mentions} ` : `${current.text}${mentions} `;

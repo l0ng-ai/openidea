@@ -212,11 +212,7 @@ function Header({ task, entries, head }: { task: AgentTask; entries: AgentEntry[
           size="small"
           onClick={() =>
             void forkTask(task.id, null).catch((e: unknown) =>
-              notifications().notify({
-                level: "error",
-                title: "Couldn't copy the task",
-                body: String(e),
-              }),
+              notifications().notify({ level: "error", title: "Couldn't copy the task", body: String(e) }),
             )
           }
         />
@@ -367,12 +363,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
           const text = selectionIn(e.currentTarget);
           const items = copyMenuFor(e.target) ?? [];
           if (text.trim() && task.status !== "archived") {
-            items.push({
-              id: "quote",
-              label: "Quote",
-              icon: "edit",
-              run: () => quoteInComposer(task.id, text),
-            });
+            items.push({ id: "quote", label: "Quote", icon: "edit", run: () => quoteInComposer(task.id, text) });
           }
           if (!items.length) return;
           e.preventDefault();
@@ -511,11 +502,7 @@ function FindBar({
     };
     update();
     const observer = new MutationObserver(update);
-    observer.observe(stream, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-    });
+    observer.observe(stream, { subtree: true, childList: true, characterData: true });
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
@@ -822,11 +809,7 @@ function MessageEditor({
       await onSend(text.trim(), images);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      notifications().notify({
-        level: "error",
-        title: "Couldn't send the message",
-        body: String(e),
-      });
+      notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) });
     } finally {
       pending.current = false;
       setSending(false);
@@ -1131,21 +1114,13 @@ function SessionComposer({
     setSending(true);
     sendMessage(task.id, now)
       .catch((e: unknown) =>
-        notifications().notify({
-          level: "error",
-          title: "Couldn't send the message",
-          body: String(e),
-        }),
+        notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) }),
       )
       .finally(() => setSending(false));
   };
   const setOption = (id: string, value: string) =>
     void setTaskConfig(task.id, id, value).catch((e: unknown) =>
-      notifications().notify({
-        level: "error",
-        title: "Couldn't change the setting",
-        body: String(e),
-      }),
+      notifications().notify({ level: "error", title: "Couldn't change the setting", body: String(e) }),
     );
   return (
     <div className={styles.composerArea}>
@@ -1198,11 +1173,7 @@ function SessionComposer({
 /** Messages waiting for the turn to end: send now, edit, or drop. */
 function Queue({ task }: { task: AgentTask }) {
   const fail = (e: unknown) =>
-    notifications().notify({
-      level: "error",
-      title: "Couldn't update the queue",
-      body: String(e),
-    });
+    notifications().notify({ level: "error", title: "Couldn't update the queue", body: String(e) });
   return (
     <div className={styles.queue} aria-label={tx("Queued messages")}>
       {task.queue.map((q) => (
