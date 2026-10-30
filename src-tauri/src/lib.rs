@@ -13,6 +13,7 @@ mod remote_dev;
 
 mod state;
 mod theme_frame;
+mod window_groups;
 mod windows;
 
 use parking_lot::Mutex;
@@ -112,6 +113,7 @@ pub fn run() {
                 }
             }
             tauri::WindowEvent::Destroyed => {
+                window_groups::destroyed(window.app_handle(), window.label());
                 if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label()))
                 {
                     let _ = settings.destroy();
@@ -121,6 +123,9 @@ pub fn run() {
                 }
                 if let Some(w) = window.try_state::<WindowsState>() {
                     w.forget(window.label());
+                }
+                if !windows::is_settings_window(window.label()) {
+                    windows::continue_quit(window.app_handle(), Some(window.label()));
                 }
             }
             _ => {}

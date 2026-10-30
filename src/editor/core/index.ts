@@ -40,6 +40,7 @@ export function activate(): void | (() => void) {
     activePath: () => ctrl.activePath(),
     activeCursor: () => ctrl.activeCursor(),
     saveAll: () => ctrl.saveAll(),
+    dirtyDocumentIds: () => [...ctrl.manager.byId.values()].filter((m) => m.getMeta().dirty).map((m) => m.doc),
     focus: () => ctrl.focus(),
     openPaths: () => ctrl.openPaths(),
     openTabs: () => ctrl.openTabs(),

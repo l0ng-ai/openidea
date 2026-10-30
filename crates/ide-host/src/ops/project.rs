@@ -14,6 +14,8 @@ pub struct ProjectInfo {
     pub name: String,
     pub is_git: bool,
     pub settings: Settings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<ide_workspace::workspace::Workspace>,
 }
 
 pub fn info(project: &Project) -> ProjectInfo {
@@ -28,6 +30,7 @@ pub fn info(project: &Project) -> ProjectInfo {
         is_git: !project.repos.read().is_empty(),
         settings,
         root: project.root.clone().into(),
+        workspace: ide_workspace::workspace::Workspace::load(&project.root).ok().flatten(),
     }
 }
 
@@ -51,6 +54,42 @@ pub fn settings(host: &Host, window: &str) -> Settings {
 
 pub fn roots(host: &Host, window: &str) -> IdeResult<ide_workspace::ProjectRoots> {
     Ok(host.project(window)?.roots())
+}
+
+pub fn save_workspace(host: &Host, window: &str, name: &str, paths: Vec<std::path::PathBuf>) -> IdeResult<ProjectInfo> {
+    let project = host.project(window)?;
+    ide_workspace::workspace::Workspace::save(&project.root, name, paths, false)?;
+    project.settings.reload();
+    project.refresh_index_scope();
+    project.refresh_repositories();
+    project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
+    Ok(info(&project))
+}
+
+/// Links a folder, or prepares an automatic workspace for the caller to open in place.
+pub fn attach_workspace(host: &Host, window: &str, path: &Path) -> IdeResult<ide_core::IpcPath> {
+    let project = host.project(window)?;
+    let path = dunce::canonicalize(path)?;
+    if project.light {
+        return Err(ide_core::IdeError::invalid("Open a project before attaching a folder"));
+    }
+    if let Some(mut workspace) = ide_workspace::workspace::Workspace::load(&project.root)? {
+        if !workspace.projects.contains(&path) {
+            workspace.projects.push(path);
+            save_workspace(host, window, &workspace.name, workspace.projects)?;
+        }
+        return Ok(project.root.clone().into());
+    }
+    if path == project.root {
+        return Ok(project.root.clone().into());
+    }
+    Ok(ide_workspace::workspace::Workspace::create_for_project(
+        &host.data_dir,
+        &project.root,
+        &info(&project).name,
+        &path,
+    )?
+    .into())
 }
 
 /// What [`set_settings`] changed; the caller tells the windows.

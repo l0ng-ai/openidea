@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
-import { basename, dirname, relativePath, useProject } from "@/platform/project";
+import { basename, dirname, projectFolder, relativePath, useProject } from "@/platform/project";
 import type { LineEnding, OutlineItem } from "@/platform/ipc";
 import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
@@ -56,7 +56,8 @@ interface Crumb {
  */
 export function Breadcrumbs() {
   const path = useEditorStatus((s) => s.status?.path ?? null);
-  const project = useProject((s) => s.project);
+  const currentProject = useProject((s) => s.project);
+  const project = projectFolder(currentProject, path ?? "");
   const outline = useOutline((s) => (path ? s[path] : undefined));
   const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
   const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);

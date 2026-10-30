@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::SystemTime;
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 struct Identity {
     len: u64,
     modified: SystemTime,
@@ -14,6 +14,22 @@ struct Identity {
 fn identity(path: &Path) -> Option<Identity> {
     let metadata = path.metadata().ok()?;
     Some(Identity { len: metadata.len(), modified: metadata.modified().ok()? })
+}
+
+/// The index as it was when a status run opened it, so the run can tell whether
+/// something else rewrote it before its stat-refresh write-back lands.
+#[derive(PartialEq, Eq, Clone)]
+pub(crate) struct Stamp(Option<Identity>);
+
+pub(crate) fn stamp(path: &Path) -> Stamp {
+    Stamp(identity(path))
+}
+
+impl Stamp {
+    /// Whether the index still has the identity it had when the stamp was taken.
+    pub(crate) fn still_holds(&self, path: &Path) -> bool {
+        identity(path) == self.0
+    }
 }
 
 #[derive(Default)]
@@ -73,5 +89,20 @@ mod tests {
         assert!(!is_own_index_write(&first));
         std::fs::remove_file(&first).unwrap();
         assert!(!is_own_index_write(&first));
+    }
+
+    #[test]
+    fn a_stamp_detects_an_external_rewrite_of_the_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = tmp.path().join("index");
+        std::fs::write(&index, "ours").unwrap();
+        let opened = stamp(&index);
+        assert!(opened.still_holds(&index));
+        // Another process (a `git switch`) replaces the index mid-status.
+        std::fs::write(&index, "theirs").unwrap();
+        assert!(!opened.still_holds(&index));
+        // A missing index is a change too: git writes a fresh one on the next run.
+        std::fs::remove_file(&index).unwrap();
+        assert!(!opened.still_holds(&index));
     }
 }

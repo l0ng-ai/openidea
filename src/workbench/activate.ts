@@ -43,6 +43,7 @@ export function activateWorkbench(): () => void {
   // Synchronous so the frame's first render after opening already has the project's layout.
   const onProject = (root: string | null) => {
     setContext("projectOpen", root !== null);
+    setContext("workspaceOpen", !!useProject.getState().project?.workspace);
     setContext("lightEdit", useProject.getState().lightEdit);
     if (root !== null) loadToolWindowLayout(root);
   };

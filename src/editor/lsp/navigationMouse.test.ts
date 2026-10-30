@@ -115,6 +115,14 @@ describe("mouse navigation", () => {
     expect(openFile).not.toHaveBeenCalled();
   });
 
+  it.each(["windows", "linux"] as const)("opens the implementation with Ctrl+Alt+click on %s", async (os) => {
+    usePlatform.setState({ os });
+    useKeymap.setState({ preset: "intellij-windows", overrides: {} });
+    click({ ctrlKey: true, altKey: true });
+    await vi.waitFor(() => expect(openFile).toHaveBeenCalledOnce());
+    expect(lspGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 9 }, "implementation");
+  });
+
   it("does not navigate with Option+Command when the binding is removed", async () => {
     useKeymap.setState({ overrides: { "navigate.implementation": ["Meta+Alt+B"] } });
     click({ metaKey: true, altKey: true });

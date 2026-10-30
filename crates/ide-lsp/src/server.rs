@@ -99,6 +99,9 @@ pub struct Server {
     /// Woken when the last `$/progress` task ends.
     idle_notify: Notify,
     transient: Mutex<HashMap<PathBuf, Transient>>,
+    pub external_project: tokio::sync::Mutex<crate::external_project::State>,
+    pub external_diagnostics: std::sync::atomic::AtomicBool,
+    pub external_refresh_queued: std::sync::atomic::AtomicBool,
 }
 
 impl Server {
@@ -123,6 +126,9 @@ impl Server {
             published_notify: Notify::new(),
             idle_notify: Notify::new(),
             transient: Mutex::new(HashMap::new()),
+            external_project: tokio::sync::Mutex::new(Default::default()),
+            external_diagnostics: std::sync::atomic::AtomicBool::new(false),
+            external_refresh_queued: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -162,15 +168,27 @@ impl Server {
         Some(st.generation)
     }
 
-    /// Starting → Missing/Failed.
-    pub fn finish_start(&self, generation: u64, conn: Conn) -> bool {
-        let mut st = self.state.lock();
-        if st.generation == generation && matches!(st.conn, Conn::Starting) {
+    /// Starting → Missing/Failed, publishing the status the failed start reports
+    /// before waiters wake: a request that wakes on `Phase::Down` reads the status
+    /// to say why it has no server, and must not still see `Starting`.
+    pub fn fail_start(
+        &self,
+        generation: u64,
+        conn: Conn,
+        sink: &SharedSink,
+        status: ServerStatus,
+        message: Option<String>,
+    ) -> bool {
+        {
+            let mut st = self.state.lock();
+            if st.generation != generation || !matches!(st.conn, Conn::Starting) {
+                return false;
+            }
             st.conn = conn;
-            self.phase.send_replace(Phase::Down);
-            return true;
         }
-        false
+        self.set_status(sink, status, message);
+        self.announce_down();
+        true
     }
 
     /// Starting → Ready. False when the start was superseded or cancelled.
@@ -189,6 +207,12 @@ impl Server {
         if st.generation == generation && matches!(st.conn, Conn::Ready(_)) {
             self.phase.send_replace(Phase::Ready);
         }
+    }
+
+    /// Wakes requests waiting for a start that ended without an instance, after
+    /// its status is published.
+    pub fn announce_down(&self) {
+        self.phase.send_replace(Phase::Down);
     }
 
     pub fn running(&self) -> Option<Running> {
@@ -246,7 +270,8 @@ impl Server {
     }
 
     /// Instance `generation`'s connection closed. `None` if superseded, else whether
-    /// the close was intentional.
+    /// the close was intentional. Waiters are woken by [`Self::announce_down`] once
+    /// the crash is reported, not here: they read the status to say why.
     pub fn on_closed(&self, generation: u64) -> Option<bool> {
         let mut st = self.state.lock();
         if st.generation != generation {
@@ -255,7 +280,6 @@ impl Server {
         match &st.conn {
             Conn::Ready(_) | Conn::Starting => {
                 st.conn = Conn::Idle;
-                self.phase.send_replace(Phase::Down);
                 Some(false)
             }
             _ => Some(true),
@@ -527,6 +551,36 @@ mod tests {
         }
         *s.started.lock() = Instant::now().checked_sub(STABLE_UPTIME);
         assert_eq!(s.record_crash(), Some(Duration::from_millis(500)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_start_reports_its_status_before_waiters_wake() {
+        // The race behind "jdtls is not ready (Starting)": a request woken by the
+        // phase change reads the status to say why it has no server, so the status
+        // must already be the failure's.
+        let s = Arc::new(server());
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let generation = s.begin_start().unwrap();
+        let waiter = {
+            let s = s.clone();
+            tokio::spawn(async move {
+                let run = s.wait_ready(Duration::from_secs(30)).await;
+                (run.is_none(), s.status())
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, Some("boom".into())));
+        assert_eq!(waiter.await.unwrap(), (true, ServerStatus::Crashed));
+    }
+
+    #[test]
+    fn a_superseded_start_is_not_announced() {
+        let s = server();
+        let generation = s.begin_start().unwrap();
+        s.begin_stop(); // abandons the start and invalidates its generation
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        assert!(!s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, Some("boom".into())));
+        assert_eq!(s.status(), ServerStatus::Stopped);
     }
 
     #[test]

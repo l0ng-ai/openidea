@@ -201,3 +201,27 @@ describe("project view context menu", () => {
     expect(l).not.toContain("Find in Files…");
   });
 });
+
+it("offers workspace removal for every member root", () => {
+  useProject.setState({
+    project: {
+      root: "/workspace",
+      name: "A",
+      settings: {},
+      isGit: false,
+      workspace: { version: 1, name: "A", projects: ["/a", "/b"] },
+    },
+  });
+  const removal = {
+    kind: "action",
+    action: "workspace.removeProject",
+    arg: "/b",
+  };
+  expect(contextMenuItems([node("/b", true, true)])).toContainEqual(removal);
+  expect(contextMenuItems([node("/a", true, true)])).toContainEqual(
+    expect.objectContaining({ action: "workspace.removeProject" }),
+  );
+  expect(contextMenuItems([node("/b/src", true)])).not.toContainEqual(
+    expect.objectContaining({ action: "workspace.removeProject" }),
+  );
+});

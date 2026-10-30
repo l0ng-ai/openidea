@@ -19,6 +19,7 @@ import {
 } from "react";
 import type { RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
+import type { TreeReorder } from "@/ui/Tree";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
@@ -232,6 +233,8 @@ export interface ServiceProviderContribution {
   banner?: ComponentType;
   /** Entries of the "Add Service" (+, ⌘N) menu. */
   addMenu?(): MenuItem[];
+  /** Optional sibling display ordering; does not move services between groups. */
+  reorder?: TreeReorder<ServiceTreeItem>;
 }
 
 export const useServiceProviders = create<{ providers: Map<string, ServiceProviderContribution> }>(() => ({
@@ -497,6 +500,8 @@ export interface EditorService {
   activeCursor(): { doc: number; path: string; line: number; col: number; offset: number } | null;
   /** Save all dirty documents; rejects with the failures once every save was tried. */
   saveAll(): Promise<void>;
+  /** Includes local edits not yet acknowledged by the backend. */
+  dirtyDocumentIds?(): number[];
   /** Move keyboard focus to the active editor (used by Escape from tool windows). */
   focus?(): void;
   /** Paths of the documents open in editor tabs (all panes, tab order). */

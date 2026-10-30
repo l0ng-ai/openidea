@@ -14,6 +14,8 @@ pub mod recent;
 pub mod roots;
 pub mod settings;
 pub mod text_refs;
+pub mod window_groups;
+pub mod workspace;
 
 pub use documents::{DetectLanguage, DocumentInfo, Documents, TextSnapshot};
 pub use editorconfig::{EditorConfig, EditorConfigProps};

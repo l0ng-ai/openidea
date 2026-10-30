@@ -7,6 +7,7 @@ import { SESSION_KIND, age, branchLabel, groupTasks, type TaskGroup } from "./mo
 import { openHome, openTask, useAgents } from "./store";
 import { taskMenu } from "./taskActions";
 import styles from "./Agents.module.css";
+import { basename, useProject } from "@/platform/project";
 import { useTx } from "@/platform/i18n";
 
 export function AgentsHeaderActions() {
@@ -43,6 +44,7 @@ export function TaskStatusIcon({ status }: { status: Status }) {
 }
 
 export function AgentsView() {
+  const project = useProject((s) => s.project);
   const tx = useTx();
   const loaded = useAgents((s) => s.loaded);
   const error = useAgents((s) => s.error);
@@ -128,6 +130,11 @@ export function AgentsView() {
               </span>
               {unread.has(n.task.id) && (
                 <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
+              )}
+              {project?.workspace && (
+                <span className={styles.taskProject} title={n.task.projectRoot ?? project.root}>
+                  {basename(n.task.projectRoot ?? project.root)}
+                </span>
               )}
               <span className={styles.detail}>
                 {providerName(n.task.provider)}

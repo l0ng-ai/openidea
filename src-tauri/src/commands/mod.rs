@@ -44,6 +44,8 @@ pub mod tools;
 pub mod vcs;
 pub mod web;
 pub mod window;
+pub mod window_group;
+pub mod workspace;
 
 use tauri_specta::collect_commands;
 
@@ -62,6 +64,16 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::recent_projects,
         app::remove_recent_project,
         app::open_project,
+        workspace::workspace_create,
+        workspace::workspace_attach,
+        workspace::workspace_update,
+        window_group::window_group_current,
+        window_group::window_group_merge,
+        window_group::window_group_select,
+        window_group::window_group_detach,
+        window_group::window_group_close,
+        window_group::window_group_reorder,
+        window_group::window_group_restore,
         app::light_edit_open,
         app::project_current,
         app::close_project,
@@ -329,6 +341,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         sdk::sdk_python_pip,
         window::window_open_project,
         window::window_open_files,
+        window::window_open_file_in_new_window,
         window::window_open_remote,
         window::window_new,
         window::window_open_settings,

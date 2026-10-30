@@ -218,6 +218,48 @@ async function startRemote(config: RunConfig, root: string) {
   if (launch) await startSession(launch, { runConfig: config });
 }
 
+/** Java preparation has no backend session id yet; expose Stop like remote JVM listening. */
+async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig) {
+  const request = nextRequestId();
+  const controller = new AbortController();
+  const key = `debug.prepare.${request}`;
+  let preparing = true;
+  notifications().notify({
+    group: "run",
+    level: "info",
+    key,
+    sticky: true,
+    title: tx`Starting debugger for ${config.name}…`,
+    actions: [
+      {
+        label: "Stop",
+        run: () => {
+          if (!preparing || controller.signal.aborted) return;
+          controller.abort();
+          notifications().expire?.(key);
+          void commands.cancelRequest(request).catch(() => undefined);
+        },
+      },
+    ],
+  });
+  let launch;
+  try {
+    await maybeEditorService()
+      ?.saveAll()
+      .catch(() => undefined);
+    controller.signal.throwIfAborted();
+    launch = await javaLaunchConfig(config, root, { request, signal: controller.signal });
+    controller.signal.throwIfAborted();
+  } catch (e) {
+    if (controller.signal.aborted || isCancelled(e)) return;
+    throw e;
+  } finally {
+    preparing = false;
+    notifications().expire?.(key);
+  }
+  await startSession(launch, { runConfig: origin });
+}
+
 async function startConfig(arg: unknown) {
   const root = useProject.getState().project?.root;
   if (!root) return;
@@ -255,10 +297,7 @@ async function startConfig(arg: unknown) {
     return;
   }
   if (isJavaDebuggable(config)) {
-    await maybeEditorService()
-      ?.saveAll()
-      .catch(() => undefined);
-    await startSession(await javaLaunchConfig(config, root), { runConfig: origin ?? config });
+    await startJavaConfig(config, root, origin ?? config);
     return;
   }
   const launch = launchConfigFor(config, root);

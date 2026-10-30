@@ -35,6 +35,7 @@ fn server(name: &str) -> LanguageServerConfig {
         fallback: false,
         max_java: None,
         launch_error: None,
+        tsserver_project: false,
     }
 }
 
@@ -937,4 +938,32 @@ fn gradle_settings_precedence() {
         }
         assert_eq!(gradle_command(root, root, &settings), if local { expected } else { wrapper.clone() });
     }
+}
+
+/// The reporter of #440 has Node 26 in `~/.local/bin` and an 18 in `/usr/bin`; an SSH
+/// exec channel's PATH puts `/usr/bin` first, so only the system's Node was listed.
+#[test]
+fn node_lists_every_install_on_the_search_path_not_only_the_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (system, user) = (tmp.path().join("usr-bin"), tmp.path().join("local-bin"));
+    for dir in [&system, &user] {
+        std::fs::create_dir(dir).unwrap();
+        std::fs::write(dir.join(exe("node")), "").unwrap();
+    }
+    let found = crate::exec::executables_in("node", [system.clone(), user.clone()].into_iter());
+    assert_eq!(found, [system.join(exe("node")), user.join(exe("node"))]);
+    // A directory without the executable contributes nothing.
+    let found = crate::exec::executables_in("node", [tmp.path().join("empty"), user.clone()].into_iter());
+    assert_eq!(found, [user.join(exe("node"))]);
+}
+
+#[test]
+fn node_on_the_search_path_keeps_its_version_manager_as_source() {
+    let home = Path::new("/home/me");
+    let source = |p: &str| crate::discover::node_source(Path::new(p), Some(home));
+    assert_eq!(source("/home/me/.nvm/versions/node/v24.0.0/bin/node"), "nvm");
+    assert_eq!(source("/home/me/.volta/tools/image/node/24.0.0/bin/node"), "volta");
+    assert_eq!(source("/home/me/.local/share/fnm/node-versions/v24/installation/bin/node"), "fnm");
+    assert_eq!(source("/home/me/.local/bin/node"), "path");
+    assert_eq!(source("/usr/bin/node"), "system");
 }

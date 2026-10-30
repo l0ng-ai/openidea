@@ -11,6 +11,16 @@ export const commands = {
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
+	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
+	workspaceAttach: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_attach", { path })),
+	workspaceUpdate: (name: string, projects: string[]) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("workspace_update", { name, projects })),
+	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
+	windowGroupMerge: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_merge")),
+	windowGroupSelect: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_select", { label })),
+	windowGroupDetach: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach")),
+	windowGroupClose: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close", { label })),
+	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
+	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
 	/**
 	 *  Edits the loose file `path` in this window without a project (LightEdit);
 	 *  a window already in LightEdit keeps its files. Returns the effective (global) settings.
@@ -22,6 +32,7 @@ export const commands = {
 	name: string,
 	isGit: boolean,
 	settings: Settings_Serialize,
+	workspace?: Workspace_Serialize | null,
 } | null>("project_current"),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
 	languages: () => __TAURI_INVOKE<LanguageInfo_Serialize[]>("languages"),
@@ -597,11 +608,12 @@ export const commands = {
 	 */
 	buildRun: (kind: BuildKind, file: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, request, clear, onEvent })),
 	/**
+	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds the workspace (when `build`), then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, build: boolean) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, build })),
+	javaResolveLaunch: (module: string, test: boolean, build: boolean, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, build, request })),
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
@@ -676,6 +688,12 @@ export const commands = {
 	 *  itself, in LightEdit.
 	 */
 	windowOpenFiles: (files: string[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("window_open_files", { files })),
+	/**
+	 *  Detaches an editor tab: opens `file` in a forced new window (`project`, None
+	 *  for LightEdit, decided by the caller), bypassing the focus-an-existing-window
+	 *  routing of [`window_open_project`] / [`window_open_files`].
+	 */
+	windowOpenFileInNewWindow: (project: string | null, file: string) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_file_in_new_window", { project, file })),
 	/**
 	 *  [`window_open_project`] for folder `path` on the host of SSH configuration
 	 *  `ssh_config` (Remote Development); a new window connects itself.
@@ -1281,6 +1299,8 @@ export type AgentSubagentStatus = "running" |
 "needsInput" | "done" | "cancelled" | "failed";
 
 export type AgentTask = {
+	/**  Original project folder; absent in tasks saved before per-task roots. */
+	projectRoot?: IpcPath | null,
 	id: string,
 	title: string,
 	/**  [`AgentProvider::id`]. */
@@ -3095,7 +3115,7 @@ export type FunctionBreakpoint = {
 export type GeneralSettings = {
 	reopenLastProject?: boolean,
 	confirmExit?: boolean,
-	/**  Where Open… puts a project while one is open: `ask` | `new` | `same`. */
+	/**  Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`. */
 	openProjectIn?: string,
 	/**  Initial folder of the Open / Clone dialogs; empty = the OS default. */
 	defaultProjectDirectory?: string,
@@ -3387,8 +3407,12 @@ export type IdeError = {
 };
 
 export type IdeEvent = 
+/**  Project window membership or selection changed. */
+{ type: "windowGroupsChanged" } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[] } | 
+/**  Excluded or ignored folders whose contents changed; they stay out of `FsChanged`. */
+{ type: "excludedDirsChanged"; dirs: IpcPath[] } | 
 /**
  *  The backend changed a document (reload from disk, formatting, refactoring).
  *  The UI applies `changes` on top of `base_version`, yielding `version`.
@@ -4265,6 +4289,8 @@ export type MethodStat = {
 };
 
 export type NewAgentTask = {
+	/**  Validated by the host; defaults to the window project root. */
+	projectRoot?: IpcPath | null,
 	prompt: AgentPrompt,
 	provider: string,
 	/**  Settings for the new session (model, mode…). */
@@ -4695,6 +4721,7 @@ export type ProjectInfo_Deserialize = {
 	name: string,
 	isGit: boolean,
 	settings: Settings_Deserialize,
+	workspace?: Workspace_Deserialize | null,
 };
 
 export type ProjectInfo_Serialize = {
@@ -4702,6 +4729,7 @@ export type ProjectInfo_Serialize = {
 	name: string,
 	isGit: boolean,
 	settings: Settings_Serialize,
+	workspace?: Workspace_Serialize | null,
 };
 
 export type ProjectRoots = {
@@ -5101,6 +5129,8 @@ export type RunConfig_Serialize = {
 export type RunExtras = RunExtras_Serialize | RunExtras_Deserialize;
 
 export type RunExtras_Deserialize = {
+	/**  Module supplying a JVM application's classpath; empty means the project root. */
+	module?: string | null,
 	/**  Values of the configuration type's own form fields (the command line derives from them). */
 	params?: { [key in string]: string },
 	/**  Folder in the Run/Debug Configurations tree. */
@@ -5138,6 +5168,8 @@ export type RunExtras_Deserialize = {
 };
 
 export type RunExtras_Serialize = {
+	/**  Module supplying a JVM application's classpath; empty means the project root. */
+	module?: string | null,
 	/**  Values of the configuration type's own form fields (the command line derives from them). */
 	params?: { [key in string]: string },
 	/**  Folder in the Run/Debug Configurations tree. */
@@ -6172,6 +6204,15 @@ export type WebReferenceKind =
 /**  `var(--name)`: the custom property's declarations. */
 "cssVariable";
 
+export type WindowTab = {
+	label: string,
+	name: string,
+	root: IpcPath | null,
+	current: boolean,
+};
+
+export type Workspace = Workspace_Serialize | Workspace_Deserialize;
+
 /**  Edits to many files, applied atomically from the user's point of view. */
 export type WorkspaceEdit = {
 	files: FileEdit[],
@@ -6182,6 +6223,18 @@ export type WorkspaceSymbol = {
 	kind: SymbolKind,
 	container: string | null,
 	location: Location,
+};
+
+export type Workspace_Deserialize = {
+	version: number,
+	name: string,
+	projects: string[],
+};
+
+export type Workspace_Serialize = {
+	version: number,
+	name: string,
+	projects: string[],
 };
 
 export type Worktree = {

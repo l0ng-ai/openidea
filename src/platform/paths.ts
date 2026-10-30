@@ -20,3 +20,10 @@ export function ipcPath(p: string): string {
   if (path.startsWith("\\\\?\\")) path = path.startsWith("\\\\?\\UNC\\") ? `\\\\${path.slice(8)}` : path.slice(4);
   return DRIVE.test(path) || NETWORK.test(path) ? path.replace(/\\/g, "/") : path;
 }
+
+/** True when `path` equals `ancestor` or lies below it. */
+export function isSameOrInside(path: string, ancestor: string): boolean {
+  path = ipcPath(path);
+  ancestor = ipcPath(ancestor);
+  return path === ancestor || path.startsWith(ancestor.endsWith("/") ? ancestor : ancestor + "/");
+}

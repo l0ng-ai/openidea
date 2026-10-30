@@ -11,6 +11,7 @@ import {
   useEffect,
   useId,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -18,6 +19,7 @@ import {
   type MouseEvent,
   type ReactNode,
   type Ref,
+  type RefObject,
 } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -29,6 +31,8 @@ import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
 import { T } from "./T";
 import { tx } from "@/platform/i18n";
+import { useTreeReorder, type TreeReorder } from "./treeReorder";
+export type { TreeReorder } from "./treeReorder";
 
 export interface TreeRowState {
   depth: number;
@@ -107,6 +111,79 @@ export interface TreeProps<T> {
   "aria-label"?: string;
   handleRef?: Ref<TreeHandle>;
   empty?: ReactNode;
+  /** Rows wider than the pane scroll horizontally instead of clipping. */
+  horizontalScroll?: boolean;
+  /** Optional display reordering between siblings; the caller owns the order. */
+  reorder?: TreeReorder<T>;
+}
+
+/** Remember intrinsic widths by identity, including rows outside the virtual window. */
+function useContentWidth<T>(
+  scroller: RefObject<HTMLDivElement | null>,
+  rows: readonly Row<T>[],
+  enabled: boolean,
+): number {
+  const [width, setWidth] = useState(0);
+  const cache = useRef(new Map<string, number>());
+  const measuredRows = useRef<readonly Row<T>[] | null>(null);
+  const maximum = useRef(0);
+  useLayoutEffect(() => {
+    if (!enabled) {
+      cache.current.clear();
+      measuredRows.current = null;
+      maximum.current = 0;
+      return;
+    }
+    const element = scroller.current;
+    if (!element) return;
+    const mounted = [...element.querySelectorAll<HTMLElement>("[data-row]")];
+    const measure = () => {
+      // Hidden tool windows have no layout. Keep their estimates until shown;
+      // the observer remains attached so showing the window resumes measurement.
+      if (element.clientWidth === 0) return;
+      let recompute = false;
+      if (measuredRows.current !== rows) {
+        const keys = new Set(rows.map((row) => row.key));
+        for (const [key, value] of cache.current) {
+          if (!keys.has(key)) {
+            cache.current.delete(key);
+            if (value === maximum.current) recompute = true;
+          }
+        }
+        measuredRows.current = rows;
+      }
+      // Measure max-content, not the viewport's min-width floor. Batch writes and
+      // restore before paint so selection backgrounds still fill the viewport.
+      const minimums = mounted.map((row) => row.style.minWidth);
+      for (const row of mounted) row.style.minWidth = "0";
+      const widths = mounted.map((row) => row.offsetWidth);
+      mounted.forEach((row, index) => {
+        row.style.minWidth = minimums[index]!;
+        const key = rows[Number(row.dataset.row)]!.key;
+        const value = widths[index]!;
+        if (cache.current.get(key) === maximum.current && value < maximum.current) recompute = true;
+        cache.current.set(key, value);
+        maximum.current = Math.max(maximum.current, value);
+      });
+      // Ordinary scrolling only touches mounted rows. Scan cached widths only
+      // when the previous maximum was removed or actually became narrower.
+      if (recompute) {
+        maximum.current = 0;
+        for (const value of cache.current.values()) maximum.current = Math.max(maximum.current, value);
+        recompute = false;
+      }
+      // Reconcile and measure together: never publish an intermediate shrink.
+      setWidth(maximum.current);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    for (const row of mounted) observer.observe(row);
+    return () => observer.disconnect();
+  });
+  // Offscreen widths are estimates after label/font/indent changes; mounting
+  // measures them afresh, including decreases for the same key.
+  return width;
 }
 
 interface Row<T> {
@@ -211,6 +288,9 @@ export function Tree<T>(props: TreeProps<T>) {
   }, [allRows, matchMap, query, speedSearchMode]);
 
   const byKey = useMemo(() => new Map(allRows.map((r) => [r.key, r])), [allRows]);
+  const emptyState = !rows.length && !!empty && !query;
+  const contentWidth = useContentWidth(scrollRef, rows, !!props.horizontalScroll);
+  const reordering = useTreeReorder(scrollRef, rows, emptyState ? undefined : props.reorder);
   // aria-posinset / aria-setsize among visible siblings (rows are virtualised).
   const positions = useMemo(() => siblingPositions(rows), [rows]);
   const indexOfKey = useMemo(() => new Map(rows.map((r, i) => [r.key, i])), [rows]);
@@ -462,8 +542,7 @@ export function Tree<T>(props: TreeProps<T>) {
   const leadRow = leadIndex >= 0 ? rows[leadIndex] : undefined;
   const noMatch = !!query && matchMap.size === 0;
 
-  if (!rows.length && empty && !query)
-    return <div className={clsx(styles.tree, styles.emptyWrap, className)}>{empty}</div>;
+  if (emptyState) return <div className={clsx(styles.tree, styles.emptyWrap, className)}>{empty}</div>;
 
   return (
     <div className={clsx(styles.wrap, className)}>
@@ -498,6 +577,9 @@ export function Tree<T>(props: TreeProps<T>) {
         }
       >
         <div className={styles.sizer} style={{ height: virtualizer.getTotalSize() }}>
+          {props.horizontalScroll && (
+            <div aria-hidden data-content-width className={styles.contentWidth} style={{ width: contentWidth }} />
+          )}
           {virtualizer.getVirtualItems().map((v) => {
             const row = rows[v.index]!;
             const pad = 4 + row.depth * indent;
@@ -541,16 +623,22 @@ export function Tree<T>(props: TreeProps<T>) {
                 aria-selected={isSelected}
                 className={clsx(
                   styles.row,
+                  props.horizontalScroll && styles.wideRow,
                   rowClassName?.(row.node),
                   isSelected && styles.selected,
                   isLead && styles.lead,
+                  reordering.drop?.key === row.key && styles[reordering.drop.position],
                 )}
                 style={style}
+                onPointerDown={props.reorder ? (e) => reordering.start(e, row) : undefined}
                 onMouseDown={(e) => onRowMouseDown(e, v.index)}
-                onDoubleClick={(e) => activate(row, e)}
+                onDoubleClick={(e) => {
+                  if (!props.reorder || !reordering.suppressActivation.current) activate(row, e);
+                }}
               >
                 <span
                   className={styles.chevron}
+                  data-tree-toggle
                   onMouseDown={(e) => {
                     if (!row.expandable || e.button !== 0) return;
                     e.stopPropagation();

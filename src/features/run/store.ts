@@ -9,12 +9,22 @@ import {
   call,
   commands,
   isTauri,
+  isCancelled,
+  nextRequestId,
+  type RequestId,
   type OutputChunk,
   type RunConfig,
   type RunId,
   type TestCaseReport,
 } from "@/platform/ipc";
-import { formatCompileErrors, isJvmApplication, parseJavaArgs, resolveJavaCommand } from "@/platform/javaLaunch";
+import {
+  findJavaModule,
+  formatCompileErrors,
+  isJvmApplication,
+  parseJavaArgs,
+  resolveJavaCommand,
+  resolveJavaModule,
+} from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -68,6 +78,7 @@ export interface RunSession {
 }
 
 interface SessionRuntime {
+  resolveRequest?: { id: RequestId; cancelled: boolean };
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
@@ -315,6 +326,11 @@ export async function deleteConfig(id: string): Promise<void> {
 
 /** Persists user configurations and reloads the merged list. */
 export async function saveUserConfigs(user: RunConfig[], removedDetectedIds: string[] = []): Promise<void> {
+  user = await Promise.all(
+    user.map(async (config) =>
+      isJvmApplication(config) && config.module == null ? { ...config, module: await findJavaModule(config) } : config,
+    ),
+  );
   await call(
     commands.runSaveConfigs(
       user.map((c) => ({ ...c, detected: false })),
@@ -620,7 +636,10 @@ export async function startRun(
       const resolved = await resolveJvmApplication(sessionId, launch);
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
       if (!resolved) {
-        patchSession(sessionId, { status: "failed", endedAt: Date.now() });
+        patchSession(sessionId, {
+          status: getSession(sessionId)?.stopped ? "finished" : "failed",
+          endedAt: Date.now(),
+        });
         return getSession(sessionId) ?? null;
       }
       launch = resolved;
@@ -690,8 +709,14 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
   }
   if (!parsed.classpath) return config;
   say(`Building and resolving the classpath of ${parsed.mainClass}…\n`);
+  const rt = runtime(sessionId)!;
+  const request = { id: nextRequestId(), cancelled: false };
+  rt.resolveRequest = request;
   try {
-    const info = await call(commands.javaResolveLaunch(config.cwd ?? "", parsed.classpath === "test", true));
+    const module = await resolveJavaModule(config);
+    if (request.cancelled) return null;
+    const info = await call(commands.javaResolveLaunch(module, parsed.classpath === "test", true, request.id));
+    if (request.cancelled) return null;
     if (info.build === "withErrors")
       say("Build completed with errors; launching with the last compiled classes.\n", "stderr");
     if (info.build === "failed") say("Build failed; launching with the last compiled classes.\n", "stderr");
@@ -715,6 +740,10 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     return resolveJavaCommand(config, info, pathSeparator());
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    if (request.cancelled || isCancelled(e)) {
+      if (runtimes.get(sessionId) === rt && rt.resolveRequest === request) patchSession(sessionId, { stopped: true });
+      return null;
+    }
     say(`Cannot resolve the classpath: ${message}\n`, "stderr");
     // jdtls can't start without a newer JDK: "Download JDK 25".
     const actions = downloadJdkActions(message);
@@ -726,6 +755,8 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       actions,
     });
     return null;
+  } finally {
+    if (rt.resolveRequest === request) delete rt.resolveRequest;
   }
 }
 
@@ -835,7 +866,15 @@ export function onRunExited(runId: RunId, code: number | null) {
 
 export async function stopSession(sessionId: string): Promise<void> {
   const session = getSession(sessionId);
-  if (!session || session.runId === null || session.status !== "running") return;
+  if (!session) return;
+  const request = runtimes.get(sessionId)?.resolveRequest;
+  if (session.status === "starting" && request) {
+    request.cancelled = true;
+    patchSession(sessionId, { stopped: true });
+    await commands.cancelRequest(request.id);
+    return;
+  }
+  if (session.runId === null || session.status !== "running") return;
   patchSession(sessionId, { stopped: true });
   try {
     await call(commands.runStop(session.runId));
@@ -995,7 +1034,7 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
 export function closeSession(sessionId: string) {
   const session = getSession(sessionId);
   if (!session) return;
-  if (session.status === "running") void stopSession(sessionId);
+  if (session.status === "running" || session.status === "starting") void stopSession(sessionId);
   const rt = runtimes.get(sessionId);
   if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);

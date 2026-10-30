@@ -72,7 +72,11 @@ export function SessionEditor({ input }: { input: EditorInput }) {
   const task = useAgents((s) => s.tasks.get(id));
   const entries = useAgents((s) => s.entries.get(id));
   const changes = useAgents((s) => s.changes.get(id));
-  const head = useLocalHead(task?.isolation === "local" ? task.status : null);
+  const project = useProject((s) => s.project);
+  const head = useLocalHead(
+    task?.isolation === "local" ? task.status : null,
+    project?.workspace ? (task?.projectRoot ?? project.root) : null,
+  );
   const [changesOpen, setChangesOpen] = useChangesOpen(id, changes ?? null);
   // The subagent conversation shown, with the subagents that lead to it (empty: the task's own).
   const [path, setPath] = useState<string[]>([]);
@@ -160,14 +164,14 @@ function providerName(id: string) {
  * Current branch of the project's repository for a local-checkout task (`status` is
  * `null` otherwise); followed as git changes, since the agent or the user may switch it.
  */
-function useLocalHead(status: AgentTask["status"] | null): string | null {
+function useLocalHead(status: AgentTask["status"] | null, root: string | null): string | null {
   const [head, setHead] = useState<string | null>(null);
   const local = status !== null;
   useEffect(() => {
     if (!local) return;
     let live = true;
     const load = () =>
-      void call(commands.vcsBranchInfo(null)).then(
+      void call(commands.vcsBranchInfo(root)).then(
         (b) => live && setHead(b.head ?? b.headCommit?.slice(0, 8) ?? null),
         () => live && setHead(null),
       );
@@ -177,7 +181,7 @@ function useLocalHead(status: AgentTask["status"] | null): string | null {
       live = false;
       off();
     };
-  }, [local, status]);
+  }, [local, status, root]);
   return local ? head : null;
 }
 
@@ -196,6 +200,8 @@ function Header({
   changesOpen: boolean;
   onToggleChanges: () => void;
 }) {
+  const project = useProject((s) => s.project);
+  const projectName = project?.workspace ? basename(task.projectRoot ?? project.root) : null;
   const count = changes?.length ?? 0;
   const busy = isBusy(task.status);
   const where = task.isolation === "worktree" ? branchLabel(task.branch) : null;
@@ -216,6 +222,7 @@ function Header({
         <span className={styles.headerText}>
           {providerName(task.provider)}
           {task.model ? ` · ${task.model}` : ""}
+          {projectName ? ` · ${projectName}` : ""}
           {" · "}
           {where ?? (
             <>

@@ -4,10 +4,11 @@ use crate::rpc::Dispatcher;
 
 use super::build::load;
 use ide_build::compile;
-use ide_core::{CancellationToken, IdeError, IdeResult};
+use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
 use ide_lsp::jdtls::JavaLaunchInfo;
 use std::path::PathBuf;
 
+/// Cancellable with `cancel_request(request)`.
 /// Builds the workspace (when `build`), then resolves the runtime (or test)
 /// classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 /// A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
@@ -17,17 +18,33 @@ pub async fn java_resolve_launch(
     module: PathBuf,
     test: bool,
     build: bool,
+    request: RequestId,
+) -> IdeResult<JavaLaunchInfo> {
+    let cancel = host.begin_request(request);
+    let result = resolve_launch(host, window, module, test, build, &cancel).await;
+    host.end_request(request);
+    result
+}
+
+async fn resolve_launch(
+    host: &Host,
+    window: &str,
+    module: PathBuf,
+    test: bool,
+    build: bool,
+    cancel: &CancellationToken,
 ) -> IdeResult<JavaLaunchInfo> {
     let project = host.project(window)?;
     let module = project.root.join(module);
     let settings = project.settings.effective();
     // Let jdtls finish its build before the external compiler writes Kotlin/Scala classes.
-    let mut info = project.lsp.java_launch(&module, test, build).await?;
+    let mut info = project.lsp.java_launch(&module, test, build, cancel).await?;
     let built = if build && compile::has_non_java_sources(&module) {
         let (root, cache, module, settings) =
             (project.root.clone(), project.build_cache_dir(), module.clone(), settings.clone());
+        let cancel = cancel.clone();
         tokio::task::spawn_blocking(move || {
-            compile::build_for_launch(&root, &load(&root, &cache, &settings), &module, test, &CancellationToken::new())
+            compile::build_for_launch(&root, &load(&root, &cache, &settings), &module, test, &cancel)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??
@@ -65,6 +82,9 @@ pub async fn java_resolve_launch(
             .map_err(|e| IdeError::internal(e.to_string()))?;
         info.hints.extend(lombok.problem());
     }
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
     Ok(info)
 }
 
@@ -83,13 +103,14 @@ pub async fn java_build_workspace(
 ) -> IdeResult<ide_lsp::jdtls::JavaBuildStatus> {
     let project = host.project(window)?;
     let module = project.root.join(module);
-    project.lsp.java_build(&module).await
+    project.lsp.java_build(&module, &CancellationToken::new()).await
 }
 
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("java_resolve_launch", |c| async move {
-        java_resolve_launch(&c.host, &c.window, c.arg("module")?, c.arg("test")?, c.arg("build")?).await
+        java_resolve_launch(&c.host, &c.window, c.arg("module")?, c.arg("test")?, c.arg("build")?, c.arg("request")?)
+            .await
     });
     d.add("java_debug_server", |c| async move { java_debug_server(&c.host, &c.window, c.arg("module")?).await });
     d.add("java_build_workspace", |c| async move { java_build_workspace(&c.host, &c.window, c.arg("module")?).await });

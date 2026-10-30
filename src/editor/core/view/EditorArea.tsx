@@ -198,6 +198,11 @@ function PaneView({ paneId }: { paneId: string }) {
   const pinnedRow =
     tabPrefs.pinnedSeparateRow && (vertical || !tabPrefs.multipleRows) && pinnedCount > 0 && pinnedCount < tabs.length;
   const dnd = useMemo(() => {
+    // A tab released outside the window detaches into a forced new window.
+    const dropOutside = (raw: string) => {
+      const p = parseTabPayload(raw);
+      if (p) void ctrl.detachTab(p.paneId, p.tabId);
+    };
     const strip = (offset: number): TabsDnd => ({
       type: EDITOR_TAB_MIME,
       payload: (tabId) => JSON.stringify({ paneId, tabId }),
@@ -205,6 +210,7 @@ function PaneView({ paneId }: { paneId: string }) {
         const p = parseTabPayload(raw);
         if (p) ctrl.moveTab(p.paneId, p.tabId, paneId, index + offset);
       },
+      onDropOutside: dropOutside,
     });
     return { all: strip(0), rest: strip(pinnedCount) };
   }, [ctrl, paneId, pinnedCount]);

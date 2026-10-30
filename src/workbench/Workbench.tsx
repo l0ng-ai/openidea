@@ -12,6 +12,7 @@ import { OverlayHost } from "./OverlayHost";
 import { projectColorVars } from "./projectColor";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
+import { WindowGroupTabs } from "./WindowGroupTabs";
 import { useApplyTheme } from "./theme";
 import { ToolWindowLayout } from "./toolwindows/ToolWindows";
 import { Welcome } from "./Welcome";
@@ -52,6 +53,7 @@ export function Workbench() {
         <>
           {/* Distraction Free Mode keeps the bar for the traffic lights and window dragging only. */}
           <TitleBar bare={distractionFree} />
+          {!distractionFree && <WindowGroupTabs />}
           <ToolWindowLayout key={root} editor={<EditorArea />} />
           {!distractionFree && <StatusBar />}
         </>

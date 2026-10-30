@@ -120,6 +120,9 @@ pub struct LanguageServerConfig {
     /// a JDK 21+); reported as the failure instead of launching it.
     #[serde(skip)]
     pub launch_error: Option<String>,
+    /// Register source files with tsserver when no project configuration exists.
+    #[serde(default)]
+    pub tsserver_project: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

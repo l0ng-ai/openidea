@@ -80,6 +80,8 @@ const USER_DIRS: &[&str] = &[
     ".cargo/bin",
     ".local/bin",
     "go/bin",
+    // `dotnet tool install --global` puts fsautocomplete, csharp-ls and friends here.
+    ".dotnet/tools",
     ".bun/bin",
     ".deno/bin",
     ".npm-global/bin",
@@ -95,6 +97,12 @@ const USER_DIRS: &[&str] = &[
 ];
 
 const SYSTEM_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/go/bin", "/usr/local/bin", "/usr/bin", "/bin"];
+
+/// Whether `dir` is one of the system's own bin directories, which [`search_path`] adds
+/// whatever `PATH` holds.
+pub fn is_system_dir(dir: &Path) -> bool {
+    SYSTEM_DIRS.iter().any(|d| Path::new(d) == dir)
+}
 
 /// The `bin` directories of nvm's Node versions in `dir`, newest first.
 fn nvm_bins(dir: &Path) -> Vec<PathBuf> {
@@ -170,6 +178,8 @@ mod tests {
         let at = |d: &str| dirs.iter().position(|p| p == Path::new(d)).unwrap();
         assert_eq!(dirs[..3], [PathBuf::from("/usr/bin"), "/opt/tools".into(), "/home/me/.asdf/shims".into()]);
         assert!(at("/home/me/.npm-global/bin") < at("/home/me/.pyenv/shims"));
+        // Global .NET tools (fsautocomplete, csharp-ls) install here, off PATH.
+        assert!(at("/home/me/.dotnet/tools") < at("/usr/local/bin"));
         assert!(at("/home/me/.local/share/mise/shims") < at("/usr/local/bin"));
         assert!(dirs.iter().all(|d| d.is_absolute()));
         let unique: HashSet<&PathBuf> = dirs.iter().collect();

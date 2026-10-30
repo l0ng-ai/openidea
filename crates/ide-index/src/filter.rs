@@ -15,6 +15,7 @@ const ALWAYS_SKIP: &[&str] = &[".git", ".hg", ".svn", ".jj"];
 
 pub(crate) struct PathFilter {
     root: PathBuf,
+    include_root: bool,
     /// Content roots outside `root`, indexed as `<folder name>/<path>`.
     extra: Vec<ExtraRoot>,
     excludes: GlobSet,
@@ -22,7 +23,7 @@ pub(crate) struct PathFilter {
     /// applies nested ignore files itself).
     gitignore: Gitignore,
     /// What the filter was built from: `(extra roots, exclude globs)`.
-    config: (Vec<PathBuf>, Vec<String>),
+    config: (crate::IndexRoots, Vec<String>),
 }
 
 struct ExtraRoot {
@@ -68,7 +69,7 @@ pub(crate) fn mtime_of(meta: &std::fs::Metadata) -> u64 {
 }
 
 impl PathFilter {
-    pub(crate) fn new(root: &Path, extra_roots: &[PathBuf], exclude_globs: &[String]) -> Self {
+    pub(crate) fn new(root: &Path, extra_roots: &crate::IndexRoots, exclude_globs: &[String]) -> Self {
         let mut set = GlobSetBuilder::new();
         for raw in exclude_globs {
             let p = raw.trim().trim_end_matches('/');
@@ -92,10 +93,9 @@ impl PathFilter {
         }
         let excludes = set.build().unwrap_or_else(|_| GlobSet::empty());
         let mut extra: Vec<ExtraRoot> = Vec::new();
-        for r in extra_roots {
+        for r in &extra_roots.folders {
             let path = dunce::canonicalize(r).unwrap_or_else(|_| r.clone());
-            let nested = path.starts_with(root)
-                || root.starts_with(&path)
+            let nested = (extra_roots.include_root && (path.starts_with(root) || root.starts_with(&path)))
                 || extra.iter().any(|e| path.starts_with(&e.path) || e.path.starts_with(&path));
             if nested || !path.is_dir() {
                 continue;
@@ -105,16 +105,17 @@ impl PathFilter {
         }
         Self {
             root: root.to_owned(),
+            include_root: extra_roots.include_root,
             extra,
             excludes,
             gitignore: root_ignores(root),
-            config: (extra_roots.to_vec(), exclude_globs.to_vec()),
+            config: (extra_roots.clone(), exclude_globs.to_vec()),
         }
     }
 
     /// Whether the filter was built from these roots and globs.
-    pub(crate) fn same_config(&self, extra_roots: &[PathBuf], excludes: &[String]) -> bool {
-        self.config.0 == extra_roots && self.config.1 == excludes
+    pub(crate) fn same_config(&self, extra_roots: &crate::IndexRoots, excludes: &[String]) -> bool {
+        &self.config.0 == extra_roots && self.config.1 == excludes
     }
 
     pub(crate) fn root(&self) -> &Path {
@@ -123,12 +124,14 @@ impl PathFilter {
 
     /// The project root, then the extra content roots.
     pub(crate) fn roots(&self) -> impl Iterator<Item = &Path> {
-        std::iter::once(self.root.as_path()).chain(self.extra.iter().map(|e| e.path.as_path()))
+        std::iter::once(self.root.as_path())
+            .filter(|_| self.include_root)
+            .chain(self.extra.iter().map(|e| e.path.as_path()))
     }
 
     /// The root containing `path`, its display prefix (`None` for the project root) and ignore rules.
     fn base_of(&self, path: &Path) -> Option<(&Path, Option<&str>, &Gitignore)> {
-        if path.starts_with(&self.root) {
+        if self.include_root && path.starts_with(&self.root) {
             return Some((&self.root, None, &self.gitignore));
         }
         self.extra
@@ -159,6 +162,9 @@ impl PathFilter {
     /// Key of `path` in the persistent store: only files below the project root
     /// are persisted (extra content roots are rescanned when the project opens).
     pub(crate) fn store_key(&self, path: &Path) -> Option<String> {
+        if !self.include_root {
+            return None;
+        }
         let rel = rel_string(path.strip_prefix(&self.root).ok()?);
         (!rel.is_empty()).then_some(rel)
     }
@@ -290,7 +296,8 @@ mod tests {
             touch(&root, f);
         }
         std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
-        let filter = PathFilter::new(&root, &[], &["**/node_modules".into(), "target".into(), "docs/**".into()]);
+        let filter =
+            PathFilter::new(&root, &vec![].into(), &["**/node_modules".into(), "target".into(), "docs/**".into()]);
         let mut found: Vec<String> =
             filter.walk(&root, &AtomicBool::new(false)).iter().filter_map(|f| filter.rel(&f.path)).collect();
         found.sort();
@@ -313,7 +320,7 @@ mod tests {
             touch(&base, f);
         }
         std::fs::write(shared.join(".gitignore"), "out/\n").unwrap();
-        let filter = PathFilter::new(&root, &[shared.clone(), root.join("src")], &["target".into()]);
+        let filter = PathFilter::new(&root, &vec![shared.clone(), root.join("src")].into(), &["target".into()]);
         assert_eq!(filter.roots().count(), 2, "roots inside the project are not extra roots");
         let mut found: Vec<String> = filter
             .roots()
@@ -327,7 +334,7 @@ mod tests {
         assert!(!filter.is_excluded(&shared.join("src/new.rs"), false));
         assert!(filter.is_excluded(&shared.join("target/y.rs"), false));
         assert!(filter.is_excluded(&shared.join("out/y.rs"), false));
-        assert!(filter.same_config(&[shared.clone(), root.join("src")], &["target".into()]));
-        assert!(!filter.same_config(&[shared], &["target".into()]));
+        assert!(filter.same_config(&vec![shared.clone(), root.join("src")].into(), &["target".into()]));
+        assert!(!filter.same_config(&vec![shared].into(), &["target".into()]));
     }
 }

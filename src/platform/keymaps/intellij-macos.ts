@@ -186,6 +186,8 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.nextSplitter": ["Alt+Tab"],
   "editor.prevSplitter": ["Alt+Shift+Tab"],
   "window.toggleFullScreen": ["Meta+Ctrl+F"],
+  "window.nextTab": ["Meta+Alt+PageDown"],
+  "window.previousTab": ["Meta+Alt+PageUp"],
   "window.next": ["Meta+Alt+`"],
   "window.previous": ["Meta+Alt+Shift+`"],
   "file.reloadFromDisk": ["Meta+Alt+Y"],
