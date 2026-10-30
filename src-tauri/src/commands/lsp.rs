@@ -222,11 +222,12 @@ pub async fn lsp_prepare_rename(
 pub async fn lsp_rename(
     window: Window,
     state: State<'_, AppState>,
+    request: RequestId,
     doc: DocId,
     pos: Pos,
     new_name: String,
-) -> IdeResult<WorkspaceEdit> {
-    ide_host::ops::lsp::lsp_rename(&state.host, window.label(), doc, pos, new_name).await
+) -> IdeResult<Renamed> {
+    ide_host::ops::lsp::lsp_rename(&state.host, window.label(), request, doc, pos, new_name).await
 }
 
 #[tauri::command]
@@ -284,11 +285,12 @@ pub async fn lsp_document_links(
 pub async fn lsp_call_hierarchy(
     window: Window,
     state: State<'_, AppState>,
+    request: RequestId,
     doc: DocId,
     pos: Pos,
     direction: HierarchyDirection,
-) -> IdeResult<Vec<HierarchyItem>> {
-    ide_host::ops::lsp::lsp_call_hierarchy(&state.host, window.label(), doc, pos, direction).await
+) -> IdeResult<CallHierarchy> {
+    ide_host::ops::lsp::lsp_call_hierarchy(&state.host, window.label(), request, doc, pos, direction).await
 }
 
 #[tauri::command]

@@ -2,7 +2,8 @@
  * Rename (⇧F6): `lsp_prepare_rename` → the name is edited in place with this
  * file's occurrences linked (`inplaceRename.ts`; ⇧F6 again opens the name
  * dialog) → `lsp_rename` → preview dialog when the edit spans several files
- * (or moves files), otherwise applied directly via `apply_workspace_edit`.
+ * (or moves files) or may have missed usages, otherwise applied directly via
+ * `apply_workspace_edit`.
  *
  * Dumb mode: when the server is not ready / failing, or answers nothing over
  * code with syntax errors, a *local* variable is renamed in place from the
@@ -11,10 +12,18 @@
  * symbols — is left to the server. Ambiguous cases ask first.
  */
 import type { EditorView } from "@codemirror/view";
-import { commands, isCancelled, type Pos, type WorkspaceEdit } from "@/platform/ipc";
+import {
+  commands,
+  isCancelled,
+  nextRequestId,
+  unavailableText,
+  type Pos,
+  type RequestId,
+  type WorkspaceEdit,
+} from "@/platform/ipc";
 import { whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure } from "@/editor/structure";
-import { docOf, lspRequest, reportLspError } from "./lsp";
+import { docOf, incompleteNote, isUnavailable, lspRequest, reportLspError } from "./lsp";
 import { comparePos, offsetToPos, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
 import { caretAnchor, openPopup, type PreviewOccurrence } from "./popupStore";
@@ -69,7 +78,7 @@ export async function startRename(view: EditorView) {
     range = await lspRequest(() => commands.lspPrepareRename(doc.doc, pos));
   } catch (e) {
     if (isCancelled(e)) return;
-    if (!(await startSyntaxRename(view, doc, pos))) reportLspError(view, e, true);
+    if (!(await startSyntaxRename(view, doc, pos, e))) reportLspError(view, e, true);
     return;
   }
   if (!range) {
@@ -208,15 +217,25 @@ async function commitInplace(view: EditorView, doc: EditorDocContext, pos: Pos, 
   await finishRename(view, doc, pos, oldName, newName);
 }
 
+/** The rename waiting for the server's edit: a newer one replaces it. */
+let renameRequest: RequestId | null = null;
+
 async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, oldName: string, newName: string) {
   if (!newName || newName === oldName) return;
-  let edit: WorkspaceEdit;
+  if (renameRequest !== null) void commands.cancelRequest(renameRequest).catch(() => {});
+  const request = nextRequestId();
+  renameRequest = request;
+  let renamed;
   try {
-    edit = await lspRequest(() => commands.lspRename(doc.doc, pos, newName));
+    renamed = await lspRequest(() => commands.lspRename(request, doc.doc, pos, newName));
   } catch (e) {
     reportLspError(view, e, true);
     return;
+  } finally {
+    if (renameRequest === request) renameRequest = null;
   }
+  const { edit, incomplete } = renamed;
+  const note = incomplete && incompleteNote(incomplete, oldName);
   const summary = summarizeWorkspaceEdit(edit);
   if (!summary.files) {
     if (await hasSyntaxErrors(doc.doc)) {
@@ -226,10 +245,12 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
         return;
       }
     }
-    showHint(view, "Nothing to rename");
+    if (note) showHint(view, note, { tone: "warning" });
+    else showHint(view, "Nothing to rename");
     return;
   }
-  if (!needsPreview(summary)) {
+  // An edit that may leave usages behind is never applied unseen.
+  if (!note && !needsPreview(summary)) {
     await applyEdit(view, edit);
     return;
   }
@@ -237,7 +258,8 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
     kind: "preview",
     title: tx`Rename '${oldName}' to '${newName}'`,
     summary,
-    confirmLabel: "Do Refactor",
+    ...(note ? { warnings: [note] } : {}),
+    confirmLabel: note ? "Rename Anyway" : "Do Refactor",
     onConfirm: () => void applyEdit(view, edit),
   });
 }
@@ -258,7 +280,7 @@ async function syntaxPlan(view: EditorView, doc: EditorDocContext, pos: Pos): Pr
 }
 
 /** Opens the rename popup for a syntax-based local rename. False when the fallback can't help. */
-async function startSyntaxRename(view: EditorView, doc: EditorDocContext, pos: Pos): Promise<boolean> {
+async function startSyntaxRename(view: EditorView, doc: EditorDocContext, pos: Pos, cause?: unknown): Promise<boolean> {
   let result;
   try {
     await whenSynced(view);
@@ -269,7 +291,8 @@ async function startSyntaxRename(view: EditorView, doc: EditorDocContext, pos: P
   }
   if (result.kind === "unsupported") return false;
   if (result.kind === "refused") {
-    showHint(view, result.message);
+    const reason = isUnavailable(cause) ? unavailableText(cause) : cause instanceof Error ? cause.message : null;
+    showHint(view, reason ? `${reason}. ${result.message}` : result.message);
     return true;
   }
   const { plan } = result;

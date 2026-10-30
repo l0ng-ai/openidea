@@ -315,6 +315,9 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   // IDEA's merge view: F7 / Shift+F7 jump between conflicts; each side pane can
   // annotate its version with Git Blame from the context menu.
+  // Each side pane blames on the branch it belongs to, so lines that only exist on
+  // the other branch show their real history instead of "Not Committed Yet".
+  const otherRev = state?.sides.commit ?? "HEAD";
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "F7") {
       e.preventDefault();
@@ -322,7 +325,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     }
   };
 
-  const sideMenu = (e: React.MouseEvent, viewRef: { current: EditorView | null }, text: string) => {
+  const sideMenu = (e: React.MouseEvent, viewRef: { current: EditorView | null }, text: string, revision?: string) => {
     const view = viewRef.current;
     if (!view) return;
     e.preventDefault();
@@ -330,7 +333,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       {
         label: "Annotate with Git Blame",
         icon: "changelist",
-        run: () => void toggleAnnotations(view, path, text),
+        run: () => void toggleAnnotations(view, path, text, revision),
       },
     ]);
   };
@@ -392,7 +395,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           className={styles.pane}
           aria-label={tx("Your version")}
           role="region"
-          onContextMenu={(e) => sideMenu(e, oursView, state?.ours ?? "")}
+          onContextMenu={(e) => sideMenu(e, oursView, state?.ours ?? "", state?.sides.reversed ? otherRev : "HEAD")}
         />
         <div ref={resultRef} className={styles.pane} aria-label={tx("Result")} role="region" />
         <div
@@ -400,7 +403,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           className={styles.pane}
           aria-label={tx("Their version")}
           role="region"
-          onContextMenu={(e) => sideMenu(e, theirsView, state?.theirs ?? "")}
+          onContextMenu={(e) => sideMenu(e, theirsView, state?.theirs ?? "", state?.sides.reversed ? "HEAD" : otherRev)}
         />
       </div>
     </div>

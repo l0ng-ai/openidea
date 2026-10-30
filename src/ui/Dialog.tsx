@@ -109,6 +109,11 @@ export interface DialogProps {
   footer?: ReactNode;
   width?: number | string;
   /**
+   * `both` shows a corner grip resizing the window. The content lays out again
+   * against the new size; a numeric `width` is also the minimum width.
+   */
+  resizable?: "both";
+  /**
    * `top` places a lightweight modal popup (choosers, Search Everywhere) near
    * the top. Popups (also any dialog without a title) get no window title bar
    * and are not draggable.
@@ -194,6 +199,7 @@ function DialogInner({
   onHelp,
   footer,
   width = 480,
+  resizable,
   position = "center",
   className,
   dismissOnBackdrop,
@@ -217,6 +223,7 @@ function DialogInner({
 
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [active, setActive] = useState(() => typeof document === "undefined" || document.hasFocus());
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
 
   useEffect(() => {
     const onFocus = () => setActive(true);
@@ -309,6 +316,33 @@ function DialogInner({
 
   const label = aria["aria-label"] ?? (typeof title === "string" ? title : undefined);
   const hasFooter = !!(buttons?.length || footerStart || onHelp || footer);
+  const canResize = resizable === "both" && !popup;
+
+  const resize = (e: PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = ref.current;
+    if (!el) return;
+    e.preventDefault();
+    const start = { x: e.clientX, y: e.clientY };
+    const rect = el.getBoundingClientRect();
+    const minW = typeof width === "number" ? width : 320;
+    const chrome = el.querySelector<HTMLElement>("[data-dialog-titlebar]")?.offsetHeight ?? 0;
+    const minH = chrome + 120;
+    const origin = offset;
+    const move = (ev: globalThis.PointerEvent) => {
+      const w = Math.min(Math.max(rect.width + ev.clientX - start.x, minW), window.innerWidth - 24);
+      const h = Math.min(Math.max(rect.height + ev.clientY - start.y, minH), window.innerHeight - 24);
+      setSize({ w, h });
+      // The overlay centres the dialog: shift by half the growth so its top-left stays put.
+      setOffset({ x: origin.x + (w - rect.width) / 2, y: origin.y + (h - rect.height) / 2 });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
 
   return createPortal(
     <div
@@ -327,7 +361,11 @@ function DialogInner({
         data-alert={icon ? "" : undefined}
         data-inactive={active ? undefined : ""}
         className={clsx(styles.dialog, popup ? styles.popup : styles.window, className)}
-        style={{ width, translate: offset.x || offset.y ? `${offset.x}px ${offset.y}px` : undefined }}
+        style={{
+          width: size ? size.w : width,
+          height: size?.h,
+          translate: offset.x || offset.y ? `${offset.x}px ${offset.y}px` : undefined,
+        }}
       >
         {icon ? null : popup ? (
           title != null && (
@@ -392,6 +430,15 @@ function DialogInner({
                 {!!buttons?.length && <DialogButtons buttons={buttons} onCancel={onClose} platform={platform} />}
               </div>
             )}
+        {canResize && (
+          <div
+            className={styles.resizeGrip}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={tx("Resize")}
+            onPointerDown={resize}
+          />
+        )}
       </div>
     </div>,
     document.body,

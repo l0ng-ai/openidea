@@ -110,6 +110,21 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
+/* Push dialogs: the list fills the body so a resizable window shows more rows. */
+.pushTreeWrap {
+  flex: 1;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+}
+.pushListWrap {
+  flex: 1;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  padding: 0 14px 14px;
+}
 .cloneDirRow {
   display: flex;
   align-items: center;

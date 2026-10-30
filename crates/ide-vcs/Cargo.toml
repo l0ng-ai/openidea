@@ -13,7 +13,7 @@ ignore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
-gix = { workspace = true, features = ["sha1", "status", "blob-diff", "revision", "index", "dirwalk", "parallel"] }
+gix = { workspace = true, features = ["sha1", "sha256", "status", "blob-diff", "revision", "index", "dirwalk", "parallel"] }
 tracing.workspace = true
 tempfile.workspace = true
 which = "8"

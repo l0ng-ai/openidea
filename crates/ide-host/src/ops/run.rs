@@ -40,6 +40,9 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         return Err(IdeError::invalid("run configuration has no command"));
     }
     // Settings › Run Targets: over SSH.
+    if config.kind == "tomcat" && config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
+        return Err(IdeError::invalid("Tomcat Local requires the local machine"));
+    }
     if config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
         let settings = project.settings.effective();
         let out = on_output.clone();
@@ -51,13 +54,25 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     let settings = project.settings.effective();
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
     let mut config = config;
-    if config.kind == "gradle" {
+    if matches!(config.kind.as_str(), "gradle" | "tomcat") {
         ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), &project.root, &settings);
     } else {
         ide_sdk::apply::resolve_run_command(&mut config, &project.root, &settings);
     }
     if config.command == ide_sdk::godot::COMMAND {
         return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
+    }
+    if config.kind == "tomcat" {
+        if host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
+            return Err(IdeError::invalid("This Tomcat configuration is already running"));
+        }
+        let (root, cache) = (project.root.clone(), project.cache_dir.clone());
+        config = tokio::task::spawn_blocking(move || {
+            ide_run::tomcat::prepare(&root, &cache, &mut config)?;
+            Ok::<_, IdeError>(config)
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))??;
     }
     let encoding = settings.console.encoding;
     let options = StartOptions {

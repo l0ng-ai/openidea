@@ -209,6 +209,37 @@ fn project_jdk_and_maven_settings() {
 }
 
 #[test]
+fn saved_maven_goal_configs_take_the_configured_launcher() {
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let maven = tmp.path().join("maven");
+    std::fs::create_dir_all(maven.join("bin")).unwrap();
+    std::fs::write(maven.join("bin/mvn"), "").unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.home = maven.to_string_lossy().into_owned();
+    s.languages.java.maven.user_settings = "/m2/settings.xml".into();
+
+    // A goal configuration saved from the tool window (`mvn -s … clean`):
+    // the bare launcher resolves to the configured Maven home (#328) and its
+    // own args are left alone.
+    let mut saved = run("maven", "mvn", &["-s", "/m2/settings.xml", "clean"]);
+    saved.detected = false;
+    // A custom path / the wrapper stay as configured.
+    let mut custom = run("maven", "/opt/other/bin/mvn", &["package"]);
+    custom.detected = false;
+    let mut wrapper = run("maven", "./mvnw", &["package"]);
+    wrapper.detected = false;
+    let mut configs = vec![saved, custom, wrapper];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].command, maven.join("bin/mvn").to_string_lossy());
+    assert_eq!(configs[0].args, ["-s", "/m2/settings.xml", "clean"], "saved args are kept");
+    assert_eq!(configs[1].command, "/opt/other/bin/mvn");
+    assert_eq!(configs[2].command, "./mvnw");
+}
+
+#[test]
 fn language_server_settings_disable_add_and_override() {
     use crate::apply::{language_servers, server_launch_overrides, server_protocol_overrides, with_custom_servers};
     use ide_core::settings::LanguageServerSettings;

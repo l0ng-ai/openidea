@@ -23,6 +23,13 @@
   margin: 0 4px;
   background: var(--border);
 }
+.note {
+  flex: none;
+  padding: 0 8px 4px;
+  font-size: var(--fs-small);
+  font-style: italic;
+  color: var(--fg-subtle);
+}
 .body {
   flex: 1;
   min-height: 0;

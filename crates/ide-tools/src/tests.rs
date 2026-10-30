@@ -197,6 +197,80 @@ fn concurrent_installs_of_one_tool_are_rejected() {
     assert!(InstallGuard::acquire("x-tool").is_ok());
 }
 
+/// A second caller mid-install joins the run (the other Settings window's
+/// duplicate install) and shares the result instead of `AlreadyExists`.
+#[test]
+fn second_install_joins_the_running_one() {
+    let slot = match install_slot("sqls", &CancellationToken::new()) {
+        Ok(slot) => slot,
+        Err(_) => panic!("no install is running"),
+    };
+    let owner = {
+        let slot = slot.clone();
+        std::thread::spawn(move || {
+            for i in 0..3 {
+                slot.broadcast(InstallEvent::Line { text: format!("line {i}") });
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            release_install_slot("sqls", &slot);
+            slot.finish(Err(IdeError::new(ErrorKind::Io, "compile failed")));
+        })
+    };
+    let events = Mutex::new(Vec::new());
+    let err = join_install(&slot, &CancellationToken::new(), &|e| events.lock().push(e)).unwrap_err();
+    owner.join().unwrap();
+    assert_eq!(err.kind, ErrorKind::Io);
+    assert_eq!(err.message, "compile failed");
+    let texts: Vec<String> = events
+        .into_inner()
+        .into_iter()
+        .filter_map(|e| match e {
+            InstallEvent::Line { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.contains(&"Joined the install already in progress…".to_string()), "{texts:?}");
+    assert!(texts.iter().any(|l| l == "line 2"), "{texts:?}");
+    // The slot is released: a fresh install can start.
+    match install_slot("sqls", &CancellationToken::new()) {
+        Ok(fresh) => release_install_slot("sqls", &fresh),
+        Err(_) => panic!("the finished install still holds its slot"),
+    }
+}
+
+/// A late caller gets the finished result without waiting.
+#[test]
+fn install_joined_after_it_finished_returns_the_result() {
+    let slot = match install_slot("marksman", &CancellationToken::new()) {
+        Ok(slot) => slot,
+        Err(_) => panic!("no install is running"),
+    };
+    let ok = ToolInfo {
+        name: "marksman".into(),
+        display_name: "Marksman".into(),
+        kind: ToolKind::LanguageServer,
+        command: "marksman".into(),
+        languages: vec![],
+        status: ToolStatus::Installed,
+        path: None,
+        version: Some("1.0".into()),
+        install_method: None,
+        can_install: true,
+        unavailable_reason: None,
+        can_uninstall: true,
+        install_hint: None,
+        homepage: None,
+        custom_error: None,
+        default_args: vec![],
+        default_initialization_options: None,
+        alternatives: vec![],
+    };
+    release_install_slot("marksman", &slot);
+    slot.finish(Ok(ok));
+    let info = join_install(&slot, &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.version.as_deref(), Some("1.0"));
+}
+
 /// Full release install through a fake `curl` that serves a local release JSON and archive.
 #[cfg(unix)]
 #[test]
@@ -455,4 +529,26 @@ exit 0"#,
     assert_eq!(info.path.as_deref(), Some(wrapper.as_path()));
     let out = std::process::Command::new(&wrapper).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/opt/dotnet");
+}
+
+#[test]
+fn kotlin_debugger_uses_existing_release_recipe_and_language_definition() {
+    let spec = registry::find("kotlin-debug-adapter").unwrap();
+    assert!(matches!(
+        spec.method,
+        Method::Release { source: ReleaseSource::GitHub { repo: "fwcd/kotlin-debug-adapter" }, .. }
+    ));
+    assert!(langs().iter().any(|l| l.debugger.as_ref().is_some_and(|d| d.adapter == spec.name)));
+}
+
+#[test]
+fn the_installing_request_can_still_cancel_its_shared_install() {
+    let owner = CancellationToken::new();
+    let slot = match install_slot("taplo", &owner) {
+        Ok(slot) => slot,
+        Err(_) => panic!("slot already taken"),
+    };
+    owner.cancel();
+    assert!(slot.cancel.is_cancelled());
+    release_install_slot("taplo", &slot);
 }

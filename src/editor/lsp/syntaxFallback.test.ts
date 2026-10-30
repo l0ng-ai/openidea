@@ -350,6 +350,24 @@ describe("navigation wiring", () => {
 });
 
 describe("rename wiring", () => {
+  it("preserves the server's missing capability when syntax cannot rename a method", async () => {
+    cmd.lspPrepareRename.mockReturnValueOnce(
+      Promise.resolve({
+        status: "error",
+        error: { kind: "unavailable", message: "intelephense doesn't support rename" },
+      }),
+    );
+    cmd.syntaxLocals.mockReturnValueOnce(ok({ status: "notLocal", name: "run", range: r(0, 4, 7), reason: "member" }));
+    const view = editor("obj.run();", "php", 5);
+    await startRename(view);
+    const message = document.querySelector(".cm-lsp-hint")?.textContent;
+    expect(message).toContain("intelephense doesn't support rename");
+    expect(message).toContain("only local variables");
+    expect(message).not.toContain("without the language server");
+    expect(view.state.doc.toString()).toBe("obj.run();");
+    expect(useLspPopup.getState().popup).toBeNull();
+  });
+
   it("renames a certain local in place when the server is not ready", async () => {
     cmd.syntaxLocals.mockReturnValueOnce(ok(local({ references: [r(1, 4, 5)] })));
     cmd.syntaxNodeAt
@@ -397,13 +415,57 @@ describe("rename wiring", () => {
       cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 12)));
       const edits = [r(0, 0, 12), r(1, 6, 18)].map((range) => ({ range, new_text: "message_count" }));
       const edit = { files: [{ kind: "edit", path: "/p/a.ts", edits }] };
-      cmd.lspRename.mockReturnValueOnce(ok(edit));
+      cmd.lspRename.mockReturnValueOnce(ok({ edit, incomplete: null }));
       const view = editor("mesage_count = 1\nprint(mesage_count)", "python", 0);
       await renameNamePart(view, { from: 0, to: 6 }, "message");
-      expect(cmd.lspRename).toHaveBeenCalledWith(7, { line: 0, col: 0 }, "message_count");
+      expect(cmd.lspRename).toHaveBeenCalledWith(expect.anything(), 7, { line: 0, col: 0 }, "message_count");
       expect(cmd.applyWorkspaceEdit).toHaveBeenCalledWith(edit);
       // Nothing was replaced locally: the server's edit covers every reference.
       expect(view.state.doc.toString()).toBe("mesage_count = 1\nprint(mesage_count)");
+    });
+
+    it("shows an edit that may miss usages before applying it, even in one file", async () => {
+      cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 12)));
+      const edit = {
+        files: [{ kind: "edit", path: "/p/a.ts", edits: [{ range: r(0, 0, 12), new_text: "message_count" }] }],
+      };
+      cmd.lspRename.mockReturnValueOnce(ok({ edit, incomplete: "tooManyFiles" }));
+      const view = editor("mesage_count = 1", "python", 0);
+      await renameNamePart(view, { from: 0, to: 6 }, "message");
+      expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+      const popup = useLspPopup.getState().popup;
+      expect(popup?.kind === "preview" && popup.warnings).toEqual([
+        "May be incomplete: too many files mention 'mesage_count' to search them all",
+      ]);
+      if (popup?.kind === "preview") popup.onConfirm();
+      await vi.waitFor(() => expect(cmd.applyWorkspaceEdit).toHaveBeenCalledWith(edit));
+      closePopup();
+    });
+
+    it("says why when an incomplete search found nothing to rename", async () => {
+      cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 12)));
+      cmd.lspRename.mockReturnValueOnce(ok({ edit: { files: [] }, incomplete: "indexing" }));
+      const view = editor("mesage_count = 1", "python", 0);
+      await renameNamePart(view, { from: 0, to: 6 }, "message");
+      expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("still indexing");
+    });
+
+    it("cancels a rename still waiting for the server when a newer one starts", async () => {
+      let answer: (v: unknown) => void = () => {};
+      cmd.lspPrepareRename.mockReturnValue(ok(r(0, 0, 12)));
+      cmd.lspRename.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)) as never);
+      cmd.lspRename.mockReturnValueOnce(ok({ edit: { files: [] }, incomplete: null }));
+      const view = editor("mesage_count = 1", "python", 0);
+      const first = renameNamePart(view, { from: 0, to: 6 }, "message");
+      await vi.waitFor(() => expect(cmd.lspRename).toHaveBeenCalledTimes(1));
+      const id = (cmd.lspRename.mock.calls[0] as unknown[])[0];
+      await renameNamePart(view, { from: 0, to: 6 }, "massage");
+      expect(cmd.cancelRequest).toHaveBeenCalledWith(id);
+      answer({ status: "error", error: { kind: "cancelled", message: "cancelled" } });
+      await first;
+      expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+      cmd.lspPrepareRename.mockReset();
+      cmd.lspPrepareRename.mockImplementation(() => unavailable());
     });
 
     it("falls back to the syntax rename of a local, references included", async () => {

@@ -57,8 +57,9 @@ pub async fn vcs_blame(
     state: State<'_, AppState>,
     path: PathBuf,
     text: Option<String>,
+    revision: Option<String>,
 ) -> IdeResult<Vec<BlameLine>> {
-    ide_host::ops::vcs::vcs_blame(&state.host, window.label(), path, text).await
+    ide_host::ops::vcs::vcs_blame(&state.host, window.label(), path, text, revision).await
 }
 
 #[tauri::command]

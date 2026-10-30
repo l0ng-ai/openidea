@@ -19,7 +19,7 @@ export const intellijMacos: Record<string, string[]> = {
   "navigate.forward": ["Meta+]", "Meta+Alt+Right", "Button5"],
   "navigate.gotoLine": ["Meta+L"],
   "navigate.declaration": ["Meta+B"],
-  "navigate.implementation": ["Meta+Alt+B"],
+  "navigate.implementation": ["Meta+Alt+B", "Meta+Alt+Button1"],
   "navigate.typeDeclaration": ["Meta+Shift+B", "Ctrl+Shift+B"],
   "navigate.fileStructure": ["Meta+F12"],
   "navigate.nextError": ["F2"],
@@ -254,6 +254,7 @@ export const intellijMacos: Record<string, string[]> = {
   "run.debugContext": ["Ctrl+Shift+D"],
   "run.stop": ["Meta+F2"],
   "workbench.stopBackgroundProcesses": ["Meta+Shift+F2"],
+  "run.updateApplication": ["Meta+F10"],
   // Rerun in the Run / Debug tool window only (when / keyWhen); Meta+R stays with the editor elsewhere.
   "run.rerun": ["Meta+R"],
   "coverage.manageReports": ["Meta+Alt+F6"],

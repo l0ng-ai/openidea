@@ -138,6 +138,9 @@ impl LspManager {
             return Ok(Widened { first, second: None, incomplete });
         }
         let opened = self.open_transient(t, files, cancel).await;
+        if opened.skipped {
+            incomplete = incomplete.or(Some(ReferencesIncomplete::FilesSkipped));
+        }
         if opened.files.is_empty() {
             return Ok(Widened { first, second: None, incomplete });
         }
@@ -160,22 +163,37 @@ impl LspManager {
     }
 
     /// Opens `files` on `t` (read from disk) unless the user has them open;
-    /// they are closed when the returned guard drops.
+    /// they are closed when the returned guard drops. Files too large or not
+    /// readable as text are left out and flagged on the guard.
     async fn open_transient(&self, t: &Target, files: Vec<PathBuf>, cancel: &CancellationToken) -> TransientFiles<'_> {
-        let read = {
+        // The server already sees the user's files, however large.
+        let open: HashSet<PathBuf> = self.docs.lock().values().map(|d| d.path.clone()).collect();
+        let (read, skipped) = {
             let cancel = cancel.clone();
             tokio::task::spawn_blocking(move || {
-                files
-                    .into_iter()
-                    .take_while(|_| !cancel.is_cancelled())
-                    .filter(|f| std::fs::metadata(f).is_ok_and(|m| m.is_file() && m.len() <= MAX_CANDIDATE_BYTES))
-                    .filter_map(|f| std::fs::read_to_string(&f).ok().map(|text| (f, text)))
-                    .collect::<Vec<_>>()
+                let mut read = Vec::new();
+                let mut skipped = false;
+                for f in files.into_iter().filter(|f| !open.contains(f)) {
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                    // A file gone since the search no longer mentions anything.
+                    let Ok(meta) = std::fs::metadata(&f) else { continue };
+                    if !meta.is_file() {
+                        continue;
+                    }
+                    match (meta.len() <= MAX_CANDIDATE_BYTES).then(|| std::fs::read_to_string(&f)) {
+                        Some(Ok(text)) => read.push((f, text)),
+                        _ => skipped = true,
+                    }
+                }
+                (read, skipped)
             })
             .await
             .unwrap_or_default()
         };
-        let mut guard = TransientFiles { mgr: self, server: t.server.clone(), run: t.run.clone(), files: Vec::new() };
+        let mut guard = TransientFiles::empty(self, t);
+        guard.skipped = skipped;
         if cancel.is_cancelled() {
             return guard;
         }
@@ -206,6 +224,8 @@ pub(crate) struct TransientFiles<'a> {
     server: Arc<Server>,
     run: Running,
     pub files: Vec<(PathBuf, lsp::Uri)>,
+    /// Candidates that could not be opened.
+    pub skipped: bool,
 }
 
 impl TransientFiles<'_> {
@@ -226,7 +246,7 @@ impl TransientFiles<'_> {
 
 impl<'a> TransientFiles<'a> {
     pub(crate) fn empty(mgr: &'a LspManager, t: &Target) -> Self {
-        Self { mgr, server: t.server.clone(), run: t.run.clone(), files: Vec::new() }
+        Self { mgr, server: t.server.clone(), run: t.run.clone(), files: Vec::new(), skipped: false }
     }
 }
 

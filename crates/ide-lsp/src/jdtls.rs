@@ -225,6 +225,24 @@ impl LspManager {
         }
     }
 
+    /// Tells jdtls the build files of `uris` changed (`java/projectConfigurationsUpdate`),
+    /// so it re-imports their projects (e.g. after `~/.m2` gained an artifact it could
+    /// not resolve). Best-effort: skipped while jdtls is not already running.
+    pub async fn java_update_project_configs(&self, path: &Path, uris: Vec<String>) -> IdeResult<()> {
+        if uris.is_empty() {
+            return Ok(());
+        }
+        let java = LanguageId::new("java");
+        let Some(server) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER) else {
+            return Ok(());
+        };
+        let Some(run) = server.running() else { return Ok(()) };
+        let identifiers: Vec<Value> = uris.iter().map(|u| json!({ "uri": u })).collect();
+        run.peer
+            .notify("java/projectConfigurationsUpdate", json!({ "identifiers": identifiers }))
+            .map_err(|e| crate::rpc_err(&server.name, "java/projectConfigurationsUpdate", e))
+    }
+
     /// Incremental build of the jdtls workspace (`java/buildWorkspace`), so
     /// class files are up to date before a launch.
     pub async fn java_build(&self, path: &Path) -> IdeResult<JavaBuildStatus> {

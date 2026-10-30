@@ -377,7 +377,7 @@ export const commands = {
 	end: Pos,
 } | null, IdeError>(__TAURI_INVOKE("lsp_prepare_rename", { doc, pos })),
 	/**  Computes the rename edit without applying it, so the UI can preview conflicts. */
-	lspRename: (doc: DocId, pos: Pos, newName: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("lsp_rename", { doc, pos, newName })),
+	lspRename: (request: RequestId, doc: DocId, pos: Pos, newName: string) => typedError<Renamed, IdeError>(__TAURI_INVOKE("lsp_rename", { request, doc, pos, newName })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -392,7 +392,7 @@ export const commands = {
 	lspCodeLens: (doc: DocId) => typedError<CodeLens[], IdeError>(__TAURI_INVOKE("lsp_code_lens", { doc })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
-	lspCallHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_call_hierarchy", { doc, pos, direction })),
+	lspCallHierarchy: (request: RequestId, doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<CallHierarchy, IdeError>(__TAURI_INVOKE("lsp_call_hierarchy", { request, doc, pos, direction })),
 	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
 	lspServers: () => typedError<ServerInfo[], IdeError>(__TAURI_INVOKE("lsp_servers")),
 	/**  Re-emits the language servers' current diagnostics (the UI loaded after they arrived). */
@@ -413,7 +413,7 @@ export const commands = {
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
-	vcsBlame: (path: string, text: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text })),
+	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
 	/**  Combined changes of several commits, `commits` oldest first. */
@@ -546,6 +546,28 @@ export const commands = {
 	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
 	/**  Writes the Gradle init script adding `jvm_args` to the JVMs the build forks; returns its path. */
 	runGradleJvmArgsScript: (jvmArgs: string[]) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_jvm_args_script", { jvmArgs })),
+	runTomcatHome: (home: string) => typedError<TomcatHome, IdeError>(__TAURI_INVOKE("run_tomcat_home", { home })),
+	runTomcatArtifacts: () => typedError<WebArtifact[], IdeError>(__TAURI_INVOKE("run_tomcat_artifacts")),
+	runTomcatBuild: (config: RunConfig_Deserialize) => typedError<({
+	/**  Stable id, e.g. `npm:dev`, `cargo:run:app`, or a uuid for user-defined. */
+	id: string,
+	name: string,
+	/**  `npm` | `cargo` | `gradle` | `maven` | `go` | `python` | `pytest` | `make` | `shell` … */
+	kind: string,
+	command: string,
+	args: string[],
+	cwd: IpcPath | null,
+	env: { [key in string]: string },
+	/**  Detected configs are regenerated; user configs persist in `.openidea/run.toml`. */
+	detected: boolean,
+	/**  Test runner configs render results in the test tree. */
+	isTest: boolean,
+	/**  DAP adapter that can debug this config, if any. */
+	debugAdapter: string | null,
+	/**  "Allow multiple instances": Run on a running config starts another one instead of restarting it. */
+	allowParallel?: boolean,
+}) & (RunExtras_Serialize) | null, IdeError>(__TAURI_INVOKE("run_tomcat_build", { config })),
+	runTomcatUpdate: (config: RunConfig_Deserialize, mode: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_tomcat_update", { config, mode })),
 	/**
 	 *  Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
 	 *  `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
@@ -1113,6 +1135,8 @@ export type AgentConfigVia =
 export type AgentEntry = { type: "user"; text: string; 
 /**  Names of the files and images sent with it. */
 attachments: string[]; 
+/**  The images sent with it, shown in the conversation. */
+images?: AgentImage[]; 
 /**  When it was sent (ms since the epoch); `None` in tasks saved before this was kept. */
 sentMs?: number | null; 
 /**  When the turn it started ended; `None` while it runs or when it was cut off. */
@@ -1573,6 +1597,11 @@ export type ByteRange = {
 	offset: number,
 	data: string,
 	total: number,
+};
+
+export type CallHierarchy = {
+	items: HierarchyItem[],
+	incomplete: ReferencesIncomplete | null,
 };
 
 /**
@@ -4841,7 +4870,9 @@ export type ReferencesIncomplete =
 /**  A language server was still indexing. */
 "indexing" | 
 /**  More project files mention the name than were checked. */
-"tooManyFiles";
+"tooManyFiles" | 
+/**  Files that mention the name were too large or unreadable to check. */
+"filesSkipped";
 
 /**  A registry agent this machine can run (or has installed). */
 export type RegistryAgent = {
@@ -4965,6 +4996,11 @@ export type RemoteSession = {
 
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
 export type RemoteStage = "connecting" | "checking" | "downloading" | "uploading" | "starting" | "opening";
+
+export type Renamed = {
+	edit: WorkspaceEdit,
+	incomplete: ReferencesIncomplete | null,
+};
 
 export type ReplaceEvent = 
 /**  A file was changed (`replacements` > 0) or had nothing left to replace. */
@@ -5915,6 +5951,10 @@ export type ThreadInfo = {
 	name: string,
 };
 
+export type TomcatHome = {
+	version: string,
+};
+
 /**  UI-facing state of one tool. */
 export type ToolInfo = {
 	/**  Server / adapter name from `languages/*.toml`. */
@@ -6097,6 +6137,13 @@ export type VirtualDocument = {
 export type Visibility = "public" | "protected" | 
 /**  Package / module / assembly scope (Java default, `internal`, `pub(crate)`, Go unexported). */
 "package" | "private";
+
+export type WebArtifact = {
+	id: string,
+	name: string,
+	module: string,
+	tool: string,
+};
 
 /**
  *  A web reference no language server resolves and where it points: `class="card"` →
