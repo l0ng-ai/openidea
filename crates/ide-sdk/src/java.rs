@@ -44,6 +44,12 @@ fn children(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+fn jdk_homes(root: &Path) -> impl Iterator<Item = PathBuf> {
+    children(root)
+        .into_iter()
+        .flat_map(|dir| [dir.join("Contents/Home"), dir.join("libexec/openjdk.jdk/Contents/Home"), dir])
+}
+
 /// Vendor directories JDK installers use on Windows, under `Program Files`
 /// and (per-user installs) `%LOCALAPPDATA%\Programs`.
 const WINDOWS_VENDORS: &[&str] =
@@ -106,9 +112,7 @@ fn scan() -> Vec<Jdk> {
         if roots[..i].contains(root) {
             continue;
         }
-        for dir in children(root) {
-            homes.extend([dir.join("Contents/Home"), dir.join("libexec/openjdk.jdk/Contents/Home"), dir]);
-        }
+        homes.extend(jdk_homes(root));
     }
     // mise keeps a macOS JDK as its bundle (`<version>/Contents/Home`), asdf flattens it.
     for (dir, _) in ide_core::version_managers::installs(ide_core::version_managers::Tool::Java) {
@@ -157,12 +161,24 @@ pub fn installed_jdks() -> Arc<[Jdk]> {
 /// Like [`installed_jdks`], but while none can run jdtls (on Java `min_java`)
 /// the list is rescanned (at most every [`RESCAN_AFTER`]), so a JDK installed
 /// after startup is picked up when the server is restarted.
-pub fn jdtls_jdks(min_java: u32) -> Arc<[Jdk]> {
+pub fn jdtls_jdks(min_java: u32, data_dir: &Path) -> Arc<[Jdk]> {
     let mut slot = JDKS.lock().unwrap_or_else(|e| e.into_inner());
-    match &*slot {
+    let installed = match &*slot {
         Some(s) if jdtls_runtime(&s.jdks, min_java).is_some() || s.at.elapsed() < RESCAN_AFTER => s.jdks.clone(),
         _ => rescan(&mut slot),
-    }
+    };
+    runtime_candidates(&installed, data_dir).into()
+}
+
+/// Runtime-only downloads are never registered as project discovery roots.
+pub fn language_server_runtimes_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("language-server-runtimes")
+}
+
+fn runtime_candidates(installed: &[Jdk], data_dir: &Path) -> Vec<Jdk> {
+    let mut jdks = installed.to_vec();
+    jdks.extend(jdk_homes(&language_server_runtimes_dir(data_dir)).filter_map(|home| jdk_at(&home)));
+    jdks
 }
 
 /// For a server with `max-java`: when the `JAVA_HOME` it would get (its env,
@@ -341,6 +357,14 @@ pub fn configure_jdtls(
         cfg.args.push(format!("--jvm-arg=-javaagent:{}", jar.to_string_lossy()));
     }
     crate::jdtls::add_default_vm_args(&mut cfg.args);
+    let managed = language_server_runtimes_dir(data_dir);
+    let managed = dunce::canonicalize(&managed).unwrap_or(managed);
+    let project_jdks: Vec<_> = project_jdk
+        .into_iter()
+        .chain(jdks)
+        .filter(|jdk| !jdk.home.starts_with(&managed) || project_jdk == Some(*jdk))
+        .cloned()
+        .collect();
     let mut all: Vec<Jdk> = Vec::new();
     for j in project_jdk.into_iter().chain(jdks).chain(server_jdk) {
         if !all.contains(j) {
@@ -361,11 +385,12 @@ pub fn configure_jdtls(
             Err(e) => cfg.launch_error = Some(e),
         }
     }
-    let mut runtimes = runtimes(jdks);
-    if let Some(project) = project_jdk {
-        let home = project.home.to_string_lossy();
+    let mut runtimes = runtimes(&project_jdks);
+    if let Some(project) = project_jdk.or_else(|| pick_jdk(&project_jdks, project_java_version(server_root))) {
+        let name = if project.major == 8 { "JavaSE-1.8".to_owned() } else { format!("JavaSE-{}", project.major) };
         for r in &mut runtimes {
-            if r["path"] == *home {
+            if r["name"] == name {
+                r["path"] = json!(project.home.to_string_lossy());
                 r["default"] = json!(true);
             }
         }
@@ -503,6 +528,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provisioning_runtime_preserves_implicit_project_jdk() {
+        let data = tempfile::tempdir().unwrap();
+        let project_root = data.path().join("tools/jdks");
+        let project_home = project_root.join("temurin-21");
+        std::fs::create_dir_all(project_home.join("bin")).unwrap();
+        std::fs::write(project_home.join("release"), "JAVA_VERSION=\"21.0.1\"\n").unwrap();
+        std::fs::write(java_executable(&project_home), "").unwrap();
+        let project = jdk_at(&project_home).unwrap();
+        let discover = || jdk_homes(&project_root).filter_map(|home| jdk_at(&home)).collect::<Vec<_>>();
+        let installed = discover();
+        assert_eq!(pick_jdk(&installed, None), Some(&project));
+        assert!(jdtls_runtime(&runtime_candidates(&installed, data.path()), 25).is_none());
+        let home = language_server_runtimes_dir(data.path()).join("temurin-25");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("release"), "JAVA_VERSION=\"25.0.1\"\n").unwrap();
+        std::fs::write(java_executable(&home), "").unwrap();
+        let candidates = runtime_candidates(&installed, data.path());
+        assert_eq!(jdtls_runtime(&candidates, 25).unwrap().major, 25);
+        assert_eq!(jdtls_runtime(&candidates, 21), Some(&project));
+        assert_eq!(pick_jdk(&discover(), None), Some(&project));
+        let explicit = jdk_at(&home).unwrap();
+        assert_eq!(pick_jdk(std::slice::from_ref(&explicit), None), Some(&explicit));
+        let mut cfg: LanguageServerConfig = serde_json::from_value(json!({"name":"jdtls", "command":"jdtls"})).unwrap();
+        configure_jdtls(&mut cfg, data.path(), data.path(), &candidates, None, None, 25, &[], None);
+        assert_eq!(cfg.env["JAVA_HOME"], explicit.home.to_string_lossy());
+        let options = serde_json::to_string(&cfg.initialization_options).unwrap();
+        assert!(!options.contains("temurin-25"), "runtime-only JDK must not become a compiler runtime");
+        assert_eq!(
+            cfg.initialization_options.as_ref().unwrap()["settings"]["java"]["configuration"]["runtimes"][0]["default"]
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn implicit_compiler_default_matches_project_pick_with_duplicate_versions() {
+        let installed =
+            [Jdk { major: 21, home: PathBuf::from("/jdk21a") }, Jdk { major: 21, home: PathBuf::from("/jdk21b") }];
+        let server = Jdk { major: 25, home: PathBuf::from("/custom-server-runtime") };
+        let mut cfg: LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &installed, None, Some(&server), 25, &[], None);
+        let opts = serde_json::to_value(cfg.initialization_options.unwrap()).unwrap();
+        assert_eq!(
+            opts["settings"]["java"]["configuration"]["runtimes"],
+            json!([{
+                "name": "JavaSE-21", "path": pick_jdk(&installed, None).unwrap().home, "default": true
+            }])
+        );
+        assert_eq!(cfg.env["JAVA_HOME"], "/custom-server-runtime");
+    }
+
+    #[test]
     fn release_versions() {
         assert_eq!(parse_release("IMPLEMENTOR=\"x\"\nJAVA_VERSION=\"21.0.3\"\n"), Some(21));
         assert_eq!(parse_release("JAVA_VERSION=\"1.8.0_372\""), Some(8));
@@ -544,7 +621,7 @@ mod tests {
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
         assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": "/jdk8" }));
         assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": "/jdk21a" }));
-        assert_eq!(rt[2], json!({ "name": "JavaSE-25", "path": "/jdk25" }));
+        assert_eq!(rt[2], json!({ "name": "JavaSE-25", "path": "/jdk25", "default": true }));
         assert_eq!(opts["bundles"], json!(["/tools/java-debug/bin/com.microsoft.java.debug.plugin.jar"]));
         assert_eq!(cfg.env["JAVA_HOME"], "/jdk25", "first JDK new enough to run jdtls");
         assert_eq!(cfg.launch_error, None);

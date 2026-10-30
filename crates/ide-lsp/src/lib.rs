@@ -75,6 +75,8 @@ pub type ApplyEditHook = Arc<dyn Fn(WorkspaceEdit) -> bool + Send + Sync>;
 /// settings before each launch; receives the server's workspace root.
 pub type ConfigFn = dyn Fn(&mut LanguageServerConfig, &Path) + Send + Sync;
 pub type ConfigHook = Arc<ConfigFn>;
+/// Prepares dependencies on a blocking worker immediately before launching an installed server.
+pub type PrepareFn = dyn Fn(&LanguageServerConfig, &Path, &CancellationToken) + Send + Sync;
 /// The servers a language uses, from its definition's list (user settings
 /// disable some and add others).
 pub type ServersFn = dyn Fn(&LanguageId, &[LanguageServerConfig]) -> Vec<LanguageServerConfig> + Send + Sync;
@@ -163,6 +165,7 @@ pub struct LspManager {
     docs: Mutex<HashMap<DocId, DocState>>,
     apply_edit_hook: RwLock<Option<ApplyEditHook>>,
     config_hook: RwLock<Option<ConfigHook>>,
+    prepare_hook: RwLock<Option<Arc<PrepareFn>>>,
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
     shutting_down: AtomicBool,
@@ -291,6 +294,7 @@ impl LspManager {
             docs: Mutex::new(HashMap::new()),
             apply_edit_hook: RwLock::new(None),
             config_hook: RwLock::new(None),
+            prepare_hook: RwLock::new(None),
             servers_hook: RwLock::new(None),
             candidates_hook: RwLock::new(None),
             shutting_down: AtomicBool::new(false),
@@ -408,7 +412,16 @@ impl LspManager {
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
-            let cfg = me.configured(&tail);
+            let mut cfg = me.configured(&tail);
+            tail.set_effective_config(cfg.clone());
+            let prepare = me.prepare_hook.read().clone();
+            if !cancel.is_cancelled()
+                && me.launcher.available(&cfg, &tail.root)
+                && let Some(prepare) = prepare
+            {
+                prepare(&cfg, &tail.root, &cancel);
+                cfg = me.configured(&tail);
+            }
             tail.set_effective_config(cfg.clone());
             let root = tail.root.clone();
             if let Some(message) = &cfg.launch_error {
@@ -1899,6 +1912,10 @@ impl LspManager {
     /// so edits flow through `ide-workspace::Documents`.
     pub fn set_config_hook(&self, hook: Box<ConfigFn>) {
         *self.config_hook.write() = Some(Arc::from(hook));
+    }
+
+    pub fn set_prepare_hook(&self, hook: Box<PrepareFn>) {
+        *self.prepare_hook.write() = Some(Arc::from(hook));
     }
 
     /// Installed by `src-tauri` to apply the servers enabled / defined in settings.

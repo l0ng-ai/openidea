@@ -126,7 +126,7 @@ impl Host {
                     let bundles: Vec<PathBuf> =
                         ide_tools::managed_bundle(&data_dir, "java-debug").into_iter().collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
-                    let jdks = ide_sdk::java::jdtls_jdks(min_java);
+                    let jdks = ide_sdk::java::jdtls_jdks(min_java, &data_dir);
                     let lombok = ide_sdk::lombok::lombok_agent(
                         server_root,
                         ide_sdk::lombok::agent_in_args(cfg.args.iter().map(String::as_str)),
@@ -156,6 +156,25 @@ impl Host {
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
                 let excluded_poms = unlinked_maven_poms(&root, &effective);
                 ide_sdk::apply::configure_maven_import(cfg, &root, &excluded_poms);
+            }));
+        }
+        {
+            let settings = settings.clone();
+            let root = root.clone();
+            let data_dir = self.data_dir.clone();
+            let sink = sink.clone();
+            lsp.set_prepare_hook(Box::new(move |cfg, _, cancel| {
+                let effective = settings.effective();
+                if cfg.name == "jdtls" {
+                    crate::java_runtime::prepare(
+                        cfg,
+                        &data_dir,
+                        !effective.languages.java.jdtls_jdk.trim().is_empty()
+                            || ide_sdk::apply::jdtls_jdk(&root, &effective).is_err(),
+                        &sink,
+                        cancel,
+                    );
+                }
             }));
         }
         {

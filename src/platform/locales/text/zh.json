@@ -1,4 +1,7 @@
 {
+  "Downloading Java {0} language server runtime": "正在下载 Java {0} 语言服务器运行时",
+  "auto-managed; uses an installed JDK or downloads a runtime when needed": "自动管理；使用已安装的 JDK，或在需要时自动下载运行时",
+  "Runs jdtls only; the project keeps its Project JDK. When empty, a suitable installed JDK is used first, otherwise Eclipse Temurin is downloaded automatically into a separate language-server folder. The jdtls executable itself is set in Language Servers.": "仅用于运行 jdtls，项目仍使用项目 JDK。留空时优先使用符合要求的已安装 JDK，否则自动将 Eclipse Temurin 下载到独立的语言服务器目录。jdtls 可执行文件在语言服务器设置中配置。",
   "Semantic Highlighting": "语义高亮",
   "Rainbow Brackets": "彩虹括号",
   "Comment with Line Comment": "使用行注释",
