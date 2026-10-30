@@ -1,4 +1,5 @@
 {
+  "Cannot determine the module for main class '{value}'": "无法确定主类 '{value}' 所属的模块",
   "Attach": "附加",
   "Remove from Workspace": "从工作区移除",
   "Downloading Java {0} language server runtime": "正在下载 Java {0} 语言服务器运行时",

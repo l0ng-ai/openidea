@@ -234,3 +234,31 @@ fn suppression_round_trip_and_resaving() {
     assert_eq!(load_suppressed_config_ids(dir.path()).unwrap(), vec![ids[1].clone()]);
     assert!(fs::read_to_string(dir.path().join(".openidea/.gitignore")).unwrap().contains("/run.local.toml"));
 }
+
+#[test]
+fn java_module_is_optional_and_independent_of_working_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = user_configs_path(dir.path());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        r#"[[configurations]]
+id = "user:main"
+name = "Main"
+kind = "application"
+command = "java"
+args = ["-cp", "${classpath}", "a.Main"]
+cwd = "sibling"
+"#,
+    )
+    .unwrap();
+    let mut configs = load_user_configs(dir.path()).unwrap();
+    assert_eq!(configs[0].extras.module, None);
+    for module in ["app", ""] {
+        configs[0].extras.module = Some(module.into());
+        save_user_configs(dir.path(), &configs).unwrap();
+        let loaded = load_user_configs(dir.path()).unwrap();
+        assert_eq!(loaded, configs);
+        assert_eq!(loaded[0].cwd.as_deref(), Some(std::path::Path::new("sibling")));
+    }
+}

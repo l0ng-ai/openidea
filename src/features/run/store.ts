@@ -17,7 +17,14 @@ import {
   type RunId,
   type TestCaseReport,
 } from "@/platform/ipc";
-import { formatCompileErrors, isJvmApplication, parseJavaArgs, resolveJavaCommand } from "@/platform/javaLaunch";
+import {
+  findJavaModule,
+  formatCompileErrors,
+  isJvmApplication,
+  parseJavaArgs,
+  resolveJavaCommand,
+  resolveJavaModule,
+} from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -319,6 +326,11 @@ export async function deleteConfig(id: string): Promise<void> {
 
 /** Persists user configurations and reloads the merged list. */
 export async function saveUserConfigs(user: RunConfig[], removedDetectedIds: string[] = []): Promise<void> {
+  user = await Promise.all(
+    user.map(async (config) =>
+      isJvmApplication(config) && config.module == null ? { ...config, module: await findJavaModule(config) } : config,
+    ),
+  );
   await call(
     commands.runSaveConfigs(
       user.map((c) => ({ ...c, detected: false })),
@@ -701,9 +713,9 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
   const request = { id: nextRequestId(), cancelled: false };
   rt.resolveRequest = request;
   try {
-    const info = await call(
-      commands.javaResolveLaunch(config.cwd ?? "", parsed.classpath === "test", true, request.id),
-    );
+    const module = await resolveJavaModule(config);
+    if (request.cancelled) return null;
+    const info = await call(commands.javaResolveLaunch(module, parsed.classpath === "test", true, request.id));
     if (request.cancelled) return null;
     if (info.build === "withErrors")
       say("Build completed with errors; launching with the last compiled classes.\n", "stderr");

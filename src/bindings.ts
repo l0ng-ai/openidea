@@ -5070,6 +5070,8 @@ export type RunConfig_Serialize = {
 export type RunExtras = RunExtras_Serialize | RunExtras_Deserialize;
 
 export type RunExtras_Deserialize = {
+	/**  Module supplying a JVM application's classpath; empty means the project root. */
+	module?: string | null,
 	/**  Values of the configuration type's own form fields (the command line derives from them). */
 	params?: { [key in string]: string },
 	/**  Folder in the Run/Debug Configurations tree. */
@@ -5107,6 +5109,8 @@ export type RunExtras_Deserialize = {
 };
 
 export type RunExtras_Serialize = {
+	/**  Module supplying a JVM application's classpath; empty means the project root. */
+	module?: string | null,
 	/**  Values of the configuration type's own form fields (the command line derives from them). */
 	params?: { [key in string]: string },
 	/**  Folder in the Run/Debug Configurations tree. */

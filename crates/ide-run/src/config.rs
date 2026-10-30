@@ -78,6 +78,7 @@ struct FileConfig {
     #[serde(default)]
     args: Vec<String>,
     cwd: Option<PathBuf>,
+    module: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default, alias = "isTest", alias = "is_test")]
@@ -161,6 +162,7 @@ fn convert(configs: Vec<FileConfig>, local: bool) -> Vec<RunConfig> {
             debug_adapter: c.debug_adapter.filter(|d| !d.is_empty()),
             allow_parallel: c.allow_parallel,
             extras: RunExtras {
+                module: c.module,
                 params: c.params,
                 folder: non_empty(c.folder),
                 local,
@@ -209,6 +211,9 @@ fn to_table(c: &RunConfig) -> Table {
     t.insert("command", value(&c.command));
     if !c.args.is_empty() {
         t.insert("args", value(c.args.iter().collect::<Array>()));
+    }
+    if let Some(module) = &c.extras.module {
+        t.insert("module", value(module));
     }
     if let Some(cwd) = &c.cwd {
         t.insert("cwd", value(cwd.to_string_lossy().replace('\\', "/")));

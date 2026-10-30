@@ -11,6 +11,14 @@ vi.mock("@/platform/ipc", async (orig) => {
     ...real,
     commands: {
       ...real.commands,
+      findFiles: (name: string) =>
+        ok(
+          name === "Main.java"
+            ? [{ path: "/p/api/src/main/java/a/Main.java", relPath: "api/src/main/java/a/Main.java" }]
+            : [],
+        ),
+      fsReadText: () => ok("package a;\npublic class Main {}"),
+      runConfigs: () => ok([]),
       fsReadDir: (path: string) =>
         ok(
           kotlinFiles && path.endsWith("/src")
@@ -49,6 +57,7 @@ const app: RunConfig = {
   command: "java",
   args: ["-Xmx1g", "-cp", "${classpath}", "a.Main", "--port", "8081 x"],
   cwd: "api",
+  module: "api",
   env: { A: "1" },
   detected: true,
   isTest: false,
@@ -143,4 +152,15 @@ describe("Java debugging (java-debug through jdtls)", () => {
     expect(l).toMatchObject({ request: "attach", cwd: "/p" });
     expect(JSON.parse(l.extraJson!)).toMatchObject({ debugServer: 41234, hostName: "127.0.0.1", port: 5005 });
   });
+});
+
+it.each(["sibling", "/outside/modules"])("debugs from %s with the main class module", async (cwd) => {
+  kotlinFiles = false;
+  for (const module of ["api", undefined]) {
+    invoked.length = 0;
+    const launch = await javaLaunchConfig({ ...app, module, cwd }, "/p");
+    expect(invoked).toContainEqual(["javaResolveLaunch", ["api", false, true, expect.any(Number)]]);
+    expect(invoked).toContainEqual(["javaDebugServer", ["api"]]);
+    expect(launch.cwd).toBe(cwd.startsWith("/") ? cwd : `/p/${cwd}`);
+  }
 });
