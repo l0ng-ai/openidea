@@ -145,10 +145,14 @@ export function fileDiffData(
 }
 
 /**
- * Opens `path` of pull request `number` in the diff viewer (fetching what it needs first).
- * @public
+ * Opens `path` of pull request `number` in the diff viewer (fetching what it needs first),
+ * revealing the 0-based right-side `line` when given (a review thread's line).
  */
-export async function openPullRequestFileDiff(number: number, path: string): Promise<void> {
+export async function openPullRequestFileDiff(
+  number: number,
+  path: string,
+  opts: { line?: number } = {},
+): Promise<void> {
   const [pr, files] = await Promise.all([
     loadPullRequestData(number, "details"),
     loadPullRequestData(number, "changes"),
@@ -161,7 +165,8 @@ export async function openPullRequestFileDiff(number: number, path: string): Pro
     previousFilename: null,
   };
   const threads = pullRequestData(number, "threads").value ?? [];
-  await executeAction("vcs.openDiff", fileDiffData(pr, file, revs, threads));
+  const data = fileDiffData(pr, file, revs, threads);
+  await executeAction("vcs.openDiff", opts.line == null ? data : { ...data, line: opts.line });
 }
 
 /** "View Pull Request in Browser" and other links. */
