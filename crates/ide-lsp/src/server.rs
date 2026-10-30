@@ -99,6 +99,9 @@ pub struct Server {
     /// Woken when the last `$/progress` task ends.
     idle_notify: Notify,
     transient: Mutex<HashMap<PathBuf, Transient>>,
+    pub external_project: tokio::sync::Mutex<crate::external_project::State>,
+    pub external_diagnostics: std::sync::atomic::AtomicBool,
+    pub external_refresh_queued: std::sync::atomic::AtomicBool,
 }
 
 impl Server {
@@ -123,6 +126,9 @@ impl Server {
             published_notify: Notify::new(),
             idle_notify: Notify::new(),
             transient: Mutex::new(HashMap::new()),
+            external_project: tokio::sync::Mutex::new(Default::default()),
+            external_diagnostics: std::sync::atomic::AtomicBool::new(false),
+            external_refresh_queued: std::sync::atomic::AtomicBool::new(false),
         }
     }
 

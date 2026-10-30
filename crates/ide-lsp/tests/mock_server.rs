@@ -210,6 +210,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         fallback: false,
         max_java: None,
         launch_error: None,
+        tsserver_project: false,
     }
 }
 
@@ -2257,4 +2258,68 @@ async fn rename_edits_files_outside_the_analysis_scope() {
     paths.sort();
     assert_eq!(paths, vec![a, b.clone()]);
     eventually(|| uris(&s.notified("textDocument/didClose")) == vec![uri_of(&b)]).await;
+}
+
+#[tokio::test]
+async fn external_projects_are_capability_gated_and_follow_lifecycle() {
+    for capable in [false, true] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"] = json!({ "commands": if capable {
+            vec!["typescript.tsserverRequest"]
+        } else { vec!["_typescript.organizeImports"] } });
+        let h = harness_configured("typescript", "ts", &[("arbitrary-name", caps)], |cfg| {
+            cfg.tsserver_project = true;
+        });
+        let s = h.launcher.state("arbitrary-name");
+        s.respond("workspace/executeCommand", json!({ "success": true, "body": true }));
+        std::fs::write(h.root.join("unopened.ts"), "export const helper = 1;").unwrap();
+        h.open("main.ts", "helper");
+        h.wait_status("arbitrary-name", ServerStatus::Ready).await;
+        if !capable {
+            assert!(s.requested("workspace/executeCommand").is_empty());
+            h.mgr.shutdown_all().await;
+            assert!(s.requested("workspace/executeCommand").is_empty());
+            continue;
+        }
+        let requests = s.requested("workspace/executeCommand");
+        assert_eq!(requests[0]["arguments"][0], "openExternalProject");
+        assert_eq!(requests[0]["arguments"][1]["rootFiles"].as_array().unwrap().len(), 2);
+        assert_eq!(s.docs.lock().len(), 1, "registration must not open source documents");
+        std::fs::write(h.root.join("new.ts"), "export const newHelper = 1;").unwrap();
+        h.mgr.project_files_changed([&h.root.join("new.ts")]);
+        eventually(|| s.requested("workspace/executeCommand").len() >= 2).await;
+        assert_eq!(
+            s.requested("workspace/executeCommand")[1]["arguments"][1]["rootFiles"].as_array().unwrap().len(),
+            3
+        );
+        std::fs::rename(h.root.join("new.ts"), h.root.join("renamed.ts")).unwrap();
+        h.mgr.project_files_changed([&h.root.join("renamed.ts")]);
+        eventually(|| s.requested("workspace/executeCommand").len() >= 3).await;
+        assert!(s.requested("workspace/executeCommand")[2].to_string().contains("renamed.ts"));
+        std::fs::remove_file(h.root.join("renamed.ts")).unwrap();
+        h.mgr.project_files_changed([&h.root.join("renamed.ts")]);
+        eventually(|| s.requested("workspace/executeCommand").len() >= 4).await;
+        let id = h.mgr.servers()[0].id;
+        h.mgr.restart(id).await.unwrap();
+        h.wait_status("arbitrary-name", ServerStatus::Ready).await;
+        eventually(|| {
+            s.requested("workspace/executeCommand")
+                .iter()
+                .filter(|r| r["arguments"][0] == "openExternalProject")
+                .count()
+                >= 5
+        })
+        .await;
+        std::fs::write(h.root.join("tsconfig.json"), "{}").unwrap();
+        h.mgr.project_files_changed([&h.root.join("tsconfig.json")]);
+        eventually(|| {
+            s.requested("workspace/executeCommand")
+                .iter()
+                .filter(|r| r["arguments"][0] == "closeExternalProject")
+                .count()
+                >= 2
+        })
+        .await;
+        h.mgr.shutdown_all().await;
+    }
 }

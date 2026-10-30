@@ -35,6 +35,7 @@ fn server(name: &str) -> LanguageServerConfig {
         fallback: false,
         max_java: None,
         launch_error: None,
+        tsserver_project: false,
     }
 }
 

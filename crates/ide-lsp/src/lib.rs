@@ -9,6 +9,7 @@
 mod angular;
 mod caps;
 mod convert;
+mod external_project;
 mod file_ops;
 mod handler;
 mod inspect;
@@ -169,6 +170,7 @@ pub struct LspManager {
     prepare_hook: RwLock<Option<Arc<PrepareFn>>>,
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
+    excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
     shutting_down: AtomicBool,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
@@ -299,6 +301,7 @@ impl LspManager {
             prepare_hook: RwLock::new(None),
             servers_hook: RwLock::new(None),
             candidates_hook: RwLock::new(None),
+            excludes_hook: RwLock::new(None),
             shutting_down: AtomicBool::new(false),
             shown_messages: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
@@ -516,6 +519,8 @@ impl LspManager {
             tracing::debug!("{}: didChangeConfiguration: {e}", server.name);
         }
         let run = Running { generation, peer: peer.clone(), caps: Arc::new(RwLock::new(caps)) };
+
+        self.refresh_external_project(&server, &run).await;
 
         // Publish readiness and (re)open attached documents atomically w.r.t. did_change.
         {
@@ -2212,6 +2217,7 @@ impl LspManager {
             return;
         }
         let graceful = async {
+            self.close_external_project(server, &run).await;
             peer.request::<_, Value>("shutdown", (), None).await.ok();
             peer.notify("exit", ()).ok();
             peer.closed().await;

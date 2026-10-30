@@ -10,6 +10,7 @@ tree-sitter = "javascript"
 
 [[language-servers]]
 name = "vtsls"
+tsserver-project = true
 command = "vtsls"
 args = ["--stdio"]
 root-markers = ["jsconfig.json", "tsconfig.json", "package.json"]
@@ -17,6 +18,7 @@ install-hint = "npm i -g @vtsls/language-server"
 
 [[language-servers]]
 name = "typescript-language-server"
+tsserver-project = true
 # Alternative: used only when the server above is not installed.
 fallback = true
 command = "typescript-language-server"
