@@ -101,7 +101,7 @@ describe("list search", () => {
         label: "good first issue",
         sort: "LEAST_RECENTLY_UPDATED",
       }),
-    ).toBe('foo bar is:merged assignee:me -reviewed-by:@me author:ann label:"good first issue" sort:updated-asc');
+    ).toBe('(foo bar) is:merged assignee:me -reviewed-by:@me author:ann label:"good first issue" sort:updated-asc');
     expect(searchTerms({ reviewState: "AWAITING_REVIEW" })).toBe("review-requested:@me");
     expect(searchTerms({})).toBeNull();
   });
@@ -109,6 +109,12 @@ describe("list search", () => {
   it("prefixes the repository for issueSearch", () => {
     expect(listSearchQuery({ owner: "o", name: "r" }, { state: "OPEN" })).toBe("type:pr repo:o/r is:open");
     expect(listSearchQuery({ owner: "o", name: "r" }, {})).toBe("type:pr repo:o/r");
+  });
+
+  it("keeps GitHub's boolean syntax inside the repository", () => {
+    const q = "is:pr is:open (review-requested:ann OR assignee:@ann)";
+    expect(listSearchQuery({ owner: "o", name: "r" }, { searchQuery: q })).toBe(`type:pr repo:o/r (${q})`);
+    expect(searchTerms({ searchQuery: "   " })).toBeNull();
   });
 
   it("counts filters and normalizes stored values", () => {

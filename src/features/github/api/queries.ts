@@ -309,9 +309,11 @@ query($repoOwner: String!, $repoName: String!, $oid: GitObjectID!) {
 }
 `;
 
+// `ISSUE_ADVANCED` rather than IntelliJ's `ISSUE`: only the advanced search understands
+// `OR`, `AND` and parentheses in the typed query.
 export const issueSearch = `
 query issueSearch($query: String!, $pageSize: Int = 100, $cursor: String) {
-  search(first: $pageSize, after: $cursor, type: ISSUE, query: $query) {
+  search(first: $pageSize, after: $cursor, type: ISSUE_ADVANCED, query: $query) {
     pageInfo {
       ...pageInfo
     }

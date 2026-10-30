@@ -111,10 +111,15 @@ export function normalizeSearch(v: unknown): PrSearchValue | null {
   return out;
 }
 
-/** The filter's search terms (`GHPRListSearchValue.toQuery`), or null when nothing is set. */
+/**
+ * The filter's search terms (`GHPRListSearchValue.toQuery`), or null when nothing is set.
+ * The typed text is grouped in parentheses: GitHub's advanced search gives `OR` the lowest
+ * precedence, so `a OR b` would otherwise escape the repository and the other filters.
+ */
 export function searchTerms(v: PrSearchValue): string | null {
   const terms: string[] = [];
-  if (v.searchQuery !== undefined) terms.push(v.searchQuery);
+  const text = v.searchQuery?.trim();
+  if (text) terms.push(`(${text})`);
   if (v.state) terms.push(STATE_TERMS[v.state]);
   if (v.assignee !== undefined) terms.push(`assignee:${v.assignee}`);
   if (v.reviewState) terms.push(REVIEW_TERMS[v.reviewState]);

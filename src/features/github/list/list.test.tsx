@@ -303,7 +303,7 @@ describe("ListPanel", () => {
     const field = screen.getByRole("textbox", { name: "Search pull requests" });
     fireEvent.change(field, { target: { value: "crash" } });
     await act(async () => fireEvent.keyDown(field, { key: "Enter" }));
-    expect(queries[1]).toBe("type:pr repo:org/app crash is:open assignee:me");
+    expect(queries[1]).toBe("type:pr repo:org/app (crash) is:open assignee:me");
     expect(loadSearchHistory()).toEqual([{ state: "OPEN", assignee: "me", searchQuery: "crash" }]);
   });
 
