@@ -56,8 +56,20 @@ const shared = [
   ["refactor.move", "project.move"],
   ["editor.closeTab", "toolwindow.closeContent"],
   ["run.rerun", "debug.rerun", "find.rerun", "usages.rerun"],
-  ["debug.smartStepInto", "db.refresh"],
-  ["debug.runToCursor", "db.refresh"],
+  [
+    "debug.smartStepInto",
+    "db.refresh",
+    "github.refresh",
+    "github.pullRequest.refresh",
+    "github.pullRequest.timeline.refresh",
+  ],
+  [
+    "debug.runToCursor",
+    "db.refresh",
+    "github.refresh",
+    "github.pullRequest.refresh",
+    "github.pullRequest.timeline.refresh",
+  ],
   ["editor.increaseFontSize", "image.zoomIn"],
   ["editor.decreaseFontSize", "image.zoomOut"],
 ];
