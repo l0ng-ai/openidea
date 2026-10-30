@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CLIENT_SETTINGS_KEYS } from "@/features/settings/model/clientScope";
+import { CLIENT_SETTINGS_KEYS } from "./clientSettings";
 import { commands, call, type Settings } from "./ipc";
 import { loadSettings, useProject } from "./project";
 import { connectRemote, disableRemote, enableRemote, remoteRouting } from "./remote";

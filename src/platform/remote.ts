@@ -8,7 +8,7 @@ import { Channel, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/co
 import { invokeLocal, setInvokeRoute, type InvokeRoute } from "./tauriCore";
 import { create } from "zustand";
 import { call, commands, isTauri, type ChannelFrame, type RemoteProgress, type RemoteSession } from "./ipc";
-import { isClientSetting, overlayClientSettings } from "@/features/settings/model/clientScope";
+import { isClientSetting, overlayClientSettings } from "./clientSettings";
 import type { Settings } from "./ipc";
 import { useProject } from "./project";
 
