@@ -95,7 +95,7 @@ interface ExecutionPoint {
 
 export const useExecutionPoint = create<ExecutionPoint>(() => ({ path: null, line: 0, top: true, values: {} }));
 
-/** Console buffer: at most this many entries (merged output runs) per session. */
+/** Console buffer: at most this many physical lines per session. */
 const MAX_CONSOLE_LINES = 50_000;
 let lineSeq = 0;
 /** ANSI state per session and output category (a colour can span several output events). */
@@ -269,21 +269,15 @@ export function appendConsole(session: DebugSessionId, category: string, raw: st
   useDebug.setState((s) => {
     const prev = s.console[session] ?? [];
     const next = [...prev];
-    const last = next[next.length - 1];
-    // Merge partial lines of the same category.
-    if (last && last.category === category && !last.text.endsWith("\n")) {
-      next[next.length - 1] = { ...last, text: last.text + text, spans: appendSpans(last.spans, spans) };
-    } else {
-      next.push({ id: ++lineSeq, category, text, spans });
-    }
+    appendConsoleLines(next, category, spans);
     trimConsole(next);
     return { console: { ...s.console, [session]: next } };
   });
 }
 
 /**
- * Queues streamed debuggee output: ANSI parsing happens now, the console store
- * is updated once per animation frame with all pending chunks merged per
+ * Queues streamed debuggee output: ANSI parsing and the console store update happen
+ * once per animation frame with all pending chunks merged per
  * (session, category), so a flood of `output` events can't saturate React.
  */
 export function appendConsoleQueued(session: DebugSessionId, category: string, raw: string) {
@@ -314,18 +308,36 @@ function flushConsoleOutput() {
       if (!text) continue;
       const prev = consoleBySession[session] ?? [];
       const next = [...prev];
-      const last = next[next.length - 1];
-      // Merge partial lines of the same category.
-      if (last && last.category === category && !last.text.endsWith("\n")) {
-        next[next.length - 1] = { ...last, text: last.text + text, spans: appendSpans(last.spans, spans) };
-      } else {
-        next.push({ id: ++lineSeq, category, text, spans });
-      }
+      appendConsoleLines(next, category, spans);
       trimConsole(next);
       consoleBySession[session] = next;
     }
     return { console: consoleBySession };
   });
+}
+
+/** Split styled output at real line breaks, retaining partial lines across events. */
+function appendConsoleLines(lines: ConsoleLine[], category: string, spans: Span[]) {
+  const last = lines.at(-1);
+  let line =
+    last && last.category === category && !last.text.endsWith("\n") ? { ...last, spans: [...last.spans] } : undefined;
+  if (line) lines[lines.length - 1] = line;
+  for (const span of spans) {
+    let start = 0;
+    while (start < span.text.length) {
+      const newline = span.text.indexOf("\n", start);
+      const end = newline < 0 ? span.text.length : newline + 1;
+      const text = span.text.slice(start, end);
+      if (!line) {
+        line = { id: ++lineSeq, category, text: "", spans: [] };
+        lines.push(line);
+      }
+      line.text += text;
+      line.spans = appendSpans(line.spans, [{ ...span, text }]);
+      if (newline >= 0) line = undefined;
+      start = end;
+    }
+  }
 }
 
 /** Drops the oldest lines once past the line or configured character cap. */

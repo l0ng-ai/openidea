@@ -1,3 +1,5 @@
+mod output;
+
 use crate::Host;
 use crate::rpc::Dispatcher;
 use ide_core::{DebugSessionId, IdeResult};
@@ -14,7 +16,8 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         super::python::prepare_debug(&mut config, &super::python::paths(&project))?;
     }
     let label = window;
-    let owner = SessionOwner::new(host.owner_window(label), host.window_sink(label));
+    let (sink, flush_output) = output::coalescing_sink(host.window_sink(label));
+    let owner = SessionOwner::new(host.owner_window(label), sink);
     let settings = match host.project(label) {
         Ok(project) => project.settings.effective(),
         Err(_) => host.global_settings.effective(),
@@ -58,7 +61,9 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         let path = ide_sdk::apply::tool_command(&root, &settings, command)?;
         Some(path.to_string_lossy().into_owned())
     };
-    host.debugger.start_with(config, owner, custom).await
+    let result = host.debugger.start_with(config, owner, custom).await;
+    flush_output();
+    result
 }
 
 /// A JVM launched by java-debug writes what java-debug decodes its output as
