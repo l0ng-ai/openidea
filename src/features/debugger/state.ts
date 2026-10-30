@@ -16,11 +16,12 @@ import {
   type DebugSessionId,
   type LaunchConfig,
   type RunId,
+  type RunConfig,
   type StackFrame,
   type ThreadInfo,
   type Variable,
 } from "@/platform/ipc";
-import { maybeEditorService, notifications, toolWindowService } from "@/workbench/contributions";
+import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
 import { breakpointsOf, consumeTemporary, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
@@ -32,6 +33,9 @@ export type SessionStatus = "starting" | "running" | "paused" | "terminated";
 export interface DebugSession {
   id: DebugSessionId;
   name: string;
+  /** Originating configuration, retained for toolbar targeting and prepared debug reruns. */
+  runConfig?: RunConfig;
+  startedAt?: number;
   adapter: string;
   parent: DebugSessionId | null;
   /** Launch configuration (root sessions), used by Rerun. */
@@ -136,6 +140,7 @@ function blank(id: DebugSessionId, p: Partial<DebugSession> = {}): DebugSession 
   return {
     id,
     name: "Debug",
+    startedAt: Date.now(),
     adapter: "",
     parent: null,
     launch: null,
@@ -211,10 +216,32 @@ function settleStart(id: DebugSessionId | null) {
 
 export function publishContext() {
   const s = activeSession();
+  useDebugRunSessions.setState({
+    sessions: Object.values(useDebug.getState().sessions)
+      .filter((session) => session.parent == null && isLive(session))
+      .map((session) => {
+        const paused = Object.values(useDebug.getState().sessions).find(
+          (child) => child.status === "paused" && rootOf(child).id === session.id,
+        );
+        return {
+          id: session.id,
+          configId: session.runConfig?.id ?? null,
+          name: session.runConfig?.name ?? session.name,
+          startedAt: session.startedAt ?? 0,
+          paused: !!paused,
+          rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
+          stop: () => void stopSession(session.id),
+          resume: () => {
+            selectSession(paused?.id ?? session.id);
+            void executeAction("debug.resume");
+          },
+        };
+      }),
+  });
   const anyLive = Object.values(useDebug.getState().sessions).some(isLive);
   setContext("debugSessionActive", anyLive);
   setContext("debugSessionPaused", s?.status === "paused");
-  setContext("debugCanRerun", !!s && !!rootOf(s).launch);
+  setContext("debugCanRerun", !!s && !!(rootOf(s).runConfig || rootOf(s).launch));
   setContext(
     "debugCanHotSwap",
     Object.values(useDebug.getState().sessions).some((x) => isLive(x) && !!x.caps?.hotCodeReplace),
@@ -253,6 +280,7 @@ export function clearConsole(session: DebugSessionId) {
 export async function startSession(
   launch: LaunchConfig,
   options: {
+    runConfig?: RunConfig;
     /** A process started for this session (e.g. Maven with a JDWP agent): Stop ends it too. */
     process?: RunId | null;
     /** Rerun repeats the launch (false for attaching to a process that is gone afterwards). */
@@ -275,6 +303,7 @@ export async function startSession(
   } catch {
     // Workbench not ready (tests).
   }
+  const startedAt = Date.now();
   pendingStarts++;
   try {
     const id = await call(commands.debugStart(launch));
@@ -287,6 +316,8 @@ export async function startSession(
           [id]: {
             ...cur,
             name: launch.name,
+            runConfig: options.runConfig,
+            startedAt,
             adapter: launch.adapter,
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
@@ -353,6 +384,11 @@ export async function rerunSession(id: DebugSessionId) {
   const s = useDebug.getState().sessions[id];
   if (!s) return;
   const root = rootOf(s);
+  if (root.runConfig) {
+    if (isLive(root)) await stopSession(root.id);
+    await executeAction("run.debugConfig", root.runConfig);
+    return;
+  }
   const launch = root.launch;
   if (!launch) return;
   if (isLive(root)) await stopSession(root.id);

@@ -909,7 +909,11 @@ export const commands = {
 	sshConnected: () => __TAURI_INVOKE<string[]>("ssh_connected"),
 	sshDisconnect: (id: string) => __TAURI_INVOKE<void>("ssh_disconnect", { id }),
 	/**  Answers an `IdeEvent::Askpass` prompt (`None`: cancelled); every window drops it. */
-	sshAskpassAnswer: (id: number, answer: string | null) => __TAURI_INVOKE<void>("ssh_askpass_answer", { id, answer }),
+	sshAskpassAnswer: (id: number, answer: string | null, remember: boolean) => __TAURI_INVOKE<void>("ssh_askpass_answer", { id, answer, remember }),
+	/**  Settings › Git › Saved credentials: `scheme://host` of every saved entry. */
+	gitCredentials: () => __TAURI_INVOKE<string[]>("git_credentials"),
+	/**  Forgets the credential of `key` (a `git_credentials` entry). */
+	gitCredentialForget: (key: string) => __TAURI_INVOKE<void>("git_credential_forget", { key }),
 	/**
 	 *  Tools › Start SSH Session: the system `ssh` command line for configuration `id`
 	 *  (run in a terminal tab, so prompts and host-key questions are answered there).
@@ -3368,7 +3372,9 @@ cancellable: boolean } |
  */
 { type: "projectRootsChanged"; root: IpcPath } | 
 /**  A child process (`ssh`, `git`) asks for a credential; answered with `ssh_askpass_answer`. */
-{ type: "askpass"; id: number; prompt: string; kind: AskpassKind } | 
+{ type: "askpass"; id: number; prompt: string; kind: AskpassKind; 
+/**  The dialog offers "Remember" for the answer (git HTTPS passwords). */
+remember: boolean } | 
 /**  Prompt `id` was answered (in any window) or gave up. */
 { type: "askpassDone"; id: number } | 
 /**

@@ -77,6 +77,7 @@ export async function debugWithAgent(config: RunConfig): Promise<boolean> {
       hostName: "127.0.0.1",
       port,
       process: runId,
+      runConfig: config,
     });
   };
   const session = await startRun(config, undefined, undefined, {

@@ -291,7 +291,10 @@ mod gradle_settings_tests {
         let model = load(root, &root.join("cache"), &settings).gradle.unwrap();
         assert_eq!(
             model.command,
-            root.join("gradle-install/bin").join(if cfg!(windows) { "gradle.bat" } else { "gradle" }).to_string_lossy()
+            root.join("gradle-install")
+                .join("bin")
+                .join(if cfg!(windows) { "gradle.bat" } else { "gradle" })
+                .to_string_lossy()
         );
         assert_eq!(model.env["JAVA_HOME"], root.join("jdk21").to_string_lossy());
         assert_eq!(model.env["GRADLE_USER_HOME"], root.join("user-home").to_string_lossy());

@@ -115,6 +115,8 @@ pub enum IdeEvent {
         id: u64,
         prompt: String,
         kind: AskpassKind,
+        /// The dialog offers "Remember" for the answer (git HTTPS passwords).
+        remember: bool,
     },
     /// Prompt `id` was answered (in any window) or gave up.
     AskpassDone {

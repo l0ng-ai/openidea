@@ -1256,3 +1256,17 @@ export function showStatusInfo(text: string, ms = 8000) {
     if (useStatusInfo.getState().seq === seq) useStatusInfo.setState({ text: null });
   }, ms);
 }
+
+/** Live debugger roots exposed to the run toolbar without coupling feature stores. */
+export interface DebugRunSession {
+  id: number;
+  configId: string | null;
+  name: string;
+  startedAt: number;
+  paused: boolean;
+  rerun: (() => void) | null;
+  stop: () => void;
+  resume: () => void;
+}
+
+export const useDebugRunSessions = create<{ sessions: DebugRunSession[] }>(() => ({ sessions: [] }));

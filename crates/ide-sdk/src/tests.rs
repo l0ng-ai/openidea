@@ -724,7 +724,7 @@ fn gradle_settings_precedence() {
     for local in [false, true] {
         settings.languages.java.gradle.distribution =
             if local { GradleDistribution::Local } else { GradleDistribution::Wrapper };
-        let expected = if local { root.join("local-gradle/bin").join(plain) } else { plain.into() };
+        let expected = if local { root.join("local-gradle").join("bin").join(plain) } else { plain.into() };
         for explicit_java in [false, true] {
             for is_test in [false, true] {
                 let mut configs =
