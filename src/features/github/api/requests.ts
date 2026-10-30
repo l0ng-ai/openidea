@@ -405,11 +405,13 @@ export async function commitChangedFiles(sha: string): Promise<GHCommitFile[]> {
 }
 
 /**
- * Open pull requests from `head` (`owner:branch`), REST `Repos.PullRequests.find`.
- * @public
+ * Open pull requests from `head` (`owner:branch`) into `base`, REST `Repos.PullRequests.find`.
  */
-export async function findOpenPullRequestsByHead(head: string): Promise<Array<{ number: number; html_url: string }>> {
-  const q = new URLSearchParams({ state: "open", head, per_page: "1" });
+export async function findOpenPullRequestsByHead(
+  head: string,
+  base?: string,
+): Promise<Array<{ number: number; html_url: string }>> {
+  const q = new URLSearchParams({ state: "open", head, ...(base ? { base } : {}), per_page: "1" });
   return (await rest<Array<{ number: number; html_url: string }>>("GET", `${repoPath()}/pulls?${q}`)) ?? [];
 }
 

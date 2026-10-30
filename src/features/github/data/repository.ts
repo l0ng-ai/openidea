@@ -311,7 +311,6 @@ export function useAuthorCandidates(): BatchesState<GHUser> {
 
 /**
  * Potential reviewers (`getBatchedPotentialReviewers`): teams, then collaborators with push (else contributors).
- * @public
  */
 export function usePotentialReviewers(): BatchesState<GHPullRequestRequestedReviewer> {
   const write = useGhRepository((s) => hasPermission(s.connection?.repository.viewerPermission, "WRITE"));
@@ -325,7 +324,6 @@ export function usePotentialReviewers(): BatchesState<GHPullRequestRequestedRevi
 
 /**
  * The first non-blank pull request template of the repository (cached).
- * @public
  */
 export function loadPullRequestTemplate(): Promise<string | null> {
   template ??= api
