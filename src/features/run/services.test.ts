@@ -41,6 +41,42 @@ describe("run configurations in Services", () => {
   const dev = config("dev", "npm");
   const scratch = config("context:file", "python");
 
+  it("applies display order to detected and saved configurations of every language", () => {
+    const configs = [
+      config("java-a", "spring-boot"),
+      config("java-b", "spring-boot"),
+      config("node-a", "npm"),
+      { ...config("node-b", "npm"), detected: false },
+      config("py-a", "python"),
+      config("py-b", "python"),
+    ];
+    const items = runServiceItems(configs, [], ["spring-boot", "npm", "python"], {
+      "spring-boot": ["java-b", "java-a"],
+      npm: ["node-b", "node-a"],
+      python: ["py-b", "py-a"],
+    });
+    expect(items.map((g) => g.children!.map((c) => c.label))).toEqual([
+      ["java-b", "java-a"],
+      ["node-b", "node-a"],
+      ["py-b", "py-a"],
+    ]);
+    expect(configs.map((c) => c.id)).toEqual(["java-a", "java-b", "node-a", "node-b", "py-a", "py-b"]);
+  });
+
+  it("keeps stable service identity and session details after refresh and rename", () => {
+    const renamed = { ...build, name: "Renamed build" };
+    const items = runServiceItems(
+      [renamed, test],
+      [session("s1", renamed, "running", 1, { httpPort: 8080 })],
+      ["cargo"],
+      { cargo: ["test", "build"] },
+    );
+    expect(items[0]!.children!.map((c) => [c.key, c.label, c.detail])).toEqual([
+      ["run:config:test", "test", undefined],
+      ["run:config:build", "Renamed build", ":8080"],
+    ]);
+  });
+
   it("lists added types fully and other types only with their runs", () => {
     const sessions = [
       session("s1", dev, "finished", 1),

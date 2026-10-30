@@ -71,6 +71,23 @@
 .loading {
   color: var(--fg-faint);
 }
+.before::before,
+.after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--focus-ring);
+  pointer-events: none;
+  z-index: 1;
+}
+.before::before {
+  top: 0;
+}
+.after::after {
+  bottom: 0;
+}
 .chevron {
   flex: none;
   width: 16px;

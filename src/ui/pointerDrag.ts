@@ -153,4 +153,5 @@ export function startPointerDrag(
   window.addEventListener("pointerup", onUp);
   window.addEventListener("pointercancel", onCancel);
   window.addEventListener("keydown", onKey, true);
+  return onCancel;
 }

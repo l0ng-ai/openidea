@@ -1,4 +1,6 @@
 {
+  "Cannot save service order": "无法保存服务顺序",
+  "The order will be kept for this session only.": "此顺序仅在当前会话中保留。",
   "Add Maven Projects": "添加 Maven 项目",
   "Unlink Maven Projects": "取消链接 Maven 项目",
   "Unlink Maven projects?": "取消链接 Maven 项目？",

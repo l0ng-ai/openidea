@@ -29,6 +29,8 @@ import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
 import { T } from "./T";
 import { tx } from "@/platform/i18n";
+import { useTreeReorder, type TreeReorder } from "./treeReorder";
+export type { TreeReorder } from "./treeReorder";
 
 export interface TreeRowState {
   depth: number;
@@ -107,6 +109,8 @@ export interface TreeProps<T> {
   "aria-label"?: string;
   handleRef?: Ref<TreeHandle>;
   empty?: ReactNode;
+  /** Optional display reordering between siblings; the caller owns the order. */
+  reorder?: TreeReorder<T>;
 }
 
 interface Row<T> {
@@ -211,6 +215,8 @@ export function Tree<T>(props: TreeProps<T>) {
   }, [allRows, matchMap, query, speedSearchMode]);
 
   const byKey = useMemo(() => new Map(allRows.map((r) => [r.key, r])), [allRows]);
+  const emptyState = !rows.length && !!empty && !query;
+  const reordering = useTreeReorder(scrollRef, rows, emptyState ? undefined : props.reorder);
   // aria-posinset / aria-setsize among visible siblings (rows are virtualised).
   const positions = useMemo(() => siblingPositions(rows), [rows]);
   const indexOfKey = useMemo(() => new Map(rows.map((r, i) => [r.key, i])), [rows]);
@@ -462,8 +468,7 @@ export function Tree<T>(props: TreeProps<T>) {
   const leadRow = leadIndex >= 0 ? rows[leadIndex] : undefined;
   const noMatch = !!query && matchMap.size === 0;
 
-  if (!rows.length && empty && !query)
-    return <div className={clsx(styles.tree, styles.emptyWrap, className)}>{empty}</div>;
+  if (emptyState) return <div className={clsx(styles.tree, styles.emptyWrap, className)}>{empty}</div>;
 
   return (
     <div className={clsx(styles.wrap, className)}>
@@ -544,13 +549,18 @@ export function Tree<T>(props: TreeProps<T>) {
                   rowClassName?.(row.node),
                   isSelected && styles.selected,
                   isLead && styles.lead,
+                  reordering.drop?.key === row.key && styles[reordering.drop.position],
                 )}
                 style={style}
+                onPointerDown={(e) => reordering.start(e, row)}
                 onMouseDown={(e) => onRowMouseDown(e, v.index)}
-                onDoubleClick={(e) => activate(row, e)}
+                onDoubleClick={(e) => {
+                  if (!reordering.suppressActivation.current) activate(row, e);
+                }}
               >
                 <span
                   className={styles.chevron}
+                  data-tree-toggle
                   onMouseDown={(e) => {
                     if (!row.expandable || e.button !== 0) return;
                     e.stopPropagation();

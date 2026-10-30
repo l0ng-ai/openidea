@@ -8,6 +8,8 @@ import clsx from "clsx";
 import { setContext } from "@/platform/context";
 import { useTxTemplate, tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
+import { useProject } from "@/platform/project";
+import { projectLocation, useRemote } from "@/platform/remote";
 import {
   EmptyState,
   Icon,
@@ -19,12 +21,14 @@ import {
   showContextMenu,
   T,
   type TreeRowState,
+  type TreeReorder,
 } from "@/ui";
 import {
   useServiceProviders,
   serviceProviders,
   type ServiceProviderContribution,
   type ServiceTreeItem,
+  type ServiceItemAction,
 } from "@/workbench/contributions";
 import {
   addServiceMenu,
@@ -74,6 +78,9 @@ function Row({ item, state }: { item: ServiceTreeItem; state: TreeRowState }) {
 }
 
 export function ServicesTreeView() {
+  const root = useProject((s) => s.project?.root ?? null);
+  useRemote((s) => s.session);
+  const location = projectLocation(root);
   const providers = useProviders();
   const rootsByProvider = useServicesTree((s) => s.roots);
   const selectedKey = useServicesTree((s) => s.selectedKey);
@@ -84,7 +91,43 @@ export function ServicesTreeView() {
   const index = useMemo(() => indexTree(rootsByProvider), [rootsByProvider]);
   const selected = selectedKey ? (index.get(selectedKey) ?? null) : null;
   const owner = selected ? providers.find((p) => p.id === selected.provider) : undefined;
-  const actions = selected && owner?.actions ? owner.actions(selected.item) : [];
+  const reorder: TreeReorder<ServiceTreeItem> = {
+    canMove: (source, target) => {
+      const from = index.get(source.key),
+        to = index.get(target.key);
+      return (
+        !!from &&
+        !!to &&
+        source.key !== target.key &&
+        from.provider === to.provider &&
+        from.parent?.key === to.parent?.key &&
+        !!providers.find((p) => p.id === from.provider)?.reorder?.canMove(source, target)
+      );
+    },
+    move: (source, target, position) => {
+      if (reorder.canMove(source, target))
+        providers.find((p) => p.id === index.get(source.key)?.provider)?.reorder?.move(source, target, position);
+    },
+  };
+  const moveActions = (item: ServiceTreeItem): ServiceItemAction[] => {
+    const located = index.get(item.key);
+    const siblings = located?.parent?.children;
+    if (!located || !siblings || !providers.find((p) => p.id === located.provider)?.reorder) return [];
+    const at = siblings.findIndex((s) => s.key === item.key);
+    return ([-1, 1] as const).map((delta) => {
+      const target = siblings[at + delta];
+      return {
+        id: delta < 0 ? "moveUp" : "moveDown",
+        title: delta < 0 ? "Move Up" : "Move Down",
+        icon: delta < 0 ? "arrow-up" : "arrow-down",
+        disabled: !target || !reorder.canMove(item, target),
+        run: () => {
+          if (target) reorder.move(item, target, delta < 0 ? "before" : "after");
+        },
+      };
+    });
+  };
+  const actions = selected ? [...(owner?.actions?.(selected.item) ?? []), ...moveActions(selected.item)] : [];
   const Detail = owner?.detail;
   const add = shortcutLabel("services.addService");
 
@@ -154,6 +197,8 @@ export function ServicesTreeView() {
               onBlur={() => setContext(SERVICES_VIEW_FOCUS, false)}
             >
               <Tree<ServiceTreeItem>
+                key={location}
+                reorder={reorder}
                 roots={roots}
                 getKey={(n) => n.key}
                 getLabel={(n) => n.label}
@@ -176,7 +221,13 @@ export function ServicesTreeView() {
                   }
                   useServicesTree.setState({ selectedKey: n.key });
                   const p = providers.find((x) => x.id === index.get(n.key)?.provider);
-                  const items = p?.menu?.(n) ?? [];
+                  const items = [...(p?.menu?.(n) ?? [])];
+                  const moves = moveActions(n);
+                  if (moves.length)
+                    items.push(
+                      { kind: "separator" },
+                      ...moves.map((a) => ({ label: a.title, icon: a.icon, disabled: a.disabled, run: a.run })),
+                    );
                   if (items.length) showContextMenu({ x: e.clientX, y: e.clientY }, items);
                 }}
                 speedSearch
