@@ -19,7 +19,7 @@ export const intellijMacos: Record<string, string[]> = {
   "navigate.forward": ["Meta+]", "Meta+Alt+Right", "Button5"],
   "navigate.gotoLine": ["Meta+L"],
   "navigate.declaration": ["Meta+B"],
-  "navigate.implementation": ["Meta+Alt+B"],
+  "navigate.implementation": ["Meta+Alt+B", "Meta+Alt+Button1"],
   "navigate.typeDeclaration": ["Meta+Shift+B", "Ctrl+Shift+B"],
   "navigate.fileStructure": ["Meta+F12"],
   "navigate.nextError": ["F2"],

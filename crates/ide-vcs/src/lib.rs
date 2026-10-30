@@ -591,13 +591,16 @@ impl Repo {
     }
     /// One entry per line of the current text (`current_text`, or the file on disk).
     /// Lines not yet committed carry an all-zero commit id and author "Not Committed Yet".
+    /// `revision` is the history to blame against (default `HEAD`); the merge view
+    /// blames each side pane on the branch it belongs to (e.g. `MERGE_HEAD`).
     pub fn blame(
         &self,
         path: &Path,
         current_text: Option<&str>,
+        revision: Option<&str>,
         encoding: &'static Encoding,
     ) -> IdeResult<Vec<BlameLine>> {
-        write::blame(self, path, current_text, encoding)
+        write::blame(self, path, current_text, revision, encoding)
     }
     /// Commits newest-first in topological order (children before parents).
     ///

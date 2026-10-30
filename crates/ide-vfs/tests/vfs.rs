@@ -311,7 +311,9 @@ fn watcher_reports_changes() {
     );
     let paths = all(&batches.lock());
     assert!(!paths.contains(&r.join("noise.log")));
-    assert!(!paths.iter().any(|p| p.starts_with(r.join("target"))));
+    // `target/` itself is reported so the tree sees the excluded directory
+    // appear; its contents still stay filtered out.
+    assert!(!paths.iter().any(|p| p.starts_with(r.join("target")) && *p != r.join("target")));
     assert!(!paths.contains(&r.join(".git/objects/aa")));
     assert!(sunk.lock().iter().any(|e| matches!(e, IdeEvent::FsChanged { .. })));
 

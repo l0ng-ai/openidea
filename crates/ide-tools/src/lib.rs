@@ -28,11 +28,13 @@ use process::{run_collect, run_quiet};
 pub use registry::{Method, ReleaseSource, TOOLS, ToolKind, ToolSpec};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
@@ -174,13 +176,39 @@ pub fn path_with_tools(app_data: &Path, path: &std::ffi::OsStr) -> OsString {
     std::env::join_paths(dirs).unwrap_or_else(|_| path.to_owned())
 }
 
-static INSTALLING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+/// An in-flight install another request can join: extra callers subscribe to
+/// its event stream, share its cancellation (any caller cancels it) and wait
+/// for the same result instead of failing with "already being installed".
+/// A second Settings window (its own JS state) hits this when it re-installs
+/// while a first window's install is still running.
+struct InstallSlot {
+    cancel: CancellationToken,
+    listeners: Mutex<Vec<mpsc::SyncSender<InstallEvent>>>,
+    result: std::sync::OnceLock<IdeResult<ToolInfo>>,
+}
 
-struct InstallGuard(String);
+impl InstallSlot {
+    fn broadcast(&self, e: InstallEvent) {
+        self.listeners.lock().retain(|tx| tx.try_send(e.clone()).is_ok());
+    }
+
+    fn finish(&self, result: IdeResult<ToolInfo>) {
+        let _ = self.result.set(result);
+        self.listeners.lock().clear();
+    }
+}
+
+static INSTALLING: Mutex<Option<HashMap<String, Arc<InstallSlot>>>> = Mutex::new(None);
+
+/// Mutual exclusion for work that cannot be joined (JDK downloads, uninstalls):
+/// a second caller while the name is busy fails fast.
+static EXCLUSIVE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+pub(crate) struct InstallGuard(String);
 
 impl InstallGuard {
-    fn acquire(name: &str) -> IdeResult<Self> {
-        let mut set = INSTALLING.lock();
+    pub(crate) fn acquire(name: &str) -> IdeResult<Self> {
+        let mut set = EXCLUSIVE.lock();
         if !set.get_or_insert_with(HashSet::new).insert(name.to_string()) {
             return Err(IdeError::new(ErrorKind::AlreadyExists, format!("{name} is already being installed")));
         }
@@ -190,10 +218,80 @@ impl InstallGuard {
 
 impl Drop for InstallGuard {
     fn drop(&mut self) {
-        if let Some(set) = INSTALLING.lock().as_mut() {
+        if let Some(set) = EXCLUSIVE.lock().as_mut() {
             set.remove(&self.0);
         }
     }
+}
+
+/// Marks `name` as installing (the slot is removed when the owner finishes) or
+/// returns the existing slot to join.
+fn install_slot(name: &str, cancel: &CancellationToken) -> Result<Arc<InstallSlot>, Arc<InstallSlot>> {
+    let mut map = INSTALLING.lock();
+    let map = map.get_or_insert_with(HashMap::new);
+    match map.get(name) {
+        Some(slot) => Err(slot.clone()),
+        None => {
+            let slot = Arc::new(InstallSlot {
+                // The owner's token: its own Cancel and a joined caller's both stop the run.
+                cancel: cancel.clone(),
+                listeners: Mutex::new(Vec::new()),
+                result: std::sync::OnceLock::new(),
+            });
+            map.insert(name.to_string(), slot.clone());
+            Ok(slot)
+        }
+    }
+}
+
+fn release_install_slot(name: &str, slot: &Arc<InstallSlot>) {
+    let mut map = INSTALLING.lock();
+    // Only the owner removes its slot (a replaced one is not ours).
+    if let Some(map) = map.as_mut()
+        && map.get(name).is_some_and(|s| Arc::ptr_eq(s, slot))
+    {
+        map.remove(name);
+    }
+}
+
+/// Follows a running install: forwards its events to `emit`, lets `cancel`
+/// cancel it, and waits for its result.
+fn join_install(slot: &Arc<InstallSlot>, cancel: &CancellationToken, emit: Emit) -> IdeResult<ToolInfo> {
+    // Fast path: already done.
+    if let Some(r) = slot.result.get() {
+        return r.clone();
+    }
+    let (tx, rx) = mpsc::sync_channel::<InstallEvent>(256);
+    slot.listeners.lock().push(tx);
+    emit(InstallEvent::Line { text: "Joined the install already in progress…".into() });
+    // Re-check: the install may have finished between the fast path and subscribing.
+    if let Some(r) = slot.result.get() {
+        // Drain whatever was queued so the listener vector drops our sender.
+        while let Ok(e) = rx.try_recv() {
+            emit(e);
+        }
+        return r.clone();
+    }
+    loop {
+        // Events wake the loop; a timeout wakes it for cancellation/result checks.
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(e) => emit(e),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            // `finish` cleared the listeners: the channel closed, the result is up.
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if cancel.is_cancelled() {
+            slot.cancel.cancel();
+        }
+        if let Some(r) = slot.result.get() {
+            // Drain events emitted before the result landed so the log stays ordered.
+            while let Ok(e) = rx.try_recv() {
+                emit(e);
+            }
+            return r.clone();
+        }
+    }
+    slot.result.get().cloned().unwrap_or_else(|| Err(IdeError::internal("install finished without a result")))
 }
 
 /// Which languages use which tool, from the language definitions.
@@ -637,6 +735,9 @@ impl Tools {
     }
 
     /// Installs (or reinstalls / updates) `name`, streaming output to `emit`.
+    /// A second call for a name already installing joins that run: it gets the
+    /// same live events and result instead of an "already installing" error,
+    /// and cancelling either request cancels the shared run.
     pub fn install(
         &self,
         name: &str,
@@ -654,37 +755,54 @@ impl Tools {
         if let Some(reason) = self.unavailable_reason(spec) {
             return Err(IdeError::unavailable(reason));
         }
-        let _guard = InstallGuard::acquire(name)?;
-        std::fs::create_dir_all(&self.root)?;
-        emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, spec.method.label()) });
-        match spec.method {
-            Method::Rustup { component } => {
-                let mut c = self.command(self.which("rustup").expect("checked"));
-                c.args(["component", "add", component]);
-                run_streamed(c, cancel, emit)?;
+        let slot = match install_slot(name, cancel) {
+            Ok(slot) => slot,
+            Err(slot) => return join_install(&slot, cancel, emit),
+        };
+        // The install uses the slot's token: every caller's cancel reaches it.
+        let cancel = &slot.cancel;
+        // Fan the events out to joined callers as well as this request's emit.
+        let fan = |e: InstallEvent| {
+            emit(e.clone());
+            slot.broadcast(e);
+        };
+        let emit = &fan as Emit;
+        let result = (|| {
+            std::fs::create_dir_all(&self.root)?;
+            emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, spec.method.label()) });
+            match spec.method {
+                Method::Rustup { component } => {
+                    let mut c = self.command(self.which("rustup").expect("checked"));
+                    c.args(["component", "add", component]);
+                    run_streamed(c, cancel, emit)?;
+                }
+                Method::Npm { packages } => self.install_npm(packages, cancel, emit)?,
+                Method::Go { module } => self.install_go(spec, module, cancel, emit)?,
+                Method::Gem { gem } => self.install_gem(spec, gem, cancel, emit)?,
+                Method::DotnetTool { package } => self.install_dotnet_tool(spec, package, cancel, emit)?,
+                Method::PipVenv { package } => self.install_venv(spec, package, cancel, emit)?,
+                Method::PipUser { package, .. } => self.install_pip_user(package, cancel, emit)?,
+                Method::PipTarget { package, .. } => self.install_pip_target(spec, package, cancel, emit)?,
+                Method::Release { source, assets, locate } => {
+                    self.install_release(spec, source, assets, locate, cancel, emit)?
+                }
             }
-            Method::Npm { packages } => self.install_npm(packages, cancel, emit)?,
-            Method::Go { module } => self.install_go(spec, module, cancel, emit)?,
-            Method::Gem { gem } => self.install_gem(spec, gem, cancel, emit)?,
-            Method::DotnetTool { package } => self.install_dotnet_tool(spec, package, cancel, emit)?,
-            Method::PipVenv { package } => self.install_venv(spec, package, cancel, emit)?,
-            Method::PipUser { package, .. } => self.install_pip_user(package, cancel, emit)?,
-            Method::PipTarget { package, .. } => self.install_pip_target(spec, package, cancel, emit)?,
-            Method::Release { source, assets, locate } => {
-                self.install_release(spec, source, assets, locate, cancel, emit)?
+            let info = self.info(name, langs)?;
+            if info.status == ToolStatus::Missing {
+                return Err(IdeError::new(
+                    ErrorKind::Io,
+                    format!("installer finished but `{}` was not found afterwards", spec.commands[0]),
+                ));
             }
-        }
-        let info = self.info(name, langs)?;
-        if info.status == ToolStatus::Missing {
-            return Err(IdeError::new(
-                ErrorKind::Io,
-                format!("installer finished but `{}` was not found afterwards", spec.commands[0]),
-            ));
-        }
-        emit(InstallEvent::Line {
-            text: format!("{} {} installed", spec.display, info.version.as_deref().unwrap_or("")).replace("  ", " "),
-        });
-        Ok(info)
+            emit(InstallEvent::Line {
+                text: format!("{} {} installed", spec.display, info.version.as_deref().unwrap_or(""))
+                    .replace("  ", " "),
+            });
+            Ok(info)
+        })();
+        release_install_slot(name, &slot);
+        slot.finish(result.clone());
+        result
     }
 
     fn npm_manager(&self) -> IdeResult<(PathBuf, bool)> {
@@ -1047,7 +1165,11 @@ impl Tools {
     /// Removes a tool the IDE installed.
     pub fn uninstall(&self, name: &str, langs: &[LanguageConfig]) -> IdeResult<ToolInfo> {
         let spec = registry::find(name).ok_or_else(|| IdeError::not_found(format!("unknown tool `{name}`")))?;
-        let _guard = InstallGuard::acquire(name)?;
+        // Uninstalling mid-install would tear down the directory under the running installer.
+        if INSTALLING.lock().as_ref().is_some_and(|m| m.contains_key(name)) {
+            return Err(IdeError::new(ErrorKind::AlreadyExists, format!("{name} is already being installed")));
+        }
+        let _guard = InstallGuard::acquire(&format!("uninstall-{name}"))?;
         let cancel = CancellationToken::new();
         let quiet = |_: InstallEvent| {};
         match spec.method {

@@ -177,6 +177,17 @@ describe("project view context menu", () => {
     expect(l).not.toContain("Compare With…");
   });
 
+  it("offers Compare With… in a non-git project too", () => {
+    useProject.setState({
+      project: { name: "p", root: ROOT, isGit: false, settings: {} } as never,
+      settings: {} as never,
+    });
+    const l = labels(contextMenuItems([node(`${ROOT}/a.py`)]));
+    expect(l).not.toContain("Git");
+    expect(l).toContain("Compare With…");
+    expect(labels(contextMenuItems([node(`${ROOT}/a.py`), node(`${ROOT}/b.py`)]))).toContain("Compare Files");
+  });
+
   it("never shows an empty submenu", () => {
     disposers.forEach((d) => d());
     disposers = [];

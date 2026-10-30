@@ -23,6 +23,7 @@ pub use model::*;
 use conversation::{Conversation, SavedSubagent, Session};
 use ide_core::{IdeError, IdeResult, IpcPath};
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
+use ide_vcs::Repo;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -116,9 +117,13 @@ impl Shared {
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
         let mut config = self.known.lock().get(provider).map(|k| k.config.clone()).unwrap_or_default();
         config::add_client_options(provider, &mut config);
-        // Approval bypass belongs to the conversation, never to another new task.
+        if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
+            && let Some(o) = config.iter_mut().find(|c| c.id == o)
+        {
+            o.current = Some(v);
+        }
         if let Some(o) = config.iter_mut().find(|o| o.id == config::CURSOR_APPROVAL) {
-            o.current = Some("ask".into());
+            o.current = Some("bypass".into());
         }
         config
     }
@@ -364,6 +369,12 @@ impl AgentManager {
         let root = self.shared.paths.project_root.clone();
         let (cwd, branch, base, base_commit, before) = match req.isolation {
             Isolation::Worktree => {
+                // The UI offers worktrees for git projects only; state it when it isn't one.
+                if Repo::discover(&self.shared.paths.project_root)?.is_none() {
+                    return Err(IdeError::invalid(
+                        "worktrees need a git repository: run the task in the local checkout",
+                    ));
+                }
                 let dir = self.shared.paths.worktrees_dir.clone();
                 let (t, b) = (title.clone(), req.base.clone());
                 let c = blocking(move || worktree::create(&root, &dir, &t, b.as_deref())).await?;
@@ -1049,6 +1060,7 @@ impl Task {
         self.push_entry(AgentEntry::User {
             text: prompt.text,
             attachments,
+            images: prompt.images,
             sent_ms: Some(now_ms()),
             done_ms: None,
             steered: true,
@@ -1069,6 +1081,7 @@ impl Task {
         self.push_entry(AgentEntry::User {
             text: prompt.text.clone(),
             attachments,
+            images: prompt.images.clone(),
             sent_ms: Some(now_ms()),
             done_ms: None,
             steered: false,

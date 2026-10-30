@@ -33,6 +33,11 @@ body {
   cursor: default;
 }
 
+html[data-selection-lock] *:not([data-selection-scope], [data-selection-scope] *) {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
 input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"]),
 textarea,
 [contenteditable="true"] {

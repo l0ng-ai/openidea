@@ -36,6 +36,7 @@ describe("IDEA keymap parity", () => {
     ["window.previous", ["Meta+Alt+Shift+`"], ["Ctrl+Alt+["]],
     ["code.commentBlock", ["Meta+Alt+/", "Ctrl+Shift+/"], ["Ctrl+Shift+/"]],
     ["navigate.typeDeclaration", ["Meta+Shift+B", "Ctrl+Shift+B"], ["Ctrl+Shift+B"]],
+    ["navigate.implementation", ["Meta+Alt+B", "Meta+Alt+Button1"], ["Ctrl+Alt+B"]],
     ["find.next", ["Meta+G"], ["F3", "Ctrl+L"]],
     ["find.previous", ["Meta+Shift+G"], ["Shift+F3", "Ctrl+Shift+L"]],
     ["project.copy", ["Meta+C"], ["Ctrl+C", "Ctrl+Insert"]],

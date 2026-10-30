@@ -56,6 +56,7 @@ class OverviewLane {
       u.docChanged ||
       u.geometryChanged ||
       u.heightChanged ||
+      u.viewportChanged ||
       u.selectionSet ||
       u.startState.facet(scrollbarMarks) !== u.state.facet(scrollbarMarks)
     )

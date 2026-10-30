@@ -57,6 +57,26 @@
   padding: 6px 0 0 8px;
   overflow: hidden;
   outline: none;
+  position: relative;
+}
+
+.paneActions {
+  position: absolute;
+  right: 14px;
+  bottom: 8px;
+  z-index: 10;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  background: var(--bg-elev, var(--bg-app));
+  border-radius: 4px;
+}
+
+.pane:hover .paneActions,
+.pane:focus-within .paneActions,
+.paneActions:focus-within {
+  opacity: 1;
 }
 
 .exited :global(.xterm-cursor-layer),

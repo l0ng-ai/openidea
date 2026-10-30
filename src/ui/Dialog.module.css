@@ -16,6 +16,7 @@
 .dialog {
   display: flex;
   flex-direction: column;
+  position: relative;
   max-width: 100%;
   max-height: 100%;
   background: var(--bg-dialog, var(--bg-elev));
@@ -34,6 +35,32 @@
   border-radius: var(--radius-popup-large);
   border: 1px solid var(--border-popup);
   box-shadow: var(--shadow-popup);
+}
+
+/* Corner grip for `resizable` dialogs (over the footer's right padding). */
+.resizeGrip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(
+    135deg,
+    transparent 55%,
+    var(--fg-faint) 55%,
+    var(--fg-faint) 62%,
+    transparent 62%,
+    transparent 72%,
+    var(--fg-faint) 72%,
+    var(--fg-faint) 79%,
+    transparent 79%
+  );
+  opacity: 0.55;
+}
+.resizeGrip:hover {
+  opacity: 1;
 }
 
 /* Title bar (drag handle). macOS: traffic lights then the title; else title + close. */

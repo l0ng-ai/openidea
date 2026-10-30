@@ -243,7 +243,7 @@ export async function planLocalRename(
   if (locals.status === "notLocal")
     return {
       kind: "refused",
-      message: tx`Can't rename '${locals.name}' without the language server: only local variables can be renamed based on syntax`,
+      message: tx`Can't rename '${locals.name}' based on syntax: only local variables can be renamed this way`,
     };
   const { symbol } = locals;
   const ranges = [symbol.definition, ...symbol.references].sort((a, b) => comparePos(a.start, b.start));

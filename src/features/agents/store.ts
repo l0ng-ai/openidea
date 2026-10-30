@@ -7,13 +7,14 @@ import type {
   AgentCommand,
   AgentEntry,
   AgentEvent,
+  AgentImage,
   AgentProvider,
   AgentTask,
   Isolation,
 } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications } from "@/workbench/contributions";
-import { canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
+import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
 import { withQuote } from "./conversation";
 import {
   HOME_KEY,
@@ -346,17 +347,19 @@ export function openHome(prompt?: string) {
   void editorService().openInput({ kind: HOME_KIND, key: HOME_KEY, data: {} }, { focus: true });
 }
 
-export async function startTask(): Promise<void> {
-  const { draft } = useAgents.getState();
+/** `isolation` overrides the draft's (a project without git can only use the local checkout). */
+export async function startTask(isolation: Isolation = useAgents.getState().draft.isolation): Promise<void> {
+  const { draft, providers } = useAgents.getState();
   const composer = composerDraft(HOME);
   if (!canSend(composer)) return;
+  const config = { ...bypassDefaults(providers.find((p) => p.id === draft.provider)?.config ?? []), ...draft.config };
   const task = await call(
     commands.agentCreate({
       prompt: toPrompt(composer),
       provider: draft.provider,
-      config: Object.entries(draft.config).map(([id, value]) => ({ id, value })),
-      isolation: draft.isolation,
-      base: draft.isolation === "worktree" ? draft.base : null,
+      config: Object.entries(config).map(([id, value]) => ({ id, value })),
+      isolation,
+      base: isolation === "worktree" ? draft.base : null,
     }),
   );
   // Its events can arrive before this reply: keep the newer state they carried.
@@ -408,14 +411,14 @@ export async function forkTask(task: string, turns: number | null): Promise<void
  * Runs the conversation again from turn `turn` with `text` as its message: the agent is
  * stopped if it works, that turn and the later ones are dropped, then `text` is sent.
  */
-export async function rerunFrom(task: string, turn: number, text: string): Promise<void> {
+export async function rerunFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
   if (isBusy(useAgents.getState().tasks.get(task)?.status ?? "ready")) {
     await cancelTask(task);
     await settled(task);
   }
   await call(commands.agentRollback(task, turn));
   try {
-    await call(commands.agentPrompt(task, { text, files: [], images: [] }, false));
+    await call(commands.agentPrompt(task, { text, files: [], images }, false));
   } catch (e) {
     // Rollback removes the inline editor; recover its text in the session composer.
     const current = composerDraft(task);

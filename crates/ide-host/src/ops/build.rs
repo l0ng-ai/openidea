@@ -123,12 +123,27 @@ pub async fn build_sync(
             BuildTool::Maven => ide_build::sync_maven(&root, &cache, &options, &token, &progress)?,
             BuildTool::Gradle => ide_build::sync_gradle(&root, &cache, &options, &token, &progress)?,
         }
-        Ok(load(&root, &cache, &settings))
+        Ok::<BuildModel, IdeError>(load(&root, &cache, &settings))
     })
     .await
     .map_err(join_err);
     host.end_request(request);
-    result?
+    let model = result??;
+    if tool == BuildTool::Maven
+        && let Some(maven) = &model.maven
+    {
+        // jdtls re-imports on pom changes but misses artifacts added to ~/.m2
+        // meanwhile ("missing artifact" stays until Invalidate Caches); asking it
+        // to update the project configurations re-resolves them (#436).
+        let lsp = project.lsp.clone();
+        let uris = maven.projects.iter().map(|p| ide_lsp::path_to_uri_string(&project.root.join(&p.pom))).collect();
+        tokio::spawn(async move {
+            if let Err(e) = lsp.java_update_project_configs(&project.root, uris).await {
+                tracing::debug!("java/projectConfigurationsUpdate: {e}");
+            }
+        });
+    }
+    Ok(model)
 }
 
 /// The POM declaring `dependency` for the Maven module `pom` (project-relative): the

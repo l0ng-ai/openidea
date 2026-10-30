@@ -14,7 +14,7 @@ import {
   rowCount,
   scrollTopForRow,
 } from "./hex";
-import { fitZoom, initialZoom, stepZoom, zoomLabel } from "./imageZoom";
+import { fitZoom, initialZoom, stepZoom, zoomAt, zoomLabel } from "./imageZoom";
 
 describe("file kinds", () => {
   it("routes by extension", () => {
@@ -95,5 +95,14 @@ describe("image zoom", () => {
     expect(initialZoom(50, 50, 100, 100)).toBe(1);
     expect(initialZoom(400, 100, 100, 100)).toBe(0.25);
     expect(zoomLabel(0.333)).toBe("33%");
+  });
+
+  it("keeps the point under the cursor fixed when zooming", () => {
+    const v = { z: 1, x: 10, y: 20 };
+    const next = zoomAt(v, 2, 110, 70);
+    // Image point under (110, 70) before: ((110-10)/1, (70-20)/1) = (100, 50).
+    expect(next).toEqual({ z: 2, x: -90, y: -30 });
+    expect(next.x + 100 * next.z).toBe(110);
+    expect(next.y + 50 * next.z).toBe(70);
   });
 });

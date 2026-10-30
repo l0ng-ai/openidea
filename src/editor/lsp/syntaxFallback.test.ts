@@ -350,6 +350,24 @@ describe("navigation wiring", () => {
 });
 
 describe("rename wiring", () => {
+  it("preserves the server's missing capability when syntax cannot rename a method", async () => {
+    cmd.lspPrepareRename.mockReturnValueOnce(
+      Promise.resolve({
+        status: "error",
+        error: { kind: "unavailable", message: "intelephense doesn't support rename" },
+      }),
+    );
+    cmd.syntaxLocals.mockReturnValueOnce(ok({ status: "notLocal", name: "run", range: r(0, 4, 7), reason: "member" }));
+    const view = editor("obj.run();", "php", 5);
+    await startRename(view);
+    const message = document.querySelector(".cm-lsp-hint")?.textContent;
+    expect(message).toContain("intelephense doesn't support rename");
+    expect(message).toContain("only local variables");
+    expect(message).not.toContain("without the language server");
+    expect(view.state.doc.toString()).toBe("obj.run();");
+    expect(useLspPopup.getState().popup).toBeNull();
+  });
+
   it("renames a certain local in place when the server is not ready", async () => {
     cmd.syntaxLocals.mockReturnValueOnce(ok(local({ references: [r(1, 4, 5)] })));
     cmd.syntaxNodeAt

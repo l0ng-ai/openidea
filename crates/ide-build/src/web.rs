@@ -137,7 +137,10 @@ mod tests {
         assert_eq!(a[0].name, "web");
         let plan = build(tmp.path(), &model, &a[0].id, &tmp.path().join("base with spaces")).unwrap();
         assert!(plan.args.contains(&"-Dexpression=project.artifact.file".into()));
-        assert!(plan.args.iter().any(|a| a.ends_with("base with spaces/artifact-path.txt")));
+        assert!(
+            plan.args.iter().any(|a| a.ends_with("base with spaces/artifact-path.txt")
+                || a.ends_with("base with spaces\\artifact-path.txt"))
+        );
     }
     #[test]
     fn maven_module_build_includes_reactor_dependencies() {

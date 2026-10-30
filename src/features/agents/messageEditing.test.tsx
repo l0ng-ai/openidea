@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { AgentEntry, AgentTask } from "@/bindings";
@@ -63,6 +63,60 @@ async function edit() {
   fireEvent.change(box, { target: { value: "Edited message" } });
   return { user, box, send: screen.getAllByRole("button", { name: "Send" })[0]! };
 }
+
+describe("a sent message with images", () => {
+  afterEach(() => {
+    entries[0] = { type: "user", text: "Original message", attachments: [], sentMs: 1, doneMs: 2, steered: false };
+  });
+
+  it("shows the images and lists only the files as chips", async () => {
+    entries[0] = {
+      type: "user",
+      text: "Look",
+      attachments: ["a.ts", "shot.png"],
+      images: [{ mimeType: "image/png", data: "AAA", name: "shot.png" }],
+      sentMs: 1,
+      doneMs: 2,
+      steered: false,
+    };
+    render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+    const img = await screen.findByRole("img", { name: "shot.png" });
+    expect(img).toHaveAttribute("src", "data:image/png;base64,AAA");
+    expect(screen.getByText("a.ts")).toBeInTheDocument();
+    expect(screen.queryByText("shot.png")).not.toBeInTheDocument();
+    entries[0] = { type: "user", text: "Original message", attachments: [], sentMs: 1, doneMs: 2, steered: false };
+  });
+
+  it("opens an image in a dialog and keeps the images when editing, minus the removed ones", async () => {
+    entries[0] = {
+      type: "user",
+      text: "Look",
+      attachments: ["a.png", "b.png"],
+      images: [
+        { mimeType: "image/png", data: "AAA", name: "a.png" },
+        { mimeType: "image/png", data: "BBB", name: "b.png" },
+      ],
+      sentMs: 1,
+      doneMs: 2,
+      steered: false,
+    };
+    render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "a.png" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: "a.png" })).toHaveLength(2);
+    await user.click(screen.getAllByRole("button", { name: "Close" })[0]!);
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getAllByRole("button", { name: "Remove Image" })).toHaveLength(2);
+    await user.click(screen.getAllByRole("button", { name: "Remove Image" })[0]!);
+    expect(screen.getAllByRole("button", { name: "Remove Image" })).toHaveLength(1);
+    expect(screen.queryByRole("img", { name: "a.png" })).not.toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: "Send" })[0]!);
+    await waitFor(() => expect(ipc.prompt).toHaveBeenCalledTimes(1));
+    expect(ipc.prompt.mock.calls[0]![1].images).toEqual([{ mimeType: "image/png", data: "BBB", name: "b.png" }]);
+    entries[0] = { type: "user", text: "Original message", attachments: [], sentMs: 1, doneMs: 2, steered: false };
+  });
+});
 
 describe("editing a sent agent message", () => {
   it("keeps Enter, Shift+Enter and IME confirmation for editing", async () => {

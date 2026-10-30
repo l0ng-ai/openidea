@@ -200,8 +200,16 @@
   display: none;
 }
 .preview :global(.mermaid-output) {
-  overflow-x: auto;
+  overflow: hidden;
   text-align: center;
+}
+.preview :global(.mermaid-output[data-zoomed="true"]) {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.preview :global(.mermaid-output[data-dragging="true"]) {
+  cursor: grabbing;
 }
 .preview :global([data-mermaid-state="error"] > .mermaid-output) {
   margin-top: 6px;

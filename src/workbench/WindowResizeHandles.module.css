@@ -1,0 +1,68 @@
+/* Invisible resize hit areas hugging the frameless window's edges. */
+.n,
+.s,
+.e,
+.w,
+.ne,
+.nw,
+.se,
+.sw {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: auto;
+}
+.n,
+.s {
+  left: 8px;
+  right: 8px;
+  height: 6px;
+}
+.e,
+.w {
+  top: 8px;
+  bottom: 8px;
+  width: 6px;
+}
+.ne,
+.nw,
+.se,
+.sw {
+  width: 12px;
+  height: 12px;
+}
+.n {
+  top: 0;
+  cursor: ns-resize;
+}
+.s {
+  bottom: 0;
+  cursor: ns-resize;
+}
+.e {
+  right: 0;
+  cursor: ew-resize;
+}
+.w {
+  left: 0;
+  cursor: ew-resize;
+}
+.ne {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+.nw {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+.se {
+  bottom: 0;
+  right: 0;
+  cursor: nwse-resize;
+}
+.sw {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}

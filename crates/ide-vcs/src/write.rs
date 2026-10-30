@@ -47,9 +47,14 @@ pub(crate) fn blame(
     r: &Repo,
     path: &Path,
     current_text: Option<&str>,
+    revision: Option<&str>,
     encoding: &'static Encoding,
 ) -> IdeResult<Vec<BlameLine>> {
     let rel = r.rel_path(path)?;
+    let revision = match revision {
+        Some(rev) => check_rev(rev)?,
+        None => "HEAD",
+    };
     let disk = match std::fs::read(r.abs_path(&rel)) {
         Ok(bytes) => bytes,
         Err(_) if current_text.is_some() => Vec::new(),
@@ -74,14 +79,14 @@ pub(crate) fn blame(
     let line_count = text.split_inclusive('\n').count();
     let tracked_in_head = {
         let repo = r.gix()?;
-        crate::repo::blob_at(&repo, &rel, "HEAD")?.is_some()
+        crate::repo::blob_at(&repo, &rel, revision)?.is_some()
     };
     if !tracked_in_head {
         return Ok(uncommitted_lines(line_count));
     }
     let out = run(
         r.root(),
-        &["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", "--", &rel],
+        &["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", revision, "--", &rel],
         Some(&contents),
     )?;
     let mut lines = crate::blame::parse_porcelain(&out.stdout_str());

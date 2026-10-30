@@ -167,6 +167,9 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
       <span className={styles.sep} />
       <IconButton icon="expand-all" size="small" iconSize={16} action={`${tool}.expandAll`} />
       <IconButton icon="collapse-all" size="small" iconSize={16} action={`${tool}.collapseAll`} />
+      {maven && (
+        <IconButton icon="settings" size="small" iconSize={16} action="maven.settings" title="Maven Settings…" />
+      )}
     </div>
   );
 }
