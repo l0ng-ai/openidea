@@ -499,6 +499,46 @@
   background: var(--fg-muted);
 }
 
+.images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.imageItem {
+  position: relative;
+  display: inline-flex;
+}
+.imageButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+.image {
+  display: block;
+  max-width: 240px;
+  max-height: 160px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.removeImage {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--bg-popup);
+  color: var(--fg);
+  cursor: pointer;
+}
+
 .attachments {
   display: flex;
   flex-wrap: wrap;

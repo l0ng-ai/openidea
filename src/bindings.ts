@@ -1124,6 +1124,8 @@ export type AgentConfigVia =
 export type AgentEntry = { type: "user"; text: string; 
 /**  Names of the files and images sent with it. */
 attachments: string[]; 
+/**  The images sent with it, shown in the conversation. */
+images?: AgentImage[]; 
 /**  When it was sent (ms since the epoch); `None` in tasks saved before this was kept. */
 sentMs?: number | null; 
 /**  When the turn it started ended; `None` while it runs or when it was cut off. */

@@ -240,6 +240,9 @@ pub enum AgentEntry {
         text: String,
         /// Names of the files and images sent with it.
         attachments: Vec<String>,
+        /// The images sent with it, shown in the conversation.
+        #[serde(default)]
+        images: Vec<AgentImage>,
         /// When it was sent (ms since the epoch); `None` in tasks saved before this was kept.
         #[serde(default)]
         sent_ms: Option<f64>,
