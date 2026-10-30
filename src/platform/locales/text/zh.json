@@ -3314,7 +3314,7 @@
   "Ready to Review": "待审阅",
   "Archived": "已归档",
   "Archive": "归档",
-  "Archive Task": "归档任务",
+  "Copy Agent Task to a New Task": "将 Agent 任务复制为新任务",
   "Delete Agent Task": "删除 Agent 任务",
   "Also remove its worktree folder": "同时删除它的 worktree 目录",
   "needs input": "等待输入",

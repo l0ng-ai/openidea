@@ -46,7 +46,6 @@ import {
   type SubagentEntry,
 } from "./model";
 import {
-  archiveTask,
   cancelTask,
   loadEntries,
   markVisible,
@@ -65,6 +64,7 @@ import {
   useAgents,
 } from "./store";
 import { setFocusedSession, focusedSession, type FocusedSession } from "./sessionFocus";
+import { taskMenu } from "./taskActions";
 import styles from "./Session.module.css";
 
 export function SessionEditor({ input }: { input: EditorInput }) {
@@ -73,6 +73,7 @@ export function SessionEditor({ input }: { input: EditorInput }) {
   const entries = useAgents((s) => s.entries.get(id));
   const changes = useAgents((s) => s.changes.get(id));
   const head = useLocalHead(task?.isolation === "local" ? task.status : null);
+  const [changesOpen, setChangesOpen] = useChangesOpen(id, changes ?? null);
   // The subagent conversation shown, with the subagents that lead to it (empty: the task's own).
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
@@ -116,7 +117,14 @@ export function SessionEditor({ input }: { input: EditorInput }) {
       }}
     >
       <div className={styles.conversation}>
-        <Header task={task} entries={entries ?? null} head={head} />
+        <Header
+          task={task}
+          entries={entries ?? null}
+          head={head}
+          changes={changes ?? null}
+          changesOpen={changesOpen}
+          onToggleChanges={() => setChangesOpen(!changesOpen)}
+        />
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
         <PermissionBanner task={task} entries={entries ?? null} />
         <Stream
@@ -137,7 +145,9 @@ export function SessionEditor({ input }: { input: EditorInput }) {
           <SessionComposer task={task} entries={entries ?? null} onOpenSubagent={openSubagent} />
         )}
       </div>
-      <ChangesPane task={task} changes={changes ?? null} head={head} />
+      {changesOpen && (
+        <ChangesPane task={task} changes={changes ?? null} head={head} onHide={() => setChangesOpen(false)} />
+      )}
     </div>
   );
 }
@@ -171,11 +181,32 @@ function useLocalHead(status: AgentTask["status"] | null): string | null {
   return local ? head : null;
 }
 
-function Header({ task, entries, head }: { task: AgentTask; entries: AgentEntry[] | null; head: string | null }) {
+function Header({
+  task,
+  entries,
+  head,
+  changes,
+  changesOpen,
+  onToggleChanges,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  head: string | null;
+  changes: AgentChange[] | null;
+  changesOpen: boolean;
+  onToggleChanges: () => void;
+}) {
+  const count = changes?.length ?? 0;
   const busy = isBusy(task.status);
   const where = task.isolation === "worktree" ? branchLabel(task.branch) : null;
   return (
-    <div className={styles.header}>
+    <div
+      className={styles.header}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        showContextMenu(e, taskMenu([task]));
+      }}
+    >
       <TaskStatusIcon status={task.status} />
       <span className={styles.title} title={task.title}>
         {task.title}
@@ -205,18 +236,6 @@ function Header({ task, entries, head }: { task: AgentTask; entries: AgentEntry[
         size="small"
         onClick={() => void executeAction("terminal.openAt", task.cwd)}
       />
-      {!busy && task.status !== "archived" && task.capabilities?.fork && (
-        <IconButton
-          icon="branch"
-          title="Copy to a New Task"
-          size="small"
-          onClick={() =>
-            void forkTask(task.id, null).catch((e: unknown) =>
-              notifications().notify({ level: "error", title: "Couldn't copy the task", body: String(e) }),
-            )
-          }
-        />
-      )}
       {task.status === "archived" && (
         <IconButton
           icon="undo"
@@ -226,9 +245,17 @@ function Header({ task, entries, head }: { task: AgentTask; entries: AgentEntry[
           actionArg={[task.id]}
         />
       )}
-      {!busy && task.status !== "archived" && (
-        <IconButton icon="close" title="Archive Task" size="small" onClick={() => void archiveTask(task.id)} />
-      )}
+      <button
+        type="button"
+        className={styles.changesToggle}
+        aria-pressed={changesOpen}
+        disabled={count === 0 && !changesOpen}
+        title={changesOpen ? tx("Hide changes") : tx("Show changes")}
+        onClick={onToggleChanges}
+      >
+        <Icon name="toolwindow-changes" size={14} />
+        {count > 0 && <span>{count}</span>}
+      </button>
     </div>
   );
 }
@@ -1216,58 +1243,53 @@ const KIND_COLOR: Partial<Record<AgentChange["kind"], string>> = {
   conflicted: "var(--vcs-conflict)",
 };
 
-const CHANGES_COLLAPSED_KEY = "openidea.agents.changesCollapsed.v1";
+const CHANGES_OPEN_KEY = "openidea.agents.changesOpen.v1";
 
-function loadCollapsed(): boolean {
+function loadChangesOpen(): Record<string, boolean> {
   try {
-    const raw = globalThis.localStorage?.getItem(CHANGES_COLLAPSED_KEY);
-    // Collapsed on first run: the chat is the focus, the diff opens on demand.
-    return raw === null ? true : (JSON.parse(raw) as boolean);
+    const raw = globalThis.localStorage?.getItem(CHANGES_OPEN_KEY);
+    const v: unknown = raw ? JSON.parse(raw) : {};
+    return v && typeof v === "object" ? (v as Record<string, boolean>) : {};
   } catch {
-    return true;
+    return {};
   }
 }
 
-function saveCollapsed(value: boolean) {
-  try {
-    globalThis.localStorage?.setItem(CHANGES_COLLAPSED_KEY, JSON.stringify(value));
-  } catch {
-    /* storage unavailable */
-  }
+/**
+ * Whether the Changes pane is shown for `task`: the user's choice once made, else
+ * only while the task has changes (so it opens when the agent first edits a file).
+ */
+function useChangesOpen(task: string, changes: AgentChange[] | null): [boolean, (open: boolean) => void] {
+  const [state, setState] = useState<{ task: string; open: boolean | undefined }>(() => ({
+    task,
+    open: loadChangesOpen()[task],
+  }));
+  const chosen = state.task === task ? state.open : loadChangesOpen()[task];
+  const set = (open: boolean) => {
+    setState({ task, open });
+    try {
+      globalThis.localStorage?.setItem(CHANGES_OPEN_KEY, JSON.stringify({ ...loadChangesOpen(), [task]: open }));
+    } catch {
+      /* storage unavailable */
+    }
+  };
+  return [chosen ?? (changes?.length ?? 0) > 0, set];
 }
 
-function ChangesPane({ task, changes, head }: { task: AgentTask; changes: AgentChange[] | null; head: string | null }) {
+function ChangesPane({
+  task,
+  changes,
+  head,
+  onHide,
+}: {
+  task: AgentTask;
+  changes: AgentChange[] | null;
+  head: string | null;
+  onHide: () => void;
+}) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
-  const [collapsed, setCollapsed] = useState<boolean>(loadCollapsed);
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
-  const toggleCollapsed = (next: boolean) => {
-    setCollapsed(next);
-    saveCollapsed(next);
-  };
-  if (collapsed) {
-    return (
-      <aside className={clsx(styles.changes, styles.changesCollapsed)} aria-label={tx("Changes")}>
-        <IconButton
-          icon="chevron-left"
-          title={tx("Show changes")}
-          size="small"
-          onClick={() => toggleCollapsed(false)}
-        />
-        <button
-          type="button"
-          className={styles.changesRail}
-          title={tx("Show changes")}
-          onClick={() => toggleCollapsed(false)}
-        >
-          <span className={styles.changesRailLabel}>
-            <T>Changes</T>
-          </span>
-          {changes && changes.length > 0 && <span className={styles.changesRailCount}>{changes.length}</span>}
-        </button>
-      </aside>
-    );
-  }
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
       <div className={styles.changesHeader}>
@@ -1281,12 +1303,7 @@ function ChangesPane({ task, changes, head }: { task: AgentTask; changes: AgentC
         )}
         <span className={styles.bannerSpacer} />
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshChanges(task.id)} />
-        <IconButton
-          icon="chevron-right"
-          title={tx("Hide changes")}
-          size="small"
-          onClick={() => toggleCollapsed(true)}
-        />
+        <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />
       </div>
       {(head ?? task.base) && (
         <div className={styles.changesSummary}>

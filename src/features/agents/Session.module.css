@@ -560,41 +560,6 @@
   min-width: 0;
   width: 280px;
 }
-.changesCollapsed {
-  width: 28px;
-  align-items: center;
-  padding-top: 4px;
-}
-.changesCollapsed > * {
-  flex: none;
-}
-.changesRail {
-  flex: 1;
-  min-height: 0;
-  align-self: stretch;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 0 8px;
-  border: none;
-  background: transparent;
-  color: var(--fg-subtle);
-  font: inherit;
-  cursor: pointer;
-}
-.changesRail:hover {
-  color: var(--fg-strong);
-}
-.changesRailLabel {
-  writing-mode: vertical-rl;
-  font-size: var(--fs-small);
-  letter-spacing: 0.02em;
-}
-.changesRailCount {
-  font-size: var(--fs-small);
-  color: var(--fg-muted);
-}
 .changesHeader {
   display: flex;
   align-items: center;
@@ -843,4 +808,31 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.changesToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg-subtle);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+.changesToggle:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.changesToggle[aria-pressed="true"] {
+  background: var(--bg-selected);
+  color: var(--fg-strong);
+}
+.changesToggle:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
