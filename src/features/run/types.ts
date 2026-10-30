@@ -6,6 +6,7 @@
 import type { RunConfig } from "@/platform/ipc";
 import { registerRunConfigType, useRunConfigTypes, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { formatArgs, parseArgs, uid, uniqueName } from "./configs";
+import { commandName } from "./commandName";
 import {
   applicationType,
   gradleForkedJvm,
@@ -19,7 +20,6 @@ import { tx } from "@/platform/i18n";
 export const COMPOUND = "compound";
 
 const on = (v: string | undefined) => v === "true";
-const baseName = (p: string) => p.replace(/\\/g, "/").split("/").pop() ?? p;
 const dirOf = (cwd: string | null | undefined) => cwd ?? "";
 
 /** Values of `args[index]` across detected configurations of `kind`. */
@@ -115,7 +115,7 @@ const program: RunConfigTypeContribution = {
 };
 
 const isScene = (a: string) => /\.t?scn$/i.test(a);
-const isGodot = (cmd: string) => /^godot([-.\w]*)$/i.test(baseName(cmd).replace(/\.exe$/i, ""));
+const isGodot = (cmd: string) => /^godot([-.\w]*)$/i.test(commandName(cmd));
 
 /**
  * Godot: `godot --path <project>` runs the main scene, `… <scene>` one scene. The
@@ -148,7 +148,7 @@ const godot: RunConfigTypeContribution = {
     },
   ],
   commandLine: (p) => ({
-    command: "godot",
+    command: p.executable || "godot",
     args: ["--path", ".", ...(p.scene?.trim() ? [p.scene.trim()] : []), ...parseArgs(p.arguments ?? "")],
     cwd: p.projectDir?.trim() || null,
   }),
@@ -158,7 +158,12 @@ const godot: RunConfigTypeContribution = {
     const path = rest.indexOf("--path");
     if (path >= 0) rest.splice(path, 2);
     const scene = rest.find(isScene) ?? "";
-    return { projectDir: dirOf(c.cwd), scene, arguments: formatArgs(rest.filter((a) => a !== scene)) };
+    return {
+      projectDir: dirOf(c.cwd),
+      scene,
+      arguments: formatArgs(rest.filter((a) => a !== scene)),
+      ...(c.command !== "godot" ? { executable: c.command } : {}),
+    };
   },
 };
 
@@ -194,13 +199,22 @@ const npm: RunConfigTypeContribution = {
   commandLine(p) {
     const command = p.command || "run";
     const args = [command, ...(command === "run" ? [p.script ?? ""] : []), ...parseArgs(p.arguments ?? "")];
-    return { command: p.packageManager || "npm", args, cwd: p.packageDir?.trim() || null };
+    const manager = p.packageManager || "npm";
+    const executable = p.executable && commandName(p.executable) === manager ? p.executable : manager;
+    return { command: executable, args, cwd: p.packageDir?.trim() || null };
   },
   paramsFrom(c) {
     const [command, ...rest] = c.args;
-    if (!PACKAGE_MANAGERS.includes(c.command) || !command || !NPM_COMMANDS.includes(command)) return null;
+    if (!PACKAGE_MANAGERS.includes(commandName(c.command)) || !command || !NPM_COMMANDS.includes(command)) return null;
     const script = command === "run" ? (rest.shift() ?? "") : "";
-    return { packageManager: c.command, command, script, arguments: formatArgs(rest), packageDir: dirOf(c.cwd) };
+    return {
+      packageManager: commandName(c.command),
+      command,
+      script,
+      arguments: formatArgs(rest),
+      packageDir: dirOf(c.cwd),
+      ...(c.command !== commandName(c.command) ? { executable: c.command } : {}),
+    };
   },
 };
 
@@ -238,16 +252,20 @@ function buildToolType(
       { key: "wrapper", label: wrapper.label, control: "checkbox" },
     ],
     commandLine: (p) => ({
-      command: wrapperCommand(wrapper.unix, wrapper.windows, wrapper.plain, on(p.wrapper)),
+      command:
+        p.executable && commandName(p.executable) === (on(p.wrapper) ? wrapper.unix : wrapper.plain)
+          ? p.executable
+          : wrapperCommand(wrapper.unix, wrapper.windows, wrapper.plain, on(p.wrapper)),
       args: [...parseArgs(p.tasks ?? ""), ...parseArgs(p.arguments ?? ""), ...jvm.args(p)],
       cwd: p.projectDir?.trim() || null,
     }),
     ...(jvm.prepareLaunch ? { prepareLaunch: jvm.prepareLaunch } : {}),
     paramsFrom(c) {
-      const name = baseName(c.command);
-      const usesWrapper = name === wrapper.unix || name === wrapper.windows;
+      const name = commandName(c.command);
+      const usesWrapper = name === wrapper.unix;
       if (!usesWrapper && name !== wrapper.plain) return null;
       return {
+        executable: c.command,
         projectDir: dirOf(c.cwd),
         tasks: formatArgs(c.args),
         arguments: "",
@@ -350,7 +368,7 @@ const pytest: RunConfigTypeContribution = {
         ? 2
         : m >= 0 && c.args[m + 1] === "pytest"
           ? m + 2
-          : baseName(c.command).replace(/\.exe$/i, "") === "pytest"
+          : commandName(c.command) === "pytest"
             ? 0
             : null;
     if (runner === null) return null;
