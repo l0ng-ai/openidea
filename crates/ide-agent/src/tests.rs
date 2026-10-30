@@ -824,3 +824,36 @@ async fn cursor_approval_choice_applies_before_first_prompt() {
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     mgr.shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archived_tasks_can_be_restored_and_continue_their_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    mgr.archive(&task.id).unwrap();
+    assert!(mgr.prompt(&task.id, text("again"), false).await.is_err());
+    mgr.unarchive(&task.id).unwrap();
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready);
+    assert!(mgr.task(&task.id).unwrap().live.lock().is_none());
+    assert_eq!(mgr.entries(&task.id, None).unwrap().len(), entries.len());
+    drop(mgr);
+    let mgr = manager(tmp.path(), agent.clone());
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready);
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(agent.calls.lock().iter().any(|call| call == "session/load"));
+    assert_eq!(mgr.entries(&task.id, None).unwrap().len(), entries.len() + 2);
+    mgr.unarchive(&task.id).unwrap();
+}

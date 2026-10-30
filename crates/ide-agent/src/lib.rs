@@ -760,6 +760,26 @@ impl AgentManager {
         Ok(())
     }
 
+    /// Returns an archived task to the active list without starting the agent.
+    pub fn unarchive(&self, id: &str) -> IdeResult<()> {
+        let task = self.task(id)?;
+        {
+            let mut s = task.state.lock();
+            if s.task.status != AgentStatus::Archived {
+                return Ok(());
+            }
+            if s.busy {
+                return Err(IdeError::invalid("the task is still stopping"));
+            }
+            s.task.status = AgentStatus::Ready;
+            s.task.error = None;
+            s.task.updated_ms = now_ms();
+        }
+        task.persist();
+        task.emit_task();
+        Ok(())
+    }
+
     /// Forgets the task; with `remove_worktree` also deletes its worktree (the branch stays).
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> IdeResult<()> {
         let task = self.task(id)?;

@@ -216,6 +216,15 @@ function Header({ task, entries, head }: { task: AgentTask; entries: AgentEntry[
           }
         />
       )}
+      {task.status === "archived" && (
+        <IconButton
+          icon="undo"
+          title="Unarchive Task"
+          size="small"
+          action="agents.unarchiveTasks"
+          actionArg={[task.id]}
+        />
+      )}
       {!busy && task.status !== "archived" && (
         <IconButton icon="close" title="Archive Task" size="small" onClick={() => void archiveTask(task.id)} />
       )}
@@ -1064,6 +1073,16 @@ function SessionComposer({
     );
   return (
     <div className={styles.composerArea}>
+      {task.status === "archived" && (
+        <div className={styles.banner}>
+          <span className={styles.bannerText}>
+            <T>This task is archived. Unarchive it to continue the conversation.</T>
+          </span>
+          <Button size="small" onClick={() => void executeAction("agents.unarchiveTasks", [task.id])}>
+            Unarchive
+          </Button>
+        </div>
+      )}
       <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
       {task.queue.length > 0 && <Queue task={task} />}
       <Composer

@@ -94,6 +94,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_cancel,
         agent::agent_respond,
         agent::agent_archive,
+        agent::agent_unarchive,
         agent::agent_delete,
         agent::agent_changes,
         agent::agent_base_text,

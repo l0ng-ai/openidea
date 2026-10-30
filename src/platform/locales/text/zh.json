@@ -4899,5 +4899,11 @@
   "Credentials the IDE answers git's HTTPS prompts with, stored in the app's own secret file (not git's credential.helper). A rejected credential is forgotten automatically.": "IDE 用于应答 git HTTPS 提示的凭据，存储在应用自己的密钥文件中（而非 git 的 credential.helper）。被拒绝的凭据会自动删除。",
   "Saved git credentials": "已保存的 git 凭据",
   "Forget": "忘记",
-  "Remember for this host": "记住此主机"
+  "Remember for this host": "记住此主机",
+  "Unarchive Task": "取消归档任务",
+  "This task is archived. Unarchive it to continue the conversation.": "此任务已归档。取消归档后即可继续对话。",
+  "Unarchive": "取消归档",
+  "Unarchive Agent Tasks": "取消归档 Agent 任务",
+  "Cannot unarchive agent tasks": "无法取消归档 Agent 任务",
+  "Unarchive ({archived})": "取消归档（{archived}）"
 }

@@ -489,5 +489,6 @@ export function addReferences(refs: Array<{ path: string; rel: string; mention: 
 export const cancelTask = (task: string, subagent: string | null = null) => call(commands.agentCancel(task, subagent));
 export const respond = (task: string, permission: number, option: string | null) =>
   call(commands.agentRespond(task, permission, option));
+export const unarchiveTask = (task: string) => call(commands.agentUnarchive(task));
 export const archiveTask = (task: string) => call(commands.agentArchive(task));
 export const deleteTask = (task: string, removeWorktree: boolean) => call(commands.agentDelete(task, removeWorktree));
