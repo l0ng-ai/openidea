@@ -45,7 +45,7 @@ export function applicationConfig(
     env: {},
     detected: true,
     isTest: false,
-    debugAdapter: "java-debug",
+    debugAdapter: relPath.endsWith(".kt") ? "kotlin-debug-adapter" : "java-debug",
   };
 }
 

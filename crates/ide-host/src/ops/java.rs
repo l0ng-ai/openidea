@@ -21,6 +21,8 @@ pub async fn java_resolve_launch(
     let project = host.project(window)?;
     let module = project.root.join(module);
     let settings = project.settings.effective();
+    // Let jdtls finish its build before the external compiler writes Kotlin/Scala classes.
+    let mut info = project.lsp.java_launch(&module, test, build).await?;
     let built = if build && compile::has_non_java_sources(&module) {
         let (root, cache, module, settings) =
             (project.root.clone(), project.build_cache_dir(), module.clone(), settings.clone());
@@ -32,7 +34,6 @@ pub async fn java_resolve_launch(
     } else {
         Vec::new()
     };
-    let mut info = project.lsp.java_launch(&module, test, build).await?;
     let mut class_paths: Vec<String> = built.iter().map(|p| p.to_string_lossy().into_owned()).collect();
     for p in std::mem::take(&mut info.class_paths) {
         if !class_paths.contains(&p) {

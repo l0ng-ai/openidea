@@ -230,6 +230,7 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  position: relative;
   padding: 6px 14px;
   font-family: var(--font-mono);
   font-size: var(--fs-ui);
@@ -244,7 +245,16 @@
   color: var(--fg);
 }
 
+.consoleInner {
+  position: relative;
+  width: 100%;
+}
+
 .out {
+  position: absolute;
+  top: 0;
+  left: 0;
+  min-width: 100%;
   color: var(--fg);
 }
 .cat-stderr {

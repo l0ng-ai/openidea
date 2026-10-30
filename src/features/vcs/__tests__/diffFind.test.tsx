@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { EditorView } from "@codemirror/view";
 import type { EditorInput } from "@/workbench/contributions";
 import { useKeymap } from "@/platform/keymap";
@@ -121,6 +122,76 @@ describe("Find in the diff viewer", () => {
     await press(0, "KeyR");
     await screen.findByRole("search", { name: "Find in file" });
     expect(screen.queryByRole("button", { name: "Show Replace" })).toBeNull();
+  });
+
+  it.each(["Meta", "Ctrl"])("opens collapsed with %s+F and expanded with Replace", async (modifier) => {
+    useKeymap.setState({
+      overrides: {
+        ...KEYMAP,
+        "find.inFile": [`${modifier}+F`],
+        "find.replaceInFile": [`${modifier}+R`],
+      },
+    });
+    render(<DiffEditor input={working} />);
+    const v = await pane(1);
+    const pressKey = (key: string) => {
+      v.contentDOM.dispatchEvent(new FocusEvent("focus"));
+      fireEvent.keyDown(v.contentDOM, {
+        code: `Key${key}`,
+        key: key.toLowerCase(),
+        metaKey: modifier === "Meta",
+        ctrlKey: modifier === "Ctrl",
+      });
+    };
+    pressKey("F");
+    expect(await screen.findByRole("button", { name: "Show Replace" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("textbox", { name: "Replace" })).toBeNull();
+    pressKey("R");
+    expect(await screen.findByRole("button", { name: "Hide Replace" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("textbox", { name: "Replace" })).toBeInTheDocument();
+    pressKey("F");
+    expect(await screen.findByRole("button", { name: "Show Replace" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("toggles with pointer and keyboard while preserving query, options, and focus", async () => {
+    const user = userEvent.setup();
+    useKeymap.setState({ overrides: KEYMAP });
+    render(<DiffEditor input={working} />);
+    const v = await press(1, "KeyF");
+    const field = await screen.findByRole("textbox", { name: "Find" });
+    fireEvent.change(field, { target: { value: "foo" } });
+    const matchCase = screen.getByRole("button", { name: "Match Case" });
+    await user.click(matchCase);
+    const pressed = matchCase.getAttribute("aria-pressed");
+    field.focus();
+    (field as HTMLInputElement).setSelectionRange(1, 2);
+    const disclosure = screen.getByRole("button", { name: "Show Replace" });
+    expect(screen.getByRole("search").firstElementChild).toBe(disclosure);
+    await user.click(disclosure);
+    expect(field).toHaveFocus();
+    expect((field as HTMLInputElement).selectionStart).toBe(1);
+    expect((field as HTMLInputElement).selectionEnd).toBe(2);
+    expect(field).toHaveValue("foo");
+    expect(matchCase).toHaveAttribute("aria-pressed", pressed);
+    const replacement = screen.getByRole("textbox", { name: "Replace" });
+    await user.type(replacement, "baz");
+    await user.click(screen.getByRole("button", { name: "Hide Replace" }));
+    expect(field).toHaveFocus();
+    expect(screen.queryByRole("textbox", { name: "Replace" })).toBeNull();
+    const toggle = screen.getByRole("button", { name: "Show Replace" });
+    toggle.focus();
+    await user.keyboard("{Enter}");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveFocus();
+    expect(screen.getByRole("textbox", { name: "Replace" })).toHaveValue("baz");
+    await user.keyboard(" ");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.keyboard(" ");
+    field.focus();
+    await user.tab();
+    expect(screen.getByRole("textbox", { name: "Replace" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Replace All" }));
+    expect(v.state.doc.toString()).toBe("baz\nqux\nbaz\n");
   });
 
   it("finds the next occurrence of the last search with ⌘G", async () => {

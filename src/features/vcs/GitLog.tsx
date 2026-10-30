@@ -1,3 +1,4 @@
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } from "./multiRoot";
 /** Git tool window: Log (graph, filters, commit details) and Console tabs. */
 import { IssueText } from "./issueLinks";
@@ -1486,7 +1487,9 @@ function ConsoleView() {
       <div
         ref={ref}
         className={styles.console}
+        tabIndex={0}
         role="log"
+        onKeyDown={copySelectionOnKeyDown}
         aria-label={tx("Git console")}
         onScroll={(e) => {
           const el = e.currentTarget;

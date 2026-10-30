@@ -10,8 +10,9 @@ import type { MergeSides } from "@/bindings";
 import { embeddedEditorExtensions } from "@/editor/api";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
-import { Button, IconButton, Spinner, T } from "@/ui";
+import { Button, IconButton, showContextMenu, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
+import { blameSlot, toggleAnnotations } from "./blame";
 import { languageFor, viewerBase } from "./cm";
 import { confirmDialog } from "./dialogs";
 import { initialResult, mergeTitles, resolutionText, type Resolution, type ResultConflict } from "./conflicts";
@@ -152,6 +153,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const resultRef = useRef<HTMLDivElement>(null);
   const theirsRef = useRef<HTMLDivElement>(null);
   const resultView = useRef<EditorView | null>(null);
+  const oursView = useRef<EditorView | null>(null);
+  const theirsView = useRef<EditorView | null>(null);
   const txt = useTxTemplate();
   const titles = mergeTitles(state?.sides);
 
@@ -188,6 +191,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     const side = () => [
       viewerBase({ readOnly: true }),
       lang,
+      blameSlot(),
       state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
     ];
     const ours = new EditorView({ doc: state.ours, parent: oursRef.current, extensions: side() });
@@ -214,11 +218,36 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     });
     resultView.current = result;
     setLeft(result.state.field(conflictField).conflicts.length);
+    oursView.current = ours;
+    theirsView.current = theirs;
+    // Scroll the three panes together (by scroll ratio), like IDEA's merge view.
+    const views = [ours, result, theirs];
+    let syncing = false;
+    const onScroll = (from: EditorView) => () => {
+      if (syncing) return;
+      syncing = true;
+      const s = from.scrollDOM;
+      const ratio = s.scrollTop / Math.max(1, s.scrollHeight - s.clientHeight);
+      for (const other of views) {
+        if (other === from) continue;
+        const o = other.scrollDOM;
+        o.scrollTop = ratio * Math.max(0, o.scrollHeight - o.clientHeight);
+      }
+      syncing = false;
+    };
+    const offs = views.map((v) => {
+      const h = onScroll(v);
+      v.scrollDOM.addEventListener("scroll", h, { passive: true });
+      return () => v.scrollDOM.removeEventListener("scroll", h);
+    });
     return () => {
+      offs.forEach((off) => off());
       ours.destroy();
       theirs.destroy();
       result.destroy();
       resultView.current = null;
+      oursView.current = null;
+      theirsView.current = null;
     };
   }, [state, lang, path]);
 
@@ -284,6 +313,28 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     }
   };
 
+  // IDEA's merge view: F7 / Shift+F7 jump between conflicts; each side pane can
+  // annotate its version with Git Blame from the context menu.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "F7") {
+      e.preventDefault();
+      goto(e.shiftKey ? -1 : 1);
+    }
+  };
+
+  const sideMenu = (e: React.MouseEvent, viewRef: { current: EditorView | null }, text: string) => {
+    const view = viewRef.current;
+    if (!view) return;
+    e.preventDefault();
+    showContextMenu(e.nativeEvent, [
+      {
+        label: "Annotate with Git Blame",
+        icon: "changelist",
+        run: () => void toggleAnnotations(view, path, text),
+      },
+    ]);
+  };
+
   if (error)
     return (
       <div className={styles.message}>
@@ -304,7 +355,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     );
 
   return (
-    <div className={styles.root}>
+    <div className={styles.root} onKeyDown={onKeyDown}>
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Merge")}>
         <IconButton icon="arrow-up" title="Previous Conflict" size="small" onClick={() => goto(-1)} />
         <IconButton icon="arrow-down" title="Next Conflict" size="small" onClick={() => goto(1)} />
@@ -336,9 +387,21 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         </div>
       ) : null}
       <div className={styles.panes} hidden={!state || lang === null}>
-        <div ref={oursRef} className={styles.pane} aria-label={tx("Your version")} role="region" />
+        <div
+          ref={oursRef}
+          className={styles.pane}
+          aria-label={tx("Your version")}
+          role="region"
+          onContextMenu={(e) => sideMenu(e, oursView, state?.ours ?? "")}
+        />
         <div ref={resultRef} className={styles.pane} aria-label={tx("Result")} role="region" />
-        <div ref={theirsRef} className={styles.pane} aria-label={tx("Their version")} role="region" />
+        <div
+          ref={theirsRef}
+          className={styles.pane}
+          aria-label={tx("Their version")}
+          role="region"
+          onContextMenu={(e) => sideMenu(e, theirsView, state?.theirs ?? "")}
+        />
       </div>
     </div>
   );

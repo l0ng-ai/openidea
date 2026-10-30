@@ -651,7 +651,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     c.env.entry(key).or_insert(value);
                 }
             }
-            "maven" => {
+            "maven" | "tomcat" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }

@@ -117,3 +117,40 @@ pub async fn run_test_reports(
 ) -> IdeResult<Vec<ide_run::junit::TestCaseReport>> {
     ide_host::ops::run::run_test_reports(&state.host, window.label(), module, since_ms).await
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn run_tomcat_home(
+    window: Window,
+    state: State<'_, AppState>,
+    home: String,
+) -> IdeResult<ide_run::tomcat::TomcatHome> {
+    ide_host::ops::run::run_tomcat_home(&state.host, window.label(), home).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn run_tomcat_artifacts(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_build::web::WebArtifact>> {
+    ide_host::ops::run::run_tomcat_artifacts(&state.host, window.label()).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn run_tomcat_build(
+    window: Window,
+    state: State<'_, AppState>,
+    config: RunConfig,
+) -> IdeResult<Option<RunConfig>> {
+    ide_host::ops::run::run_tomcat_build(&state.host, window.label(), config).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn run_tomcat_update(
+    window: Window,
+    state: State<'_, AppState>,
+    config: RunConfig,
+    mode: String,
+) -> IdeResult<()> {
+    ide_host::ops::run::run_tomcat_update(&state.host, window.label(), config, mode).await
+}

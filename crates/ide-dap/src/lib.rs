@@ -13,6 +13,8 @@ pub mod attach;
 mod cargo;
 pub mod connection;
 pub mod jdwp;
+pub mod kotlin;
+mod kotlin_jdwp;
 mod session;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
@@ -563,6 +565,14 @@ impl DebugManager {
         let dbg = adapter::find_config(&self.languages, &config.adapter)
             .ok_or_else(|| IdeError::unavailable(format!("unknown debug adapter `{}`", config.adapter)))?;
         let mut spec = adapter::resolve(&dbg, cwd.clone());
+        if config.adapter == kotlin::ADAPTER
+            && let Some(home) = arguments
+                .as_object_mut()
+                .and_then(|o| o.remove("__adapterJavaHome"))
+                .and_then(|v| v.as_str().map(str::to_owned))
+        {
+            spec.env.push(("JAVA_HOME".into(), home));
+        }
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }
@@ -722,7 +732,19 @@ impl DebugManager {
         }
     }
 
-    async fn configure(&self, s: &Arc<Session>, arguments: Value) -> IdeResult<()> {
+    async fn configure(&self, s: &Arc<Session>, mut arguments: Value) -> IdeResult<()> {
+        if s.adapter == kotlin::ADAPTER {
+            let project = arguments
+                .get("projectRoot")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| s.spec.cwd.clone());
+            let mirror = tokio::task::spawn_blocking(move || kotlin::SourceMirror::create(&project))
+                .await
+                .map_err(|e| IdeError::internal(e.to_string()))??;
+            arguments["projectRoot"] = json!(mirror.root());
+            *s.kotlin_mirror.lock() = Some(mirror);
+        }
         let caps = s
             .conn
             .request_timeout(
@@ -749,8 +771,32 @@ impl DebugManager {
             .await?;
         *s.caps.lock() = if caps.is_object() { caps } else { json!({}) };
 
+        // The Kotlin adapter ignores the resolved classpath and project runtime on launch.
+        let request = if s.adapter == kotlin::ADAPTER && s.request == "launch" {
+            session::start_kotlin_debuggee(s, &mut arguments).await?;
+            "attach"
+        } else {
+            &s.request
+        };
+        if s.adapter == kotlin::ADAPTER {
+            let host = arguments
+                .get("hostName")
+                .and_then(Value::as_str)
+                .ok_or_else(|| IdeError::invalid("Missing Kotlin JDWP host"))?
+                .to_owned();
+            let port = arguments
+                .get("port")
+                .and_then(Value::as_u64)
+                .and_then(|p| u16::try_from(p).ok())
+                .filter(|p| *p != 0)
+                .ok_or_else(|| IdeError::invalid("Invalid Kotlin JDWP port"))?;
+            let (relay, port) = kotlin_jdwp::StartupRelay::start(host, port).await?;
+            *s.kotlin_relay.lock() = Some(relay);
+            arguments["hostName"] = json!("127.0.0.1");
+            arguments["port"] = json!(port);
+        }
         // Many adapters answer `launch` only after `configurationDone`, so don't wait for it yet.
-        let launch = s.conn.send_request(&s.request, arguments)?;
+        let launch = s.conn.send_request(request, arguments)?;
         let mut launch = Box::pin(async move { launch.await.unwrap_or(Err(DapError::Closed)) });
         let mut initialized = s.initialized.subscribe();
         let mut launch_result = None;
@@ -780,6 +826,7 @@ impl DebugManager {
                         s.emit(ide_core::event::DebugEvent::BreakpointsChanged { path: path.into() });
                     }
                 }
+                Err(e) if s.adapter == kotlin::ADAPTER => return Err(e.into()),
                 Err(e) => tracing::debug!("setBreakpoints for {} failed: {e}", path.display()),
             }
         }
@@ -802,7 +849,11 @@ impl DebugManager {
             let _ = self.send_exception_breakpoints(s).await;
         }
         if s.supports("supportsConfigurationDoneRequest") {
-            s.conn.request_timeout("configurationDone", Value::Null, REQUEST_TIMEOUT).await?;
+            if s.adapter == kotlin::ADAPTER {
+                drop(s.conn.send_request("configurationDone", json!({}))?);
+            } else {
+                s.conn.request_timeout("configurationDone", Value::Null, REQUEST_TIMEOUT).await?;
+            }
         }
         s.configured.store(true, Ordering::Release);
         if launch_result.is_none() {
@@ -812,6 +863,9 @@ impl DebugManager {
                 }
                 Err(_) => return Err(DapError::Timeout(s.request.clone()).into()),
             }
+        }
+        if let Some(relay) = s.kotlin_relay.lock().as_mut() {
+            relay.release();
         }
         Ok(())
     }
@@ -869,6 +923,7 @@ impl DebugManager {
                 Ok(states) => {
                     result.get_or_insert(states);
                 }
+                Err(e) if s.adapter == kotlin::ADAPTER => return Err(e.into()),
                 Err(e) => tracing::debug!("setBreakpoints on session {} failed: {e}", s.id.0),
             }
         }
@@ -884,6 +939,23 @@ impl DebugManager {
         });
         self.states.lock().insert(path, states.clone());
         Ok(states)
+    }
+
+    /// Refresh fallback copies after an editor save.
+    pub async fn refresh_source_mirrors(&self, owner: &str) -> IdeResult<()> {
+        let sessions: Vec<_> = self.sessions.lock().values().filter(|s| s.owner.key == owner).cloned().collect();
+        tokio::task::spawn_blocking(move || {
+            for s in sessions {
+                if let Some(mirror) = s.kotlin_mirror.lock().as_mut()
+                    && let Err(e) = mirror.refresh()
+                {
+                    tracing::warn!("Could not refresh Kotlin debug sources: {e}");
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
     }
 
     /// Last known verification states of a file's breakpoints (after `BreakpointsChanged`).

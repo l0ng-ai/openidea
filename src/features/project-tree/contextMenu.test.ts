@@ -129,6 +129,22 @@ describe("project view context menu", () => {
     }
   });
 
+  it("offers Show History for files, directories, multi-selection and the project root", () => {
+    const dispose = registerActions([{ id: "vcs.showHistory", title: "Show History", run: () => undefined }]);
+    try {
+      for (const nodes of [
+        [node("/p/a.py")],
+        [node("/p/src", true)],
+        [node("/p/a.py"), node("/p/src", true)],
+        [node("/p", true, true)],
+      ]) {
+        expect(sub(contextMenuItems(nodes), "Git")).toContain("Show History");
+      }
+    } finally {
+      dispose();
+    }
+  });
+
   it("shows Mark Directory as for folders, without file-only items", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
     expect(l).toContain("Mark Directory as");

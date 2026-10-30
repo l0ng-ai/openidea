@@ -456,3 +456,13 @@ exit 0"#,
     let out = std::process::Command::new(&wrapper).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/opt/dotnet");
 }
+
+#[test]
+fn kotlin_debugger_uses_existing_release_recipe_and_language_definition() {
+    let spec = registry::find("kotlin-debug-adapter").unwrap();
+    assert!(matches!(
+        spec.method,
+        Method::Release { source: ReleaseSource::GitHub { repo: "fwcd/kotlin-debug-adapter" }, .. }
+    ));
+    assert!(langs().iter().any(|l| l.debugger.as_ref().is_some_and(|d| d.adapter == spec.name)));
+}

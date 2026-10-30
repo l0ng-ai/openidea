@@ -26,6 +26,9 @@ importers:
       '@codemirror/language-data':
         specifier: ^6.5.2
         version: 6.5.2
+      '@codemirror/legacy-modes':
+        specifier: ^6.5.5
+        version: 6.5.5
       '@codemirror/lint':
         specifier: ^6.9.7
         version: 6.9.7

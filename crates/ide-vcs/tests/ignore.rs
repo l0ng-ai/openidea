@@ -234,6 +234,51 @@ fn backslash_is_literal_newlines_and_symlinks_are_rejected() {
     assert_eq!(std::fs::read(fx.root.join(".gitignore")).unwrap(), original);
 }
 
+#[cfg(unix)]
+#[test]
+fn symlink_leaf_is_ignored_by_name_without_a_directory_slash() {
+    use std::os::unix::fs::symlink;
+    let fx = Fixture::new();
+    let target = fx.root.join("real");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(target.join("a.txt"), "x").unwrap();
+    let link = fx.root.join("link-dir");
+    symlink(&target, &link).unwrap();
+    add_to_ignore(std::slice::from_ref(&link), Gitignore).unwrap();
+    assert_eq!(std::fs::read_to_string(fx.root.join(".gitignore")).unwrap(), "/link-dir\n");
+    fx.ignored("link-dir");
+    // Already covered: nothing is written and no link is refused.
+    add_to_ignore(&[link], Gitignore).unwrap();
+    assert_eq!(std::fs::read_to_string(fx.root.join(".gitignore")).unwrap(), "/link-dir\n");
+}
+
+#[cfg(windows)]
+#[test]
+fn junction_leaf_is_ignored_by_name_without_a_directory_slash() {
+    let fx = Fixture::new();
+    let target = fx.root.join("real");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(target.join("a.txt"), "x").unwrap();
+    let link = fx.root.join("_exp");
+    let created = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(&target)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(created.success(), "mklink /J failed");
+    add_to_ignore(std::slice::from_ref(&link), Gitignore).unwrap();
+    assert_eq!(std::fs::read_to_string(fx.root.join(".gitignore")).unwrap(), "/_exp\n");
+    fx.ignored("_exp");
+    // Already covered by a directory rule, as in project trees that ignore every `_*` directory.
+    std::fs::write(fx.root.join(".gitignore"), "_*/\n").unwrap();
+    add_to_ignore(&[link], Gitignore).unwrap();
+    assert_eq!(std::fs::read_to_string(fx.root.join(".gitignore")).unwrap(), "_*/\n");
+    fx.ignored("_exp");
+}
+
 #[test]
 fn overridden_local_rule_is_not_duplicated_and_explains_precedence() {
     let fx = Fixture::new();

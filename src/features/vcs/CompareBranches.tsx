@@ -6,6 +6,7 @@ import { call, commands } from "@/platform/ipc";
 import { Dialog, List, Spinner, Tabs, T } from "@/ui";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
+import { showCompareRevisions } from "./operations";
 import { currentRepo, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
@@ -128,7 +129,18 @@ function CompareDialog({ branch, current, onClose }: { branch: string; current: 
       title={tx`Compare ${current} with ${branch}`}
       onClose={onClose}
       width={640}
-      buttons={[{ label: "Close", role: "cancel" }]}
+      buttons={[
+        {
+          label: "Show Diff",
+          role: "default",
+          onClick: () => {
+            onClose();
+            // Whole-project diff: every file that differs between the branches.
+            showCompareRevisions(branch, "HEAD", branch, current);
+          },
+        },
+        { label: "Close", role: "cancel" },
+      ]}
     >
       <Tabs
         variant="compact"

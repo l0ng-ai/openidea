@@ -63,6 +63,12 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "tcp",
             "Install the CodeLLDB adapter (https://github.com/vadimcn/codelldb/releases) and put `codelldb` on PATH",
         ),
+        "kotlin-debug-adapter" => cfg(
+            "kotlin-debug-adapter",
+            &[],
+            "stdio",
+            "Install the Kotlin Debug Adapter from Settings > Language Servers",
+        ),
         "debugpy" => cfg("python3", &["-m", "debugpy.adapter"], "stdio", "pip install debugpy"),
         "js-debug" => cfg(
             "js-debug-adapter",
