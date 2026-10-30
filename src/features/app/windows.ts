@@ -7,7 +7,7 @@
  * Open File…, a file path on the command line) open in LightEdit: a window with
  * editor tabs only. One LightEdit window collects them all.
  */
-import type { Action } from "@/platform/actions";
+import { executeAction, type Action } from "@/platform/actions";
 import { t } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
 import {
@@ -139,9 +139,32 @@ export async function openProjectWithPolicy(path: string, files: readonly string
   const { project: current, lightEdit } = useProject.getState();
   if (!current && !lightEdit) return openProjectInWindow(path, false, files);
   if (current?.root === path) return openInEditor(files);
+  if (current?.workspace?.projects.includes(path)) {
+    await executeAction("project.reveal", path);
+    return openInEditor(files);
+  }
   const mode = await chooseProjectWindow(basename(path));
   if (!mode) return;
   if (mode === "new") return openProjectInWindow(path, true, files);
+  if (mode === "attach") {
+    try {
+      if (!current?.workspace && !(await confirmLeaveProject())) return;
+      const root = await call(commands.workspaceAttach(path));
+      if (root === current?.root) {
+        if (!current.workspace) maybeEditorService()?.cancelClose?.();
+        const project = await commands.projectCurrent();
+        if (project) useProject.setState({ project, settings: project.settings });
+      } else {
+        await openProject(root);
+      }
+      await executeAction("project.reveal", path);
+      await openInEditor(files);
+    } catch (e) {
+      maybeEditorService()?.cancelClose?.();
+      openFailed(path, e);
+    }
+    return;
+  }
   try {
     // A window that already has the project is focused instead.
     const outcome = await call(commands.windowOpenProject(path, false, [...files]));
@@ -199,6 +222,23 @@ export async function consumeLaunch(): Promise<void> {
 
 export function windowActions(): Action[] {
   return [
+    {
+      id: "workspace.removeProject",
+      title: "Remove from Workspace",
+      category: t("app.category.file"),
+      when: "workspaceOpen",
+      run: async ({ arg }) => {
+        const workspace = useProject.getState().project?.workspace;
+        if (typeof arg !== "string" || !workspace || workspace.projects.indexOf(arg) <= 0) return;
+        const project = await call(
+          commands.workspaceUpdate(
+            workspace.name,
+            workspace.projects.filter((p) => p !== arg),
+          ),
+        );
+        useProject.setState({ project, settings: project.settings });
+      },
+    },
     {
       id: "workspace.create",
       title: "New Workspace…",

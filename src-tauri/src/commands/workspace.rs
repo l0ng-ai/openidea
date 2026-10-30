@@ -30,3 +30,13 @@ pub async fn workspace_update(window: WebviewWindow, name: String, projects: Vec
     window.state::<AppState>().sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
     Ok(info)
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_attach(window: WebviewWindow, path: PathBuf) -> IdeResult<ide_core::IpcPath> {
+    let host = window.state::<AppState>().host.clone();
+    let label = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::project::attach_workspace(&host, &label, &path))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}

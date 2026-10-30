@@ -6,6 +6,8 @@ A workspace opens several local project folders in one IDE session. A window gro
 
 Use **File → New Workspace…**. Choose a name and a separate directory for the workspace, then add project folders. **File → Open Workspace…** opens that directory again. **File → Manage Workspace…** changes its name or linked projects. Removing a link leaves the project's files and open editor buffers intact.
 
+When opening another local project, choose **Attach** to add it to this window. A plain project becomes a workspace automatically under the IDE app data directory's `workspaces` folder, named after the current project (with a unique directory suffix when needed). The existing editor session carries over after the unsaved-changes guard. **Don't ask again** remembers Attach; change it in **Settings → System Settings → Project → Open project in**. Already linked projects are revealed in Project view. Right-click a non-first linked root and choose **Remove from Workspace** to unlink it without deleting files.
+
 The workspace stores its manifest in `.openidea/workspace.json`:
 
 ```json

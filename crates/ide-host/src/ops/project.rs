@@ -66,6 +66,32 @@ pub fn save_workspace(host: &Host, window: &str, name: &str, paths: Vec<std::pat
     Ok(info(&project))
 }
 
+/// Links a folder, or prepares an automatic workspace for the caller to open in place.
+pub fn attach_workspace(host: &Host, window: &str, path: &Path) -> IdeResult<ide_core::IpcPath> {
+    let project = host.project(window)?;
+    let path = dunce::canonicalize(path)?;
+    if project.light {
+        return Err(ide_core::IdeError::invalid("Open a project before attaching a folder"));
+    }
+    if let Some(mut workspace) = ide_workspace::workspace::Workspace::load(&project.root)? {
+        if !workspace.projects.contains(&path) {
+            workspace.projects.push(path);
+            save_workspace(host, window, &workspace.name, workspace.projects)?;
+        }
+        return Ok(project.root.clone().into());
+    }
+    if path == project.root {
+        return Ok(project.root.clone().into());
+    }
+    Ok(ide_workspace::workspace::Workspace::create_for_project(
+        &host.data_dir,
+        &project.root,
+        &info(&project).name,
+        &path,
+    )?
+    .into())
+}
+
 /// What [`set_settings`] changed; the caller tells the windows.
 pub struct SettingsApplied {
     pub settings: Settings,

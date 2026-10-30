@@ -18,7 +18,7 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
         std::fs::write(root.join("package.json"), r#"{"scripts":{"test":"echo test"}}"#).unwrap();
     }
     let root = base.join("workspace");
-    Workspace::save(&root, "Full stack", roots.clone(), true).unwrap();
+    Workspace::save(&root, "Full stack", vec![roots[0].clone()], true).unwrap();
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
@@ -31,6 +31,8 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     });
     let project = host.open_project("main", &root).unwrap();
     assert_eq!(ops::project::info(&project).name, "Full stack");
+    assert_eq!(ops::project::attach_workspace(&host, "main", &roots[1]).unwrap().as_ref(), root.as_path());
+    ops::project::attach_workspace(&host, "main", &roots[1]).unwrap();
     assert_eq!(project.content_roots(), roots);
     for _ in 0..500 {
         if project.repos().all().len() == 2 {
@@ -89,5 +91,12 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     std::fs::write(invalid.join(ide_workspace::workspace::FILE), "broken").unwrap();
     assert!(host.open_project("main", &invalid).is_err());
     assert!(Arc::ptr_eq(&host.project("main").unwrap(), &project));
+    host.open_project("main", &roots[0]).unwrap();
+    let automatic = ops::project::attach_workspace(&host, "main", &roots[1]).unwrap();
+    assert_eq!(host.project("main").unwrap().root, roots[0]);
+    let automatic = host.open_project("main", &automatic).unwrap();
+    assert_eq!(automatic.content_roots(), roots);
+    assert_eq!(ops::project::info(&automatic).name, "frontend");
+    assert!(automatic.root.starts_with(base.join("data/workspaces")));
     host.close_project("main");
 }

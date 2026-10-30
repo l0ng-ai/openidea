@@ -12,6 +12,7 @@ export const commands = {
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
 	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
+	workspaceAttach: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_attach", { path })),
 	workspaceUpdate: (name: string, projects: string[]) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("workspace_update", { name, projects })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
 	windowGroupMerge: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_merge")),
@@ -3087,7 +3088,7 @@ export type FunctionBreakpoint = {
 export type GeneralSettings = {
 	reopenLastProject?: boolean,
 	confirmExit?: boolean,
-	/**  Where Open… puts a project while one is open: `ask` | `new` | `same`. */
+	/**  Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`. */
 	openProjectIn?: string,
 	/**  Initial folder of the Open / Clone dialogs; empty = the OS default. */
 	defaultProjectDirectory?: string,

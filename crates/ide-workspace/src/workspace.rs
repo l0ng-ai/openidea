@@ -22,6 +22,33 @@ fn serialize_projects<S: serde::Serializer>(projects: &[PathBuf], serializer: S)
 }
 
 impl Workspace {
+    /// Creates an automatically named workspace outside all linked projects.
+    pub fn create_for_project(data_dir: &Path, current: &Path, name: &str, attached: &Path) -> IdeResult<PathBuf> {
+        let projects = vec![current.to_path_buf(), attached.to_path_buf()];
+        let base = destination(&data_dir.join("workspaces"))?;
+        let folder = current.file_name().and_then(|n| n.to_str()).unwrap_or("workspace");
+        // Validate before creating anything, including when app data is inside a project.
+        let normalized = normalize_projects(&base, projects.clone(), false)?;
+        if normalized.iter().any(|p| base.starts_with(p)) {
+            return Err(IdeError::invalid("Store the workspace outside its linked project folders"));
+        }
+        std::fs::create_dir_all(&base)?;
+        for suffix in 0.. {
+            let root = base.join(if suffix == 0 { folder.to_owned() } else { format!("{folder}-{suffix}") });
+            match std::fs::create_dir(&root) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            }
+            if let Err(error) = Self::save(&root, name, projects.clone(), true) {
+                let _ = std::fs::remove_dir(&root);
+                return Err(error);
+            }
+            return Ok(root);
+        }
+        unreachable!()
+    }
+
     pub fn load(root: &Path) -> IdeResult<Option<Self>> {
         let bytes = match std::fs::read(root.join(FILE)) {
             Ok(bytes) => bytes,
@@ -113,6 +140,27 @@ fn normalize_projects(root: &Path, projects: Vec<PathBuf>, allow_missing: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_workspace_is_unique_and_outside_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let a = base.join("a");
+        let b = base.join("b");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let data = base.join("data");
+        let root = Workspace::create_for_project(&data, &a, "A", &b).unwrap();
+        let workspace = Workspace::load(&root).unwrap().unwrap();
+        assert_eq!(workspace.name, "A");
+        assert_eq!(workspace.projects, vec![a.clone(), b.clone()]);
+        assert_eq!(root, data.join("workspaces/a"));
+        let other = Workspace::create_for_project(&data, &a, "A", &b).unwrap();
+        assert_eq!(other, data.join("workspaces/a-1"));
+        assert!(Workspace::create_for_project(&a.join("data"), &a, "A", &b).is_err());
+        assert!(!a.join("data").exists());
+        assert!(!a.join(FILE).exists());
+    }
 
     #[test]
     fn round_trip_deduplicates_projects_without_changing_them() {

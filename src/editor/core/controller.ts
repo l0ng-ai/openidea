@@ -262,6 +262,15 @@ export class EditorController implements SlotHost {
           prevRoot = root;
           prevLight = s.lightEdit;
           this.saveSession();
+          if (
+            root &&
+            previous.project &&
+            !previous.project.workspace &&
+            s.project?.workspace?.projects[0] === previous.project.root
+          ) {
+            const session = loadSession(previous.project.root);
+            if (session) storeSession(root, session);
+          }
           this.sessionRoot = null;
           const generation = ++this.projectGeneration;
           const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);

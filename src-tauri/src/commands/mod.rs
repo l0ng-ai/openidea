@@ -65,6 +65,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::remove_recent_project,
         app::open_project,
         workspace::workspace_create,
+        workspace::workspace_attach,
         workspace::workspace_update,
         window_group::window_group_current,
         window_group::window_group_merge,
