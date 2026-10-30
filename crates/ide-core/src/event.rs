@@ -21,6 +21,10 @@ pub enum IdeEvent {
         modified: Vec<crate::IpcPath>,
         removed: Vec<crate::IpcPath>,
     },
+    /// Excluded or ignored folders whose contents changed; they stay out of `FsChanged`.
+    ExcludedDirsChanged {
+        dirs: Vec<crate::IpcPath>,
+    },
     /// The backend changed a document (reload from disk, formatting, refactoring).
     /// The UI applies `changes` on top of `base_version`, yielding `version`.
     DocPatched {

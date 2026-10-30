@@ -22,7 +22,15 @@ import { ProjectHeaderActions, useProjectHeaderMenu, useProjectTitleMenu } from 
 import { loadHomeDir } from "./home";
 import { selectedNodes } from "./operations";
 import { ProjectView } from "./ProjectView";
-import { applyFsChange, initProjectTree, reloadAll, setChangedFiles, setOpenFiles, useProjectTree } from "./store";
+import {
+  applyFsChange,
+  initProjectTree,
+  reloadAll,
+  reloadLoadedDirs,
+  setChangedFiles,
+  setOpenFiles,
+  useProjectTree,
+} from "./store";
 
 export function activate(): () => void {
   loadHomeDir();
@@ -138,6 +146,7 @@ export function activate(): () => void {
         .map((n) => n.path),
     ),
     onIdeEvent("fsChanged", (e) => void applyFsChange(e)),
+    onIdeEvent("excludedDirsChanged", (e) => void reloadLoadedDirs(e.dirs)),
   ];
   return () => {
     disposers.reverse().forEach((d) => d());

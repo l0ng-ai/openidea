@@ -3379,6 +3379,8 @@ export type IdeEvent =
 { type: "windowGroupsChanged" } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[] } | 
+/**  Excluded or ignored folders whose contents changed; they stay out of `FsChanged`. */
+{ type: "excludedDirsChanged"; dirs: IpcPath[] } | 
 /**
  *  The backend changed a document (reload from disk, formatting, refactoring).
  *  The UI applies `changes` on top of `base_version`, yielding `version`.
