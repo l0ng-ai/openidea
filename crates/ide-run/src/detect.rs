@@ -10,12 +10,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn detect(root: &Path) -> Vec<RunConfig> {
+    detect_excluding(root, &[])
+}
+
+pub(crate) fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<RunConfig> {
     let mut out = Vec::new();
     detect_node(root, &mut out);
     detect_deno(root, &mut out);
     detect_cargo(root, &mut out);
     detect_gradle(root, &mut out);
-    detect_maven(root, &mut out);
+    detect_maven(root, excluded_poms, &mut out);
     detect_go(root, &mut out);
     detect_python(root, &mut out);
     detect_make(root, &mut out);
@@ -489,9 +493,13 @@ fn collect_texts_from_subdirs(root: &Path, names: &[&str]) -> String {
     text
 }
 
-fn detect_maven(root: &Path, out: &mut Vec<RunConfig>) {
+fn detect_maven(root: &Path, excluded_poms: &[PathBuf], out: &mut Vec<RunConfig>) {
     for dir in build_dirs(root, &["pom.xml"]) {
-        detect_maven_build(root, &dir, out);
+        let pom = dir.join("pom.xml");
+        let relative = pom.strip_prefix(root).unwrap_or(&pom);
+        if !excluded_poms.iter().any(|excluded| excluded == relative) {
+            detect_maven_build(root, &dir, out);
+        }
     }
 }
 

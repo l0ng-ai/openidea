@@ -81,7 +81,7 @@ impl Host {
         let post_start = self.environment.project_opened(&root, &sink);
         let settings = SettingsStore::load(&self.config_dir, Some(&root));
         let detected_roots = Arc::new(RwLock::new(ide_workspace::roots::detect(&root)));
-        let excludes = exclude_globs(&settings.effective(), &detected_roots.read());
+        let excludes = exclude_globs(&root, &settings.effective(), &detected_roots.read());
         let extra_roots = content_roots(&settings.effective(), &root);
         mark("roots");
 
@@ -154,6 +154,8 @@ impl Host {
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
+                let excluded_poms = unlinked_maven_poms(&root, &effective);
+                ide_sdk::apply::configure_maven_import(cfg, &root, &excluded_poms);
             }));
         }
         {
@@ -224,7 +226,7 @@ impl Host {
                         if *detected_roots.read() != fresh {
                             // Detected excluded folders (`target`, `build`) leave the index too.
                             let effective = settings.effective();
-                            index.set_scope(content_roots(&effective, &root), exclude_globs(&effective, &fresh));
+                            index.set_scope(content_roots(&effective, &root), exclude_globs(&root, &effective, &fresh));
                             *detected_roots.write() = fresh;
                             sink.emit(IdeEvent::ProjectRootsChanged { root: root.clone().into() });
                         }
@@ -586,7 +588,7 @@ impl Project {
 
     /// Effective source / test / resource / excluded roots (detected + Project Structure marks).
     pub fn roots(&self) -> ProjectRoots {
-        ProjectRoots::compute(self.detected_roots.read().clone(), &self.settings.effective().project_structure)
+        linked_roots(&self.root, &self.settings.effective(), &self.detected_roots.read())
     }
 
     /// Where the Maven / Gradle tool windows cache what the build tools reported.
@@ -642,7 +644,7 @@ impl Project {
 
     /// `files.exclude`, the ignored names and the effective excluded roots (user-marked and detected).
     pub fn exclude_globs(&self) -> Vec<String> {
-        exclude_globs(&self.settings.effective(), &self.detected_roots.read())
+        exclude_globs(&self.root, &self.settings.effective(), &self.detected_roots.read())
     }
 
     /// Project Structure content roots besides the project folder (existing directories).
@@ -792,9 +794,23 @@ fn content_root_watcher(
     .ok()
 }
 
-fn exclude_globs(settings: &ide_core::settings::Settings, detected: &[SourceFolder]) -> Vec<String> {
+pub(crate) fn unlinked_maven_poms(root: &Path, settings: &ide_core::settings::Settings) -> Vec<PathBuf> {
+    ide_build::maven::UnlinkedProjects::load(root, &settings.languages.java.maven).poms().map(PathBuf::from).collect()
+}
+
+fn linked_roots(root: &Path, settings: &ide_core::settings::Settings, detected: &[SourceFolder]) -> ProjectRoots {
+    let unlinked = ide_build::maven::UnlinkedProjects::load(root, &settings.languages.java.maven);
+    let detected = detected
+        .iter()
+        .filter(|folder| !folder.detected_from.as_ref().is_some_and(|pom| unlinked.contains(pom)))
+        .cloned()
+        .collect();
+    ProjectRoots::compute(detected, &settings.project_structure)
+}
+
+fn exclude_globs(root: &Path, settings: &ide_core::settings::Settings, detected: &[SourceFolder]) -> Vec<String> {
     let mut globs = settings.file_excludes();
-    globs.extend(ProjectRoots::compute(detected.to_vec(), &settings.project_structure).excluded_globs());
+    globs.extend(linked_roots(root, settings, detected).excluded_globs());
     globs
 }
 
@@ -924,4 +940,51 @@ fn notify_transfer(sink: &SharedSink, what: &str, path: &Path, result: IdeResult
 pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
     let exe = settings.vcs.git.executable.trim();
     ide_vcs::set_git_executable((!exe.is_empty()).then(|| Path::new(exe)));
+}
+
+#[cfg(test)]
+mod maven_linkage_tests {
+    #[test]
+    fn unlinked_roots_remain_plain_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            std::fs::create_dir_all(tmp.path().join(name).join("src/main/java")).unwrap();
+            std::fs::write(tmp.path().join(name).join("pom.xml"), "<project/>").unwrap();
+        }
+        std::fs::create_dir_all(tmp.path().join("a/child/src/main/java")).unwrap();
+        std::fs::write(tmp.path().join("a/pom.xml"), "<project><modules><module>child</module></modules></project>")
+            .unwrap();
+        std::fs::write(tmp.path().join("a/child/pom.xml"), "<project/>").unwrap();
+        let detected = ide_workspace::roots::detect(tmp.path());
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.java.maven.unlinked_projects.push("a/pom.xml".into());
+        let excluded_poms = super::unlinked_maven_poms(tmp.path(), &settings);
+        assert_eq!(excluded_poms, vec![std::path::PathBuf::from("a/child/pom.xml"), "a/pom.xml".into()]);
+        let configs = ide_run::detect_excluding(tmp.path(), &excluded_poms);
+        assert!(configs.iter().any(|c| c.kind == "maven"));
+        assert!(
+            configs
+                .iter()
+                .filter(|c| c.kind == "maven")
+                .all(|c| { c.cwd.as_ref().is_some_and(|dir| dir.as_ref() == std::path::Path::new("b")) })
+        );
+        let mut server = serde_json::from_value::<ide_language::LanguageServerConfig>(
+            serde_json::json!({"name": "jdtls", "command": "jdtls"}),
+        )
+        .unwrap();
+        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms);
+        let options = serde_json::to_value(server.initialization_options).unwrap();
+        let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
+        assert!(exclusions.contains(&serde_json::json!(tmp.path().join("a").to_string_lossy())));
+        assert!(exclusions.contains(&serde_json::json!(tmp.path().join("a/child").to_string_lossy())));
+        let roots = super::linked_roots(tmp.path(), &settings, &detected);
+        assert!(roots.roots.iter().any(|r| r.path == "b/src/main/java"));
+        assert!(!roots.roots.iter().any(|r| r.path.starts_with("a/")));
+        assert!(tmp.path().join("a/pom.xml").is_file());
+        let model = crate::ops::build::load(tmp.path(), &tmp.path().join("cache"), &settings);
+        assert_eq!(model.maven.unwrap().projects.len(), 1);
+        settings.languages.java.maven.unlinked_projects.push("b/pom.xml".into());
+        let model = crate::ops::build::load(tmp.path(), &tmp.path().join("cache"), &settings);
+        assert!(model.maven.unwrap().projects.is_empty());
+    }
 }

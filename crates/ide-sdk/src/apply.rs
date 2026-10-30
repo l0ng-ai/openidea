@@ -173,6 +173,60 @@ fn merge(base: &mut Value, layer: Value) {
     }
 }
 
+/// Excludes project-relative Maven POM paths from JDTLS import, preserving user exclusions.
+pub fn configure_maven_import(cfg: &mut LanguageServerConfig, root: &Path, excluded_poms: &[PathBuf]) {
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let mut options =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    if let Some(settings) = &cfg.settings {
+        merge(&mut options, settings.clone());
+    }
+    let mut exclusions = options
+        .pointer("/java/import/exclusions")
+        .or_else(|| options.pointer("/settings/java/import/exclusions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| {
+            vec![
+                json!("**/node_modules/**"),
+                json!("**/.metadata/**"),
+                json!("**/archetype-resources/**"),
+                json!("**/META-INF/maven/**"),
+            ]
+        });
+    for pom in excluded_poms {
+        let directory = root.join(pom).parent().unwrap_or(root).to_path_buf();
+        let directory = directory.to_string_lossy().replace('\\', "/");
+        // Java NIO glob syntax treats these characters specially even in literal paths.
+        let escaped: String =
+            directory.chars().flat_map(|c| if "*?[]{}\\".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
+        exclusions.push(json!(escaped));
+    }
+    if !excluded_poms.is_empty() {
+        merge_init_options(cfg, json!({"settings": {"java": {"import": {"exclusions": exclusions}}}}));
+        if let Some(settings) = &mut cfg.settings {
+            merge(
+                settings,
+                json!({"java": {"import": {"exclusions": exclusions}}, "settings": {"java": {"import": {"exclusions": exclusions}}}}),
+            );
+        }
+        // A fresh workspace cannot retain Maven projects imported before unlinking.
+        if let Some(index) = cfg.args.iter().position(|arg| arg == "-data")
+            && let Some(workspace) = cfg.args.get_mut(index + 1)
+        {
+            let mut hash = 0xcbf29ce484222325u64;
+            for pom in excluded_poms {
+                for byte in pom.to_string_lossy().bytes().chain([0]) {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                }
+            }
+            *workspace = format!("{workspace}-maven-{hash:016x}");
+        }
+    }
+}
+
 pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     let mut current =
         cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
@@ -615,4 +669,28 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: Option<&str>) -> Op
         _ => "activate",
     };
     script(target).is_file().then_some(line)
+}
+
+#[cfg(test)]
+mod maven_linkage_tests {
+    use super::*;
+
+    #[test]
+    fn import_excludes_unlinked_modules_and_changes_persistent_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("a/child")).unwrap();
+        std::fs::write(tmp.path().join("a/pom.xml"), "<project><modules><module>child</module></modules></project>")
+            .unwrap();
+        std::fs::write(tmp.path().join("a/child/pom.xml"), "<project/>").unwrap();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
+        merge_init_options(&mut cfg, json!({"settings":{"java":{"import":{"exclusions":["**/custom"]}}}}));
+        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()]);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
+        assert!(exclusions.contains(&json!("**/custom")));
+        assert!(exclusions.contains(&json!(tmp.path().join("a").to_string_lossy())));
+        assert!(exclusions.contains(&json!(tmp.path().join("a/child").to_string_lossy())));
+        assert!(cfg.args[1].starts_with("/cache/jdtls-maven-"));
+    }
 }

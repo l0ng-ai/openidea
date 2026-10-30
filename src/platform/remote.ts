@@ -8,6 +8,8 @@ import { Channel, type InvokeArgs, type InvokeOptions } from "@tauri-apps/api/co
 import { invokeLocal, setInvokeRoute, type InvokeRoute } from "./tauriCore";
 import { create } from "zustand";
 import { call, commands, isTauri, type ChannelFrame, type RemoteProgress, type RemoteSession } from "./ipc";
+import { isClientSetting, overlayClientSettings } from "./clientSettings";
+import type { Settings } from "./ipc";
 import { useProject } from "./project";
 
 interface RemoteState {
@@ -51,25 +53,46 @@ async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOpti
 /**
  * Where a command of a remote window runs. Local always: opening a project (a
  * local folder; leaving the remote one) and closing it (that drops the
- * connection, which ends the server's session). Both: a global setting, which
+ * connection, which ends the server's session). Client UI settings stay local.
+ * Both: a global tooling setting, which
  * the server's language servers and the local windows read.
  */
 export function remoteRouting(cmd: string, args: InvokeArgs | undefined, served: ReadonlySet<string>) {
-  if (cmd === "system_font_families") return "local";
+  if (cmd === "system_font_families" || cmd === "settings_get_global") return "local";
+  if (cmd === "settings_set" && isClientSetting((args as { key?: string } | undefined)?.key ?? "")) return "local";
   if (!served.has(cmd) || cmd === "open_project" || cmd === "close_project") return "local";
   if (cmd === "settings_set" && (args as { scope?: string } | undefined)?.scope === "global") return "both";
   return "remote";
 }
 
+/** All effective settings responses use the same client overlay, including writes and project snapshots. */
+async function clientSettings<T extends Settings>(settings: T): Promise<T> {
+  return overlayClientSettings(settings, await invokeLocal<Settings>("settings_get_global"));
+}
+
 const route: InvokeRoute = (cmd, args, options) => {
-  switch (remoteRouting(cmd, args, routed)) {
-    case "local":
-      return null;
-    case "remote":
-      return remoteInvoke(cmd, args, options);
-    case "both":
-      return invokeLocal(cmd, args, options).then(() => remoteInvoke(cmd, args, options));
+  const destination = remoteRouting(cmd, args, routed);
+  if (cmd === "settings_set") {
+    const setting = args as { scope: string; key: string; value: string };
+    return (async () => {
+      if (isClientSetting(setting.key)) {
+        await invokeLocal(cmd, { ...setting, scope: "global" }, options);
+        return clientSettings((await remoteInvoke("settings_get")) as Settings);
+      }
+      if (destination === "local") return invokeLocal(cmd, args, options);
+      if (destination === "both") await invokeLocal(cmd, args, options);
+      return clientSettings((await remoteInvoke(cmd, args, options)) as Settings);
+    })();
   }
+  if (destination === "local") return null;
+  return remoteInvoke(cmd, args, options).then(async (result) => {
+    if (cmd === "settings_get") return clientSettings(result as Settings);
+    if (cmd === "project_current" && result) {
+      const project = result as { settings: Settings };
+      return { ...project, settings: await clientSettings(project.settings) };
+    }
+    return result;
+  });
 };
 
 /** Routes the commands the server answers (`session.commands`) to it from now on. */
@@ -115,6 +138,7 @@ export async function connectRemote(sshConfig: string, path: string) {
   try {
     const r = await call(commands.remoteConnect(sshConfig, path, onProgress));
     enableRemote({ sshConfig: r.sshConfig, root: r.root, host: r.host, commands: r.commands });
+    r.project.settings = await clientSettings(r.project.settings);
     useProject.setState({ project: r.project, settings: r.project.settings });
     rememberRemote({
       sshConfig: r.sshConfig,

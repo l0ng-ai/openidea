@@ -1,4 +1,9 @@
 {
+  "Add Maven Projects": "添加 Maven 项目",
+  "Unlink Maven Projects": "取消链接 Maven 项目",
+  "Unlink Maven projects?": "取消链接 Maven 项目？",
+  "Remove this project and its modules from Maven? Files will remain in the Project view.": "从 Maven 中移除此项目及其模块？文件将保留在项目视图中。",
+  "Unlink": "取消链接",
   "(does not exist)": "（不存在）",
   ", e.g.": "，例如",
   ", then press Tab.": "，然后按 Tab。",

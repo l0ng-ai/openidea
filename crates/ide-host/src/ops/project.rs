@@ -129,7 +129,9 @@ pub fn set_settings(
             host.runtime.spawn(async move { lsp.reconfigure().await });
         }
     }
-    let roots_changed = key == "projectStructure" || key.starts_with("projectStructure.");
+    let roots_changed = key == "projectStructure"
+        || key.starts_with("projectStructure.")
+        || "languages.java.maven.unlinkedProjects".starts_with(key);
     // Content roots and excludes (files.exclude, ignored names, excluded folders) reach the
     // index and the watchers without reopening the project (the rescan runs in the background).
     if roots_changed || key == "files" || key.starts_with("files.") {

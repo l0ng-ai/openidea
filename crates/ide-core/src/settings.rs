@@ -569,6 +569,8 @@ pub struct JavaSettings {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MavenSettings {
+    /// Project-relative root POMs removed from the Maven project model.
+    pub unlinked_projects: Vec<String>,
     /// Maven home (or its `mvn` executable); empty = the project's `mvnw`, else `mvn` on `PATH`.
     pub home: String,
     /// User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`.
@@ -689,5 +691,21 @@ mod tests {
         assert_eq!(s.project_structure.exclude_file_patterns(), vec!["*.log", "tmp*"]);
         assert_eq!(s.file_excludes(), vec!["*.log", "tmp*"]);
         assert!(Settings::default().files.file_types.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod maven_linkage_tests {
+    use super::*;
+
+    #[test]
+    fn maven_linkage_defaults_and_round_trips() {
+        let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
+        assert!(old.unlinked_projects.is_empty());
+        let settings =
+            MavenSettings { unlinked_projects: vec!["pom.xml".into(), "services/api/pom.xml".into()], ..old };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert!(encoded.contains("unlinkedProjects"));
+        assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
     }
 }

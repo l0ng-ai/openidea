@@ -74,6 +74,7 @@ describe("build tools feature", () => {
         .map((a) => a.id)
         .sort(),
     ).toEqual([
+      "maven.addProjects",
       "maven.analyzeDependencies",
       "maven.executeGoal",
       "maven.reload",
