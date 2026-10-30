@@ -31,7 +31,7 @@ describe("languages settings", () => {
     expect(v.java.jdtlsVmArgs).toBe("-Xmx2g");
     expect(v.java.jdk).toBe("");
     expect(v.java.jdtlsJdk).toBe("/opt/jdk-25");
-    expect(v.java.maven).toEqual({ home: "/opt/maven", userSettings: "", localRepository: "" });
+    expect(v.java.maven).toEqual({ home: "/opt/maven", userSettings: "", localRepository: "", unlinkedProjects: [] });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
   });
 

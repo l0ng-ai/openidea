@@ -967,6 +967,67 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
     model
 }
 
+/// Shared linkage decision for every Maven consumer, including modules outside a reactor directory.
+#[derive(Default)]
+pub struct UnlinkedProjects {
+    poms: std::collections::BTreeSet<String>,
+}
+
+impl UnlinkedProjects {
+    pub fn load(root: &Path, settings: &ide_core::settings::MavenSettings) -> Self {
+        if settings.unlinked_projects.is_empty() {
+            return Self::default();
+        }
+        Self::from_model(&load(root), settings)
+    }
+
+    pub fn from_model(model: &MavenModel, settings: &ide_core::settings::MavenSettings) -> Self {
+        let mut result = Self::default();
+        let mut pending = settings.unlinked_projects.clone();
+        while let Some(pom) = pending.pop() {
+            let pom = normalized_pom(&pom);
+            if !result.poms.insert(pom.clone()) {
+                continue;
+            }
+            if let Some(project) = model.projects.iter().find(|p| normalized_pom(&p.pom) == pom) {
+                pending.extend(project.modules.iter().cloned());
+            }
+        }
+        result
+    }
+
+    pub fn contains(&self, pom: &str) -> bool {
+        self.poms.contains(&normalized_pom(pom))
+    }
+
+    pub fn poms(&self) -> impl Iterator<Item = &str> {
+        self.poms.iter().map(String::as_str)
+    }
+
+    pub fn filter(&self, model: &mut MavenModel) {
+        model.projects.retain(|p| !self.contains(&p.pom));
+        for project in &mut model.projects {
+            project.modules.retain(|p| !self.contains(p));
+        }
+        model.profiles.retain(|p| model.projects.iter().any(|project| project.profiles.contains(&p.id)));
+    }
+}
+
+fn normalized_pom(pom: &str) -> String {
+    let pom = pom.replace('\\', "/");
+    let mut parts = Vec::new();
+    for part in pom.split('/') {
+        match part {
+            "" | "." => {}
+            ".." if parts.last().is_some_and(|p| *p != "..") => {
+                parts.pop();
+            }
+            part => parts.push(part),
+        }
+    }
+    parts.join("/")
+}
+
 /// Every POM of the model (for change detection).
 pub fn build_files(root: &Path, model: &MavenModel) -> Vec<PathBuf> {
     model.projects.iter().map(|p| root.join(&p.pom)).collect()
@@ -1457,5 +1518,47 @@ mod tests {
             );
             assert_eq!((d.group_id.as_str(), d.version.as_deref()), ("g", Some("1")), "{line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod linkage_tests {
+    use super::*;
+    use ide_core::settings::MavenSettings;
+
+    #[test]
+    fn excludes_reactor_modules_and_profiles_but_keeps_other_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (name, body) in [
+            (
+                "a",
+                "<modules><module>child</module><module>../shared</module></modules><profiles><profile><id>only-a</id></profile></profiles>",
+            ),
+            ("a/child", ""),
+            ("shared", ""),
+            ("b", ""),
+        ] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+            std::fs::write(
+                root.join(name).join("pom.xml"),
+                format!("<project><artifactId>{name}</artifactId>{body}</project>"),
+            )
+            .unwrap();
+        }
+        let original = load_with_repo(root, None);
+        let settings = MavenSettings { unlinked_projects: vec!["./a/pom.xml".into()], ..Default::default() };
+        let unlinked = UnlinkedProjects::from_model(&original, &settings);
+        assert!(unlinked.contains("a/child/pom.xml"));
+        assert!(unlinked.contains("shared/pom.xml"));
+        assert!(unlinked.contains("a/../shared/pom.xml"));
+        assert!(!unlinked.contains("b/pom.xml"));
+        let mut model = original.clone();
+        unlinked.filter(&mut model);
+        assert_eq!(model.projects.iter().map(|p| p.pom.as_str()).collect::<Vec<_>>(), ["b/pom.xml"]);
+        assert!(model.profiles.is_empty());
+        let mut restored = original.clone();
+        UnlinkedProjects::from_model(&original, &MavenSettings::default()).filter(&mut restored);
+        assert_eq!(restored, original);
     }
 }

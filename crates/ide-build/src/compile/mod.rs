@@ -234,6 +234,9 @@ fn maven_steps(root: &Path, model: &BuildModel, kind: BuildKind, module: Option<
     let Some(module) = module else { return Ok(tops.iter().map(|p| step(p, &[])).collect()) };
     // The reactor root containing the module builds it with what it depends on (`-pl … -am`).
     let rel = rel_str(root, module);
+    if !m.projects.iter().any(|p| p.dir == rel) {
+        return Err(IdeError::not_found("no linked Maven project found for module"));
+    }
     let top = tops
         .iter()
         .filter(|t| t.dir.is_empty() || rel == t.dir || rel.starts_with(&format!("{}/", t.dir)))

@@ -27,7 +27,12 @@ fn java_env(project_jdk: Option<&ide_sdk::java::Jdk>, release: Option<u32>) -> B
 /// The build model with the launch settings applied: the JDK (`JAVA_HOME`), and
 /// the Maven home and options from Settings › Maven.
 pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
-    let mut model = ide_build::load(root, cache, ide_sdk::apply::maven_local_repository(root, settings));
+    let mut model = ide_build::load_linked(
+        root,
+        cache,
+        ide_sdk::apply::maven_local_repository(root, settings),
+        &settings.languages.java.maven,
+    );
     let jdk = ide_sdk::apply::project_jdk(root, settings);
     if let Some(m) = &mut model.maven {
         let mvn = ide_sdk::apply::maven_command(root, settings);
@@ -107,6 +112,7 @@ pub async fn build_sync(
             env,
             maven_command: ide_sdk::apply::maven_command(&root, &settings).map(|p| p.to_string_lossy().into_owned()),
             maven_options: ide_sdk::apply::maven_options(&root, &settings),
+            maven_settings: settings.languages.java.maven.clone(),
         };
         let progress = |p: SyncProgress| {
             let _ = on_progress.send(p);

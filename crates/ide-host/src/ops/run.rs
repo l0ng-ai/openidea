@@ -10,13 +10,15 @@ pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     let root = project.root.clone();
     let user = ide_run::load_user_configs(&root)?;
     let suppressed = ide_run::load_suppressed_config_ids(&root)?;
-    let mut all: Vec<RunConfig> = ide_run::detect(&root)
+    let settings = project.settings.effective();
+    let excluded_poms = crate::project::unlinked_maven_poms(&root, &settings);
+    let mut all: Vec<RunConfig> = ide_run::detect_excluding(&root, &excluded_poms)
         .into_iter()
         .filter(|d| !suppressed.contains(&d.id) && !user.iter().any(|u| u.id == d.id))
         .collect();
     all.extend(user);
     // Project interpreter / package manager / toolchains from Languages & Frameworks.
-    ide_sdk::apply::apply_to_run_configs(&mut all, &root, &project.settings.effective());
+    ide_sdk::apply::apply_to_run_configs(&mut all, &root, &settings);
     Ok(all)
 }
 

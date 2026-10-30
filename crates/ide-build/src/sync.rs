@@ -23,6 +23,7 @@ pub struct SyncProgress {
 
 #[derive(Clone, Debug, Default)]
 pub struct SyncOptions {
+    pub maven_settings: ide_core::settings::MavenSettings,
     /// `-o` / `--offline`.
     pub offline: bool,
     /// Maven profiles (`-P`), `!id` deactivates.
@@ -198,7 +199,8 @@ pub fn sync_maven(
     cancel: &CancellationToken,
     progress: &dyn Fn(SyncProgress),
 ) -> IdeResult<()> {
-    let model = maven::load(root);
+    let mut model = maven::load(root);
+    maven::UnlinkedProjects::from_model(&model, &options.maven_settings).filter(&mut model);
     std::fs::create_dir_all(cache_dir)?;
     let mut cache =
         MavenCache { hash: hash_files(&maven::build_files(root, &model)), verbose: true, ..MavenCache::default() };

@@ -5,6 +5,8 @@
  * choices (per project, in localStorage) and running goals through the run
  * feature's actions.
  */
+import { confirm } from "@/workbench/messages";
+import { tx } from "@/platform/i18n";
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import { executeAction } from "@/platform/actions";
@@ -170,6 +172,54 @@ export async function loadModel(): Promise<void> {
   }
 }
 
+const UNLINKED_PROJECTS = "languages.java.maven.unlinkedProjects";
+
+async function setLinked(root: string, pom: string, linked: boolean) {
+  if (useProject.getState().project?.root !== root) return;
+  const settings = await commands.settingsGet();
+  if (useProject.getState().project?.root !== root) return;
+  const previous = settings.languages.java?.maven?.unlinkedProjects ?? [];
+  const next = linked ? previous.filter((p) => p !== pom) : [...new Set([...previous, pom])];
+  if (JSON.stringify(next) === JSON.stringify(previous)) return;
+  await call(commands.settingsSet("project", UNLINKED_PROJECTS, JSON.stringify(next)));
+  await loadModel();
+}
+
+export async function unlinkProjects(pom: string | null) {
+  const { root, model } = useBuild.getState();
+  if (!root || !pom || !model?.maven?.projects.some((p) => p.pom === pom && !p.aggregated)) return;
+  if (
+    !(await confirm({
+      title: "Unlink Maven projects?",
+      message: "Remove this project and its modules from Maven? Files will remain in the Project view.",
+      ok: "Unlink",
+    }))
+  )
+    return;
+  cancelSync("maven");
+  await setLinked(root, pom, false);
+}
+
+export async function addProjects() {
+  const root = useProject.getState().project?.root;
+  if (!root || !isTauri()) return;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    title: tx`Add Maven Projects`,
+    directory: false,
+    multiple: false,
+    defaultPath: root,
+    filters: [{ name: "pom.xml", extensions: ["xml"] }],
+  });
+  if (typeof picked !== "string") return;
+  const base = root.replace(/\\/g, "/").replace(/\/$/, "");
+  const path = picked.replace(/\\/g, "/");
+  if (!path.startsWith(`${base}/`)) return;
+  const pom = path.slice(base.length + 1);
+  if (pom.split("/").some((part) => part === ".." || part === ".") || pom.split("/").pop() !== "pom.xml") return;
+  await setLinked(root, pom, true);
+}
+
 /** Tree keys expanded on first show: the top-level projects. */
 export function initialExpanded(tool: BuildTool, model: BuildModel): Set<string> {
   if (tool === "maven")
@@ -182,6 +232,7 @@ const TITLES: Record<BuildTool, string> = { maven: "Syncing Maven projects", gra
 /** Reloads all projects of `tool` from the build tool itself (effective POM, dependency tree, task list). */
 export async function syncTool(tool: BuildTool): Promise<void> {
   const state = useBuild.getState();
+  const gen = generation;
   const root = state.root;
   if (!root || !isTauri() || state.syncing[tool]) return;
   const request = nextRequestId();
@@ -201,7 +252,7 @@ export async function syncTool(tool: BuildTool): Promise<void> {
   const offline = tool === "maven" ? settings.maven.offline : settings.gradle.offline;
   try {
     const next = await call(commands.buildSync(tool, request, offline, profiles, channel));
-    if (useBuild.getState().root !== root) return;
+    if (useBuild.getState().root !== root || gen !== generation) return;
     const configs = await call(commands.runConfigs()).catch(() => useBuild.getState().configs);
     useBuild.setState({ model: next, configs });
     const error = tool === "maven" ? next.maven?.syncError : next.gradle?.syncError;
