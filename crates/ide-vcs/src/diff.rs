@@ -174,6 +174,45 @@ fn quote_path(path: &str) -> String {
     out
 }
 
+/// Apply selected line hunks while retaining the base's line separators.
+pub(crate) fn selected_text(old: &str, new: &str, selected: &[usize]) -> String {
+    let old_norm = normalize_eol(old);
+    let new_norm = normalize_eol(new);
+    let old_lines = split_lines(&old_norm);
+    let new_lines = split_lines(&new_norm);
+    let old_raw = split_raw_lines(old);
+    let eol = if old.contains("\r\n") {
+        "\r\n"
+    } else if old.contains('\r') {
+        "\r"
+    } else {
+        "\n"
+    };
+    let mut result = String::new();
+    let mut cursor = 0;
+    for (index, (before, after)) in raw_hunks(&old_lines, &new_lines).iter().enumerate() {
+        if !selected.contains(&index) {
+            continue;
+        }
+        for line in &old_raw[cursor..before.start as usize] {
+            result.push_str(line);
+        }
+        for line in &new_lines[after.start as usize..after.end as usize] {
+            if let Some(body) = line.strip_suffix('\n') {
+                result.push_str(body);
+                result.push_str(eol);
+            } else {
+                result.push_str(line);
+            }
+        }
+        cursor = before.end as usize;
+    }
+    for line in &old_raw[cursor..] {
+        result.push_str(line);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

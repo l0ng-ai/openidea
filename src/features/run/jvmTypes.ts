@@ -8,6 +8,7 @@ import { call, commands, type RunConfig } from "@/platform/ipc";
 import { CLASSPATH, parseJavaArgs, TEST_CLASSPATH } from "@/platform/javaLaunch";
 import type { RunConfigTypeContribution, RunConfigTypeField } from "@/workbench/contributions";
 import { formatArgs, parseArgs } from "./configs";
+import { commandName } from "./commandName";
 
 export const isWindows = () => typeof navigator !== "undefined" && /win/i.test(navigator.platform);
 
@@ -37,8 +38,6 @@ const profilesField = (hint: string, visible?: RunConfigTypeField["visible"]): R
   hint,
   ...(visible ? { visible } : {}),
 });
-
-const isJava = (command: string) => /^java(\.exe)?$/i.test(command.replace(/\\/g, "/").split("/").pop() ?? "");
 
 /** Main classes of the JVM configurations, offered while typing. */
 function mainClasses(configs: readonly RunConfig[]): string[] {
@@ -85,7 +84,7 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
       const main = p.mainClass?.trim() ?? "";
       const profiles = spring ? (p.activeProfiles?.trim() ?? "") : "";
       return {
-        command: "java",
+        command: p.executable || "java",
         args: [
           ...splitJvmArgs(p.vmOptions),
           "-cp",
@@ -98,7 +97,7 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
     },
     // Configurations detected or saved before these fields existed: `java [vm] -cp <cp> Main [args]`.
     paramsFrom(c) {
-      if (!isJava(c.command)) return null;
+      if (!/^java$/i.test(commandName(c.command))) return null;
       const parsed = parseJavaArgs(c.args);
       const classpath =
         parsed.classpath === "runtime"
@@ -114,6 +113,7 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
         rest = rest.slice(1);
       }
       return {
+        ...(c.command !== "java" ? { executable: c.command } : {}),
         mainClass: parsed.mainClass,
         vmOptions: formatArgs(parsed.vmArgs),
         programArgs: formatArgs(rest),

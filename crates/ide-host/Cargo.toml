@@ -10,6 +10,7 @@ name = "openidea-server"
 path = "src/bin/server.rs"
 
 [dependencies]
+encoding_rs.workspace = true
 ide-core.workspace = true
 ide-text.workspace = true
 ide-vfs.workspace = true

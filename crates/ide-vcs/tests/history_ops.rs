@@ -113,7 +113,7 @@ fn merge_versions_put_the_users_work_on_the_left() {
     let repo = fx.repo();
     let topic = fx.git(&["rev-parse", "topic"]);
     assert!(repo.rebase("main").is_err());
-    let v = repo.merge_versions(&fx.path("f.txt")).unwrap();
+    let v = repo.merge_versions(&fx.path("f.txt"), encoding_rs::UTF_8).unwrap();
     assert_eq!(v.ours.as_deref(), Some("topic\n"));
     assert_eq!(v.theirs.as_deref(), Some("main\n"));
     assert_eq!(v.base.as_deref(), Some("base\n"));
@@ -129,7 +129,7 @@ fn merge_versions_put_the_users_work_on_the_left() {
 
     // Merge: not swapped; the merged branch is named.
     assert!(repo.merge("main").is_err());
-    let v = repo.merge_versions(&fx.path("f.txt")).unwrap();
+    let v = repo.merge_versions(&fx.path("f.txt"), encoding_rs::UTF_8).unwrap();
     assert_eq!(v.ours.as_deref(), Some("topic\n"));
     assert_eq!(v.theirs.as_deref(), Some("main\n"));
     assert!(!v.sides.reversed);
@@ -140,7 +140,7 @@ fn merge_versions_put_the_users_work_on_the_left() {
     // Cherry-pick: not swapped; the picked commit is named.
     let main = fx.git(&["rev-parse", "main"]);
     assert!(repo.cherry_pick(std::slice::from_ref(&main), &cancel, &out).is_err());
-    let v = repo.merge_versions(&fx.path("f.txt")).unwrap();
+    let v = repo.merge_versions(&fx.path("f.txt"), encoding_rs::UTF_8).unwrap();
     assert_eq!(v.ours.as_deref(), Some("topic\n"));
     assert!(!v.sides.reversed);
     assert_eq!(v.sides.operation.as_deref(), Some("cherry-pick"));
@@ -374,7 +374,7 @@ fn unshelve_with_conflict_leaves_merge_state() {
     assert_eq!(outcome.conflicts, vec!["f.txt".to_string()]);
     let text = fx.read("f.txt");
     assert!(text.contains("<<<<<<<") && text.contains("SHELVED") && text.contains("COMMITTED"), "{text}");
-    let (base, ours, theirs) = repo.conflict_versions(&fx.path("f.txt")).unwrap();
+    let (base, ours, theirs) = repo.conflict_versions(&fx.path("f.txt"), encoding_rs::UTF_8).unwrap();
     assert!(base.is_some() && ours.unwrap().contains("COMMITTED") && theirs.unwrap().contains("SHELVED"));
     // Kept on the shelf when not removing.
     assert_eq!(shelf::list(&shelf).unwrap().len(), 1);

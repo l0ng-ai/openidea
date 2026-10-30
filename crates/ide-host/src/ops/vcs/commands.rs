@@ -187,18 +187,24 @@ pub async fn vcs_branch_info(host: &Host, window: &str, repo: Option<PathBuf>) -
 pub fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
     let project = host.project(window)?;
     let text = project.text_of(&path)?;
-    project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false))
+    project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
 }
 
 pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<String>) -> IdeResult<Option<String>> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo_of(&path, |r| r.file_at(&path, rev.as_deref()))).await
+    blocking(move || {
+        project.with_repo_of(&path, |r| r.file_at(&path, rev.as_deref(), project.vcs_encoding(&path, rev.as_deref())?))
+    })
+    .await
 }
 
 pub async fn vcs_blame(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<BlameLine>> {
     let project = host.project(window)?;
     let text = project.documents.text_of(&path);
-    blocking(move || project.with_repo_of(&path, |r| r.blame(&path, text.as_deref()))).await
+    blocking(move || {
+        project.with_repo_of(&path, |r| r.blame(&path, text.as_deref(), project.vcs_encoding(&path, None)?))
+    })
+    .await
 }
 
 pub async fn vcs_log(host: &Host, window: &str, repo: Option<PathBuf>, query: LogQuery) -> IdeResult<Vec<Commit>> {
@@ -276,7 +282,7 @@ pub async fn vcs_unstage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeR
 
 pub async fn vcs_stage_patch(host: &Host, window: &str, patch: String) -> IdeResult<()> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo(|r| r.stage_patch(&patch))).await
+    blocking(move || project.with_repo(|r| r.stage_patch(&patch, &|path| project.vcs_encoding(path, Some(":0"))))).await
 }
 
 pub async fn vcs_discard(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<()> {
@@ -293,7 +299,12 @@ pub async fn vcs_commit(
 ) -> IdeResult<String> {
     // Commit hooks may run for a long time.
     let project = host.project(window)?;
-    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.commit_with(&message, &options))).await
+    blocking(move || {
+        project.with_repo_at(repo.as_deref(), |r| {
+            r.commit_with(&message, &options, &|path| project.vcs_encoding(path, None))
+        })
+    })
+    .await
 }
 
 pub async fn vcs_checkout(
@@ -464,12 +475,14 @@ pub async fn vcs_remote(
 /// The user's side is `ours` (sides swapped during a rebase, as in IDEA).
 pub async fn vcs_conflict_versions(host: &Host, window: &str, path: PathBuf) -> IdeResult<ide_vcs::MergeVersions> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo_of(&path, |r| r.merge_versions(&path))).await
+    blocking(move || project.with_repo_of(&path, |r| r.merge_versions(&path, project.vcs_encoding(&path, Some(":2"))?)))
+        .await
 }
 
 pub async fn vcs_diff_text(host: &Host, window: &str, path: PathBuf, staged: bool) -> IdeResult<String> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo_of(&path, |r| r.diff_text(&path, staged))).await
+    blocking(move || project.with_repo_of(&path, |r| r.diff_text(&path, staged, project.vcs_encoding(&path, None)?)))
+        .await
 }
 
 /// Line hunks between two arbitrary texts (diff viewer, commit dialog).
@@ -481,13 +494,11 @@ pub fn vcs_diff_hunks(_host: &Host, _window: &str, old_text: String, new_text: S
 /// Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
 pub fn vcs_stage_hunks(host: &Host, window: &str, path: PathBuf, hunks: Vec<u32>) -> IdeResult<()> {
     let project = host.project(window)?;
-    let current = ide_vfs::load_text(&path)?.text;
+    let encoding = project.vcs_encoding(&path, Some(":0"))?;
+    let current = ide_vfs::load_text_as(&path, encoding.name())?.text;
     project.with_repo_of(&path, |r| {
-        let index_text = r.file_at(&path, Some(":0"))?.unwrap_or_default();
-        let rel = path.strip_prefix(r.root()).unwrap_or(&path).to_string_lossy().replace('\\', "/");
         let selected: Vec<usize> = hunks.iter().map(|&h| h as usize).collect();
-        let patch = ide_vcs::build_partial_patch(&rel, &index_text, &current, &selected);
-        if patch.is_empty() { Ok(()) } else { r.stage_patch(&patch) }
+        r.stage_hunks(&path, &current, &selected, encoding)
     })
 }
 

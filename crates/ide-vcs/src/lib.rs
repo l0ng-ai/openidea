@@ -2,6 +2,7 @@
 //! writes (commit, checkout, push/pull, stash, merge) shell out to `git` so
 //! hooks, credentials and signing behave exactly as on the command line.
 
+use encoding_rs::Encoding;
 use ide_core::ignored::IgnoredNames;
 use ide_core::{CancellationToken, IdeResult};
 use serde::{Deserialize, Serialize};
@@ -451,6 +452,7 @@ mod repo;
 mod roots;
 pub mod shelf;
 mod status;
+mod text_encoding;
 mod write;
 
 pub use cli::{detected_git_executable, git_version, set_askpass_env, set_git_executable};
@@ -520,10 +522,24 @@ impl Repo {
     }
     /// Content of `path` at `rev` (default HEAD); `None` if absent there.
     /// `rev` may be any revision git understands, or `":"` / `":0"` for the index.
-    pub fn file_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<String>> {
+    pub fn file_at(&self, path: &Path, rev: Option<&str>, encoding: &'static Encoding) -> IdeResult<Option<String>> {
         let rel = self.rel_path(path)?;
         let repo = self.gix()?;
-        Ok(repo::blob_at(&repo, &rel, rev.unwrap_or("HEAD"))?.map(|b| String::from_utf8_lossy(&b).into_owned()))
+        Ok(repo::blob_at(&repo, &rel, rev.unwrap_or("HEAD"))?.map(|b| text_encoding::decode(&b, encoding).into_owned()))
+    }
+    /// Raw revision bytes, for encoding detection when the working file is absent.
+    pub fn file_bytes_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<Vec<u8>>> {
+        repo::blob_at(&self.gix()?, &self.rel_path(path)?, rev.unwrap_or("HEAD"))
+    }
+    /// Stage selected decoded hunks, retaining the index encoding, BOM and line endings.
+    pub fn stage_hunks(
+        &self,
+        path: &Path,
+        current: &str,
+        selected: &[usize],
+        encoding: &'static Encoding,
+    ) -> IdeResult<()> {
+        write::stage_hunks(self, path, current, selected, encoding)
     }
     /// Hunks of `current_text` against HEAD (or the index when `against_index`).
     ///
@@ -531,7 +547,13 @@ impl Repo {
     /// follows the removed block (equal to the line count when removed at the end).
     /// Files absent from the base yield one `Added` hunk; ignored files, binary files and
     /// paths outside the worktree yield no hunks.
-    pub fn line_hunks(&self, path: &Path, current_text: &str, against_index: bool) -> IdeResult<Vec<LineHunk>> {
+    pub fn line_hunks(
+        &self,
+        path: &Path,
+        current_text: &str,
+        against_index: bool,
+        encoding: &'static Encoding,
+    ) -> IdeResult<Vec<LineHunk>> {
         let Ok(rel) = self.rel_path(path) else { return Ok(Vec::new()) };
         if rel.is_empty() || rel == ".git" || rel.starts_with(".git/") {
             return Ok(Vec::new());
@@ -539,8 +561,8 @@ impl Repo {
         let repo = self.gix()?;
         let base = repo::blob_at(&repo, &rel, if against_index { ":0" } else { "HEAD" })?;
         match base {
-            Some(base) if base.contains(&0) => Ok(Vec::new()),
-            Some(base) => Ok(diff::line_hunks(&String::from_utf8_lossy(&base), current_text)),
+            Some(base) if text_encoding::is_binary(&base, encoding) => Ok(Vec::new()),
+            Some(base) => Ok(diff::line_hunks(&text_encoding::decode(&base, encoding), current_text)),
             None => {
                 if repo::is_ignored(&repo, &rel)? {
                     return Ok(Vec::new());
@@ -551,8 +573,13 @@ impl Repo {
     }
     /// One entry per line of the current text (`current_text`, or the file on disk).
     /// Lines not yet committed carry an all-zero commit id and author "Not Committed Yet".
-    pub fn blame(&self, path: &Path, current_text: Option<&str>) -> IdeResult<Vec<BlameLine>> {
-        write::blame(self, path, current_text)
+    pub fn blame(
+        &self,
+        path: &Path,
+        current_text: Option<&str>,
+        encoding: &'static Encoding,
+    ) -> IdeResult<Vec<BlameLine>> {
+        write::blame(self, path, current_text, encoding)
     }
     /// Commits newest-first in topological order (children before parents).
     ///
@@ -583,8 +610,8 @@ impl Repo {
     }
     /// Unified diff of a file: index↔worktree (`staged == false`, untracked files diff
     /// against /dev/null) or HEAD↔index (`staged == true`). Empty when unchanged.
-    pub fn diff_text(&self, path: &Path, staged: bool) -> IdeResult<String> {
-        write::diff_text(self, path, staged)
+    pub fn diff_text(&self, path: &Path, staged: bool, encoding: &'static Encoding) -> IdeResult<String> {
+        write::diff_text(self, path, staged, encoding)
     }
 
     /// `git config --get <key>` (all scopes); `None` when unset.
@@ -602,8 +629,8 @@ impl Repo {
     }
     /// Applies a unified-diff patch to the index (partial staging of hunks/lines).
     /// Zero-context patches (see [`build_partial_patch`]) are accepted.
-    pub fn stage_patch(&self, patch: &str) -> IdeResult<()> {
-        write::stage_patch(self, patch)
+    pub fn stage_patch(&self, patch: &str, encoding: &dyn Fn(&Path) -> IdeResult<&'static Encoding>) -> IdeResult<()> {
+        write::stage_patch(self, patch, encoding)
     }
     /// Discards unstaged changes: tracked paths are restored from the index (staged
     /// changes are kept), untracked files and directories are deleted.
@@ -614,11 +641,16 @@ impl Repo {
     /// `amend` keeps the previous message.
     pub fn commit(&self, message: &str, amend: bool, sign_off: bool) -> IdeResult<String> {
         let options = CommitOptions { amend, sign_off, author: None, run_hooks: true, partial: Vec::new() };
-        write::commit(self, message, &options)
+        write::commit(self, message, &options, &|_| Ok(encoding_rs::UTF_8))
     }
     /// Commits with the Commit Options popup's choices.
-    pub fn commit_with(&self, message: &str, options: &CommitOptions) -> IdeResult<String> {
-        write::commit(self, message, options)
+    pub fn commit_with(
+        &self,
+        message: &str,
+        options: &CommitOptions,
+        encoding: &dyn Fn(&Path) -> IdeResult<&'static Encoding>,
+    ) -> IdeResult<String> {
+        write::commit(self, message, options, encoding)
     }
     /// Switches to `branch`. With `create`, creates it at HEAD. Without, a remote branch
     /// (`origin/x`) gets a local tracking branch and any other revision is checked out
@@ -867,8 +899,8 @@ impl Repo {
     }
     /// The versions of a conflicted file with the user's work as `ours`, as IDEA's merge
     /// dialog shows them (sides swapped during a rebase).
-    pub fn merge_versions(&self, path: &Path) -> IdeResult<MergeVersions> {
-        let (base, ours, theirs) = self.conflict_versions(path)?;
+    pub fn merge_versions(&self, path: &Path, encoding: &'static Encoding) -> IdeResult<MergeVersions> {
+        let (base, ours, theirs) = self.conflict_versions(path, encoding)?;
         let sides = self.merge_sides()?;
         let (ours, theirs) = if sides.reversed { (theirs, ours) } else { (ours, theirs) };
         let merged = match (&ours, &theirs) {
@@ -878,11 +910,15 @@ impl Repo {
         Ok(MergeVersions { base, ours, theirs, sides, merged })
     }
     /// For conflict resolution: (base, ours, theirs) versions of a conflicted file.
-    pub fn conflict_versions(&self, path: &Path) -> IdeResult<(Option<String>, Option<String>, Option<String>)> {
+    pub fn conflict_versions(
+        &self,
+        path: &Path,
+        encoding: &'static Encoding,
+    ) -> IdeResult<(Option<String>, Option<String>, Option<String>)> {
         let rel = self.rel_path(path)?;
         let repo = self.gix()?;
         let stage = |n: u8| -> IdeResult<Option<String>> {
-            Ok(repo::blob_at(&repo, &rel, &format!(":{n}"))?.map(|b| String::from_utf8_lossy(&b).into_owned()))
+            Ok(repo::blob_at(&repo, &rel, &format!(":{n}"))?.map(|b| text_encoding::decode(&b, encoding).into_owned()))
         };
         Ok((stage(1)?, stage(2)?, stage(3)?))
     }
