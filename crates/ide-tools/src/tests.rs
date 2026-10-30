@@ -24,7 +24,10 @@ impl Env {
     fn tools(&self) -> Tools {
         let mut dirs = vec![self.sys.clone()];
         dirs.extend(bin_dirs_in(&self.root, Platform::current()));
-        Tools::with_paths(self.root.clone(), std::env::join_paths(dirs).unwrap(), Platform::current())
+        let mut tools = Tools::with_paths(self.root.clone(), std::env::join_paths(dirs).unwrap(), Platform::current());
+        // These fixtures test detection and version parsing, not process startup latency.
+        tools.version_timeout = Duration::from_secs(60);
+        tools
     }
 
     #[cfg(unix)]

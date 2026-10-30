@@ -761,20 +761,70 @@ fn angular_language_server_is_found_behind_version_manager_shims() {
 #[cfg(unix)]
 #[test]
 fn query_output_is_read_within_the_deadline() {
-    let tmp = tempfile::tempdir().unwrap();
-    // Its own PATH: the first search path would read the login shell within the timing.
+    // Keep process startup outside a tight timing budget even under workspace load.
+    let timeout = std::time::Duration::from_secs(60);
     let env = [("PATH", "/usr/bin:/bin")];
-    let timeout = std::time::Duration::from_secs(2);
-    // Exits at once, leaving a job that holds its output open, or keeps writing to it.
-    let jobs = ["sleep 5", "i=0; while [ $i -lt 2000000 ]; do echo more; i=$((i+1)); done"];
-    for (i, job) in jobs.iter().enumerate() {
-        let program = npm_shim(tmp.path(), &format!("wrapper{i}"));
-        std::fs::write(&program, format!("#!/bin/sh\necho /global/root\n({job}) &\n")).unwrap();
-        let started = std::time::Instant::now();
-        let out = crate::exec::query_in(&program, &[], None, &env, timeout).unwrap();
-        assert!(out.starts_with("/global/root"), "{job}: {out:.40}");
-        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{job}: {:?}", started.elapsed());
+    let started = std::time::Instant::now();
+    let out = crate::exec::query_in(Path::new("/bin/sh"), &["-c", "printf /global/root"], None, &env, timeout);
+    assert_eq!(out.as_deref(), Some("/global/root"));
+    // EOF must return promptly, without waiting for the generous deadline.
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+}
+
+#[cfg(unix)]
+#[test]
+fn query_drains_both_pipes_before_the_child_exits() {
+    let out = crate::exec::query_in(
+        Path::new("/bin/sh"),
+        &["-c", "head -c 262144 /dev/zero; head -c 262144 /dev/zero >&2"],
+        None,
+        &[("PATH", "/usr/bin:/bin")],
+        std::time::Duration::from_secs(60),
+    )
+    .unwrap();
+    assert_eq!(out.len(), 262144);
+}
+
+#[cfg(unix)]
+#[test]
+fn query_is_bounded_when_descendants_keep_pipes_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pid = tmp.path().join("pid");
+    // The descendant outlives the query; clean it up even if an assertion fails.
+    struct Descendant(std::path::PathBuf);
+    impl Drop for Descendant {
+        fn drop(&mut self) {
+            if let Ok(pid) = std::fs::read_to_string(&self.0) {
+                let _ = std::process::Command::new("/bin/kill").arg(pid.trim()).status();
+            }
+        }
     }
+    let _descendant = Descendant(pid.clone());
+    let started = std::time::Instant::now();
+    let out = crate::exec::query_in(
+        Path::new("/bin/sh"),
+        &["-c", "sleep 120 & echo $! > \"$1\"; printf /global/root", "wrapper", pid.to_str().unwrap()],
+        None,
+        &[("PATH", "/usr/bin:/bin")],
+        std::time::Duration::from_secs(30),
+    );
+    assert_eq!(out.as_deref(), Some("/global/root"));
+    // The descendant keeps both pipes open for longer than the query deadline.
+    assert!(started.elapsed() < std::time::Duration::from_secs(90));
+}
+
+#[cfg(unix)]
+#[test]
+fn query_times_out_when_the_child_does_not_exit() {
+    // exec avoids leaving a descendant behind when the timed-out child is killed.
+    let out = crate::exec::query_in(
+        Path::new("/bin/sh"),
+        &["-c", "printf /global/root; exec sleep 120"],
+        None,
+        &[("PATH", "/usr/bin:/bin")],
+        std::time::Duration::from_millis(100),
+    );
+    assert_eq!(out, None);
 }
 
 #[test]

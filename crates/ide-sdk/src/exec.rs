@@ -78,6 +78,7 @@ pub(crate) fn query_in(
             }
         });
     }
+    drop(tx);
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {

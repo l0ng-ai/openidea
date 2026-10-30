@@ -25,8 +25,28 @@ pub fn search_path() -> OsString {
 pub fn find_command(command: &str, search: &OsStr, root: &Path) -> Option<PathBuf> {
     let path = Path::new(command);
     let explicit = path.parent().is_some_and(|p| !p.as_os_str().is_empty());
-    let command = if explicit { root.join(path) } else { path.to_path_buf() };
-    crate::process::find_executable(command.to_str()?, search)
+    let pathext = host_var_os("PATHEXT");
+    let names = crate::process::executable_names(command, cfg!(windows), pathext.as_deref().and_then(OsStr::to_str));
+    let dirs = if explicit {
+        vec![root.to_path_buf()]
+    } else {
+        std::env::split_paths(search).filter(|p| !p.as_os_str().is_empty()).map(|p| root.join(p)).collect()
+    };
+    dirs.into_iter().find_map(|dir| names.iter().map(|name| dir.join(name)).find(|p| is_executable(p)))
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else { return false };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    true
 }
 
 /// [`search_path`]'s directories, in order and once each. Only absolute ones: a
@@ -104,11 +124,36 @@ mod tests {
         std::fs::create_dir(&bin).unwrap();
         let name = if cfg!(windows) { "ngserver.cmd" } else { "ngserver" };
         std::fs::write(bin.join(name), "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let search = std::env::join_paths([&bin]).unwrap();
         assert_eq!(find_command("ngserver", &search, dir.path()), Some(bin.join(name)));
         assert_eq!(find_command("bin/ngserver", &search, dir.path()), Some(bin.join(name)));
         assert_eq!(find_command(bin.join(name).to_str().unwrap(), &search, dir.path()), Some(bin.join(name)));
         assert_eq!(find_command("absent", &search, dir.path()), None);
+        for command in ["bin/ngserver", bin.join(name).to_str().unwrap()] {
+            assert_eq!(find_command(command, OsStr::new(""), dir.path()), Some(bin.join(name)));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_executable_files_do_not_shadow_commands() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = [tmp.path().join("first"), tmp.path().join("second")];
+        for (dir, mode) in dirs.iter().zip([0o644, 0o755]) {
+            std::fs::create_dir(dir).unwrap();
+            let file = dir.join("ngserver");
+            std::fs::write(&file, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let path = std::env::join_paths(&dirs).unwrap();
+        assert_eq!(find_command("ngserver", &path, tmp.path()), Some(dirs[1].join("ngserver")));
+        assert_eq!(find_command("first/ngserver", &path, tmp.path()), None);
     }
 
     #[cfg(unix)]

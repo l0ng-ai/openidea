@@ -309,6 +309,7 @@ pub struct Tools {
     custom: BTreeMap<String, PathBuf>,
     /// Executables found outside the search path (app bundles), by command.
     found: BTreeMap<String, PathBuf>,
+    version_timeout: Duration,
 }
 
 impl Tools {
@@ -322,7 +323,15 @@ impl Tools {
         let system: Vec<PathBuf> = std::env::split_paths(&search_path).filter(|d| !ours.contains(d)).collect();
         let system_path = std::env::join_paths(&system).unwrap_or_default();
         let child_path = std::env::join_paths(ours.iter().chain(system.iter())).unwrap_or_default();
-        Self { root, system_path, child_path, platform, custom: BTreeMap::new(), found: BTreeMap::new() }
+        Self {
+            root,
+            system_path,
+            child_path,
+            platform,
+            custom: BTreeMap::new(),
+            found: BTreeMap::new(),
+            version_timeout: Duration::from_secs(4),
+        }
     }
 
     /// Reports the executables chosen in settings (command → path) as the tools' location.
@@ -406,7 +415,7 @@ impl Tools {
         let program = sibling.or_else(|| self.which(cmd))?;
         let mut c = self.command(program);
         c.args(args);
-        let (ok, out) = run_quiet(c, Duration::from_secs(4))?;
+        let (ok, out) = run_quiet(c, self.version_timeout)?;
         if !ok {
             return None;
         }
@@ -526,7 +535,7 @@ impl Tools {
                 if cmd == spec.commands[0] { path.clone() } else { path.parent().and_then(|d| self.exe_in(d, cmd))? };
             let mut c = self.command(program);
             c.args(args);
-            let (ok, out) = run_quiet(c, Duration::from_secs(4))?;
+            let (ok, out) = run_quiet(c, self.version_timeout)?;
             if ok { parse_version(&out) } else { None }
         });
         info.status = ToolStatus::Custom;
