@@ -22,7 +22,7 @@ import {
   type Variable,
 } from "@/platform/ipc";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
-import { breakpointsOf, consumeTemporary, refreshStates, resetStatuses } from "./breakpoints/store";
+import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
 import { refreshExceptionFilters } from "./breakpoints/exceptions";
@@ -306,6 +306,7 @@ export async function startSession(
   const startedAt = Date.now();
   pendingStarts++;
   try {
+    await flushBreakpoints();
     const id = await call(commands.debugStart(launch));
     owned.add(id);
     useDebug.setState((s) => {
