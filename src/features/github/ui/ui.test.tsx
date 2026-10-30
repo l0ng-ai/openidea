@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { DEFAULT_DATE_FORMAT } from "@/platform/dateFormat";
+import * as openUrl from "@/platform/openUrl";
 import { Avatar, AvatarStack, avatarSrc, reviewerRingColor } from "./Avatar";
 import { BranchChip, LabelChip, StateTag, labelForeground } from "./chips";
 import { ChooserPopup, chooserItems } from "./ChooserPopup";
+import { Markdown } from "./Markdown";
 import { prettyDate, prettyDateTime } from "./prettyDate";
 
 describe("prettyDate", () => {
@@ -133,5 +135,27 @@ describe("ChooserPopup", () => {
       fireEvent.keyDown(document, { key: "Escape" });
     });
     expect(onClose).toHaveBeenCalledWith([users[1]]);
+  });
+});
+
+describe("Markdown", () => {
+  it("opens web links in the browser and never navigates the page for other links", async () => {
+    const open = vi.spyOn(openUrl, "openExternalUrl").mockResolvedValue();
+    const { container } = render(<Markdown text="[web](https://example.com/a) [rel](docs/guide.md)" />);
+    const links = await vi.waitFor(() => {
+      const found = container.querySelectorAll("a");
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    const click = (a: Element) => {
+      const e = new MouseEvent("click", { bubbles: true, cancelable: true });
+      a.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    expect(click(links[0]!)).toBe(true);
+    expect(open).toHaveBeenCalledWith("https://example.com/a");
+    open.mockClear();
+    expect(click(links[1]!)).toBe(true);
+    expect(open).not.toHaveBeenCalled();
   });
 });

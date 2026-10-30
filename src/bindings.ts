@@ -909,13 +909,6 @@ export const commands = {
 	ghPrCreate: (request: RequestId, pr: CreatePullRequest, onOutput: Channel<string>) => typedError<string, IdeError>(__TAURI_INVOKE("gh_pr_create", { request, pr, onOutput })),
 	ghPrReview: (number: number, event: ReviewEvent, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_review", { number, event, body })),
 	ghPrComment: (number: number, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_comment", { number, body })),
-	/**  Merges, squashes or rebases a pull request into its base. */
-	ghPrMerge: (number: number, merge: MergePullRequest) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_merge", { number, merge })),
-	/**  Closes, reopens or marks a draft pull request ready for review. */
-	ghPrChangeState: (number: number, change: PrStateChange) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_change_state", { number, change })),
-	ghPrAddReviewers: (number: number, logins: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_add_reviewers", { number, logins })),
-	/**  Logins a review can be requested from. */
-	ghPotentialReviewers: () => typedError<string[], IdeError>(__TAURI_INVOKE("gh_potential_reviewers")),
 	/**  Fetches what is missing to diff a pull request locally; returns the revisions to compare. */
 	ghPrPrepareDiff: (request: RequestId, number: number, headOid: string, baseOid: string, baseRef: string, nameWithOwner: string, onOutput: Channel<string>) => typedError<PrDiffRevisions, IdeError>(__TAURI_INVOKE("gh_pr_prepare_diff", { request, number, headOid, baseOid, baseRef, nameWithOwner, onOutput })),
 	/**  The requests of an `.http` file (gutter run icons, Run All). */
@@ -4219,8 +4212,6 @@ export type MenuNode = { kind: "submenu"; id: string; label: string; children: M
 /**  A disabled placeholder such as "No Recent Projects". */
 { kind: "placeholder"; id: string; label: string } | { kind: "separator" };
 
-export type MergeMethod = "merge" | "squash" | "rebase";
-
 /**  Merge dialog › Modify options (shared by the Pull dialog). */
 export type MergeOptions = {
 	noFf?: boolean,
@@ -4229,17 +4220,6 @@ export type MergeOptions = {
 	noCommit?: boolean,
 	/**  `-m`: message of the merge commit (Merge dialog only). */
 	message?: string | null,
-};
-
-export type MergePullRequest = {
-	method: MergeMethod,
-	/**  Commit subject and body (merge / squash; ignored for rebase). Empty: GitHub's default. */
-	subject: string,
-	body: string,
-	/**  The head the user saw: the merge fails if the branch moved since. */
-	headOid: string,
-	/**  Merge with administrator privileges although requirements are not met. */
-	admin: boolean,
 };
 
 /**
@@ -4608,10 +4588,6 @@ export type PrReviewer = {
 };
 
 export type PrState = "open" | "closed" | "merged";
-
-export type PrStateChange = "close" | "reopen" | 
-/**  Draft → ready for review. */
-"ready";
 
 export type PrStateFilter = "open" | "closed" | "merged" | "all";
 

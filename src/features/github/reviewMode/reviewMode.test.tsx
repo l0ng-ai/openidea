@@ -156,6 +156,12 @@ describe("model", () => {
     expect(trackedBranch("origin", "refs/pull/7/head", remotes)).toMatchObject({ pullRequest: 7, branch: null });
     expect(trackedBranch(null, null, remotes)).toBeNull();
     expect(trackedBranch(".", "refs/heads/main", remotes)).toBeNull();
+    const alias = [{ name: "origin", url: "git@work-github:o/r.git" }];
+    expect(trackedBranch("origin", "refs/heads/x", alias)).toBeNull();
+    expect(trackedBranch("origin", "refs/heads/x", alias, { owner: "o", name: "r" })?.repository).toEqual({
+      owner: "o",
+      name: "r",
+    });
     expect(trackedBranch("gitlab", "refs/heads/x", [{ name: "gitlab", url: "git@gitlab.com:o/r.git" }])).toBeNull();
   });
 

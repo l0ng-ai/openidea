@@ -8,6 +8,7 @@
  * `github.pullRequests`, `.createPullRequest`, `.checkoutPullRequest`, `.openInBrowser`
  * and `.refresh` are the Git › GitHub menu's.
  */
+import "./ui/palette.css";
 import { registerActions, type Action } from "@/platform/actions";
 import { getContext, setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";

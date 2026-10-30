@@ -16,7 +16,7 @@
 import type { LineHunk } from "@/bindings";
 import type { GHPullRequestReviewThread, GHRepositoryCoordinates } from "../api/types";
 import type { PatchHunk } from "../diff/model";
-import { parseGitHubRemote } from "../data/model";
+import { parseGitHubRemote, remoteOfRepository } from "../data/model";
 
 // ---------------------------------------------------------------------------
 // The pull request of the current branch
@@ -34,16 +34,19 @@ export interface TrackedBranch {
 /**
  * The remote branch the current branch tracks (`findHostedRemoteBranchTrackedByCurrent`):
  * `remote` is a remote's name or URL (gh sets URLs for forks), `merge` the remote ref.
- * Null when it tracks nothing or the remote is not on GitHub.
+ * Null when it tracks nothing or the remote is not on GitHub. `connected` is recognised by
+ * the URL's path too, for a remote behind an SSH host alias.
  */
 export function trackedBranch(
   remote: string | null,
   merge: string | null,
   remotes: ReadonlyArray<{ name: string; url: string }>,
+  connected?: GHRepositoryCoordinates,
 ): TrackedBranch | null {
   if (!remote || !merge || remote === ".") return null;
   const url = remotes.find((r) => r.name === remote)?.url ?? remote;
-  const repository = parseGitHubRemote(url);
+  const repository =
+    parseGitHubRemote(url) ?? (connected && remoteOfRepository([{ name: remote, url }], connected) ? connected : null);
   if (!repository) return null;
   const pr = /^refs\/pull\/(\d+)\/head$/.exec(merge);
   if (pr) return { repository, branch: null, pullRequest: Number(pr[1]) };

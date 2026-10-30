@@ -113,6 +113,7 @@ const fetchers: { [K in PullRequestSlice]: (number: number) => Promise<Slices[K]
   mergeability: async (n) => {
     const data = await api.findPullRequestMergeability(n);
     if (!data) throw new Error(`Pull request #${n} not found`);
+    scheduleMergeabilityCheck(n, data.mergeable);
     return buildMergeabilityState(data, currentUserHasPermission("ADMIN"));
   },
   commits: (n) => api.allPages((c) => api.pullRequestCommitsPage(n, c)),
@@ -125,6 +126,25 @@ const fetchers: { [K in PullRequestSlice]: (number: number) => Promise<Slices[K]
   pendingReview: async (n) => api.findPendingReview(await pullRequestId(n)),
   participants: (n) => api.allPages((c) => api.pullRequestParticipantsPage(n, c)),
 };
+
+/** GitHub computes mergeability in the background: `UNKNOWN` is asked again a few times. */
+const MERGEABILITY_RECHECK_MS = 3000;
+const MERGEABILITY_RECHECKS = 10;
+const mergeabilityRechecks = new Map<number, number>();
+
+function scheduleMergeabilityCheck(number: number, mergeable: string) {
+  if (mergeable !== "UNKNOWN") {
+    mergeabilityRechecks.delete(number);
+    return;
+  }
+  const done = mergeabilityRechecks.get(number) ?? 0;
+  if (done >= MERGEABILITY_RECHECKS) return;
+  mergeabilityRechecks.set(number, done + 1);
+  const started = epoch;
+  setTimeout(() => {
+    if (started === epoch) void reloadPullRequestData(number, "mergeability").catch(() => undefined);
+  }, MERGEABILITY_RECHECK_MS);
+}
 
 const inFlight = new Map<string, { seq: number; promise: Promise<unknown> }>();
 let seqCounter = 0;
@@ -202,7 +222,7 @@ export function cachedDetails(number: number): GHPullRequest | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Timeline (`GHPRTimelineDataProvider`: pages of 100, then polled for new items)
+// Timeline (`GHPRTimelineDataProvider`: pages of 100)
 
 function timelineOf(number: number): TimelineState {
   return usePullRequests.getState().prs[number]?.timeline ?? EMPTY_TIMELINE;
@@ -319,6 +339,7 @@ export async function reloadPullRequest(number: number): Promise<void> {
 /** Forgets every pull request (disconnect, another repository). */
 export function clearPullRequests() {
   epoch++;
+  mergeabilityRechecks.clear();
   inFlight.clear();
   timelineRuns.clear();
   usePullRequests.setState({ prs: {} });

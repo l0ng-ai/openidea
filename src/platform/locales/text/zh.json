@@ -5027,6 +5027,7 @@
   "Mark All as Viewed": "全部标记为已查看",
   "Mark All as Not Viewed": "全部标记为未查看",
   "{count} commits": "{count} 个提交",
+  "1 commit": "1 个提交",
   "All commits ({count})": "所有提交 ({count})",
   "Can't load changes": "无法加载更改",
   "Reopen Pull Request": "重新打开拉取请求",

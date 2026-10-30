@@ -30,10 +30,11 @@ export function Markdown({ text, emptyText, className }: MarkdownProps) {
       className={clsx(styles.markdown, className)}
       onClick={(e) => {
         const a = (e.target as HTMLElement).closest("a");
-        if (a?.href && /^https?:/.test(a.href)) {
-          e.preventDefault();
-          void openInBrowser(a.href);
-        }
+        if (!a) return;
+        // Other links (relative ones in a pull request's text) must not navigate the app's page.
+        e.preventDefault();
+        const href = a.getAttribute("href") ?? "";
+        if (/^https?:/i.test(href)) void openInBrowser(href);
       }}
       dangerouslySetInnerHTML={{ __html: html }}
     />

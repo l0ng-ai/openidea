@@ -72,7 +72,13 @@ export function CommitPicker({
         // The link is as wide as the longest hash once one is shown, so the arrows do not move.
         style={commit ? { minWidth: `calc(${longest}ch + 20px)` } : undefined}
       >
-        <span>{commit ? commit.commit.abbreviatedOid : tx`${commits.length} commits`}</span>
+        <span>
+          {commit
+            ? commit.commit.abbreviatedOid
+            : commits.length === 1
+              ? tx("1 commit")
+              : tx`${commits.length} commits`}
+        </span>
         <Icon name="chevron-down" size={12} />
       </button>
       {arrows && (

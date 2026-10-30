@@ -25,6 +25,7 @@ import { isTeam } from "../data/model";
 import { createPullRequest } from "../data/operations";
 import { loadPullRequestTemplate, requireConnection, sameRepository, useGhRepository } from "../data/repository";
 import type { GHRemote } from "../data/repository";
+import { refreshCurrentBranchPullRequest } from "../reviewMode/state";
 import { openPullRequest } from "../toolwindow/open";
 import { closeTab, useGhTabs } from "../toolwindow/store";
 import {
@@ -425,6 +426,7 @@ export async function createFromForm(draft: boolean): Promise<void> {
       onSettingMetadata: () => useCreatePr.setState({ creation: { kind: "metadata" } }),
     });
     useCreatePr.setState({ creation: { kind: "created" } });
+    void refreshCurrentBranchPullRequest();
     await openPullRequest(pr.number);
     closeTab("create");
   } catch (err) {

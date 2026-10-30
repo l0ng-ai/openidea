@@ -6,6 +6,7 @@
  * resolved afterwards when the viewer may. Progress shows in the tool window's banner.
  */
 import { useEffect, useState } from "react";
+import { useVcs } from "@/features/vcs/store";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import type { GHPullRequest, GHPullRequestReviewThread } from "../../api/types";
@@ -65,13 +66,15 @@ export async function applySuggestion(
 
 let branchCache: {
   at: number;
+  version: number;
   value: Promise<{ head: string | null; upstream: string | null; commit: string | null }>;
 } | null = null;
 
-function branchInfo() {
-  if (!branchCache || Date.now() - branchCache.at > 2000) {
+function branchInfo(version: number) {
+  if (!branchCache || branchCache.version !== version || Date.now() - branchCache.at > 2000) {
     branchCache = {
       at: Date.now(),
+      version,
       value: call(commands.vcsBranchInfo(null)).then(
         (b) => ({ head: b.head, upstream: b.upstream, commit: b.headCommit }),
         () => ({ head: null, upstream: null, commit: null }),
@@ -91,20 +94,21 @@ export function isReviewBranch(
   return b.head === pr.headRefName;
 }
 
-/** `isOnReviewBranch`, checked again when the window regains focus; null while unknown. */
+/** `isOnReviewBranch`, checked again when the repository changes or the window regains focus; null while unknown. */
 export function useOnReviewBranch(number: number): boolean | null {
   const pr = usePullRequestData(number, "details").value;
+  const version = useVcs((s) => s.version);
   const [value, setValue] = useState<boolean | null>(null);
   useEffect(() => {
     if (!pr) return;
     let alive = true;
-    const check = () => void branchInfo().then((b) => alive && setValue(isReviewBranch(pr, b)));
+    const check = () => void branchInfo(version).then((b) => alive && setValue(isReviewBranch(pr, b)));
     check();
     window.addEventListener("focus", check);
     return () => {
       alive = false;
       window.removeEventListener("focus", check);
     };
-  }, [pr]);
+  }, [pr, version]);
   return value;
 }

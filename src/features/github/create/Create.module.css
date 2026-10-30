@@ -360,7 +360,7 @@
   align-items: center;
   padding: 0 4px;
   border: none;
-  border-left: 1px solid color-mix(in srgb, var(--fg-button-primary, #fff) 35%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--fg-button-primary) 35%, transparent);
   border-radius: 0 var(--radius-control, 4px) var(--radius-control, 4px) 0;
   background: var(--bg-button-primary);
   color: var(--fg-button-primary);

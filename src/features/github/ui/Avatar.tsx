@@ -37,12 +37,12 @@ export function avatarSrc(url: string, px: number): string {
   return u.toString();
 }
 
-const FALLBACK_COLORS = ["#5e8adf", "#c75450", "#4f9a62", "#b97e2f", "#8f62c8", "#3d9ba3", "#b9578e", "#6e7b8a"];
+const FALLBACK_COLORS = 8;
 
 function fallbackColor(key: string): string {
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
-  return FALLBACK_COLORS[Math.abs(h) % FALLBACK_COLORS.length]!;
+  return `var(--gh-avatar-${Math.abs(h) % FALLBACK_COLORS})`;
 }
 
 export interface AvatarProps {

@@ -17,6 +17,7 @@ import {
   mergeCommitMessage,
   normalizeSearch,
   parseGitHubRemote,
+  remoteOfRepository,
   pullRequestPermissions,
   pullRequestStateIcon,
   repositoryDisplayName,
@@ -455,5 +456,15 @@ describe("batches", () => {
         { items: [2], loading: true, done: false, error: null },
       ]),
     ).toEqual({ items: [1, 2], loading: true, done: false, error: null });
+  });
+});
+
+describe("remoteOfRepository", () => {
+  const repo = { owner: "Org", name: "app" };
+  it("finds the remote behind an SSH host alias by the URL's path", () => {
+    const alias = { name: "origin", url: "git@work-github:org/app.git" };
+    expect(remoteOfRepository([{ name: "other", url: "git@work-github:org/app2.git" }, alias], repo)).toBe(alias);
+    expect(remoteOfRepository([{ name: "x", url: "ssh://work-github/org/app/" }], repo)?.name).toBe("x");
+    expect(remoteOfRepository([{ name: "x", url: "git@work-github:notorg/app.git" }], repo)).toBeNull();
   });
 });

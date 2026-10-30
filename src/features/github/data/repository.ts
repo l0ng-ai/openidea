@@ -27,7 +27,7 @@ import type {
   GHUser,
 } from "../api/types";
 import { createBatchesLoader, mergeBatches, type BatchesLoader, type BatchesState } from "./batches";
-import { hasPermission, parseGitHubRemote } from "./model";
+import { hasPermission, parseGitHubRemote, remoteOfRepository } from "./model";
 
 /** A GitHub remote of the project. */
 export interface GHRemote extends GHRepositoryCoordinates {
@@ -123,20 +123,28 @@ export async function refreshConnection(): Promise<void> {
   useGhRepository.setState({ checking: true });
   let availability: GhAvailability;
   let remotes: GHRemote[] = [];
+  let allRemotes: Array<{ name: string; url: string }> = [];
   try {
     const [a, r] = await Promise.all([
       call(commands.ghAvailability()),
       call(commands.vcsRemotes(null)).catch(() => []),
     ]);
     availability = a;
+    allRemotes = r;
     remotes = githubRemotes(r);
   } catch (e) {
     availability = { kind: "error", message: errorMessage(e) };
   }
   if (seq !== checkSeq) return;
   const defaultRemote = availability.kind === "ready" ? parseNameWithOwner(availability.repo.nameWithOwner) : null;
-  if (defaultRemote && !remotes.some((r) => sameRepository(r, defaultRemote)))
-    remotes.unshift({ ...defaultRemote, remote: "", url: availability.kind === "ready" ? availability.repo.url : "" });
+  if (defaultRemote && !remotes.some((r) => sameRepository(r, defaultRemote))) {
+    const own = remoteOfRepository(allRemotes, defaultRemote);
+    remotes.unshift({
+      ...defaultRemote,
+      remote: own?.name ?? "",
+      url: own?.url ?? (availability.kind === "ready" ? availability.repo.url : ""),
+    });
+  }
   useGhRepository.setState({ availability, remotes, defaultRemote, checking: false });
   if (availability.kind !== "ready") {
     disconnect({ forget: false });

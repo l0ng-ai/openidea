@@ -1,27 +1,8 @@
 /*
  * Code review chat items (collaboration-tools' CodeReviewChatItemUIUtil): FULL timeline
  * items (30px avatar, 14px gap, 10px 16px padding), FULL_SECONDARY replies (20px avatar
- * under the FULL content) and COMPACT diff inlays (20px avatar, 10px padding). Fixed
- * colours are IntelliJ's (dark first, light under data-theme="light").
+ * under the FULL content) and COMPACT diff inlays (20px avatar, 10px padding).
  */
-:global(:root) {
-  --gh-status-info: #40b6e0b2;
-  --gh-status-secondary: #9aa7b0b3;
-  --gh-status-success: #62b543b3;
-  --gh-status-error: #f26522b3;
-  --gh-anchor-line: #544b2d;
-  --gh-reaction-bg: #2b2d30;
-  --gh-reaction-bg-hover: #393b40;
-  --gh-reaction-border-reacted: #548af7;
-  --gh-bubble-border: var(--border);
-}
-:global(:root[data-theme="light"]) {
-  --gh-anchor-line: #fbf1d1;
-  --gh-reaction-bg: #ebecf0;
-  --gh-reaction-bg-hover: #dfe1e5;
-  --gh-reaction-border-reacted: #3574f0;
-}
-
 /* --- Chat item --------------------------------------------------------- */
 
 .item {

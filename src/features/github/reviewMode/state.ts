@@ -49,7 +49,7 @@ async function findPullRequestForCurrentBranch(): Promise<{ number: number; bran
     call(commands.vcsConfigGet(repo, `branch.${head}.merge`)),
     call(commands.vcsRemotes(repo)),
   ]);
-  const tracked = trackedBranch(remote, merge, remotes);
+  const tracked = trackedBranch(remote, merge, remotes, connection.coordinates);
   if (!tracked) return null;
   if (tracked.pullRequest !== null) return { number: tracked.pullRequest, branch: head };
   const query = openPullRequestQuery(connection.coordinates, tracked);

@@ -421,3 +421,24 @@ export function parseGitHubRemote(url: string): GHRepositoryCoordinates | null {
     );
   return m ? { owner: m[1]!, name: m[2]! } : null;
 }
+
+/**
+ * The remote of `repo` among `remotes`, by the URL's path: gh also resolves a remote behind
+ * an SSH host alias (`git@work-github:o/r.git`), which `parseGitHubRemote` can't tell is GitHub.
+ */
+export function remoteOfRepository(
+  remotes: ReadonlyArray<{ name: string; url: string }>,
+  repo: GHRepositoryCoordinates,
+): { name: string; url: string } | null {
+  const path = `${repo.owner}/${repo.name}`.toLowerCase();
+  return (
+    remotes.find((r) => {
+      const url = r.url
+        .trim()
+        .toLowerCase()
+        .replace(/\/$/, "")
+        .replace(/\.git$/, "");
+      return url.endsWith(`/${path}`) || url.endsWith(`:${path}`);
+    }) ?? null
+  );
+}

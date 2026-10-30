@@ -105,7 +105,7 @@ function CommitChooser({ commits, selected }: { commits: Commit[]; selected: Com
         onClick={() => setOpen(true)}
       >
         <span className={selected ? styles.hash : undefined}>
-          {selected ? selected.shortId : tx`${commits.length} commits`}
+          {selected ? selected.shortId : commits.length === 1 ? tx("1 commit") : tx`${commits.length} commits`}
         </span>
         {commits.length > 1 && <Icon name="chevron-down" size={12} />}
       </button>

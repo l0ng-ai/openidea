@@ -82,7 +82,11 @@ function build(state: EditorState, inlays: readonly LineInlay[]): DecorationSet 
 }
 
 // A block formatting context: the content's margins count in the height CodeMirror measures.
-const theme = EditorView.baseTheme({ ".cm-lineInlay": { display: "flow-root" } });
+// The scroller is the size container, for inlay content to stay within the pane's width (`cqw`).
+const theme = EditorView.baseTheme({
+  ".cm-scroller": { containerType: "inline-size" },
+  ".cm-lineInlay": { display: "flow-root" },
+});
 
 /** The inlay field of a view, starting with `initial`. */
 export function lineInlays(initial: readonly LineInlay[] = []): Extension {

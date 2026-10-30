@@ -100,35 +100,6 @@ fn list_arguments() {
 }
 
 #[test]
-fn merge_arguments() {
-    let mut req = MergePullRequest {
-        method: MergeMethod::Squash,
-        subject: " Fix login (#7) ".into(),
-        body: "* one\n\n* two\n".into(),
-        head_oid: "abc123".into(),
-        admin: false,
-    };
-    assert_eq!(
-        merge_args(7, &req),
-        [
-            "pr",
-            "merge",
-            "7",
-            "--squash",
-            "--subject",
-            "Fix login (#7)",
-            "--body",
-            "* one\n\n* two",
-            "--match-head-commit",
-            "abc123"
-        ]
-    );
-    req.method = MergeMethod::Rebase;
-    req.admin = true;
-    assert_eq!(merge_args(7, &req), ["pr", "merge", "7", "--rebase", "--match-head-commit", "abc123", "--admin"]);
-}
-
-#[test]
 fn api_arguments() {
     let req =
         GhApiRequest { method: "post".into(), endpoint: "graphql".into(), body: Some("{}".into()), paginate: false };

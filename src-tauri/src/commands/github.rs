@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_github::{
-    CreatePullRequest, GhApiRequest, GhAvailability, MergePullRequest, PrDiffRevisions, PrListQuery, PrReviewComment,
-    PrStateChange, PullRequestDetails, PullRequestSummary, ReviewEvent,
+    CreatePullRequest, GhApiRequest, GhAvailability, PrDiffRevisions, PrListQuery, PrReviewComment, PullRequestDetails,
+    PullRequestSummary, ReviewEvent,
 };
 use std::path::PathBuf;
 use tauri::ipc::Channel;
@@ -126,55 +126,6 @@ pub async fn gh_pr_review(
 pub async fn gh_pr_comment(window: Window, state: State<'_, AppState>, number: u32, body: String) -> IdeResult<()> {
     let root = root(&window, &state)?;
     blocking(move || ide_github::add_comment(&root, number, &body)).await
-}
-
-/// Merges, squashes or rebases a pull request into its base.
-#[tauri::command]
-#[specta::specta]
-pub async fn gh_pr_merge(
-    window: Window,
-    state: State<'_, AppState>,
-    number: u32,
-    merge: MergePullRequest,
-) -> IdeResult<()> {
-    let root = root(&window, &state)?;
-    let dir = root.clone();
-    let result = blocking(move || ide_github::merge(&dir, number, &merge)).await;
-    vcs_changed(&state, &window, &root);
-    result
-}
-
-/// Closes, reopens or marks a draft pull request ready for review.
-#[tauri::command]
-#[specta::specta]
-pub async fn gh_pr_change_state(
-    window: Window,
-    state: State<'_, AppState>,
-    number: u32,
-    change: PrStateChange,
-) -> IdeResult<()> {
-    let root = root(&window, &state)?;
-    blocking(move || ide_github::change_state(&root, number, change)).await
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn gh_pr_add_reviewers(
-    window: Window,
-    state: State<'_, AppState>,
-    number: u32,
-    logins: Vec<String>,
-) -> IdeResult<()> {
-    let root = root(&window, &state)?;
-    blocking(move || ide_github::add_reviewers(&root, number, &logins)).await
-}
-
-/// Logins a review can be requested from.
-#[tauri::command]
-#[specta::specta]
-pub async fn gh_potential_reviewers(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<String>> {
-    let root = root(&window, &state)?;
-    blocking(move || ide_github::potential_reviewers(&root)).await
 }
 
 /// A GitHub GraphQL / REST call through `gh api`; returns the response body.

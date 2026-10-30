@@ -1,24 +1,4 @@
-/*
- * Shared GitHub UI. Fixed colours are IntelliJ's (dark first, light under
- * data-theme="light"): the unread dot, the state tag and the reviewer rings.
- */
-:global(:root) {
-  --gh-unread: #548af7;
-  --gh-tag-fg: #868a91;
-  --gh-tag-bg: #43454a;
-  --gh-review-approved: #57965c;
-  --gh-review-changes: #e08855;
-  --gh-review-neutral: #6f737a;
-  --gh-conflict: #e05555;
-}
-:global(:root[data-theme="light"]) {
-  --gh-unread: #3574f0;
-  --gh-tag-fg: #6c707e;
-  --gh-tag-bg: #dfe1e5;
-  --gh-review-approved: #5fb865;
-  --gh-review-changes: #ec8f4c;
-  --gh-review-neutral: #818594;
-}
+/* Shared GitHub UI. */
 
 /* Avatar: a circle; the ring (outlined avatars) is 2px with a 1px gap, outside the size. */
 .avatar {
@@ -30,7 +10,7 @@
   overflow: hidden;
   border-radius: 50%;
   background: var(--bg-hover);
-  color: #fff;
+  color: var(--gh-avatar-fg);
   font-weight: 600;
   line-height: 1;
   user-select: none;
