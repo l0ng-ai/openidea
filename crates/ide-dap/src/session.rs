@@ -104,6 +104,11 @@ impl Session {
 
     /// `path` as sent to the adapter (resolved for [`RESOLVES_PATHS`] adapters).
     pub fn adapter_path(&self, path: &Path) -> PathBuf {
+        if self.adapter == "java-debug" {
+            let native = java_source_path(&path.to_string_lossy());
+            self.resolved_paths.lock().insert(native.clone(), path.to_path_buf());
+            return native;
+        }
         if !RESOLVES_PATHS.contains(&self.adapter.as_str()) {
             return path.to_path_buf();
         }
@@ -118,7 +123,11 @@ impl Session {
 
     /// A path from the adapter as the IDE knows it (undoes [`Session::adapter_path`]).
     pub fn client_path(&self, path: &str) -> Option<PathBuf> {
-        self.resolved_paths.lock().get(Path::new(path)).cloned()
+        let key = if self.adapter == "java-debug" { java_source_path(path) } else { PathBuf::from(path) };
+        self.resolved_paths.lock().get(&key).cloned().or_else(|| {
+            (self.adapter == "java-debug" && is_windows_source_path(path))
+                .then(|| PathBuf::from(path.replace('\\', "/")))
+        })
     }
 
     pub fn supports(&self, cap: &str) -> bool {
@@ -243,6 +252,19 @@ impl Session {
             let _ = c.start_kill();
         }
     }
+}
+
+// java-debug treats a forward-slash drive path as a URI (scheme "C").
+// Keep DAP path mode, but use native Windows separators for Java source lookup.
+fn is_windows_source_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'/' | b'\\'))
+        || path.starts_with("//")
+        || path.starts_with(r"\\")
+}
+
+fn java_source_path(path: &str) -> PathBuf {
+    if is_windows_source_path(path) { PathBuf::from(path.replace('/', r"\")) } else { PathBuf::from(path) }
 }
 
 fn with_conditions(v: &mut Value, condition: Option<&str>, hit_condition: Option<&str>) {
