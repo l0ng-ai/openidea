@@ -237,6 +237,19 @@ pub enum PushTags {
     CurrentBranch,
 }
 
+/// Options of [`Repo::push_branch_to`]: which commits to push and where to.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PushBranchOptions<'a> {
+    /// Push only up to this commit of the branch (`None`: the whole branch).
+    pub revision: Option<&'a str>,
+    /// Remote branch name (`None` keeps the upstream's / the local name).
+    pub target: Option<&'a str>,
+    /// Remote to push to (`None` keeps the upstream's / the default remote).
+    pub remote: Option<&'a str>,
+    /// `git push --force-with-lease`.
+    pub force_with_lease: bool,
+}
+
 /// What an interactive rebase does with one commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -781,20 +794,25 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        write::push_branch(self, branch, revision, None, force_with_lease, cancel, on_output)
+        write::push_branch(
+            self,
+            branch,
+            PushBranchOptions { revision, force_with_lease, ..Default::default() },
+            cancel,
+            on_output,
+        )
     }
-    /// [`Repo::push_branch`] to remote branch `target` instead of the upstream's name (the
-    /// Push dialog's editable target).
+    /// [`Repo::push_branch`] to remote branch `target` (None keeps the upstream's name)
+    /// and/or remote `remote` (None keeps the upstream's remote). The Push dialog's
+    /// editable target and remote picker.
     pub fn push_branch_to(
         &self,
         branch: &str,
-        revision: Option<&str>,
-        target: &str,
-        force_with_lease: bool,
+        options: PushBranchOptions<'_>,
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        write::push_branch(self, branch, revision, Some(target), force_with_lease, cancel, on_output)
+        write::push_branch(self, branch, options, cancel, on_output)
     }
     /// Fast-forwards a local branch that is not checked out to its upstream (Branches ›
     /// Update). Fails when the branch has diverged.

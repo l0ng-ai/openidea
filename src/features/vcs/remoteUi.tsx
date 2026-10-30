@@ -288,49 +288,74 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const [commits, setCommits] = useState<Commit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [force, setForce] = useState(false);
+  const [remotes, setRemotes] = useState<string[]>([]);
   const current = branch?.head ?? null;
   const head = pushTarget.branch ?? current;
   // Another branch, or a partial push: `git push <remote> <src>:<dst>` instead of the plain push.
   const explicit = head !== current || !!pushTarget.revision;
-  const upstream = explicit
+  const tracked = explicit
     ? (branches.find((b) => !b.remote && b.name === head)?.upstream ?? null)
     : (branch?.upstream ?? null);
   const revision = pushTarget.revision?.id ?? null;
-  const [setUpstream, setSetUpstream] = useState(!upstream);
+  const trackedRemote = tracked ? tracked.slice(0, tracked.indexOf("/")) : null;
+  const trackedBranch = tracked ? tracked.slice(tracked.indexOf("/") + 1) : null;
+  // The picked remote (Git › Push can target any configured remote, like IDEA).
+  const [remote, setRemote] = useState<string | null>(trackedRemote);
+  const [setUpstream, setSetUpstream] = useState(!tracked);
   const [pushTags, setPushTags] = useState(false);
   const [tagsMode, setTagsMode] = useState<PushTags>("all");
+  const upstream = trackedBranch ? (remote ? `${remote}/${trackedBranch}` : tracked) : tracked;
+
+  useEffect(() => {
+    let alive = true;
+    call(commands.vcsRemotes(repo))
+      .then((list) => {
+        if (!alive) return;
+        setRemotes(list.map((r) => r.name));
+        setRemote((r) => r ?? (list.some((x) => x.name === "origin") ? "origin" : (list[0]?.name ?? null)));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [repo]);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       if (!head) return [];
-      if (!explicit) {
-        const q = outgoingQuery(upstream);
-        return logOf(q.branch, q.limit, q.range, repo);
+      if (!explicit && upstream === tracked) {
+        // The tracked upstream: `@{u}` resolves it even when the name is ambiguous.
+        return logOf("HEAD", 1000, "@{u}..HEAD", repo).catch(() => logOf("HEAD", 50, null, repo));
       }
       const tip = revision ?? head;
-      return upstream ? logOf(tip, 1000, `${upstream}..${tip}`, repo) : logOf(tip, 50, null, repo);
+      // `remote/branch` may not exist locally yet: fall back to the recent history.
+      return upstream
+        ? logOf(tip, 1000, `${upstream}..${tip}`, repo).catch(() => logOf(tip, 50, null, repo))
+        : logOf(tip, 50, null, repo);
     })()
       .then((c) => alive && setCommits(c))
       .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
     };
-  }, [head, upstream, explicit, revision]);
+  }, [head, upstream, explicit, revision, tracked, repo]);
 
-  const remote = upstream ? upstream.slice(0, upstream.indexOf("/")) : null;
-  const defaultTarget = upstream ? upstream.slice(upstream.indexOf("/") + 1) : head;
+  const defaultTarget = trackedBranch ?? head;
   // IDEA's push target is editable: another name pushes to that branch of the same remote.
   const [targetName, setTargetName] = useState(defaultTarget ?? "");
   const edited = targetName.trim();
   const retarget = !!head && !!edited && edited !== defaultTarget;
   const target = retarget ? edited : defaultTarget;
-  const targetLabel = retarget ? `${remote ? `${remote}/` : ""}${edited}` : (upstream ?? "new remote branch");
+  // A remote different from the tracked one always goes through `pushBranch`.
+  const remoteChanged = !!remote && remote !== trackedRemote;
+  const targetLabel =
+    remoteChanged || retarget ? `${remote ? `${remote}/` : ""}${target}` : (upstream ?? "new remote branch");
   const protectedTarget = !!target && isProtectedBranch(target);
   const push = async () => {
     if (force && !protectedTarget && !(await confirmForcePush(remote ? `${remote}/${target}` : (target ?? "")))) return;
     onClose();
-    if ((explicit || retarget) && head) {
+    if ((explicit || retarget || remoteChanged) && head) {
       await runRemote(
         {
           op: "pushBranch",
@@ -338,6 +363,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
           revision,
           force_with_lease: force && !protectedTarget,
           target: retarget ? edited : null,
+          remote: remoteChanged ? remote : null,
         },
         `${revision ? `${head} up to ${revision.slice(0, 8)}` : head} → ${targetLabel}`,
         [repo],
@@ -372,7 +398,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
               label="Force (with lease)"
             />
           </span>
-          {!explicit && !retarget && (
+          {!explicit && !retarget && !remoteChanged && (
             <>
               <Checkbox
                 checked={setUpstream || !upstream}
@@ -409,11 +435,19 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
       <div className={styles.section}>
         {!head
           ? tx("HEAD is detached; check out a branch to push.")
-          : upstream
-            ? `${head}${revision ? ` up to ${revision.slice(0, 8)}` : ""} → ${remote}/`
+          : trackedBranch
+            ? `${head}${revision ? ` up to ${revision.slice(0, 8)}` : ""} → ${remote ?? trackedRemote ?? ""}/`
             : revision
               ? tx`${head} has no upstream: commits up to ${revision.slice(0, 8)} will be pushed as a new branch:`
               : tx`${head} has no upstream: it will be pushed as a new branch and tracked:`}
+        {head && remotes.length > 1 && (
+          <Select<string>
+            value={remote ?? ""}
+            aria-label="Remote"
+            onChange={setRemote}
+            options={remotes.map((r) => ({ value: r, label: r }))}
+          />
+        )}
         {head && (
           <Input
             aria-label="Target branch"

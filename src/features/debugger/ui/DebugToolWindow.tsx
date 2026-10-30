@@ -1,4 +1,5 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction, getAction } from "@/platform/actions";
@@ -621,6 +622,7 @@ function ConsoleView({ session }: { session: DebugSession }) {
           showContextMenu(e, [{ label: "Clear All", icon: "trash", run: () => clearConsole(session.id) }]);
         }}
         role="log"
+        onKeyDown={copySelectionOnKeyDown}
         aria-label={tx("Debug console")}
         tabIndex={0}
       >

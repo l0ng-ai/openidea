@@ -390,7 +390,25 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
   const canReplace = !!opts.search && !invalid;
 
   return (
-    <div className={styles.find} role="search" aria-label={replace ? "Replace in file" : "Find in file"}>
+    <div
+      className={clsx(styles.find, onReplaceShown && styles.findExpandable)}
+      role="search"
+      aria-label={replace ? "Replace in file" : "Find in file"}
+    >
+      {onReplaceShown && (
+        <IconButton
+          icon={replace ? "chevron-down" : "chevron-right"}
+          title={replace ? "Hide Replace" : "Show Replace"}
+          size="small"
+          className={styles.findExpand}
+          aria-expanded={replace}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            if (replaceBoxRef.current?.contains(document.activeElement)) inputRef.current?.focus();
+            onReplaceShown(!replace);
+          }}
+        />
+      )}
       <div ref={findBoxRef} className={styles.findField}>
         <SearchField
           ref={inputRef}
@@ -450,15 +468,6 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
           pressed={scoped || opts.context !== "any"}
           onClick={() => setFilterMenu(true)}
         />
-        {onReplaceShown && (
-          <IconButton
-            icon="replace"
-            title={replace ? "Hide Replace" : "Show Replace"}
-            size="small"
-            pressed={replace}
-            onClick={() => onReplaceShown(!replace)}
-          />
-        )}
       </div>
       <IconButton icon="close" title="Close" shortcut="⎋" size="small" className={styles.findClose} onClick={close} />
       {replace && (

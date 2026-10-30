@@ -228,6 +228,7 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
 
 function menu(item: ServiceTreeItem): MenuItem[] {
   const items: MenuItem[] = actions(item).map((a) => ({
+    id: a.id,
     label: a.title,
     icon: a.icon,
     disabled: a.disabled,

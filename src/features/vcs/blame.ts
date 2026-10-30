@@ -106,7 +106,7 @@ class BlameRefresher implements PluginValue {
   private schedule(delay: number) {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
-      void call(commands.vcsBlame(this.path))
+      void call(commands.vcsBlame(this.path, null))
         .then((lines) => {
           if (!this.destroyed && this.view.state.field(blameField, false))
             this.view.dispatch({ effects: setBlame.of(lines) });
@@ -153,7 +153,7 @@ function lineAt(view: EditorView, from: number): BlameLine | undefined {
   return found;
 }
 
-function blameExtension(lines: BlameLine[], path: string): Extension {
+function blameExtension(lines: BlameLine[], path: string, live: boolean): Extension {
   return [
     blameField.init((state) => ({ lines, markers: build(lines, state.doc) })),
     Prec.high(
@@ -186,14 +186,15 @@ function blameExtension(lines: BlameLine[], path: string): Extension {
                     { kind: "separator" as const },
                   ]
                 : []),
-              { label: "Close Annotations", run: () => setAnnotations(view, null, path) },
+              { label: "Close Annotations", run: () => setAnnotations(view, null, path, false) },
             ]);
             return true;
           },
         },
       }),
     ),
-    ViewPlugin.define((view) => new BlameRefresher(view, path)),
+    // Static content (a merge pane's side) is not re-blamed on edits / HEAD moves.
+    ...(live ? [ViewPlugin.define((view) => new BlameRefresher(view, path))] : []),
     blameTheme,
   ];
 }
@@ -202,19 +203,19 @@ export function annotationsShown(view: EditorView): boolean {
   return !!view.state.field(blameField, false);
 }
 
-function setAnnotations(view: EditorView, lines: BlameLine[] | null, path: string) {
-  view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path) : []) });
+function setAnnotations(view: EditorView, lines: BlameLine[] | null, path: string, live: boolean) {
+  view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live) : []) });
 }
 
-/** Toggles annotations in `view` (showing `path`). */
-export async function toggleAnnotations(view: EditorView, path: string) {
+/** Toggles annotations in `view`; `text` blames that content instead of the file on disk. */
+export async function toggleAnnotations(view: EditorView, path: string, text?: string) {
   if (annotationsShown(view)) {
-    setAnnotations(view, null, path);
+    setAnnotations(view, null, path, false);
     return;
   }
   try {
-    const lines = await call(commands.vcsBlame(path));
-    setAnnotations(view, lines, path);
+    const lines = await call(commands.vcsBlame(path, text ?? null));
+    setAnnotations(view, lines, path, text === undefined);
   } catch (e) {
     notifications().notify({
       group: "vcs",
