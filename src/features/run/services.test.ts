@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
-import { DEFAULT_TYPES, readTypes, runServiceItems, sessionDetail, sessionStatus } from "./services";
+import { DEFAULT_TYPES, readRan, readTypes, runServiceItems, sessionDetail, sessionStatus } from "./services";
 import { startedPort } from "./serverPort";
 import type { RunSession } from "./store";
 
@@ -103,6 +103,38 @@ describe("types added to Services", () => {
     localStorage.setItem("openidea.services.runTypes:/p", "[]");
     expect(readTypes("/p")).toEqual([]);
     expect(readTypes("/q")).toEqual(["spring-boot"]);
+  });
+});
+
+describe("configurations that ran", () => {
+  const dev = config("dev", "npm");
+  const scratch = config("context:file", "python");
+  beforeEach(() => localStorage.clear());
+
+  it("persists the ran configuration ids per project", () => {
+    expect(readRan("/p")).toEqual([]);
+    localStorage.setItem("openidea.services.ran:/p", JSON.stringify(["dev"]));
+    expect(readRan("/p")).toEqual(["dev"]);
+    expect(readRan("/q")).toEqual([]);
+  });
+
+  it("lists previously run configurations without a session", () => {
+    const items = runServiceItems([dev, scratch], [], [], ["dev", "context:file"]);
+    expect(items.map((i) => [i.key, i.label])).toEqual([
+      ["run:type:npm", "npm"],
+      ["run:type:python", "Python"],
+    ]);
+    expect(items[0]!.children!.map((c) => [c.label, c.dim])).toEqual([["dev", true]]);
+    expect(items[1]!.children!.map((c) => c.key)).toEqual(["run:config:context:file"]);
+  });
+
+  it("ignores ran ids whose configuration is gone and merges sessions", () => {
+    const gone = runServiceItems([dev], [], [], ["missing"]);
+    expect(gone).toEqual([]);
+    const running = session("s1", dev, "running", 1);
+    const items = runServiceItems([dev], [running], [], ["dev"]);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.children!.map((c) => [c.label, c.detail])).toEqual([["dev", "Running"]]);
   });
 });
 

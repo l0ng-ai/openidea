@@ -18,7 +18,7 @@ const isMavenTestGoal = (a: string) =>
 const isGradleJvmTask = (a: string) => /(^|:)(test|bootRun|run|integrationTest|check)$/.test(a);
 /** A plugin goal that runs the application in Maven's own JVM (`tomcat7:run`, `jetty:run-war`, `exec:java`). */
 const isMavenInProcessGoal = (a: string) => /^[\w.-]+(:[\w.-]+)*:(run|run-war|run-exploded|java)$/.test(a);
-const JAVA_ADAPTER = "java-debug";
+const JVM_ADAPTERS = ["java-debug", "kotlin-debug-adapter"];
 
 function withOption(env: Record<string, string>, key: string, value: string): Record<string, string> {
   const current = env[key]?.trim();
@@ -50,7 +50,7 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
       if (failsafe) out = withProperty(out, "maven.failsafe.debug", JDWP_AGENT);
       return { ...config, args: out };
     }
-    if (config.debugAdapter === JAVA_ADAPTER || args.some(isMavenInProcessGoal))
+    if (JVM_ADAPTERS.includes(config.debugAdapter ?? "") || args.some(isMavenInProcessGoal))
       return { ...config, env: withOption(config.env, "MAVEN_OPTS", JDWP_AGENT) };
     return null;
   }
@@ -59,7 +59,7 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
     return args.includes("--debug-jvm") ? config : { ...config, args: [...args, "--debug-jvm"] };
   }
   // Application / Spring Boot configurations are launched by java-debug itself.
-  if (config.debugAdapter === JAVA_ADAPTER && !isJvmApplication(config))
+  if (JVM_ADAPTERS.includes(config.debugAdapter ?? "") && !isJvmApplication(config))
     return { ...config, env: withOption(config.env, "JAVA_TOOL_OPTIONS", JDWP_AGENT) };
   return null;
 }

@@ -37,6 +37,7 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
 import { openUrl } from "./navigate";
@@ -71,7 +72,8 @@ interface SessionRuntime {
   tests: TestResults | null;
   parser: TestOutputParser | null;
   queue: OutputChunk[];
-  flushHandle: number | null;
+  /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
+  flushHandle: { raf: number } | { timeout: number } | null;
   /** Bumped per start so output from a previous run in the same tab is ignored. */
   generation: number;
   /** Called with every complete output line (e.g. waiting for a JDWP agent). */
@@ -340,10 +342,7 @@ function getSession(id: string): RunSession | undefined {
 function flush(sessionId: string) {
   const rt = runtimes.get(sessionId);
   if (!rt) return;
-  if (rt.flushHandle !== null) {
-    cancelAnimationFrame(rt.flushHandle);
-    rt.flushHandle = null;
-  }
+  cancelFlush(rt);
   if (rt.queue.length === 0) return;
   const chunks = rt.queue.splice(0);
   for (const c of chunks) rt.console.append(c);
@@ -358,7 +357,39 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
     return;
   }
   rt.queue.push(chunk);
-  if (rt.flushHandle === null) rt.flushHandle = requestAnimationFrame(() => flush(sessionId));
+  if (rt.flushHandle === null) {
+    // rAF pauses in background tabs; a timeout keeps consuming output so it doesn't
+    // pile up until the console is shown again (issue #319: the console "kept
+    // scrolling" the previous run's backlog after switching back to it).
+    rt.flushHandle = document.hidden
+      ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
+      : { raf: requestAnimationFrame(() => flush(sessionId)) };
+  }
+}
+
+function cancelFlush(rt: SessionRuntime) {
+  if (rt.flushHandle === null) return;
+  if ("raf" in rt.flushHandle) cancelAnimationFrame(rt.flushHandle.raf);
+  else clearTimeout(rt.flushHandle.timeout);
+  rt.flushHandle = null;
+}
+
+/**
+ * `visibilitychange`: rAF stops firing while the page is hidden, so any pending
+ * rAF flush is moved to a timeout (and back on return) — otherwise output that
+ * arrives while a background tab is hidden would only land when it is shown.
+ */
+export function rescheduleConsoleFlushes() {
+  for (const [id, rt] of runtimes) {
+    if (rt.flushHandle === null) continue;
+    const hidden = document.hidden;
+    const isTimeout = "timeout" in rt.flushHandle;
+    if (hidden === isTimeout) continue;
+    cancelFlush(rt);
+    rt.flushHandle = hidden
+      ? { timeout: window.setTimeout(() => flush(id), 100) }
+      : { raf: requestAnimationFrame(() => flush(id)) };
+  }
 }
 
 /** Settings › Console › Override console cycle buffer size, in characters (null = line cap only). */
@@ -504,7 +535,7 @@ export async function startRun(
     const prev = runtimes.get(session.id);
     const rt = newRuntime(config);
     rt.generation = (prev?.generation ?? 0) + 1;
-    if (prev?.flushHandle != null) cancelAnimationFrame(prev.flushHandle);
+    if (prev) cancelFlush(prev);
     runtimes.set(session.id, rt);
     session = {
       ...session,
@@ -541,6 +572,8 @@ export async function startRun(
     useRun.setState((s) => ({ sessions: [...s.sessions, created], activeSession: created.id }));
   }
   bump(session.id);
+  // The Services tool window lists the configuration again after a restart.
+  recordRun(config.id);
   const sessionId = session.id;
   const rt = runtimes.get(sessionId)!;
   const generation = rt.generation;
@@ -964,7 +997,7 @@ export function closeSession(sessionId: string) {
   if (!session) return;
   if (session.status === "running") void stopSession(sessionId);
   const rt = runtimes.get(sessionId);
-  if (rt?.flushHandle != null) cancelAnimationFrame(rt.flushHandle);
+  if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);
   useRun.setState((s) => {
     const index = s.sessions.findIndex((x) => x.id === sessionId);
@@ -984,7 +1017,7 @@ export function runningSessions(): RunSession[] {
 /** Stops everything and forgets sessions (project closed). */
 export function resetRuns() {
   for (const s of runningSessions()) void stopSession(s.id);
-  for (const rt of runtimes.values()) if (rt.flushHandle != null) cancelAnimationFrame(rt.flushHandle);
+  for (const rt of runtimes.values()) cancelFlush(rt);
   runtimes.clear();
   pendingExits.clear();
   useRun.setState({

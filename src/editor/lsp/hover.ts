@@ -35,6 +35,7 @@ import { applyCodeAction, quickFixesAt } from "./intentions";
 import { editorPrefs } from "@/platform/editorSettings";
 import { CONTRIBUTED_HOVER, contributedAt, type ContributedHover } from "@/editor/api";
 import { navigationModifierHeld, onNavigationModifier, pointerTarget } from "@/platform/navigationModifier";
+import { phpConstructAt } from "./phpConstructs";
 
 let hoverRequest: RequestId | null = null;
 
@@ -48,6 +49,12 @@ export async function requestHover(view: EditorView, pos: number): Promise<Hover
   }
   const doc = docOf(view);
   if (!doc) return null;
+  const construct = phpConstructAt(view.state, pos, doc.language);
+  if (construct)
+    return {
+      contents: { kind: "markdown", value: construct.markdown },
+      range: { start: offsetToPos(view.state.doc, construct.from), end: offsetToPos(view.state.doc, construct.to) },
+    };
   if (hoverRequest !== null && isTauri()) void commands.cancelRequest(hoverRequest);
   const id = (hoverRequest = nextRequestId());
   try {
@@ -230,6 +237,13 @@ function showDoc(view: EditorView, entry: DocEntry, at: number) {
   });
 }
 
+export function showPhpConstructDocumentation(view: EditorView, pos: number): boolean {
+  const construct = phpConstructAt(view.state, pos, docOf(view)?.language ?? null);
+  if (!construct) return false;
+  showDoc(view, { markup: { kind: "markdown", value: construct.markdown }, language: "PHP" }, construct.from);
+  return true;
+}
+
 /**
  * F1: documentation for the symbol at the caret in a popup (or the
  * Documentation tool window while it is open); in an open lookup, for its
@@ -263,7 +277,10 @@ export async function quickDocumentation(view: EditorView) {
       {
         markup: hover.contents,
         language: ctx?.uiMode ?? null,
-        source: ctx ? definitionOf(ctx.doc, offsetToPos(view.state.doc, pos)) : undefined,
+        source:
+          ctx && !phpConstructAt(view.state, pos, ctx.language)
+            ? definitionOf(ctx.doc, offsetToPos(view.state.doc, pos))
+            : undefined,
       },
       hover.range ? rangeToOffsets(view.state.doc, hover.range).from : pos,
     );
@@ -327,6 +344,7 @@ export async function quickDefinition(view: EditorView, kind: "definition" | "ty
   const doc = docOf(view);
   if (!doc) return;
   const pos = view.state.selection.main.head;
+  if (kind === "definition" && showPhpConstructDocumentation(view, pos)) return;
   try {
     const found = await lspRequest(() => commands.lspGoto(doc.doc, offsetToPos(view.state.doc, pos), kind));
     const seen = new Set<string>();

@@ -11,10 +11,10 @@
  * symbols — is left to the server. Ambiguous cases ask first.
  */
 import type { EditorView } from "@codemirror/view";
-import { commands, isCancelled, type Pos, type WorkspaceEdit } from "@/platform/ipc";
+import { commands, isCancelled, unavailableText, type Pos, type WorkspaceEdit } from "@/platform/ipc";
 import { whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure } from "@/editor/structure";
-import { docOf, lspRequest, reportLspError } from "./lsp";
+import { docOf, isUnavailable, lspRequest, reportLspError } from "./lsp";
 import { comparePos, offsetToPos, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
 import { caretAnchor, openPopup, type PreviewOccurrence } from "./popupStore";
@@ -69,7 +69,7 @@ export async function startRename(view: EditorView) {
     range = await lspRequest(() => commands.lspPrepareRename(doc.doc, pos));
   } catch (e) {
     if (isCancelled(e)) return;
-    if (!(await startSyntaxRename(view, doc, pos))) reportLspError(view, e, true);
+    if (!(await startSyntaxRename(view, doc, pos, e))) reportLspError(view, e, true);
     return;
   }
   if (!range) {
@@ -258,7 +258,7 @@ async function syntaxPlan(view: EditorView, doc: EditorDocContext, pos: Pos): Pr
 }
 
 /** Opens the rename popup for a syntax-based local rename. False when the fallback can't help. */
-async function startSyntaxRename(view: EditorView, doc: EditorDocContext, pos: Pos): Promise<boolean> {
+async function startSyntaxRename(view: EditorView, doc: EditorDocContext, pos: Pos, cause?: unknown): Promise<boolean> {
   let result;
   try {
     await whenSynced(view);
@@ -269,7 +269,8 @@ async function startSyntaxRename(view: EditorView, doc: EditorDocContext, pos: P
   }
   if (result.kind === "unsupported") return false;
   if (result.kind === "refused") {
-    showHint(view, result.message);
+    const reason = isUnavailable(cause) ? unavailableText(cause) : cause instanceof Error ? cause.message : null;
+    showHint(view, reason ? `${reason}. ${result.message}` : result.message);
     return true;
   }
   const { plan } = result;

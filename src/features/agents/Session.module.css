@@ -118,7 +118,7 @@
   outline: none;
 }
 /* Skip off-screen output layout; editable messages must repaint immediately when focus/content changes. */
-.stream > :not(.message) {
+.stream > :not(.message):not(details) {
   content-visibility: auto;
   contain-intrinsic-block-size: auto 80px;
 }

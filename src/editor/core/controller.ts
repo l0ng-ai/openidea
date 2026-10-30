@@ -710,6 +710,12 @@ export class EditorController implements SlotHost {
             { kind: "separator" },
             {
               kind: "action",
+              action: "diff.compareWith",
+              arg: slot.model.path,
+              label: "Compare With…",
+            },
+            {
+              kind: "action",
               action: "diff.compareWithClipboard",
               arg: { path: slot.model.path },
               label: "Compare with Clipboard",
@@ -1597,6 +1603,9 @@ export class EditorController implements SlotHost {
             { kind: "separator" },
             localHistoryMenu(path),
             ...(inProject ? [gitMenu(path)] : []),
+            { kind: "separator" },
+            { kind: "action", action: "diff.compareWith", arg: path, label: "Compare With…" },
+            { kind: "action", action: "diff.compareWithClipboard", arg: { path }, label: "Compare with Clipboard" },
             { kind: "separator" },
             {
               label: "Copy Path/Reference…",

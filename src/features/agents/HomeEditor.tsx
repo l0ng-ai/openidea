@@ -48,6 +48,9 @@ export function HomeEditor() {
   const probe = useProbe(provider?.installed ? provider.id : null);
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
+  // Without git under the project there are no worktrees: force the local checkout.
+  const isGit = project?.isGit ?? false;
+  const isolation = isGit ? draft.isolation : "local";
   const base = draft.base ?? current;
   const canStart = canSend(composer) && !!provider?.installed && !starting;
   const root = project?.root ?? "";
@@ -56,7 +59,7 @@ export function HomeEditor() {
     if (!canStart) return;
     setStarting(true);
     setError(null);
-    startTask()
+    startTask(isolation)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setStarting(false));
   };
@@ -102,17 +105,24 @@ export function HomeEditor() {
         />
         <div className={styles.where}>
           <span className={styles.project}>{project?.name}</span>
-          <Select
-            variant="ghost"
-            aria-label="Isolation"
-            value={draft.isolation}
-            options={[
-              { value: "worktree", label: tx("New worktree"), icon: "branch", detail: tx("away from your changes") },
-              { value: "local", label: tx("Local checkout"), icon: "folder", detail: tx("edits your files directly") },
-            ]}
-            onChange={(isolation) => updateDraft({ isolation })}
-          />
-          {draft.isolation === "local" && current && (
+          {isGit && (
+            <Select
+              variant="ghost"
+              aria-label="Isolation"
+              value={isolation}
+              options={[
+                { value: "worktree", label: tx("New worktree"), icon: "branch", detail: tx("away from your changes") },
+                {
+                  value: "local",
+                  label: tx("Local checkout"),
+                  icon: "folder",
+                  detail: tx("edits your files directly"),
+                },
+              ]}
+              onChange={(isolation) => updateDraft({ isolation })}
+            />
+          )}
+          {isolation === "local" && current && (
             <>
               <span className={styles.note}>
                 <T>on</T>
@@ -123,7 +133,7 @@ export function HomeEditor() {
               </span>
             </>
           )}
-          {draft.isolation === "worktree" && branches.length > 0 && (
+          {isolation === "worktree" && branches.length > 0 && (
             <>
               <span className={styles.note}>
                 <T>from</T>

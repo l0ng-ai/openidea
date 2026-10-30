@@ -51,7 +51,7 @@ import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
 import { identifierAt, readManyFileLines } from "./files";
 import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
 import { featureBackoff } from "./availability";
-import { requestHover } from "./hover";
+import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
@@ -157,6 +157,7 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   if (kind === "definition" || kind === "declaration") {
     const own = contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
     if (own?.(view, offset)) return;
+    if (showPhpConstructDocumentation(view, offset)) return;
   }
   const doc = docOf(view);
   if (!doc) return;

@@ -96,7 +96,7 @@ async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
     project.documents.save(doc.id).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).unwrap().is_empty());
-    assert!(vcs::vcs_blame(&host, "main", path.clone(), None).await.unwrap().iter().all(|l| l.author == "Test"));
+    assert!(vcs::vcs_blame(&host, "main", path.clone(), None, None).await.unwrap().iter().all(|l| l.author == "Test"));
     // Missing working files still use configured encoding for historical content.
     project.documents.close(doc.id);
     let mut defaults = project.documents.file_defaults();

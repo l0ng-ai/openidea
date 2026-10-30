@@ -34,6 +34,22 @@ fn kill_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// `program` as spawnable: a bare name (`mvn`, `mvn.cmd`) resolves on the IDE's
+/// search path — the login shell's `PATH` plus version-manager shims — since the
+/// app's own `PATH` can be minimal and `Command` would not see `mvn` there.
+fn program_path(program: &str, env: &BTreeMap<String, String>) -> std::path::PathBuf {
+    let path = std::path::Path::new(program);
+    if !path.is_relative() || path.components().count() > 1 {
+        return path.to_path_buf();
+    }
+    let search = env
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+        .map(|(_, v)| std::ffi::OsString::from(v))
+        .unwrap_or_else(ide_core::tool_path::search_path);
+    ide_core::process::find_executable(program, &search).unwrap_or_else(|| path.to_path_buf())
+}
+
 /// Runs `program args` in `cwd`, feeding each output line to `on_line`; kills
 /// the process group and returns `cancelled` when `cancel` fires.
 pub(crate) fn run(
@@ -48,7 +64,8 @@ pub(crate) fn run(
     // Output is read as UTF-8: JVMs on Windows are told to write it (see `ide_core::output_encoding`).
     let encoding =
         ide_core::output_encoding::fix(program, args, env, |k| std::env::var(k).ok(), "UTF-8", cfg!(windows));
-    let mut command = Command::new(program);
+    let program = program_path(program, env);
+    let mut command = Command::new(&program);
     command.args(args).current_dir(cwd).envs(env).envs(encoding.env).stdin(Stdio::null());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
@@ -57,7 +74,8 @@ pub(crate) fn run(
         command.process_group(0);
     }
     ide_core::process::prepare(&mut command);
-    let mut child = command.spawn().map_err(|e| IdeError::unavailable(format!("cannot start {program}: {e}")))?;
+    let mut child =
+        command.spawn().map_err(|e| IdeError::unavailable(format!("cannot start {}: {e}", program.display())))?;
     let (tx, rx) = mpsc::channel::<(Stream, String)>();
     let pump = |stream: Box<dyn Read + Send>, kind: Stream, tx: mpsc::Sender<(Stream, String)>| {
         std::thread::spawn(move || {

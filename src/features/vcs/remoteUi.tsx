@@ -5,7 +5,7 @@ import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
-import { Checkbox, Dialog, Input, List, Select, Spinner, T } from "@/ui";
+import { Checkbox, Dialog, Input, List, Select, Spinner, T, Tree } from "@/ui";
 import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
@@ -128,12 +128,19 @@ export function defaultPushChecked(repos: readonly RepoPush[], selected: string 
   );
 }
 
-type PushRow = { type: "repo"; repo: RepoPush } | { type: "commit"; repo: RepoPush; commit: Commit };
+/** One node of the multi-repository Push tree: a repo group with its outgoing commits. */
+interface PushNode {
+  key: string;
+  repo: RepoPush;
+  commit?: Commit;
+  children?: PushNode[];
+}
 
 function MultiPushDialog({ onClose }: { onClose: () => void }) {
   const roots = useVcs((s) => s.roots);
   const [repos, setRepos] = useState<RepoPush[] | null>(null);
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const [force, setForce] = useState(false);
   const [pushTags, setPushTags] = useState(false);
@@ -192,10 +199,11 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
       if (!ok) return;
     }
   };
-  const rows: PushRow[] = (repos ?? []).flatMap((repo) => [
-    { type: "repo" as const, repo },
-    ...repo.commits.map((commit) => ({ type: "commit" as const, repo, commit })),
-  ]);
+  const nodes: PushNode[] = (repos ?? []).map((repo) => ({
+    key: repo.root,
+    repo,
+    children: repo.commits.map((commit) => ({ key: `${repo.root}:${commit.id}`, repo, commit })),
+  }));
 
   return (
     <Dialog
@@ -203,6 +211,7 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
       title="Push Commits"
       onClose={onClose}
       width={620}
+      resizable="both"
       footerStart={
         <>
           <Checkbox checked={force} onChange={setForce} label="Force (with lease)" />
@@ -230,7 +239,7 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div style={{ height: 340, display: "flex", flexDirection: "column", padding: "14px" }}>
+      <div className={styles.pushTreeWrap}>
         {error ? (
           <div className={styles.error}>{error}</div>
         ) : !repos ? (
@@ -238,39 +247,54 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
             <Spinner size={14} />
           </div>
         ) : (
-          <List
-            items={rows}
-            getKey={(r) => (r.type === "repo" ? `repo:${r.repo.root}` : `${r.repo.root}:${r.commit.id}`)}
+          <Tree<PushNode>
+            roots={nodes}
+            getKey={(n) => n.key}
+            getLabel={(n) => (n.commit ? n.commit.summary : repoName(n.repo.root))}
+            getChildren={(n) => n.children}
+            isExpandable={(n) => !!n.children?.length}
+            expanded={new Set(nodes.map((n) => n.key).filter((k) => !collapsed.has(k)))}
+            onExpandedChange={(_next, node, open) =>
+              setCollapsed((c) => {
+                const s = new Set(c);
+                if (open) s.delete(node.key);
+                else s.add(node.key);
+                return s;
+              })
+            }
             rowHeight={22}
             aria-label="Outgoing commits"
             className={styles.boxList}
-            // Clicks on the checkbox toggle it themselves.
-            onActivate={(r, _i, e) => {
-              if (r.type === "repo" && !(e.target as HTMLElement | null)?.closest?.("label")) toggle(r.repo.root);
-            }}
             empty={
               <span>
                 <T>Everything is up to date</T>
               </span>
             }
-            renderItem={(r) =>
-              r.type === "repo" ? (
+            renderNode={(n) =>
+              n.commit ? (
                 <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
-                  <Checkbox
-                    checked={checked.has(r.repo.root)}
-                    onChange={() => toggle(r.repo.root)}
-                    label={repoName(r.repo.root)}
-                  />
-                  <span className={styles.commitMeta}>
-                    {r.repo.branch.head} → {r.repo.branch.upstream ?? tx("new remote branch")}
-                  </span>
+                  <span className={styles.commitHash}>{n.commit.shortId}</span>
+                  <span className={styles.commitSubject}>{n.commit.summary}</span>
+                  <span className={styles.commitMeta}>{n.commit.author}</span>
+                  <span className={styles.commitMeta}>{formatTime(n.commit.timeMs)}</span>
                 </span>
               ) : (
-                <span className={styles.commitRow} style={{ flex: 1, padding: "0 0 0 24px" }}>
-                  <span className={styles.commitHash}>{r.commit.shortId}</span>
-                  <span className={styles.commitSubject}>{r.commit.summary}</span>
-                  <span className={styles.commitMeta}>{r.commit.author}</span>
-                  <span className={styles.commitMeta}>{formatTime(r.commit.timeMs)}</span>
+                <span
+                  className={styles.commitRow}
+                  style={{ flex: 1, padding: 0 }}
+                  // A row click toggles the checkbox, like before; only the chevron collapses.
+                  onClick={(e) => {
+                    if (!(e.target as HTMLElement | null)?.closest?.("label")) toggle(n.repo.root);
+                  }}
+                >
+                  <Checkbox
+                    checked={checked.has(n.repo.root)}
+                    onChange={() => toggle(n.repo.root)}
+                    label={repoName(n.repo.root)}
+                  />
+                  <span className={styles.commitMeta}>
+                    {n.repo.branch.head} → {n.repo.branch.upstream ?? tx("new remote branch")}
+                  </span>
                 </span>
               )
             }
@@ -388,6 +412,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
       title={head ? tx`Push Commits to ${upstream ?? "remote"}` : "Push"}
       onClose={onClose}
       width={620}
+      resizable="both"
       footerStart={
         <>
           <span title={protectedTarget ? `Force push to protected branch '${target}' is prohibited` : undefined}>
@@ -459,7 +484,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
         )}
         {retarget && <span className={styles.hint}> {tx("New")}</span>}
       </div>
-      <div style={{ height: 300, display: "flex", flexDirection: "column", padding: "0 14px 14px" }}>
+      <div className={styles.pushListWrap}>
         {error ? (
           <div className={styles.error}>{error}</div>
         ) : !commits ? (

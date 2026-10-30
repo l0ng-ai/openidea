@@ -105,6 +105,10 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     Ok(map
         .into_iter()
         .filter(|(_, e)| e.staged.is_some() || e.unstaged.is_some())
+        // Ignored names mean "the IDE treats these as nonexistent": hide their tracked
+        // changes too, not just untracked hits above. Conflicts stay visible so merges
+        // cannot stall on a file the user cannot see.
+        .filter(|(rel, _)| conflicts.contains(rel) || !ignored.is_ignored_path(rel))
         .map(|(rel, mut e)| {
             if conflicts.contains(&rel) {
                 e.staged = None;

@@ -15,6 +15,7 @@ struct Script {
     run_in_terminal: Option<Vec<String>>,
     /// Send a `startDebugging` reverse request (child session) when a non-child `launch` arrives.
     start_debugging: bool,
+    ignore_configuration_done: bool,
     source_path: Option<String>,
 }
 
@@ -131,7 +132,9 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 ok!(msg, json!({"value": format!("{}!", msg["arguments"]["value"].as_str().unwrap()), "type": "int"}))
             }
             "configurationDone" => {
-                ok!(msg, Value::Null);
+                if !script.ignore_configuration_done {
+                    ok!(msg, Value::Null);
+                }
                 if let Some(l) = pending_launch.take() {
                     send!(json!({"type": "response", "request_seq": l, "command": "launch", "success": true}));
                 }
@@ -1016,6 +1019,68 @@ fn root_and_address_placeholders() {
     assert_eq!(adapter::parse_address("127.0.0.1:6006"), Some(("127.0.0.1".into(), 6006)));
     assert_eq!(adapter::parse_address("[::1]:6006"), Some(("::1".into(), 6006)));
     assert_eq!(adapter::parse_address("6006"), None);
+}
+
+#[tokio::test]
+async fn kotlin_configures_without_configuration_done_response() {
+    let h = harness(Script { ignore_configuration_done: true, ..Default::default() });
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join("Main.kt");
+    std::fs::write(&path, "package org.example\nfun main() {}\n").unwrap();
+    h.manager.set_breakpoints(path.clone(), vec![bp(1)]).await.unwrap();
+    let mut config = config();
+    config.adapter = kotlin::ADAPTER.into();
+    config.request = "attach".into();
+    config.cwd = Some(project.path().to_owned().into());
+    config.extra_json = Some(json!({"projectRoot": project.path(), "hostName": "127.0.0.1", "port": 5005}).to_string());
+    let id = tokio::time::timeout(Duration::from_secs(2), h.start(config)).await.unwrap().unwrap();
+    let root = PathBuf::from(h.request("attach")["arguments"]["projectRoot"].as_str().unwrap());
+    assert!(!root.starts_with(project.path()));
+    let request = h.request("setBreakpoints");
+    assert_eq!(request["arguments"]["source"]["name"], "Main.kt");
+    let mapped = PathBuf::from(request["arguments"]["source"]["path"].as_str().unwrap());
+    assert!(mapped.starts_with(&root));
+    assert!(mapped.is_file());
+    assert_eq!(h.manager.session(id).unwrap().client_path(mapped.to_str().unwrap()), Some(path));
+    h.manager.stop(id).await.unwrap();
+}
+
+/// Requires a compiled no-delay reporter fixture (Main.kt, package org.example,
+/// loop at line 5, println(i) at line 6), and the unmodified official adapter.
+/// KOTLIN_PROBE_CONFIG is a LaunchConfig JSON file; KOTLIN_PROBE_ADAPTER is its executable.
+#[tokio::test]
+#[ignore = "requires official Kotlin adapter and compiled reporter fixture"]
+async fn kotlin_official_release_ten_no_delay_runs() {
+    let config: LaunchConfig = serde_json::from_slice(
+        &std::fs::read(std::env::var("KOTLIN_PROBE_CONFIG").expect("KOTLIN_PROBE_CONFIG")).unwrap(),
+    )
+    .unwrap();
+    let adapter = std::env::var("KOTLIN_PROBE_ADAPTER").expect("KOTLIN_PROBE_ADAPTER");
+    let source = PathBuf::from(config.cwd.clone().unwrap()).join("src/main/kotlin/Main.kt");
+    for run in 1..=10 {
+        let (owner, events) = recording_owner("kotlin-probe");
+        let manager = DebugManager::new(Arc::new(LanguageRegistry::from_configs(Vec::new())));
+        let h = Harness { manager, owner, events, log: Arc::default() };
+        h.manager.set_breakpoints(source.clone(), vec![bp(5)]).await.unwrap();
+        let id = h.manager.start_with(config.clone(), h.owner.clone(), |_| Some(adapter.clone())).await.unwrap();
+        let stopped = h.wait_event(|e| matches!(e, DebugEvent::Stopped { reason, .. } if reason == "breakpoint")).await;
+        let DebugEvent::Stopped { thread_id, .. } = stopped else { unreachable!() };
+        let frames = h.manager.stack_trace(id, thread_id).await.unwrap();
+        assert_eq!(frames[0].line, 5);
+        assert_eq!(frames[0].path.as_deref(), Some(source.as_path()));
+        let scopes = h.manager.scopes(id, frames[0].id).await.unwrap();
+        let mut variables = Vec::new();
+        for scope in scopes {
+            variables.extend(h.manager.variables(id, scope.variables_reference).await.unwrap());
+        }
+        assert!(variables.iter().any(|v| v.name == "i" && v.value == "0"));
+        h.manager.step(id, thread_id, StepKind::Over).await.unwrap();
+        h.wait_event(|e| matches!(e, DebugEvent::Stopped { reason, .. } if reason == "step")).await;
+        let frames = h.manager.stack_trace(id, thread_id).await.unwrap();
+        assert_eq!(frames[0].line, 4);
+        h.manager.stop(id).await.unwrap();
+        println!("Run {run}/10: breakpoint Main.kt:6, i=0, step Main.kt:5; stopped");
+    }
 }
 
 #[tokio::test]

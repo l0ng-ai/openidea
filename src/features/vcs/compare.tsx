@@ -92,6 +92,34 @@ async function pickFile(near: string): Promise<string | null> {
   return (Array.isArray(picked) ? picked[0] : picked) ?? null;
 }
 
+/**
+ * The file to compare `path` against: the OS file dialog on the desktop; a
+ * browser file picker's contents elsewhere (remote development / `pnpm dev`),
+ * compared as text since no absolute path is available to the backend.
+ */
+async function pickComparison(
+  path: string,
+): Promise<{ type: "file"; path: string } | { type: "text"; text: string; label: string } | null> {
+  if (isTauri()) {
+    const picked = await pickFile(path);
+    return picked ? { type: "file", path: picked } : null;
+  }
+  if (typeof document === "undefined") {
+    info("Compare With needs the desktop app or a browser file picker");
+    return null;
+  }
+  const chosen = await new Promise<File | null>((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.onchange = () => resolve(input.files?.[0] ?? null);
+    // Chrome fires `cancel` (or focus returns) when the dialog is dismissed.
+    input.addEventListener("cancel", () => resolve(null));
+    input.click();
+  });
+  if (!chosen) return null;
+  return { type: "text", text: await chosen.text(), label: chosen.name };
+}
+
 const contextPath = (arg: unknown) => argPath(arg) ?? maybeEditorService()?.activePath() ?? undefined;
 
 export function registerCompareActions(): () => void {
@@ -186,9 +214,18 @@ export function registerCompareActions(): () => void {
       run: async ({ arg }) => {
         const path = contextPath(arg);
         if (!path) return info("Open or select a file to compare");
-        const other = await pickFile(path);
-        if (!other || other === path) return;
-        await openDiff(compareFilesData(path, other));
+        const other = await pickComparison(path);
+        if (!other) return;
+        if (other.type === "file") {
+          if (other.path === path) return;
+          await openDiff(compareFilesData(path, other.path));
+        } else {
+          await openDiff({
+            path,
+            left: { type: "text", text: other.text, label: other.label },
+            right: { type: "worktree", label: displayPath(path) },
+          });
+        }
       },
     },
     {

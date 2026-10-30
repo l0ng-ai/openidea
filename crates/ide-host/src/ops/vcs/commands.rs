@@ -201,12 +201,20 @@ pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<S
     .await
 }
 
-pub async fn vcs_blame(host: &Host, window: &str, path: PathBuf, text: Option<String>) -> IdeResult<Vec<BlameLine>> {
+pub async fn vcs_blame(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+    text: Option<String>,
+    revision: Option<String>,
+) -> IdeResult<Vec<BlameLine>> {
     let project = host.project(window)?;
     // An explicit text wins (merge view annotates its side panes, not the worktree).
     let text = text.or_else(|| project.documents.text_of(&path));
     blocking(move || {
-        project.with_repo_of(&path, |r| r.blame(&path, text.as_deref(), project.vcs_encoding(&path, None)?))
+        project.with_repo_of(&path, |r| {
+            r.blame(&path, text.as_deref(), revision.as_deref(), project.vcs_encoding(&path, revision.as_deref())?)
+        })
     })
     .await
 }
@@ -837,7 +845,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?) });
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
-    d.add("vcs_blame", |c| async move { vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?).await });
+    d.add("vcs_blame", |c| async move {
+        vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?, c.arg("revision")?).await
+    });
     d.add("vcs_log", |c| async move { vcs_log(&c.host, &c.window, c.arg("repo")?, c.arg("query")?).await });
     d.add("vcs_commit_files", |c| async move {
         vcs_commit_files(&c.host, &c.window, c.arg("repo")?, c.arg("commit")?).await

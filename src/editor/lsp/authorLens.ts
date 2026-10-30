@@ -76,7 +76,7 @@ export function blameFor(path: string, text: Text): Promise<BlameLine[] | null> 
   const hit = cache.get(path);
   if (hit && (hit.text === text || hit.text === null)) return hit.lines;
   const entry: Entry = { text, lines: Promise.resolve(null) };
-  entry.lines = call(commands.vcsBlame(path, null)).then(
+  entry.lines = call(commands.vcsBlame(path, null, null)).then(
     (lines) => lines,
     () => {
       entry.text = null;
