@@ -5,14 +5,12 @@
  *
  * `openDialog` lets other parts add their own (it resolves with what `done` is given,
  * null when cancelled). Included: IntelliJ's merge commit message dialog, the pull request
- * number prompt of Git › GitHub › Checkout Pull Request…, and the quick Create Pull Request
- * dialog used until the New Pull Request tab is ported.
+ * number prompt of Git › GitHub › Checkout Pull Request….
  */
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { create } from "zustand";
-import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { Checkbox, Dialog, Input, Select, T } from "@/ui";
+import { Dialog, Input, T } from "@/ui";
 import styles from "./ui.module.css";
 
 interface Entry {
@@ -131,114 +129,6 @@ function NumberDialog(props: { title: string; onDone: (v: number | null) => void
           onChange={(e) => setValue(e.target.value)}
         />
       </form>
-    </Dialog>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Quick Create Pull Request (gh pr create)
-
-export interface CreatePrInput {
-  title: string;
-  body: string;
-  base: string;
-  draft: boolean;
-  push: boolean;
-}
-
-/** Asks for the new pull request's title, description, base branch and options. */
-export function createPullRequestDialog(opts: {
-  head: string;
-  defaultBase: string | null;
-  title: string;
-  needsPush: boolean;
-}) {
-  return openDialog<CreatePrInput>((done) => <CreateDialog {...opts} onDone={done} />);
-}
-
-function CreateDialog(props: {
-  head: string;
-  defaultBase: string | null;
-  title: string;
-  needsPush: boolean;
-  onDone: (v: CreatePrInput | null) => void;
-}) {
-  const [title, setTitle] = useState(props.title);
-  const [body, setBody] = useState("");
-  const [base, setBase] = useState(props.defaultBase ?? "");
-  const [bases, setBases] = useState<string[]>(props.defaultBase ? [props.defaultBase] : []);
-  const [draft, setDraft] = useState(false);
-  const [push, setPush] = useState(props.needsPush);
-
-  useEffect(() => {
-    let alive = true;
-    // Base candidates: branches of the remotes (without `origin/`), the default first.
-    call(commands.vcsBranches(null))
-      .then((branches) => {
-        const names = new Set<string>();
-        if (props.defaultBase) names.add(props.defaultBase);
-        for (const b of branches) {
-          if (!b.remote || b.name.endsWith("/HEAD")) continue;
-          const short = b.name.slice(b.name.indexOf("/") + 1);
-          if (short !== props.head) names.add(short);
-        }
-        if (alive) {
-          setBases([...names]);
-          setBase((cur) => cur || [...names][0] || "");
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [props.defaultBase, props.head]);
-
-  const ok = !!title.trim() && !!base;
-  const submit = () => ok && props.onDone({ title: title.trim(), body, base, draft, push });
-  return (
-    <Dialog
-      open
-      title="Create Pull Request"
-      onClose={() => props.onDone(null)}
-      width={560}
-      buttons={[
-        { label: draft ? "Create Draft" : "Create", role: "default", disabled: !ok, onClick: submit },
-        { label: "Cancel", role: "cancel" },
-      ]}
-    >
-      <div className={styles.form}>
-        <div className={styles.formRow}>
-          <label className={styles.fieldLabel}>
-            <T>Base:</T>
-          </label>
-          <Select
-            value={base || null}
-            options={bases.map((b) => ({ value: b, label: b }))}
-            onChange={setBase}
-            aria-label="Base branch"
-          />
-          <span className={styles.fieldLabel}>← {props.head}</span>
-        </div>
-        <Input
-          data-autofocus
-          aria-label="Title"
-          placeholder="Title"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-        />
-        <textarea
-          aria-label={tx("Description")}
-          placeholder={tx("Description (Markdown)")}
-          className={styles.textarea}
-          rows={10}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-        />
-        <div className={styles.formRow}>
-          <Checkbox checked={draft} onChange={setDraft} label="Draft" />
-          <Checkbox checked={push} onChange={setPush} label={tx`Push '${props.head}' first`} />
-        </div>
-      </div>
     </Dialog>
   );
 }

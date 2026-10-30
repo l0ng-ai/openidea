@@ -1,0 +1,386 @@
+/*
+ * The New Pull Request tab. Gaps are IntelliJ's: 12px sides, 8px between the parts,
+ * 10px around the status line and the button.
+ */
+.root {
+  flex: 1;
+  min-height: 0;
+}
+
+.top,
+.bottom {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.centered {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 0;
+  padding: 12px;
+  text-align: center;
+}
+.hint {
+  color: var(--fg-muted);
+}
+.errorText {
+  color: var(--danger);
+}
+.errorDetail {
+  max-width: 100%;
+  color: var(--fg-secondary);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Link-style buttons: the direction dropdowns, the commit chooser, Show details, View. */
+.link,
+.textLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+.link:hover:not(:disabled) .linkText,
+.textLink:hover {
+  color: var(--link-hover, var(--link));
+  text-decoration: underline;
+}
+.link:disabled {
+  color: var(--fg);
+  cursor: default;
+}
+.linkText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Direction */
+.direction {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 12px;
+}
+/* Base and head share the width; each shows its whole text when it fits. */
+.direction > .link {
+  flex: 0 1 auto;
+  max-width: calc(50% - 12px);
+}
+.arrow {
+  flex: none;
+  color: var(--fg-muted);
+}
+.headPopup {
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  height: 340px;
+  overflow: hidden;
+}
+.headRepo {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 0;
+}
+.headRepo > :last-child {
+  flex: 1;
+  min-width: 0;
+}
+.headRepoLabel {
+  flex: none;
+  color: var(--fg-secondary);
+}
+.headSearch {
+  flex: none;
+  padding: 6px 8px 4px;
+}
+.headList {
+  flex: 1;
+  min-height: 0;
+  padding-bottom: 4px;
+}
+.headSection {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 10px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.headRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.headRow[data-active] {
+  background: var(--bg-list-selected);
+  border-radius: var(--radius-selection);
+}
+
+/* Commits and changes */
+.changesBox {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+.changes {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.commits {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 50%;
+  padding: 2px 12px 8px;
+  overflow: auto;
+}
+.commitsHeader {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+}
+.commitsTitle {
+  font-weight: 600;
+}
+.hash {
+  font-family: var(--font-mono);
+}
+.commitInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.commitTop {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.commitTop > .textLink {
+  flex: none;
+  margin-left: auto;
+}
+.commitSubject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commitSubjectFull {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.commitBody {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.commitMeta {
+  color: var(--fg-muted);
+}
+.tree {
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+.fileRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.fileName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fileDetail {
+  margin-left: 4px;
+  color: var(--fg-muted);
+}
+
+/* Title and description */
+.text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 60px;
+}
+.titleInput {
+  flex: none;
+  margin: 0;
+  border: none !important;
+  border-bottom: 1px solid var(--border) !important;
+  border-radius: 0 !important;
+  background: var(--bg-editor, var(--bg-input)) !important;
+  padding: 8px 12px !important;
+  height: auto !important;
+  box-shadow: none !important;
+}
+.descriptionBox {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.description {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 12px;
+  border: none;
+  outline: none;
+  background: var(--bg-editor, var(--bg-input));
+  color: var(--fg);
+  font: inherit;
+  resize: none;
+}
+.templateSpinner {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+}
+
+/* Reviewers, assignees, labels */
+.metadata {
+  display: grid;
+  flex: none;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-editor, var(--bg-input));
+}
+.metaLabel {
+  padding: 6px 5px 6px 0;
+  color: var(--fg-muted);
+}
+.metaList {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  min-height: 28px;
+}
+.metaItem {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 3px;
+}
+.userItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Status and the option button */
+.footer {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+}
+.status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 100%;
+}
+.statusRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.statusText {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.errorPopup {
+  width: 300px;
+  max-height: 400px;
+  padding: 10px 12px;
+  overflow: auto;
+  resize: both;
+}
+.errorPopupTitle {
+  margin-bottom: 6px;
+  color: var(--danger);
+}
+.errorPopupText {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.optionButton {
+  display: inline-flex;
+  align-items: stretch;
+}
+.optionButton > :first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.optionArrow {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  border: none;
+  border-left: 1px solid color-mix(in srgb, var(--fg-button-primary, #fff) 35%, transparent);
+  border-radius: 0 var(--radius-control, 4px) var(--radius-control, 4px) 0;
+  background: var(--bg-button-primary);
+  color: var(--fg-button-primary);
+  cursor: pointer;
+}
+.optionArrow:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* New Remote Branch for Pull Request */
+.dialogForm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dialogLabel {
+  color: var(--fg);
+}
+.dialogComment {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}

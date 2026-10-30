@@ -394,8 +394,8 @@ export async function toggleReaction(
 /**
  * Creates a pull request in the connected repository (`GHPRCreationService`): `head` is
  * the branch (`owner:branch` for a fork's). A blank title falls back to the branch name,
- * a blank body is sent as null. Reviewers, assignees and labels are set afterwards.
- * @public
+ * a blank body is sent as null. Reviewers, assignees and labels are set afterwards
+ * (`onSettingMetadata` is called first: "Updating pull request fields").
  */
 export async function createPullRequest(input: {
   base: string;
@@ -406,6 +406,7 @@ export async function createPullRequest(input: {
   reviewers?: GHPullRequestRequestedReviewer[];
   assignees?: string[];
   labels?: string[];
+  onSettingMetadata?: () => void;
 }): Promise<GHPullRequestShort> {
   const { repository } = requireConnection();
   const branch = input.head.slice(input.head.indexOf(":") + 1);
@@ -418,6 +419,7 @@ export async function createPullRequest(input: {
     draft: input.draft,
   });
   const n = pr.number;
+  if (input.reviewers?.length || input.assignees?.length || input.labels?.length) input.onSettingMetadata?.();
   await settle([
     ...(input.reviewers?.length ? [adjustReviewers(n, { added: input.reviewers, removed: [] })] : []),
     ...(input.assignees?.length ? [api.updateAssignees(n, input.assignees)] : []),

@@ -48,7 +48,6 @@ export function LabelChip({ label, className }: { label: Pick<GHLabel, "name" | 
 
 /**
  * The 16px colour square of label pickers.
- * @public
  */
 export function LabelSwatch({ label }: { label: Pick<GHLabel, "color"> }) {
   return <span className={styles.labelSwatch} style={{ background: labelColor(label) }} aria-hidden />;
