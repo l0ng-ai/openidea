@@ -60,8 +60,30 @@ export function uiModeForPath(path: string): string | null | undefined {
 
 const supports = new Map<string, Promise<LanguageSupport | null>>();
 
-/** Modes replacing `@codemirror/language-data`'s: Angular templates with control-flow blocks. */
+/** Frontend modes with template syntax missing from the bundled parsers. */
 const OWN_MODES = [
+  LanguageDescription.of({
+    name: "Shell",
+    load: async () => {
+      const { shell } = await import("@codemirror/legacy-modes/mode/shell");
+      const { shellInterpolation } = await import("./shellInterpolation");
+      return new LanguageSupport(StreamLanguage.define(shellInterpolation(shell)));
+    },
+  }),
+  ...(["Kotlin", "Scala", "Dart", "Groovy", "C#"] as const).map((name) =>
+    LanguageDescription.of({
+      name,
+      load: async () => {
+        const { interpolationParser } = await import("./interpolation");
+        const modes = await import("@codemirror/legacy-modes/mode/clike");
+        const base =
+          name === "Groovy"
+            ? (await import("@codemirror/legacy-modes/mode/groovy")).groovy
+            : modes[name === "C#" ? "csharp" : (name.toLowerCase() as "kotlin" | "scala" | "dart")];
+        return new LanguageSupport(StreamLanguage.define(interpolationParser(base, name)));
+      },
+    }),
+  ),
   LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
 ];
 
@@ -144,11 +166,11 @@ export function findLanguageDescription(uiMode: string | null, path: string): La
     const exact = BUILTIN_MODES.find((l) => l.name === uiMode);
     if (exact) return exact;
     const loose = LanguageDescription.matchLanguageName(BUILTIN_MODES, uiMode, false);
-    if (loose) return loose;
+    if (loose) return OWN_MODES.find((l) => l.name === loose.name) ?? loose;
   }
-  return uiMode === null && infos
-    ? null
-    : LanguageDescription.matchFilename(BUILTIN_MODES, path.slice(path.lastIndexOf("/") + 1));
+  if (uiMode === null && infos) return null;
+  const matched = LanguageDescription.matchFilename(BUILTIN_MODES, path.slice(path.lastIndexOf("/") + 1));
+  return OWN_MODES.find((l) => l.name === matched?.name) ?? matched;
 }
 
 /** Loads (once) the CodeMirror language for `desc`. */

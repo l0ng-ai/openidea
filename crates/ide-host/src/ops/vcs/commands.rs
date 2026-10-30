@@ -45,13 +45,16 @@ pub enum RemoteOp {
         branch: String,
     },
     /// Pushes local `branch` (only up to `revision` when set) to its upstream, or to
-    /// remote branch `target` of the same remote.
+    /// remote branch `target`; `remote` overrides the upstream's remote (Push dialog's
+    /// remote picker).
     PushBranch {
         branch: String,
         revision: Option<String>,
         force_with_lease: bool,
         #[serde(default)]
         target: Option<String>,
+        #[serde(default)]
+        remote: Option<String>,
     },
     /// Fast-forwards local `branch` (not checked out) to its upstream.
     UpdateBranch {
@@ -198,9 +201,10 @@ pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<S
     .await
 }
 
-pub async fn vcs_blame(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<BlameLine>> {
+pub async fn vcs_blame(host: &Host, window: &str, path: PathBuf, text: Option<String>) -> IdeResult<Vec<BlameLine>> {
     let project = host.project(window)?;
-    let text = project.documents.text_of(&path);
+    // An explicit text wins (merge view annotates its side panes, not the worktree).
+    let text = text.or_else(|| project.documents.text_of(&path));
     blocking(move || {
         project.with_repo_of(&path, |r| r.blame(&path, text.as_deref(), project.vcs_encoding(&path, None)?))
     })
@@ -249,12 +253,13 @@ pub async fn vcs_stage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeRes
 }
 
 /// Project-host operation (also registered with the remote dispatcher).
+/// Returns the ignore files that were updated, so the UI can show them.
 pub async fn vcs_add_to_ignore(
     host: &Host,
     window: &str,
     paths: Vec<PathBuf>,
     destination: IgnoreDestination,
-) -> IdeResult<()> {
+) -> IdeResult<Vec<String>> {
     let project = host.project(window)?;
     blocking(move || {
         for path in &paths {
@@ -270,7 +275,7 @@ pub async fn vcs_add_to_ignore(
             watcher.reload_ignore_rules();
         }
         project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
-        result.map(|_| ())
+        result.map(|files| files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
     })
     .await
 }
@@ -454,12 +459,17 @@ pub async fn vcs_remote(
                 r.push_with_tags(force_with_lease, set_upstream, tags, &cancel, &out)
             }
             RemoteOp::DeleteBranch { branch } => r.delete_remote_branch(&branch, &cancel, &out),
-            RemoteOp::PushBranch { branch, revision, force_with_lease, target } => match target {
-                Some(target) => {
-                    r.push_branch_to(&branch, revision.as_deref(), &target, force_with_lease, &cancel, &out)
-                }
-                None => r.push_branch(&branch, revision.as_deref(), force_with_lease, &cancel, &out),
-            },
+            RemoteOp::PushBranch { branch, revision, force_with_lease, target, remote } => r.push_branch_to(
+                &branch,
+                PushBranchOptions {
+                    revision: revision.as_deref(),
+                    target: target.as_deref(),
+                    remote: remote.as_deref(),
+                    force_with_lease,
+                },
+                &cancel,
+                &out,
+            ),
             RemoteOp::UpdateBranch { branch } => r.update_branch(&branch, &cancel, &out),
             RemoteOp::PullFrom { remote, branches, rebase, options } => {
                 r.pull_from(&remote, &branches, rebase, &options, &cancel, &out)
@@ -827,7 +837,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?) });
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
-    d.add("vcs_blame", |c| async move { vcs_blame(&c.host, &c.window, c.arg("path")?).await });
+    d.add("vcs_blame", |c| async move { vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?).await });
     d.add("vcs_log", |c| async move { vcs_log(&c.host, &c.window, c.arg("repo")?, c.arg("query")?).await });
     d.add("vcs_commit_files", |c| async move {
         vcs_commit_files(&c.host, &c.window, c.arg("repo")?, c.arg("commit")?).await

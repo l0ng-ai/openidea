@@ -937,6 +937,7 @@
   "Installed {name} {version}": "已安装 {name} {version}",
   "Installing {name}": "正在安装 {name}",
   "IPC round trip": "IPC 往返",
+  "Already ignored": "已被忽略",
   "Idle seconds": "空闲秒数",
   "Ignore files and folders": "忽略文件和文件夹",
   "Ignore whitespace": "忽略空白",

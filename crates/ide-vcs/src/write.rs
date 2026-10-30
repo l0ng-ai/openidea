@@ -4,7 +4,8 @@ use crate::cli::{self, run};
 use crate::repo::{gx, resolve};
 use crate::text_encoding::{decode, encode, has_bom, is_binary};
 use crate::{
-    BlameLine, CheckoutMode, CheckoutOptions, CheckoutOutcome, CommitOptions, DeletedBranch, DivergedLocal, Repo,
+    BlameLine, CheckoutMode, CheckoutOptions, CheckoutOutcome, CommitOptions, DeletedBranch, DivergedLocal,
+    PushBranchOptions, Repo,
 };
 use encoding_rs::Encoding;
 use gix::bstr::{BStr, ByteSlice};
@@ -750,22 +751,25 @@ fn check_local_branch(r: &Repo, branch: &str) -> IdeResult<()> {
         .map_err(|_| IdeError::invalid(format!("'{branch}' is not a local branch")))
 }
 
-/// Pushes local `branch` (or only up to `revision`) to its upstream; a branch without
-/// one goes to the default remote under the same name and, when pushed whole, gets it
-/// as upstream.
+/// Pushes local `branch` (or only up to `opts.revision`) to its upstream; a branch
+/// without one goes to the default remote under the same name and, when pushed whole,
+/// gets it as upstream.
 pub(crate) fn push_branch(
     r: &Repo,
     branch: &str,
-    revision: Option<&str>,
-    target: Option<&str>,
-    force_with_lease: bool,
+    opts: PushBranchOptions<'_>,
     cancel: &CancellationToken,
     on_output: &dyn Fn(String),
 ) -> IdeResult<()> {
+    let PushBranchOptions { revision, target, remote: remote_override, force_with_lease } = opts;
     check_local_branch(r, branch)?;
-    let (remote, mut name, set_upstream) = match branch_upstream(r, branch) {
-        Some((remote, name)) => (remote, name, false),
-        None => (push_remote(r)?, branch.to_string(), revision.is_none()),
+    let remote_override = remote_override.map(str::trim).filter(|s| !s.is_empty());
+    let (remote, mut name, set_upstream) = match (remote_override, branch_upstream(r, branch)) {
+        // An explicit remote keeps the upstream's branch name but pushes elsewhere.
+        (Some(remote), Some((_, name))) => (check_rev(remote)?.to_string(), name, false),
+        (Some(remote), None) => (check_rev(remote)?.to_string(), branch.to_string(), revision.is_none()),
+        (None, Some((remote, name))) => (remote, name, false),
+        (None, None) => (push_remote(r)?, branch.to_string(), revision.is_none()),
     };
     if let Some(t) = target.map(str::trim).filter(|t| !t.is_empty()) {
         let valid =

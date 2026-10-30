@@ -20,7 +20,10 @@ for (const destination of ["gitignore", "localExclude"] as const) {
           throw new Error("Wrong ignore destination or paths");
         written = true;
         fs.ignored.add(path);
-        return { status: "ok", data: null };
+        return {
+          status: "ok",
+          data: [destination === "gitignore" ? `${root}/.gitignore` : `${root}/.git/info/exclude`],
+        };
       };
       commands.vcsStatus = async () => {
         document.body.dataset.ignoreStatusRefresh = written ? "after-write" : "before-write";
