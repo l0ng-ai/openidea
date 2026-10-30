@@ -54,7 +54,6 @@ function refreshReview(number: number) {
 
 /**
  * Edits the title and / or description.
- * @public
  */
 export async function updateDetails(number: number, patch: { title?: string; body?: string }) {
   const pr = await api.updatePullRequest(await pullRequestId(number), patch);
@@ -217,7 +216,6 @@ export async function deleteReview(number: number, reviewId: string) {
 
 /**
  * Edits a review's body; resolves with the new body.
- * @public
  */
 export async function updateReviewBody(number: number, reviewId: string, body: string) {
   const review = await api.updateReview(reviewId, body);
@@ -286,7 +284,6 @@ export async function addCommitComment(
 
 /**
  * Replies to the review comment `replyToCommentId` (in the pending review, else a new one).
- * @public
  */
 export async function replyToComment(number: number, replyToCommentId: string, body: string) {
   const pending = await loadPullRequestData(number, "pendingReview");
@@ -300,7 +297,6 @@ export async function replyToComment(number: number, replyToCommentId: string, b
 
 /**
  * Edits a review comment.
- * @public
  */
 export async function updateReviewComment(number: number, commentId: string, body: string) {
   const comment = await api.updateReviewComment(commentId, body);
@@ -310,7 +306,6 @@ export async function updateReviewComment(number: number, commentId: string, bod
 
 /**
  * Deletes a review comment (its thread goes with its last comment).
- * @public
  */
 export async function deleteReviewComment(number: number, commentId: string) {
   await api.deleteReviewComment(commentId);
@@ -319,7 +314,6 @@ export async function deleteReviewComment(number: number, commentId: string) {
 
 /**
  * Resolve: marks a review thread resolved.
- * @public
  */
 export async function resolveThread(number: number, threadId: string) {
   const thread = await api.resolveReviewThread(threadId);
@@ -330,7 +324,6 @@ export async function resolveThread(number: number, threadId: string) {
 
 /**
  * Unresolve: reopens a review thread.
- * @public
  */
 export async function unresolveThread(number: number, threadId: string) {
   const thread = await api.unresolveReviewThread(threadId);
@@ -344,7 +337,6 @@ export async function unresolveThread(number: number, threadId: string) {
 
 /**
  * Adds a conversation comment (the timeline's composer).
- * @public
  */
 export async function addIssueComment(number: number, body: string) {
   await api.createIssueComment(number, body);
@@ -353,7 +345,6 @@ export async function addIssueComment(number: number, body: string) {
 
 /**
  * Edits a conversation comment.
- * @public
  */
 export async function updateIssueComment(number: number, commentId: string, body: string) {
   const comment = await api.updateIssueComment(commentId, body);
@@ -363,7 +354,6 @@ export async function updateIssueComment(number: number, commentId: string, body
 
 /**
  * Deletes a conversation comment.
- * @public
  */
 export async function deleteIssueComment(number: number, commentId: string) {
   await api.deleteIssueComment(commentId);
@@ -373,7 +363,6 @@ export async function deleteIssueComment(number: number, commentId: string) {
 /**
  * Adds or removes the viewer's reaction on `subjectId` (the description, a comment, a
  * review comment); `on` says which data holds the subject, to refresh it.
- * @public
  */
 export async function toggleReaction(
   number: number,

@@ -1,0 +1,97 @@
+/* The timeline editor (GHPRFileEditorComponentFactory): one scrolling column. */
+.scroll {
+  height: 100%;
+  overflow: auto;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+.column {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+}
+.title {
+  max-width: 42em;
+  margin: 0;
+  padding: 20px 16px;
+  color: var(--fg-strong);
+  font-size: 1.4em;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+.link:hover {
+  text-decoration: underline;
+}
+.paragraph {
+  margin: 0;
+}
+.paragraph + .paragraph {
+  margin-top: 4px;
+}
+.commits {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.commit {
+  display: flex;
+  flex-direction: column;
+}
+.branch {
+  display: inline-flex;
+  padding: 0 4px 0 2px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  vertical-align: bottom;
+}
+.loadingThreads {
+  padding: 16px 10px 16px 60px;
+  color: var(--fg-secondary);
+}
+.status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(42em + 32px);
+  padding: 16px 10px;
+  text-align: center;
+}
+.errorTitle {
+  font-weight: 600;
+}
+.errorText {
+  color: var(--fg-secondary);
+  white-space: pre-wrap;
+}
+.mergedTitle {
+  font-weight: 700;
+}
+.mergedBody {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.composer {
+  padding: 10px 16px;
+}
+.placeholder {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+}
