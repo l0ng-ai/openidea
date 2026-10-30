@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import type { ToolInfo } from "@/bindings";
-import { Badge, Button, EmptyState, IconButton, ProgressBar, SearchField, Select, Spinner, T } from "@/ui";
+import { Badge, Button, EmptyState, IconButton, ProgressBar, SearchField, Spinner, T } from "@/ui";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useSettingsForm } from "@/workbench/contributions";
@@ -27,25 +27,6 @@ import styles from "./LanguageServersPage.module.css";
 import { tx } from "@/platform/i18n";
 
 type Filter = "all" | "missing" | "installed";
-
-const PYTHON_ANALYZERS = ["basedpyright", "pyright", "ty"] as const;
-type PythonAnalyzer = (typeof PYTHON_ANALYZERS)[number] | "auto" | "none" | "custom";
-
-function selectedPythonAnalyzer(servers: Record<string, ServerEntry>): PythonAnalyzer {
-  const enabled = PYTHON_ANALYZERS.filter((name) => servers[name]?.enabled !== false);
-  if (enabled.length === PYTHON_ANALYZERS.length) return "auto";
-  if (enabled.length === 0) return "none";
-  return enabled.length === 1 ? enabled[0]! : "custom";
-}
-
-const PYTHON_ANALYZER_OPTIONS: ReadonlyArray<{ value: PythonAnalyzer; label: string; disabled?: boolean }> = [
-  { value: "auto", label: "Automatic (first available)" },
-  { value: "basedpyright", label: "basedpyright" },
-  { value: "pyright", label: "Pyright" },
-  { value: "ty", label: "ty" },
-  { value: "none", label: "None" },
-  { value: "custom", label: "Custom combination", disabled: true },
-];
 
 const STATUS_TONE: Record<ToolInfo["status"], "success" | "accent" | "warning"> = {
   installed: "success",
@@ -90,6 +71,7 @@ function pendingTool(name: string, entry: ServerEntry, languages: string[]): Too
     customError: null,
     defaultArgs: [],
     defaultInitializationOptions: null,
+    alternatives: [],
   };
 }
 
@@ -336,29 +318,6 @@ export function LanguageServersPage() {
           "Language servers and debug adapters used by the IDE. Missing tools can be installed into the IDE's own tools folder; nothing is downloaded until you click Install.",
         )}
       </p>
-      <div className={styles.pythonAnalyzer}>
-        <div className={styles.pythonAnalyzerRow}>
-          <span>
-            <T>Python language server</T>
-          </span>
-          <Select
-            aria-label="Python language server"
-            value={selectedPythonAnalyzer(servers)}
-            options={PYTHON_ANALYZER_OPTIONS}
-            onChange={(selected) => {
-              if (selected === "custom") return;
-              for (const name of PYTHON_ANALYZERS) {
-                const on = selected === "auto" || selected === name;
-                // Same as each server's own checkbox: on is the default, so only a project spells it out.
-                form.set(serverKey(name, "enabled"), on ? (form.scope === "project" ? true : null) : false);
-              }
-            }}
-          />
-        </div>
-        <p className={styles.pythonAnalyzerHint}>
-          <T>Only one of these built-in Python analyzers runs at a time.</T>
-        </p>
-      </div>
       {error && (
         <div className={styles.error} role="alert">
           {error}

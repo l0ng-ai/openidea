@@ -189,6 +189,11 @@ pub fn detect(root: &Path) -> Vec<RunConfig> {
     detect::detect(root)
 }
 
+/// Detects configurations excluding the supplied project-relative Maven POM paths.
+pub fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<RunConfig> {
+    detect::detect_excluding(root, excluded_poms)
+}
+
 /// Reads `<root>/.openidea/run.toml`; a missing file yields no configs.
 pub fn load_user_configs(root: &Path) -> IdeResult<Vec<RunConfig>> {
     config::load(root)
@@ -232,4 +237,24 @@ pub fn system_env() -> BTreeMap<String, String> {
 /// Path of the user run configuration file for `root`.
 pub fn user_configs_path(root: &Path) -> PathBuf {
     config::config_path(root)
+}
+
+#[cfg(test)]
+mod linkage_tests {
+    #[test]
+    fn detection_skips_unlinked_maven_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            std::fs::create_dir(tmp.path().join(name)).unwrap();
+            std::fs::write(tmp.path().join(name).join("pom.xml"), "<project/>").unwrap();
+        }
+        let configs = super::detect_excluding(tmp.path(), &["a/pom.xml".into()]);
+        assert!(configs.iter().any(|c| c.kind == "maven"));
+        assert!(
+            configs
+                .iter()
+                .filter(|c| c.kind == "maven")
+                .all(|c| c.cwd.as_ref().is_some_and(|d| d.as_ref() == std::path::Path::new("b")))
+        );
+    }
 }

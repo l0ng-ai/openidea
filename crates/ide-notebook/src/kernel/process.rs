@@ -1,13 +1,12 @@
 use ide_core::{IdeError, IdeResult};
 use jupyter_protocol::ConnectionInfo;
 use parking_lot::Mutex;
-use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -18,7 +17,7 @@ pub(super) struct Process {
     child: Child,
     #[cfg(unix)]
     pid: Option<u32>,
-    stderr: Arc<Mutex<VecDeque<u8>>>,
+    stderr: Arc<Mutex<String>>,
     drains: Vec<JoinHandle<()>>,
     // Kept until the process and sockets have stopped; contains the HMAC secret.
     _directory: tempfile::TempDir,
@@ -103,26 +102,31 @@ impl Process {
             child,
             #[cfg(unix)]
             pid,
-            stderr: Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_BYTES))),
+            stderr: Arc::new(Mutex::new(String::new())),
             drains: Vec::new(),
             _directory: directory,
             #[cfg(windows)]
             windows,
         };
-        if let Some(mut stderr) = process.child.stderr.take() {
+        if let Some(stderr) = process.child.stderr.take() {
             let tail = process.stderr.clone();
             process.drains.push(tokio::spawn(async move {
-                let mut buffer = [0_u8; 4096];
-                while let Ok(count) = stderr.read(&mut buffer).await {
-                    if count == 0 {
-                        break;
-                    }
-                    let mut tail = tail.lock();
-                    for byte in &buffer[..count] {
-                        if tail.len() == STDERR_BYTES {
-                            tail.pop_front();
+                let mut reader = BufReader::new(stderr);
+                let mut line = Vec::new();
+                loop {
+                    line.clear();
+                    match reader.read_until(b'\n', &mut line).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            let text = ide_core::output_encoding::decode_tool_output(&line);
+                            let mut tail = tail.lock();
+                            tail.push_str(&text);
+                            let mut start = tail.len().saturating_sub(STDERR_BYTES);
+                            while !tail.is_char_boundary(start) {
+                                start += 1;
+                            }
+                            tail.drain(..start);
                         }
-                        tail.push_back(*byte);
                     }
                 }
             }));
@@ -143,8 +147,7 @@ impl Process {
     }
 
     pub fn stderr(&self) -> String {
-        let bytes = self.stderr.lock().iter().copied().collect::<Vec<_>>();
-        String::from_utf8_lossy(&bytes).into_owned()
+        self.stderr.lock().clone()
     }
 
     pub fn death(&mut self) -> IdeResult<Option<String>> {

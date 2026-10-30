@@ -712,17 +712,62 @@ pub fn open_settings_window(
         .and_then(|b| b.build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
     apply_zoom(app, &window);
-    // window-state restores the remembered size; the position always follows the parent.
-    if let (Ok(pos), Ok(size), Ok(own), Ok(scale)) =
-        (parent.outer_position(), parent.outer_size(), window.outer_size(), parent.scale_factor())
-    {
-        let (pos, size, own) =
-            (pos.to_logical::<f64>(scale), size.to_logical::<f64>(scale), own.to_logical::<f64>(scale));
-        let at = centered(pos.x, pos.y, size.width, size.height, own.width, own.height);
-        let _ = window.set_position(tauri::LogicalPosition::new(at.0, at.1));
+    // Restore runs during build; fit its size to the parent's current display before showing.
+    if let Err(e) = fit_settings_window(&window, &parent) {
+        tracing::warn!("cannot fit settings window: {e}");
     }
     focus(&window);
     Ok(())
+}
+
+/// Fit outer bounds, including native decorations, using one monitor's logical coordinate space.
+fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+    let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
+        return Ok(());
+    };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let origin = area.position.to_logical::<f64>(scale);
+    let available = area.size.to_logical::<f64>(scale);
+    // Move to the target display first so native frame metrics use its scale factor.
+    window.set_position(area.position)?;
+    let inner = window.inner_size()?.to_logical::<f64>(scale);
+    let outer = window.outer_size()?.to_logical::<f64>(scale);
+    let frame = (outer.width - inner.width, outer.height - inner.height);
+    let pos = parent.outer_position()?.to_logical::<f64>(scale);
+    let size = parent.outer_size()?.to_logical::<f64>(scale);
+    let bounds = fit_bounds(
+        (pos.x, pos.y, size.width, size.height),
+        (outer.width, outer.height),
+        (origin.x, origin.y, available.width, available.height),
+    );
+    // A small work area takes precedence over the usual minimum window size.
+    window.set_min_size(Some(
+        tauri::LogicalSize::new(
+            SETTINGS_MIN_SIZE.0.min((available.width - frame.0).max(1.0)),
+            SETTINGS_MIN_SIZE.1.min((available.height - frame.1).max(1.0)),
+        )
+        .to_physical::<u32>(scale),
+    ))?;
+    window.set_size(
+        tauri::LogicalSize::new((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0)).to_physical::<u32>(scale),
+    )?;
+    window.set_position(tauri::PhysicalPosition::new(
+        (bounds.0 * scale).round() as i32,
+        (bounds.1 * scale).round() as i32,
+    ))
+}
+
+fn fit_bounds(parent: (f64, f64, f64, f64), size: (f64, f64), work: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let width = size.0.min(work.2);
+    let height = size.1.min(work.3);
+    let at = centered(parent.0, parent.1, parent.2, parent.3, width, height);
+    (
+        work.0 + (at.0 - work.0).clamp(0.0, work.2 - width),
+        work.1 + (at.1 - work.1).clamp(0.0, work.3 - height),
+        width,
+        height,
+    )
 }
 
 /// Top-left corner that centres a `w`×`h` window over the parent rectangle
@@ -989,6 +1034,34 @@ mod tests {
         assert_eq!(settings_parent("main"), None);
         assert!(is_settings_window("settings-project-1"));
         assert!(!is_settings_window("project-1"));
+    }
+
+    #[test]
+    fn settings_bounds_fit_current_work_area() {
+        for (parent, size, work, expected) in [
+            // 1920×1080 at 150% scaling, with a 40-physical-pixel taskbar.
+            (
+                (0.0, 0.0, 1280.0, 600.0),
+                (980.0, 720.0),
+                (0.0, 0.0, 1280.0, 1040.0 / 1.5),
+                (150.0, 0.0, 980.0, 1040.0 / 1.5),
+            ),
+            // Restored geometry from a larger display.
+            ((100.0, 50.0, 1440.0, 900.0), (2400.0, 1600.0), (0.0, 24.0, 1920.0, 1016.0), (0.0, 24.0, 1920.0, 1016.0)),
+            // Secondary display with a negative origin and reserved top/left space.
+            (
+                (-1800.0, 100.0, 1400.0, 900.0),
+                (980.0, 720.0),
+                (-1870.0, 24.0, 1870.0, 1016.0),
+                (-1590.0, 190.0, 980.0, 720.0),
+            ),
+            // Parent near the lower-right edge.
+            ((1700.0, 900.0, 800.0, 600.0), (980.0, 720.0), (0.0, 0.0, 1920.0, 1040.0), (940.0, 320.0, 980.0, 720.0)),
+            // Work area smaller than the normal minimum size.
+            ((0.0, 0.0, 800.0, 600.0), (980.0, 720.0), (0.0, 0.0, 600.0, 360.0), (0.0, 0.0, 600.0, 360.0)),
+        ] {
+            assert_eq!(fit_bounds(parent, size, work), expected);
+        }
     }
 
     #[test]

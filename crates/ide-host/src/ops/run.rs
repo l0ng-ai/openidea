@@ -10,13 +10,18 @@ pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     let root = project.root.clone();
     let user = ide_run::load_user_configs(&root)?;
     let suppressed = ide_run::load_suppressed_config_ids(&root)?;
-    let mut all: Vec<RunConfig> = ide_run::detect(&root)
+    let settings = project.settings.effective();
+    let excluded_poms = crate::project::unlinked_maven_poms(&root, &settings);
+    let mut all: Vec<RunConfig> = ide_run::detect_excluding(&root, &excluded_poms)
         .into_iter()
         .filter(|d| !suppressed.contains(&d.id) && !user.iter().any(|u| u.id == d.id))
         .collect();
     all.extend(user);
     // Project interpreter / package manager / toolchains from Languages & Frameworks.
-    ide_sdk::apply::apply_to_run_configs(&mut all, &root, &project.settings.effective());
+    // Keep Gradle choices unmodified in the editor: derived defaults must not be saved as explicit env.
+    for config in all.iter_mut().filter(|c| c.kind != "gradle") {
+        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(config), &root, &settings);
+    }
     Ok(all)
 }
 
@@ -46,7 +51,11 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     let settings = project.settings.effective();
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
     let mut config = config;
-    ide_sdk::apply::resolve_run_command(&mut config, &project.root, &settings);
+    if config.kind == "gradle" {
+        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), &project.root, &settings);
+    } else {
+        ide_sdk::apply::resolve_run_command(&mut config, &project.root, &settings);
+    }
     if config.command == ide_sdk::godot::COMMAND {
         return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
     }

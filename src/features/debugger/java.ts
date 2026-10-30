@@ -102,7 +102,9 @@ export interface JavaAttachTarget {
   port: number;
 }
 
-export function isJavaAttachTarget(arg: unknown): arg is JavaAttachTarget & { process?: number | null } {
+export function isJavaAttachTarget(
+  arg: unknown,
+): arg is JavaAttachTarget & { process?: number | null; runConfig?: RunConfig } {
   return !!arg && typeof arg === "object" && "port" in arg && typeof (arg as { port: unknown }).port === "number";
 }
 

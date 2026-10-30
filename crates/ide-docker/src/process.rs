@@ -54,7 +54,7 @@ fn read_all(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Str
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = pipe.read_to_end(&mut buf);
-        String::from_utf8_lossy(&buf).into_owned()
+        ide_core::output_encoding::decode_tool_output(&buf)
     })
 }
 
@@ -115,7 +115,7 @@ fn spawn_reader(mut pipe: impl Read + Send + 'static, tx: mpsc::Sender<Event>, s
         let mut pending: Vec<u8> = Vec::new();
         let flush = |pending: &mut Vec<u8>| {
             if !pending.is_empty() {
-                let line = String::from_utf8_lossy(pending).trim_end().to_string();
+                let line = ide_core::output_encoding::decode_tool_output(pending).trim_end().to_string();
                 pending.clear();
                 let _ = tx.send(Event::Line(stream, line));
             }

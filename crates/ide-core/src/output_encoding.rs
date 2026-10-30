@@ -18,6 +18,60 @@
 
 use std::collections::BTreeMap;
 
+/// Decodes complete lines or collected output from IDE-managed tools, preferring UTF-8.
+/// Windows launcher/native diagnostics fall back to the system ANSI code page.
+/// Callers must buffer incomplete lines so multibyte characters are never split.
+/// Run consoles and protocol streams have their own encoding contracts.
+pub fn decode_tool_output(bytes: &[u8]) -> String {
+    #[cfg(windows)]
+    // SAFETY: GetACP is an argument-less query with no preconditions.
+    let code_page = unsafe { windows_sys::Win32::Globalization::GetACP() };
+    #[cfg(not(windows))]
+    let code_page = 65001;
+    decode_tool_output_with_code_page(bytes, code_page)
+}
+
+fn decode_tool_output_with_code_page(bytes: &[u8], code_page: u32) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+    let encoding = encoding_for_code_page(code_page).unwrap_or(encoding_rs::UTF_8);
+    // Collected output can mix UTF-8 JVM lines with native launcher diagnostics.
+    let mut text = String::new();
+    for line in bytes.split_inclusive(|b| *b == b'\n') {
+        match std::str::from_utf8(line) {
+            Ok(line) => text.push_str(line),
+            Err(_) => text.push_str(&encoding.decode_without_bom_handling(line).0),
+        }
+    }
+    text
+}
+
+fn encoding_for_code_page(cp: u32) -> Option<&'static encoding_rs::Encoding> {
+    Some(match cp {
+        65001 => encoding_rs::UTF_8,
+        936 => encoding_rs::GBK,
+        54936 => encoding_rs::GB18030,
+        950 => encoding_rs::BIG5,
+        932 => encoding_rs::SHIFT_JIS,
+        949 => encoding_rs::EUC_KR,
+        866 => encoding_rs::IBM866,
+        874 => encoding_rs::WINDOWS_874,
+        1250 => encoding_rs::WINDOWS_1250,
+        1251 => encoding_rs::WINDOWS_1251,
+        1252 => encoding_rs::WINDOWS_1252,
+        1253 => encoding_rs::WINDOWS_1253,
+        1254 => encoding_rs::WINDOWS_1254,
+        1255 => encoding_rs::WINDOWS_1255,
+        1256 => encoding_rs::WINDOWS_1256,
+        1257 => encoding_rs::WINDOWS_1257,
+        1258 => encoding_rs::WINDOWS_1258,
+        20866 => encoding_rs::KOI8_R,
+        21866 => encoding_rs::KOI8_U,
+        _ => return None,
+    })
+}
+
 const STD_PROPERTIES: &[&str] = &["stdout.encoding", "stderr.encoding", "sun.stdout.encoding", "sun.stderr.encoding"];
 const FILE_ENCODING: &str = "file.encoding";
 const TOOL_OPTIONS: &str = "JAVA_TOOL_OPTIONS";
@@ -236,6 +290,29 @@ impl NoticeFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_output_prefers_utf8() {
+        for cp in [936, 1252, 65001, 0] {
+            for text in ["", "plain ASCII\r\n", "中文 café 🦀\n"] {
+                assert_eq!(decode_tool_output_with_code_page(text.as_bytes(), cp), text);
+            }
+        }
+    }
+
+    #[test]
+    fn tool_output_decodes_native_diagnostics_and_mixed_lines() {
+        const GBK: &[u8] = b"\xcf\xb5\xcd\xb3\xd5\xd2\xb2\xbb\xb5\xbd\xd6\xb8\xb6\xa8\xb5\xc4\xc2\xb7\xbe\xb6\xa1\xa3";
+        assert_eq!(decode_tool_output_with_code_page(GBK, 936), "系统找不到指定的路径。");
+        let mut mixed = "JVM: 中文\r\n".as_bytes().to_vec();
+        mixed.extend_from_slice(GBK);
+        mixed.extend_from_slice(b"\r\nlast");
+        assert_eq!(decode_tool_output_with_code_page(&mixed, 936), "JVM: 中文\r\n系统找不到指定的路径。\r\nlast");
+        assert_eq!(decode_tool_output_with_code_page(b"caf\xe9", 1252), "café");
+        for cp in [65001, 0] {
+            assert_eq!(decode_tool_output_with_code_page(b"a\xffb", cp), "a�b");
+        }
+    }
 
     const STD_UTF8: [&str; 4] = [
         "-Dstdout.encoding=UTF-8",

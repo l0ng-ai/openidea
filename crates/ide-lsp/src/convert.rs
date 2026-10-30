@@ -1177,6 +1177,40 @@ mod tests {
     }
 
     #[test]
+    fn jdtls_completion_defaults_preserve_prefix_range_and_edit_text() {
+        // JDT.LS 1.63: request after `System.out.` or `System.out.Print`.
+        for end in [19, 24] {
+            let (_, items) = parse_completion_response(json!({
+                "isIncomplete": false,
+                "itemDefaults": {
+                    "editRange": {
+                        "insert": {"start": {"line":2,"character":19}, "end": {"line":2,"character":end}},
+                        "replace": {"start": {"line":2,"character":19}, "end": {"line":2,"character":end}}
+                    },
+                    "insertTextFormat": 2,
+                    "data": {"completionKinds": [2, 6]}
+                },
+                "items": [{
+                    "label": "print",
+                    "labelDetails": {"detail": "(Object obj)", "description": "void"},
+                    "kind": 2,
+                    "detail": "PrintStream.print(Object obj) : void",
+                    "filterText": "print(Object obj) : void",
+                    "insertText": "print",
+                    "textEditText": "print(${0});",
+                    "data": {"pid": "0", "rid": "0"}
+                }]
+            }));
+            let item = completion_item(&Conv::utf16(), Path::new("/Main.java"), items[0].clone(), ServerId(1));
+            assert_eq!(item.replace_range, Some(Range::new(p(2, 19), p(2, end))));
+            assert_eq!(item.replace_range_tab, None);
+            assert_eq!(item.filter_text.as_deref(), Some("print(Object obj) : void"));
+            assert_eq!(item.insert_text, "print(${0});");
+            assert!(item.is_snippet);
+        }
+    }
+
+    #[test]
     fn hover_normalisation() {
         let conv = Conv::utf16();
         let h: lsp::Hover = serde_json::from_value(json!({

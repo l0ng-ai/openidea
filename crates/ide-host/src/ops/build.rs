@@ -27,7 +27,12 @@ fn java_env(project_jdk: Option<&ide_sdk::java::Jdk>, release: Option<u32>) -> B
 /// The build model with the launch settings applied: the JDK (`JAVA_HOME`), and
 /// the Maven home and options from Settings › Maven.
 pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
-    let mut model = ide_build::load(root, cache, ide_sdk::apply::maven_local_repository(root, settings));
+    let mut model = ide_build::load_linked(
+        root,
+        cache,
+        ide_sdk::apply::maven_local_repository(root, settings),
+        &settings.languages.java.maven,
+    );
     let jdk = ide_sdk::apply::project_jdk(root, settings);
     if let Some(m) = &mut model.maven {
         let mvn = ide_sdk::apply::maven_command(root, settings);
@@ -41,7 +46,8 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         }
     }
     if let Some(g) = &mut model.gradle {
-        g.env = java_env(jdk.as_ref(), g.java_version);
+        g.env = ide_sdk::apply::gradle_env(root, settings, java_env(jdk.as_ref(), g.java_version));
+        g.command = ide_sdk::apply::gradle_command(root, &root.join(&g.dir), settings).to_string_lossy().into_owned();
     }
     // A failed sync of a project no installed JDK can build says so first (with a Download JDK action).
     let missing = |release: Option<u32>| match jdk {
@@ -62,7 +68,7 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
     if let Some(g) = &mut model.gradle
         && g.sync_error.is_some()
     {
-        let hint = missing(g.java_version);
+        let hint = if settings.languages.java.gradle.jvm.trim().is_empty() { missing(g.java_version) } else { None };
         explain(&mut g.sync_error, hint);
     }
     model
@@ -107,6 +113,8 @@ pub async fn build_sync(
             env,
             maven_command: ide_sdk::apply::maven_command(&root, &settings).map(|p| p.to_string_lossy().into_owned()),
             maven_options: ide_sdk::apply::maven_options(&root, &settings),
+            maven_settings: settings.languages.java.maven.clone(),
+            gradle_command: current.gradle.as_ref().map(|g| g.command.clone()),
         };
         let progress = |p: SyncProgress| {
             let _ = on_progress.send(p);
@@ -260,4 +268,35 @@ pub(crate) fn register(d: &mut Dispatcher) {
         )
         .await
     });
+}
+
+#[cfg(test)]
+mod gradle_settings_tests {
+    use super::*;
+
+    #[test]
+    fn model_for_sync_tasks_and_compile_uses_gradle_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
+        let wrapper = root.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
+        std::fs::write(&wrapper, "").unwrap();
+        let mut settings = Settings::default();
+        let default = load(root, &root.join("cache"), &settings).gradle.unwrap();
+        assert_eq!(default.command, wrapper.to_string_lossy());
+        settings.languages.java.gradle.jvm = "jdk21".into();
+        settings.languages.java.gradle.user_home = "user-home".into();
+        settings.languages.java.gradle.distribution = ide_core::settings::GradleDistribution::Local;
+        settings.languages.java.gradle.home = "gradle-install".into();
+        let model = load(root, &root.join("cache"), &settings).gradle.unwrap();
+        assert_eq!(
+            model.command,
+            root.join("gradle-install")
+                .join("bin")
+                .join(if cfg!(windows) { "gradle.bat" } else { "gradle" })
+                .to_string_lossy()
+        );
+        assert_eq!(model.env["JAVA_HOME"], root.join("jdk21").to_string_lossy());
+        assert_eq!(model.env["GRADLE_USER_HOME"], root.join("user-home").to_string_lossy());
+    }
 }

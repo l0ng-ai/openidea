@@ -313,6 +313,21 @@ impl FsBatch {
     }
 }
 
+/// Detect a revision's encoding with the same rules as files opened in the editor.
+pub fn detect_encoding(bytes: &[u8], fallback: Option<&str>) -> &'static encoding_rs::Encoding {
+    let (_, detected, has_bom, binary) = encoding::decode(bytes);
+    if !binary
+        && !has_bom
+        && detected != encoding_rs::UTF_8
+        && detected != encoding_rs::UTF_16LE
+        && detected != encoding_rs::UTF_16BE
+    {
+        fallback.and_then(|label| encoding_rs::Encoding::for_label(label.trim().as_bytes())).unwrap_or(detected)
+    } else {
+        detected
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

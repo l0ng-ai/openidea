@@ -96,7 +96,12 @@ pub(crate) fn without_untouched(changes: Vec<AgentChange>, before: &BTreeMap<Str
 }
 
 pub(crate) fn file_at(cwd: &Path, path: &Path, rev: &str) -> IdeResult<Option<String>> {
-    repo_at(cwd)?.file_at(path, Some(rev))
+    let repo = repo_at(cwd)?;
+    let encoding = match ide_vfs::load_text(path) {
+        Ok(loaded) => encoding_rs::Encoding::for_label(loaded.encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8),
+        Err(_) => ide_vfs::detect_encoding(&repo.file_bytes_at(path, Some(rev))?.unwrap_or_default(), None),
+    };
+    repo.file_at(path, Some(rev), encoding)
 }
 
 /// A short ASCII branch-safe name from the task title.

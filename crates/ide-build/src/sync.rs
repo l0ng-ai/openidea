@@ -23,6 +23,7 @@ pub struct SyncProgress {
 
 #[derive(Clone, Debug, Default)]
 pub struct SyncOptions {
+    pub maven_settings: ide_core::settings::MavenSettings,
     /// `-o` / `--offline`.
     pub offline: bool,
     /// Maven profiles (`-P`), `!id` deactivates.
@@ -31,6 +32,8 @@ pub struct SyncOptions {
     pub env: BTreeMap<String, String>,
     /// Maven launcher replacing the project's `mvnw` / `mvn` (Settings › Maven home).
     pub maven_command: Option<String>,
+    /// Resolved Gradle launcher from Settings.
+    pub gradle_command: Option<String>,
     /// Maven options before the goals (`-s`, `-Dmaven.repo.local=`).
     pub maven_options: Vec<String>,
 }
@@ -198,7 +201,8 @@ pub fn sync_maven(
     cancel: &CancellationToken,
     progress: &dyn Fn(SyncProgress),
 ) -> IdeResult<()> {
-    let model = maven::load(root);
+    let mut model = maven::load(root);
+    maven::UnlinkedProjects::from_model(&model, &options.maven_settings).filter(&mut model);
     std::fs::create_dir_all(cache_dir)?;
     let mut cache =
         MavenCache { hash: hash_files(&maven::build_files(root, &model)), verbose: true, ..MavenCache::default() };
@@ -266,7 +270,14 @@ pub fn sync_gradle(
         args.push("--offline".into());
     }
     progress(SyncProgress { message: "Loading Gradle tasks".into(), fraction: None });
-    let out = run(&model.command, &args, &root.join(&model.dir), &options.env, cancel, |_| {})?;
+    let out = run(
+        options.gradle_command.as_deref().unwrap_or(&model.command),
+        &args,
+        &root.join(&model.dir),
+        &options.env,
+        cancel,
+        |_| {},
+    )?;
     let cache = GradleCache {
         hash: hash_files(&gradle::build_files(root, &model)),
         at_ms: now_ms(),
@@ -279,6 +290,29 @@ pub fn sync_gradle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_sync_uses_resolved_command_and_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        let launcher = root.join("configured-gradle");
+        std::fs::write(&launcher, "#!/bin/sh\nprintf '%s\\n' \"$JAVA_HOME\" \"$GRADLE_USER_HOME\" > actual-env\n")
+            .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let options = SyncOptions {
+            gradle_command: Some(launcher.to_string_lossy().into_owned()),
+            env: BTreeMap::from([
+                ("JAVA_HOME".into(), "/jdk21".into()),
+                ("GRADLE_USER_HOME".into(), "/gradle-cache".into()),
+            ]),
+            ..Default::default()
+        };
+        sync_gradle(root, &root.join("cache"), &options, &CancellationToken::new(), &|_| {}).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("actual-env")).unwrap(), "/jdk21\n/gradle-cache\n");
+    }
 
     #[test]
     fn caches_merge_and_go_stale() {

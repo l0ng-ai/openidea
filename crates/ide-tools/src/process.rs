@@ -3,6 +3,7 @@
 
 use crate::InstallEvent;
 use ide_core::error::ErrorKind;
+use ide_core::output_encoding::decode_tool_output;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -86,8 +87,9 @@ pub fn run_collect(mut cmd: Command, cancel: &CancellationToken, emit: Emit) -> 
     for pipe in pipes.into_iter().flatten() {
         let tx = tx.clone();
         std::thread::spawn(move || {
-            for line in BufReader::new(pipe).lines() {
+            for line in BufReader::new(pipe).split(b'\n') {
                 let Ok(line) = line else { break };
+                let line = decode_tool_output(&line).trim_end_matches('\r').to_owned();
                 if tx.send(line).is_err() {
                     break;
                 }
@@ -127,14 +129,14 @@ pub fn run_quiet(mut cmd: Command, timeout: Duration) -> Option<(bool, String)> 
     let mut stdout = child.stdout.take()?;
     let mut stderr = child.stderr.take()?;
     let out_t = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stdout.read_to_string(&mut s);
-        s
+        let mut s = Vec::new();
+        let _ = stdout.read_to_end(&mut s);
+        decode_tool_output(&s)
     });
     let err_t = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
+        let mut s = Vec::new();
+        let _ = stderr.read_to_end(&mut s);
+        decode_tool_output(&s)
     });
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -251,8 +253,9 @@ impl Http {
             return Err(IdeError::new(ErrorKind::Io, format!("{url}: response is larger than {max} bytes")));
         }
         if !status.success() {
-            let mut err = String::new();
-            let _ = stderr.read_to_string(&mut err);
+            let mut err = Vec::new();
+            let _ = stderr.read_to_end(&mut err);
+            let err = decode_tool_output(&err);
             return Err(IdeError::new(ErrorKind::Io, format!("GET {url} failed: {}", err.trim())));
         }
         String::from_utf8(body).map_err(|_| IdeError::new(ErrorKind::Protocol, format!("{url}: response is not UTF-8")))
@@ -272,9 +275,9 @@ impl Http {
         let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run curl: {e}")))?;
         let mut stderr = child.stderr.take().expect("piped");
         let err_t = std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = stderr.read_to_string(&mut s);
-            s
+            let mut s = Vec::new();
+            let _ = stderr.read_to_end(&mut s);
+            decode_tool_output(&s)
         });
         let mut last = Instant::now();
         let mut last_bytes = 0;

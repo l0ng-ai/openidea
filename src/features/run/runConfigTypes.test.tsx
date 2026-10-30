@@ -1,3 +1,4 @@
+import { useProject } from "@/platform/project";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
@@ -22,6 +23,7 @@ import { pasteRows } from "./EnvDialog";
 import { CURRENT_FILE, resetRuns, selectConfig, sessionsOf, startCompound, startRun, useRun } from "./store";
 import {
   BUILTIN_TYPES,
+  blankTemplate,
   formParams,
   missingParams,
   newConfigOfType,
@@ -71,6 +73,47 @@ describe("configuration types", () => {
     expect(runConfigTypes().map((t) => t.id)).toEqual(expect.arrayContaining(BUILTIN_TYPES.map((t) => t.id)));
   });
 
+  it.each([
+    ["maven", "mvn.cmd", ["clean", "test"]],
+    ["maven", "MVN.CMD", ["verify"]],
+    ["maven", "mvn.bat", ["test"]],
+    ["maven", "/opt/maven/bin/mvn", ["package"]],
+    ["maven", String.raw`C:\tools\maven\bin\mvn.cmd`, ["test", "-Dname=two words"]],
+    ["maven", "mvnw.cmd", ["test"]],
+    ["gradle", "gradle.bat", ["build"]],
+    ["gradle", "gradle.cmd", ["test"]],
+    ["gradle", "gradlew.bat", ["test"]],
+    ["pytest", "pytest.exe", ["tests/test_app.py", "-q"]],
+    ["pytest", String.raw`C:\project\.venv\Scripts\PYTEST.EXE`, ["-q"]],
+    ["pytest", "PYTHON.EXE", ["-m", "pytest", "tests"]],
+    ["npm", String.raw`C:\Program Files\nodejs\NPM.CMD`, ["run", "test", "--", "two words"]],
+    ["npm", "pnpm.COM", ["test"]],
+    ["application", String.raw`C:\jdk\bin\JAVA.EXE`, ["-cp", "lib/*", "a.Main"]],
+    ["spring-boot", "java.cmd", ["-cp", "lib/*", "a.App"]],
+    ["godot", "GODOT.EXE", ["--path", ".", "res://a.tscn"]],
+  ])("opens %s launcher %s in its form and preserves the command line", (kind, command, args) => {
+    const original = cfg("windows", { kind, command, args, cwd: "C:/project" });
+    const params = formParams(original);
+    expect(params).not.toBeNull();
+    expect(withParams(original, params!)).toMatchObject({ command, args, cwd: original.cwd });
+    if (kind === "maven" || kind === "gradle") {
+      expect(params!.wrapper === "true").toBe(/^(mvnw|gradlew)/.test(command));
+      expect(withParams(original, { ...params!, tasks: "clean" })).toMatchObject({ command, args: ["clean"] });
+    }
+  });
+
+  it("switches launchers when the wrapper or package manager selection changes", () => {
+    const maven = cfg("m", { kind: "maven", command: "mvnw.cmd", args: ["test"] });
+    expect(withParams(maven, { ...formParams(maven)!, wrapper: "false" }).command).toBe("mvn");
+    const npm = cfg("n", { kind: "npm", command: "NPM.CMD", args: ["test"] });
+    expect(formParams(npm)!.packageManager).toBe("npm");
+    expect(withParams(npm, { ...formParams(npm)!, packageManager: "pnpm" }).command).toBe("pnpm");
+  });
+
+  it.each(["mvn.cmd.sh", "other.exe", "/bin/MVN"])("does not accept unrelated Maven commands: %s", (command) => {
+    expect(formParams(cfg("m", { kind: "maven", command, args: ["test"] }))).toBeNull();
+  });
+
   it("old run.toml entries edit as a Shell Script command line", () => {
     const old = cfg("user:server", { command: "cargo", args: ["run", "--bin", "my app"] });
     const params = formParams(old)!;
@@ -96,9 +139,19 @@ describe("configuration types", () => {
       command: "/Apps/Godot.app/Contents/MacOS/Godot",
       args: ["--path", "."],
     });
-    expect(godot.paramsFrom!(detected)).toEqual({ projectDir: "", scene: "", arguments: "" });
+    expect(godot.paramsFrom!(detected)).toEqual({
+      projectDir: "",
+      scene: "",
+      arguments: "",
+      executable: detected.command,
+    });
     const scene = { ...detected, cwd: "demo", args: ["--path", ".", "res://a.tscn", "--verbose"] };
-    expect(godot.paramsFrom!(scene)).toEqual({ projectDir: "demo", scene: "res://a.tscn", arguments: "--verbose" });
+    expect(godot.paramsFrom!(scene)).toEqual({
+      projectDir: "demo",
+      scene: "res://a.tscn",
+      arguments: "--verbose",
+      executable: detected.command,
+    });
     expect(godot.paramsFrom!(cfg("x", { command: "cargo" }))).toBeNull();
   });
 
@@ -221,8 +274,8 @@ describe("configuration types", () => {
     });
     const gradle = cfg("gradle:test", { kind: "gradle", command: "./gradlew", args: ["test"], detected: true });
     expect(formParams(gradle)).toMatchObject({ tasks: "test", wrapper: "true" });
-    // A toolchain-specific command line the form can't reproduce stays a plain command.
-    expect(formParams(cfg("m", { kind: "maven", command: "/opt/maven/bin/mvn", args: ["package"] }))).toBeNull();
+    // An unrelated executable stays a plain command.
+    expect(formParams(cfg("m", { kind: "maven", command: "/opt/tools/custom-build", args: ["package"] }))).toBeNull();
     expect(withParams(npm, { packageManager: "npm", command: "test", packageDir: "" })).toMatchObject({
       command: "npm",
       args: ["test"],
@@ -467,4 +520,24 @@ describe("Current File", () => {
     selectConfig(CURRENT_FILE);
     expect(useRun.getState().selectedId).toBe(CURRENT_FILE);
   });
+});
+
+describe("new Gradle wrapper default", () => {
+  it.each(["wrapper", "local"] as const)(
+    "follows %s distribution without changing existing choices",
+    (distribution) => {
+      const previous = useProject.getState().settings;
+      useProject.setState({ settings: { languages: { java: { gradle: { distribution } } } } as never });
+      try {
+        const type = BUILTIN_TYPES.find((t) => t.id === "gradle")!;
+        const config = newConfigOfType(type, [], blankTemplate(type));
+        expect(config.params?.wrapper).toBe(distribution === "local" ? "false" : "true");
+        expect(type.fields.some((f) => f.key === "wrapper")).toBe(true);
+        const template = { ...config, params: { wrapper: "true" } };
+        expect(newConfigOfType(type, [], template).params?.wrapper).toBe("true");
+      } finally {
+        useProject.setState({ settings: previous });
+      }
+    },
+  );
 });

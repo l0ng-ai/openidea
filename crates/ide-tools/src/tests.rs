@@ -88,6 +88,20 @@ fn everything_missing_on_an_empty_system() {
     assert!(find(&list, "delve").kind == ToolKind::Debugger);
 }
 
+#[test]
+fn interchangeable_servers_list_their_alternatives() {
+    let env = Env::new();
+    let list = env.tools().list(&langs());
+    let python = ["basedpyright", "pyright", "ty"];
+    for name in python {
+        assert_eq!(find(&list, name).alternatives, python);
+    }
+    assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
+    // A regular server after a fallback starts no group with it.
+    assert!(find(&list, "angular-language-server").alternatives.is_empty());
+    assert!(find(&list, "rust-analyzer").alternatives.is_empty());
+}
+
 #[cfg(unix)]
 #[test]
 fn detects_tools_on_path_with_versions() {

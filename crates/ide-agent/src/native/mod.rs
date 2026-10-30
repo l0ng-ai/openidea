@@ -64,7 +64,7 @@ fn version_of(program: &Path) -> Option<Vec<u64>> {
     let mut cmd = std::process::Command::new(program);
     ide_core::process::prepare(&mut cmd);
     let out = cmd.arg("--version").envs(ide_core::process::shell_env()).output().ok()?;
-    parse_version(&String::from_utf8_lossy(&out.stdout))
+    parse_version(&ide_core::output_encoding::decode_tool_output(&out.stdout))
 }
 
 fn parse_version(text: &str) -> Option<Vec<u64>> {

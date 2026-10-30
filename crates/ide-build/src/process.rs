@@ -68,7 +68,7 @@ pub(crate) fn run(
                 match reader.read_until(b'\n', &mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
-                        let line = String::from_utf8_lossy(&buf);
+                        let line = ide_core::output_encoding::decode_tool_output(&buf);
                         let line = line.trim_end_matches(['\n', '\r']).to_owned();
                         if tx.send((kind, line)).is_err() {
                             break;

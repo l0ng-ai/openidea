@@ -213,8 +213,12 @@ pub fn collect(spec: &CoverageReportSpec) -> IdeResult<CoverageSuite> {
                 .output()
                 .map_err(|e| IdeError::unavailable(format!("cannot run {program}: {e}")))?;
             if !out.status.success() {
-                let text = String::from_utf8_lossy(&out.stderr).trim().to_owned();
-                let text = if text.is_empty() { String::from_utf8_lossy(&out.stdout).trim().to_owned() } else { text };
+                let text = ide_core::output_encoding::decode_tool_output(&out.stderr).trim().to_owned();
+                let text = if text.is_empty() {
+                    ide_core::output_encoding::decode_tool_output(&out.stdout).trim().to_owned()
+                } else {
+                    text
+                };
                 return Err(IdeError::not_found(format!("exporting the coverage data failed: {text}")));
             }
             let text = read_report(lcov)?;

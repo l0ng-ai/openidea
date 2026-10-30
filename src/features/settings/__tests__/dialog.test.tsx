@@ -65,6 +65,28 @@ async function openDialog(page?: string) {
 }
 
 describe("Settings dialog", () => {
+  it("finds Gradle JVM and applies project Gradle settings", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.gradle");
+    fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "Gradle JVM" } });
+    expect(within(dialog).getByRole("tree", { name: "Settings pages" }).textContent).toContain("Gradle");
+    expect(within(dialog).getByLabelText("Gradle JVM")).toBeInTheDocument();
+    await act(async () => stage("build.gradle", "project", "languages.java.gradle.jvm", "/jdk21"));
+    await act(async () => stage("build.gradle", "project", "languages.java.gradle.distribution", "local"));
+    expect(within(dialog).getByPlaceholderText("Gradle installation directory")).toBeInTheDocument();
+    await act(async () => stage("build.gradle", "project", "languages.java.gradle.home", "/gradle"));
+    await act(async () => stage("build.gradle", "project", "languages.java.gradle.userHome", "/gradle-cache"));
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet.mock.calls).toEqual(
+      expect.arrayContaining([
+        ["project", "languages.java.gradle.jvm", '"/jdk21"'],
+        ["project", "languages.java.gradle.distribution", '"local"'],
+        ["project", "languages.java.gradle.home", '"/gradle"'],
+        ["project", "languages.java.gradle.userHome", '"/gradle-cache"'],
+      ]),
+    );
+  });
+
   it("searches pages and highlights matching option labels", async () => {
     const dialog = await openDialog("appearance");
     fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "soft wrap" } });

@@ -116,6 +116,43 @@ pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
     found
 }
 
+/// Project launcher policy for sync and tool-window tasks.
+pub fn gradle_command(root: &Path, build_dir: &Path, s: &Settings) -> PathBuf {
+    resolve_gradle_command(root, build_dir, s, true)
+}
+
+fn resolve_gradle_command(root: &Path, build_dir: &Path, s: &Settings, use_wrapper: bool) -> PathBuf {
+    let g = &s.languages.java.gradle;
+    let name = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    if g.distribution == ide_core::settings::GradleDistribution::Local
+        && let Some(home) = setting_path(root, &g.home)
+    {
+        return home.join("bin").join(name);
+    }
+    let wrapper = build_dir.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
+    if use_wrapper && wrapper.is_file() {
+        return wrapper;
+    }
+    pinned::pinned_install(build_dir, Tool::Gradle)
+        .map(|(home, _)| home.join("bin").join(name))
+        .unwrap_or_else(|| name.into())
+}
+
+/// Gradle JVM overrides Project JDK; model callers supply the module's fallback environment.
+pub fn gradle_env(
+    root: &Path,
+    s: &Settings,
+    mut env: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    if let Some(home) = setting_path(root, &s.languages.java.gradle.jvm) {
+        env.insert("JAVA_HOME".into(), home.to_string_lossy().into_owned());
+    }
+    if let Some(home) = setting_path(root, &s.languages.java.gradle.user_home) {
+        env.insert("GRADLE_USER_HOME".into(), home.to_string_lossy().into_owned());
+    }
+    env
+}
+
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`
 /// and `-Dmaven.repo.local=<dir>`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
@@ -170,6 +207,60 @@ fn merge(base: &mut Value, layer: Value) {
             }
         }
         (base, layer) => *base = layer,
+    }
+}
+
+/// Excludes project-relative Maven POM paths from JDTLS import, preserving user exclusions.
+pub fn configure_maven_import(cfg: &mut LanguageServerConfig, root: &Path, excluded_poms: &[PathBuf]) {
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let mut options =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    if let Some(settings) = &cfg.settings {
+        merge(&mut options, settings.clone());
+    }
+    let mut exclusions = options
+        .pointer("/java/import/exclusions")
+        .or_else(|| options.pointer("/settings/java/import/exclusions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| {
+            vec![
+                json!("**/node_modules/**"),
+                json!("**/.metadata/**"),
+                json!("**/archetype-resources/**"),
+                json!("**/META-INF/maven/**"),
+            ]
+        });
+    for pom in excluded_poms {
+        let directory = root.join(pom).parent().unwrap_or(root).to_path_buf();
+        let directory = directory.to_string_lossy().replace('\\', "/");
+        // Java NIO glob syntax treats these characters specially even in literal paths.
+        let escaped: String =
+            directory.chars().flat_map(|c| if "*?[]{}\\".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
+        exclusions.push(json!(escaped));
+    }
+    if !excluded_poms.is_empty() {
+        merge_init_options(cfg, json!({"settings": {"java": {"import": {"exclusions": exclusions}}}}));
+        if let Some(settings) = &mut cfg.settings {
+            merge(
+                settings,
+                json!({"java": {"import": {"exclusions": exclusions}}, "settings": {"java": {"import": {"exclusions": exclusions}}}}),
+            );
+        }
+        // A fresh workspace cannot retain Maven projects imported before unlinking.
+        if let Some(index) = cfg.args.iter().position(|arg| arg == "-data")
+            && let Some(workspace) = cfg.args.get_mut(index + 1)
+        {
+            let mut hash = 0xcbf29ce484222325u64;
+            for pom in excluded_poms {
+                for byte in pom.to_string_lossy().bytes().chain([0]) {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                }
+            }
+            *workspace = format!("{workspace}-maven-{hash:016x}");
+        }
     }
 }
 
@@ -478,7 +569,6 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let jdk = project_jdk(root, s);
     let mvn = maven_command(root, s);
     let mvn_options = maven_options(root, s);
-    let gradle = pinned::pinned_install(root, Tool::Gradle).map(|(dir, _)| dir.join("bin"));
 
     for c in configs.iter_mut() {
         resolve_run_command(c, root, s);
@@ -546,14 +636,24 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     c.env.entry("GOPATH".into()).or_insert_with(|| gopath.to_string_lossy().into_owned());
                 }
             }
-            "maven" | "gradle" => {
+            "gradle" => {
+                let build_dir = c.cwd.as_ref().map(|p| root.join(p.as_ref())).unwrap_or_else(|| root.to_path_buf());
+                if matches!(c.command.as_str(), "gradle" | "gradle.bat") {
+                    c.command = resolve_gradle_command(root, &build_dir, s, false).to_string_lossy().into_owned();
+                }
+                let defaults = jdk
+                    .as_ref()
+                    .map(|j| {
+                        std::collections::BTreeMap::from([("JAVA_HOME".into(), j.home.to_string_lossy().into_owned())])
+                    })
+                    .unwrap_or_default();
+                for (key, value) in gradle_env(root, s, defaults) {
+                    c.env.entry(key).or_insert(value);
+                }
+            }
+            "maven" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
-                }
-                if c.kind == "gradle"
-                    && let Some(bin) = gradle.as_ref().filter(|b| b.is_dir())
-                {
-                    path_dirs.push(bin.clone());
                 }
                 if c.kind == "maven" && c.detected {
                     if let Some(mvn) = &mvn {
@@ -615,4 +715,28 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: Option<&str>) -> Op
         _ => "activate",
     };
     script(target).is_file().then_some(line)
+}
+
+#[cfg(test)]
+mod maven_linkage_tests {
+    use super::*;
+
+    #[test]
+    fn import_excludes_unlinked_modules_and_changes_persistent_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("a/child")).unwrap();
+        std::fs::write(tmp.path().join("a/pom.xml"), "<project><modules><module>child</module></modules></project>")
+            .unwrap();
+        std::fs::write(tmp.path().join("a/child/pom.xml"), "<project/>").unwrap();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
+        merge_init_options(&mut cfg, json!({"settings":{"java":{"import":{"exclusions":["**/custom"]}}}}));
+        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()]);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
+        assert!(exclusions.contains(&json!("**/custom")));
+        assert!(exclusions.contains(&json!(tmp.path().join("a").to_string_lossy().replace('\\', "/"))));
+        assert!(exclusions.contains(&json!(tmp.path().join("a/child").to_string_lossy().replace('\\', "/"))));
+        assert!(cfg.args[1].starts_with("/cache/jdtls-maven-"));
+    }
 }

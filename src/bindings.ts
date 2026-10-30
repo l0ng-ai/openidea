@@ -909,7 +909,11 @@ export const commands = {
 	sshConnected: () => __TAURI_INVOKE<string[]>("ssh_connected"),
 	sshDisconnect: (id: string) => __TAURI_INVOKE<void>("ssh_disconnect", { id }),
 	/**  Answers an `IdeEvent::Askpass` prompt (`None`: cancelled); every window drops it. */
-	sshAskpassAnswer: (id: number, answer: string | null) => __TAURI_INVOKE<void>("ssh_askpass_answer", { id, answer }),
+	sshAskpassAnswer: (id: number, answer: string | null, remember: boolean) => __TAURI_INVOKE<void>("ssh_askpass_answer", { id, answer, remember }),
+	/**  Settings › Git › Saved credentials: `scheme://host` of every saved entry. */
+	gitCredentials: () => __TAURI_INVOKE<string[]>("git_credentials"),
+	/**  Forgets the credential of `key` (a `git_credentials` entry). */
+	gitCredentialForget: (key: string) => __TAURI_INVOKE<void>("git_credential_forget", { key }),
 	/**
 	 *  Tools › Start SSH Session: the system `ssh` command line for configuration `id`
 	 *  (run in a terminal tab, so prompts and host-key questions are answered there).
@@ -3139,6 +3143,8 @@ export type GoSettings = {
 
 export type GotoKind = "definition" | "declaration" | "typeDefinition" | "implementation";
 
+export type GradleDistribution = "wrapper" | "local";
+
 export type GradleModel = {
 	/**  Project-relative directory of the build (where `settings.gradle` is); `""` = project root. */
 	dir: string,
@@ -3164,6 +3170,17 @@ export type GradleProject = {
 	/**  Project-relative build script, if any. */
 	buildFile: string | null,
 	tasks: GradleTask[],
+};
+
+/**  Build Tools › Gradle. */
+export type GradleSettings = {
+	/**  Empty = Project JDK; otherwise a JDK home. */
+	jvm?: string,
+	distribution?: GradleDistribution,
+	/**  Used only for the local distribution. */
+	home?: string,
+	/**  Empty = Gradle's default user home. */
+	userHome?: string,
 };
 
 export type GradleTask = {
@@ -3355,7 +3372,9 @@ cancellable: boolean } |
  */
 { type: "projectRootsChanged"; root: IpcPath } | 
 /**  A child process (`ssh`, `git`) asks for a credential; answered with `ssh_askpass_answer`. */
-{ type: "askpass"; id: number; prompt: string; kind: AskpassKind } | 
+{ type: "askpass"; id: number; prompt: string; kind: AskpassKind; 
+/**  The dialog offers "Remember" for the answer (git HTTPS passwords). */
+remember: boolean } | 
 /**  Prompt `id` was answered (in any window) or gave up. */
 { type: "askpassDone"; id: number } | 
 /**
@@ -3614,6 +3633,8 @@ export type JavaSettings = {
 	jdtlsVmArgs?: string,
 	/**  Build Tools › Maven. */
 	maven?: MavenSettings,
+	/**  Build Tools › Gradle. */
+	gradle?: GradleSettings,
 };
 
 /**  Java versions a vendor publishes. */
@@ -4075,6 +4096,8 @@ export type MavenProject = {
 
 /**  Build Tools › Maven. */
 export type MavenSettings = {
+	/**  Project-relative root POMs removed from the Maven project model. */
+	unlinkedProjects?: string[],
 	/**  Maven home (or its `mvn` executable); empty = the project's `mvnw`, else `mvn` on `PATH`. */
 	home?: string,
 	/**  User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`. */
@@ -5867,6 +5890,11 @@ export type ToolInfo = {
 	defaultArgs: string[],
 	/**  A language server's `initializationOptions` from its language definition, as JSON text. */
 	defaultInitializationOptions: string | null,
+	/**
+	 *  The interchangeable servers this one belongs to, in preference order: a
+	 *  server and the `fallback` ones after it. Empty when it has none.
+	 */
+	alternatives: string[],
 };
 
 export type ToolKind = "languageServer" | "debugger" | 

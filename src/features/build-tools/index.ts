@@ -21,6 +21,8 @@ import { buildToolsRunAnything } from "./runAnything";
 import { expandableKeys, gradleChildren, gradleRoots, mavenChildren, mavenRoots } from "./model";
 import {
   ANALYZER_KIND,
+  addProjects,
+  unlinkProjects,
   cancelSync,
   loadModel,
   openAnalyzer,
@@ -110,7 +112,7 @@ function apply(model: BuildModel | null, registered: Partial<Record<BuildTool, (
   for (const tool of ["maven", "gradle"] as const) {
     const info = tool === "maven" ? model?.maven : model?.gradle;
     const key = `${tool}:${root}`;
-    if (info && info.syncedAt == null && !synced.has(key)) {
+    if (info && (tool !== "maven" || model?.maven?.projects.length) && info.syncedAt == null && !synced.has(key)) {
       synced.add(key);
       void syncTool(tool);
     }
@@ -165,6 +167,22 @@ export function activate(): () => void {
       if (e.key === "languages" || e.key.startsWith("languages.java")) scheduleLoad();
     }),
     registerActions([
+      {
+        id: "maven.addProjects",
+        title: "Add Maven Projects",
+        category: "Maven",
+        icon: "plus",
+        when: "projectOpen",
+        run: () => addProjects(),
+      },
+      {
+        id: "maven.unlinkProjects",
+        title: "Unlink Maven Projects",
+        category: "Maven",
+        hidden: true,
+        when: MAVEN_WHEN,
+        run: ({ arg }) => unlinkProjects(analyzerPom(arg)),
+      },
       {
         id: "maven.reload",
         title: "Reload All Maven Projects",
