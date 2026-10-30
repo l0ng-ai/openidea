@@ -379,7 +379,7 @@ describe("before launch tasks", () => {
       ],
     });
     expect(await runBeforeLaunch(app, [app.id])).toBe(true);
-    expect(build).toHaveBeenCalledOnce();
+    expect(build).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arg: { activate: false } }));
     expect(show).toHaveBeenCalledWith("todo", true);
 
     build.mockImplementation(async () => setContext("build.lastStatus", "failed"));
