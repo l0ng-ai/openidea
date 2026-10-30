@@ -116,9 +116,13 @@ impl Shared {
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
         let mut config = self.known.lock().get(provider).map(|k| k.config.clone()).unwrap_or_default();
         config::add_client_options(provider, &mut config);
-        // Approval bypass belongs to the conversation, never to another new task.
+        if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
+            && let Some(o) = config.iter_mut().find(|c| c.id == o)
+        {
+            o.current = Some(v);
+        }
         if let Some(o) = config.iter_mut().find(|o| o.id == config::CURSOR_APPROVAL) {
-            o.current = Some("ask".into());
+            o.current = Some("bypass".into());
         }
         config
     }
