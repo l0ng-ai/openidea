@@ -426,6 +426,11 @@ const ICONS = {
   "inline-add-hover": "inline/inlineAddHover",
   "edit-source": "actions/editSource",
   "green-checkmark": "general/greenCheckmark",
+  // CI / code review status (`CIBuildStatusIcons`)
+  "ci-pending": "run/testNotRunYet",
+  "ci-failed": "run/testError",
+  "ci-skipped": "run/testSkipped",
+  "ci-failed-in-progress": "status/failedInProgress",
   // Symbols (also used by `symbol-<kind>`)
   class: "nodes/class",
   interface: "nodes/interface",

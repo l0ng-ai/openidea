@@ -29,10 +29,7 @@ const handlers: Partial<GithubHandlers> = {};
 /** The context key enabling the action(s) of handler `name`. */
 export const handlerContextKey = (name: GithubHandlerName) => `github.${name}`;
 
-/**
- * Provides handler `name`, enabling its actions; returns the disposer.
- * @public
- */
+/** Provides handler `name`, enabling its actions; returns the disposer. */
 export function provideGithubHandler<K extends GithubHandlerName>(name: K, handler: GithubHandlers[K]): () => void {
   handlers[name] = handler;
   setContext(handlerContextKey(name), true);
