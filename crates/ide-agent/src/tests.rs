@@ -227,6 +227,8 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     assert_eq!(names(mgr_a.commands("claude", Some(&task.id)).await.unwrap()), ["review", "triage"]);
     // Other agents get only what they offered.
     assert!(mgr_a.commands("codex", None).await.unwrap().is_empty());
+    mgr_a.cancel(&task.id, None).unwrap();
+    wait_for(&mgr_a, &task.id, AgentStatus::Ready).await;
     mgr_a.shutdown();
 
     // Another project shares the settings but not the commands.
@@ -272,6 +274,9 @@ async fn builtin_commands_only_fill_verified_gaps_and_preserve_advertised_metada
     assert_eq!(commands[0].name, advertised.name);
     assert_eq!(commands[0].description, advertised.description);
     assert_eq!(commands[0].hint, advertised.hint);
+    // Finish the in-process agent before Tokio stops driving its permission response.
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     mgr.shutdown();
 }
 
@@ -797,6 +802,8 @@ async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
     // An unrelated new conversation still asks, even after the cache was updated.
     let other = mgr.create(new()).await.unwrap();
     wait_for(&mgr, &other.id, AgentStatus::NeedsInput).await;
+    mgr.cancel(&other.id, None).unwrap();
+    wait_for(&mgr, &other.id, AgentStatus::Ready).await;
     mgr.shutdown();
 }
 
