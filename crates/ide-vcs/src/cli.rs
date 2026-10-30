@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Explicit git executable from Settings › Version Control › Git (`None` = auto-detect).
 static CONFIGURED: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
@@ -243,6 +243,59 @@ pub(crate) fn run_raw(root: &Path, args: &[&str], stdin: Option<&[u8]>) -> IdeRe
 
 /// [`run_raw`] with extra environment variables (e.g. a temporary `GIT_INDEX_FILE`).
 pub(crate) fn run_raw_env(
+    root: &Path,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> IdeResult<Output> {
+    let first = run_raw_env_once(root, args, stdin, env)?;
+    if !retryable_index_lock(args, &first) {
+        return Ok(first);
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(first);
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(50)));
+        if Instant::now() >= deadline {
+            return Ok(first);
+        }
+        let out = run_raw_env_once(root, args, stdin, env)?;
+        if !retryable_index_lock(args, &out) {
+            return Ok(out);
+        }
+    }
+}
+
+fn retryable_index_lock(args: &[&str], out: &Output) -> bool {
+    // These builtins take the index lock before changing the index, worktree or refs.
+    // switch folds post-checkout hook failures to exit 1, unlike checkout/restore
+    // path operations, whose hooks can return 128 after files have already changed.
+    // Keep commit, update-index, merge, rebase, stash and streaming operations out:
+    // a lock error there can follow partial work. Interactive modes are excluded too.
+    let args = args.strip_prefix(&["--literal-pathspecs"]).unwrap_or(args);
+    let Some((sub, options)) = args.split_first() else { return false };
+    if !matches!(*sub, "switch" | "add" | "rm" | "reset")
+        || options
+            .iter()
+            .take_while(|arg| **arg != "--")
+            .any(|arg| matches!(*arg, "-p" | "--patch" | "-i" | "--interactive" | "-e" | "--edit" | "--soft"))
+        || out.code != Some(128)
+        || !out.stdout.is_empty()
+    {
+        return false;
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let Some(path) = stderr.lines().next().and_then(|line| line.strip_prefix("fatal: Unable to create '")) else {
+        return false;
+    };
+    path.strip_suffix("': File exists.")
+        .is_some_and(|path| path.ends_with("/index.lock") || path.ends_with("\\index.lock"))
+}
+
+fn run_raw_env_once(
     root: &Path,
     args: &[&str],
     stdin: Option<&[u8]>,
@@ -637,5 +690,105 @@ mod batching_tests {
     #[test]
     fn the_platform_limit_is_a_positive_budget() {
         assert!(command_line_limit() > 1_000);
+    }
+}
+
+#[cfg(test)]
+mod index_lock_tests {
+    use super::*;
+
+    fn repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        run(dir.path(), &["init", "-q", "-b", "main"], None).unwrap();
+        std::fs::write(dir.path().join("file"), "main\n").unwrap();
+        run(dir.path(), &["add", "file"], None).unwrap();
+        run(
+            dir.path(),
+            &["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"],
+            None,
+        )
+        .unwrap();
+        run(dir.path(), &["branch", "other"], None).unwrap();
+        dir
+    }
+
+    #[test]
+    fn switch_retries_until_index_lock_is_released() {
+        let dir = repo();
+        let lock = dir.path().join(".git/index.lock");
+        std::fs::write(&lock, "held").unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            std::fs::remove_file(lock).unwrap();
+        });
+        let start = Instant::now();
+        let result = run(dir.path(), &["switch", "other"], None);
+        release.join().unwrap();
+        result.unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(300));
+        assert_eq!(run(dir.path(), &["branch", "--show-current"], None).unwrap().stdout_str().trim(), "other");
+    }
+
+    #[test]
+    fn persistent_index_lock_returns_original_error_without_removing_lock() {
+        let dir = repo();
+        let lock = dir.path().join(".git/index.lock");
+        std::fs::write(&lock, "held by someone else").unwrap();
+        let args = ["switch", "other"];
+        let original = run_raw_env_once(dir.path(), &args, None, &[]).unwrap();
+        let start = Instant::now();
+        let error = run(dir.path(), &args, None).err().unwrap();
+        assert!(start.elapsed() >= Duration::from_secs(2));
+        assert!(start.elapsed() < Duration::from_secs(4));
+        assert_eq!(error.to_string(), failure(&args, &original.stderr, &original.stdout, original.code).to_string());
+        assert_eq!(std::fs::read_to_string(lock).unwrap(), "held by someone else");
+        assert_eq!(run(dir.path(), &["branch", "--show-current"], None).unwrap().stdout_str().trim(), "main");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn switch_does_not_repeat_a_failed_post_checkout_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = repo();
+        let hook = dir.path().join(".git/hooks/post-checkout");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\necho ran >> hook-runs\necho \"fatal: Unable to create '$PWD/.git/index.lock': File exists.\" >&2\nexit 128\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let out = run_raw(dir.path(), &["switch", "-q", "other"], None).unwrap();
+        assert_eq!(out.code, Some(1));
+        assert_eq!(std::fs::read_to_string(dir.path().join("hook-runs")).unwrap(), "ran\n");
+        assert_eq!(run(dir.path(), &["branch", "--show-current"], None).unwrap().stdout_str().trim(), "other");
+    }
+
+    #[test]
+    fn retry_requires_a_safe_command_and_the_exact_lock_failure() {
+        let mut out = Output {
+            stdout: Vec::new(),
+            stderr: b"fatal: Unable to create '/repo/.git/index.lock': File exists.\n\nAnother git process".to_vec(),
+            code: Some(128),
+        };
+        for args in [&["switch", "other"][..], &["--literal-pathspecs", "add", "-A", "--"], &["rm"], &["reset"]] {
+            assert!(retryable_index_lock(args, &out));
+        }
+        for sub in ["merge", "rebase", "stash", "commit", "update-index", "checkout", "restore", "pull", "status"] {
+            assert!(!retryable_index_lock(&[sub], &out));
+        }
+        assert!(!retryable_index_lock(&["add", "--patch"], &out));
+        assert!(!retryable_index_lock(&["reset", "--soft"], &out));
+        out.code = Some(1); // switch's post-checkout hook can fail after the switch succeeded.
+        assert!(!retryable_index_lock(&["switch"], &out));
+        out.code = Some(128);
+        for message in [
+            "fatal: Unable to create '/repo/.git/HEAD.lock': File exists.",
+            "fatal: Unable to create '/repo/.git/index.lock': Permission denied",
+            "error: index.lock: File exists",
+            "warning: partial work\nfatal: Unable to create '/repo/.git/index.lock': File exists.",
+        ] {
+            out.stderr = message.as_bytes().to_vec();
+            assert!(!retryable_index_lock(&["switch"], &out));
+        }
     }
 }
