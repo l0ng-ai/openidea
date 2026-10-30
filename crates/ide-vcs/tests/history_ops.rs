@@ -498,10 +498,21 @@ fn push_branch_and_up_to_revision() {
     assert!(repo.push_branch("nope", None, false, &cancel, &out).is_err());
 
     // An edited target: same remote, another branch name; the upstream stays as it was.
-    repo.push_branch_to("main", None, "review/main", false, &cancel, &out).unwrap();
+    fn opts<'a>(target: Option<&'a str>, remote: Option<&'a str>) -> PushBranchOptions<'a> {
+        PushBranchOptions { target, remote, ..Default::default() }
+    }
+    repo.push_branch_to("main", opts(Some("review/main"), None), &cancel, &out).unwrap();
     assert_eq!(git_in(&bare, &["rev-parse", "review/main"]), c3);
     assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "main@{upstream}"]), "origin/main");
-    assert!(repo.push_branch_to("main", None, "bad..name", false, &cancel, &out).is_err());
+    assert!(repo.push_branch_to("main", opts(Some("bad..name"), None), &cancel, &out).is_err());
+
+    // A chosen remote: same branch name, pushed to the other remote.
+    let bare2 = fx._tmp.path().join("backup.git");
+    git_in(fx._tmp.path(), &["init", "-q", "--bare", bare2.to_str().unwrap()]);
+    fx.git(&["remote", "add", "backup", bare2.to_str().unwrap()]);
+    repo.push_branch_to("main", opts(None, Some("backup")), &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare2, &["rev-parse", "main"]), c3);
+    assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "main@{upstream}"]), "origin/main");
 }
 
 #[test]

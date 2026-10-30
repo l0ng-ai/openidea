@@ -117,6 +117,16 @@
   background: var(--bg-editor-inline, var(--bg-elev));
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
 }
+.findExpandable {
+  grid-template-columns: auto minmax(220px, 420px) auto 1fr;
+}
+.findExpand {
+  grid-column: 1;
+  grid-row: 1;
+}
+.findExpandable .findField {
+  grid-column: 2;
+}
 .findField {
   min-width: 0;
 }
