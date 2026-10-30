@@ -4,6 +4,7 @@ import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import type { RunConfig } from "@/platform/ipc";
 import {
+  useDebugRunSessions,
   provideNotificationService,
   provideToolWindowService,
   registerMenuGroup,
@@ -51,6 +52,7 @@ const running = (id: string, c: RunConfig, runId: number | null = null): RunSess
 
 beforeEach(() => {
   resetRuns();
+  useDebugRunSessions.setState({ sessions: [] });
   confirm.mockClear();
   confirm.mockResolvedValue(true);
   provideToolWindowService({ show: vi.fn(), isVisible: () => true } as unknown as ToolWindowService);
@@ -153,6 +155,8 @@ describe("Stop", () => {
     setContext("projectOpen", true);
     useRun.setState({
       sessions: [running("run1", config("a"), 1), running("run2", config("b"), 2)],
+      configs: [config("a"), config("b")],
+      selectedId: "a",
       activeSession: "run2",
     });
     setContext("toolWindowFocus", true);

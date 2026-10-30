@@ -455,7 +455,10 @@ mod status;
 mod text_encoding;
 mod write;
 
-pub use cli::{detected_git_executable, git_version, set_askpass_env, set_git_executable};
+pub use cli::{
+    GitCommandObserver, detected_git_executable, git_version, set_askpass_env, set_git_command_observer,
+    set_git_executable,
+};
 pub use diff::build_partial_patch;
 pub use ignore::{IgnoreDestination, add_to_ignore};
 pub use manage::{MergeOptions, RebaseOptions, RemoteEdit, Worktree};

@@ -211,17 +211,19 @@ async function startRemote(config: RunConfig, root: string) {
     }
     const launch = await javaAttachConfig({ name: config.name, module: t.module, hostName, port }, root);
     // A listen relay accepts one debugger: rerunning listens again through the configuration.
-    await startSession(launch, { rerunnable: t.mode === "attach" });
+    await startSession(launch, { runConfig: config, rerunnable: t.mode === "attach" });
     return;
   }
   const launch = remoteAttachConfig(config, root);
-  if (launch) await startSession(launch);
+  if (launch) await startSession(launch, { runConfig: config });
 }
 
 async function startConfig(arg: unknown) {
   const root = useProject.getState().project?.root;
   if (!root) return;
-  let config: RunConfig | null = isRunConfig(arg) ? arg : null;
+  const origin = arg && typeof arg === "object" && "origin" in arg && isRunConfig(arg.origin) ? arg.origin : null;
+  const input = arg && typeof arg === "object" && "config" in arg ? arg.config : arg;
+  let config: RunConfig | null = isRunConfig(input) ? input : null;
   if (!config) {
     if (!isTauri()) {
       notifications().notify({ group: "run", level: "warning", title: "Debugging needs the desktop app" });
@@ -256,7 +258,7 @@ async function startConfig(arg: unknown) {
     await maybeEditorService()
       ?.saveAll()
       .catch(() => undefined);
-    await startSession(await javaLaunchConfig(config, root));
+    await startSession(await javaLaunchConfig(config, root), { runConfig: origin ?? config });
     return;
   }
   const launch = launchConfigFor(config, root);
@@ -272,7 +274,7 @@ async function startConfig(arg: unknown) {
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
-  await startSession(launch);
+  await startSession(launch, { runConfig: origin ?? config });
 }
 
 export function registerDebugActions(): () => void {
@@ -312,7 +314,11 @@ export function registerDebugActions(): () => void {
             const root = useProject.getState().project?.root;
             if (!root || !isJavaAttachTarget(arg)) return;
             const launch = await javaAttachConfig(arg, root);
-            await startSession(launch, { process: (arg.process ?? null) as RunId | null, rerunnable: false });
+            await startSession(launch, {
+              process: (arg.process ?? null) as RunId | null,
+              runConfig: arg.runConfig,
+              rerunnable: false,
+            });
           })(),
         ),
     },

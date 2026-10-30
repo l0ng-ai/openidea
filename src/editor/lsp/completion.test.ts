@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState, StateEffect } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, runScopeHandlers } from "@codemirror/view";
 import type { CompletionItem } from "@/bindings";
 import type { EditorDocContext } from "@/editor/api";
 import { lspDoc } from "./lsp";
@@ -22,7 +22,13 @@ import {
   matchRanges,
   sortAlphabetically,
 } from "./completion";
-import type { CompletionSource } from "@codemirror/autocomplete";
+import {
+  acceptCompletion,
+  currentCompletions,
+  snippet,
+  startCompletion,
+  type CompletionSource,
+} from "@codemirror/autocomplete";
 import { useProject } from "@/platform/project";
 import type { Settings } from "@/platform/ipc";
 
@@ -197,6 +203,106 @@ describe("applying completions", () => {
     apply(view, c, 2);
     expect(view.state.doc.toString()).toBe("x.create()");
   });
+
+  for (const mode of ["insert", "replace"] as const) {
+    for (const shape of ["textEdit", "insertReplace", "noEdit"] as const) {
+      for (const isSnippet of [false, true]) {
+        it(`${mode} replaces a mixed-case prefix typed after a ${shape} request (snippet: ${isSnippet})`, () => {
+          const { view, req, pos } = setup("/* 😀 */ System.out.|Suffix", "Print");
+          const range = { start: { line: 0, col: pos }, end: { line: 0, col: pos } };
+          const c = makeCompletion(
+            item({
+              label: "print",
+              filterText: "print(Object obj) : void",
+              insertText: isSnippet ? "print(${0})" : "print()",
+              isSnippet,
+              replaceRange: shape === "noEdit" ? null : range,
+              replaceRangeTab: shape === "insertReplace" ? { ...range, end: { line: 0, col: pos + 6 } } : null,
+            }),
+            req,
+          );
+          applyLspCompletion(view, c, pos, pos + 5, mode);
+          expect(view.state.doc.toString()).toBe(`/* 😀 */ System.out.print()${mode === "insert" ? "Suffix" : ""}`);
+        });
+      }
+    }
+
+    it(`${mode} accepts the fresh JDT.LS Print response range`, () => {
+      const { view, req } = setup("        System.out.Print|");
+      const c = makeCompletion(
+        item({
+          label: "print",
+          filterText: "print(Object obj) : void",
+          insertText: "print(${0});",
+          isSnippet: true,
+          replaceRange: { start: { line: 0, col: 19 }, end: { line: 0, col: 24 } },
+        }),
+        req,
+      );
+      applyLspCompletion(view, c, 19, 24, mode);
+      expect(view.state.doc.toString()).toBe("        System.out.print();");
+    });
+  }
+
+  for (const mode of ["insert", "replace"] as const) {
+    it(`${mode} accepts a cached lookup requested before typing Print`, async () => {
+      const { view, req, pos } = setup("System.out.|Suffix");
+      const c = makeCompletion(
+        item({
+          label: "print",
+          filterText: "print(Object obj) : void",
+          insertText: "print(${0})",
+          isSnippet: true,
+          replaceRange: { start: { line: 0, col: pos }, end: { line: 0, col: pos } },
+        }),
+        req,
+      );
+      const source = vi.fn(() => ({ from: pos, options: [c], validFor: /^\w*$/ }));
+      view.dispatch({
+        effects: StateEffect.appendConfig.of([
+          completionExtension(),
+          EditorState.languageData.of(() => [{ openideaCompletion: source }]),
+        ]),
+      });
+      startCompletion(view);
+      await vi.waitFor(() => expect(currentCompletions(view.state)).toHaveLength(1));
+      view.dispatch({
+        changes: { from: pos, insert: "Print" },
+        selection: { anchor: pos + 5 },
+        userEvent: "input.type",
+      });
+      await vi.waitFor(() => expect(currentCompletions(view.state)[0]).toBe(c));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(
+        mode === "insert"
+          ? acceptCompletion(view)
+          : runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor"),
+      ).toBe(true);
+      expect(source).toHaveBeenCalledTimes(1);
+      expect(view.state.doc.toString()).toBe(`System.out.print()${mode === "insert" ? "Suffix" : ""}`);
+    });
+  }
+
+  for (const template of [false, true]) {
+    it(`replaces mixed-case prefixes in contributed ${template ? "snippet" : "word"} completions`, async () => {
+      const { view } = setup("Print|");
+      const source: CompletionSource = () => ({
+        from: 0,
+        options: [{ label: "print", apply: template ? snippet("print(#{})") : "print" }],
+      });
+      view.dispatch({
+        effects: StateEffect.appendConfig.of([
+          completionExtension(),
+          EditorState.languageData.of(() => [{ openideaCompletion: source }]),
+        ]),
+      });
+      startCompletion(view);
+      await vi.waitFor(() => expect(currentCompletions(view.state)).toHaveLength(1));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(acceptCompletion(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe(template ? "print()" : "print");
+    });
+  }
 
   it("applies additional edits (imports) in the same change", () => {
     const { view, req } = setup("\nfoo.ba|");

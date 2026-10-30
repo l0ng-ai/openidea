@@ -139,6 +139,58 @@ function ProtectedBranchesRow() {
   );
 }
 
+/** Saved git HTTPS credentials (Settings › Git › Passwords): list and forget. */
+function GitCredentialsRow() {
+  const [hosts, setHosts] = useState<string[]>([]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    void commands.gitCredentials().then(setHosts, () => undefined);
+  }, []);
+  const forget = async (key: string) => {
+    await commands.gitCredentialForget(key);
+    setHosts((h) => h.filter((k) => k !== key));
+  };
+  if (hosts.length === 0)
+    return (
+      <Row
+        label="Passwords"
+        hint={
+          'Credentials the IDE answers git\'s HTTPS prompts with. Saved after a successful fetch / pull / push when "Remember for this host" was checked.'
+        }
+      >
+        <span className={styles.empty}>
+          <T>No saved credentials</T>
+        </span>
+      </Row>
+    );
+  return (
+    <Row
+      label="Passwords"
+      stacked
+      hint={
+        "Credentials the IDE answers git's HTTPS prompts with, stored in the app's own secret file (not git's credential.helper). A rejected credential is forgotten automatically."
+      }
+    >
+      <div className={styles.tableBox}>
+        <table className={styles.table} aria-label={tx("Saved git credentials")}>
+          <tbody>
+            {hosts.map((h) => (
+              <tr key={h}>
+                <td className={styles.mono}>{h}</td>
+                <td style={{ width: 90 }}>
+                  <Button size="small" onClick={() => void forget(h)}>
+                    <T>Forget</T>
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Row>
+  );
+}
+
 function LargeFilesRow() {
   return (
     <ToggleNumber
@@ -517,6 +569,17 @@ export const VCS_PAGES: PageSpec[] = [
                 hint="Fetches remotes in the background so incoming commits show in the Branches popup. Auto stops after an authentication failure."
               />
             ),
+          },
+        ],
+      },
+      {
+        title: "Passwords",
+        options: [
+          {
+            kind: "custom",
+            label: "Passwords",
+            keywords: ["credentials", "remember", "forget", "https"],
+            component: GitCredentialsRow,
           },
         ],
       },

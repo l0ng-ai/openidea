@@ -27,6 +27,48 @@ pub fn set_askpass_env(env: Vec<(String, String)>) {
     *ASKPASS.write().unwrap_or_else(|e| e.into_inner()) = env;
 }
 
+/// Called once per git child with its id, success flag, and stderr.
+pub type GitCommandObserver = std::sync::Arc<dyn Fn(u64, bool, &str) + Send + Sync>;
+
+static COMMAND_OBSERVER: std::sync::RwLock<Option<(&'static str, GitCommandObserver)>> = std::sync::RwLock::new(None);
+
+/// Installs the completion observer and the environment variable carrying each
+/// child's unique id to its credential helper.
+pub fn set_git_command_observer(env_name: &'static str, observer: GitCommandObserver) {
+    *COMMAND_OBSERVER.write().unwrap_or_else(|e| e.into_inner()) = Some((env_name, observer));
+}
+
+struct CommandSession {
+    id: u64,
+    observer: Option<GitCommandObserver>,
+}
+
+impl CommandSession {
+    fn start(cmd: &mut Command) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let hook = COMMAND_OBSERVER.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let observer = hook.map(|(env_name, observer)| {
+            cmd.env(env_name, id.to_string());
+            observer
+        });
+        Self { id, observer }
+    }
+
+    fn finish(&mut self, success: bool, stderr: &str) {
+        if let Some(observer) = self.observer.take() {
+            observer(self.id, success, stderr);
+        }
+    }
+}
+
+impl Drop for CommandSession {
+    fn drop(&mut self) {
+        // Cancellation or an I/O error discards only this child's pending answers.
+        self.finish(false, "");
+    }
+}
+
 /// Locates the auto-detected git executable once per process.
 ///
 /// GUI apps on macOS start with a minimal `PATH`, so a few well-known install
@@ -143,6 +185,7 @@ pub(crate) fn run_raw_env(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     tracing::debug!(?args, "git");
+    let mut session = CommandSession::start(&mut cmd);
     let mut child = cmd.spawn().map_err(spawn_error)?;
     let writer = match (stdin, child.stdin.take()) {
         (Some(data), Some(mut pipe)) => {
@@ -158,6 +201,7 @@ pub(crate) fn run_raw_env(
     if let Some(w) = writer {
         let _ = w.join();
     }
+    session.finish(out.status.success(), &String::from_utf8_lossy(&out.stderr));
     Ok(Output { stdout: out.stdout, stderr: out.stderr, code: out.status.code() })
 }
 
@@ -274,6 +318,7 @@ pub(crate) fn run_streaming_env(
         cmd.process_group(0);
     }
     tracing::debug!(?args, "git (streaming)");
+    let mut session = CommandSession::start(&mut cmd);
     let mut child = cmd.spawn().map_err(spawn_error)?;
 
     let (tx, rx) = mpsc::channel::<Event>();
@@ -332,11 +377,13 @@ pub(crate) fn run_streaming_env(
         let _ = r.join();
     }
     if status.success() {
+        session.finish(true, &stderr_tail.join("\n"));
         return Ok(());
     }
     let relevant: Vec<&str> =
         conflicts.iter().chain(stderr_tail.iter()).map(String::as_str).filter(|l| !is_progress_line(l)).collect();
     let msg = relevant.join("\n");
+    session.finish(false, &stderr_tail.join("\n"));
     Err(failure(args, msg.as_bytes(), b"", status.code()))
 }
 
@@ -419,4 +466,37 @@ fn kill(child: &mut Child) {
         }
     }
     let _ = child.kill();
+}
+
+#[cfg(test)]
+mod command_session_tests {
+    use super::*;
+
+    #[test]
+    fn command_ids_reach_children_and_completion_is_once_per_session() {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = events.clone();
+        set_git_command_observer(
+            "OPENIDEA_TEST_COMMAND_ID",
+            std::sync::Arc::new(move |id, success, stderr| {
+                seen.lock().unwrap().push((id, success, stderr.to_owned()));
+            }),
+        );
+        let mut first_cmd = Command::new("git");
+        let mut second_cmd = Command::new("git");
+        let mut first = CommandSession::start(&mut first_cmd);
+        let second = CommandSession::start(&mut second_cmd);
+        let (first_id, second_id) = (first.id, second.id);
+        assert_ne!(first_id, second_id);
+        for (cmd, id) in [(&first_cmd, first_id), (&second_cmd, second_id)] {
+            let value = cmd.get_envs().find(|(key, _)| *key == "OPENIDEA_TEST_COMMAND_ID").unwrap().1.unwrap();
+            assert_eq!(value, std::ffi::OsStr::new(&id.to_string()));
+        }
+        drop(second); // cancellation discards this command's state
+        first.finish(true, "done");
+        drop(first);
+        let events = events.lock().unwrap();
+        let ours: Vec<_> = events.iter().filter(|(id, _, _)| *id == first_id || *id == second_id).cloned().collect();
+        assert_eq!(ours, vec![(second_id, false, String::new()), (first_id, true, "done".into())]);
+    }
 }
