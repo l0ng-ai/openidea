@@ -3,6 +3,7 @@
 //! processes, SFTP, local port forwarding, and askpass for `ssh` / `git`.
 
 pub mod askpass;
+pub mod git_creds;
 pub mod manager;
 pub mod secrets;
 pub mod session;

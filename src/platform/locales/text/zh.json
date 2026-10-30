@@ -4829,5 +4829,12 @@
   "JDK used for Gradle sync, tasks, run configurations and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "用于 Gradle 同步、任务、运行配置和测试的 JDK。运行配置中显式设置的 JAVA_HOME 优先。",
   "Uses the Gradle wrapper when present, otherwise the project-pinned mise/asdf Gradle, then Gradle on PATH.": "优先使用 Gradle 包装器，否则使用项目通过 mise/asdf 固定的 Gradle，最后使用 PATH 中的 Gradle。",
   "Uses bin/gradle (bin/gradle.bat on Windows) instead of the wrapper or pinned toolchain.": "使用 bin/gradle（Windows 上为 bin/gradle.bat），覆盖包装器或固定的工具链。",
-  "Sets GRADLE_USER_HOME. Empty uses Gradle's default.": "设置 GRADLE_USER_HOME。留空则使用 Gradle 默认值。"
+  "Sets GRADLE_USER_HOME. Empty uses Gradle's default.": "设置 GRADLE_USER_HOME。留空则使用 Gradle 默认值。",
+  "Passwords": "密码",
+  "Credentials the IDE answers git's HTTPS prompts with. Saved after a successful fetch / pull / push when \"Remember for this host\" was checked.": "IDE 用于应答 git HTTPS 提示的凭据。勾选「记住此主机」后，在 fetch / pull / push 成功时保存。",
+  "No saved credentials": "没有已保存的凭据",
+  "Credentials the IDE answers git's HTTPS prompts with, stored in the app's own secret file (not git's credential.helper). A rejected credential is forgotten automatically.": "IDE 用于应答 git HTTPS 提示的凭据，存储在应用自己的密钥文件中（而非 git 的 credential.helper）。被拒绝的凭据会自动删除。",
+  "Saved git credentials": "已保存的 git 凭据",
+  "Forget": "忘记",
+  "Remember for this host": "记住此主机"
 }
