@@ -1,8 +1,32 @@
+use super::doc::blocking;
 use crate::Host;
 use crate::apply_workspace_edit as apply_edit;
 use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
+
+async fn prepare_actions(
+    project: std::sync::Arc<crate::Project>,
+    doc: DocId,
+    version: u32,
+    mut actions: Vec<CodeAction>,
+) -> IdeResult<Vec<CodeAction>> {
+    blocking(move || {
+        if project.documents.version(doc)? != version {
+            return Err(ide_core::IdeError::new(
+                ide_core::error::ErrorKind::OutOfSync,
+                "document changed while computing code actions; request them again",
+            ));
+        }
+        for action in &mut actions {
+            if let Some(edit) = &mut action.edit {
+                project.documents.prepare_workspace_edit(edit)?;
+            }
+        }
+        Ok(actions)
+    })
+    .await
+}
 
 pub async fn lsp_completion(
     host: &Host,
@@ -132,7 +156,10 @@ pub async fn lsp_code_actions(
     range: Range,
     only: Vec<String>,
 ) -> IdeResult<Vec<CodeAction>> {
-    host.project(window)?.lsp.code_actions(doc, range, only).await
+    let project = host.project(window)?;
+    let version = project.documents.version(doc)?;
+    let actions = project.lsp.code_actions(doc, range, only).await?;
+    prepare_actions(project, doc, version, actions).await
 }
 
 /// Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability).
@@ -144,11 +171,14 @@ pub async fn lsp_code_action_query(
     range: Range,
     only: Vec<String>,
 ) -> IdeResult<CodeActionQuery> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
+    let version = project.documents.version(doc)?;
     let cancel = host.begin_request(request);
-    let result = lsp.code_action_query(doc, range, only, cancel).await;
+    let result = project.lsp.code_action_query(doc, range, only, cancel).await;
     host.end_request(request);
-    result
+    let mut result = result?;
+    result.actions = prepare_actions(project, doc, version, result.actions).await?;
+    Ok(result)
 }
 
 /// Resolves a code action's edit without applying it (intention preview).
@@ -161,19 +191,26 @@ pub async fn lsp_resolve_code_action(
     if action.edit.is_some() {
         return Ok(action);
     }
-    host.project(window)?.lsp.resolve_code_action(doc, action).await
+    let project = host.project(window)?;
+    let version = project.documents.version(doc)?;
+    let action = project.lsp.resolve_code_action(doc, action).await?;
+    Ok(prepare_actions(project, doc, version, vec![action]).await?.remove(0))
 }
 
 /// Resolves (if needed), applies the edit, then runs the command of a code action.
 pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action: CodeAction) -> IdeResult<()> {
     let project = host.project(window)?;
     let action = if action.edit.is_none() && action.command.is_none() {
-        project.lsp.resolve_code_action(doc, action).await?
+        let version = project.documents.version(doc)?;
+        let action = project.lsp.resolve_code_action(doc, action).await?;
+        prepare_actions(project.clone(), doc, version, vec![action]).await?.remove(0)
     } else {
         action
     };
     if let Some(edit) = &action.edit {
-        apply_edit(&project.documents, edit)?;
+        let documents = project.documents.clone();
+        let edit = edit.clone();
+        blocking(move || apply_edit(&documents, &edit)).await?;
     }
     if let Some(command) = action.command {
         project.lsp.execute_command(doc, command).await?;
@@ -187,7 +224,20 @@ pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos)
 
 /// Computes the rename edit without applying it, so the UI can preview conflicts.
 pub async fn lsp_rename(host: &Host, window: &str, doc: DocId, pos: Pos, new_name: String) -> IdeResult<WorkspaceEdit> {
-    host.project(window)?.lsp.rename(doc, pos, new_name).await
+    let project = host.project(window)?;
+    let version = project.documents.version(doc)?;
+    let mut edit = project.lsp.rename(doc, pos, new_name).await?;
+    blocking(move || {
+        if project.documents.version(doc)? != version {
+            return Err(ide_core::IdeError::new(
+                ide_core::error::ErrorKind::OutOfSync,
+                "document changed while computing rename; request it again",
+            ));
+        }
+        project.documents.prepare_workspace_edit(&mut edit)?;
+        Ok(edit)
+    })
+    .await
 }
 
 pub async fn lsp_format(
@@ -251,21 +301,38 @@ pub async fn lsp_restart(host: &Host, window: &str, server: ServerId) -> IdeResu
 }
 
 /// Applies a (previewed) workspace edit, e.g. after rename confirmation.
-pub fn apply_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit) -> IdeResult<()> {
+pub async fn apply_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit) -> IdeResult<()> {
     let project = host.project(window)?;
-    // Multi-file refactorings leave a Local History point to go back to.
-    let paths: Vec<&std::path::Path> = edit
-        .files
-        .iter()
-        .filter_map(|f| match f {
-            ide_core::FileEdit::Edit { path, .. } => Some(&**path),
-            _ => None,
-        })
-        .collect();
-    if edit.files.len() > 1 {
-        project.record_before_refactoring(&paths, "Apply changes");
-    }
-    apply_edit(&project.documents, &edit)
+    blocking(move || {
+        // Multi-file refactorings leave a Local History point to go back to.
+        let paths: Vec<&std::path::Path> = edit
+            .files
+            .iter()
+            .filter_map(|f| match f {
+                ide_core::FileEdit::Edit { path, .. } => Some(&**path),
+                _ => None,
+            })
+            .collect();
+        if edit.files.len() > 1 {
+            project.record_before_refactoring(&paths, "Apply changes");
+        }
+        apply_edit(&project.documents, &edit)
+    })
+    .await
+}
+
+pub async fn prepare_workspace_edit(host: &Host, window: &str, mut edit: WorkspaceEdit) -> IdeResult<WorkspaceEdit> {
+    let project = host.project(window)?;
+    blocking(move || {
+        project.documents.prepare_workspace_edit(&mut edit)?;
+        Ok(edit)
+    })
+    .await
+}
+
+pub async fn undo_workspace_edit(host: &Host, window: &str, id: u32) -> IdeResult<()> {
+    let project = host.project(window)?;
+    blocking(move || project.documents.undo_workspace_edit(id)).await
 }
 
 /// Runs a server command (`workspace/executeCommand`), e.g. a completion item's
@@ -356,7 +423,12 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_servers", |c| async move { lsp_servers(&c.host, &c.window) });
     d.add("lsp_resend_diagnostics", |c| async move { lsp_resend_diagnostics(&c.host, &c.window) });
     d.add("lsp_restart", |c| async move { lsp_restart(&c.host, &c.window, c.arg("server")?).await });
-    d.add("apply_workspace_edit", |c| async move { apply_workspace_edit(&c.host, &c.window, c.arg("edit")?) });
+    d.add("apply_workspace_edit", |c| async move { apply_workspace_edit(&c.host, &c.window, c.arg("edit")?).await });
+    d.add(
+        "prepare_workspace_edit",
+        |c| async move { prepare_workspace_edit(&c.host, &c.window, c.arg("edit")?).await },
+    );
+    d.add("undo_workspace_edit", |c| async move { undo_workspace_edit(&c.host, &c.window, c.arg("id")?).await });
     d.add("lsp_execute_command", |c| async move {
         lsp_execute_command(&c.host, &c.window, c.arg("doc")?, c.arg("command")?).await
     });

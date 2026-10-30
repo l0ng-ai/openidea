@@ -202,6 +202,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_resend_diagnostics,
         lsp::lsp_restart,
         lsp::apply_workspace_edit,
+        lsp::prepare_workspace_edit,
+        lsp::undo_workspace_edit,
         lsp::lsp_execute_command,
         vcs::vcs_status,
         vcs::vcs_roots,

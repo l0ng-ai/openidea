@@ -97,15 +97,41 @@ pub struct TextEdit {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct WorkspaceEdit {
     pub files: Vec<FileEdit>,
+    /// Content fingerprints captured before presenting an edit for confirmation.
+    #[serde(default)]
+    #[specta(optional)]
+    pub preconditions: Vec<WorkspaceEditPrecondition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct WorkspaceEditPrecondition {
+    pub path: crate::IpcPath,
+    pub hash: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FileEdit {
-    Edit { path: crate::IpcPath, edits: Vec<TextEdit> },
-    Create { path: crate::IpcPath, overwrite: bool },
-    Rename { from: crate::IpcPath, to: crate::IpcPath },
-    Delete { path: crate::IpcPath, recursive: bool },
+    Edit {
+        path: crate::IpcPath,
+        edits: Vec<TextEdit>,
+        /// LSP TextDocumentEdit version; null/unversioned edits use content preconditions.
+        #[serde(default)]
+        #[specta(optional)]
+        version: Option<i32>,
+    },
+    Create {
+        path: crate::IpcPath,
+        overwrite: bool,
+    },
+    Rename {
+        from: crate::IpcPath,
+        to: crate::IpcPath,
+    },
+    Delete {
+        path: crate::IpcPath,
+        recursive: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]

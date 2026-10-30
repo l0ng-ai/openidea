@@ -607,7 +607,7 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     assert_eq!(s.requested("codeAction/resolve")[0]["data"], json!({ "id": 7 }));
     let edit = resolved.edit.unwrap();
     assert!(
-        matches!(&edit.files[0], FileEdit::Edit { path: p, edits } if p == &path && edits[0].range == rng(0, 0, 1, 0))
+        matches!(&edit.files[0], FileEdit::Edit { path: p, edits, .. } if p == &path && edits[0].range == rng(0, 0, 1, 0))
     );
 
     h.mgr.execute_command(doc, actions[1].command.clone().unwrap()).await.unwrap();
@@ -652,7 +652,9 @@ async fn apply_edit_hook_and_server_requests() {
     let edits = applied.lock().clone();
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0].files[0], FileEdit::Create { path: new_file.into(), overwrite: false });
-    assert!(matches!(&edits[0].files[1], FileEdit::Edit { path: p, edits } if p == &path && edits[0].new_text == "X"));
+    assert!(
+        matches!(&edits[0].files[1], FileEdit::Edit { path: p, edits, .. } if p == &path && edits[0].new_text == "X")
+    );
 
     let peer = s.peer();
     let cfg: Value = peer
@@ -1203,7 +1205,7 @@ fn edits_in(edit: &WorkspaceEdit, path: &Path) -> Vec<(Range, String)> {
     edit.files
         .iter()
         .filter_map(|f| match f {
-            FileEdit::Edit { path: p, edits } if p.to_path_buf() == path => {
+            FileEdit::Edit { path: p, edits, .. } if p.to_path_buf() == path => {
                 Some(edits.iter().map(|e| (e.range, e.new_text.clone())))
             }
             _ => None,
@@ -1545,7 +1547,7 @@ async fn will_and_did_rename_files_honour_filters() {
     assert_eq!(result.servers, vec!["mock".to_owned()]);
     assert!(result.errors.is_empty());
     match &result.edit.files[..] {
-        [FileEdit::Edit { path, edits }] => {
+        [FileEdit::Edit { path, edits, .. }] => {
             assert_eq!(path, &main);
             assert_eq!(edits[0].range, rng(0, 4, 0, 7));
             assert_eq!(edits[0].new_text, "lib");

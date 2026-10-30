@@ -32,6 +32,10 @@ pub enum IdeEvent {
         doc: DocId,
         dirty: bool,
     },
+    /// A complete workspace edit can be undone as one operation.
+    WorkspaceEditApplied {
+        id: u32,
+    },
     /// An open document's language changed (Settings › File Types, Override File
     /// Type), or its UI mode (a framework's root marker appeared or went).
     DocLanguage {

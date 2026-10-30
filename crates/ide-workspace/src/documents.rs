@@ -4,7 +4,7 @@ use ide_core::error::ErrorKind;
 use ide_core::event::NotifyLevel;
 use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, LanguageId, SharedSink, TextEdit};
 use ide_text::{AppliedChange, ByteEdit, Document, LineEnding};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{Mutex, ReentrantMutex, RwLock};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
@@ -62,6 +62,10 @@ pub type DetectUiMode = dyn Fn(&Path, &LanguageId) -> Option<String> + Send + Sy
 /// Every document has its own lock; operations on one document are serialized
 /// and observers see them in version order.
 pub struct Documents {
+    /// Workspace transactions hold this across preflight/commit/rollback; ordinary
+    /// operations re-enter it while accessing the individual document locks.
+    operations: ReentrantMutex<()>,
+    workspace_edits: Mutex<workspace_edit::History>,
     registry: Mutex<Registry>,
     observers: RwLock<Vec<Arc<dyn DocumentObserver>>>,
     sink: SharedSink,
@@ -96,6 +100,8 @@ pub trait DocumentObserver: Send + Sync {
     fn closed(&self, _doc: DocId, _path: &Path) {}
 }
 
+mod workspace_edit;
+
 type Slot = Arc<Mutex<DocState>>;
 
 #[derive(Default)]
@@ -111,6 +117,7 @@ struct RegEntry {
     keys: Vec<PathBuf>,
 }
 
+#[derive(Clone)]
 struct DocState {
     path: PathBuf,
     doc: Document,
@@ -162,6 +169,8 @@ fn read_only_error(path: &Path) -> IdeError {
 impl Documents {
     pub fn new(sink: SharedSink, detect_language: Box<DetectLanguage>) -> Self {
         Self {
+            operations: ReentrantMutex::new(()),
+            workspace_edits: Mutex::default(),
             registry: Mutex::default(),
             observers: RwLock::default(),
             sink,
@@ -212,6 +221,7 @@ impl Documents {
 
     /// Locks a document, failing if it was closed concurrently.
     fn with_doc<T>(&self, doc: DocId, f: impl FnOnce(&mut DocState) -> IdeResult<T>) -> IdeResult<T> {
+        let _operation = self.operations.lock();
         let slot = self.slot(doc)?;
         let mut st = slot.lock();
         if st.closed {
@@ -259,6 +269,7 @@ impl Documents {
 
     /// Opens (or re-references) the document at `path`.
     pub fn open(&self, path: &Path) -> IdeResult<DocumentInfo> {
+        let _operation = self.operations.lock();
         if let Some(info) = self.reopen(path) {
             return Ok(info);
         }
@@ -350,6 +361,7 @@ impl Documents {
     /// language server provides for a non-`file:` URI. It is keyed by the URI,
     /// never touches the disk and cannot be edited or saved.
     pub fn open_virtual(&self, uri: &str, language: LanguageId, text: &str) -> IdeResult<DocumentInfo> {
+        let _operation = self.operations.lock();
         let key = PathBuf::from(uri);
         if let Some(info) = self.reopen(&key) {
             return Ok(info);
@@ -407,6 +419,7 @@ impl Documents {
     }
 
     pub fn close(&self, doc: DocId) {
+        let _operation = self.operations.lock();
         let slot = {
             let mut reg = self.registry.lock();
             let Some(entry) = reg.docs.get_mut(&doc) else { return };
@@ -607,6 +620,11 @@ impl Documents {
         self.with_doc(doc, |st| Ok(st.dirty))
     }
 
+    /// Current generation without copying the document text.
+    pub fn version(&self, doc: DocId) -> IdeResult<u32> {
+        self.with_doc(doc, |st| Ok(st.doc.version()))
+    }
+
     /// Ids of all open documents.
     pub fn open_documents(&self) -> Vec<DocId> {
         self.registry.lock().docs.keys().copied().collect()
@@ -619,6 +637,7 @@ impl Documents {
     /// for the observers, so it moves to the matching language servers and
     /// syntax tree. Returns the changed documents.
     pub fn redetect_languages(&self) -> Vec<DocId> {
+        let _operation = self.operations.lock();
         let slots: Vec<(DocId, Slot)> = self.registry.lock().docs.iter().map(|(id, e)| (*id, e.slot.clone())).collect();
         let mut changed = Vec::new();
         for (id, slot) in slots {

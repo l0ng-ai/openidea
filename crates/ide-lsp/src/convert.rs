@@ -621,7 +621,7 @@ pub fn workspace_edit(conv: &Conv, e: lsp::WorkspaceEdit) -> WorkspaceEdit {
             })
             .map(|e| conv.text_edit(&path, e))
             .collect();
-        files.push(FileEdit::Edit { path: path.into(), edits });
+        files.push(FileEdit::Edit { path: path.into(), edits, version: e.text_document.version });
     };
     if let Some(changes) = e.document_changes {
         match changes {
@@ -657,39 +657,47 @@ pub fn workspace_edit(conv: &Conv, e: lsp::WorkspaceEdit) -> WorkspaceEdit {
         for (uri, edits) in changes {
             if let Some(path) = uri_path(&uri) {
                 let edits = conv.text_edits(&path, edits);
-                files.push(FileEdit::Edit { path: path.into(), edits });
+                files.push(FileEdit::Edit { path: path.into(), edits, version: None });
             }
         }
     }
-    WorkspaceEdit { files }
+    WorkspaceEdit { files, ..Default::default() }
 }
 
 /// Adds the changes of `extra`, another server's edit for the same request, to
 /// `edit` where they leave its own alone: what only the other server sees
 /// (Angular templates next to vtsls's TypeScript).
 pub fn merge_workspace_edit(edit: &mut WorkspaceEdit, extra: WorkspaceEdit) {
+    edit.preconditions.extend(extra.preconditions);
     let overlap =
         |a: &TextEdit, b: &TextEdit| a.range == b.range || (a.range.start < b.range.end && b.range.start < a.range.end);
     for file in extra.files {
-        let FileEdit::Edit { path, edits } = file else {
+        let FileEdit::Edit { path, edits, version } = file else {
             if !edit.files.contains(&file) {
                 edit.files.push(file);
             }
             continue;
         };
         let own = edit.files.iter_mut().find_map(|f| match f {
-            FileEdit::Edit { path: p, edits } if *p == path => Some(edits),
+            FileEdit::Edit { path: p, edits, version } if *p == path => Some((edits, version)),
             _ => None,
         });
         match own {
-            Some(own) => {
+            Some((own, own_version)) => {
+                // Conflicting versions cannot describe one consistent edit. Keep both
+                // operations so transaction preflight rejects them instead of dropping a guard.
+                if own_version.is_some() && version.is_some() && *own_version != version {
+                    edit.files.push(FileEdit::Edit { path, edits, version });
+                    continue;
+                }
+                *own_version = own_version.or(version);
                 let added: Vec<TextEdit> = edits.into_iter().filter(|e| !own.iter().any(|o| overlap(o, e))).collect();
                 if !added.is_empty() {
                     own.extend(added);
                     own.sort_by_key(|e| e.range.start);
                 }
             }
-            None => edit.files.push(FileEdit::Edit { path, edits }),
+            None => edit.files.push(FileEdit::Edit { path, edits, version }),
         }
     }
 }
@@ -1026,16 +1034,20 @@ mod tests {
             range: Range::new(Pos::new(l, c), Pos::new(l, c + 5)),
             new_text: text.into(),
         };
-        let file = |p: &str, edits: Vec<TextEdit>| FileEdit::Edit { path: PathBuf::from(p).into(), edits };
+        let file =
+            |p: &str, edits: Vec<TextEdit>| FileEdit::Edit { path: PathBuf::from(p).into(), edits, version: None };
         // vtsls renames a shorthand property with an alias; the Angular server
         // renames it plainly and adds the template.
-        let mut merged =
-            WorkspaceEdit { files: vec![file("/a.ts", vec![edit(3, 2, "items: entries"), edit(9, 4, "entries")])] };
+        let mut merged = WorkspaceEdit {
+            files: vec![file("/a.ts", vec![edit(3, 2, "items: entries"), edit(9, 4, "entries")])],
+            ..Default::default()
+        };
         let angular = WorkspaceEdit {
             files: vec![
                 file("/a.ts", vec![edit(9, 4, "entries"), edit(3, 2, "entries"), edit(1, 14, "entries")]),
                 file("/a.html", vec![edit(0, 7, "entries")]),
             ],
+            ..Default::default()
         };
         merge_workspace_edit(&mut merged, angular);
         assert_eq!(
@@ -1296,7 +1308,7 @@ mod tests {
         assert_eq!(w.files.len(), 4);
         assert_eq!(w.files[0], FileEdit::Create { path: "/n.rs".into(), overwrite: true });
         match &w.files[1] {
-            FileEdit::Edit { path, edits } => {
+            FileEdit::Edit { path, edits, .. } => {
                 assert_eq!(path, Path::new("/n.rs"));
                 assert_eq!(edits.len(), 2);
                 assert_eq!(edits[1].new_text, "y");
@@ -1310,6 +1322,26 @@ mod tests {
             { "range": {"start": {"line":0,"character":0}, "end": {"line":0,"character":1}}, "newText": "q" } ] } }))
         .unwrap();
         assert!(matches!(&workspace_edit(&conv, e).files[0], FileEdit::Edit { edits, .. } if edits[0].new_text == "q"));
+    }
+
+    #[test]
+    fn workspace_edits_preserve_document_versions_and_merge_guards() {
+        let conv = Conv::utf16();
+        let incoming = |version| {
+            serde_json::from_value(json!({
+            "documentChanges": [{
+                "textDocument": { "uri": "file:///a.rs", "version": version },
+                "edits": [{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } }, "newText": "x" }]
+            }]
+        })).unwrap()
+        };
+        let mut edit = workspace_edit(&conv, incoming(Some(7)));
+        assert!(matches!(edit.files[0], FileEdit::Edit { version: Some(7), .. }));
+        merge_workspace_edit(&mut edit, workspace_edit(&conv, incoming(None::<i32>)));
+        assert!(matches!(edit.files[0], FileEdit::Edit { version: Some(7), .. }));
+        merge_workspace_edit(&mut edit, workspace_edit(&conv, incoming(Some(8))));
+        assert_eq!(edit.files.len(), 2, "inconsistent version guards must not be discarded");
+        assert!(matches!(edit.files[1], FileEdit::Edit { version: Some(8), .. }));
     }
 
     #[test]

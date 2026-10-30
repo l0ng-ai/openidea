@@ -138,7 +138,7 @@ function PreviewDialog({ request }: { request: PreviewRequest }) {
           label: "Do Refactor",
           role: "default",
           autoFocus: true,
-          onClick: () => request.resolve({ files: kept }),
+          onClick: () => request.resolve({ ...request.edit, files: kept }),
         },
         { label: "Cancel", role: "cancel" },
       ]}

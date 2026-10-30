@@ -361,7 +361,7 @@ fn edited_lines(edit: &ide_core::WorkspaceEdit, path: &Path) -> Vec<u32> {
         .files
         .iter()
         .filter_map(|f| match f {
-            ide_core::FileEdit::Edit { path: p, edits } if p.to_path_buf() == path => {
+            ide_core::FileEdit::Edit { path: p, edits, .. } if p.to_path_buf() == path => {
                 Some(edits.iter().map(|e| e.range.start.line))
             }
             _ => None,
