@@ -2386,7 +2386,6 @@
   "not installed in this project": "此项目中未安装",
   "or click a line number to set a breakpoint.": "或点击行号设置断点。",
   "per module, the JDK of its Java version": "按模块使用与其 Java 版本匹配的 JDK",
-  "the project JDK if new enough, else the first installed JDK that is": "项目 JDK 版本足够时使用它，否则使用第一个版本足够的已安装 JDK",
   "pip output": "pip 输出",
   "places the caret. A line with": "放置光标。包含",
   "println! with Debug": "使用 Debug 的 println!",
