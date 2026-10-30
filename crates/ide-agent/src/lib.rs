@@ -23,6 +23,7 @@ pub use model::*;
 use conversation::{Conversation, SavedSubagent, Session};
 use ide_core::{IdeError, IdeResult, IpcPath};
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
+use ide_vcs::Repo;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -368,6 +369,12 @@ impl AgentManager {
         let root = self.shared.paths.project_root.clone();
         let (cwd, branch, base, base_commit, before) = match req.isolation {
             Isolation::Worktree => {
+                // The UI offers worktrees for git projects only; state it when it isn't one.
+                if Repo::discover(&self.shared.paths.project_root)?.is_none() {
+                    return Err(IdeError::invalid(
+                        "worktrees need a git repository: run the task in the local checkout",
+                    ));
+                }
                 let dir = self.shared.paths.worktrees_dir.clone();
                 let (t, b) = (title.clone(), req.base.clone());
                 let c = blocking(move || worktree::create(&root, &dir, &t, b.as_deref())).await?;

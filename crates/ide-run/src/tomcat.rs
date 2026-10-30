@@ -401,13 +401,13 @@ mod tests {
     }
     #[test]
     fn constructs_platform_commands_without_splitting_paths() {
-        let home = Path::new("/some path/tomcat");
+        let home = if cfg!(windows) { Path::new("C:/some path/tomcat") } else { Path::new("/some path/tomcat") };
         assert_eq!(
             script_command(home, false, "run"),
-            ("sh".into(), vec!["/some path/tomcat/bin/catalina.sh".into(), "run".into()])
+            ("sh".into(), vec![home.join("bin/catalina.sh").to_string_lossy().into_owned(), "run".into()])
         );
         let (command, args) = script_command(home, true, "run");
-        assert_eq!(command, "\"/some path/tomcat/bin/catalina.bat\" run");
+        assert_eq!(command, format!("\"{}\" run", home.join("bin/catalina.bat").display()));
         assert!(args.is_empty());
     }
     #[test]
@@ -469,6 +469,9 @@ mod tests {
         assert!(c.env["CATALINA_OPTS"].contains("-Xmx256m"));
         assert!(!c.env.get("JAVA_OPTS").is_some_and(|s| s.contains("jdwp")));
         assert_eq!(c.env["JRE_HOME"], "/jdk with spaces");
-        assert!(c.extras.stop_command.unwrap().contains("catalina.sh' stop"));
+        let stop = c.extras.stop_command.unwrap();
+        assert!(stop.contains("stop"));
+        let script = if cfg!(windows) { "catalina.bat" } else { "catalina.sh" };
+        assert!(stop.contains(script));
     }
 }

@@ -3,7 +3,7 @@
  * project has that build system, like IDEA. The model is re-read when build
  * files change; running goals / tasks goes through the run feature's actions.
  */
-import { registerActions } from "@/platform/actions";
+import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { onIdeEvent, type BuildModel, type BuildTool } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -260,6 +260,16 @@ export function activate(): () => void {
         hidden: true,
         when: MAVEN_WHEN,
         run: () => setExpanded("maven", new Set()),
+      },
+      {
+        id: "maven.settings",
+        title: "Maven Settings…",
+        description: "Opens Settings › Build, Execution, Deployment › Maven",
+        category: "Maven",
+        icon: "settings",
+        when: MAVEN_WHEN,
+        keywords: ["maven home", "mvn", "settings", "preferences"],
+        run: () => void executeAction("file.settings", "build.maven"),
       },
       {
         id: "gradle.reload",

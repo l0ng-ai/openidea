@@ -401,6 +401,9 @@ struct Inherited {
     managed: Vec<RawDep>,
     plugins: Vec<RawPlugin>,
     managed_plugins: Vec<RawPlugin>,
+    /// `<id>`, `activeByDefault`: profiles of the POM and its ancestors —
+    /// Maven lets a child enable a parent's profiles with `-P`.
+    profiles: Vec<(String, bool)>,
 }
 
 fn merge_by<T: Clone>(base: &mut Vec<T>, own: &[T], key: impl Fn(&T) -> String) {
@@ -523,6 +526,11 @@ impl Resolver {
             merge_by(&mut ctx.deps, &p.deps, RawDep::key);
             merge_plugins(&mut ctx.plugins, &p.plugins);
         }
+        merge_by(
+            &mut ctx.profiles,
+            &pom.profiles.iter().map(|p| (p.id.clone(), p.active_by_default)).collect::<Vec<_>>(),
+            |(id, _)| id.clone(),
+        );
         // Managed dependencies: own entries win; imported BOMs fill the gaps.
         let props = self.properties_for(&pom, &ctx, &dir);
         let mut imported: Vec<RawDep> = Vec::new();
@@ -935,9 +943,10 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
             .or_else(|| pom.compiler_release.as_deref().map(i))
             .and_then(|v| java_version(&v));
 
-        for p in &pom.profiles {
-            if !model.profiles.iter().any(|x| x.id == p.id) {
-                model.profiles.push(MavenProfile { id: p.id.clone(), active_by_default: p.active_by_default });
+        // The project can activate the profiles of its own POM and its ancestors'.
+        for (id, active) in &ctx.profiles {
+            if !model.profiles.iter().any(|x| x.id == *id) {
+                model.profiles.push(MavenProfile { id: id.clone(), active_by_default: *active });
             }
         }
         let artifact_id = i(&pom.artifact_id);
@@ -954,7 +963,7 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
             aggregated,
             plugins,
             dependencies,
-            profiles: pom.profiles.iter().map(|p| p.id.clone()).collect(),
+            profiles: ctx.profiles.iter().map(|(id, _)| id.clone()).collect(),
             java_version: jv,
             command: wrapper(root, &dir),
             options: Vec::new(),
@@ -1280,7 +1289,39 @@ mod tests {
         let profiles: Vec<(&str, bool)> = model.profiles.iter().map(|p| (p.id.as_str(), p.active_by_default)).collect();
         assert_eq!(profiles, [("dev", true), ("extra", false)]);
         assert_eq!(parent.profiles, ["dev", "extra"]);
+        assert_eq!(core.profiles, ["dev", "extra"], "a module inherits its parent's profiles");
         assert!(model.projects.iter().all(|p| p.command == if cfg!(windows) { "mvn.cmd" } else { "mvn" }));
+    }
+
+    #[test]
+    fn profiles_of_a_parent_pom_are_inherited() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version>
+              <packaging>pom</packaging><modules><module>child</module></modules>
+              <profiles>
+                <profile><id>jdk8</id></profile>
+                <profile><id>jdk21</id><activation><activeByDefault>true</activeByDefault></activation></profile>
+              </profiles>
+            </project>"#,
+        );
+        write(
+            root,
+            "child/pom.xml",
+            r#"<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent>
+              <artifactId>child</artifactId>
+              <profiles><profile><id>own</id></profile></profiles>
+            </project>"#,
+        );
+        let model = load_with_repo(root, None);
+        let child = &model.projects[1];
+        // `-Pjdk8` on the module activates the parent's profile, so it is listed.
+        assert_eq!(child.profiles, ["jdk8", "jdk21", "own"]);
+        let profiles: Vec<(&str, bool)> = model.profiles.iter().map(|p| (p.id.as_str(), p.active_by_default)).collect();
+        assert_eq!(profiles, [("jdk8", false), ("jdk21", true), ("own", false)]);
     }
 
     #[test]

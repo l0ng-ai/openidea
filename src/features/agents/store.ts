@@ -346,7 +346,8 @@ export function openHome(prompt?: string) {
   void editorService().openInput({ kind: HOME_KIND, key: HOME_KEY, data: {} }, { focus: true });
 }
 
-export async function startTask(): Promise<void> {
+/** `isolation` overrides the draft's (a project without git can only use the local checkout). */
+export async function startTask(isolation: Isolation = useAgents.getState().draft.isolation): Promise<void> {
   const { draft, providers } = useAgents.getState();
   const composer = composerDraft(HOME);
   if (!canSend(composer)) return;
@@ -356,8 +357,8 @@ export async function startTask(): Promise<void> {
       prompt: toPrompt(composer),
       provider: draft.provider,
       config: Object.entries(config).map(([id, value]) => ({ id, value })),
-      isolation: draft.isolation,
-      base: draft.isolation === "worktree" ? draft.base : null,
+      isolation,
+      base: isolation === "worktree" ? draft.base : null,
     }),
   );
   // Its events can arrive before this reply: keep the newer state they carried.

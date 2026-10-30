@@ -106,7 +106,7 @@ class BlameRefresher implements PluginValue {
   private schedule(delay: number) {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
-      void call(commands.vcsBlame(this.path, null))
+      void call(commands.vcsBlame(this.path, null, null))
         .then((lines) => {
           if (!this.destroyed && this.view.state.field(blameField, false))
             this.view.dispatch({ effects: setBlame.of(lines) });
@@ -207,14 +207,15 @@ function setAnnotations(view: EditorView, lines: BlameLine[] | null, path: strin
   view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live) : []) });
 }
 
-/** Toggles annotations in `view`; `text` blames that content instead of the file on disk. */
-export async function toggleAnnotations(view: EditorView, path: string, text?: string) {
+/** Toggles annotations in `view`; `text` blames that content instead of the file on
+ * disk, `revision` the history it is blamed on (default HEAD). */
+export async function toggleAnnotations(view: EditorView, path: string, text?: string, revision?: string) {
   if (annotationsShown(view)) {
     setAnnotations(view, null, path, false);
     return;
   }
   try {
-    const lines = await call(commands.vcsBlame(path, text ?? null));
+    const lines = await call(commands.vcsBlame(path, text ?? null, revision ?? null));
     setAnnotations(view, lines, path, text === undefined);
   } catch (e) {
     notifications().notify({
