@@ -4,13 +4,14 @@
  */
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
-import { getContext, setContext } from "@/platform/context";
+import { setContext } from "@/platform/context";
 import { onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, type MenuItem } from "@/ui";
 import {
   menuGroupItems,
+  useDebugRunSessions,
   notifications,
   registerMenuGroup,
   registerOverlay,
@@ -50,7 +51,6 @@ import {
   CURRENT_FILE,
   currentFileSelected,
   prepareLaunch,
-  sessionsOf,
   setBeforeLaunchRunner,
   loadConfigs,
   failedTests,
@@ -66,6 +66,7 @@ import {
   stopSession,
   useRun,
 } from "./store";
+import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
 
 function hasProject() {
@@ -82,6 +83,11 @@ async function runSelected() {
   const config = selectedConfig();
   if (!config) {
     useRun.setState({ chooserOpen: true, chooserMode: "run" });
+    return;
+  }
+  const target = selectedTarget(config.id, useRun.getState().sessions, useDebugRunSessions.getState().sessions);
+  if (target) {
+    target.rerun?.();
     return;
   }
   await startRun(config);
@@ -171,34 +177,20 @@ function configFromArg(arg: unknown): RunConfig | undefined {
   return arg as RunConfig;
 }
 
-/**
- * IDEA's Stop: in the Run or Debug tool window, the selected tab's process; otherwise the
- * only running process, or a chooser of every running one (run sessions and the
- * `stopProcess` items other features contribute, e.g. debug sessions).
- */
+/** Stop the selected configuration; otherwise offer the running processes. */
 function stopAction() {
-  const ctx = getContext();
-  if (ctx.toolWindowFocus && ctx.activeToolWindow === "debug" && getAction("debug.stop")) {
-    void executeAction("debug.stop");
+  const running = runningSessions();
+  const debug = useDebugRunSessions.getState().sessions;
+  const selected = selectedConfig();
+  const compound = compoundTargets(selected, running, debug);
+  if (compound.length) {
+    compound.forEach((s) => s.stop());
     return;
   }
-  const running = runningSessions();
-  const { activeSession } = useRun.getState();
-  if (ctx.toolWindowFocus && ctx.activeToolWindow === "run") {
-    const active = running.find((s) => s.id === activeSession);
-    if (active) {
-      void stopSession(active.id);
-      return;
-    }
-  }
-  // A selected compound stops all of its configurations.
-  const selected = selectedConfig();
-  if (selected?.kind === "compound") {
-    const own = sessionsOf(selected, running);
-    if (own.length) {
-      own.forEach((s) => void stopSession(s.id));
-      return;
-    }
+  const target = selectedTarget(useRun.getState().selectedId, running, debug);
+  if (target) {
+    target.stop();
+    return;
   }
   const items = [
     ...running.map((s): MenuItem => ({

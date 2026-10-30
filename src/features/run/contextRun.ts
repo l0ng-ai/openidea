@@ -126,7 +126,7 @@ export async function launchProduced(p: Produced, debug: boolean): Promise<void>
       return;
     }
     if (!(await buildFirst(p.debug.build))) return;
-    await executeAction("debug.startConfig", p.debug.config);
+    await executeAction("debug.startConfig", { config: p.debug.config, origin: config });
     return;
   }
   await executeAction("run.debugConfig", config);
