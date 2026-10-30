@@ -115,7 +115,7 @@ pub async fn vcs_add_to_ignore(
     state: State<'_, AppState>,
     paths: Vec<PathBuf>,
     destination: IgnoreDestination,
-) -> IdeResult<()> {
+) -> IdeResult<Vec<String>> {
     ide_host::ops::vcs::vcs_add_to_ignore(&state.host, window.label(), paths, destination).await
 }
 

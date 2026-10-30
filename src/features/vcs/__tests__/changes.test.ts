@@ -4,6 +4,7 @@ import {
   aggregateCheck,
   buildChangeTree,
   commitRepos,
+  ignoreTargets,
   initialCheck,
   hunkIncluded,
   planCommit,
@@ -112,6 +113,36 @@ describe("several repositories", () => {
     expect(rootOf("/r/libs/core/", repos)).toBe("/r");
     expect(rootOf("/r", repos)).toBe("/r");
     expect(rootOf("/other", repos)).toBeNull();
+  });
+});
+
+describe("ignore targets", () => {
+  const group = (roots: ChangeNode[], id: string) => roots.find((n) => n.group === id)!;
+
+  it("takes unversioned files only, not tracked changes", () => {
+    const tree = buildChangeTree(status, "/r", true);
+    expect(ignoreTargets([group(tree, "changes")], [])).toEqual([]);
+    expect(ignoreTargets([group(tree, "unversioned")], [])).toEqual(["/r/notes.txt"]);
+  });
+
+  it("uses one rule for a directory whose files are all unversioned", () => {
+    const tree = buildChangeTree(
+      [
+        fs("build/out.log", null, "untracked"),
+        fs("build/tmp/a.tmp", null, "untracked"),
+        fs("notes.txt", null, "untracked"),
+      ],
+      "/r",
+      true,
+    );
+    expect(ignoreTargets([group(tree, "unversioned")], [])).toEqual(["/r/build", "/r/notes.txt"]);
+  });
+
+  it("lists the files of every repository instead of a repository root", () => {
+    const nested = [...status, fs("libs/core/new.txt", null, "untracked")];
+    const repos = ["/r", "/r/libs/core"];
+    const tree = buildChangeTree(nested, "/r", false, undefined, repos);
+    expect(ignoreTargets([group(tree, "unversioned")], repos)).toEqual(["/r/notes.txt", "/r/libs/core/new.txt"]);
   });
 });
 

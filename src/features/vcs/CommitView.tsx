@@ -36,6 +36,7 @@ import {
   buildChangeTree,
   checkOf,
   filesOf,
+  ignoreTargets,
   isPartiallyStaged,
   planCommit,
   toggledCheck,
@@ -194,11 +195,12 @@ function listMenu(id: string, active: boolean, paths: string[]): MenuItem[] {
   ];
 }
 
-function nodeMenu(nodes: ChangeNode[]): MenuItem[] {
+function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
   const files = filesOf(nodes);
   const paths = files.map((f) => f.path);
   const first = nodes.find((n) => n.type === "file");
   const untracked = files.filter((f) => f.unstaged === "untracked");
+  const toIgnore = ignoreTargets(nodes, repos);
   const conflicted = files.filter((f) => f.unstaged === "conflicted");
   const items: MenuItem[] = [
     { kind: "action", action: "vcs.showDiff", arg: first?.path },
@@ -216,6 +218,16 @@ function nodeMenu(nodes: ChangeNode[]): MenuItem[] {
     { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…" },
     ...(untracked.length
       ? [{ kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) }]
+      : []),
+    ...(toIgnore.length
+      ? [
+          {
+            kind: "action" as const,
+            action: "vcs.ignoreShared",
+            arg: toIgnore,
+            label: "Add to .gitignore",
+          },
+        ]
       : []),
     {
       label: "Stage",
@@ -478,7 +490,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               return;
             }
             const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
-            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node]));
+            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node], repos));
           }}
           aria-label="Changes"
           empty={

@@ -249,12 +249,13 @@ pub async fn vcs_stage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeRes
 }
 
 /// Project-host operation (also registered with the remote dispatcher).
+/// Returns the ignore files that were updated, so the UI can show them.
 pub async fn vcs_add_to_ignore(
     host: &Host,
     window: &str,
     paths: Vec<PathBuf>,
     destination: IgnoreDestination,
-) -> IdeResult<()> {
+) -> IdeResult<Vec<String>> {
     let project = host.project(window)?;
     blocking(move || {
         for path in &paths {
@@ -270,7 +271,7 @@ pub async fn vcs_add_to_ignore(
             watcher.reload_ignore_rules();
         }
         project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
-        result.map(|_| ())
+        result.map(|files| files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
     })
     .await
 }
