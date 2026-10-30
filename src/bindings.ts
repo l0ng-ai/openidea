@@ -687,6 +687,12 @@ export const commands = {
 	 */
 	windowOpenFiles: (files: string[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("window_open_files", { files })),
 	/**
+	 *  Detaches an editor tab: opens `file` in a forced new window (`project`, None
+	 *  for LightEdit, decided by the caller), bypassing the focus-an-existing-window
+	 *  routing of [`window_open_project`] / [`window_open_files`].
+	 */
+	windowOpenFileInNewWindow: (project: string | null, file: string) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_file_in_new_window", { project, file })),
+	/**
 	 *  [`window_open_project`] for folder `path` on the host of SSH configuration
 	 *  `ssh_config` (Remote Development); a new window connects itself.
 	 */
