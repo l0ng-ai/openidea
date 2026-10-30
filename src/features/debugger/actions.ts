@@ -341,7 +341,13 @@ export function registerDebugActions(): () => void {
       icon: "refresh",
       keywords: ["hotswap", "hot swap", "hot code replace"],
       when: "debugCanHotSwap",
-      run: () => reloadChangedClasses(),
+      run: ({ arg }) =>
+        reloadChangedClasses(
+          true,
+          typeof arg === "object" && arg !== null && "configId" in arg && typeof arg.configId === "string"
+            ? arg.configId
+            : undefined,
+        ),
     },
     {
       id: "debug.rerun",

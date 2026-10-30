@@ -111,6 +111,17 @@ fn discover_outside_and_inside() {
 }
 
 #[test]
+fn discover_sha256_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("work");
+    std::fs::create_dir(&dir).unwrap();
+    git_in(&dir, &["init", "-q", "--object-format=sha256"]);
+    let repo = Repo::discover(&dir).unwrap().unwrap();
+    assert_eq!(std::fs::canonicalize(repo.root()).unwrap(), std::fs::canonicalize(&dir).unwrap());
+    assert!(repo.status().unwrap().is_empty());
+}
+
+#[test]
 fn repository_without_commits() {
     let fx = Fixture::new();
     fx.write("new.txt", "hello\n");
@@ -175,6 +186,9 @@ fn status_matrix() {
     fx.write("staged_del.txt", "a\n");
     fx.write("rename_me.txt", "some longer content\nthat is stable\nfor rename detection\n");
     fx.write("both.txt", "a\n");
+    // A committed file the IDE ignores keeps its history but drops out of the change list.
+    fx.write("tracked.pyc", "a\n");
+    fx.git(&["add", "-f", "tracked.pyc"]);
     fx.commit_all("base");
 
     fx.write("modified.txt", "b\n");
@@ -195,6 +209,10 @@ fn status_matrix() {
     fx.write(".DS_Store", "junk");
     fx.write("dir/.DS_Store", "junk");
     fx.write("pkg/__pycache__/m.pyc", "junk");
+    fx.write("tracked.pyc", "b\n");
+    // Contents differ from `staged_del.txt` so rename detection cannot pair them.
+    fx.write("staged_ignored.pyc", "cached\nbytecode\n");
+    fx.git(&["add", "-f", "staged_ignored.pyc"]);
 
     let repo = fx.repo();
     repo.set_ignored_names(ide_core::settings::Settings::default().ignored_names());
@@ -217,6 +235,10 @@ fn status_matrix() {
     assert_eq!(status_of(&st, "renamed.txt").renamed_from.as_deref(), Some("rename_me.txt"));
     assert!(!st.iter().any(|s| s.rel_path == "rename_me.txt"), "rename source listed: {st:#?}");
     assert!(!st.iter().any(|s| s.rel_path.contains("debug.log") || s.rel_path.contains("build")));
+    assert!(
+        !st.iter().any(|s| s.rel_path.contains("tracked.pyc") || s.rel_path.contains("staged_ignored.pyc")),
+        "{st:#?}"
+    );
     assert!(!st.iter().any(|s| s.rel_path.contains(".DS_Store") || s.rel_path.contains("pkg")), "{st:#?}");
     // Sorted by path.
     let paths: Vec<_> = st.iter().map(|s| s.rel_path.clone()).collect();
@@ -419,7 +441,7 @@ fn blame_with_unsaved_edits() {
     let second = fx.commit_all("second");
     let repo = fx.repo();
 
-    let lines = repo.blame(&fx.path("b.txt"), None, encoding_rs::UTF_8).unwrap();
+    let lines = repo.blame(&fx.path("b.txt"), None, None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[0].commit, first);
     assert_eq!(lines[1].commit, second);
@@ -427,7 +449,7 @@ fn blame_with_unsaved_edits() {
     assert_eq!(lines[0].author, "Test User");
     assert!(lines[0].time_ms > 1.0e12);
 
-    let lines = repo.blame(&fx.path("b.txt"), Some("one\nedited\nthree\nfour"), encoding_rs::UTF_8).unwrap();
+    let lines = repo.blame(&fx.path("b.txt"), Some("one\nedited\nthree\nfour"), None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.len(), 4);
     assert_eq!(lines[0].commit, first);
     assert!(lines[1].commit.bytes().all(|b| b == b'0'));
@@ -435,9 +457,38 @@ fn blame_with_unsaved_edits() {
     assert_eq!(lines[2].commit, first);
     assert_eq!(lines[3].author, "Not Committed Yet");
 
-    let lines = repo.blame(&fx.path("untracked.txt"), Some("x\ny\n"), encoding_rs::UTF_8).unwrap();
+    let lines = repo.blame(&fx.path("untracked.txt"), Some("x\ny\n"), None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.len(), 2);
     assert!(lines.iter().all(|l| l.author == "Not Committed Yet"));
+}
+
+#[test]
+fn blame_against_another_revision() {
+    // The merge view blames each side pane on the branch it belongs to: lines that
+    // only exist on the merged branch show their real history, not "Not Committed Yet".
+    let fx = Fixture::new();
+    fx.write("b.txt", "one\nthree\n");
+    let first = fx.commit_all("first");
+    fx.write("b.txt", "one\nTWO\nthree\n");
+    fx.commit_all("second");
+    fx.git(&["checkout", "-q", "-b", "feature", &first]);
+    fx.write("b.txt", "one\nfeature\nthree\n");
+    let feature = fx.commit_all("feature line");
+    fx.git(&["checkout", "-q", "main"]);
+    let repo = fx.repo();
+
+    // Blaming the feature content against HEAD marks its extra line uncommitted…
+    let text = "one\nfeature\nthree\n";
+    let lines = repo.blame(&fx.path("b.txt"), Some(text), Some("HEAD"), encoding_rs::UTF_8).unwrap();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0].commit, first);
+    assert_eq!(lines[1].author, "Not Committed Yet");
+    assert_eq!(lines[2].commit, first);
+    // …while blaming it against the feature commit resolves its real history.
+    let lines = repo.blame(&fx.path("b.txt"), Some(text), Some(&feature), encoding_rs::UTF_8).unwrap();
+    assert_eq!(lines[1].commit, feature);
+    assert_eq!(lines[1].summary, "feature line");
+    assert!(repo.blame(&fx.path("b.txt"), Some(text), Some("no-such-ref"), encoding_rs::UTF_8).is_err());
 }
 
 #[test]
@@ -1357,7 +1408,7 @@ fn encoded_java_hunks_staging_blame_and_partial_commit_preserve_bytes() {
             let repo = fx.repo();
             assert_eq!(repo.file_at(&path, None, encoding).unwrap().as_deref(), Some(old.as_str()));
             assert!(
-                repo.blame(&path, Some(&old.replace("\r\n", "\n")), encoding)
+                repo.blame(&path, Some(&old.replace("\r\n", "\n")), None, encoding)
                     .unwrap()
                     .iter()
                     .all(|line| line.author == "Test User")

@@ -7,7 +7,7 @@ import { confirmChecked, showError } from "@/workbench/messages";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { AgentsView } from "./AgentsView";
 import { SESSION_KIND } from "./model";
-import { archiveTask, deleteTask, openTask, useAgents } from "./store";
+import { archiveTask, unarchiveTask, deleteTask, openTask, useAgents } from "./store";
 import { taskActions } from "./taskActions";
 
 const editor = vi.hoisted(() => ({
@@ -32,6 +32,7 @@ vi.mock("./store", async (original) => ({
   ...(await original<typeof import("./store")>()),
   openTask: vi.fn((id: string) => editor.listener?.({ kind: "agent-session", key: id, data: { task: id } })),
   archiveTask: vi.fn(async () => {}),
+  unarchiveTask: vi.fn(async () => {}),
   deleteTask: vi.fn(async () => {}),
 }));
 
@@ -181,6 +182,19 @@ describe("Agents bulk actions", () => {
     context("two");
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive (1)" }));
     await waitFor(() => expect(archiveTask).toHaveBeenCalledExactlyOnceWith("two"));
+  });
+
+  it("unarchives only archived tasks in a mixed selection", async () => {
+    const tasks = [task("one"), task("two", "archived"), task("three", "archived")];
+    useAgents.setState({ tasks: new Map(tasks.map((t) => [t.id, t])) });
+    setup();
+    fireEvent.doubleClick(screen.getByText("Archived"));
+    select("one");
+    select("three", { shiftKey: true });
+    context("two");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unarchive (2)" }));
+    await waitFor(() => expect(unarchiveTask).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(unarchiveTask).mock.calls).toEqual([["two"], ["three"]]);
   });
 
   it("cancels the whole batch", async () => {

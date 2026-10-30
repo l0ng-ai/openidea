@@ -305,11 +305,16 @@ pub struct FsBatch {
     pub created: Vec<PathBuf>,
     pub modified: Vec<PathBuf>,
     pub removed: Vec<PathBuf>,
+    /// VCS metadata (`.git/HEAD`, `index`, `refs/**`): reported separately so
+    /// generic `fsChanged` consumers do not treat the backend's own index
+    /// refresh as a worktree edit and schedule another `vcs_status` (which
+    /// writes `.git/index` again — an idle refresh loop).
+    pub vcs: Vec<PathBuf>,
 }
 
 impl FsBatch {
     pub fn is_empty(&self) -> bool {
-        self.created.is_empty() && self.modified.is_empty() && self.removed.is_empty()
+        self.created.is_empty() && self.modified.is_empty() && self.removed.is_empty() && self.vcs.is_empty()
     }
 }
 

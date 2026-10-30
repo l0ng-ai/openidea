@@ -4,6 +4,7 @@ import { Icon, type IconName } from "./icons";
 import { Popup } from "./Popup";
 import { List, listNavigate } from "./List";
 import { useTx } from "@/platform/i18n";
+import { SearchField } from "./Input";
 import styles from "./Select.module.css";
 
 export interface SelectOption<V extends string = string> {
@@ -26,6 +27,8 @@ export interface SelectProps<V extends string = string> {
   "aria-label"?: string;
   /** Custom trigger content. */
   renderValue?: (option: SelectOption<V> | undefined) => ReactNode;
+  /** Show a search box in the popup (useful for long option lists). */
+  searchable?: boolean;
 }
 
 const TYPE_AHEAD_MS = 800;
@@ -40,6 +43,7 @@ export function Select<V extends string = string>({
   variant = "framed",
   className,
   renderValue,
+  searchable = false,
   ...aria
 }: SelectProps<V>) {
   const tx = useTx();
@@ -47,10 +51,16 @@ export function Select<V extends string = string>({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const current = options.find((o) => o.value === value);
   const [active, setActive] = useState(0);
+  const [query, setQuery] = useState("");
   const typeAhead = useRef({ text: "", at: -Infinity });
   const isSection = (o: SelectOption<V>) => !!o.disabled;
+  const filtered =
+    searchable && query.trim()
+      ? options.filter((o) => !o.disabled && tx(o.label).toLowerCase().includes(query.trim().toLowerCase()))
+      : options;
 
   const openPopup = () => {
+    setQuery("");
     setActive(
       Math.max(
         0,
@@ -69,7 +79,7 @@ export function Select<V extends string = string>({
   const onPopupKey = (e: KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      choose(options[active]);
+      choose(filtered[active]);
       return;
     }
     const next = listNavigate(e.key, { items: options, active, isSection, wrap: true });
@@ -85,10 +95,10 @@ export function Select<V extends string = string>({
       ahead.at = e.timeStamp;
       const repeat = ahead.text.length > 1 && [...ahead.text].every((c) => c === ahead.text[0]);
       const prefix = repeat ? ahead.text[0]! : ahead.text;
-      const n = options.length;
+      const n = filtered.length;
       for (let s = prefix.length > 1 ? 0 : 1; s <= n; s++) {
         const i = (active + s) % n;
-        if (!options[i]!.disabled && tx(options[i]!.label).toLowerCase().startsWith(prefix)) {
+        if (!filtered[i]!.disabled && tx(filtered[i]!.label).toLowerCase().startsWith(prefix)) {
           setActive(i);
           break;
         }
@@ -135,6 +145,22 @@ export function Select<V extends string = string>({
         className={styles.popup}
       >
         <div tabIndex={-1} data-autofocus onKeyDown={onPopupKey} className={styles.popupInner}>
+          {searchable && (
+            <div className={styles.searchWrap}>
+              <SearchField
+                value={query}
+                autoFocus
+                placeholder={tx("Search…")}
+                onChange={(v) => {
+                  setQuery(v);
+                  setActive(0);
+                }}
+                size="normal"
+                variant="framed"
+                className={styles.search}
+              />
+            </div>
+          )}
           {/* Virtualised rows are absolutely positioned; this sizes the popup to the widest label. */}
           <div aria-hidden className={styles.sizer}>
             {options.map((o) => (
@@ -147,7 +173,7 @@ export function Select<V extends string = string>({
             ))}
           </div>
           <List
-            items={options}
+            items={filtered}
             getKey={(o) => o.value}
             isSection={isSection}
             renderSection={(o) => <span className={styles.disabled}>{tx(o.label)}</span>}

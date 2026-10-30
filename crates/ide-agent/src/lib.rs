@@ -23,6 +23,7 @@ pub use model::*;
 use conversation::{Conversation, SavedSubagent, Session};
 use ide_core::{IdeError, IdeResult, IpcPath};
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
+use ide_vcs::Repo;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -116,9 +117,13 @@ impl Shared {
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
         let mut config = self.known.lock().get(provider).map(|k| k.config.clone()).unwrap_or_default();
         config::add_client_options(provider, &mut config);
-        // Approval bypass belongs to the conversation, never to another new task.
+        if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
+            && let Some(o) = config.iter_mut().find(|c| c.id == o)
+        {
+            o.current = Some(v);
+        }
         if let Some(o) = config.iter_mut().find(|o| o.id == config::CURSOR_APPROVAL) {
-            o.current = Some("ask".into());
+            o.current = Some("bypass".into());
         }
         config
     }
@@ -364,6 +369,12 @@ impl AgentManager {
         let root = self.shared.paths.project_root.clone();
         let (cwd, branch, base, base_commit, before) = match req.isolation {
             Isolation::Worktree => {
+                // The UI offers worktrees for git projects only; state it when it isn't one.
+                if Repo::discover(&self.shared.paths.project_root)?.is_none() {
+                    return Err(IdeError::invalid(
+                        "worktrees need a git repository: run the task in the local checkout",
+                    ));
+                }
                 let dir = self.shared.paths.worktrees_dir.clone();
                 let (t, b) = (title.clone(), req.base.clone());
                 let c = blocking(move || worktree::create(&root, &dir, &t, b.as_deref())).await?;
@@ -547,6 +558,10 @@ impl AgentManager {
                 o.current = Some(value);
             }
             s.task.model = model_of(&s.task.config).or(s.task.model.take());
+            let provider = s.task.provider.clone();
+            let config = s.task.config.clone();
+            drop(s);
+            task.shared.remember(&provider, Some(&config), None);
         }
         task.approve_pending();
         task.persist();
@@ -753,6 +768,26 @@ impl AgentManager {
         let task = self.task(id)?;
         task.kill();
         task.set_status(AgentStatus::Archived, None);
+        Ok(())
+    }
+
+    /// Returns an archived task to the active list without starting the agent.
+    pub fn unarchive(&self, id: &str) -> IdeResult<()> {
+        let task = self.task(id)?;
+        {
+            let mut s = task.state.lock();
+            if s.task.status != AgentStatus::Archived {
+                return Ok(());
+            }
+            if s.busy {
+                return Err(IdeError::invalid("the task is still stopping"));
+            }
+            s.task.status = AgentStatus::Ready;
+            s.task.error = None;
+            s.task.updated_ms = now_ms();
+        }
+        task.persist();
+        task.emit_task();
         Ok(())
     }
 
@@ -1191,7 +1226,6 @@ impl Task {
             (if known { reported } else { s.task.config.clone() }, s.wanted.clone())
         };
         config::add_client_options(&provider_id, &mut options);
-        self.shared.remember(&provider_id, Some(&options), None);
         for choice in &wanted {
             // An option the session doesn't offer yet is set once it does (`apply_late_choices`).
             let Some(o) = options.iter().find(|o| o.id == choice.id).cloned() else { continue };
@@ -1220,6 +1254,7 @@ impl Task {
                 Err(e) => tracing::warn!("agent task {}: setting {} to {} failed: {e}", self.id, o.id, choice.value),
             }
         }
+        self.shared.remember(&provider_id, Some(&options), None);
         {
             let mut s = self.state.lock();
             s.task.model = model_of(&options).or(s.task.model.take());

@@ -29,6 +29,7 @@ import {
 } from "./store";
 import { TestTreeView, formatDuration } from "./TestTreeView";
 import { StackTracePanel, closeStackTrace, useStackTraces, type StackTraceTab } from "./stackTrace";
+import { showTomcatUpdate } from "./tomcatUpdate";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -140,6 +141,15 @@ export function SessionPanel({ session }: { session: RunSession }) {
           disabled={!running}
           onClick={() => void stopSession(session.id)}
         />
+        {session.config.kind === "tomcat" && (
+          <IconButton
+            icon="refresh"
+            title="Update Application"
+            shortcut={shortcutLabel("run.updateApplication")}
+            disabled={!running}
+            onClick={() => showTomcatUpdate(session.id)}
+          />
+        )}
         <div className={styles.toolbarSep} />
         {!rt.terminal && (
           <>

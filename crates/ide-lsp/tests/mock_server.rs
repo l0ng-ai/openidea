@@ -906,6 +906,38 @@ async fn launch_error_fails_without_starting_the_server() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn preparation_refreshes_config_and_survives_unchanged_settings() {
+    use std::sync::atomic::AtomicBool;
+    let h = harness(&[("mock", incremental_caps())]);
+    let prepared = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(AtomicUsize::new(0));
+    let (release, wait) = std::sync::mpsc::channel();
+    let wait = Mutex::new(wait);
+    h.mgr.set_config_hook(Box::new({
+        let prepared = prepared.clone();
+        move |cfg, _| {
+            cfg.launch_error = (!prepared.load(Ordering::SeqCst)).then(|| "needs runtime".into());
+        }
+    }));
+    h.mgr.set_prepare_hook(Box::new({
+        let started = started.clone();
+        move |_, _, cancel| {
+            started.fetch_add(1, Ordering::SeqCst);
+            wait.lock().recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(!cancel.is_cancelled(), "unchanged settings cancelled preparation");
+            prepared.store(true, Ordering::SeqCst);
+        }
+    }));
+    h.open("a.mk", "x");
+    eventually(|| started.load(Ordering::SeqCst) > 0).await;
+    h.mgr.reconfigure().await;
+    release.send(()).unwrap();
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert_eq!(h.launcher.state("mock").launches.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn settings_changes_reach_servers_without_restarts() {
     let h = harness(&[("mock", incremental_caps()), ("extra", incremental_caps())]);
     let settings: Arc<Mutex<Option<Value>>> = Default::default();

@@ -4,6 +4,7 @@
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod environment;
+mod java_runtime;
 pub mod notebook;
 pub mod ops;
 mod project;

@@ -227,6 +227,8 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     assert_eq!(names(mgr_a.commands("claude", Some(&task.id)).await.unwrap()), ["review", "triage"]);
     // Other agents get only what they offered.
     assert!(mgr_a.commands("codex", None).await.unwrap().is_empty());
+    mgr_a.cancel(&task.id, None).unwrap();
+    wait_for(&mgr_a, &task.id, AgentStatus::Ready).await;
     mgr_a.shutdown();
 
     // Another project shares the settings but not the commands.
@@ -272,6 +274,9 @@ async fn builtin_commands_only_fill_verified_gaps_and_preserve_advertised_metada
     assert_eq!(commands[0].name, advertised.name);
     assert_eq!(commands[0].description, advertised.description);
     assert_eq!(commands[0].hint, advertised.hint);
+    // Finish the in-process agent before Tokio stops driving its permission response.
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     mgr.shutdown();
 }
 
@@ -788,15 +793,17 @@ async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
     mgr.prompt(&task.id, text("Fix again"), false).await.unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     assert!(!agent.calls.lock().iter().any(|c| c.contains("bypass")));
-    assert!(!config::bypass_approvals("cursor", &mgr.shared.known_config("cursor")));
+    assert!(config::bypass_approvals("cursor", &mgr.shared.known_config("cursor")));
     mgr.set_config(&task.id, config::CURSOR_APPROVAL, "ask".into()).await.unwrap();
     mgr.prompt(&task.id, text("Fix once more"), false).await.unwrap();
     wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
     mgr.cancel(&task.id, None).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
-    // An unrelated new conversation still asks, even after the cache was updated.
+    // A task created without choosing approvals still asks; the New Task page sends the default.
     let other = mgr.create(new()).await.unwrap();
     wait_for(&mgr, &other.id, AgentStatus::NeedsInput).await;
+    mgr.cancel(&other.id, None).unwrap();
+    wait_for(&mgr, &other.id, AgentStatus::Ready).await;
     mgr.shutdown();
 }
 
@@ -816,4 +823,37 @@ async fn cursor_approval_choice_applies_before_first_prompt() {
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archived_tasks_can_be_restored_and_continue_their_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    mgr.archive(&task.id).unwrap();
+    assert!(mgr.prompt(&task.id, text("again"), false).await.is_err());
+    mgr.unarchive(&task.id).unwrap();
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready);
+    assert!(mgr.task(&task.id).unwrap().live.lock().is_none());
+    assert_eq!(mgr.entries(&task.id, None).unwrap().len(), entries.len());
+    drop(mgr);
+    let mgr = manager(tmp.path(), agent.clone());
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready);
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(agent.calls.lock().iter().any(|call| call == "session/load"));
+    assert_eq!(mgr.entries(&task.id, None).unwrap().len(), entries.len() + 2);
+    mgr.unarchive(&task.id).unwrap();
 }

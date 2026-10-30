@@ -18,6 +18,9 @@ describe("missing debug adapters", () => {
       tool: "js-debug",
       title: "The JavaScript debugger (vscode-js-debug) is not installed",
     });
+    expect(
+      missingAdapter("kotlin-debug-adapter", unavailable("debug adapter `kotlin-debug-adapter` not found (x)"))?.tool,
+    ).toBe("kotlin-debug-adapter");
     expect(missingAdapter("delve", unavailable("debug adapter `delve` not found (x)"))?.tool).toBe("delve");
   });
 

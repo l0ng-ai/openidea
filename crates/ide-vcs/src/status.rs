@@ -90,19 +90,25 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
             }
         }
     }
-    // Persist refreshed stat info so the next status is cheaper (like `git status` does).
-    // Only when something changed: `write_changes` writes even an empty change set, and
-    // the rewritten `.git/index` comes back as a VCS change that triggers the next status.
+    // Serialize write-back and identity capture with watcher queries.
     if let Some(mut outcome) = iter.into_outcome()
         && outcome.has_changes()
-        && let Some(Err(e)) = outcome.write_changes()
     {
-        tracing::debug!("could not write refreshed index: {e}");
+        let mut writes = crate::index_writes::lock();
+        match outcome.write_changes() {
+            Some(Ok(_)) => writes.record(&repo.index_path()),
+            Some(Err(e)) => tracing::debug!("could not write refreshed index: {e}"),
+            None => {}
+        }
     }
 
     Ok(map
         .into_iter()
         .filter(|(_, e)| e.staged.is_some() || e.unstaged.is_some())
+        // Ignored names mean "the IDE treats these as nonexistent": hide their tracked
+        // changes too, not just untracked hits above. Conflicts stay visible so merges
+        // cannot stall on a file the user cannot see.
+        .filter(|(rel, _)| conflicts.contains(rel) || !ignored.is_ignored_path(rel))
         .map(|(rel, mut e)| {
             if conflicts.contains(&rel) {
                 e.staged = None;

@@ -140,6 +140,10 @@ pub fn archive(host: &Host, window: &str, task: String) -> IdeResult<()> {
     host.project(window)?.agents.archive(&task)
 }
 
+pub fn unarchive(host: &Host, window: &str, task: String) -> IdeResult<()> {
+    host.project(window)?.agents.unarchive(&task)
+}
+
 pub async fn delete(host: &Host, window: &str, task: String, remove_worktree: bool) -> IdeResult<()> {
     host.project(window)?.agents.delete(&task, remove_worktree).await
 }
@@ -183,6 +187,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_respond", |c| async move {
         respond(&c.host, &c.window, c.arg("task")?, c.arg("permission")?, c.arg("option")?)
     });
+    d.add("agent_unarchive", |c| async move { unarchive(&c.host, &c.window, c.arg("task")?) });
     d.add("agent_archive", |c| async move { archive(&c.host, &c.window, c.arg("task")?) });
     d.add(
         "agent_delete",

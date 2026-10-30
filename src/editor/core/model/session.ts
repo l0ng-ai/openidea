@@ -7,6 +7,7 @@
  * plain JSON (localStorage, keyed by project root) and rebuilt into a fresh
  * TabsState with new ids.
  */
+import { ipcPath } from "@/platform/paths";
 import type { EditorInput } from "@/workbench/contributions";
 import { initialTabsState, paneIds, type LayoutNode, type Pane, type Tab, type TabsState } from "./tabs";
 
@@ -91,7 +92,7 @@ export function serializeSession(
  * and `\\?\C:\a\b` become `C:/a/b`. Other paths are returned as is.
  */
 export function slashPath(p: string): string {
-  return /^(\\\\\?\\)?[A-Za-z]:\\/.test(p) ? p.replace(/^\\\\\?\\/, "").replace(/\\/g, "/") : p;
+  return ipcPath(p);
 }
 
 function isSessionTab(v: unknown): v is SessionTab {

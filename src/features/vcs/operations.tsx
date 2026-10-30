@@ -472,6 +472,13 @@ export function showCompareVersions(older: Commit, newer: Commit) {
   ));
 }
 
+/** Files that differ between two revisions (e.g. two branches from Compare with Current). */
+export function showCompareRevisions(from: string, to: string, fromLabel = from, toLabel = to) {
+  openDialog((close) => (
+    <ChangesBetweenDialog from={{ rev: from, label: fromLabel }} to={{ rev: to, label: toLabel }} onClose={close} />
+  ));
+}
+
 interface Revision {
   rev: string;
   label: string;

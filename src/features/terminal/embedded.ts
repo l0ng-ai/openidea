@@ -8,6 +8,8 @@ import { Terminal, type IDisposable } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { EmbeddedTerminal, EmbeddedTerminalOptions } from "@/workbench/contributions";
+import { isImeKey } from "@/platform/ime";
+import { terminalKeyAction } from "./keys";
 import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { fitScheduler, settledResize } from "./fit";
@@ -46,6 +48,12 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     smoothScrollDuration: 0,
     convertEol: false,
     theme: readTerminalTheme(),
+  });
+  term.attachCustomKeyEventHandler((e) => {
+    if (isImeKey(e) || terminalKeyAction(e, term.hasSelection()).kind !== "copy") return true;
+    if (e.type === "keydown") void navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+    e.preventDefault();
+    return false;
   });
   const fit = new FitAddon();
   term.loadAddon(fit);

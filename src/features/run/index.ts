@@ -42,6 +42,7 @@ import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
+import { showTomcatUpdate } from "./tomcatUpdate";
 import { runGutter } from "./runGutter";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
 import { clearRuntimeCache } from "./runtimes";
@@ -51,6 +52,7 @@ import {
   CURRENT_FILE,
   currentFileSelected,
   prepareLaunch,
+  rescheduleConsoleFlushes,
   setBeforeLaunchRunner,
   loadConfigs,
   failedTests,
@@ -283,6 +285,14 @@ export function activate(): () => void {
     }),
     registerActions([
       {
+        id: "run.updateApplication",
+        title: "Update Application",
+        category: "Run",
+        icon: "refresh",
+        when: "run.tomcatRunning",
+        run: () => showTomcatUpdate(),
+      },
+      {
         id: "run.run",
         title: "Run",
         category: "Run",
@@ -494,7 +504,13 @@ export function activate(): () => void {
     ]),
     onIdeEvent("runExited", (e) => onRunExited(e.run, e.code)),
     // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
-    useRun.subscribe((s) => setContext("run.selectedKind", s.configs.find((c) => c.id === s.selectedId)?.kind ?? "")),
+    useRun.subscribe((s) => {
+      setContext("run.selectedKind", s.configs.find((c) => c.id === s.selectedId)?.kind ?? "");
+      setContext(
+        "run.tomcatRunning",
+        s.sessions.some((session) => session.config.kind === "tomcat" && session.status === "running"),
+      );
+    }),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
       resetRuns();
@@ -518,6 +534,12 @@ export function activate(): () => void {
       if (e.key === "languages" || e.key.startsWith("languages.")) scheduleReload();
     }),
   );
+
+  // Hidden tabs pause rAF: move pending console flushes to timeouts (and back on
+  // return) so output keeps draining while a run continues in the background.
+  const onVisibility = () => rescheduleConsoleFlushes();
+  document.addEventListener("visibilitychange", onVisibility);
+  disposers.push(() => document.removeEventListener("visibilitychange", onVisibility));
 
   return () => {
     clearTimeout(reloadTimer);

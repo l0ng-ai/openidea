@@ -121,6 +121,16 @@ fn now_ms() -> f64 {
 /// Merges the cached effective build into `model`.
 pub fn apply_maven_cache(root: &Path, cache_dir: &Path, model: &mut MavenModel) {
     let Some(cache) = read_cache::<MavenCache>(cache_dir, MAVEN_CACHE) else { return };
+    model.synced_at = Some(cache.at_ms);
+    model.sync_error = cache.error;
+    let changed = cache.hash != hash_files(&maven::build_files(root, model));
+    model.stale = !cache.verbose || changed;
+    // A cache older than the current build files: its effective-POM plugins and
+    // resolved dependencies would hide what the POMs declare now (a just added
+    // dependency never appears). The static parse stays until Reload.
+    if changed {
+        return;
+    }
     for p in &mut model.projects {
         if let Some(c) = cache.projects.iter().find(|c| c.key == p.key()) {
             if !c.plugins.is_empty() {
@@ -129,9 +139,6 @@ pub fn apply_maven_cache(root: &Path, cache_dir: &Path, model: &mut MavenModel) 
             p.dependencies = c.dependencies.clone();
         }
     }
-    model.synced_at = Some(cache.at_ms);
-    model.sync_error = cache.error;
-    model.stale = !cache.verbose || cache.hash != hash_files(&maven::build_files(root, model));
 }
 
 /// Merges the cached task list into `model`.
@@ -349,12 +356,16 @@ mod tests {
 
         std::fs::write(
             root.join("pom.xml"),
-            "<project><groupId>g</groupId><artifactId>a</artifactId><version>2</version></project>",
+            "<project><groupId>g</groupId><artifactId>a</artifactId><version>2</version>\
+             <dependencies><dependency><groupId>g</groupId><artifactId>fresh</artifactId><version>1</version></dependency></dependencies>\
+             </project>",
         )
         .unwrap();
         let mut model = maven::load_with_repo(&root, None);
         apply_maven_cache(&root, &cache_dir, &mut model);
         assert!(model.stale);
+        // The POM changed: the stale effective dependencies must not hide the new one (#249).
+        assert_eq!(model.projects[0].dependencies[0].artifact_id, "fresh");
     }
 
     #[test]

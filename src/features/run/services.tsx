@@ -1,7 +1,8 @@
 /**
  * Run configurations in the Services tool window (IDEA's Run Dashboard): Spring
  * Boot by default, the configuration types added there ("Add Service › Run
- * Configuration Type") and the types of this window's run sessions, one group
+ * Configuration Type"), the types of this window's run sessions and the
+ * configurations that ran before (kept per project across restarts), one group
  * each, with run / debug / stop / rerun per configuration. A configuration that
  * ran shows its console in the detail pane, a running web application its HTTP port.
  */
@@ -30,6 +31,7 @@ export const RUN_PROVIDER = "runConfigurations";
 const TYPE_PREFIX = "run:type:";
 const CONFIG_PREFIX = "run:config:";
 const STORAGE_KEY = "openidea.services.runTypes:";
+const RAN_KEY = "openidea.services.ran:";
 /** Types shown in Services until the user changes the list. */
 export const DEFAULT_TYPES: readonly string[] = ["spring-boot"];
 
@@ -78,6 +80,41 @@ export function removeType(kind: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Configurations that ran, per project (shown again after a restart)
+
+const useRanConfigs = create<{ root: string | null; ids: string[] }>(() => ({ root: null, ids: [] }));
+
+/** The project's previously run configuration ids, most recent last. */
+export function readRan(root: string): string[] {
+  try {
+    const raw = localStorage.getItem(RAN_KEY + root);
+    if (raw === null) return [];
+    const v: unknown = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function ranIds(root: string | null): string[] {
+  const s = useRanConfigs.getState();
+  return s.root === root ? s.ids : root ? readRan(root) : [];
+}
+
+/** Records a run, so its configuration is back in Services after a restart. */
+export function recordRun(configId: string) {
+  const root = useProject.getState().project?.root ?? null;
+  const ids = [...ranIds(root).filter((id) => id !== configId), configId];
+  useRanConfigs.setState({ root, ids });
+  if (!root) return;
+  try {
+    localStorage.setItem(RAN_KEY + root, JSON.stringify(ids));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tree
 
 const busy = (s: RunSession) => s.status === "running" || s.status === "starting";
@@ -113,12 +150,19 @@ export function runServiceItems(
   configs: readonly RunConfig[],
   sessions: readonly RunSession[],
   added: readonly string[],
+  ran: readonly string[] = [],
 ): ServiceTreeItem[] {
   const latest = latestSessions(sessions);
   const kinds = [...added];
   for (const s of sessions) if (!kinds.includes(s.config.kind)) kinds.push(s.config.kind);
+  for (const id of ran) {
+    const kind = configs.find((c) => c.id === id)?.kind;
+    if (kind && !kinds.includes(kind)) kinds.push(kind);
+  }
   return kinds.flatMap((kind) => {
-    const entries: RunConfig[] = added.includes(kind) ? configs.filter((c) => c.kind === kind) : [];
+    const entries: RunConfig[] = added.includes(kind)
+      ? configs.filter((c) => c.kind === kind)
+      : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
     for (const s of latest.values())
       if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
     if (!entries.length && DEFAULT_TYPES.includes(kind)) return [];
@@ -155,12 +199,15 @@ function useRoots(): ServiceTreeItem[] {
   const sessions = useRun((s) => s.sessions);
   const types = useAddedTypes((s) => s.types);
   const typesRoot = useAddedTypes((s) => s.root);
+  const ran = useRanConfigs((s) => s.ids);
+  const ranRoot = useRanConfigs((s) => s.root);
   useEffect(() => {
     if (typesRoot !== root) useAddedTypes.setState({ root, types: root ? readTypes(root) : [] });
-  }, [root, typesRoot]);
+    if (ranRoot !== root) useRanConfigs.setState({ root, ids: root ? readRan(root) : [] });
+  }, [root, typesRoot, ranRoot]);
   return useMemo(
-    () => runServiceItems(configs, sessions, typesRoot === root ? types : []),
-    [configs, sessions, types, typesRoot, root],
+    () => runServiceItems(configs, sessions, typesRoot === root ? types : [], ranRoot === root ? ran : []),
+    [configs, sessions, types, typesRoot, ran, ranRoot, root],
   );
 }
 
@@ -228,6 +275,7 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
 
 function menu(item: ServiceTreeItem): MenuItem[] {
   const items: MenuItem[] = actions(item).map((a) => ({
+    id: a.id,
     label: a.title,
     icon: a.icon,
     disabled: a.disabled,

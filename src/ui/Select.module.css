@@ -123,3 +123,16 @@
     border: 1px solid ButtonText;
   }
 }
+
+.searchWrap {
+  padding: 4px 6px 6px;
+}
+.search {
+  width: 100%;
+  height: var(--h-field, 28px);
+  padding: 0 8px;
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-field, var(--bg-button));
+  box-shadow: inset 0 0 0 1px var(--border-button);
+  color: var(--fg-strong);
+}

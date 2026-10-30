@@ -36,6 +36,7 @@ import {
   useServicesTree,
 } from "./tree";
 import styles from "./Services.module.css";
+import { selectionActions, selectionMenu, selectedServices } from "./selection";
 
 export const SERVICES_VIEW_FOCUS = "servicesViewFocus";
 
@@ -77,6 +78,7 @@ export function ServicesTreeView() {
   const providers = useProviders();
   const rootsByProvider = useServicesTree((s) => s.roots);
   const selectedKey = useServicesTree((s) => s.selectedKey);
+  const selectedKeys = useServicesTree((s) => s.selectedKeys);
   const expanded = useServicesTree((s) => s.expanded);
   const addRef = useRef<HTMLButtonElement>(null);
 
@@ -84,7 +86,7 @@ export function ServicesTreeView() {
   const index = useMemo(() => indexTree(rootsByProvider), [rootsByProvider]);
   const selected = selectedKey ? (index.get(selectedKey) ?? null) : null;
   const owner = selected ? providers.find((p) => p.id === selected.provider) : undefined;
-  const actions = selected && owner?.actions ? owner.actions(selected.item) : [];
+  const actions = selectionActions(selectedServices(selectedKeys, index), providers);
   const Detail = owner?.detail;
   const add = shortcutLabel("services.addService");
 
@@ -161,22 +163,23 @@ export function ServicesTreeView() {
                 isExpandable={(n) => !!n.children?.length}
                 expanded={expanded}
                 onExpandedChange={(next) => useServicesTree.setState({ expanded: next })}
-                selected={selectedKey ? new Set([selectedKey]) : new Set()}
-                onSelectionChange={(_keys, lead) => useServicesTree.setState({ selectedKey: lead?.key ?? null })}
+                selected={selectedKeys}
+                onSelectionChange={(keys, lead) =>
+                  useServicesTree.setState({ selectedKeys: keys, selectedKey: keys.size ? (lead?.key ?? null) : null })
+                }
                 renderNode={(n, state) => <Row item={n} state={state} />}
                 onActivate={(n) => {
                   const p = index.get(n.key);
                   providers.find((x) => x.id === p?.provider)?.activate?.(n);
                 }}
-                onContextMenu={(n, _sel, e) => {
+                onContextMenu={(n, keys, e) => {
                   e.preventDefault();
                   if (!n) {
                     showContextMenu({ x: e.clientX, y: e.clientY }, addServiceMenu(providers));
                     return;
                   }
-                  useServicesTree.setState({ selectedKey: n.key });
-                  const p = providers.find((x) => x.id === index.get(n.key)?.provider);
-                  const items = p?.menu?.(n) ?? [];
+                  useServicesTree.setState({ selectedKeys: keys, selectedKey: n.key });
+                  const items = selectionMenu(selectedServices(keys, index), providers);
                   if (items.length) showContextMenu({ x: e.clientX, y: e.clientY }, items);
                 }}
                 speedSearch

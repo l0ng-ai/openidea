@@ -139,7 +139,7 @@ pub(crate) fn invocation(config: &RunConfig, cwd: &Path) -> Invocation {
     if config.args.is_empty() && looks_like_shell && !cwd.join(command).is_file() {
         return shell_invocation(command, windows, std::env::var("COMSPEC").ok());
     }
-    let program = resolve_program(command, cwd, &config.env, windows);
+    let program = resolve_program(command, cwd, config, windows);
     let mut display = quote(command);
     for a in &config.args {
         display.push(' ');
@@ -239,22 +239,18 @@ fn shell_invocation(command: &str, windows: bool, comspec: Option<String>) -> In
 }
 
 /// The program to spawn: relative paths like `./gradlew` or `.venv/bin/python`
-/// against the run directory; on Windows a bare name through `PATH` × `PATHEXT`
-/// (`kotlinc` → `kotlinc.bat`), which `Command` would only try as `.exe`.
-fn resolve_program(command: &str, cwd: &Path, env: &BTreeMap<String, String>, windows: bool) -> PathBuf {
+/// against the run directory; a bare name through the configuration's search path
+/// (on Windows also `PATHEXT`: `kotlinc` → `kotlinc.bat`), so launchers installed
+/// outside the app's own `PATH` (`mvn` in a version manager's shims) still start.
+fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool) -> PathBuf {
     let path = Path::new(command);
     if path.is_relative() && path.components().count() > 1 {
         return cwd.join(path);
     }
-    if windows && path.components().count() == 1 && path.is_relative() {
-        let search = env
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
-            .map(|(_, v)| std::ffi::OsString::from(v))
-            .or_else(|| std::env::var_os("PATH"))
-            .unwrap_or_default();
+    if path.components().count() == 1 && path.is_relative() {
+        let search = crate::wrap::search_path(config);
         let pathext = std::env::var("PATHEXT").ok();
-        if let Some(found) = crate::which::find_executable_in(command, &search, true, pathext.as_deref()) {
+        if let Some(found) = crate::which::find_executable_in(command, &search, windows, pathext.as_deref()) {
             return found;
         }
     }
@@ -1032,14 +1028,28 @@ mod tests {
         let cwd = dir.path();
         let path = std::env::join_paths([&bin]).unwrap().to_string_lossy().into_owned();
         // Windows environment keys are case-insensitive (`Path`).
-        let env = BTreeMap::from([("Path".to_owned(), path)]);
-        assert_eq!(resolve_program("kotlinc", cwd, &env, true), bin.join("kotlinc.bat"));
+        let config = |env: BTreeMap<String, String>| RunConfig {
+            id: "c".into(),
+            name: "c".into(),
+            kind: "maven".into(),
+            command: String::new(),
+            args: Vec::new(),
+            cwd: None,
+            env,
+            detected: false,
+            is_test: false,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: Default::default(),
+        };
+        let config = config(BTreeMap::from([("Path".to_owned(), path)]));
+        assert_eq!(resolve_program("kotlinc", cwd, &config, true), bin.join("kotlinc.bat"));
         // Not found: left to the OS (`command not found` at spawn).
-        assert_eq!(resolve_program("nope", cwd, &env, true), PathBuf::from("nope"));
-        // Unix: bare names are left to `execvp`.
-        assert_eq!(resolve_program("kotlinc", cwd, &env, false), PathBuf::from("kotlinc"));
+        assert_eq!(resolve_program("nope", cwd, &config, true), PathBuf::from("nope"));
+        // Unix: extensionless names only (`kotlinc.bat` does not match `kotlinc`).
+        assert_eq!(resolve_program("kotlinc", cwd, &config, false), PathBuf::from("kotlinc"));
         // Relative paths resolve against the run directory on every platform.
-        assert_eq!(resolve_program("./gradlew", cwd, &env, true), cwd.join("./gradlew"));
-        assert_eq!(resolve_program(".venv/bin/python", cwd, &env, false), cwd.join(".venv/bin/python"));
+        assert_eq!(resolve_program("./gradlew", cwd, &config, true), cwd.join("./gradlew"));
+        assert_eq!(resolve_program(".venv/bin/python", cwd, &config, false), cwd.join(".venv/bin/python"));
     }
 }

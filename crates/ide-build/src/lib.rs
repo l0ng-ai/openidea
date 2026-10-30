@@ -11,6 +11,7 @@ pub mod maven;
 pub mod pom_edit;
 mod process;
 mod sync;
+pub mod web;
 mod xml;
 
 pub use gradle::{GradleModel, GradleProject, GradleTask};

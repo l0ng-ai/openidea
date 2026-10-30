@@ -3,6 +3,7 @@ import type { RunConfig } from "@/platform/ipc";
 
 const invoked: Array<[string, unknown[]]> = [];
 let shortenCommandLine: string | null = null;
+let kotlinFiles = false;
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   const ok = (data: unknown) => Promise.resolve({ status: "ok", data });
@@ -10,6 +11,12 @@ vi.mock("@/platform/ipc", async (orig) => {
     ...real,
     commands: {
       ...real.commands,
+      fsReadDir: (path: string) =>
+        ok(
+          kotlinFiles && path.endsWith("/src")
+            ? [{ name: "Main.kt", path: `${path}/Main.kt`, kind: "file", excluded: false }]
+            : [],
+        ),
       javaResolveLaunch: (...a: unknown[]) => {
         invoked.push(["javaResolveLaunch", a]);
         return ok({
@@ -52,6 +59,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
   beforeEach(() => {
     invoked.length = 0;
     shortenCommandLine = null;
+    kotlinFiles = false;
   });
 
   it("launches Application configs with the resolved classpath on jdtls' debug server", async () => {
@@ -98,6 +106,36 @@ describe("Java debugging (java-debug through jdtls)", () => {
       const l = await javaLaunchConfig(app, "/p");
       expect(JSON.parse(l.extraJson!).shortenCommandLine).toBe(how);
     }
+  });
+
+  it("routes a Kotlin main to the Kotlin adapter and preserves JVM launch arguments", async () => {
+    const config = { ...app, debugAdapter: "kotlin-debug-adapter" };
+    expect(isJavaDebuggable(config)).toBe(true);
+    const l = await javaLaunchConfig(config, "/p");
+    expect(l).toMatchObject({ adapter: "kotlin-debug-adapter", request: "launch", cwd: "/p/api", env: { A: "1" } });
+    expect(JSON.parse(l.extraJson!)).toMatchObject({
+      projectRoot: "/p/api",
+      mainClass: "a.Main",
+      classPaths: ["/p/target/classes", "/m2/a.jar"],
+      javaExec: "/jdk21/bin/java",
+      vmArguments: ["-Xmx1g"],
+      programArgs: ["--port", "8081 x"],
+    });
+    expect(invoked.some(([command]) => command === "javaDebugServer")).toBe(false);
+  });
+
+  it("routes launch and JDWP attach in a mixed module to Kotlin without starting jdtls' adapter", async () => {
+    kotlinFiles = true;
+    expect((await javaLaunchConfig(app, "/p")).adapter).toBe("kotlin-debug-adapter");
+    const l = await javaAttachConfig({ name: "mvn test", module: "api", hostName: "remote", port: 5005 }, "/p");
+    expect(l.adapter).toBe("kotlin-debug-adapter");
+    expect(JSON.parse(l.extraJson!)).toEqual({
+      projectRoot: "/p/api",
+      hostName: "remote",
+      port: 5005,
+      timeout: 30_000,
+    });
+    expect(invoked.some(([command]) => command === "javaDebugServer")).toBe(false);
   });
 
   it("attaches to a JDWP agent", async () => {

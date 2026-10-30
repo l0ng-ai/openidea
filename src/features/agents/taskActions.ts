@@ -4,7 +4,7 @@ import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
 import { showError, confirmChecked } from "@/workbench/messages";
 import { isBusy } from "./model";
-import { archiveTask, deleteTask, openTask, useAgents } from "./store";
+import { archiveTask, unarchiveTask, deleteTask, openTask, useAgents } from "./store";
 
 const canArchive = (task: AgentTask) => !isBusy(task.status) && task.status !== "archived";
 
@@ -76,6 +76,18 @@ export const taskActions: Action[] = [
       runTasks(resolveTasks(arg).filter(canArchive), (task) => archiveTask(task.id), tx("Cannot archive agent tasks")),
   },
   {
+    id: "agents.unarchiveTasks",
+    title: "Unarchive Agent Tasks",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) =>
+      runTasks(
+        resolveTasks(arg).filter((task) => task.status === "archived"),
+        (task) => unarchiveTask(task.id),
+        tx("Cannot unarchive agent tasks"),
+      ),
+  },
+  {
     id: "agents.deleteTasks",
     title: "Delete Agent Tasks",
     category: "Agents",
@@ -89,6 +101,7 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
   const ids = tasks.map((task) => task.id);
   const task = tasks[0]!;
   const multiple = tasks.length > 1;
+  const archived = tasks.filter((task) => task.status === "archived").length;
   const archivable = tasks.filter(canArchive).length;
   return [
     ...(!multiple
@@ -96,6 +109,16 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
           { kind: "action", action: "agents.openTask", label: "Open", arg: task.id },
           { kind: "action", action: "terminal.openAt", label: "Open in Terminal", icon: "terminal", arg: task.cwd },
           { kind: "separator" },
+        ] satisfies MenuItem[])
+      : []),
+    ...(archived
+      ? ([
+          {
+            kind: "action",
+            action: "agents.unarchiveTasks",
+            label: multiple ? tx`Unarchive (${archived})` : "Unarchive",
+            arg: ids,
+          },
         ] satisfies MenuItem[])
       : []),
     {

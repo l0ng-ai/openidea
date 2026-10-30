@@ -11,6 +11,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { editorService, notifications } from "@/workbench/contributions";
 import { fitScheduler, settledResize } from "./fit";
+import { ImeCommitGate } from "./imeCommit";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { splitCommandLine } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
@@ -51,6 +52,8 @@ export interface SessionSnapshot {
   commandRunning: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
+  /** True while the viewport is pinned to the newest output. */
+  follow: boolean;
 }
 
 export interface SessionOptions {
@@ -176,6 +179,10 @@ export class TerminalSession {
   private lastSize = { cols: 0, rows: 0 };
   /** Bumped on restart so late output from a previous PTY is ignored. */
   private generation = 0;
+  /** WebKitGTK delivers one IME commit' worth of text more than once; see `ImeCommitGate`. */
+  private readonly ime = new ImeCommitGate(() => {
+    if (this.term.textarea) this.term.textarea.value = "";
+  });
 
   constructor(opts: SessionOptions) {
     this.opts = opts;
@@ -187,6 +194,7 @@ export class TerminalSession {
       appTitle: null,
       commandRunning: false,
       cwd: opts.cwd,
+      follow: true,
     };
     this.host = document.createElement("div");
     this.host.className = "openidea-terminal-host";
@@ -227,7 +235,7 @@ export class TerminalSession {
       this.searchAddon.onDidChangeResults((r) => {
         for (const l of this.searchListeners) l({ index: r.resultIndex, count: r.resultCount });
       }),
-      this.term.onData((data) => this.input(data)),
+      this.term.onData((data) => this.fromTerminal(data)),
       this.term.onBinary((data) => this.input(data)),
       this.term.onTitleChange((title) => this.update({ appTitle: title.trim() || null })),
       // OSC 7: `file://host/path` — shells report their cwd so relative links resolve correctly.
@@ -260,6 +268,11 @@ export class TerminalSession {
         if (workflowSettings().terminal.mouseReporting) return false;
         const modes = params.map((p) => (Array.isArray(p) ? p[0] : p) ?? 0);
         return modes.length > 0 && modes.every((m) => MOUSE_MODES.has(m));
+      }),
+      // Track scroll position: follow when the user scrolls back to the bottom.
+      this.term.onScroll(() => {
+        const atBottom = this.isAtBottom();
+        if (atBottom !== this.snapshot.follow) this.update({ follow: atBottom });
       }),
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
@@ -347,6 +360,7 @@ export class TerminalSession {
         () => this.scheduleFit(),
       );
       this.term.textarea?.addEventListener("focus", () => this.opts.onFocus(this.key));
+      this.watchImeCommit();
     }
     this.resizeObserver?.disconnect();
     this.resizeObserver = new ResizeObserver(() => this.scheduleFit());
@@ -362,6 +376,44 @@ export class TerminalSession {
 
   private scheduleFit() {
     this.fitter.schedule();
+  }
+
+  /**
+   * Routes a WebKitGTK / fcitx5 IME commit through `ImeCommitGate`: the platform reports the
+   * composition's own keystroke (code 229) and its input event but never `compositionstart`,
+   * which is what xterm's own bookkeeping is built on.
+   */
+  private watchImeCommit() {
+    const textarea = this.term.textarea;
+    if (!textarea) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.keyCode === 229) this.ime.begin();
+    };
+    const onInput = (e: InputEvent) => {
+      if (e.inputType === "insertFromComposition" || e.inputType === "insertCompositionText") this.ime.begin();
+    };
+    const onCompositionStart = () => this.ime.compositionStart();
+    // Bubble phase, i.e. after xterm's own listener: the rebase must land behind the emissions
+    // that xterm's composition and textarea-diff paths already scheduled.
+    const onCompositionEnd = () => this.ime.finish();
+    this.host.addEventListener("keydown", onKeyDown, true);
+    textarea.addEventListener("input", onInput, true);
+    textarea.addEventListener("compositionstart", onCompositionStart, true);
+    textarea.addEventListener("compositionend", onCompositionEnd);
+    this.disposables.push({
+      dispose: () => {
+        this.ime.close();
+        this.host.removeEventListener("keydown", onKeyDown, true);
+        textarea.removeEventListener("input", onInput, true);
+        textarea.removeEventListener("compositionstart", onCompositionStart, true);
+        textarea.removeEventListener("compositionend", onCompositionEnd);
+      },
+    });
+  }
+
+  /** xterm's data event, with one IME commit's repeated emissions collapsed. */
+  private fromTerminal(data: string) {
+    if (this.ime.accept()) this.input(data);
   }
 
   private doFit() {
@@ -516,6 +568,16 @@ export class TerminalSession {
 
   clear() {
     this.term.clear();
+  }
+
+  isAtBottom(): boolean {
+    return this.term.buffer.active.viewportY >= this.term.buffer.active.baseY;
+  }
+
+  /** Sets the follow flag; when turning it on also scrolls to the bottom. */
+  setFollow(follow: boolean) {
+    if (follow) this.term.scrollToBottom();
+    if (follow !== this.snapshot.follow) this.update({ follow });
   }
 
   focus() {

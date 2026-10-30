@@ -129,6 +129,22 @@ describe("project view context menu", () => {
     }
   });
 
+  it("offers Show History for files, directories, multi-selection and the project root", () => {
+    const dispose = registerActions([{ id: "vcs.showHistory", title: "Show History", run: () => undefined }]);
+    try {
+      for (const nodes of [
+        [node("/p/a.py")],
+        [node("/p/src", true)],
+        [node("/p/a.py"), node("/p/src", true)],
+        [node("/p", true, true)],
+      ]) {
+        expect(sub(contextMenuItems(nodes), "Git")).toContain("Show History");
+      }
+    } finally {
+      dispose();
+    }
+  });
+
   it("shows Mark Directory as for folders, without file-only items", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
     expect(l).toContain("Mark Directory as");
@@ -159,6 +175,17 @@ describe("project view context menu", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/a.py`), node(`${ROOT}/b.py`)]));
     expect(l).toContain("Compare Files");
     expect(l).not.toContain("Compare With…");
+  });
+
+  it("offers Compare With… in a non-git project too", () => {
+    useProject.setState({
+      project: { name: "p", root: ROOT, isGit: false, settings: {} } as never,
+      settings: {} as never,
+    });
+    const l = labels(contextMenuItems([node(`${ROOT}/a.py`)]));
+    expect(l).not.toContain("Git");
+    expect(l).toContain("Compare With…");
+    expect(labels(contextMenuItems([node(`${ROOT}/a.py`), node(`${ROOT}/b.py`)]))).toContain("Compare Files");
   });
 
   it("never shows an empty submenu", () => {

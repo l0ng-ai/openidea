@@ -77,11 +77,16 @@ impl Watcher {
         let shared = filter.excludes.clone();
         let rules = filter.gitignore.clone();
         let emit = move |batch: &FsBatch| {
-            sink.emit(IdeEvent::FsChanged {
-                created: batch.created.iter().map(Into::into).collect(),
-                modified: batch.modified.iter().map(Into::into).collect(),
-                removed: batch.removed.iter().map(Into::into).collect(),
-            });
+            // VCS-metadata-only batches (`batch.vcs`) carry no worktree paths:
+            // consumers that refresh on any `fsChanged` would reschedule purely
+            // from the backend's own `.git/index` write.
+            if !(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty()) {
+                sink.emit(IdeEvent::FsChanged {
+                    created: batch.created.iter().map(Into::into).collect(),
+                    modified: batch.modified.iter().map(Into::into).collect(),
+                    removed: batch.removed.iter().map(Into::into).collect(),
+                });
+            }
             on_change(batch);
         };
         let inner = match mode {
@@ -517,7 +522,7 @@ impl EventFilter {
         let mut batch = FsBatch::default();
         for (path, change) in changes {
             if change == Change::Vcs {
-                batch.modified.push(path);
+                batch.vcs.push(path);
                 continue;
             }
             let meta = path.symlink_metadata().ok();
@@ -535,11 +540,21 @@ impl EventFilter {
                 (c, _) => c,
             };
             if let Ok(rel) = path.strip_prefix(&self.root) {
-                if self.excludes.read().is_excluded(rel) {
+                let is_dir = meta.as_ref().is_some_and(|m| m.is_dir());
+                // Directories that match an exclude / gitignore rule themselves
+                // still report their own create / remove / modify — the tree
+                // needs to see `target/` or `node_modules/` appear (marked
+                // excluded/ignored) instead of silently swallowing the events
+                // `client install` produces.
+                // A removed path has no metadata to tell file from directory;
+                // let it through on the off chance it is the excluded directory
+                // itself — reporting one extra file removal is harmless.
+                let self_excluded = (is_dir || change == Change::Removed)
+                    && (self.excludes.read().is_match(rel) || self.gitignore.is_ignored_self(&path, true));
+                if !self_excluded && self.excludes.read().is_excluded(rel) {
                     continue;
                 }
-                let is_dir = meta.as_ref().is_some_and(|m| m.is_dir());
-                if self.gitignore.is_ignored(&path, is_dir) {
+                if !self_excluded && self.gitignore.is_ignored(&path, is_dir) {
                     continue;
                 }
             }
@@ -594,10 +609,8 @@ mod tests {
         ];
         let batch = filter.batch(&events);
         assert_eq!(batch.created, vec![root.join("a.txt")]);
-        assert_eq!(
-            batch.modified,
-            vec![root.join(".git/HEAD"), root.join(".git/refs/heads/feature"), root.join("kept.txt")]
-        );
+        assert_eq!(batch.vcs, vec![root.join(".git/HEAD"), root.join(".git/refs/heads/feature")]);
+        assert_eq!(batch.modified, vec![root.join("kept.txt")]);
         assert_eq!(batch.removed, vec![root.join("from.txt"), root.join("gone.txt"), root.join("old.txt")]);
     }
 
@@ -616,6 +629,48 @@ mod tests {
             filter.batch(&[ev(EventKind::Modify(ModifyKind::Name(RenameMode::Both)), vec![temp, root.join("a.py")])]);
         assert_eq!(batch.created, vec![root.join("a.py")]);
         assert!(batch.removed.is_empty());
+    }
+
+    /// `client install` produces an excluded / ignored directory wholesale:
+    /// the directory's own create passes through so the tree shows it appear
+    /// (marked excluded/ignored), while everything inside stays filtered out.
+    #[test]
+    fn excluded_and_ignored_directories_report_themselves_but_not_contents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), "dist\n*.log\n").unwrap();
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::create_dir_all(root.join("dist/assets")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for f in ["target/debug/out.o", "dist/app.js", "src/main.rs", "debug.log"] {
+            std::fs::write(root.join(f), "x").unwrap();
+        }
+        let filter = EventFilter::new(root.clone(), &["**/target".into()]);
+        let create_dir = EventKind::Create(CreateKind::Folder);
+        let create_file = EventKind::Create(CreateKind::File);
+
+        // The ignored / excluded directory itself is reported.
+        let batch = filter.batch(&[ev(create_dir, vec![root.join("target")]), ev(create_dir, vec![root.join("dist")])]);
+        assert_eq!(batch.created, vec![root.join("dist"), root.join("target")]);
+
+        // Everything inside the ignored / excluded directories stays filtered,
+        // as do files matching ignore patterns at the project root.
+        let batch = filter.batch(&[
+            ev(create_file, vec![root.join("target/debug/out.o")]),
+            ev(create_file, vec![root.join("dist/app.js")]),
+            ev(create_file, vec![root.join("debug.log")]),
+        ]);
+        assert!(batch.is_empty(), "{batch:?}");
+
+        // Sibling files in unignored directories still come through.
+        let batch = filter.batch(&[ev(create_file, vec![root.join("src/main.rs")])]);
+        assert_eq!(batch.created, vec![root.join("src/main.rs")]);
+
+        // Removing the ignored / excluded directory reports the directory.
+        std::fs::remove_dir_all(root.join("target")).unwrap();
+        let batch = filter.batch(&[ev(EventKind::Remove(RemoveKind::Folder), vec![root.join("target")])]);
+        assert_eq!(batch.removed, vec![root.join("target")]);
     }
 
     #[test]

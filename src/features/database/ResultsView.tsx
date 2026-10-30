@@ -3,6 +3,7 @@
  * executed statement with its outcome, and a `Result N` tab per result set —
  * a toolbar (re-run, export / copy as CSV, JSON, SQL…), the grid and a floating row count.
  */
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { DbPlanNode } from "@/platform/ipc";
@@ -45,7 +46,14 @@ function Output() {
         <span className={styles.spacer} />
         <IconButton icon="trash" title="Clear All" disabled={!lines.length} onClick={clearOutput} />
       </div>
-      <div ref={ref} className={styles.output} role="log" aria-label={tx("Database output")}>
+      <div
+        ref={ref}
+        className={styles.output}
+        tabIndex={0}
+        onKeyDown={copySelectionOnKeyDown}
+        role="log"
+        aria-label={tx("Database output")}
+      >
         {lines.map((l: OutputLine) => (
           <div key={l.id} className={clsx(styles.outputLine, l.kind === "error" && styles.outputError)}>
             <span className={styles.outputTime}>[{time(l.time)}]</span>{" "}

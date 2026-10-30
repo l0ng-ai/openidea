@@ -44,6 +44,7 @@ export function ConfigPickers({
                     : undefined,
               detail: v.description ?? undefined,
             }))}
+            searchable={o.category === "model"}
             onChange={(v) => onChange(o.id, v)}
             // Effort and other levels say what they are: "Effort  Medium".
             renderValue={

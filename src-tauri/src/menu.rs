@@ -571,6 +571,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("run.chooseDebugConfig", "Debug…"),
             act("runAnything.show", "Run Anything…"),
             act("run.editConfigs", "Edit Configurations…"),
+            act("run.updateApplication", "Update Application"),
             act("debug.attachToProcess", "Attach to Process…"),
             SEP,
             act("debug.resume", "Resume Program"),
