@@ -4138,6 +4138,7 @@ dependencies = [
  "serde",
  "serde_json",
  "specta",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

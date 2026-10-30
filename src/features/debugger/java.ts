@@ -16,15 +16,34 @@ import {
 import { notifications } from "@/workbench/contributions";
 
 export const JAVA_ADAPTER = "java-debug";
+export const KOTLIN_ADAPTER = "kotlin-debug-adapter";
 
 export function isJavaDebuggable(rc: RunConfig): boolean {
-  return isJvmApplication(rc) && (rc.debugAdapter ?? JAVA_ADAPTER) === JAVA_ADAPTER;
+  return isJvmApplication(rc) && [JAVA_ADAPTER, KOTLIN_ADAPTER].includes(rc.debugAdapter ?? JAVA_ADAPTER);
 }
 
 function join(base: string, p: string) {
   if (p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p)) return p;
   const rel = p.replace(/^\.\//, "");
   return rel === "." || rel === "" ? base : `${base.replace(/\/$/, "")}/${rel}`;
+}
+
+/** Conventional JVM source sets, including Kotlin kept in a Java source directory.
+ * A mixed module uses Kotlin's adapter, which also accepts Java line breakpoints.
+ */
+export async function moduleHasKotlinSources(cwd: string): Promise<boolean> {
+  const pending = [join(cwd, "src")];
+  while (pending.length) {
+    const path = pending.pop()!;
+    const entries = await call(commands.fsReadDir(path)).catch(() => []);
+    for (const entry of entries) {
+      if (entry.excluded) continue;
+      if ((entry.kind === "file" || entry.targetKind === "file") && entry.name.endsWith(".kt")) return true;
+      // Do not follow directory symlinks: a source tree can link back to a parent.
+      if (entry.kind === "dir") pending.push(entry.path);
+    }
+  }
+  return false;
 }
 
 /** java-debug missing from jdtls: offer the one-click install (jdtls restarts with the bundle). */
@@ -67,8 +86,29 @@ export async function javaLaunchConfig(rc: RunConfig, root: string): Promise<Lau
       body: formatCompileErrors(info).trimEnd(),
     });
   const resolved = resolveJavaCommand(rc, info);
-  const port = await debugServer(module);
+  const kotlin = rc.debugAdapter === KOTLIN_ADAPTER || (await moduleHasKotlinSources(cwd));
   const classPaths = parsed.explicitClasspath ? parsed.explicitClasspath.split(/[:;]/) : info.classPaths;
+  if (kotlin) {
+    return {
+      name: rc.name,
+      adapter: KOTLIN_ADAPTER,
+      request: "launch",
+      program: null,
+      args: [],
+      cwd,
+      env: { ...rc.env },
+      extraJson: JSON.stringify({
+        projectRoot: cwd,
+        mainClass: parsed.mainClass,
+        classPaths,
+        modulePaths: info.modulePaths,
+        javaExec: resolved.command,
+        vmArguments: parsed.vmArgs,
+        programArgs: parsed.programArgs,
+      }),
+    };
+  }
+  const port = await debugServer(module);
   return {
     name: rc.name,
     adapter: JAVA_ADAPTER,
@@ -110,6 +150,19 @@ export function isJavaAttachTarget(
 
 /** Attach request for a JVM listening with a JDWP agent. */
 export async function javaAttachConfig(target: JavaAttachTarget, root: string): Promise<LaunchConfig> {
+  const cwd = target.module ? join(root, target.module) : root;
+  if (await moduleHasKotlinSources(cwd)) {
+    return {
+      name: target.name,
+      adapter: KOTLIN_ADAPTER,
+      request: "attach",
+      program: null,
+      args: [],
+      cwd,
+      env: {},
+      extraJson: JSON.stringify({ projectRoot: cwd, hostName: target.hostName, port: target.port, timeout: 30_000 }),
+    };
+  }
   const port = await debugServer(target.module);
   return {
     name: target.name,

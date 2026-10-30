@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tempfile.workspace = true
 ide-core.workspace = true
 ide-language.workspace = true
 ide-jsonrpc.workspace = true

@@ -2133,6 +2133,7 @@
   "Text or hash": "文本或哈希",
   "Text selected in the editor": "编辑器中选中的文本",
   "Text to find": "要查找的文本",
+  "The Kotlin debugger is not installed": "未安装 Kotlin 调试器",
   "The Java debugger is not installed": "未安装 Java 调试器",
   "The action already has this shortcut": "该操作已有此快捷键",
   "The active changelist cannot be deleted": "无法删除活动更改列表",

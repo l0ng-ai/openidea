@@ -35,6 +35,7 @@ import styles from "./Run.module.css";
  */
 const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "java-debug", label: "java-debug (Java)" },
+  { id: "kotlin-debug-adapter", label: "kotlin-debug-adapter (Kotlin)" },
   { id: "debugpy", label: "debugpy (Python)" },
   { id: "js-debug", label: "js-debug (Node.js / TypeScript)" },
   { id: "delve", label: "Delve (Go)" },
