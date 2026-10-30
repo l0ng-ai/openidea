@@ -151,7 +151,7 @@ describe("Stop", () => {
     setContext("activeToolWindow", "");
   });
 
-  it("stops the selected configuration even when another Run tab has focus", async () => {
+  it("stops the selected tab's process in the focused Run tool window", async () => {
     setContext("projectOpen", true);
     useRun.setState({
       sessions: [running("run1", config("a"), 1), running("run2", config("b"), 2)],
@@ -162,7 +162,7 @@ describe("Stop", () => {
     setContext("toolWindowFocus", true);
     setContext("activeToolWindow", "run");
     await executeAction("run.stop");
-    expect(useRun.getState().sessions.map((s) => !!s.stopped)).toEqual([true, false]);
+    expect(useRun.getState().sessions.map((s) => !!s.stopped)).toEqual([false, true]);
   });
 
   it("stops the only running process, including a contributed debug session", async () => {

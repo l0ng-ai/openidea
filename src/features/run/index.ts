@@ -4,7 +4,7 @@
  */
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
-import { setContext } from "@/platform/context";
+import { getContext, setContext } from "@/platform/context";
 import { onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
@@ -177,9 +177,24 @@ function configFromArg(arg: unknown): RunConfig | undefined {
   return arg as RunConfig;
 }
 
-/** Stop the selected configuration; otherwise offer the running processes. */
+/**
+ * Stop: in the Run or Debug tool window, the selected tab's process; otherwise the selected
+ * configuration's session, or a chooser of every running process.
+ */
 function stopAction() {
+  const ctx = getContext();
+  if (ctx.toolWindowFocus && ctx.activeToolWindow === "debug" && getAction("debug.stop")) {
+    void executeAction("debug.stop");
+    return;
+  }
   const running = runningSessions();
+  if (ctx.toolWindowFocus && ctx.activeToolWindow === "run") {
+    const active = running.find((s) => s.id === useRun.getState().activeSession);
+    if (active) {
+      void stopSession(active.id);
+      return;
+    }
+  }
   const debug = useDebugRunSessions.getState().sessions;
   const selected = selectedConfig();
   const compound = compoundTargets(selected, running, debug);
