@@ -64,7 +64,10 @@ impl SourceMirror {
         if self.paths.contains_key(real) {
             return Ok(());
         }
-        let text = fs::read_to_string(real)?;
+        let Ok(text) = fs::read_to_string(real) else {
+            tracing::debug!("Kotlin debug mirror: skipping unreadable {}", real.display());
+            return Ok(());
+        };
         let language = if real.extension().is_some_and(|e| e == "java") { "java" } else { "kotlin" };
         let relative = real.strip_prefix(&self.source_dir).unwrap_or(real);
         let mut components = relative.components();
@@ -74,13 +77,17 @@ impl SourceMirror {
         let mut mirror = self.root().join(format!("root{index}")).join("src/main").join(language);
         for part in package(&text).split('.').filter(|s| !s.is_empty()) {
             if part == ".." || part.contains(['/', '\\']) {
-                return Err(IdeError::invalid("Invalid package in Kotlin debug source"));
+                tracing::debug!("Kotlin debug mirror: skipping {} (invalid package)", real.display());
+                return Ok(());
             }
             mirror.push(part);
         }
         mirror.push(real.file_name().ok_or_else(|| IdeError::invalid("Source has no filename"))?);
+        // Same package and file name in one source set (e.g. main and test of a module):
+        // the first wins; breakpoints in the other stay unverified instead of failing the session.
         if self.paths.values().any(|p| p == &mirror) {
-            return Err(IdeError::invalid(format!("Ambiguous debug source {}", mirror.display())));
+            tracing::debug!("Kotlin debug mirror: skipping ambiguous {}", real.display());
+            return Ok(());
         }
         fs::create_dir_all(mirror.parent().unwrap())?;
         if link(real, &mirror).is_err() {

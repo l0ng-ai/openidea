@@ -18,6 +18,8 @@ import {
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
+import { tomcatType } from "./tomcat";
+
 export const COMPOUND = "compound";
 
 const on = (v: string | undefined) => v === "true";
@@ -394,6 +396,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   pytest,
   applicationType,
   springBootType,
+  tomcatType,
   compound,
 ];
 

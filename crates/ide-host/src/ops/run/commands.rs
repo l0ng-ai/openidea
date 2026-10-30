@@ -49,8 +49,87 @@ pub async fn run_test_reports(
         .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+pub async fn run_tomcat_home(host: &Host, window: &str, home: String) -> IdeResult<ide_run::tomcat::TomcatHome> {
+    let root = host.project(window)?.root.clone();
+    tokio::task::spawn_blocking(move || ide_run::tomcat::validate_home(&root.join(home)))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<ide_build::web::WebArtifact>> {
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &project.settings.effective());
+        ide_build::web::artifacts(&project.root, &model)
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))
+}
+
+pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> IdeResult<Option<RunConfig>> {
+    if config.extras.params.get("deployment").is_some_and(|v| v != "artifact") {
+        return Ok(None);
+    }
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &project.settings.effective());
+        let artifacts = ide_build::web::artifacts(&project.root, &model);
+        let id = config
+            .extras
+            .params
+            .get("artifact")
+            .filter(|s| !s.is_empty())
+            .or_else(|| artifacts.first().map(|a| &a.id))
+            .ok_or_else(|| IdeError::invalid("Choose a WAR artifact"))?;
+        let plan = ide_build::web::build(
+            &project.root,
+            &model,
+            id,
+            &ide_run::tomcat::base_dir(&project.cache_dir, &config.id),
+        )?;
+        let mut env = plan.env;
+        env.extend(config.env.clone());
+        Ok(Some(RunConfig {
+            id: format!("tomcat-build:{}", config.id),
+            name: format!("Build {}", config.name),
+            kind: if id.starts_with("maven:") { "maven" } else { "gradle" }.into(),
+            command: plan.command,
+            args: plan.args,
+            cwd: Some(std::path::PathBuf::from(plan.cwd).into()),
+            env,
+            detected: false,
+            is_test: false,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: ide_run::RunExtras {
+                include_system_env: config.extras.include_system_env,
+                env_files: config.extras.env_files,
+                ..Default::default()
+            },
+        }))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mode: String) -> IdeResult<()> {
+    let project = host.project(window)?;
+    if !host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
+        return Err(IdeError::invalid("Start this Tomcat configuration before updating it"));
+    }
+    tokio::task::spawn_blocking(move || ide_run::tomcat::update(&project.root, &project.cache_dir, &config, &mode))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
+    d.add("run_tomcat_home", |c| async move { run_tomcat_home(&c.host, &c.window, c.arg("home")?).await });
+    d.add("run_tomcat_artifacts", |c| async move { run_tomcat_artifacts(&c.host, &c.window).await });
+    d.add("run_tomcat_build", |c| async move { run_tomcat_build(&c.host, &c.window, c.arg("config")?).await });
+    d.add("run_tomcat_update", |c| async move {
+        run_tomcat_update(&c.host, &c.window, c.arg("config")?, c.arg("mode")?).await
+    });
     d.add("run_templates", |c| async move { run_templates(&c.host, &c.window) });
     d.add("run_save_templates", |c| async move { run_save_templates(&c.host, &c.window, c.arg("templates")?) });
     d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });

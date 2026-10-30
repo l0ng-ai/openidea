@@ -1,5 +1,7 @@
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { registerActions } from "@/platform/actions";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Grid } from "./Grid";
 
 vi.mock("@tanstack/react-virtual", () => ({
@@ -11,7 +13,17 @@ vi.mock("@tanstack/react-virtual", () => ({
 }));
 
 describe("database grid", () => {
-  it("drags a rectangle and copies it as TSV", () => {
+  const disposers: Array<() => void> = [];
+  afterEach(() => {
+    disposers
+      .splice(0)
+      .reverse()
+      .forEach((dispose) => dispose());
+  });
+  it("drags a rectangle and copies it as TSV through the Windows dispatcher", () => {
+    useKeymap.setState({ preset: "intellij-windows", overrides: {} });
+    const globalCopy = vi.fn();
+    disposers.push(registerActions([{ id: "edit.copy", title: "Copy", run: globalCopy }]), installKeyboardDispatcher());
     const writeText = vi.fn();
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     render(
@@ -33,8 +45,9 @@ describe("database grid", () => {
     fireEvent.mouseDown(cells[0]!, { button: 0 });
     fireEvent.mouseEnter(cells[3]!);
     fireEvent.mouseUp(window);
-    fireEvent.keyDown(screen.getByRole("grid"), { key: "c", metaKey: true });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "c", code: "KeyC", ctrlKey: true });
     expect(writeText).toHaveBeenCalledWith("one\ttwo\nthree\tfour");
+    expect(globalCopy).not.toHaveBeenCalled();
   });
   it("pastes a rectangle as pending edits and skips deleted rows", () => {
     const onEdit = vi.fn();

@@ -114,6 +114,7 @@ const UNTRANSLATED = new Set<string>([
   "Greenplum",
   "Java",
   "java-debug (Java)",
+  "kotlin-debug-adapter (Kotlin)",
   "js-debug (Node.js / TypeScript)",
   "JSON",
   "lldb-dap (C, C++, Swift)",

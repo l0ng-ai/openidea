@@ -38,6 +38,8 @@ import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
 import { startedPort } from "./serverPort";
+import { tomcatBrowserUrl } from "./tomcat";
+import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
@@ -543,7 +545,15 @@ export async function startRun(
   const rt = runtimes.get(sessionId)!;
   const generation = rt.generation;
   if (options.onLine) rt.lineListeners.push(options.onLine);
+  let browserOpened = false;
   rt.lineListeners.push((line) => {
+    if (config.kind === "tomcat" && /Server startup in/.test(line)) {
+      patchSession(sessionId, { httpPort: Number(config.params?.httpPort || "8080") });
+      if (!browserOpened && config.params?.openBrowser === "true") {
+        browserOpened = true;
+        void openUrl(tomcatBrowserUrl(config));
+      }
+    }
     const port = startedPort(line);
     if (port !== null && runtimes.get(sessionId)?.generation === generation && getSession(sessionId)?.httpPort !== port)
       patchSession(sessionId, { httpPort: port });
@@ -585,6 +595,7 @@ export async function startRun(
     const prepare = typeFor(launch.kind)?.prepareLaunch;
     if (prepare) {
       launch = await prepare(launch);
+      if (launch.kind === "tomcat") useRun.setState({ activeSession: sessionId });
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     }
     // Debug launches read the agent's output lines: never through a terminal.
@@ -806,7 +817,7 @@ export async function stopSession(sessionId: string): Promise<void> {
 }
 
 /** Resolves once the given sessions' processes exited (or after `timeoutMs`). */
-function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): Promise<void> {
+export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): Promise<void> {
   const live = () =>
     sessionIds.some((id) => {
       const s = getSession(id);

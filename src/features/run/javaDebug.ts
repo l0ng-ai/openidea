@@ -37,6 +37,7 @@ function withProperty(args: readonly string[], key: string, value: string): stri
 
 /** The configuration with a waiting JDWP agent, or null when it starts no debuggable JVM. */
 export function jdwpLaunch(config: RunConfig): RunConfig | null {
+  if (config.kind === "tomcat") return { ...config, params: { ...config.params, tomcatDebug: "true" } };
   const args = config.args;
   // A single source file (`java Hi.java`): the agent goes before the file.
   if (config.kind === "java-file") return { ...config, args: [JDWP_AGENT, ...args] };

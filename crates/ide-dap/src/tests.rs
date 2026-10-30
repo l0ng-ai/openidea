@@ -16,6 +16,7 @@ struct Script {
     /// Send a `startDebugging` reverse request (child session) when a non-child `launch` arrives.
     start_debugging: bool,
     ignore_configuration_done: bool,
+    source_path: Option<String>,
 }
 
 struct FakeLauncher {
@@ -142,14 +143,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}})
                 );
                 send!(
-                    json!({"type": "event", "event": "breakpoint", "body": {"reason": "changed", "breakpoint": {"id": 1, "verified": false, "message": "moved", "line": 9}}})
+                    json!({"type": "event", "event": "breakpoint", "body": {"reason": "changed", "breakpoint": {"id": 1, "verified": false, "message": "moved", "line": 9, "source": {"path": script.source_path}}}})
                 );
             }
             "threads" => ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]})),
             "stackTrace" => ok!(
                 msg,
                 json!({"stackFrames": [
-                    {"id": 10, "name": "main", "line": 5, "column": 3, "source": {"path": "/p/a.py"}},
+                    {"id": 10, "name": "main", "line": 5, "column": 3, "source": {"path": script.source_path.as_deref().unwrap_or("/p/a.py")}},
                     {"id": 11, "name": "lib", "line": 1, "column": 1, "source": {"path": "/usr/lib/x.py", "presentationHint": "deemphasize"}},
                 ]})
             ),
@@ -1079,5 +1080,62 @@ async fn kotlin_official_release_ten_no_delay_runs() {
         assert_eq!(frames[0].line, 4);
         h.manager.stop(id).await.unwrap();
         println!("Run {run}/10: breakpoint Main.kt:6, i=0, step Main.kt:5; stopped");
+    }
+}
+
+#[tokio::test]
+async fn java_windows_source_paths_for_launch_and_attach() {
+    for request in ["launch", "attach"] {
+        for (client, native, returned) in [
+            ("C:/work/Main.java", r"C:\work\Main.java", r"C:\work\Main.java"),
+            ("C:/work/Main.java", r"C:\work\Main.java", "C:/work/Main.java"),
+            (r"c:\work\Main.java", r"c:\work\Main.java", "c:/work/Main.java"),
+            (r"D:/my project\Main.java", r"D:\my project\Main.java", r"D:\my project\Main.java"),
+            ("//server/share/Main.java", r"\\server\share\Main.java", "//server/share/Main.java"),
+            (r"\\server\share/Main.java", r"\\server\share\Main.java", "//server/share/Main.java"),
+            ("/work/Main.java", "/work/Main.java", "/work/Main.java"),
+        ] {
+            let h = harness(Script { source_path: Some(returned.into()), ..Script::default() });
+            let path = PathBuf::from(client);
+            h.manager.set_breakpoints(path.clone(), vec![bp(4)]).await.unwrap();
+            let mut cfg = config();
+            cfg.adapter = "java-debug".into();
+            cfg.request = request.into();
+            let id = h.start(cfg).await.unwrap();
+            assert_eq!(h.request("initialize")["arguments"]["pathFormat"], "path");
+            assert_eq!(h.request("setBreakpoints")["arguments"]["source"]["path"], native);
+            let commands = h.commands();
+            assert!(
+                commands.iter().position(|c| c == "setBreakpoints").unwrap()
+                    < commands.iter().position(|c| c == "configurationDone").unwrap()
+            );
+            let frames = h.manager.stack_trace(id, 1).await.unwrap();
+            assert_eq!(frames[0].path.as_deref(), Some(path.as_path()));
+            h.wait_event(|e| {
+                matches!(e, DebugEvent::BreakpointsChanged { path: p } if p.as_ref() == path.as_path())
+                    && h.manager.breakpoint_states(&path)[0].message.as_deref() == Some("moved")
+            })
+            .await;
+            assert_eq!(h.manager.breakpoint_states(&path)[0].message.as_deref(), Some("moved"));
+            h.manager.stop(id).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn java_stack_frames_without_breakpoints_normalize_windows_paths() {
+    for (returned, expected) in [
+        (r"C:\work\Other.java", "C:/work/Other.java"),
+        (r"\\server\share\Other.java", "//server/share/Other.java"),
+        ("C:/work/Other.java", "C:/work/Other.java"),
+        ("/work/Other.java", "/work/Other.java"),
+    ] {
+        let h = harness(Script { source_path: Some(returned.into()), ..Script::default() });
+        let mut cfg = config();
+        cfg.adapter = "java-debug".into();
+        let id = h.start(cfg).await.unwrap();
+        let frames = h.manager.stack_trace(id, 1).await.unwrap();
+        assert_eq!(frames[0].path.as_deref(), Some(PathBuf::from(expected).as_path()));
+        h.manager.stop(id).await.unwrap();
     }
 }

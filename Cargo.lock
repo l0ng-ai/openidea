@@ -4463,6 +4463,7 @@ dependencies = [
  "libc",
  "parking_lot",
  "portable-pty",
+ "quick-xml",
  "serde",
  "serde_json",
  "specta",

@@ -249,6 +249,7 @@ export const intellijWindows: Record<string, string[]> = {
   "run.stop": ["Ctrl+F2"],
   "workbench.stopBackgroundProcesses": ["Ctrl+Shift+F2"],
   // Rerun in the Run / Debug tool window only (when / keyWhen); Ctrl+F5 stays with the editor elsewhere.
+  "run.updateApplication": ["Ctrl+F10"],
   "run.rerun": ["Ctrl+F5"],
   "coverage.manageReports": ["Ctrl+Alt+F6"],
   "debug.rerun": ["Ctrl+F5"],

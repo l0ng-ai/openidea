@@ -3,6 +3,7 @@
  * grouped by Compose project, images, volumes, networks) and one per registry;
  * log / inspect of the selection in the detail pane.
  */
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { Channel } from "@tauri-apps/api/core";
@@ -355,7 +356,9 @@ function LogStream(props: {
       <div
         ref={scroller}
         className={clsx(styles.log, wrap && styles.wrap)}
+        tabIndex={0}
         role="log"
+        onKeyDown={copySelectionOnKeyDown}
         aria-label={tx("Container log")}
         onScroll={(e) => {
           const el = e.currentTarget;
@@ -391,7 +394,12 @@ function InspectView({ conn, object, id }: { conn: string; object: DockerObject;
   }, [conn, object, id]);
   return (
     <div className={styles.detailBody}>
-      <pre className={clsx(styles.log, styles.json)} aria-label={tx("Inspect")}>
+      <pre
+        tabIndex={0}
+        onKeyDown={copySelectionOnKeyDown}
+        className={clsx(styles.log, styles.json)}
+        aria-label={tx("Inspect")}
+      >
         {error ?? text ?? tx("Loading…")}
       </pre>
     </div>

@@ -3,7 +3,7 @@
  * (IDEA's "Override IDE shortcuts"): Ctrl+letter goes to the shell (Ctrl+R
  * reverse search, Ctrl+D EOF…), plus the macOS conveniences ⌘C / ⌘V / ⌘K /
  * ⌘W, ⌘F (find) and ⌘/⌥ arrow navigation, and Ctrl+Shift+C / V (copy / paste
- * on Windows and Linux, where Ctrl+C must reach the shell).
+ * on Windows and Linux, where Ctrl+C also copies a selection and otherwise interrupts the shell).
  *
  * With "Override IDE shortcuts" on, a Ctrl or Escape stroke still reaches the IDE when the
  * keymap binds it to one of IDEA's terminal-allowed actions (Find Action, Go to
@@ -15,7 +15,7 @@
  * there is no terminal, so there is nothing to handle.
  */
 import { executeAction } from "@/platform/actions";
-import { effectiveBindings, letterOf, strokeOf } from "@/platform/keymap";
+import { effectiveBindings, isMacHost, letterOf, registerKeyClaim, strokeOf } from "@/platform/keymap";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { terminalRuntime } from "./loader";
 import { isImeKey } from "@/platform/ime";
@@ -54,6 +54,7 @@ export function terminalKeyAction(e: KeyLike, hasSelection: boolean): TerminalKe
     return { kind: "pass" };
   }
   const letter = letterOf(e);
+  if (ctrl && !meta && !alt && letter === "C" && hasSelection && !isMacHost()) return { kind: "copy" };
   if (ctrl && shift && !meta && !alt) {
     if (letter === "C") return hasSelection ? { kind: "copy" } : { kind: "pass" };
     if (letter === "V") return { kind: "paste" };
@@ -127,6 +128,12 @@ export function isAllowedIdeShortcut(stroke: string, bindings: ReadonlyArray<rea
 }
 
 export function installTerminalKeys(target: Window = window): () => void {
+  // Embedded terminals and sessions with shortcut overrides disabled still own copy/interrupt.
+  const releaseCopyClaim = registerKeyClaim(
+    (e, stroke) =>
+      !!(e.target as Element | null)?.closest?.(".xterm") &&
+      ["Ctrl+C", "Ctrl+Insert", "Ctrl+Shift+C", "Meta+C"].includes(stroke),
+  );
   const onKeyDown = (e: KeyboardEvent) => {
     const rt = terminalRuntime();
     if (isImeKey(e) || !rt) return;
@@ -183,5 +190,8 @@ export function installTerminalKeys(target: Window = window): () => void {
     e.stopImmediatePropagation();
   };
   target.addEventListener("keydown", onKeyDown, true);
-  return () => target.removeEventListener("keydown", onKeyDown, true);
+  return () => {
+    releaseCopyClaim();
+    target.removeEventListener("keydown", onKeyDown, true);
+  };
 }
