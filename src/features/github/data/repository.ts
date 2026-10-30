@@ -310,10 +310,7 @@ export function useAuthorCandidates(): BatchesState<GHUser> {
   return collaborators;
 }
 
-/**
- * Potential reviewers (`getBatchedPotentialReviewers`): teams, then collaborators with push (else contributors).
- * @public
- */
+/** Potential reviewers (`getBatchedPotentialReviewers`): teams, then collaborators with push (else contributors). */
 export function usePotentialReviewers(): BatchesState<GHPullRequestRequestedReviewer> {
   const write = useGhRepository((s) => hasPermission(s.connection?.repository.viewerPermission, "WRITE"));
   const teams = useRepositoryList("teams");

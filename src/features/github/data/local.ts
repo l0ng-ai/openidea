@@ -144,10 +144,7 @@ export function fileDiffData(
   };
 }
 
-/**
- * Opens `path` of pull request `number` in the diff viewer (fetching what it needs first).
- * @public
- */
+/** Opens `path` of pull request `number` in the diff viewer (fetching what it needs first). */
 export async function openPullRequestFileDiff(number: number, path: string): Promise<void> {
   const [pr, files] = await Promise.all([
     loadPullRequestData(number, "details"),

@@ -395,10 +395,7 @@ export async function pullRequestChangedFiles(number: number): Promise<GHCommitF
   return (files ?? []).map(commitFile);
 }
 
-/**
- * The files a commit changes (REST `commits/{sha}`).
- * @public
- */
+/** The files a commit changes (REST `commits/{sha}`). */
 export async function commitChangedFiles(sha: string): Promise<GHCommitFile[]> {
   const commit = await rest<{ files?: RestCommitFile[] }>("GET", `${repoPath()}/commits/${sha}`);
   return (commit?.files ?? []).map(commitFile);

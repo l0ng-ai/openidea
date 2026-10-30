@@ -78,37 +78,25 @@ export async function adjustReviewers(
   await refreshState(number);
 }
 
-/**
- * "Close Pull Request".
- * @public
- */
+/** "Close Pull Request". */
 export async function closePullRequest(number: number) {
   await api.updatePullRequestState(number, "closed");
   await refreshState(number);
 }
 
-/**
- * "Reopen Pull Request".
- * @public
- */
+/** "Reopen Pull Request". */
 export async function reopenPullRequest(number: number) {
   await api.updatePullRequestState(number, "open");
   await refreshState(number);
 }
 
-/**
- * "Post Pull Request": marks a draft ready for review.
- * @public
- */
+/** "Post Pull Request": marks a draft ready for review. */
 export async function markReadyForReview(number: number) {
   await api.markPullRequestReadyForReview(await pullRequestId(number));
   await refreshState(number);
 }
 
-/**
- * Merge… / Squash and Merge… (with the dialog's message) / Rebase, at head `headRefOid`.
- * @public
- */
+/** Merge… / Squash and Merge… (with the dialog's message) / Rebase, at head `headRefOid`. */
 export async function mergePullRequest(
   number: number,
   method: "merge" | "squash" | "rebase",
@@ -149,7 +137,6 @@ export async function setLabels(number: number, names: string[]) {
 /**
  * Marks `paths` viewed / not viewed: the cache changes at once, one request per path runs
  * in parallel, and the state is reloaded when any fails.
- * @public
  */
 export async function setViewed(number: number, paths: readonly string[], viewed: boolean) {
   setPullRequestData(number, "viewedState", (v) => {
@@ -196,20 +183,14 @@ export async function submitReview(number: number, reviewId: string, event: GHPu
   await reloadPullRequestData(number, "mergeability").catch(() => undefined);
 }
 
-/**
- * Submit Review popup: submits the pending review, or creates a submitted one.
- * @public
- */
+/** Submit Review popup: submits the pending review, or creates a submitted one. */
 export async function submitOrCreateReview(number: number, event: GHPullRequestReviewEvent, body: string) {
   const pending = await loadPullRequestData(number, "pendingReview");
   if (pending) await submitReview(number, pending.id, event, body);
   else await createReview(number, { event, body: body || undefined });
 }
 
-/**
- * Discards a pending review with its comments.
- * @public
- */
+/** Discards a pending review with its comments. */
 export async function deleteReview(number: number, reviewId: string) {
   await api.deleteReview(reviewId);
   await refreshReview(number);

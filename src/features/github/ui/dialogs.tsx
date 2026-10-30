@@ -52,7 +52,6 @@ export function GithubDialogHost() {
 /**
  * "Merge Review" / "Squash and Merge Review": the commit message to merge with (subject,
  * blank line, body); resolves with the edited message.
- * @public
  */
 export function mergeCommitMessageDialog(opts: { title: string; message: string }) {
   return openDialog<string>((done) => <MergeDialog {...opts} onDone={done} />);
