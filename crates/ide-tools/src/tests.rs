@@ -335,7 +335,7 @@ done"#,
     }
     let installs = fs::read_to_string(&log).unwrap();
     for line in installs.lines() {
-        assert!(line.contains("typescript@<7") && !line.contains("typescript@latest"), "{line}");
+        assert!(line.contains("typescript@6") && !line.contains("typescript@latest"), "{line}");
     }
     assert!(installs.contains("@vue/language-server@latest"), "{installs}");
 
