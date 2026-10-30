@@ -366,11 +366,12 @@ impl AgentManager {
             .ok_or_else(|| IdeError::invalid(format!("unknown agent {}", req.provider)))?;
         let prompt = clean(req.prompt).ok_or_else(|| IdeError::invalid("describe the task first"))?;
         let title = title_of(&prompt);
-        let root = self.shared.paths.project_root.clone();
+        let root = req.project_root.clone().map(|p| p.0).unwrap_or_else(|| self.shared.paths.project_root.clone());
+        let project_root = Some(IpcPath(root.clone()));
         let (cwd, branch, base, base_commit, before) = match req.isolation {
             Isolation::Worktree => {
                 // The UI offers worktrees for git projects only; state it when it isn't one.
-                if Repo::discover(&self.shared.paths.project_root)?.is_none() {
+                if Repo::discover(&root)?.is_none() {
                     return Err(IdeError::invalid(
                         "worktrees need a git repository: run the task in the local checkout",
                     ));
@@ -398,6 +399,7 @@ impl AgentManager {
         }
         let now = now_ms();
         let task = AgentTask {
+            project_root,
             id: uuid::Uuid::new_v4().simple().to_string(),
             title,
             provider: spec.id.clone(),
@@ -795,14 +797,17 @@ impl AgentManager {
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> IdeResult<()> {
         let task = self.task(id)?;
         task.kill();
-        let (isolation, cwd) = {
+        let (isolation, cwd, root) = {
             let s = task.state.lock();
-            (s.task.isolation, s.task.cwd.0.clone())
+            (
+                s.task.isolation,
+                s.task.cwd.0.clone(),
+                s.task.project_root.clone().map(|p| p.0).unwrap_or_else(|| self.shared.paths.project_root.clone()),
+            )
         };
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
         if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
-            let root = self.shared.paths.project_root.clone();
             blocking(move || worktree::remove(&root, &cwd)).await?;
         }
         self.tasks.write().remove(id);

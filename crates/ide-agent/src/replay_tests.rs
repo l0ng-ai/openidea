@@ -56,6 +56,7 @@ fn config(provider: &str) -> Vec<AgentConfigChoice> {
 
 async fn create(mgr: &AgentManager, provider: &str, prompt: &str) -> String {
     let req = NewAgentTask {
+        project_root: None,
         prompt: text(prompt),
         provider: provider.into(),
         config: config(provider),

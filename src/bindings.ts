@@ -1281,6 +1281,8 @@ export type AgentSubagentStatus = "running" |
 "needsInput" | "done" | "cancelled" | "failed";
 
 export type AgentTask = {
+	/**  Original project folder; absent in tasks saved before per-task roots. */
+	projectRoot?: IpcPath | null,
 	id: string,
 	title: string,
 	/**  [`AgentProvider::id`]. */
@@ -4228,6 +4230,8 @@ export type MethodStat = {
 };
 
 export type NewAgentTask = {
+	/**  Validated by the host; defaults to the window project root. */
+	projectRoot?: IpcPath | null,
 	prompt: AgentPrompt,
 	provider: string,
 	/**  Settings for the new session (model, mode…). */
