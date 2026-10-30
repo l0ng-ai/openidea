@@ -47,7 +47,6 @@ test("keeps offscreen width when an unrelated directory expands, without transie
     .poll(async () => page.evaluate(() => (window as unknown as { widthSamples: number[] }).widthSamples.length))
     .toBe(30);
   const after = await metrics(tree);
-  console.log("unrelated expansion", { before, after });
   expect(after).toEqual(before);
   expect(await page.evaluate(() => Math.min(...(window as unknown as { widthSamples: number[] }).widthSamples))).toBe(
     200,
