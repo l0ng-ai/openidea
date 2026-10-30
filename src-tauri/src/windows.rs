@@ -713,14 +713,26 @@ pub fn open_settings_window(
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
     apply_zoom(app, &window);
     // Restore runs during build; fit its size to the parent's current display before showing.
+    #[cfg(target_os = "macos")]
     if let Err(e) = fit_settings_window(&window, &parent) {
         tracing::warn!("cannot fit settings window: {e}");
+    }
+    // Elsewhere the remembered size is kept and the position follows the parent.
+    #[cfg(not(target_os = "macos"))]
+    if let (Ok(pos), Ok(size), Ok(own), Ok(scale)) =
+        (parent.outer_position(), parent.outer_size(), window.outer_size(), parent.scale_factor())
+    {
+        let (pos, size, own) =
+            (pos.to_logical::<f64>(scale), size.to_logical::<f64>(scale), own.to_logical::<f64>(scale));
+        let at = centered(pos.x, pos.y, size.width, size.height, own.width, own.height);
+        let _ = window.set_position(tauri::LogicalPosition::new(at.0, at.1));
     }
     focus(&window);
     Ok(())
 }
 
 /// Fit outer bounds, including native decorations, using one monitor's logical coordinate space.
+#[cfg(target_os = "macos")]
 fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
     let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
         return Ok(());
@@ -758,6 +770,7 @@ fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri:
     ))
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn fit_bounds(parent: (f64, f64, f64, f64), size: (f64, f64), work: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
     let width = size.0.min(work.2);
     let height = size.1.min(work.3);
