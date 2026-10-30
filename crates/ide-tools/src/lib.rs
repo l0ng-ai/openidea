@@ -77,6 +77,9 @@ pub struct ToolInfo {
     pub default_args: Vec<String>,
     /// A language server's `initializationOptions` from its language definition, as JSON text.
     pub default_initialization_options: Option<String>,
+    /// The interchangeable servers this one belongs to, in preference order: a
+    /// server and the `fallback` ones after it. Empty when it has none.
+    pub alternatives: Vec<String>,
 }
 
 /// Streamed install progress.
@@ -224,6 +227,7 @@ struct Usage {
     install_hint: Option<String>,
     args: Vec<String>,
     initialization_options: Option<String>,
+    alternatives: Vec<String>,
 }
 
 fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
@@ -264,6 +268,23 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
             u.args = s.args.clone();
             u.initialization_options =
                 s.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).map(|v| v.to_string());
+        }
+    }
+    for l in langs {
+        let servers = &l.language_servers;
+        for (i, head) in servers.iter().enumerate().filter(|(_, s)| !s.fallback) {
+            let chain: Vec<String> = std::iter::once(head)
+                .chain(servers[i + 1..].iter().take_while(|s| s.fallback))
+                .map(|s| s.name.clone())
+                .collect();
+            if chain.len() < 2 {
+                continue;
+            }
+            for name in &chain {
+                if let Some(u) = map.get_mut(name).filter(|u| u.alternatives.is_empty()) {
+                    u.alternatives = chain.clone();
+                }
+            }
         }
     }
     map
@@ -480,6 +501,7 @@ impl Tools {
                 custom_error: None,
                 default_args: u.args.clone(),
                 default_initialization_options: u.initialization_options.clone(),
+                alternatives: u.alternatives.clone(),
             })
             .map(|info| self.apply_custom(info, None));
         };
@@ -504,6 +526,7 @@ impl Tools {
             custom_error: None,
             default_args: usage.map(|u| u.args.clone()).unwrap_or_default(),
             default_initialization_options: usage.and_then(|u| u.initialization_options.clone()),
+            alternatives: usage.map(|u| u.alternatives.clone()).unwrap_or_default(),
         })
         .map(|info| self.apply_custom(info, Some(spec)))
     }

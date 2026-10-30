@@ -5884,6 +5884,11 @@ export type ToolInfo = {
 	defaultArgs: string[],
 	/**  A language server's `initializationOptions` from its language definition, as JSON text. */
 	defaultInitializationOptions: string | null,
+	/**
+	 *  The interchangeable servers this one belongs to, in preference order: a
+	 *  server and the `fallback` ones after it. Empty when it has none.
+	 */
+	alternatives: string[],
 };
 
 export type ToolKind = "languageServer" | "debugger" | 

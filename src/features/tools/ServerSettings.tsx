@@ -7,7 +7,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import type { ToolInfo } from "@/bindings";
-import { Checkbox, Dialog, Icon, IconButton, Input, Popup, SearchField, T } from "@/ui";
+import { Checkbox, Dialog, Icon, IconButton, Input, Popup, SearchField, Select, T } from "@/ui";
 import { tx } from "@/platform/i18n";
 import { useSettingsForm } from "@/workbench/contributions";
 import { toolsBackend, type LanguageChoice } from "./backend";
@@ -27,6 +27,7 @@ import {
   type ServerEntry,
   type ServerField,
 } from "./serverConfig";
+import { STATUS_LABEL, useTools } from "./store";
 import styles from "./ServerSettings.module.css";
 
 let languageList: Promise<LanguageChoice[]> | null = null;
@@ -352,6 +353,66 @@ export function ToolSettings({ tool }: { tool: ToolInfo }) {
   );
 }
 
+/**
+ * Interchangeable servers (a server and its `fallback`s): one picker for the
+ * group instead of an on/off box per server. Automatic keeps them all on, so
+ * the first one available runs.
+ */
+function AlternativesRow({ tool }: { tool: ToolInfo }) {
+  const form = useSettingsForm();
+  const tools = useTools((s) => s.tools);
+  const servers = (form.useValue("languageServers") ?? {}) as Record<string, ServerEntry>;
+  const names = tool.alternatives;
+  const members = names.map((name) => tools.find((t) => t.name === name));
+  const common = members.reduce<string[]>(
+    (acc, t) => (t ? acc.filter((l) => t.languages.includes(l)) : acc),
+    tool.languages,
+  );
+  const languages = common.join(", ");
+  // "ty (Python)" is just "ty" next to "Language server for Python".
+  const short = names.map((name, i) => {
+    const display = members[i]?.displayName ?? name;
+    const suffix = /^(.*) \((.+)\)$/.exec(display);
+    return suffix && common.includes(suffix[2]!) ? suffix[1]! : display;
+  });
+  const enabled = names.filter((name) => servers[name]?.enabled !== false);
+  const value =
+    enabled.length === names.length
+      ? "auto"
+      : enabled.length === 0
+        ? "none"
+        : enabled.length === 1
+          ? enabled[0]!
+          : null;
+  const options = [
+    { value: "auto", label: tx("Automatic") },
+    ...names.map((name, i) => {
+      const t = members[i];
+      return { value: name, label: short[i]!, detail: t ? tx(STATUS_LABEL[t.status]) : undefined };
+    }),
+    { value: "none", label: tx("None") },
+  ];
+  const order = short.join(" → ");
+  const label = languages ? tx`Language server for ${languages}` : tx("Language server");
+  return (
+    <Row label={label} hint={tx`Only one of these runs at a time. Automatic uses the first one available: ${order}.`}>
+      <Select
+        aria-label={label}
+        value={value}
+        placeholder={tx("Custom combination")}
+        options={options}
+        onChange={(choice) => {
+          for (const name of names) {
+            const on = choice === "auto" || choice === name;
+            // Same as the on/off box: on is the default, so only a project spells it out.
+            form.set(serverKey(name, "enabled"), on ? (form.scope === "project" ? true : null) : false);
+          }
+        }}
+      />
+    </Row>
+  );
+}
+
 /** A language server: on/off, executable, startup options, workspace configuration. */
 export function ServerSettings({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
   const form = useSettingsForm();
@@ -372,14 +433,20 @@ export function ServerSettings({ tool, pending }: { tool: ToolInfo; pending: boo
 
   return (
     <div className={styles.form}>
-      <Checkbox
-        checked={entry.enabled !== false}
-        label={
-          languages.length ? tx`Use ${tool.displayName} for ${languages.join(", ")} files` : tx`Use ${tool.displayName}`
-        }
-        // Enabled is the default; a project says so explicitly to win over a global "off".
-        onChange={(on) => set("enabled")(on ? (form.scope === "project" ? true : null) : false)}
-      />
+      {tool.alternatives.length > 1 ? (
+        <AlternativesRow tool={tool} />
+      ) : (
+        <Checkbox
+          checked={entry.enabled !== false}
+          label={
+            languages.length
+              ? tx`Use ${tool.displayName} for ${languages.join(", ")} files`
+              : tx`Use ${tool.displayName}`
+          }
+          // Enabled is the default; a project says so explicitly to win over a global "off".
+          onChange={(on) => set("enabled")(on ? (form.scope === "project" ? true : null) : false)}
+        />
+      )}
 
       <Section title="Executable">
         <ExecutableRow tool={tool} pending={pending} />
