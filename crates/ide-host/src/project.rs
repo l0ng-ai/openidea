@@ -689,11 +689,29 @@ impl Project {
         }
     }
 
+    /// Use the open document's selected encoding, or the same detection/settings as opening it.
+    pub fn vcs_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<&'static encoding_rs::Encoding> {
+        if let Some(id) = self.documents.by_path(path) {
+            let info = self.documents.snapshot(id)?;
+            return encoding_rs::Encoding::for_label(info.encoding.as_bytes())
+                .ok_or_else(|| ide_core::IdeError::invalid("unknown document encoding"));
+        }
+        let defaults = self.documents.file_defaults();
+        let fallback = defaults.fallback_for(path);
+        if path.exists() {
+            let loaded = ide_vfs::load_text_with_fallback(path, fallback)?;
+            return encoding_rs::Encoding::for_label(loaded.encoding.as_bytes())
+                .ok_or_else(|| ide_core::IdeError::invalid("unknown file encoding"));
+        }
+        let bytes = self.with_repo_of(path, |r| r.file_bytes_at(path, rev))?.unwrap_or_default();
+        Ok(ide_vfs::detect_encoding(&bytes, fallback))
+    }
+
     /// Current text of `path`: the open buffer when available, else the file on disk.
     pub fn text_of(&self, path: &Path) -> IdeResult<String> {
         match self.documents.text_of(path) {
             Some(text) => Ok(text),
-            None => Ok(ide_vfs::load_text(path)?.text),
+            None => Ok(ide_vfs::load_text_with_fallback(path, self.documents.file_defaults().fallback_for(path))?.text),
         }
     }
 }

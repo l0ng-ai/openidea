@@ -4034,10 +4034,12 @@ name = "ide-agent"
 version = "0.1.25"
 dependencies = [
  "dunce",
+ "encoding_rs",
  "ide-core",
  "ide-jsonrpc",
  "ide-tools",
  "ide-vcs",
+ "ide-vfs",
  "parking_lot",
  "serde",
  "serde_json",
@@ -4202,6 +4204,7 @@ version = "0.1.25"
 dependencies = [
  "dirs 6.0.0",
  "dunce",
+ "encoding_rs",
  "ide-agent",
  "ide-analysis",
  "ide-build",
@@ -4603,6 +4606,7 @@ name = "ide-vcs"
 version = "0.1.25"
 dependencies = [
  "dunce",
+ "encoding_rs",
  "gix",
  "ide-core",
  "ignore",

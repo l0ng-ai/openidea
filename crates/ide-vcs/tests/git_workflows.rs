@@ -651,7 +651,7 @@ fn rollback_hunk_via_partial_patch_leaves_other_hunks() {
     assert_eq!(hunks.len(), 2);
     let patch = build_partial_patch("f.txt", &original, &edited, &[0]);
     let repo = fx.repo();
-    repo.stage_patch(&patch).unwrap();
+    repo.stage_patch(&patch, &|_| Ok(encoding_rs::UTF_8)).unwrap();
     repo.discard(&[fx.path("f.txt")]).unwrap();
     assert_eq!(fx.read("f.txt"), original.replace("line 2\n", "line two\n"));
 }
@@ -777,7 +777,7 @@ fn add_to_vcs_annotate_and_history() {
     repo.stage(&[fx.path("new/b.txt")]).unwrap();
     assert_eq!(status_of(&repo.status().unwrap(), "new/b.txt").unwrap().staged, Some(ChangeKind::Added));
 
-    let blame = repo.blame(&fx.path("a.txt"), Some("1\nchanged\nunsaved\n")).unwrap();
+    let blame = repo.blame(&fx.path("a.txt"), Some("1\nchanged\nunsaved\n"), encoding_rs::UTF_8).unwrap();
     assert_eq!(blame.len(), 3);
     assert_eq!(blame[0].commit, first);
     assert_eq!(blame[1].commit, second);
@@ -785,8 +785,8 @@ fn add_to_vcs_annotate_and_history() {
 
     let history = repo.log(&LogQuery { path: Some(fx.path("a.txt").into()), ..Default::default() }).unwrap();
     assert_eq!(history.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec![second.as_str(), first.as_str()]);
-    assert_eq!(repo.file_at(&fx.path("a.txt"), Some(&first)).unwrap().as_deref(), Some("1\n2\n"));
-    let diff = repo.diff_text(&fx.path("new/b.txt"), true).unwrap();
+    assert_eq!(repo.file_at(&fx.path("a.txt"), Some(&first), encoding_rs::UTF_8).unwrap().as_deref(), Some("1\n2\n"));
+    let diff = repo.diff_text(&fx.path("new/b.txt"), true, encoding_rs::UTF_8).unwrap();
     assert!(diff.contains("+b"), "{diff}");
 }
 
