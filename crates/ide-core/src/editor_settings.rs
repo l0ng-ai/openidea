@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 pub struct EditorGeneralSettings {
     /// Change font size with ⌘ + mouse wheel.
     pub wheel_zoom: bool,
+    pub markdown_image_folder: String,
+    pub markdown_image_name_pattern: String,
     /// Drag-and-drop of selected text inside the editor.
     pub drag_and_drop: bool,
     /// When the caret moves out of view: `minimize` scrolling | `center` the caret line.
@@ -35,6 +37,8 @@ impl Default for EditorGeneralSettings {
     fn default() -> Self {
         Self {
             wheel_zoom: false,
+            markdown_image_folder: "assets".into(),
+            markdown_image_name_pattern: "image-{timestamp}".into(),
             drag_and_drop: true,
             caret_scroll: "minimize".into(),
             soft_wrap_files: "*.md; *.txt; *.rst; *.adoc".into(),

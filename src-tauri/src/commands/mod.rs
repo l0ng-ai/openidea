@@ -126,6 +126,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         bytes::fs_read_range,
         bytes::fs_read_image,
         fs::fs_create_file,
+        fs::fs_create_file_bytes,
         fs::fs_create_dir,
         fs::fs_rename,
         fs::fs_set_writable,

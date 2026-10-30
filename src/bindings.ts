@@ -151,6 +151,7 @@ export const commands = {
 	 *  `charset` (writes the BOM for `utf-8-bom` / UTF-16).
 	 */
 	fsCreateFile: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file", { path })),
+	fsCreateFileBytes: (path: string, data: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
 	fsCreateDir: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_dir", { path })),
 	fsRename: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_rename", { from, to })),
 	/**
@@ -2690,6 +2691,8 @@ export type EditorConfigProps = {
 export type EditorGeneralSettings = {
 	/**  Change font size with ⌘ + mouse wheel. */
 	wheelZoom?: boolean,
+	markdownImageFolder?: string,
+	markdownImageNamePattern?: string,
 	/**  Drag-and-drop of selected text inside the editor. */
 	dragAndDrop?: boolean,
 	/**  When the caret moves out of view: `minimize` scrolling | `center` the caret line. */

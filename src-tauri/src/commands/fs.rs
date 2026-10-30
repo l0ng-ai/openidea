@@ -21,6 +21,12 @@ pub fn fs_create_file(window: Window, state: State<'_, AppState>, path: PathBuf)
 
 #[tauri::command]
 #[specta::specta]
+pub async fn fs_create_file_bytes(state: State<'_, AppState>, path: PathBuf, data: Vec<u8>) -> IdeResult<()> {
+    fs::create_file_bytes(&state.host, path, data).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn fs_create_dir(path: PathBuf) -> IdeResult<()> {
     ide_vfs::create_dir(&path)
 }

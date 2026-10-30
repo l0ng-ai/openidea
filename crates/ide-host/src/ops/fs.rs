@@ -49,6 +49,10 @@ pub fn create_file(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
     }
 }
 
+pub async fn create_file_bytes(host: &Host, path: PathBuf, data: Vec<u8>) -> IdeResult<()> {
+    host.blocking(move || ide_vfs::create_file_bytes(&path, &data)).await
+}
+
 /// Toggle Read-only Attribute: sets the writable bit (and the open document's
 /// state). Returns whether the file is read-only now.
 pub fn set_writable(host: &Host, window: &str, path: PathBuf, writable: bool) -> IdeResult<bool> {

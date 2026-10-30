@@ -232,6 +232,12 @@ pub fn save_text(path: &Path, text: &str, encoding: &str, has_bom: bool) -> IdeR
 pub fn create_file(path: &Path) -> IdeResult<()> {
     ops::create_file(path)
 }
+
+/// Creates a binary file exclusively, including missing parent directories.
+pub fn create_file_bytes(path: &Path, data: &[u8]) -> IdeResult<()> {
+    ops::create_file_bytes(path, data)
+}
+
 /// Creates a directory and missing parents; `AlreadyExists` if present.
 pub fn create_dir(path: &Path) -> IdeResult<()> {
     ops::create_dir(path)

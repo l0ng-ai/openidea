@@ -96,6 +96,23 @@ const GENERAL = editorPage({
   keywords: ["mouse", "scroll", "wrap", "trailing spaces", "save"],
   sections: [
     {
+      title: "Markdown Images",
+      items: [
+        {
+          t: "text",
+          key: `${P}.general.markdownImageFolder`,
+          label: "Image folder",
+          hint: "Relative to the Markdown file.",
+        },
+        {
+          t: "text",
+          key: `${P}.general.markdownImageNamePattern`,
+          label: "Image name pattern",
+          hint: "For clipboard images: {timestamp} becomes YYYYMMDD-HHmmss. Source file names are preserved.",
+        },
+      ],
+    },
+    {
       title: "Mouse Control",
       items: [
         { t: "check", key: `${P}.general.wheelZoom`, label: "Change font size with Command+Mouse Wheel" },

@@ -35,6 +35,17 @@ pub(crate) fn create_file(path: &Path) -> IdeResult<()> {
     Ok(())
 }
 
+pub(crate) fn create_file_bytes(path: &Path, data: &[u8]) -> IdeResult<()> {
+    use std::io::Write;
+    if exists(path) {
+        return Err(already_exists(path));
+    }
+    ensure_parent(path)?;
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(data)?;
+    Ok(())
+}
+
 /// IDEA's "Toggle Read-only Attribute": read-only clears every write bit,
 /// writable adds the owner's.
 pub(crate) fn set_writable(path: &Path, writable: bool) -> IdeResult<()> {

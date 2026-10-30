@@ -33,6 +33,7 @@ import {
   insertNewlineKeepIndent,
   selectLineStart,
 } from "@codemirror/commands";
+import { markdownImages } from "./markdownImages";
 import type { EditorExtras } from "@/platform/editorSettings";
 import { openideaHighlightStyle } from "./highlight";
 import {
@@ -511,6 +512,8 @@ export function prefsExtension(o: PrefsOptions): Extension {
   const g = prefs.general;
   const k = prefs.smartKeys;
   const out: Extension[] = [];
+  if (!o.readOnly)
+    out.push(markdownImages({ path: o.path, folder: g.markdownImageFolder, pattern: g.markdownImageNamePattern }));
   if (g.scrollPastEnd) out.push(scrollPastEnd());
   if ((o.wrapOverride ?? softWrapActive(o.softWrap, prefs, o.path)) && g.softWrapIndent) out.push(wrapIndent);
   if (o.showWhitespace) {

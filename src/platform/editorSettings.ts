@@ -67,6 +67,8 @@ export const EDITOR_EXTRA_DEFAULTS = {
   boldFontWeight: 700,
   general: {
     wheelZoom: false,
+    markdownImageFolder: "assets",
+    markdownImageNamePattern: "image-{timestamp}",
     dragAndDrop: true,
     caretScroll: "minimize",
     softWrapFiles: "*.md; *.txt; *.rst; *.adoc",
