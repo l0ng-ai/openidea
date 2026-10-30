@@ -332,7 +332,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         </Field>
       )}
       <div className={styles.formSection}>
-        <span className={styles.formSectionTitle}>{tx(type?.label ?? kindLabel(config.kind))}</span>
+        <span className={styles.formSectionTitle}>{tx(kindLabel(config.kind))}</span>
         <button
           ref={modifyRef}
           type="button"

@@ -254,8 +254,8 @@ export const intellijMacos: Record<string, string[]> = {
   "run.debugContext": ["Ctrl+Shift+D"],
   "run.stop": ["Meta+F2"],
   "workbench.stopBackgroundProcesses": ["Meta+Shift+F2"],
-  // Rerun in the Run / Debug tool window only (when / keyWhen); Meta+R stays with the editor elsewhere.
   "run.updateApplication": ["Meta+F10"],
+  // Rerun in the Run / Debug tool window only (when / keyWhen); Meta+R stays with the editor elsewhere.
   "run.rerun": ["Meta+R"],
   "coverage.manageReports": ["Meta+Alt+F6"],
   "debug.rerun": ["Meta+R"],
