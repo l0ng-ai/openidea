@@ -16,7 +16,7 @@ tracing.workspace = true
 which = "8"
 flate2 = "1"
 tar = "0.4"
-zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
+zip.workspace = true
 sha2 = "0.10"
 hex = "0.4"
 

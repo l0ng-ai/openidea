@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 concurrency:
@@ -68,6 +70,15 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --locked -p ide-host --bin openidea-server --target x86_64-unknown-linux-musl
       - run: target/x86_64-unknown-linux-musl/debug/openidea-server --version
+
+  deny:
+    name: Cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check
 
   frontend:
     name: Frontend

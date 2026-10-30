@@ -42,6 +42,9 @@
 .excluded {
   color: var(--vcs-ignored);
 }
+.excludedRow {
+  background: color-mix(in srgb, var(--vcs-ignored) 14%, transparent);
+}
 .error {
   text-decoration: underline wavy var(--danger);
   text-decoration-skip-ink: none;

@@ -47,13 +47,15 @@ pub struct QueryResult {
     pub execution_ms: f64,
 }
 
-// bb8-tiberius never marks connections broken; keep an empty slot when discarded.
-pub struct MssqlConnectionManager(bb8_tiberius::ConnectionManager);
+// Keep an empty slot when a connection is discarded after cancellation or rollback failure.
+pub struct MssqlConnectionManager(tiberius::Config);
 
-pub struct MssqlConnection(Option<bb8_tiberius::rt::Client>);
+type MssqlClient = tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>;
+
+pub struct MssqlConnection(Option<MssqlClient>);
 
 impl std::ops::Deref for MssqlConnection {
-    type Target = bb8_tiberius::rt::Client;
+    type Target = MssqlClient;
     fn deref(&self) -> &Self::Target {
         self.0.as_ref().expect("live SQL Server connection")
     }
@@ -67,10 +69,26 @@ impl std::ops::DerefMut for MssqlConnection {
 
 impl ManageConnection for MssqlConnectionManager {
     type Connection = MssqlConnection;
-    type Error = bb8_tiberius::Error;
+    type Error = tiberius::error::Error;
 
     async fn connect(&self) -> Result<Self::Connection, Self::Error> {
-        self.0.connect().await.map(|c| MssqlConnection(Some(c)))
+        use tokio_util::compat::TokioAsyncWriteCompatExt;
+
+        let tcp = tokio::net::TcpStream::connect(self.0.get_addr()).await?;
+        tcp.set_nodelay(true)?;
+        let client = match MssqlClient::connect(self.0.clone(), tcp.compat_write()).await {
+            // Preserve the single redirect supported by the previous pool adapter.
+            Err(tiberius::error::Error::Routing { host, port }) => {
+                let mut config = self.0.clone();
+                config.host(host);
+                config.port(port);
+                let tcp = tokio::net::TcpStream::connect(config.get_addr()).await?;
+                tcp.set_nodelay(true)?;
+                MssqlClient::connect(config, tcp.compat_write()).await?
+            }
+            result => result?,
+        };
+        Ok(MssqlConnection(Some(client)))
     }
 
     async fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
@@ -120,28 +138,25 @@ pub(crate) fn db_err(e: sqlx::Error) -> IdeError {
     }
 }
 
-pub(crate) fn mssql_err(e: impl Into<bb8_tiberius::Error>) -> IdeError {
-    match e.into() {
-        bb8_tiberius::Error::Tiberius(e) => match &e {
-            tiberius::error::Error::Server(d) => {
-                let code = d.code();
-                // Wrong login: SQL Server 18456.
-                let auth = matches!(code, 18452 | 18456 | 18470);
-                IdeError::new(
-                    if auth { ErrorKind::PermissionDenied } else { ErrorKind::InvalidInput },
-                    format!("[{code}] {}", d.message()),
-                )
-            }
-            tiberius::error::Error::Io { .. } | tiberius::error::Error::Tls(_) => {
-                IdeError::new(ErrorKind::Io, e.to_string())
-            }
-            _ => IdeError::new(ErrorKind::Protocol, e.to_string()),
-        },
-        bb8_tiberius::Error::Io(e) => IdeError::new(ErrorKind::Io, e.to_string()),
+pub(crate) fn mssql_err(e: tiberius::error::Error) -> IdeError {
+    match &e {
+        tiberius::error::Error::Server(d) => {
+            let code = d.code();
+            // Wrong login: SQL Server 18456.
+            let auth = matches!(code, 18452 | 18456 | 18470);
+            IdeError::new(
+                if auth { ErrorKind::PermissionDenied } else { ErrorKind::InvalidInput },
+                format!("[{code}] {}", d.message()),
+            )
+        }
+        tiberius::error::Error::Io { .. } | tiberius::error::Error::Tls(_) => {
+            IdeError::new(ErrorKind::Io, e.to_string())
+        }
+        _ => IdeError::new(ErrorKind::Protocol, e.to_string()),
     }
 }
 
-fn mssql_pool_err(e: bb8::RunError<bb8_tiberius::Error>) -> IdeError {
+fn mssql_pool_err(e: bb8::RunError<tiberius::error::Error>) -> IdeError {
     match e {
         bb8::RunError::User(e) => mssql_err(e),
         bb8::RunError::TimedOut => IdeError::new(ErrorKind::Io, "timed out connecting to the database"),
@@ -364,13 +379,13 @@ macro_rules! fetch {
 /// Columns, rows, rows affected, more rows beyond the limit, time of the first answer.
 type Fetched = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, Option<u64>, bool, Option<Instant>);
 
-async fn mssql_command(conn: &mut bb8_tiberius::rt::Client, sql: &str) -> IdeResult<()> {
+async fn mssql_command(conn: &mut MssqlClient, sql: &str) -> IdeResult<()> {
     // Transaction control must be a batch: sp_executesql rejects a changed transaction count.
     conn.simple_query(sql).await.map_err(mssql_err)?.into_results().await.map_err(mssql_err)?;
     Ok(())
 }
 
-async fn mssql_fetch(conn: &mut bb8_tiberius::rt::Client, sql: &str, max: usize) -> IdeResult<Fetched> {
+async fn mssql_fetch(conn: &mut MssqlClient, sql: &str, max: usize) -> IdeResult<Fetched> {
     let mut stream = conn.simple_query(sql).await.map_err(mssql_err)?;
     let first = Some(Instant::now());
     let columns = stream
@@ -669,7 +684,7 @@ impl Pool {
                 if matches!(source.ssl, DbSslMode::Disable | DbSslMode::Prefer) {
                     config.trust_cert();
                 }
-                let manager = MssqlConnectionManager(bb8_tiberius::ConnectionManager::new(config));
+                let manager = MssqlConnectionManager(config);
                 let pool = bb8::Pool::builder()
                     .max_size(MAX)
                     .connection_timeout(timeout)
@@ -907,6 +922,23 @@ fn statement_columns<S: sqlx::Statement>(s: &S) -> Vec<ResultColumn> {
 mod tests {
     use super::*;
     use crate::source::{DbOptions, DbProperty};
+
+    #[test]
+    fn discarded_sqlserver_connections_are_broken() {
+        let manager = MssqlConnectionManager(tiberius::Config::new());
+        assert!(manager.has_broken(&mut MssqlConnection(None)));
+    }
+
+    #[tokio::test]
+    async fn sqlserver_connect_reports_io_errors() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = tiberius::Config::new();
+        config.host("127.0.0.1");
+        config.port(listener.local_addr().unwrap().port());
+        drop(listener);
+        let result = MssqlConnectionManager(config).connect().await;
+        assert!(matches!(result, Err(tiberius::error::Error::Io { .. })));
+    }
 
     #[test]
     fn sqlserver_cells_preserve_values_and_nulls() {

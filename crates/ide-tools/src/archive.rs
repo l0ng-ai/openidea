@@ -65,6 +65,7 @@ pub fn extract(
         ArchiveKind::TarXz => extract_with_tar(archive, dest, "-xJf", cancel),
         ArchiveKind::TarBz2 => extract_with_tar(archive, dest, "-xjf", cancel),
         ArchiveKind::Gz => {
+            validate_single_name(dest, single_name)?;
             let mut gz = flate2::read::GzDecoder::new(BufReader::new(File::open(archive)?));
             let target = dest.join(single_name);
             let mut out = File::create(&target)?;
@@ -72,6 +73,7 @@ pub fn extract(
             make_executable(&target)
         }
         ArchiveKind::Raw => {
+            validate_single_name(dest, single_name)?;
             let target = dest.join(single_name);
             fs::copy(archive, &target)?;
             make_executable(&target)
@@ -80,15 +82,25 @@ pub fn extract(
 }
 
 fn extract_tar<R: io::Read>(mut archive: tar::Archive<R>, dest: &Path, cancel: &CancellationToken) -> IdeResult<()> {
-    archive.set_preserve_permissions(true);
+    archive.set_preserve_permissions(false);
     archive.set_overwrite(true);
-    for entry in archive.entries().map_err(|e| io_err("reading archive", e))? {
-        check(cancel)?;
-        let mut entry = entry.map_err(|e| io_err("reading archive", e))?;
-        // `unpack_in` refuses entries escaping `dest` (returns Ok(false)).
-        entry.unpack_in(dest).map_err(|e| io_err("extracting", e))?;
-    }
-    Ok(())
+    let result = (|| {
+        for entry in archive.entries().map_err(|e| io_err("reading archive", e))? {
+            check(cancel)?;
+            let mut entry = entry.map_err(|e| io_err("reading archive", e))?;
+            if entry.header().entry_type().is_symlink() {
+                let path = entry.path().map_err(|e| io_err("reading archive path", e))?;
+                if let Some(target) = entry.link_name().map_err(|e| io_err("reading archive link", e))? {
+                    validate_link(dest, &path, &target)?;
+                }
+            }
+            // `unpack_in` refuses escaping paths and validates link ancestors before writing.
+            entry.unpack_in(dest).map_err(|e| io_err("extracting", e))?;
+        }
+        Ok(())
+    })();
+    let sanitized = sanitize_tree(dest, dest);
+    result.and(sanitized)
 }
 
 fn extract_zip(archive: &Path, dest: &Path, cancel: &CancellationToken) -> IdeResult<()> {
@@ -100,6 +112,7 @@ fn extract_zip(archive: &Path, dest: &Path, cancel: &CancellationToken) -> IdeRe
         if !is_safe_relative(&rel) {
             continue;
         }
+        reject_symlink_components(dest, &rel)?;
         let out = dest.join(&rel);
         if file.is_dir() {
             fs::create_dir_all(&out)?;
@@ -112,6 +125,7 @@ fn extract_zip(archive: &Path, dest: &Path, cancel: &CancellationToken) -> IdeRe
         if file.is_symlink() {
             let mut target = String::new();
             io::Read::read_to_string(&mut file, &mut target)?;
+            validate_link(dest, &rel, Path::new(&target))?;
             let _ = fs::remove_file(&out);
             std::os::unix::fs::symlink(target, &out)?;
             continue;
@@ -132,12 +146,119 @@ fn extract_zip(archive: &Path, dest: &Path, cancel: &CancellationToken) -> IdeRe
 fn extract_with_tar(archive: &Path, dest: &Path, flags: &str, cancel: &CancellationToken) -> IdeResult<()> {
     let tar = which::which("tar").map_err(|_| IdeError::unavailable("`tar` is required to unpack this archive"))?;
     let mut cmd = std::process::Command::new(tar);
-    cmd.arg(flags).arg(archive).arg("-C").arg(dest);
-    let (ok, output, _) = crate::process::run_collect(cmd, cancel, &|_| {})?;
+    cmd.arg(flags).arg(archive).arg("--no-same-owner").arg("--no-same-permissions").arg("-C").arg(dest);
+    let result = crate::process::run_collect(cmd, cancel, &|_| {});
+    // System tar implementations differ in which special permission bits they retain.
+    // Sanitize partial extractions too, without following archive-created links.
+    let sanitized = sanitize_tree(dest, dest);
+    let (ok, output, _) = result?;
+    sanitized?;
     if !ok {
         return Err(io_err("tar failed", output.trim()));
     }
     Ok(())
+}
+
+fn validate_single_name(dest: &Path, name: &str) -> IdeResult<()> {
+    let path = Path::new(name);
+    if !is_safe_relative(path) {
+        return Err(IdeError::invalid("archive filename escapes its destination"));
+    }
+    reject_symlink_components(dest, path)
+}
+
+fn reject_symlink_components(dest: &Path, rel: &Path) -> IdeResult<()> {
+    let mut path = dest.to_path_buf();
+    for component in rel.components() {
+        path.push(component);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(IdeError::invalid("archive entry traverses a symlink"));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+fn validate_link(root: &Path, path: &Path, target: &Path) -> IdeResult<()> {
+    fn resolve(root: &Path, path: &Path, resolved: &mut PathBuf, links: &mut usize) -> IdeResult<()> {
+        for component in path.components() {
+            match component {
+                Component::Normal(name) => {
+                    resolved.push(name);
+                    match fs::symlink_metadata(root.join(&*resolved)) {
+                        Ok(meta) if meta.file_type().is_symlink() => {
+                            *links += 1;
+                            if *links > 40 {
+                                return Err(IdeError::invalid("archive symlink cycle"));
+                            }
+                            let target = fs::read_link(root.join(&*resolved))?;
+                            resolved.pop();
+                            resolve(root, &target, resolved, links)?;
+                        }
+                        Ok(_) => {}
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                Component::CurDir => {}
+                Component::ParentDir if resolved.pop() => {}
+                _ => return Err(IdeError::invalid("archive symlink escapes its destination")),
+            }
+        }
+        Ok(())
+    }
+    let mut resolved = PathBuf::new();
+    let mut links = 0;
+    resolve(root, path.parent().unwrap_or(Path::new("")), &mut resolved, &mut links)?;
+    resolve(root, target, &mut resolved, &mut links)
+}
+
+fn sanitize_tree(root: &Path, dir: &Path) -> IdeResult<()> {
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(dir)?.permissions().mode() & 0o777;
+        // Even a mode-000 directory may contain files whose special bits need clearing.
+        fs::set_permissions(dir, fs::Permissions::from_mode(mode | 0o700))?;
+        mode
+    };
+    let mut error = None;
+    for entry in fs::read_dir(dir)? {
+        let result = (|| {
+            let path = entry?.path();
+            let meta = fs::symlink_metadata(&path)?;
+            if meta.file_type().is_symlink() {
+                let target = fs::read_link(&path)?;
+                if let Err(e) = validate_link(root, path.strip_prefix(root).expect("entry below root"), &target) {
+                    fs::remove_file(&path)?;
+                    return Err(e);
+                }
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&path, fs::Permissions::from_mode(meta.permissions().mode() & 0o777))?;
+                }
+                if meta.is_dir() {
+                    sanitize_tree(root, &path)?;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            error.get_or_insert(e);
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(mode))?;
+    }
+    error.map_or(Ok(()), Err)
 }
 
 fn is_safe_relative(p: &Path) -> bool {
@@ -149,7 +270,7 @@ pub fn make_executable(path: &Path) -> IdeResult<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         let mut perms = fs::metadata(path)?.permissions();
-        perms.set_mode(perms.mode() | 0o755);
+        perms.set_mode((perms.mode() & 0o777) | 0o755);
         fs::set_permissions(path, perms)?;
     }
     #[cfg(not(unix))]
@@ -350,6 +471,203 @@ mod tests {
         extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).unwrap();
         assert!(!tmp.path().join("escape.txt").exists());
         assert!(dest.join("ok.txt").exists());
+    }
+
+    #[test]
+    fn zip_symlinks_are_confined_to_the_destination() {
+        for target in ["../outside", "/tmp/outside", "a/../../outside"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let archive = tmp.path().join("evil.zip");
+            let mut z = zip::ZipWriter::new(File::create(&archive).unwrap());
+            z.add_symlink("link", target, zip::write::SimpleFileOptions::default()).unwrap();
+            z.finish().unwrap();
+            let dest = tmp.path().join("out");
+            assert!(extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).is_err());
+            assert!(fs::symlink_metadata(dest.join("link")).is_err());
+        }
+        // A link inside the archive (e.g. a framework's Versions/Current) still extracts.
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("ok.zip");
+        let mut z = zip::ZipWriter::new(File::create(&archive).unwrap());
+        z.start_file("Versions/A/lib", zip::write::SimpleFileOptions::default()).unwrap();
+        io::Write::write_all(&mut z, b"x").unwrap();
+        z.add_symlink("Versions/Current", "A", zip::write::SimpleFileOptions::default()).unwrap();
+        z.finish().unwrap();
+        let dest = tmp.path().join("out");
+        extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).unwrap();
+        assert_eq!(fs::read_link(dest.join("Versions/Current")).unwrap(), Path::new("A"));
+        assert_eq!(fs::read(dest.join("Versions/Current/lib")).unwrap(), b"x");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_does_not_write_or_chmod_through_existing_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        for name in ["link", "dir/file"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let outside = tmp.path().join("outside");
+            fs::create_dir(&outside).unwrap();
+            let file = outside.join("file");
+            fs::write(&file, "original").unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+            let dest = tmp.path().join("out");
+            fs::create_dir(&dest).unwrap();
+            symlink(&file, dest.join("link")).unwrap();
+            symlink(&outside, dest.join("dir")).unwrap();
+            let archive = tmp.path().join("evil.zip");
+            zip_file(&archive, &[(name, b"replaced", 0o777)]);
+            assert!(extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).is_err());
+            assert_eq!(fs::read_to_string(&file).unwrap(), "original");
+            assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archives_strip_special_permission_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        for kind in [ArchiveKind::TarGz, ArchiveKind::Zip, ArchiveKind::TarXz, ArchiveKind::TarBz2] {
+            let archive = tmp.path().join(format!("{kind:?}.archive"));
+            match kind {
+                ArchiveKind::TarGz => tar_gz(&archive, &[("tool", b"binary", 0o7777)]),
+                ArchiveKind::Zip => {
+                    zip_file(&archive, &[("tool", b"binary", 0o777)]);
+                    // ZipWriter strips special bits, so set the central directory's Unix mode directly.
+                    let mut bytes = fs::read(&archive).unwrap();
+                    let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+                    bytes[central + 38..central + 42].copy_from_slice(&(0o107777_u32 << 16).to_le_bytes());
+                    fs::write(&archive, bytes).unwrap();
+                }
+                _ => {
+                    let source = tmp.path().join(format!("source-{kind:?}"));
+                    fs::create_dir(&source).unwrap();
+                    fs::write(source.join("tool"), "binary").unwrap();
+                    fs::set_permissions(source.join("tool"), fs::Permissions::from_mode(0o7777)).unwrap();
+                    let flag = if kind == ArchiveKind::TarXz { "-cJf" } else { "-cjf" };
+                    assert!(
+                        std::process::Command::new("tar")
+                            .arg(flag)
+                            .arg(&archive)
+                            .arg("-C")
+                            .arg(&source)
+                            .arg("tool")
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                }
+            }
+            let dest = tmp.path().join(format!("out-{kind:?}"));
+            extract(&archive, kind, &dest, "x", &CancellationToken::new()).unwrap();
+            let mode = fs::metadata(dest.join("tool")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o7000, 0, "{kind:?}");
+            assert_ne!(mode & 0o111, 0, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn tar_entries_cannot_escape() {
+        for (name, link) in [("../escape", None), ("link", Some("../escape"))] {
+            let tmp = tempfile::tempdir().unwrap();
+            let archive = tmp.path().join("evil.tar.gz");
+            let gz = flate2::write::GzEncoder::new(File::create(&archive).unwrap(), flate2::Compression::fast());
+            let mut builder = tar::Builder::new(gz);
+            let mut header = tar::Header::new_gnu();
+            header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+            header.set_mode(0o7777);
+            header.set_size(0);
+            if let Some(target) = link {
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_link_name(target).unwrap();
+            }
+            header.set_cksum();
+            builder.append(&header, io::empty()).unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+            let dest = tmp.path().join("out");
+            let _ = extract(&archive, ArchiveKind::TarGz, &dest, "x", &CancellationToken::new());
+            assert!(!tmp.path().join("escape").exists());
+            assert!(fs::symlink_metadata(dest.join("link")).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compressed_tar_cannot_escape_or_retain_special_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        // Both fixtures contain link -> ../outside, link/victim, ../escaped, and a mode-7777 file.
+        for (kind, bytes) in [
+            (ArchiveKind::TarXz, include_bytes!("../tests/fixtures/escape.tar.xz").as_slice()),
+            (ArchiveKind::TarBz2, include_bytes!("../tests/fixtures/escape.tar.bz2").as_slice()),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            fs::create_dir(tmp.path().join("outside")).unwrap();
+            let victim = tmp.path().join("outside/victim");
+            fs::write(&victim, "original").unwrap();
+            fs::set_permissions(&victim, fs::Permissions::from_mode(0o600)).unwrap();
+            let archive = tmp.path().join("evil.archive");
+            fs::write(&archive, bytes).unwrap();
+            let dest = tmp.path().join("out");
+            assert!(extract(&archive, kind, &dest, "x", &CancellationToken::new()).is_err());
+            assert_eq!(fs::read_to_string(&victim).unwrap(), "original");
+            assert_eq!(fs::metadata(&victim).unwrap().permissions().mode() & 0o7777, 0o600);
+            assert!(!tmp.path().join("escaped").exists());
+            assert!(fs::symlink_metadata(dest.join("link")).is_err());
+            if let Ok(meta) = fs::metadata(dest.join("special")) {
+                assert_eq!(meta.permissions().mode() & 0o7000, 0);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_link_resolution_handles_chains_and_dangling_targets() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir(root.join("lib")).unwrap();
+        symlink(".", root.join("alias")).unwrap();
+        assert!(validate_link(root, Path::new("link"), Path::new("alias/../missing")).is_err());
+        assert!(validate_link(root, Path::new("lib/link"), Path::new("../missing")).is_ok());
+        symlink("cycle", root.join("cycle")).unwrap();
+        assert!(validate_link(root, Path::new("link"), Path::new("cycle")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sanitizing_clears_all_modes_even_after_bad_links() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for name in ["a", "b"] {
+            let dir = root.join(name);
+            fs::create_dir(&dir).unwrap();
+            symlink("../../outside", dir.join("bad-link")).unwrap();
+            fs::write(dir.join("tool"), "binary").unwrap();
+            fs::set_permissions(dir.join("tool"), fs::Permissions::from_mode(0o7777)).unwrap();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o7000)).unwrap();
+        }
+        fs::set_permissions(root, fs::Permissions::from_mode(0o7777)).unwrap();
+        assert!(sanitize_tree(root, root).is_err());
+        assert_eq!(fs::metadata(root).unwrap().permissions().mode() & 0o7000, 0);
+        for name in ["a", "b"] {
+            let dir = root.join(name);
+            assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o7777, 0);
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(fs::symlink_metadata(dir.join("bad-link")).is_err());
+            assert_eq!(fs::metadata(dir.join("tool")).unwrap().permissions().mode() & 0o7000, 0);
+        }
+    }
+
+    #[test]
+    fn single_payload_names_cannot_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("raw");
+        fs::write(&archive, "payload").unwrap();
+        for kind in [ArchiveKind::Raw, ArchiveKind::Gz] {
+            assert!(extract(&archive, kind, &tmp.path().join("out"), "../escaped", &CancellationToken::new()).is_err());
+            assert!(!tmp.path().join("escaped").exists());
+        }
     }
 
     #[test]

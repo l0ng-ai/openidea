@@ -19,7 +19,7 @@ chardetng.workspace = true
 trash.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
-zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
+zip.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

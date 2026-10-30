@@ -103,6 +103,7 @@ export interface TreeProps<T> {
   rowHeight?: number;
   indent?: number;
   className?: string;
+  rowClassName?: (node: T) => string | undefined;
   "aria-label"?: string;
   handleRef?: Ref<TreeHandle>;
   empty?: ReactNode;
@@ -145,6 +146,7 @@ export function Tree<T>(props: TreeProps<T>) {
     rowHeight = 24,
     indent = 20,
     className,
+    rowClassName,
     handleRef,
     empty,
   } = props;
@@ -537,7 +539,12 @@ export function Tree<T>(props: TreeProps<T>) {
                 aria-setsize={positions[v.index]![1]}
                 aria-expanded={row.expandable ? row.expanded : undefined}
                 aria-selected={isSelected}
-                className={clsx(styles.row, isSelected && styles.selected, isLead && styles.lead)}
+                className={clsx(
+                  styles.row,
+                  rowClassName?.(row.node),
+                  isSelected && styles.selected,
+                  isLead && styles.lead,
+                )}
                 style={style}
                 onMouseDown={(e) => onRowMouseDown(e, v.index)}
                 onDoubleClick={(e) => activate(row, e)}

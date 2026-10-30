@@ -16,6 +16,8 @@ import {
   MAX_IMAGE_BYTES,
   applyCompletion,
   atEdgeLine,
+  isPathQuery,
+  resolveTyped,
   completionAt,
   imageFromDataUrl,
   matchCommands,
@@ -34,7 +36,7 @@ import { isImeKey } from "@/platform/ime";
 const MAX_PROMPT_HEIGHT = 280;
 const MAX_ITEMS = 12;
 
-type Item = { kind: "file"; path: string; rel: string } | { kind: "command"; command: AgentCommand };
+type Item = { kind: "file"; path: string; rel: string; dir?: boolean } | { kind: "command"; command: AgentCommand };
 
 export interface ComposerProps {
   /** Store key of the draft. */
@@ -100,8 +102,30 @@ export function Composer(props: ComposerProps) {
   useEffect(() => {
     if (completion?.kind !== "file") return;
     let alive = true;
+    const query = completion.query;
     const timer = setTimeout(() => {
-      call(commands.findFiles(completion.query, MAX_ITEMS))
+      if (isPathQuery(query)) {
+        // Outside the index: list the directory typed so far.
+        const typed = /(^|\/)\.\.?$/.test(query) ? `${query}/` : query;
+        const dirPart = typed.slice(0, typed.lastIndexOf("/") + 1);
+        const last = typed.slice(dirPart.length);
+        call(commands.pathCompletions(`${typed.startsWith("/") ? "" : root}/_`, typed))
+          .then((found) => {
+            if (!alive) return;
+            setFiles(
+              found
+                .filter((f) => f.name.toLowerCase().startsWith(last.toLowerCase()))
+                .slice(0, MAX_ITEMS)
+                .map((f) => {
+                  const rel = `${dirPart}${f.name}`;
+                  return { kind: "file", rel, dir: f.dir, path: resolveTyped(root, rel) };
+                }),
+            );
+          })
+          .catch(() => alive && setFiles([]));
+        return;
+      }
+      call(commands.findFiles(query, MAX_ITEMS))
         .then((found) => {
           if (!alive) return;
           setFiles(
@@ -145,6 +169,12 @@ export function Composer(props: ComposerProps) {
 
   const accept = (item: Item | undefined) => {
     if (!item || !completion) return;
+    if (item.kind === "file" && item.dir) {
+      // Descend: keep completing inside the folder.
+      const insert = `${mentionOf(item.rel)}/`;
+      setText(text.slice(0, completion.from) + insert + text.slice(completion.to), completion.from + insert.length);
+      return;
+    }
     if (item.kind === "file") {
       const mention = mentionOf(item.rel);
       const next = applyCompletion(text, completion, mention);
@@ -311,7 +341,7 @@ export function Composer(props: ComposerProps) {
               >
                 {item.kind === "file" ? (
                   <>
-                    <Icon name={fileIconName(basename(item.rel))} size={16} />
+                    <Icon name={item.dir ? "folder" : fileIconName(basename(item.rel))} size={16} />
                     <span className={styles.itemName}>{basename(item.rel)}</span>
                     <span className={styles.itemDetail}>{item.rel}</span>
                   </>

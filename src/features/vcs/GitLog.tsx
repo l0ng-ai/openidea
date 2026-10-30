@@ -92,8 +92,8 @@ import { gitTabs, shownTab } from "./gitTabs";
 import { ChangesTree, StashContent, tabItems, useStashTabCounts } from "./CommitView";
 import { WorktreesPanel } from "./gitMenuDialogs";
 
-const ROW = 22;
-const LANE = 12;
+const ROW = 26;
+const LANE = 14;
 
 /** The Git window's tabs (they depend on the commit interface) and the one shown. */
 function useGitTabs() {
@@ -1021,7 +1021,7 @@ function CommitList() {
                 selected={selectedSet.has(commitKey(c))}
                 head={headKeys.has(commitKey(c))}
                 mine={opts.highlightMine && isMine(c, user)}
-                onBranch={!!onBranch?.has(commitKey(c))}
+                onBranch={!onBranch || onBranch.has(commitKey(c))}
                 opts={opts}
                 remoteNames={new Set((c as RepoCommit).remoteNames ?? remoteNames)}
                 onPick={pick}
@@ -1075,7 +1075,7 @@ const CommitRow = memo(function CommitRow({
       id={id}
       role="option"
       aria-selected={selected}
-      className={clsx(styles.row, onBranch && styles.currentBranch, selected && styles.selected)}
+      className={clsx(styles.row, !onBranch && styles.offBranch, selected && styles.selected)}
       style={{ top }}
       onMouseDown={(e) => {
         if (e.shiftKey) e.preventDefault(); // no text selection on range clicks
@@ -1149,7 +1149,7 @@ export function GraphCell({ row, head }: { row: GraphRow; head?: boolean }) {
       <circle
         cx={x(row.lane)}
         cy={cy}
-        r={head ? 4 : 3.2}
+        r={head ? 4.5 : 3.8}
         fill={head ? "var(--bg-app)" : laneColor(row.color)}
         stroke={laneColor(row.color)}
         strokeWidth={head ? 2 : 0}

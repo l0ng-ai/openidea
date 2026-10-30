@@ -18,7 +18,7 @@ futures.workspace = true
 sqlx.workspace = true
 tiberius.workspace = true
 bb8.workspace = true
-bb8-tiberius.workspace = true
+tokio-util = { workspace = true, features = ["compat"] }
 dirs.workspace = true
 ide-ssh.workspace = true
 
