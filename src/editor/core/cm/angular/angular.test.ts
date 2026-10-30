@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree, matchBrackets } from "@codemirror/language";
+import { ensureSyntaxTree, foldable, matchBrackets } from "@codemirror/language";
 import { NodeProp, type Tree } from "@lezer/common";
 import { buildParserFile } from "@lezer/generator";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
@@ -198,6 +198,52 @@ describe("Angular templates", () => {
       matched: true,
       end: { from: doc.lastIndexOf("}") },
     });
+  });
+
+  it("folds a block from its `{` to its `}`", () => {
+    const doc = [
+      "@if (a && b) {",
+      "  <p>{{ x }}</p>",
+      "} @else if (c) {",
+      "  <ul>",
+      "    @for (i of is; track i) {",
+      "      <li>{ i }</li>",
+      "    }",
+      "  </ul>",
+      "} @else {",
+      "  none",
+      "}",
+      "@switch (m) {",
+      "  @case (1) { one }",
+      "  @default {",
+      "    other",
+      "  }",
+      "}",
+    ].join("\n");
+    const state = EditorState.create({ doc, extensions: angular() });
+    stateTree(state);
+    const folds = [];
+    for (let n = 1; n <= state.doc.lines; n++) {
+      const line = state.doc.line(n);
+      const fold = foldable(state, line.from, line.to);
+      if (fold)
+        folds.push([
+          n,
+          state.doc.lineAt(fold.to).number,
+          state.sliceDoc(fold.from - 1, fold.from),
+          state.sliceDoc(fold.to, fold.to + 1),
+        ]);
+    }
+    expect(folds).toEqual([
+      [1, 3, "{", "}"],
+      [3, 9, "{", "}"],
+      // The element's own fold.
+      [4, 8, ">", "<"],
+      [5, 7, "{", "}"],
+      [9, 11, "{", "}"],
+      [12, 17, "{", "}"],
+      [14, 16, "{", "}"],
+    ]);
   });
 
   it("highlights key, unit and animation binding names", () => {

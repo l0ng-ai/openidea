@@ -3,10 +3,10 @@
  * Angular syntax (`angular.grammar`), expressions parsed as JavaScript. From
  * @codemirror/lang-angular 0.1.4 (MIT, see LICENSE); changed by OpenIDEA:
  * control-flow blocks, `@let`, key and animation binding names, structural
- * directives' microsyntax, and runs of text that entities split (`a && b`)
- * parsed as one.
+ * directives' microsyntax, runs of text that entities split (`a && b`)
+ * parsed as one, and folding blocks.
  */
-import { LRLanguage, LanguageSupport } from "@codemirror/language";
+import { LRLanguage, LanguageSupport, foldService, matchBrackets, syntaxTree } from "@codemirror/language";
 import { html } from "@codemirror/lang-html";
 import { javascriptLanguage } from "@codemirror/lang-javascript";
 import { styleTags, tags as t } from "@lezer/highlight";
@@ -137,9 +137,27 @@ function mixAngular(node: SyntaxNodeRef, input: Input): NestedParse | null {
 
 export const angularLanguage = (baseHTML.language as LRLanguage).configure({ wrap: parseMixed(mixAngular) }, "angular");
 
+/**
+ * The body of the first block opened on a line and closed on a later one, up
+ * to its `}`, which stays visible: `@if (a) {…}`, `} @else {…}`. Its braces
+ * pair like plain text, across elements.
+ */
+const blockFolding = foldService.of((state, lineStart, lineEnd) => {
+  const text = state.sliceDoc(lineStart, lineEnd);
+  const tree = syntaxTree(state);
+  for (let i = text.indexOf("{"); i >= 0; i = text.indexOf("{", i + 1)) {
+    const open = tree.resolveInner(lineStart + i, 1);
+    if (open.name != "Brace" || open.parent?.name != "Block") continue;
+    const match = matchBrackets(state, open.from, 1, { brackets: "{}", maxScanDistance: state.doc.length });
+    if (match?.matched && match.end && match.end.from > lineEnd) return { from: open.to, to: match.end.from };
+  }
+  return null;
+});
+
 export function angular(): LanguageSupport {
   return new LanguageSupport(angularLanguage, [
     baseHTML.support,
+    blockFolding,
     baseHTML.language.data.of({
       closeBrackets: { brackets: ["[", "{", '"'] },
       indentOnInput: /^\s*[}\]]$/,
