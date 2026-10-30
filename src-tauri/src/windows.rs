@@ -713,8 +713,9 @@ pub fn open_settings_window(
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
     apply_zoom(app, &window);
     // Restore runs during build; fit its size to the parent's current display before showing.
-    fit_settings_window(&window, &parent)
-        .map_err(|e| IdeError::internal(format!("cannot fit settings window: {e}")))?;
+    if let Err(e) = fit_settings_window(&window, &parent) {
+        tracing::warn!("cannot fit settings window: {e}");
+    }
     focus(&window);
     Ok(())
 }
