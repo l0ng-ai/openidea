@@ -3806,7 +3806,6 @@
   "Save '{word}' to project-level dictionary": "将 '{word}' 保存到项目级词典",
   "Save '{word}' to application-level dictionary": "将 '{word}' 保存到应用程序级词典",
   "Typo: In word '{word}'": "拼写错误：单词 '{word}'",
-  "Can't rename '{name}' without the language server: only local variables can be renamed based on syntax": "没有语言服务器时无法重命名 '{name}'：基于语法只能重命名局部变量",
   "Choose Super Class or Interface ({count} found)": "选择超类或接口（找到 {count} 个）",
   "Choose Super Method of {name} ({count} found)": "选择 {name} 的超方法（找到 {count} 个）",
   "Choose Implementation of {name} ({count} found)": "选择 {name} 的实现（找到 {count} 个）",
@@ -4959,5 +4958,8 @@
   "Tomcat server.xml has no HTTP connector": "Tomcat 的 server.xml 中没有 HTTP 连接器",
   "WAR contains an invalid path": "WAR 中包含无效路径",
   "Context path must start with / and contain only letters, digits, /, - or _": "上下文路径必须以 / 开头，且只能包含字母、数字、/、- 或 _",
-  "Tomcat home must contain bin/catalina.sh or bin/catalina.bat and lib/catalina.jar": "Tomcat 安装目录必须包含 bin/catalina.sh 或 bin/catalina.bat，以及 lib/catalina.jar"
+  "Tomcat home must contain bin/catalina.sh or bin/catalina.bat and lib/catalina.jar": "Tomcat 安装目录必须包含 bin/catalina.sh 或 bin/catalina.bat，以及 lib/catalina.jar",
+  "Can't rename '{name}' based on syntax: only local variables can be renamed this way": "无法基于语法重命名 '{name}'：这种方式只能重命名局部变量",
+  "Returns true when the value is falsey or the variable does not exist. Checking an undefined variable does not emit a warning.": "当值为假值或变量不存在时返回 true。检查未定义的变量不会产生警告。",
+  "Returns true only when every supplied variable exists and is not null. Checks stop at the first unset or null variable.": "仅当传入的每个变量都存在且不为 null 时返回 true。遇到第一个未设置或为 null 的变量即停止检查。"
 }
