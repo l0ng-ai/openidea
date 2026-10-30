@@ -276,6 +276,33 @@ export class LaneMarker extends GutterMarker {
   }
 }
 
+/**
+ * The floating row at the editor's top-right (IDEA's inspection widget area): widgets
+ * append their element to it (CSS `order` sorts them; lower first) and remove it when
+ * done. The inspection widget sits there; code review adds its Review Mode group.
+ *
+ *   const el = document.createElement("div");
+ *   el.style.order = "-1";
+ *   editorCorner(view).appendChild(el);
+ */
+export function editorCorner(view: EditorView): HTMLElement {
+  const found = view.dom.querySelector<HTMLElement>(":scope > .cm-openidea-corner");
+  if (found) return found;
+  const el = document.createElement("div");
+  el.className = "cm-openidea-corner";
+  Object.assign(el.style, {
+    position: "absolute",
+    top: "4px",
+    right: "16px",
+    zIndex: "5",
+    display: "flex",
+    alignItems: "center",
+    gap: "4px",
+  });
+  view.dom.appendChild(el);
+  return el;
+}
+
 // --- language support without a language server ----------------------------------
 
 /**

@@ -1,0 +1,47 @@
+/* The review group in the editor's top-right row, styled like the inspection widget. */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 1px;
+  border-radius: var(--radius-small);
+  background-color: var(--bg-editor, var(--bg-island, var(--bg-app)));
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  color: var(--fg-muted);
+  user-select: none;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 3px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+/* "Review Mode" with its text: the toolbar's small font. */
+.text {
+  padding: 0 5px;
+  font-size: var(--fs-small, var(--fs-ui));
+}
+
+.button:hover {
+  background-color: var(--bg-toolbar-hover);
+}
+
+.button:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.warning {
+  color: var(--warning);
+}

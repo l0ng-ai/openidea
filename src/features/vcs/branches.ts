@@ -11,6 +11,8 @@ export interface PopupAction {
   arg?: unknown;
   /** A separator goes between actions of different groups (Update / Commit / Push | New Branch / Checkout…). */
   group?: string;
+  /** A toggle: shown with a check mark when on. */
+  checked?: boolean;
 }
 
 export type BranchGroup = "recent" | "local" | "remote";

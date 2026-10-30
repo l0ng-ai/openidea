@@ -65,7 +65,11 @@ export function cancelBusy() {
 
 /** "Checkout Branch": fetches and checks out the pull request's branch (gh's local name). */
 export async function checkoutPullRequest(number: number): Promise<boolean> {
-  const done = await withBusy(`Checking out #${number}…`, (r, out) => call(commands.ghPrCheckout(r, number, out)));
+  // The command resolves with nothing (`null`), which `withBusy` reports as a failure.
+  const done = await withBusy(`Checking out #${number}…`, async (r, out) => {
+    await call(commands.ghPrCheckout(r, number, out));
+    return true;
+  });
   if (done === null) return false;
   notifications().notify({
     group: "vcs",

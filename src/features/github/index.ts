@@ -19,6 +19,7 @@ import { checkoutPullRequest, clearDiffCache, copyUrl, openInBrowser, openInWork
 import { deleteMergedBranch } from "./data/operations";
 import { cachedDetails, loadPullRequestData, reloadPullRequest } from "./data/pullRequest";
 import { refreshConnection, resetConnection, useGhRepository } from "./data/repository";
+import { showSubmitReview } from "./details/SubmitReviewPopup";
 import { activateReviewMode } from "./reviewMode";
 import { githubHandler, handlerContextKey } from "./toolwindow/handlers";
 import {
@@ -248,8 +249,14 @@ function actions(): Action[] {
       id: "github.pullRequest.submitReview",
       title: "Submit Review…",
       category: "GitHub",
-      when: `${CONNECTED} && ${handlerContextKey("submitReview")}`,
-      run: ({ arg }) => withPullRequest(arg, (n) => githubHandler("submitReview")?.(n)),
+      // The details panel's popup; without it (the branch popup in review mode) one of its own.
+      when: `${CONNECTED} && (${handlerContextKey("submitReview")} || githubCurrentBranchPullRequest)`,
+      run: ({ arg }) =>
+        withPullRequest(arg, (n) => {
+          const handler = githubHandler("submitReview");
+          if (handler) handler(n);
+          else void showSubmitReview(n);
+        }),
     },
     {
       // Github.PullRequest.Changed.MarkViewed.Toggle

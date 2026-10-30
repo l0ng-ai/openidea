@@ -4,17 +4,25 @@
  * `PULL_REQUEST_DIFF`) get their review threads as inlays, the gutter "+" with single- and
  * multi-line comments, Start Review / Add Single Comment, the review toolbar and the viewed
  * toggle, through the vcs diff viewer provider point. Also registers the editor actions and
- * Settings › Version Control › GitHub.
+ * Settings › Version Control › GitHub. The editor actions also serve review mode's editors.
  */
 import { registerDiffViewerProvider } from "@/features/vcs/diffViewerProviders";
 import { registerActions } from "@/platform/actions";
+import { getContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
 import { registerSettingsPage } from "@/workbench/contributions";
 import { useGhRepository } from "../data/repository";
+import { activeReviewEditor } from "../reviewMode/editor";
 import { clearNewComments } from "./newComments";
 import { activeReviewDiff, createReviewDiff } from "./reviewDiff";
 
-const WHEN = "projectOpen && githubConnected && githubReviewDiff";
+/** The editor actions apply to the focused review diff, or to the review in the active editor (review mode). */
+const WHEN = "projectOpen && githubConnected && (githubReviewDiff || githubReviewEditor)";
+
+function reviewTarget() {
+  const diff = activeReviewDiff();
+  return (getContext().diffEditorFocus && diff) || activeReviewEditor() || diff;
+}
 
 /** "Mark File as Viewed" / "Mark File as Not Viewed" in the focused review diff; false when none is focused. */
 export function toggleReviewDiffViewed(): boolean {
@@ -35,7 +43,7 @@ export function activateReviewDiff(): () => void {
         description: "Create a new code review comment on the line under the caret",
         category: "GitHub",
         when: WHEN,
-        run: () => activeReviewDiff()?.addComment(false),
+        run: () => reviewTarget()?.addComment(false),
       },
       {
         id: "github.pullRequest.diff.addMultilineComment",
@@ -43,7 +51,7 @@ export function activateReviewDiff(): () => void {
         description: "Create a new code review comment on the selected lines",
         category: "GitHub",
         when: WHEN,
-        run: () => activeReviewDiff()?.addComment(true),
+        run: () => reviewTarget()?.addComment(true),
       },
       {
         // CodeReview.PreviousComment
@@ -53,7 +61,7 @@ export function activateReviewDiff(): () => void {
         category: "GitHub",
         icon: "arrow-up",
         when: WHEN,
-        run: () => void activeReviewDiff()?.gotoComment(-1),
+        run: () => void reviewTarget()?.gotoComment(-1),
       },
       {
         // CodeReview.NextComment
@@ -63,7 +71,7 @@ export function activateReviewDiff(): () => void {
         category: "GitHub",
         icon: "arrow-down",
         when: WHEN,
-        run: () => void activeReviewDiff()?.gotoComment(1),
+        run: () => void reviewTarget()?.gotoComment(1),
       },
       {
         id: "github.pullRequest.diff.refreshReview",
@@ -71,7 +79,7 @@ export function activateReviewDiff(): () => void {
         category: "GitHub",
         icon: "refresh",
         when: WHEN,
-        run: () => activeReviewDiff()?.refresh(),
+        run: () => reviewTarget()?.refresh(),
       },
     ]),
     registerSettingsPage({

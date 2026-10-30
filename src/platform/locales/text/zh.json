@@ -5107,5 +5107,18 @@
   "Add Single Comment": "添加单条评论",
   "Drag to select several lines for commenting": "拖动以选择多行进行评论",
   "The range of this comment is not adjustable as it contains suggestion": "此评论包含建议，因此无法调整其范围",
-  "Comment range cannot be adjusted while reviewing a single commit": "审查单个提交时无法调整评论范围"
+  "Comment range cannot be adjusted while reviewing a single commit": "审查单个提交时无法调整评论范围",
+  "Update Branch to Enable Review Mode…": "更新分支以启用审查模式…",
+  "Disable Review Mode": "禁用审查模式",
+  "Show Unresolved Comments Only": "仅显示未解决的评论",
+  "Show All Comments": "显示所有评论",
+  "Configure review mode": "配置审查模式",
+  "In Review Mode, you can see review comments and proposed changes right in the editor": "在审查模式下，您可以直接在编辑器中查看审查评论和建议的更改",
+  "Pull request #{n} exists for current branch {branch}, but local branch is out of sync with remote": "当前分支 {branch} 存在拉取请求 #{n}，但本地分支与远程不同步",
+  "Loading changes for pull request #{n}": "正在加载拉取请求 #{n} 的更改",
+  "Pull request #{n} exists for current branch {branch}, but pull request details loading failed": "当前分支 {branch} 存在拉取请求 #{n}，但加载拉取请求详细信息失败",
+  "Pull request #{n} exists for current branch {branch}": "当前分支 {branch} 存在拉取请求 #{n}",
+  "Show Review Diff": "显示审查差异",
+  "Pull Request branch update failed": "拉取请求分支更新失败",
+  "#{n} on {branch}": "#{n} 位于 {branch}"
 }
