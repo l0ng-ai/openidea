@@ -281,7 +281,8 @@ fn run_one(argv: &[String], root: &Path, cancel: &CancellationToken, on_line: &d
     for pipe in pipes.into_iter().flatten() {
         let tx = tx.clone();
         std::thread::spawn(move || {
-            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+            for line in BufReader::new(pipe).split(b'\n').map_while(Result::ok) {
+                let line = ide_core::output_encoding::decode_tool_output(&line).trim_end_matches('\r').to_owned();
                 if tx.send(line).is_err() {
                     break;
                 }

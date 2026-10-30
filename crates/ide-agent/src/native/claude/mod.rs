@@ -296,7 +296,7 @@ impl Shim {
         let mut cmd = std::process::Command::new(&self.config.program);
         ide_core::process::prepare(&mut cmd);
         let out = cmd.arg("--version").envs(ide_core::process::shell_env()).output().ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
+        let text = ide_core::output_encoding::decode_tool_output(&out.stdout);
         text.split_whitespace().next().filter(|v| out.status.success() && !v.is_empty()).map(str::to_owned)
     }
 

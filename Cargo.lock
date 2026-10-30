@@ -4093,6 +4093,7 @@ name = "ide-core"
 version = "0.1.25"
 dependencies = [
  "dunce",
+ "encoding_rs",
  "serde",
  "serde_json",
  "specta",
@@ -4100,6 +4101,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

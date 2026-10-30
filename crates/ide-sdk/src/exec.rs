@@ -1,6 +1,7 @@
 //! Running toolchain commands: short queries with a timeout and long-running
 //! streaming commands that honour cancellation.
 
+use ide_core::output_encoding::decode_tool_output;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
@@ -77,14 +78,14 @@ pub(crate) fn query_in(
     let mut stdout = child.stdout.take()?;
     let mut stderr = child.stderr.take()?;
     let out = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stdout.read_to_string(&mut s);
-        s
+        let mut s = Vec::new();
+        let _ = stdout.read_to_end(&mut s);
+        decode_tool_output(&s)
     });
     let err = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
+        let mut s = Vec::new();
+        let _ = stderr.read_to_end(&mut s);
+        decode_tool_output(&s)
     });
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -131,16 +132,16 @@ pub(crate) fn stream(
     if let Some(out) = child.stdout.take() {
         let tx = tx.clone();
         readers.push(std::thread::spawn(move || {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                let _ = tx.send(line);
+            for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
+                let _ = tx.send(decode_tool_output(&line).trim_end_matches('\r').to_owned());
             }
         }));
     }
     if let Some(err) = child.stderr.take() {
         let tx = tx.clone();
         readers.push(std::thread::spawn(move || {
-            for line in BufReader::new(err).lines().map_while(Result::ok) {
-                let _ = tx.send(line);
+            for line in BufReader::new(err).split(b'\n').map_while(Result::ok) {
+                let _ = tx.send(decode_tool_output(&line).trim_end_matches('\r').to_owned());
             }
         }));
     }
