@@ -1,82 +1,159 @@
 /**
- * PLACEHOLDER (foundation stub) — the list tab's panel. Wave 1 "list" replaces it.
+ * The list tab's panel (IntelliJ's `GHPRListPanelFactory` / `GHPRListPanelController`):
+ * the search panel, a progress stripe while loading, and the pull requests, 50 per page,
+ * the next page requested once the scroll passes 70% (checked again after each page).
+ * Enter or a double-click opens the selected pull request; the context menu is
+ * `Github.PullRequest.ToolWindow.List.Popup`. Load errors replace the list with
+ * "Can't load pull requests" and Retry.
  *
- * Contract: `ListPanel()` takes no props and renders inside the list tab of the Pull
- * Requests tool window while it is connected (`useGhRepository().connection` is set; the
- * tab adds IntelliJ's 8px top padding). It owns:
- * - the search panel: start with `initialSearch(currentUser.login)`, apply with
- *   `setListSearch(value)`, persist with `saveLastSearch` / `rememberSearch`
- *   (`data/searchHistory.ts`, `data/model.ts` for the value and its terms);
- * - the rows from `useGhPrList()` (`items`, `loading`, `error`, `hasMore`), paging with
- *   `loadMore()` past 70% of the scroll, `reloadList()` for Refresh;
- * - selection: report it with `setListSelection(number)` (`toolwindow/store.ts`), open
- *   with `openPullRequest(number)` (`toolwindow/open.ts`) on Enter / double-click.
- * The tool window reloads the list when the tab is selected or the window shown.
- *
- * Until then this lists the open pull requests plainly, so the window stays usable.
+ * The search starts as the last one used, else "Assigned to you"; every change is saved
+ * as the last search and, by IntelliJ's rules, added to the history (`model.ts`).
  */
-import { useEffect } from "react";
-import { EmptyState, List, Spinner, T } from "@/ui";
-import { tx } from "@/platform/i18n";
+import { useCallback, useEffect, useRef, type MouseEvent } from "react";
+import { useTx } from "@/platform/i18n";
+import { EmptyState, List, ProgressBar, showContextMenu, T, type MenuItem } from "@/ui";
 import type { GHPullRequestShort } from "../api/types";
-import { loadMore, setListSearch, useGhPrList } from "../data/list";
+import { loadMore, reloadList, setListSearch, useGhPrList } from "../data/list";
+import { filterCount, type PrSearchValue } from "../data/model";
 import { useGhRepository } from "../data/repository";
-import { initialSearch } from "../data/searchHistory";
+import { initialSearch, rememberSearch, saveLastSearch } from "../data/searchHistory";
 import { openPullRequest } from "../toolwindow/open";
 import { setListSelection, useGhTabs } from "../toolwindow/store";
-import { Placeholder } from "../ui/Placeholder";
-import { prettyDate } from "../ui/prettyDate";
-import styles from "../toolwindow/ToolWindow.module.css";
+import { createSearchHistoryRecorder, defaultFilter, pastThreshold, type SearchHistoryRecorder } from "./model";
+import { PullRequestRow } from "./PullRequestRow";
+import { SearchPanel } from "./SearchPanel";
+import styles from "./List.module.css";
 
-function Row({ pr }: { pr: GHPullRequestShort }) {
-  const number = pr.number;
-  const date = prettyDate(pr.createdAt);
-  const author = pr.author?.login;
+/** Row height: 4px + the 24px first line + the 16px info line + 5px. */
+const ROW_HEIGHT = 49;
+
+/** `Github.PullRequest.ToolWindow.List.Popup`. */
+function contextMenu(number: number): MenuItem[] {
+  return [
+    { kind: "action", action: "github.pullRequest.show", arg: number },
+    { kind: "action", action: "github.pullRequest.checkoutBranch", arg: number },
+    { kind: "action", action: "github.pullRequest.openInWorktree", arg: number },
+    { kind: "action", action: "github.pullRequest.openInBrowser", arg: number },
+    { kind: "action", action: "github.pullRequest.copyUrl", arg: number },
+    { kind: "separator" },
+    { kind: "action", action: "github.refresh", label: "Refresh List" },
+  ];
+}
+
+/** Applies searches to the list, saving them as IntelliJ does; the first call is the initial search. */
+function useApplySearch(login: string | undefined): (v: PrSearchValue) => void {
+  const recorder = useRef<SearchHistoryRecorder | null>(null);
+  useEffect(() => {
+    if (!login) return;
+    const defaultSearch = defaultFilter(login);
+    const r = createSearchHistoryRecorder({
+      defaultSearch,
+      saveLast: (v) => saveLastSearch(v),
+      remember: (v) => rememberSearch(v, undefined, defaultSearch),
+    });
+    recorder.current = r;
+    r.onChange(initialSearch(login));
+    void setListSearch(initialSearch(login));
+    return () => {
+      r.dispose();
+      if (recorder.current === r) recorder.current = null;
+    };
+  }, [login]);
+  return useCallback((v: PrSearchValue) => {
+    recorder.current?.onChange(v);
+    void setListSearch(v);
+  }, []);
+}
+
+function ErrorState({ error }: { error: string }) {
   return (
-    <div className={styles.plainRow}>
-      <div className={styles.ellipsis}>{pr.title}</div>
-      <div className={styles.secondary}>
-        {author ? tx`#${number} · created ${date}, by ${author}` : tx`#${number} · created ${date}`}
-      </div>
+    <div className={styles.error}>
+      <EmptyState
+        title="Can't load pull requests"
+        actions={
+          <button type="button" className={styles.emptyLink} onClick={() => void reloadList()}>
+            <T>Retry</T>
+          </button>
+        }
+      >
+        <div className={styles.errorBody}>{error}</div>
+      </EmptyState>
     </div>
   );
 }
 
 export function ListPanel() {
-  const login = useGhRepository((s) => s.connection?.currentUser.login);
-  const { items, loading, error, loaded, hasMore } = useGhPrList();
+  const t = useTx();
+  const connection = useGhRepository((s) => s.connection);
+  const login = connection?.currentUser.login;
+  const { search, items, loading, error, loaded, hasMore } = useGhPrList();
   const selected = useGhTabs((s) => s.listSelection);
+  const apply = useApplySearch(login);
+  const body = useRef<HTMLDivElement>(null);
+
+  const checkScroll = useCallback(() => {
+    const list = body.current?.querySelector<HTMLElement>("[role=listbox]");
+    if (!list || list.offsetParent === null) return;
+    if (pastThreshold(list.scrollTop, list.clientHeight, list.scrollHeight)) void loadMore();
+  }, []);
+  // After each page: the list may still not fill the view (`ReviewListUtil.wrapWithLazyVerticalScroll`).
   useEffect(() => {
-    if (login) void setListSearch(initialSearch(login));
-  }, [login]);
+    if (loaded && !loading && hasMore && !error) {
+      const id = requestAnimationFrame(checkScroll);
+      return () => cancelAnimationFrame(id);
+    }
+  }, [items.length, loaded, loading, hasMore, error, checkScroll]);
+
+  if (!connection || !login) return null;
   const index = items.findIndex((p) => p.number === selected);
+  const onContextMenu = (pr: GHPullRequestShort, _i: number, e: MouseEvent) => {
+    e.preventDefault();
+    setListSelection(pr.number);
+    showContextMenu(e, contextMenu(pr.number));
+  };
+
+  const empty = loading ? (
+    <EmptyState title="Loading…" />
+  ) : filterCount(search) === 0 ? (
+    <EmptyState title={t`No pull requests in ${connection.coordinates.name}`} />
+  ) : (
+    <EmptyState
+      title="No pull requests matching filters"
+      actions={
+        <button type="button" className={styles.emptyLink} onClick={() => apply({})}>
+          <T>Clear filters</T>
+        </button>
+      }
+    />
+  );
+
   return (
-    <div className={styles.column}>
-      <Placeholder title="Pull request list (placeholder)" />
-      {error ? (
-        <EmptyState title="Can't load pull requests">{error}</EmptyState>
-      ) : (
-        <List
-          items={items}
-          getKey={(p) => p.id}
-          rowHeight={44}
-          activeIndex={index}
-          onActiveChange={(i) => {
-            setListSelection(items[i]?.number ?? null);
-            if (i > items.length * 0.7 && hasMore) void loadMore();
-          }}
-          onActivate={(p) => void openPullRequest(p.number)}
-          aria-label="Pull requests"
-          className={styles.grow}
-          empty={loaded && !loading ? <EmptyState title="No pull requests" /> : <Spinner />}
-          renderItem={(p) => <Row pr={p} />}
-        />
-      )}
-      {loading && loaded && (
-        <div className={styles.secondary}>
-          <T>Loading…</T>
-        </div>
-      )}
+    <div className={styles.panel}>
+      <SearchPanel search={search} apply={apply} login={login} />
+      <div ref={body} className={styles.body} onScrollCapture={checkScroll}>
+        {loading && <ProgressBar className={styles.stripe} aria-label="Loading…" />}
+        {error ? (
+          <ErrorState error={error} />
+        ) : (
+          <List<GHPullRequestShort>
+            items={items}
+            getKey={(p) => p.id}
+            rowHeight={ROW_HEIGHT}
+            activeIndex={index}
+            onActiveChange={(i) => setListSelection(items[i]?.number ?? null)}
+            onActivate={(p, _i, e) => {
+              // Enter or a double-click (`CommonShortcuts.ENTER`, `DOUBLE_CLICK_1`).
+              if (e.type === "click" && (e as MouseEvent).detail !== 2) return;
+              void openPullRequest(p.number);
+            }}
+            onContextMenu={onContextMenu}
+            aria-label="Pull requests"
+            className={styles.list}
+            empty={empty}
+            renderItem={(p) => <PullRequestRow pr={p} currentUser={connection.currentUser} />}
+          />
+        )}
+      </div>
     </div>
   );
 }

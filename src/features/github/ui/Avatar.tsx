@@ -104,8 +104,8 @@ export function AvatarStack({
   items: readonly AvatarStackItem[];
   max?: number;
   size?: number;
-  /** Tooltip of the whole stack (IntelliJ shows a popup listing them on hover). */
-  title?: string;
+  /** Tooltip of the whole stack (IntelliJ shows a popup listing them on hover); `null` for none at all. */
+  title?: string | null;
   className?: string;
 }) {
   if (!items.length) return null;
@@ -114,7 +114,7 @@ export function AvatarStack({
     <span
       className={clsx(styles.stack, className)}
       style={{ "--overlap": `${Math.round(size / 3)}px` } as CSSProperties}
-      title={title}
+      title={title ?? undefined}
     >
       {shown.map((a, i) => (
         <Avatar
@@ -123,7 +123,7 @@ export function AvatarStack({
           name={a.name}
           size={size}
           ring={a.ring}
-          title={title ? null : undefined}
+          title={title || title === null ? null : undefined}
           style={{ zIndex: shown.length - i }}
         />
       ))}

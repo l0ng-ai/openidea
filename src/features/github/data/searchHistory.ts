@@ -28,9 +28,16 @@ function save(key: string, value: unknown) {
   }
 }
 
-/** `history` with `v` first (moved up when already there). Searches without filters and the default are not kept. */
-export function withSearch(history: readonly PrSearchValue[], v: PrSearchValue): PrSearchValue[] {
-  if (filterCount(v) === 0 || sameSearch(v, DEFAULT_SEARCH)) return [...history];
+/**
+ * `history` with `v` first (moved up when already there). Searches without filters and
+ * `defaultSearch` are not kept (the list passes its first-run filter, "Assigned to you").
+ */
+export function withSearch(
+  history: readonly PrSearchValue[],
+  v: PrSearchValue,
+  defaultSearch: PrSearchValue = DEFAULT_SEARCH,
+): PrSearchValue[] {
+  if (filterCount(v) === 0 || sameSearch(v, defaultSearch)) return [...history];
   return [v, ...history.filter((h) => !sameSearch(h, v))].slice(0, MAX_HISTORY);
 }
 
@@ -41,12 +48,9 @@ export function loadSearchHistory(root = projectRoot()): PrSearchValue[] {
   return Array.isArray(v) ? v.flatMap((x) => normalizeSearch(x) ?? []) : [];
 }
 
-/**
- * Adds `v` to the history (see `withSearch`).
- * @public
- */
-export function rememberSearch(v: PrSearchValue, root = projectRoot()) {
-  if (root) save(historyKey(root), withSearch(loadSearchHistory(root), v));
+/** Adds `v` to the history (see `withSearch`). */
+export function rememberSearch(v: PrSearchValue, root = projectRoot(), defaultSearch: PrSearchValue = DEFAULT_SEARCH) {
+  if (root) save(historyKey(root), withSearch(loadSearchHistory(root), v, defaultSearch));
 }
 
 /** The search the project's list showed last, if any. */
@@ -54,10 +58,7 @@ export function loadLastSearch(root = projectRoot()): PrSearchValue | null {
   return root ? normalizeSearch(load(lastKey(root))) : null;
 }
 
-/**
- * Remembers `v` as the search to restore.
- * @public
- */
+/** Remembers `v` as the search to restore. */
 export function saveLastSearch(v: PrSearchValue, root = projectRoot()) {
   if (root) save(lastKey(root), v);
 }

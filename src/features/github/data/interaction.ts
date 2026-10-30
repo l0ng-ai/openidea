@@ -71,10 +71,7 @@ export function isPullRequestSeen(
   return seen;
 }
 
-/**
- * React hook: whether `pr` is seen; re-renders when the last-seen times change.
- * @public
- */
+/** React hook: whether `pr` is seen; re-renders when the last-seen times change. */
 export function usePullRequestSeen(
   pr: Pick<GHPullRequestShort, "id" | "author" | "reviewRequests" | "updatedAt">,
   user: Pick<GHUser, "id"> | null | undefined,

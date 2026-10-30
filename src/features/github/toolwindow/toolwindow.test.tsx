@@ -160,7 +160,7 @@ describe("tool window", () => {
       );
     });
     expect(screen.getByRole("tab", { name: /app/ })).toBeTruthy();
-    expect(screen.getByText("Pull request list (placeholder)")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Search pull requests" })).toBeTruthy();
     const body = JSON.parse(ghApi.mock.calls[0]![0].body!) as { variables: { query: string; pageSize: number } };
     // First run: "Assigned to you".
     expect(body.variables).toMatchObject({ query: "type:pr repo:org/app is:open assignee:me", pageSize: 50 });

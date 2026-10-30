@@ -302,7 +302,6 @@ export function useRepositoryList<K extends RepositoryListName>(name: K): Batche
 /**
  * Users that can be chosen as authors in the list filter: collaborators with write
  * access, else contributors (users without push access cannot list collaborators).
- * @public
  */
 export function useAuthorCandidates(): BatchesState<GHUser> {
   const write = useGhRepository((s) => hasPermission(s.connection?.repository.viewerPermission, "WRITE"));
