@@ -9,6 +9,7 @@ license.workspace = true
 dunce.workspace = true
 ignore.workspace = true
 ide-core.workspace = true
+ide-build.workspace = true
 ide-language.workspace = true
 ide-run.workspace = true
 ide-vfs.workspace = true

@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 ide-core.workspace = true
+ide-build.workspace = true
 encoding_rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true

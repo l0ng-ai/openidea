@@ -21,7 +21,7 @@ export interface LanguagesValid {
     jdk: string;
     jdtlsJdk: string;
     jdtlsVmArgs: string;
-    maven: { home: string; userSettings: string; localRepository: string };
+    maven: { home: string; userSettings: string; localRepository: string; unlinkedProjects: string[] };
   };
 }
 
@@ -54,7 +54,12 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "" },
   typescript: { version: "bundled" },
-  java: { jdk: "", jdtlsJdk: "", jdtlsVmArgs: "", maven: { home: "", userSettings: "", localRepository: "" } },
+  java: {
+    jdk: "",
+    jdtlsJdk: "",
+    jdtlsVmArgs: "",
+    maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [] },
+  },
 };
 
 export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
@@ -136,6 +141,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         home: text(maven.home, d.java.maven.home),
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
+        unlinkedProjects: folders(maven.unlinkedProjects),
       },
     },
   };

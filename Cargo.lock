@@ -4448,6 +4448,7 @@ name = "ide-run"
 version = "0.1.25"
 dependencies = [
  "encoding_rs",
+ "ide-build",
  "ide-core",
  "libc",
  "parking_lot",
@@ -4468,6 +4469,7 @@ name = "ide-sdk"
 version = "0.1.25"
 dependencies = [
  "dunce",
+ "ide-build",
  "ide-core",
  "ide-language",
  "ide-run",

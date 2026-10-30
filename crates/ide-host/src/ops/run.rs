@@ -10,7 +10,7 @@ pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     let root = project.root.clone();
     let user = ide_run::load_user_configs(&root)?;
     let suppressed = ide_run::load_suppressed_config_ids(&root)?;
-    let mut all: Vec<RunConfig> = ide_run::detect(&root)
+    let mut all: Vec<RunConfig> = ide_run::detect_linked(&root, &project.settings.effective().languages.java.maven)
         .into_iter()
         .filter(|d| !suppressed.contains(&d.id) && !user.iter().any(|u| u.id == d.id))
         .collect();
