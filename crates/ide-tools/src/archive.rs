@@ -112,9 +112,6 @@ fn extract_zip(archive: &Path, dest: &Path, cancel: &CancellationToken) -> IdeRe
         if !is_safe_relative(&rel) {
             continue;
         }
-        if file.is_symlink() {
-            return Err(IdeError::invalid("zip symlinks are not supported"));
-        }
         reject_symlink_components(dest, &rel)?;
         let out = dest.join(&rel);
         if file.is_dir() {
@@ -123,6 +120,15 @@ fn extract_zip(archive: &Path, dest: &Path, cancel: &CancellationToken) -> IdeRe
         }
         if let Some(parent) = out.parent() {
             fs::create_dir_all(parent)?;
+        }
+        #[cfg(unix)]
+        if file.is_symlink() {
+            let mut target = String::new();
+            io::Read::read_to_string(&mut file, &mut target)?;
+            validate_link(dest, &rel, Path::new(&target))?;
+            let _ = fs::remove_file(&out);
+            std::os::unix::fs::symlink(target, &out)?;
+            continue;
         }
         let mut w = File::create(&out)?;
         io::copy(&mut file, &mut w).map_err(|e| io_err("extracting", e))?;
@@ -468,8 +474,8 @@ mod tests {
     }
 
     #[test]
-    fn zip_symlinks_are_rejected() {
-        for target in ["../outside", "/tmp/outside", "inside"] {
+    fn zip_symlinks_are_confined_to_the_destination() {
+        for target in ["../outside", "/tmp/outside", "a/../../outside"] {
             let tmp = tempfile::tempdir().unwrap();
             let archive = tmp.path().join("evil.zip");
             let mut z = zip::ZipWriter::new(File::create(&archive).unwrap());
@@ -479,6 +485,18 @@ mod tests {
             assert!(extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).is_err());
             assert!(fs::symlink_metadata(dest.join("link")).is_err());
         }
+        // A link inside the archive (e.g. a framework's Versions/Current) still extracts.
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("ok.zip");
+        let mut z = zip::ZipWriter::new(File::create(&archive).unwrap());
+        z.start_file("Versions/A/lib", zip::write::SimpleFileOptions::default()).unwrap();
+        io::Write::write_all(&mut z, b"x").unwrap();
+        z.add_symlink("Versions/Current", "A", zip::write::SimpleFileOptions::default()).unwrap();
+        z.finish().unwrap();
+        let dest = tmp.path().join("out");
+        extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).unwrap();
+        assert_eq!(fs::read_link(dest.join("Versions/Current")).unwrap(), Path::new("A"));
+        assert_eq!(fs::read(dest.join("Versions/Current/lib")).unwrap(), b"x");
     }
 
     #[cfg(unix)]
