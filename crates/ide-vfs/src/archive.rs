@@ -120,7 +120,8 @@ impl Archive {
         nodes.insert(String::new(), Node { dir: true, size: 0, index: None, children: Vec::new() });
         for i in 0..zip.len() {
             let Ok(file) = zip.by_index_raw(i) else { continue };
-            let Some(name) = clean_name(file.name()) else { continue };
+            let Ok(name) = file.name() else { continue };
+            let Some(name) = clean_name(&name) else { continue };
             let (dir, size) = (file.is_dir(), file.size());
             drop(file);
             let mut parent = parent_of(&name).0;

@@ -23,4 +23,4 @@ globset.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 encoding_rs.workspace = true
-zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
+zip.workspace = true
