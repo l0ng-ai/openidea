@@ -1,8 +1,9 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createEmbeddedTerminal } from "./embedded";
 import { installTerminalKeys } from "./keys";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { registerAction } from "@/platform/actions";
+import { usePlatform } from "@/platform/platformInfo";
 
 const terminal = vi.hoisted(() => ({
   selection: "selected run output",
@@ -47,6 +48,8 @@ vi.mock("./fit", () => ({
   settledResize: () => ({ resized() {}, cancel() {} }),
 }));
 
+beforeEach(() => usePlatform.setState({ os: "windows" }));
+afterEach(() => usePlatform.setState({ os: "macos" }));
 afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();

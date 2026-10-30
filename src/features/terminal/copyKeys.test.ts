@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installTerminalKeys } from "./keys";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { registerAction } from "@/platform/actions";
+import { usePlatform } from "@/platform/platformInfo";
 
 const mock = vi.hoisted(() => ({
   session: { hasSelection: true, send: vi.fn(), copySelection: vi.fn() },
@@ -10,6 +11,8 @@ const mock = vi.hoisted(() => ({
 vi.mock("./loader", () => ({ terminalRuntime: () => ({ sessionFromElement: () => mock.session }) }));
 vi.mock("@/platform/workflowSettings", () => ({ workflowSettings: () => mock.settings }));
 
+beforeEach(() => usePlatform.setState({ os: "windows" }));
+afterEach(() => usePlatform.setState({ os: "macos" }));
 afterEach(() => vi.clearAllMocks());
 
 describe("terminal copy capture", () => {
