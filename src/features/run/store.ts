@@ -679,8 +679,6 @@ function revealSession(sessionId: string) {
   }
 }
 
-const pathSeparator = () => (typeof navigator !== "undefined" && /win/i.test(navigator.platform) ? ";" : ":");
-
 /**
  * Builds the module (jdtls workspace build) and resolves `${classpath}` and the
  * project JDK of a Java application configuration. Null (and a console message) on failure.
@@ -725,7 +723,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       say("The classpath is empty: is the module imported by the Java language server?\n", "stderr");
       return null;
     }
-    return resolveJavaCommand(config, info, pathSeparator());
+    return resolveJavaCommand(config, info);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (request.cancelled || isCancelled(e)) {

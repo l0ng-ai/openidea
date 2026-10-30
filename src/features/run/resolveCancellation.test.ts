@@ -37,6 +37,7 @@ const info: JavaLaunchInfo = {
   projectRoot: "/p",
   classPaths: ["/p/target/classes"],
   modulePaths: [],
+  pathListSeparator: ":",
   javaHome: null,
   javaExec: "java",
   shortenCommandLine: null,
@@ -49,7 +50,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   provideNotificationService({ notify });
 });
-afterEach(() => resetRuns());
+afterEach(() => {
+  resetRuns();
+  vi.restoreAllMocks();
+});
 
 describe("Stop during Java launch resolution", () => {
   it.each(["cancelled", "success"])("cancels the request and ignores a late %s response", async (response) => {
@@ -78,5 +82,28 @@ describe("Stop during Java launch resolution", () => {
     expect(runtime(session.id)!.console.lines.some((line) => line.kind === "stderr")).toBe(false);
     expect(useRun.getState().sessions[0]).toMatchObject({ stopped: true, status: "finished", runId: null });
     expect(runtime(session.id)!.resolveRequest).toBeUndefined();
+  });
+});
+
+describe("Java run host separator", () => {
+  it.each([
+    { client: "Win32", separator: ":", paths: ["/p/classes", "/lib/a.jar"] },
+    { client: "MacIntel", separator: ";", paths: ["C:\\p\\classes", "D:\\lib\\a.jar"] },
+    { client: "MacIntel", separator: ":", paths: ["/p/classes", "/lib/a.jar"] },
+  ])("uses $separator from the host on $client", async ({ client, separator, paths }) => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(client);
+    ipc.javaResolveLaunch.mockResolvedValue({
+      status: "ok",
+      data: { ...info, classPaths: paths, modulePaths: paths, pathListSeparator: separator },
+    });
+    ipc.runStart.mockResolvedValue({ status: "ok", data: 42 });
+    await startRun(config);
+    expect(ipc.runStart.mock.calls[0]![0].args).toEqual([
+      "--module-path",
+      paths.join(separator),
+      "-cp",
+      paths.join(separator),
+      "Main",
+    ]);
   });
 });

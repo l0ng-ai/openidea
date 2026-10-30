@@ -3643,6 +3643,8 @@ export type JavaLaunchInfo = {
 	projectRoot: IpcPath | null,
 	classPaths: string[],
 	modulePaths: string[],
+	/**  Path list separator of the host that runs the JVM. */
+	pathListSeparator: string,
 	/**  JDK home jdtls compiles the project against. */
 	javaHome: IpcPath | null,
 	/**  The `java` launcher to use (filled in by the caller from the installed JDKs). */

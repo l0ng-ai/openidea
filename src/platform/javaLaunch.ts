@@ -71,11 +71,11 @@ export function parseJavaArgs(args: readonly string[]): JavaCommandLine {
 }
 
 /** The configuration with its placeholders and launcher resolved. */
-export function resolveJavaCommand(config: RunConfig, info: JavaLaunchInfo, pathSeparator = ":"): RunConfig {
-  const cp = info.classPaths.join(pathSeparator);
+export function resolveJavaCommand(config: RunConfig, info: JavaLaunchInfo): RunConfig {
+  const cp = info.classPaths.join(info.pathListSeparator);
   const args: string[] = [];
   if (info.modulePaths.length && !config.args.some((a) => a === "-p" || a === "--module-path"))
-    args.push("--module-path", info.modulePaths.join(pathSeparator));
+    args.push("--module-path", info.modulePaths.join(info.pathListSeparator));
   args.push(...config.args.map((a) => (a === CLASSPATH || a === TEST_CLASSPATH ? cp : a)));
   const command = config.command === "java" && info.javaExec ? info.javaExec : config.command;
   return { ...config, command, args };
