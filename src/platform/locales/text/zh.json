@@ -3386,7 +3386,7 @@
   "Configuration file": "配置文件",
   "mappings": "个映射",
   "No ~/.openideavimrc or ~/.ideavimrc found.": "未找到 ~/.openideavimrc 或 ~/.ideavimrc。",
-  "Supported: set options, map / nmap / imap / vmap / noremap variants, let mapleader, and :action / <Action>() mappings that run IDE actions. :w saves, :q closes the editor tab.": "支持：set 选项、map / nmap / imap / vmap / noremap 等映射、let mapleader，以及运行 IDE 操作的 :action / <Action>() 映射。:w 保存，:q 关闭编辑器标签页。",
+  "Supported: set options, map / nmap / imap / vmap / noremap variants, let mapleader, source, and :action / <Action>() mappings that run IDE actions. :w saves, :q closes the editor tab.": "支持：set 选项、map / nmap / imap / vmap / noremap 等映射、let mapleader、source，以及运行 IDE 操作的 :action / <Action>() 映射。:w 保存，:q 关闭编辑器标签页。",
   "Shortcut conflicts": "快捷键冲突",
   "Keys Vim also handles. With Vim as the handler the key goes to the editor while Vim mode is on and an editor has focus; with IDE, an enabled IDE action runs first.": "Vim 也会处理的按键。处理程序为 Vim 时，在 Vim 模式开启且编辑器获得焦点时按键交给编辑器；为 IDE 时，先运行可用的 IDE 操作。",
   "Shortcut": "快捷键",

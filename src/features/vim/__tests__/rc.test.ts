@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PRESETS } from "@/platform/keymap";
 import { exOfRhs, IDEA_ACTIONS, parseVimrc, resolveActionId } from "../rc";
+import { readSourcedFiles } from "../rcFile";
 
 const RC = `
 " OpenIDEA vimrc
@@ -50,7 +51,7 @@ describe("ideavimrc parsing", () => {
 
   it("reports everything else as ignored, never executed", () => {
     const reasons = ignored.map((i) => `${i.line}:${i.reason}`);
-    expect(reasons).toContain("15:unsupported command: source");
+    expect(reasons).toContain("15:cannot read file");
     expect(reasons).toContain("16:mapping needs a left and right side");
     expect(reasons).toContain("17:unsupported command: Plug");
   });
@@ -89,5 +90,48 @@ describe(":action ids", () => {
     ]);
     const missing = Object.entries(IDEA_ACTIONS).filter(([, id]) => !known.has(id));
     expect(missing).toEqual([]);
+  });
+});
+
+describe("source", () => {
+  it("applies the sourced file in place, sharing the leader", () => {
+    const sources = new Map([["~/.vimrc", 'let mapleader = ","\nset textwidth=80\nset number\nnmap <leader>a b']]);
+    const { commands, ignored } = parseVimrc("nmap x y\nsource ~/.vimrc\nnmap <leader>c d", sources);
+    expect(commands).toEqual([
+      { kind: "map", mode: "normal", noremap: false, lhs: "x", rhs: "y" },
+      { kind: "set", name: "textwidth", value: "80" },
+      { kind: "map", mode: "normal", noremap: false, lhs: ",a", rhs: "b" },
+      { kind: "map", mode: "normal", noremap: false, lhs: ",c", rhs: "d" },
+    ]);
+    expect(ignored).toEqual([
+      { file: "~/.vimrc", line: 3, text: "set number", reason: "option not supported: number" },
+    ]);
+  });
+
+  it("reports unreadable files and files that source themselves", () => {
+    const sources = new Map([
+      ["a", "source b"],
+      ["b", "source a"],
+      ["gone", null],
+    ]);
+    expect(parseVimrc("so gone\nsource a", sources).ignored).toEqual([
+      { line: 1, text: "so gone", reason: "cannot read file" },
+      { file: "b", line: 1, text: "source a", reason: "file sources itself" },
+    ]);
+  });
+
+  it("reads nested files once, expanding ~ only at the start", async () => {
+    const files: Record<string, string> = { "/home/me/.vimrc": "source /etc/extra\nsource ~/.vimrc", "/etc/extra": "" };
+    const read = async (path: string) => {
+      const text = files[path];
+      if (text === undefined) throw new Error("missing");
+      return text;
+    };
+    const sources = await readSourcedFiles("source ~/.vimrc\nsource ~other/x", read, "/home/me");
+    expect([...sources]).toEqual([
+      ["~/.vimrc", files["/home/me/.vimrc"]],
+      ["~other/x", null],
+      ["/etc/extra", ""],
+    ]);
   });
 });
