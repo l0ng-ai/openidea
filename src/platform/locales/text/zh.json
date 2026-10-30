@@ -3345,6 +3345,7 @@
   "No changes yet": "还没有改动",
   "What should the agent do?": "让 agent 做点什么？",
   "New worktree": "新 worktree",
+  "Starting debugger for {name}…": "正在启动 {name} 的调试器…",
   "Starting…": "正在启动…",
   "Waiting for your answer": "等待你的回答",
   "Waiting for your answer…": "等待你的回答…",

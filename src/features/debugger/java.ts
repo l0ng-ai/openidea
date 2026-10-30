@@ -5,7 +5,15 @@
  * JVMs started by Maven / Gradle with a JDWP agent are attached to.
  */
 import { executeAction } from "@/platform/actions";
-import { call, commands, IpcError, nextRequestId, type LaunchConfig, type RunConfig } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  IpcError,
+  nextRequestId,
+  type LaunchConfig,
+  type RequestId,
+  type RunConfig,
+} from "@/platform/ipc";
 import {
   formatCompileErrors,
   isJvmApplication,
@@ -62,21 +70,30 @@ function offerInstall(e: unknown): never {
   throw e;
 }
 
-async function debugServer(module: string): Promise<number> {
+async function debugServer(module: string, signal?: AbortSignal): Promise<number> {
   try {
     return await call(commands.javaDebugServer(module));
   } catch (e) {
+    signal?.throwIfAborted();
     offerInstall(e);
   }
 }
 
 /** Launch request for an Application configuration (`java … -cp ${classpath} Main args`). */
-export async function javaLaunchConfig(rc: RunConfig, root: string): Promise<LaunchConfig> {
+export async function javaLaunchConfig(
+  rc: RunConfig,
+  root: string,
+  preparation?: { request: RequestId; signal: AbortSignal },
+): Promise<LaunchConfig> {
   const module = rc.cwd ?? "";
   const cwd = rc.cwd ? join(root, rc.cwd) : root;
   const parsed = parseJavaArgs(rc.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${rc.name}'`);
-  const info = await call(commands.javaResolveLaunch(module, parsed.classpath === "test", true, nextRequestId()));
+  preparation?.signal.throwIfAborted();
+  const info = await call(
+    commands.javaResolveLaunch(module, parsed.classpath === "test", true, preparation?.request ?? nextRequestId()),
+  );
+  preparation?.signal.throwIfAborted();
   if (info.errorCount > 0)
     notifications().notify({
       group: "run",
@@ -87,6 +104,7 @@ export async function javaLaunchConfig(rc: RunConfig, root: string): Promise<Lau
     });
   const resolved = resolveJavaCommand(rc, info);
   const kotlin = rc.debugAdapter === KOTLIN_ADAPTER || (await moduleHasKotlinSources(cwd));
+  preparation?.signal.throwIfAborted();
   const classPaths = parsed.explicitClasspath ? parsed.explicitClasspath.split(/[:;]/) : info.classPaths;
   if (kotlin) {
     return {
@@ -108,7 +126,8 @@ export async function javaLaunchConfig(rc: RunConfig, root: string): Promise<Lau
       }),
     };
   }
-  const port = await debugServer(module);
+  const port = await debugServer(module, preparation?.signal);
+  preparation?.signal.throwIfAborted();
   return {
     name: rc.name,
     adapter: JAVA_ADAPTER,
