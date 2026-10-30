@@ -157,6 +157,6 @@ export async function openCommitFileDiff(number: number, sha: string, file: GHCo
   const short = sha.slice(0, 8);
   data.left = data.left.type === "rev" ? { ...data.left, label: `${short}^` } : data.left;
   data.right = data.right.type === "rev" ? { ...data.right, label: short } : data.right;
-  data.annotations = [];
+  data.context = { ...data.context!, commit: sha };
   await executeAction("vcs.openDiff", data);
 }

@@ -9,11 +9,11 @@
  * and `.refresh` are the Git › GitHub menu's.
  */
 import { registerActions, type Action } from "@/platform/actions";
-import { setContext } from "@/platform/context";
+import { getContext, setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { lazyComponent } from "@/ui";
 import { maybeEditorService, registerEditorKind, registerOverlay, registerToolWindow } from "@/workbench/contributions";
-import { activateReviewDiff } from "./diff";
+import { activateReviewDiff, toggleReviewDiffViewed } from "./diff";
 import { reloadList } from "./data/list";
 import { checkoutPullRequest, clearDiffCache, copyUrl, openInBrowser, openInWorktree } from "./data/local";
 import { deleteMergedBranch } from "./data/operations";
@@ -257,8 +257,11 @@ function actions(): Action[] {
       title: "Toggle viewed/not viewed state",
       description: "Toggle viewed/not viewed state for the selection or file",
       category: "GitHub",
-      when: `${CONNECTED} && ${handlerContextKey("toggleViewed")}`,
-      run: () => githubHandler("toggleViewed")?.(),
+      // The file of the focused review diff, else the details panel's selection.
+      when: `${CONNECTED} && (${handlerContextKey("toggleViewed")} || githubReviewDiff)`,
+      run: () => {
+        if (!(getContext().diffEditorFocus && toggleReviewDiffViewed())) githubHandler("toggleViewed")?.();
+      },
     },
     {
       // Github.Pull.Request.Show.In.Toolwindow

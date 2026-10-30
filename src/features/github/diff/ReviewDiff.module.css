@@ -1,0 +1,33 @@
+/* The editor inlay panel (`CodeReviewCommentUIUtil.createEditorInlayPanel`): 10px arc, the
+   tear line colour as border, the editor background; content at most 42em wide. */
+.inlay {
+  box-sizing: border-box;
+  max-width: calc(42em + 60px);
+  margin: 4px 12px 4px 4px;
+  padding: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-editor);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  white-space: normal;
+  cursor: auto;
+}
+
+.newComment {
+  padding: 4px 10px;
+}
+
+.sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: var(--border-strong);
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}

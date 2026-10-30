@@ -1,12 +1,12 @@
 /**
  * Local git work for pull requests: checkout (`gh pr checkout`), fetching what a diff
  * needs (`ghPrPrepareDiff`, cached per head / base commit) and opening a changed file in
- * the diff viewer (`vcs.openDiff`) with its review threads as notes. Long operations run
+ * the diff viewer (`vcs.openDiff`; `diff/` shows its review threads). Long operations run
  * one at a time and are shown in the tool window's banner (`useGhBusy`), cancellable.
  */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import type { DiffAnnotation, DiffData } from "@/features/vcs/diffInput";
+import { withChain, type DiffData } from "@/features/vcs/diffInput";
 import { executeAction } from "@/platform/actions";
 import type { PrDiffRevisions, RequestId } from "@/platform/ipc";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
@@ -14,8 +14,8 @@ import { openExternalUrl } from "@/platform/openUrl";
 import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
 import { errorMessage } from "../api/client";
-import type { GHCommitFile, GHPullRequest, GHPullRequestReviewThread } from "../api/types";
-import { loadPullRequestData, pullRequestData } from "./pullRequest";
+import type { GHCommitFile, GHPullRequest } from "../api/types";
+import { loadPullRequestData } from "./pullRequest";
 import { nameWithOwner, requireConnection } from "./repository";
 
 /** The running operation (checkout, fetch for a diff) with its last output line. */
@@ -95,29 +95,17 @@ export function clearDiffCache() {
   diffCache.clear();
 }
 
-/** Current (not outdated) threads of `path` as diff notes: the first comment, at the thread's line. */
-export function threadNotes(path: string, threads: readonly GHPullRequestReviewThread[]): DiffAnnotation[] {
-  return threads.flatMap((t) => {
-    const first = t.comments.nodes[0];
-    if (t.path !== path || t.line == null || !first) return [];
-    return [
-      {
-        side: t.diffSide === "LEFT" ? "left" : "right",
-        line: t.line - 1,
-        author: first.author?.login ?? "ghost",
-        body: first.body,
-        date: first.createdAt,
-      } satisfies DiffAnnotation,
-    ];
-  });
-}
+/** The diff context of a pull request's file (`diff/` shows its review there); `commit` for one commit's diff. */
+export const PULL_REQUEST_DIFF = "github.pullRequest";
 
-/** `DiffData` for a changed file of `pr`: merge base ↔ head. */
+/**
+ * `DiffData` for a changed file of `pr`: merge base ↔ head, its context (`PULL_REQUEST_DIFF`)
+ * naming the pull request and the file.
+ */
 export function fileDiffData(
   pr: Pick<GHPullRequest, "number" | "baseRefName" | "headRefName">,
   file: Pick<GHCommitFile, "filename" | "status" | "previousFilename">,
   revs: PrDiffRevisions,
-  threads: readonly GHPullRequestReviewThread[] = [],
 ): DiffData {
   const root = revs.root;
   const changed = revs.files.find((f) => f.path === file.filename);
@@ -140,18 +128,19 @@ export function fileDiffData(
       ? { type: "text", text: "", label: tx("(deleted)") }
       : { type: "rev", rev: revs.head, label: `#${n} ${pr.headRefName}` },
     title: `#${n}: ${name}`,
-    annotations: threadNotes(file.filename, threads),
+    context: { kind: PULL_REQUEST_DIFF, number: n, path: file.filename, commit: null },
   };
 }
 
 /**
  * Opens `path` of pull request `number` in the diff viewer (fetching what it needs first),
- * revealing the 0-based right-side `line` when given (a review thread's line).
+ * revealing the 0-based `line` of `side` (default right) when given (a review thread's line).
+ * The pull request's other files follow in the chain (F7 past the last change).
  */
 export async function openPullRequestFileDiff(
   number: number,
   path: string,
-  opts: { line?: number } = {},
+  opts: { line?: number; side?: "left" | "right" } = {},
 ): Promise<void> {
   const [pr, files] = await Promise.all([
     loadPullRequestData(number, "details"),
@@ -164,9 +153,12 @@ export async function openPullRequestFileDiff(
     status: "modified" as const,
     previousFilename: null,
   };
-  const threads = pullRequestData(number, "threads").value ?? [];
-  const data = fileDiffData(pr, file, revs, threads);
-  await executeAction("vcs.openDiff", opts.line == null ? data : { ...data, line: opts.line });
+  const all = files.some((f) => f.filename === path) ? files : [...files, file];
+  const data = withChain(
+    all.map((f) => fileDiffData(pr, f, revs)),
+    all.findIndex((f) => f.filename === path),
+  );
+  await executeAction("vcs.openDiff", opts.line == null ? data : { ...data, line: opts.line, lineSide: opts.side });
 }
 
 /** "View Pull Request in Browser" and other links. */

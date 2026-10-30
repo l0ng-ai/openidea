@@ -41,6 +41,8 @@ export interface CommentEditorProps {
   onSubmit: (text: string) => Promise<unknown>;
   /** Shows Cancel (and Escape cancels). */
   onCancel?: () => void;
+  /** Escape only, no Cancel button (a diff's new comment: its gutter icon discards it). */
+  noCancelButton?: boolean;
   /** Buttons before the primary one ("Resolve" of the reply box). */
   extraActions?: CommentEditorAction[];
   /** The author avatar on the left: the current user's (FULL / COMPACT inputs). */
@@ -52,6 +54,10 @@ export interface CommentEditorProps {
   clearOnSubmit?: boolean;
   /** Allows submitting an empty text (editing a review body to nothing is not allowed). */
   allowEmpty?: boolean;
+  /** Called as the text changes (a diff's new comment keeps its draft). */
+  onTextChange?: (text: string) => void;
+  /** Changing it moves the focus into the field again (a new comment requested twice). */
+  focusRequest?: number;
 }
 
 export function CommentEditor({
@@ -60,6 +66,7 @@ export function CommentEditor({
   submitHint,
   onSubmit,
   onCancel,
+  noCancelButton,
   extraActions = [],
   showAvatar,
   variant = "full",
@@ -67,6 +74,8 @@ export function CommentEditor({
   autoFocus,
   clearOnSubmit,
   allowEmpty,
+  onTextChange,
+  focusRequest,
 }: CommentEditorProps) {
   const t = useTx();
   const me = useGhRepository((s) => s.connection?.currentUser ?? null);
@@ -94,7 +103,7 @@ export function CommentEditor({
     const el = ref.current;
     el?.focus();
     el?.setSelectionRange(el.value.length, el.value.length);
-  }, [autoFocus]);
+  }, [autoFocus, focusRequest]);
 
   const canSubmit = !busy && (allowEmpty || !!text.trim());
 
@@ -104,7 +113,10 @@ export function CommentEditor({
     setError(null);
     try {
       await onSubmit(text);
-      if (clearOnSubmit) setText("");
+      if (clearOnSubmit) {
+        setText("");
+        onTextChange?.("");
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -135,6 +147,7 @@ export function CommentEditor({
     if (!el || !mention) return;
     const r = insertMention(text, mention.start, el.selectionStart, u.login);
     setText(r.text);
+    onTextChange?.(r.text);
     setMention(null);
     requestAnimationFrame(() => {
       el.focus();
@@ -190,6 +203,7 @@ export function CommentEditor({
             aria-label={placeholder ? t(placeholder) : t(submitLabel)}
             onChange={(e) => {
               setText(e.target.value);
+              onTextChange?.(e.target.value);
               updateMention(e.target.value, e.target.selectionStart);
             }}
             onSelect={(e) => {
@@ -216,7 +230,7 @@ export function CommentEditor({
             <span>{tx`${newLineShortcut()} to add new line`}</span>
           </div>
           <div className={styles.buttons}>
-            {onCancel && (
+            {onCancel && !noCancelButton && (
               <Button disabled={busy} onClick={onCancel}>
                 Cancel
               </Button>

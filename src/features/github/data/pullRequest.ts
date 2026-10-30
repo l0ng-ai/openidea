@@ -189,6 +189,13 @@ export function setPullRequestData<K extends PullRequestSlice>(
   patchSlice(number, key, { value: update(slice(number, key).value) });
 }
 
+/** Calls `listener` after any data of pull request `number` changed (outside React); returns the unsubscriber. */
+export function subscribePullRequestData(number: number, listener: () => void): () => void {
+  return usePullRequests.subscribe((s, prev) => {
+    if (s.prs[number] !== prev.prs[number]) listener();
+  });
+}
+
 /** Pull request `number` as far as it is cached (the list row while details load). */
 export function cachedDetails(number: number): GHPullRequest | undefined {
   return slice(number, "details").value;

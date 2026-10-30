@@ -401,6 +401,12 @@ export async function commitChangedFiles(sha: string): Promise<GHCommitFile[]> {
   return (commit?.files ?? []).map(commitFile);
 }
 
+/** The files changed from the merge base of `base` and `head` to `head` (REST `compare/{base}...{head}`). */
+export async function compareChangedFiles(base: string, head: string): Promise<GHCommitFile[]> {
+  const r = await rest<{ files?: RestCommitFile[] }>("GET", `${repoPath()}/compare/${base}...${head}`);
+  return (r?.files ?? []).map(commitFile);
+}
+
 /**
  * Open pull requests from `head` (`owner:branch`) into `base`, REST `Repos.PullRequests.find`.
  */

@@ -34,8 +34,10 @@ export interface DiffData {
   path: string;
   left: DiffSide;
   right: DiffSide;
-  /** Reveal this 0-based line of the right side. */
+  /** Reveal this 0-based line (of the right side, unless `lineSide` says otherwise). */
   line?: number;
+  /** The side `line` is on. */
+  lineSide?: "left" | "right";
   /** Tab title instead of the default "name (left ↔ right)". */
   title?: string;
   /** Notes shown under lines (unified mode shows the right side's only). */
@@ -47,6 +49,11 @@ export interface DiffData {
   chain?: DiffData[];
   /** Select the first or last difference once shown (moving along the chain). */
   reveal?: "first" | "last";
+  /**
+   * What the diff shows, for diff viewer providers (`registerDiffViewerProvider`), e.g. a
+   * pull request's file: `{ kind: "github.pullRequest", number: 12, path: "src/a.ts" }`. Plain JSON.
+   */
+  context?: { kind: string; [key: string]: unknown };
 }
 
 export const DIFF_KIND = "diff";

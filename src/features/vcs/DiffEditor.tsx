@@ -1,11 +1,20 @@
 /** Diff viewer editor tab (side-by-side / unified) built on @codemirror/merge. */
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { EditorView, keymap } from "@codemirror/view";
 import { Prec, Text, type Extension } from "@codemirror/state";
 import { history, historyKeymap } from "@codemirror/commands";
-import { MergeView, getChunks, goToNextChunk, goToPreviousChunk, unifiedMergeView, Chunk } from "@codemirror/merge";
+import {
+  MergeView,
+  getChunks,
+  getOriginalDoc,
+  goToNextChunk,
+  goToPreviousChunk,
+  unifiedMergeView,
+  uncollapseUnchanged,
+  Chunk,
+} from "@codemirror/merge";
 import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
 import { setFindOpen } from "@/editor/core/cm/find";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
@@ -23,6 +32,7 @@ import {
   ideaDiffConfig,
   loadDiffOptions,
   saveDiffOptions,
+  type DiffMode,
   type DiffViewOptions,
   type HighlightPolicy,
   type IgnorePolicy,
@@ -41,6 +51,13 @@ import {
   type DiffSide,
 } from "./diffInput";
 import { diffAnnotations } from "./diffAnnotations";
+import {
+  createDiffViewerContributions,
+  type DiffPaneSide,
+  type DiffViewerContribution,
+  type DiffViewerHost,
+  type DiffViewerPane,
+} from "./diffViewerProviders";
 import { UnalignedPanes } from "./diffScroll";
 import { groupOf } from "./changes";
 import { inclusionGutter } from "./hunkInclusion";
@@ -96,6 +113,67 @@ export function mapLine(chunks: readonly Chunk[], line: number, from: Text, to: 
   return Math.max(0, Math.min(line + shift, to.lines - 1));
 }
 
+/** `chunks` seen from the right side (B ↔ A swapped), for `mapLine` from right to left. */
+const swapped = (chunks: readonly Chunk[]) =>
+  chunks.map((c) => ({ fromA: c.fromB, toA: c.toB, fromB: c.fromA, toB: c.toA }) as unknown as Chunk);
+
+/** Selects `pos` and scrolls it to the middle, first expanding the collapsed unchanged lines holding it. */
+function revealPos(v: EditorView, pos: number) {
+  const block = v.lineBlockAt(pos);
+  const collapsed = v.state.doc.lineAt(block.from).number !== v.state.doc.lineAt(block.to).number;
+  v.dispatch({
+    selection: { anchor: pos },
+    effects: [
+      ...(collapsed ? [uncollapseUnchanged.of(block.from)] : []),
+      EditorView.scrollIntoView(pos, { y: "center" }),
+    ],
+  });
+}
+
+/** The panes as diff viewer contributions see them. */
+function viewerHost(views: Views, data: DiffData, mode: DiffMode, focused: () => "a" | "b"): DiffViewerHost {
+  const docA = () => views.a?.state.doc ?? getOriginalDoc(views.b.state);
+  const chunks = () => getChunks(views.b.state)?.chunks ?? [];
+  const panes = (): DiffViewerPane[] =>
+    views.a
+      ? [
+          { side: "left", view: views.a },
+          { side: "right", view: views.b },
+        ]
+      : [{ side: "right", view: views.b }];
+  const mapSide = (from: DiffPaneSide, line: number) =>
+    from === "left"
+      ? mapLine(chunks(), line, docA(), views.b.state.doc)
+      : mapLine(swapped(chunks()), line, views.b.state.doc, docA());
+  const locate = (side: DiffPaneSide, line: number) => {
+    const all = panes();
+    if (side === "left" && !views.a) return { pane: all[0]!, line: mapSide("left", line) };
+    const pane = all.find((p) => p.side === side)!;
+    return line >= 0 && line < pane.view.state.doc.lines ? { pane, line } : null;
+  };
+  return {
+    data,
+    mode,
+    panes,
+    doc: (side) => (side === "left" ? docA() : views.b.state.doc),
+    mapLine: mapSide,
+    locate,
+    reveal(side, line) {
+      const at = locate(side, line);
+      if (!at) return;
+      const v = at.pane.view;
+      revealPos(v, v.state.doc.line(at.line + 1).from);
+      v.focus();
+    },
+    focusedPane: () => {
+      const all = panes();
+      return focused() === "a" && views.a ? all[0]! : all[all.length - 1]!;
+    },
+  };
+}
+
+const NO_CONTRIBUTIONS: DiffViewerContribution[] = [];
+
 /** Joins the open document of a file-backed side (working file, Compare Files); null for revisions / texts. */
 async function attachSide(side: DiffSide, path: string): Promise<DocumentAttachment | null> {
   const file = sideFile(side, path);
@@ -138,6 +216,21 @@ export function DiffEditor({ input }: { input: EditorInput }) {
   const version = useVcs((s) => s.version);
   const leftKey = sideKey(left);
   const rightKey = sideKey(right);
+  const contextKey = JSON.stringify(data.context ?? null);
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  /** Diff viewer providers' contributions for this diff (`registerDiffViewerProvider`). */
+  const [contribs, setContribs] = useState<DiffViewerContribution[]>(NO_CONTRIBUTIONS);
+  const viewerRef = useRef<DiffViewerHost | null>(null);
+  const [viewer, setViewer] = useState<DiffViewerHost | null>(null);
+  useEffect(() => {
+    const list = createDiffViewerContributions(dataRef.current);
+    setContribs(list.length ? list : NO_CONTRIBUTIONS);
+    return () => {
+      list.forEach((c) => c.dispose?.());
+      setContribs(NO_CONTRIBUTIONS);
+    };
+  }, [path, leftKey, rightKey, contextKey]);
 
   const setOpts = (patch: Partial<DiffViewOptions>) =>
     setOptsState((o) => {
@@ -267,6 +360,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
             styles,
           )
         : [],
+      notes ? contribs.map((c) => c.extensions?.({ side: notes, unified: opts.mode !== "split" }) ?? []) : [],
     ];
     let views: Views;
     if (opts.mode === "split") {
@@ -379,9 +473,19 @@ export function DiffEditor({ input }: { input: EditorInput }) {
       if (scrollTop != null) requestAnimationFrame(() => (view.scrollDOM.scrollTop = scrollTop));
     }
     viewsRef.current = views;
+    const built = viewerHost(views, dataRef.current, opts.mode, () => focusedSide.current);
+    const detach = contribs.map((c) => c.attach?.(built));
+    const destroyViews = views.destroy;
+    views.destroy = () => {
+      detach.forEach((d) => d?.());
+      destroyViews();
+    };
+    viewerRef.current = built;
+    setViewer(built);
     setViewsGen((g) => g + 1);
     requestAnimationFrame(updateChunkInfo);
   }, [
+    contribs,
     attached,
     statics,
     lang,
@@ -408,22 +512,32 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     [],
   );
 
-  // Reveal the requested line (or the first / last difference) once.
-  const revealed = useRef(false);
+  // Reveal the requested line (or the first / last difference) once per request.
+  const revealed = useRef<string | null>(null);
+  const revealKey = data.line == null && !data.reveal ? null : `${data.line}:${data.lineSide}:${data.reveal}`;
   useEffect(() => {
-    const v = viewsRef.current?.b;
-    if (!v || revealed.current || (data.line == null && !data.reveal) || !ready) return;
-    revealed.current = true;
+    let v = viewsRef.current?.b;
+    if (!v || revealKey === null || revealed.current === revealKey || !ready) return;
+    revealed.current = revealKey;
     let at: number | undefined;
-    if (data.line != null) at = v.state.doc.line(Math.min(v.state.doc.lines, Math.max(1, data.line + 1))).from;
-    else {
+    if (data.line != null) {
+      let line = data.line;
+      if (data.lineSide === "left") {
+        const found = viewerRef.current?.locate("left", line);
+        if (found) [v, line] = [found.pane.view, found.line];
+      }
+      at = v.state.doc.line(Math.min(v.state.doc.lines, Math.max(1, line + 1))).from;
+    } else {
       const chunks = getChunks(v.state)?.chunks ?? [];
       at = (data.reveal === "last" ? chunks[chunks.length - 1] : chunks[0])?.fromB;
     }
     if (at === undefined) return;
-    v.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
+    if (data.line != null) revealPos(v, at);
+    else v.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
+    // A left-side line: that pane gets the focus, so navigation goes on from there.
+    if (v === viewsRef.current?.a) v.focus();
     updateChunkInfo();
-  }, [ready, statics, data.line, data.reveal, updateChunkInfo]);
+  }, [ready, statics, revealKey, data.line, data.lineSide, data.reveal, updateChunkInfo]);
 
   // IDEA: past the last (first) difference F7 (Shift+F7) first hints, then moves along the chain.
   const [navHint, setNavHint] = useState<string | null>(null);
@@ -702,8 +816,27 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         disabled: opts.mode !== "split",
         run: () => setOpts({ alignChanges: !opts.alignChanges }),
       },
+      ...contribs.flatMap((c) => {
+        const items = c.settingsItems?.() ?? [];
+        return items.length ? [{ kind: "separator" } as const, ...items] : [];
+      }),
     ]);
   };
+  /** The panes' right-click menu: the contributions' items for the clicked line (none: the default menu). */
+  const onContextMenu = (e: MouseEvent) => {
+    const pane = viewerRef.current?.panes().find((p) => p.view.dom.contains(e.target as Node | null));
+    if (!pane) return;
+    const pos = pane.view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+    const line = pane.view.state.doc.lineAt(pos).number - 1;
+    const items = contribs.flatMap((c) => {
+      const list = c.contextMenuItems?.({ side: pane.side, line }) ?? [];
+      return list.length ? [...list, { kind: "separator" } as const] : [];
+    });
+    if (!items.length) return;
+    e.preventDefault();
+    showContextMenu(e, items.slice(0, -1));
+  };
+  const viewerOf = () => viewerRef.current;
   const nav = useRef<DiffNavigator>({
     next: () => step(1),
     prev: () => step(-1),
@@ -711,9 +844,18 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     applyChange,
     file,
     showSettings,
+    viewer: viewerOf,
   });
   useEffect(() => {
-    nav.current = { next: () => step(1), prev: () => step(-1), jumpToSource, applyChange, file, showSettings };
+    nav.current = {
+      next: () => step(1),
+      prev: () => step(-1),
+      jumpToSource,
+      applyChange,
+      file,
+      showSettings,
+      viewer: viewerOf,
+    };
   });
 
   useEffect(
@@ -853,6 +995,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
                   ? tx`${chunkInfo.count} difference`
                   : tx`${chunkInfo.count} differences`}
         </span>
+        {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
         <IconButton
           icon="settings"
           title="Settings"
@@ -921,6 +1064,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         hidden={!!error || !ready}
         aria-label={diffTitle(data)}
         role="region"
+        onContextMenu={onContextMenu}
       />
       {navHint && (
         <div className={styles.navHint} role="status">
