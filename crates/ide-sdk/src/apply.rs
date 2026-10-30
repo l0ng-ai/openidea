@@ -655,7 +655,6 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
-
                 if c.kind == "maven" && c.detected {
                     if let Some(mvn) = &mvn {
                         c.command = mvn.to_string_lossy().into_owned();
