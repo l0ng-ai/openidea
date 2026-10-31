@@ -291,6 +291,10 @@ fn env_files_system_env_and_redirects() {
     config.extras.include_system_env = false;
     config.extras.stdin_file = Some("input.txt".into());
     config.extras.output_file = Some("logs/out.log".into());
+    let prepared = ide_run::resolved_env(root, &config).unwrap();
+    assert_eq!(prepared.get("FROM_FILE").map(String::as_str), Some("file"));
+    assert_eq!(prepared.get("OVERRIDDEN").map(String::as_str), Some("config"));
+    assert!(!prepared.contains_key("HOME"));
     let (id, chunks) = start(&h, &config);
     // stdin comes from the file: writing to it is refused.
     assert!(h.pm.write_stdin(id, "x").is_err());
@@ -302,6 +306,7 @@ fn env_files_system_env_and_redirects() {
 
     // With the system environment, HOME is inherited.
     config.extras.include_system_env = true;
+    assert!(ide_run::resolved_env(root, &config).unwrap().contains_key("HOME"));
     config.extras.stdin_file = None;
     config.extras.output_file = None;
     config.args = vec!["-c".into(), "printf '%s' \"${HOME:+set}\"".into()];

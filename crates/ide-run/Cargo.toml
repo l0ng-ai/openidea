@@ -24,4 +24,5 @@ quick-xml = "0.42"
 libc = "0.2"
 
 [dev-dependencies]
+ide-build = { path = "../ide-build" }
 tempfile.workspace = true

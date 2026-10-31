@@ -4,11 +4,12 @@
  */
 import { create } from "zustand";
 import { call, commands, nextRequestId, type SearchQuery } from "@/platform/ipc";
+import type { FindResultsSource } from "@/workbench/contributions";
 import type { MenuItem } from "@/ui";
 import { loadJson, saveJson } from "../common/open";
 import { maybeToolWindowService } from "../common/services";
 import { cancelRequest, streamSearch } from "../common/textSearch";
-import { FindSession, IDLE, type FindDeps, type FindState } from "./session";
+import { FindSession, IDLE, countFileMatches, type FindDeps, type FindState } from "./session";
 
 export interface FindTab {
   id: number;
@@ -20,6 +21,8 @@ export interface FindTab {
   /** Kept when a new search runs (Pin Tab). */
   pinned?: boolean;
   state: FindState;
+  /** In-file results reveal their line on selection while keeping focus in the tree. */
+  editorResults?: boolean;
 }
 
 interface FindWindowState {
@@ -74,6 +77,23 @@ export function openInFindWindow(
   });
   void session.search(query);
   maybeToolWindowService()?.show("find", true);
+  return id;
+}
+
+/** Use the normal Find session/tab lifecycle for live editor results. */
+export function openEditorResults(source: FindResultsSource) {
+  const id = openInFindWindow(source.query, source.title, null, {
+    validate: async () => {},
+    nextRequestId,
+    cancel: () => {},
+    start: async (_request, _query, onFile) => {
+      const file = source.read();
+      const matches = countFileMatches(file);
+      if (matches) onFile(file);
+      return { files: matches ? 1 : 0, matches, limitHit: false, cancelled: false, elapsedMs: 0 };
+    },
+  });
+  patchTab(id, { editorResults: true });
   return id;
 }
 

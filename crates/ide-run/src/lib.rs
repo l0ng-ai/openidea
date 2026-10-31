@@ -240,6 +240,11 @@ pub fn system_env() -> BTreeMap<String, String> {
     ide_core::process::host_vars().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect()
 }
 
+/// Complete environment for a preparatory tool belonging to this run configuration.
+pub fn resolved_env(root: &Path, config: &RunConfig) -> IdeResult<BTreeMap<String, String>> {
+    process::resolved_env(root, config)
+}
+
 /// Path of the user run configuration file for `root`.
 pub fn user_configs_path(root: &Path) -> PathBuf {
     config::config_path(root)

@@ -396,6 +396,7 @@ export const intellijMacos: Record<string, string[]> = {
   "find.popup.openResult": ["F4", "Meta+Down"],
   "find.popup.recentSearches": ["Alt+Down"],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.
+  "find.openInWindow": ["Alt+F7"],
   "find.field.newLine": ["Meta+Shift+Enter"],
   "find.field.recentSearches": ["Alt+Down"],
 };
