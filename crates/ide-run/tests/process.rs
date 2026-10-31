@@ -510,8 +510,10 @@ fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
 #[test]
 fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
     let h = harness();
-    let go =
-        ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()).expect("Go toolchain");
+    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+        eprintln!("skipped: no Go toolchain");
+        return;
+    };
     let module = h.root.path().join("module");
     std::fs::create_dir_all(&module).unwrap();
     std::fs::write(module.join("go.mod"), "module example.com/demo\ngo 1.22\n").unwrap();
@@ -550,8 +552,10 @@ fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
 #[test]
 fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     let h = harness();
-    let go =
-        ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()).expect("Go toolchain");
+    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+        eprintln!("skipped: no Go toolchain");
+        return;
+    };
     std::fs::write(h.root.path().join("go.mod"), "module example.com/filetests\ngo 1.22\n").unwrap();
     std::fs::write(h.root.path().join("main.go"), "package filetests\nfunc value() int { return 2 }\n").unwrap();
     std::fs::write(h.root.path().join("generate.go"), "//go:build ignore\n\npackage main\nfunc main() {}\n").unwrap();

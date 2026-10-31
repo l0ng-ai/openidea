@@ -574,8 +574,6 @@ async fn connect_with_retries(
 mod tests {
     use super::*;
 
-    /// Managed tools win over `PATH`, and debugpy falls back to the private copy.
-    #[cfg(unix)]
     #[tokio::test]
     async fn program_output_is_forwarded_without_the_adapter_banner() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -588,6 +586,8 @@ mod tests {
         assert_eq!(sink.lock().len(), 3);
     }
 
+    /// Managed tools win over `PATH`, and debugpy falls back to the private copy.
+    #[cfg(unix)]
     #[tokio::test]
     async fn managed_tools_and_private_debugpy() {
         use std::os::unix::fs::PermissionsExt;
