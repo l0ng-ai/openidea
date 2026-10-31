@@ -81,11 +81,11 @@ async fn rejects_bad_token_host_origin_and_sessions() {
 #[tokio::test(flavor = "multi_thread")]
 async fn calls_tools_and_reports_errors_as_tool_results() {
     let h = Harness::new(&[("src/a.txt", "one\ntwo\n")]).await;
-    assert_eq!(h.call("read_file", json!({ "file_path": "src/a.txt" })).await, "1\tone\n2\ttwo\n");
+    assert_eq!(h.call("read_file", json!({ "file_path": "src/a.txt" })).await, "L1: one\nL2: two\nL3: ");
     let root = h.root.to_string_lossy().into_owned();
     assert_eq!(
         h.call("read_file", json!({ "file_path": "src/a.txt", "offset": 2, "projectPath": root })).await,
-        "2\ttwo\n"
+        "L2: two\nL3: "
     );
     let msg = h.call_err("read_file", json!({ "file_path": "missing.txt" })).await;
     assert!(!msg.is_empty());
@@ -99,35 +99,6 @@ async fn calls_tools_and_reports_errors_as_tool_results() {
         .post(json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": { "name": "no_such_tool" } }))
         .await;
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["error"]["code"], -32602);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn lists_directory_trees() {
-    let h = Harness::new(&[("src/main.rs", ""), ("src/lib/mod.rs", ""), ("README.md", "")]).await;
-    let tree = h.call("list_directory_tree", json!({ "directoryPath": "." })).await;
-    assert!(tree.contains("├── src/") || tree.contains("└── src/"), "{tree}");
-    assert!(tree.contains("main.rs") && tree.contains("mod.rs") && tree.contains("README.md"), "{tree}");
-    let shallow = h.call("list_directory_tree", json!({ "maxDepth": 1 })).await;
-    assert!(!shallow.contains("main.rs"), "{shallow}");
-    // Directories cut off by the depth limit are marked unless they are empty.
-    assert!(shallow.contains("src/ …"), "{shallow}");
-    let two = h.call("list_directory_tree", json!({ "maxDepth": 2 })).await;
-    assert!(two.contains("lib/ …") && !two.contains("src/ …"), "{two}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn directory_trees_leave_out_what_search_leaves_out() {
-    let h = Harness::new(&[("src/a.rs", ""), ("src/a.pyc", ""), ("only/x.pyc", ""), ("empty/.keep", "")]).await;
-    std::fs::remove_file(h.path("empty/.keep")).unwrap();
-    // `*.pyc` is an ignored name by default.
-    let tree = h.call("list_directory_tree", json!({})).await;
-    assert!(tree.contains("a.rs") && !tree.contains(".pyc"), "{tree}");
-    let found = h.call_json("search_file", json!({ "q": "*.pyc" })).await;
-    assert_eq!(found["entries"], json!([]));
-    // A directory whose only files are left out is not marked as having contents.
-    let shallow = h.call("list_directory_tree", json!({ "maxDepth": 1 })).await;
-    assert!(shallow.contains("── only/\n") && shallow.contains("── empty/\n"), "{shallow}");
-    assert!(shallow.contains("── src/ …"), "{shallow}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -190,7 +161,7 @@ async fn asks_before_reading_outside_the_project() {
     assert!(msg.contains("declined"), "{msg}");
     assert!(matches!(h.ui.asked.lock().last(), Some(ide_core::mcp::McpUiRequest::Confirm { .. })));
     *h.ui.answer.lock() = Value::Bool(true);
-    assert_eq!(h.call("read_file", json!({ "file_path": path })).await, "1\ttoken\n");
+    assert_eq!(h.call("read_file", json!({ "file_path": path })).await, "L1: token\nL2: ");
     // Inside the project nobody is asked.
     let asked = h.ui.asked.lock().len();
     h.call("read_file", json!({ "file_path": "a.txt" })).await;

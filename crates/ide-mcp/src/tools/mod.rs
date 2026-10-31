@@ -6,6 +6,7 @@ pub mod edit;
 pub mod files;
 pub mod run;
 pub mod search;
+pub mod util;
 pub mod vcs;
 
 use crate::tool::Tool;

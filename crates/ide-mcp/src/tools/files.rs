@@ -1,213 +1,282 @@
+// Ported from JetBrains intellij-community plugins/mcp-server (mcpserver.toolsets/src/general/ReadToolset.kt,
+// the list_directory_tree part of FileToolset.kt, src/com/intellij/mcpserver/util/fs.util.kt), Apache-2.0.
 //! Reading files and listing directories.
 
-use crate::tool::{Output, Param, ParamType, Tool};
-use ide_core::IdeError;
+use crate::tool::{Call, Output, Param, ParamType, Tool};
+use crate::tools::util::{
+    self, RELATIVE_PATH_IN_PROJECT_DESCRIPTION, TIMED_OUT_DESCRIPTION, TIMEOUT_MILLISECONDS_DESCRIPTION,
+};
 use ide_core::mcp::McpToolKind;
-use ide_search::FileMask;
-use ide_vfs::EntryKind;
-use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use ide_core::{CancellationToken, IdeError, IdeResult};
+use serde::Serialize;
+use serde_json::json;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
-const READ_DEFAULT_LINES: usize = 2000;
-const READ_MAX_LINES: usize = 5000;
-/// Longer lines are cut (minified files would flood the context).
-const MAX_LINE_CHARS: usize = 2000;
-const TREE_DEFAULT_DEPTH: usize = 5;
-const TREE_MAX_ENTRIES: usize = 3000;
+const DEFAULT_READ_LIMIT: i64 = 2000;
+const MAX_READ_LIMIT: i64 = 5000;
+/// Longer lines are cut (minified files would flood the context), in UTF-16 units.
+const MAX_LINE_LENGTH: usize = 2000;
+const DEFAULT_TREE_DEPTH: i64 = 5;
 
 pub fn tools() -> Vec<Tool> {
     vec![read_file(), list_directory_tree()]
 }
 
+// --- read_file -----------------------------------------------------------------
+
 fn read_file() -> Tool {
     Tool::new(
         "read_file",
         McpToolKind::Read,
-        "Reads a text file of the project (or any file by absolute path), including unsaved changes of open \
-editors. Returns numbered lines (1-based), `<line number>\\t<text>`. Reads up to 2000 lines from `offset` by \
-default; `limit` accepts up to 5000. Lines longer than 2000 characters are cut.",
+        "Reads a file in the project directory or from any project dependency or other project source root.
+Can read text sources inside jar/zip archives; compiled class files are not decompiled.
+Returns numbered lines (1-indexed) as text.
+By default, reads up to 2000 lines starting from the beginning of the file.
+The maximum accepted limit is 5000 lines.",
         |call| async move {
-            let path = call.resolve_readable(&call.str("file_path")?).await?;
-            let offset = call.count("offset", 1, usize::MAX)?;
-            let limit = call.count("limit", READ_DEFAULT_LINES, READ_MAX_LINES)?;
-            let host = call.host();
-            if path.is_file() {
-                let probe = ide_vfs::probe(&path)?;
-                if probe.binary && call.project().documents.by_path(&path).is_none() {
-                    return Err(IdeError::invalid(format!(
-                        "{} is a binary file ({} bytes); read_file reads text",
-                        call.display(&path),
-                        probe.size
-                    )));
-                }
+            let offset = positive(&call, "offset", 1)?;
+            let limit = positive(&call, "limit", DEFAULT_READ_LIMIT)?;
+            if limit > MAX_READ_LIMIT {
+                return Err(IdeError::invalid(format!("limit must be <= {MAX_READ_LIMIT}")));
             }
-            let text = ide_host::ops::fs::read_text(&host, call.window(), path.clone()).await.map_err(|e| {
-                if path.is_dir() {
-                    IdeError::invalid(format!("{} is a directory; use list_directory_tree", call.display(&path)))
-                } else {
-                    e
-                }
-            })?;
-            Ok(Output::text(numbered(&text, offset, limit)))
+            let path = util::resolve_read_file(&call, &call.str("file_path")?).await?;
+            let probe = ide_vfs::probe(&path)?;
+            if probe.binary && call.project().documents.by_path(&path).is_none() {
+                return Err(IdeError::invalid(format!(
+                    "{} is a binary file ({} bytes); read_file reads text",
+                    call.display(&path),
+                    probe.size
+                )));
+            }
+            let text = ide_host::ops::fs::read_text(&call.host(), call.window(), path).await?;
+            Ok(Output::text(render_slice(&text, offset as usize, limit as usize)?))
         },
     )
-    .param(Param::required(
-        "file_path",
-        ParamType::String,
-        "Path of the file: project-relative, absolute, or a file:// URL. Paths returned by the other tools can be \
-passed as they are.",
+    .param(Param::required("file_path", ParamType::String, util::FILE_PATH_DESCRIPTION))
+    .param(Param::optional("offset", ParamType::Integer, "1-based line number to start reading from"))
+    .param(Param::optional(
+        "limit",
+        ParamType::Integer,
+        "Maximum number of lines to return (default: 2000, max: 5000)",
     ))
-    .param(Param::optional("offset", ParamType::Integer, "1-based line to start reading from (default 1)"))
-    .param(Param::optional("limit", ParamType::Integer, "Maximum number of lines (default 2000, at most 5000)"))
 }
 
-/// `text`'s lines `offset..offset+limit` as `<n>\t<line>`, with a note when more follow.
-pub(crate) fn numbered(text: &str, offset: usize, limit: usize) -> String {
-    if text.is_empty() {
-        return "(the file is empty)".into();
+/// An integer argument that must be > 0.
+fn positive(call: &Call, name: &str, default: i64) -> IdeResult<i64> {
+    match call.opt_i64(name)?.unwrap_or(default) {
+        n if n <= 0 => Err(IdeError::invalid(format!("{name} must be > 0"))),
+        n => Ok(n),
     }
-    let lines: Vec<&str> = text.split('\n').collect();
-    // A trailing newline does not start another line.
-    let total = if text.ends_with('\n') { lines.len() - 1 } else { lines.len() };
-    if offset > total {
-        return format!("(the file has {total} lines; offset {offset} is past its end)");
+}
+
+/// Lines `start..` of `text` as `L<n>: <line>`; when more than `max_lines` remain, the first
+/// and the last halves of the budget with a `…N lines truncated…` marker between them.
+/// Lines are the editor's: a trailing line break starts an empty last line.
+fn render_slice(text: &str, start: usize, max_lines: usize) -> IdeResult<String> {
+    let lines: Vec<&str> = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    let count = lines.len();
+    if start > count {
+        return Err(IdeError::invalid("offset exceeds file length"));
     }
-    let end = (offset - 1 + limit).min(total);
+    let range = |from: usize, to: usize| {
+        (from..=to).map(|n| format!("L{n}: {}", format_line(lines[n - 1]))).collect::<Vec<_>>().join("\n")
+    };
+    let available = count - start + 1;
+    if available <= max_lines {
+        return Ok(range(start, count));
+    }
+    let head = max_lines / 2;
+    let tail = max_lines - head;
+    let head_end = start + head - 1;
+    let tail_start = count - tail + 1;
     let mut out = String::new();
-    for (i, line) in lines[offset - 1..end].iter().enumerate() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        let _ = write!(out, "{}\t", offset + i);
-        match line.char_indices().nth(MAX_LINE_CHARS) {
-            Some((cut, _)) => {
-                out.push_str(&line[..cut]);
-                out.push_str(" … (line truncated)");
-            }
-            None => out.push_str(line),
-        }
+    if head > 0 {
+        out.push_str(&range(start, head_end));
         out.push('\n');
     }
-    if end < total {
-        let _ = write!(out, "… {} more lines (continue with offset={})", total - end, end + 1);
+    out.push_str(&format!("\u{2026}{} lines truncated\u{2026}", tail_start - head_end - 1));
+    if tail > 0 {
+        out.push('\n');
+        out.push_str(&range(tail_start, count));
     }
-    out
+    Ok(out)
+}
+
+/// `line` cut to [`MAX_LINE_LENGTH`] UTF-16 units, or as many characters when the cut would
+/// split a surrogate pair (as JetBrains does).
+fn format_line(line: &str) -> &str {
+    let mut units = 0;
+    for (i, c) in line.char_indices() {
+        if units >= MAX_LINE_LENGTH {
+            return &line[..i];
+        }
+        if units + c.len_utf16() > MAX_LINE_LENGTH {
+            // A pair across the boundary: keep MAX_LINE_LENGTH characters instead.
+            return match line.char_indices().nth(MAX_LINE_LENGTH) {
+                Some((cut, _)) => &line[..cut],
+                None => line,
+            };
+        }
+        units += c.len_utf16();
+    }
+    line
+}
+
+// --- list_directory_tree -------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectoryTreeInfo {
+    traversed_directory: String,
+    tree: String,
+    errors: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    listing_timed_out: bool,
 }
 
 fn list_directory_tree() -> Tool {
     Tool::new(
         "list_directory_tree",
         McpToolKind::Read,
-        "Shows a directory of the project as a tree, like the `tree` utility, without ignored and excluded files \
-(what search_file leaves out). Directories below `maxDepth` that have contents are shown as `name/ …`. Use it to \
-explore the project instead of `ls` / `find`.",
+        "Provides a tree representation of the specified directory in the pseudo graphic format like `tree` utility does.
+Use this tool to explore the contents of a directory or the whole project.
+You MUST prefer this tool over listing directories via command line utilities like `ls` or `dir`.",
         |call| async move {
-            let dir = call.resolve_readable(call.opt_str("directoryPath")?.as_deref().unwrap_or(".")).await?;
-            let depth = call.count("maxDepth", TREE_DEFAULT_DEPTH, 50)?;
-            if !dir.is_dir() {
-                return Err(IdeError::not_found(format!("{} is not a directory", call.display(&dir))));
+            let directory = call.str("directoryPath")?;
+            let max_depth = call.opt_i64("maxDepth")?.unwrap_or(DEFAULT_TREE_DEPTH);
+            let timeout = call.opt_i64("timeout")?.unwrap_or(util::MEDIUM_TIMEOUT.as_millis() as i64);
+            let dir = call.resolve_readable(&directory).await?;
+            if !dir.exists() {
+                return Err(IdeError::not_found(format!("No such directory: {}", dir.display())));
             }
-            let host = call.host();
-            let label = call.display(&dir);
-            let tree = Tree {
-                host: host.clone(),
-                window: call.window().to_owned(),
-                root: call.root().to_path_buf(),
-                // Ignored names and "Exclude files" patterns, which `read_dir` does not flag.
-                excludes: FileMask::new(&[], &call.project().search_excludes())?,
-            };
-            let text = host.blocking(move || Ok(tree.render(&dir, &label, depth))).await?;
-            Ok(Output::text(text))
+            if !dir.is_dir() {
+                return Err(IdeError::invalid(format!("Not a directory: {}", dir.display())));
+            }
+            let deadline = Instant::now() + Duration::from_millis(timeout.max(0) as u64);
+            let cancel = call.cancel.clone();
+            let mut tree =
+                TreeRender { out: String::new(), errors: Vec::new(), timed_out: false, deadline, cancel: cancel.clone() };
+            let tree = call
+                .host()
+                .blocking(move || {
+                    tree.render(&dir, "", true, max_depth, true);
+                    Ok(tree)
+                })
+                .await?;
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            Output::json(DirectoryTreeInfo {
+                traversed_directory: directory,
+                tree: tree.out,
+                errors: tree.errors,
+                listing_timed_out: tree.timed_out,
+            })
         },
     )
-    .param(Param::optional(
-        "directoryPath",
-        ParamType::String,
-        "Directory, relative to the project root (default: the root)",
-    ))
-    .param(Param::optional("maxDepth", ParamType::Integer, "How many levels to descend (default 5)"))
+    .param(Param::required("directoryPath", ParamType::String, RELATIVE_PATH_IN_PROJECT_DESCRIPTION))
+    .param(Param::optional("maxDepth", ParamType::Integer, "Maximum recursion depth"))
+    .param(Param::optional("timeout", ParamType::Integer, TIMEOUT_MILLISECONDS_DESCRIPTION))
+    .output(json!({
+        "type": "object",
+        "properties": {
+            "traversedDirectory": { "type": "string" },
+            "tree": { "type": "string" },
+            "errors": { "type": "array", "items": { "type": "string" } },
+            "listingTimedOut": { "type": "boolean", "description": TIMED_OUT_DESCRIPTION },
+        },
+        "required": ["traversedDirectory", "tree", "errors"],
+    }))
 }
 
-struct Tree {
-    host: Arc<ide_host::Host>,
-    window: String,
-    root: PathBuf,
-    excludes: FileMask,
+/// The `tree`-like listing: the directory's absolute path, then every entry (hidden and
+/// ignored ones too) by lower-cased name, directories marked with `/`.
+struct TreeRender {
+    out: String,
+    errors: Vec<String>,
+    timed_out: bool,
+    deadline: Instant,
+    cancel: CancellationToken,
 }
 
-impl Tree {
-    fn render(&self, dir: &Path, label: &str, depth: usize) -> String {
-        let mut out = format!("{label}/\n");
-        let mut count = 0usize;
-        self.walk(dir, "", depth, &mut out, &mut count);
-        if count >= TREE_MAX_ENTRIES {
-            let _ =
-                writeln!(out, "… (stopped after {TREE_MAX_ENTRIES} entries; list a subdirectory or lower maxDepth)");
-        }
-        out
-    }
-
-    /// The entries of `dir` that are shown, directories first, by name.
-    fn entries(&self, dir: &Path) -> Vec<ide_vfs::FileEntry> {
-        let Ok(mut entries) = ide_host::ops::fs::read_dir(&self.host, &self.window, dir.to_path_buf()) else {
-            return Vec::new();
-        };
-        entries.retain(|e| {
-            if e.ignored || e.excluded || e.name == ".git" {
-                return false;
-            }
-            // Outside the project only the names count.
-            let rel = match e.path.strip_prefix(&self.root) {
-                Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
-                Err(_) => e.name.clone(),
-            };
-            self.excludes.matches(&rel)
-        });
-        entries.sort_by(|a, b| {
-            (a.kind != EntryKind::Dir, a.name.to_lowercase()).cmp(&(b.kind != EntryKind::Dir, b.name.to_lowercase()))
-        });
-        entries
-    }
-
-    fn walk(&self, dir: &Path, prefix: &str, depth: usize, out: &mut String, count: &mut usize) {
-        if depth == 0 || *count >= TREE_MAX_ENTRIES {
+impl TreeRender {
+    fn render(&mut self, path: &Path, indent: &str, is_last: bool, max_depth: i64, is_root: bool) {
+        if max_depth <= 0 || self.timed_out || self.cancel.is_cancelled() {
             return;
         }
-        let entries = self.entries(dir);
-        let n = entries.len();
-        for (i, entry) in entries.into_iter().enumerate() {
-            if *count >= TREE_MAX_ENTRIES {
+        if Instant::now() >= self.deadline {
+            self.timed_out = true;
+            return;
+        }
+        let prefix = match (is_root, is_last) {
+            (true, _) => "",
+            (false, true) => "└── ",
+            (false, false) => "├── ",
+        };
+        let name = if is_root {
+            path.display().to_string()
+        } else {
+            path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+        };
+        // Symlinks are followed, like `File.isDirectory`; the depth limit stops loops.
+        let is_dir = path.is_dir();
+        self.out.push_str(&format!("{indent}{prefix}{name}{}\n", if is_dir { "/" } else { "" }));
+        if !is_dir {
+            return;
+        }
+        let mut children: Vec<_> = match std::fs::read_dir(path) {
+            Ok(entries) => entries.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+            Err(e) => {
+                self.errors.push(format!("Failed to read {}: {e}", path.display()));
                 return;
             }
-            *count += 1;
-            let last = i + 1 == n;
-            let is_dir = entry.kind == EntryKind::Dir;
-            // A directory below the depth limit is marked when it has something to show.
-            let suffix = match is_dir {
-                false => "",
-                true if depth == 1 && !self.entries(&entry.path).is_empty() => "/ …",
-                true => "/",
-            };
-            let _ = writeln!(out, "{prefix}{}{}{suffix}", if last { "└── " } else { "├── " }, entry.name);
-            if is_dir {
-                let child_prefix = format!("{prefix}{}", if last { "    " } else { "│   " });
-                self.walk(&entry.path, &child_prefix, depth - 1, out, count);
-            }
+        };
+        let key = |p: &std::path::PathBuf| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        children.sort_by_cached_key(|p| (key(p).to_lowercase(), key(p)));
+        let child_indent = format!("{indent}{}", if is_last { "    " } else { "│   " });
+        let n = children.len();
+        for (i, child) in children.iter().enumerate() {
+            self.render(child, &child_indent, i + 1 == n, max_depth - 1, false);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::numbered;
+    use super::*;
+
+    fn slice(text: &str, start: usize, max: usize) -> String {
+        render_slice(text, start, max).unwrap()
+    }
 
     #[test]
-    fn numbers_lines_and_pages() {
-        assert_eq!(numbered("a\nb\nc\n", 1, 10), "1\ta\n2\tb\n3\tc\n");
-        assert_eq!(numbered("a\r\nb", 2, 10), "2\tb\n");
-        assert_eq!(numbered("a\nb\nc", 1, 2), "1\ta\n2\tb\n… 1 more lines (continue with offset=3)");
-        assert_eq!(numbered("", 1, 10), "(the file is empty)");
-        assert!(numbered("a\n", 5, 10).contains("past its end"));
+    fn numbers_lines_like_the_editor() {
+        assert_eq!(slice("a\nb", 1, 10), "L1: a\nL2: b");
+        assert_eq!(slice("a\r\nb\n", 1, 10), "L1: a\nL2: b\nL3: ");
+        assert_eq!(slice("", 1, 10), "L1: ");
+        assert_eq!(slice("a\nb\nc", 2, 10), "L2: b\nL3: c");
+        assert!(render_slice("", 2, 10).unwrap_err().message.contains("offset exceeds file length"));
+        assert!(render_slice("a\nb", 3, 10).unwrap_err().message.contains("offset exceeds file length"));
+    }
+
+    #[test]
+    fn keeps_head_and_tail_of_long_slices() {
+        let text = (1..=11).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        assert_eq!(slice(&text, 1, 4), "L1: line 1\nL2: line 2\n…7 lines truncated…\nL10: line 10\nL11: line 11");
+        assert_eq!(slice(&text, 3, 4), "L3: line 3\nL4: line 4\n…5 lines truncated…\nL10: line 10\nL11: line 11");
+        assert_eq!(slice(&text, 1, 1), "…10 lines truncated…\nL11: line 11");
+    }
+
+    #[test]
+    fn cuts_long_lines_at_utf16_units() {
         let long = "x".repeat(2100);
-        assert!(numbered(&long, 1, 1).ends_with("(line truncated)\n"));
+        assert_eq!(format_line(&long).len(), MAX_LINE_LENGTH);
+        // A pair across the boundary keeps 2000 characters.
+        let pair = format!("{}😀{}", "x".repeat(1999), "y".repeat(10));
+        assert_eq!(format_line(&pair).chars().count(), MAX_LINE_LENGTH);
+        assert!(format_line(&pair).ends_with('😀'));
+        let short = format!("{}😀", "x".repeat(1998));
+        assert_eq!(format_line(&short), short);
     }
 }
