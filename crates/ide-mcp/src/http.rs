@@ -13,7 +13,7 @@
 use crate::Shared;
 use crate::project::PROJECT_PATH_HEADER;
 use crate::protocol::{self, Ctx, Handled, PARSE_ERROR};
-use crate::session::Session;
+use crate::session::{Inbound, Outbound, Session};
 use ide_core::CancellationToken;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -30,6 +30,8 @@ pub const SSE_ENDPOINT: &str = "/sse";
 pub const MESSAGE_ENDPOINT: &str = "/message";
 const MAX_HEAD: usize = 64 * 1024;
 const MAX_BODY: usize = 32 * 1024 * 1024;
+/// Connections served at once; more are answered `503` and closed.
+pub(crate) const MAX_CONNECTIONS: usize = 64;
 /// How long an idle keep-alive connection waits for its next request.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const SESSION_HEADER: &str = "mcp-session-id";
@@ -37,6 +39,7 @@ const SESSION_HEADER: &str = "mcp-session-id";
 /// Accepts connections until `stop` is cancelled.
 pub(crate) async fn serve(listener: TcpListener, shared: Arc<Shared>, stop: CancellationToken) {
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
         let accepted = tokio::select! {
             a = listener.accept() => a,
@@ -47,9 +50,14 @@ pub(crate) async fn serve(listener: TcpListener, shared: Arc<Shared>, stop: Canc
                 if !peer.ip().is_loopback() {
                     continue;
                 }
+                let Ok(slot) = slots.clone().try_acquire_owned() else {
+                    tokio::spawn(refuse_busy(sock));
+                    continue;
+                };
                 let shared = shared.clone();
                 let stop = stop.clone();
                 tokio::spawn(async move {
+                    let _slot = slot;
                     tokio::select! {
                         r = connection(sock, &shared, port) => {
                             if let Err(e) = r {
@@ -66,6 +74,23 @@ pub(crate) async fn serve(listener: TcpListener, shared: Arc<Shared>, stop: Canc
             }
         }
     }
+}
+
+/// Answers a connection beyond [`MAX_CONNECTIONS`] with `503` and closes it.
+async fn refuse_busy(mut sock: TcpStream) {
+    let mut out = Vec::new();
+    let _ = write_response(&mut out, busy(), false).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        sock.write_all(&out).await?;
+        sock.shutdown().await
+    })
+    .await;
+}
+
+fn busy() -> Response {
+    let mut r = Response::text(503, "Service Unavailable: too many connections to the MCP server");
+    r.headers.push(("Retry-After", "1".into()));
+    r
 }
 
 pub(crate) struct Request {
@@ -134,7 +159,7 @@ impl Response {
 pub(crate) struct Sse {
     /// A raw event written first (the legacy transport's `endpoint`).
     prelude: Option<String>,
-    rx: mpsc::UnboundedReceiver<Value>,
+    rx: Inbound,
     /// A POST's stream ends once the responses to these request ids went out; a
     /// notification stream (`None`) runs until its session ends.
     until: Option<HashSet<String>>,
@@ -313,7 +338,7 @@ async fn read_chunked<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Res
                 }
             }
         }
-        if body.len() + size > MAX_BODY {
+        if body.len().checked_add(size).is_none_or(|total| total > MAX_BODY) {
             return Err(RequestError::Bad(413, "Payload Too Large"));
         }
         let start = body.len();
@@ -339,6 +364,7 @@ fn reason(status: u16) -> &'static str {
         413 => "Payload Too Large",
         415 => "Unsupported Media Type",
         431 => "Request Header Fields Too Large",
+        503 => "Service Unavailable",
         _ => "Error",
     }
 }
@@ -384,7 +410,7 @@ async fn write_sse<W: AsyncWrite + Unpin>(write: &mut W, mut sse: Sse, chunked: 
     while !sse.until.as_ref().is_some_and(HashSet::is_empty) {
         tokio::select! {
             biased;
-            message = sse.rx.recv() => {
+            message = sse.rx.rx.recv() => {
                 let Some(message) = message else { break };
                 if let Some(until) = &mut sse.until
                     && message.get("method").is_none()
@@ -395,6 +421,8 @@ async fn write_sse<W: AsyncWrite + Unpin>(write: &mut W, mut sse: Sse, chunked: 
                 put(write, &format!("event: message\ndata: {message}\n\n"), chunked).await?;
             }
             _ = sse.closed.cancelled() => break,
+            // The client read too slowly: the stream ends rather than buffering forever.
+            _ = sse.rx.overflow.cancelled() => break,
             _ = tokio::time::sleep(sse.heartbeat) => put(write, ": heartbeat\n\n", chunked).await?,
         }
     }
@@ -526,7 +554,7 @@ async fn post(shared: &Arc<Shared>, request: &Request) -> Response {
         && accepts_sse(request)
         && protocol::wants_stream(shared, s, &body)
     {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = Outbound::channel();
         let id = body.get("id").map(Value::to_string).unwrap_or_default();
         let ctx = Ctx { session: Some(s.clone()), outbound: Some(tx.clone()), project_header };
         let heartbeat = shared.timing.read().heartbeat;
@@ -595,7 +623,10 @@ fn legacy_stream(shared: &Arc<Shared>, request: &Request) -> Response {
     }
     let session = Arc::new(Session::new(uuid::Uuid::new_v4().simple().to_string(), true, request.project_header()));
     let Some((_, rx)) = session.open_stream() else { unreachable!("a new session has no stream") };
-    shared.add_session(session.clone());
+    if !shared.add_session(session.clone()) {
+        session.close();
+        return Response::text(503, "Service Unavailable: too many active MCP sessions");
+    }
     let prelude = format!("event: endpoint\ndata: {MESSAGE_ENDPOINT}?sessionId={}\n\n", session.id);
     let (owner, id) = (shared.clone(), session.id.clone());
     Response::sse(Sse {
@@ -731,8 +762,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_chunk_sizes_that_overflow() {
+        let raw = b"POST /mcp HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\nffffffffffffffff\r\n";
+        let mut r = BufReader::new(&raw[..]);
+        assert!(matches!(read_request(&mut r).await, Err(RequestError::Bad(413, _))));
+    }
+
+    #[tokio::test]
+    async fn refuses_connections_beyond_the_limit() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move { listener.accept().await.unwrap().0 });
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        refuse_busy(accept.await.unwrap()).await;
+        let mut answer = String::new();
+        client.read_to_string(&mut answer).await.unwrap();
+        assert!(answer.starts_with("HTTP/1.1 503 Service Unavailable\r\n"), "{answer}");
+        assert!(answer.contains("Connection: close"), "{answer}");
+    }
+
+    #[tokio::test]
+    async fn ends_a_stream_whose_buffer_overflowed() {
+        let (tx, rx) = Outbound::with_capacity(1);
+        let sse = Sse {
+            prelude: None,
+            rx,
+            until: None,
+            closed: CancellationToken::new(),
+            heartbeat: Duration::from_secs(60),
+            _on_end: OnEnd(None),
+        };
+        tx.send(serde_json::json!({ "method": "a" })).unwrap();
+        assert!(tx.send(serde_json::json!({ "method": "b" })).is_err());
+        let mut out = Vec::new();
+        // A notification stream (no `until`) would run forever otherwise.
+        tokio::time::timeout(Duration::from_secs(5), write_sse(&mut out, sse, false)).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn writes_sse_until_the_responses_went_out() {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = Outbound::channel();
         let sse = Sse {
             prelude: None,
             rx,

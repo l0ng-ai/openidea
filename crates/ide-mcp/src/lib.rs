@@ -60,7 +60,7 @@ pub(crate) struct Config {
     pub filter: filter::FilterSettings,
 }
 
-/// Sessions kept at most; clients rarely end theirs, so the oldest go first.
+/// Sessions kept at most; clients rarely end theirs, so the oldest idle ones go first.
 pub(crate) const MAX_SESSIONS: usize = 256;
 /// Intervals that tests shorten.
 #[derive(Clone, Copy)]
@@ -119,8 +119,9 @@ impl Shared {
         self.sessions.lock().get(id).cloned()
     }
 
-    pub fn add_session(&self, session: Arc<Session>) {
-        session::insert(&mut self.sessions.lock(), session, MAX_SESSIONS);
+    /// Adds a session; `false` when the server holds [`MAX_SESSIONS`] busy ones already.
+    pub fn add_session(&self, session: Arc<Session>) -> bool {
+        session::insert(&mut self.sessions.lock(), session, MAX_SESSIONS)
     }
 
     pub fn remove_session(&self, id: &str) -> bool {

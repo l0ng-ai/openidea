@@ -12,12 +12,58 @@ use parking_lot::{Mutex, RwLock};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
+/// Messages an SSE stream holds before it is written; a client that reads slower than
+/// the server writes loses the stream instead of growing the buffer without bound.
+pub(crate) const STREAM_CAPACITY: usize = 1024;
+
 /// Where JSON-RPC messages for the client go: an SSE stream's writer.
-pub(crate) type Outbound = mpsc::UnboundedSender<Value>;
+#[derive(Clone)]
+pub(crate) struct Outbound {
+    tx: mpsc::Sender<Value>,
+    overflow: CancellationToken,
+}
+
+/// The reading end of an [`Outbound`]: the stream ends when `overflow` is cancelled.
+pub(crate) struct Inbound {
+    pub rx: mpsc::Receiver<Value>,
+    pub overflow: CancellationToken,
+}
+
+impl Outbound {
+    pub fn channel() -> (Outbound, Inbound) {
+        Self::with_capacity(STREAM_CAPACITY)
+    }
+
+    pub fn with_capacity(capacity: usize) -> (Outbound, Inbound) {
+        let (tx, rx) = mpsc::channel(capacity);
+        let overflow = CancellationToken::new();
+        (Outbound { tx, overflow: overflow.clone() }, Inbound { rx, overflow })
+    }
+
+    /// Queues `message`; a full buffer ends the stream (the message comes back).
+    pub fn send(&self, message: Value) -> Result<(), Value> {
+        if self.overflow.is_cancelled() {
+            return Err(message);
+        }
+        match self.tx.try_send(message) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(m)) => {
+                tracing::debug!("MCP stream: the client does not read; the stream is dropped");
+                self.overflow.cancel();
+                Err(m)
+            }
+            Err(mpsc::error::TrySendError::Closed(m)) => Err(m),
+        }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.tx.is_closed() || self.overflow.is_cancelled()
+    }
+}
 
 /// How long the client gets to list its roots.
 pub(crate) const ROOTS_TIMEOUT: Duration = Duration::from_secs(30);
@@ -75,6 +121,17 @@ pub(crate) struct Session {
     pub advertised_stripped: Mutex<Option<bool>>,
     /// Cancelled when the session ends; its streams end with it.
     pub closed: CancellationToken,
+    /// `tools/call`s running ([`Session::call_started`]).
+    calls: AtomicUsize,
+}
+
+/// Counts a running call of a session until dropped.
+pub(crate) struct RunningCall(Arc<Session>);
+
+impl Drop for RunningCall {
+    fn drop(&mut self) {
+        self.0.calls.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl Session {
@@ -92,7 +149,19 @@ impl Session {
             next_request: AtomicU64::new(1),
             advertised_stripped: Mutex::default(),
             closed: CancellationToken::new(),
+            calls: AtomicUsize::new(0),
         }
+    }
+
+    /// Counts a call as running until the returned guard is dropped.
+    pub fn call_started(self: &Arc<Self>) -> RunningCall {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        RunningCall(self.clone())
+    }
+
+    /// Neither a stream nor a call keeps it busy: it may be evicted.
+    pub fn is_idle(&self) -> bool {
+        !self.has_stream() && self.calls.load(Ordering::Relaxed) == 0
     }
 
     pub fn client_name(&self) -> String {
@@ -107,13 +176,13 @@ impl Session {
     }
 
     /// Opens the notification stream; `None` while another one is open.
-    pub fn open_stream(&self) -> Option<(u64, mpsc::UnboundedReceiver<Value>)> {
+    pub fn open_stream(&self) -> Option<(u64, Inbound)> {
         let mut stream = self.stream.lock();
         if stream.as_ref().is_some_and(|(_, tx)| !tx.is_closed()) {
             return None;
         }
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = Outbound::channel();
         *stream = Some((generation, tx));
         Some((generation, rx))
     }
@@ -135,7 +204,7 @@ impl Session {
         let message = match via {
             Some(v) => match v.send(message) {
                 Ok(()) => return true,
-                Err(mpsc::error::SendError(m)) => m,
+                Err(m) => m,
             },
             None => message,
         };
@@ -245,13 +314,63 @@ impl Session {
     }
 }
 
-/// Keeps a session id → session map bounded and closes what leaves it.
-pub(crate) fn insert(sessions: &mut HashMap<String, Arc<Session>>, session: Arc<Session>, max: usize) {
+/// Keeps a session id → session map bounded: when it is full, the oldest idle session
+/// (no open stream, no call running) is closed to make room. `false` (and nothing
+/// inserted) when every session is busy.
+pub(crate) fn insert(sessions: &mut HashMap<String, Arc<Session>>, session: Arc<Session>, max: usize) -> bool {
     while sessions.len() >= max {
-        let Some(oldest) = sessions.iter().min_by_key(|(_, s)| s.created).map(|(k, _)| k.clone()) else { break };
+        let oldest =
+            sessions.iter().filter(|(_, s)| s.is_idle()).min_by_key(|(_, s)| s.created).map(|(k, _)| k.clone());
+        let Some(oldest) = oldest else { return false };
         if let Some(s) = sessions.remove(&oldest) {
             s.close();
         }
     }
     sessions.insert(session.id.clone(), session);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(id: &str) -> Arc<Session> {
+        Arc::new(Session::new(id.into(), false, None))
+    }
+
+    #[test]
+    fn evicts_the_oldest_idle_session_only() {
+        let mut sessions = HashMap::new();
+        let (streaming, calling, idle) = (session("streaming"), session("calling"), session("idle"));
+        let _stream = streaming.open_stream().unwrap();
+        let call = calling.call_started();
+        for s in [&streaming, &calling, &idle] {
+            assert!(insert(&mut sessions, s.clone(), 3));
+        }
+        // Full: the idle one goes although it is the newest.
+        assert!(insert(&mut sessions, session("new"), 3));
+        assert!(idle.closed.is_cancelled() && !sessions.contains_key("idle"));
+        assert!(sessions.contains_key("streaming") && sessions.contains_key("calling"));
+        // `new` is idle now and goes next; then nobody can.
+        assert!(insert(&mut sessions, session("newer"), 3));
+        assert!(!sessions.contains_key("new"));
+        let _newer_stream = sessions["newer"].open_stream().unwrap();
+        assert!(!insert(&mut sessions, session("refused"), 3));
+        assert!(!sessions.contains_key("refused") && sessions.len() == 3);
+        // The call ended: its session may go.
+        drop(call);
+        assert!(insert(&mut sessions, session("late"), 3));
+        assert!(!sessions.contains_key("calling"));
+    }
+
+    #[test]
+    fn a_full_stream_is_dropped_instead_of_buffering() {
+        let (tx, mut inbound) = Outbound::with_capacity(2);
+        assert!(tx.send(json!(1)).is_ok() && tx.send(json!(2)).is_ok());
+        assert_eq!(tx.send(json!(3)), Err(json!(3)));
+        assert!(inbound.overflow.is_cancelled() && tx.is_closed());
+        // Nothing more is queued even after the reader caught up.
+        assert_eq!(inbound.rx.try_recv().unwrap(), json!(1));
+        assert!(tx.send(json!(4)).is_err());
+    }
 }

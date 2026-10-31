@@ -23,6 +23,8 @@ pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 pub const INTERNAL_ERROR: i64 = -32603;
+/// Server error: no room for another session.
+pub const SERVER_BUSY: i64 = -32000;
 
 /// The name in `serverInfo` (JetBrains: "<product> MCP Server").
 pub const SERVER_NAME: &str = "OpenIDEA MCP Server";
@@ -155,7 +157,8 @@ fn notification(shared: &Arc<Shared>, ctx: &Ctx, method: &str, params: &Map<Stri
     match method {
         "notifications/cancelled" => {
             if let Some(request) = params.get("requestId")
-                && let Some(token) = shared.inflight.lock().get(&inflight_key(session.map(|s| s.id.as_str()), request))
+                && let Some(key) = inflight_key(session.map(|s| s.id.as_str()), request)
+                && let Some(token) = shared.inflight.lock().get(&key)
             {
                 token.cancel();
             }
@@ -175,8 +178,17 @@ fn notification(shared: &Arc<Shared>, ctx: &Ctx, method: &str, params: &Map<Stri
     }
 }
 
-fn inflight_key(session: Option<&str>, request: &Value) -> String {
-    format!("{}\u{0}{request}", session.unwrap_or(""))
+/// The key a session's call is cancelled by (`notifications/cancelled`). Calls without a
+/// session cannot be told apart by their ids (every client counts from 0): they have none.
+fn inflight_key(session: Option<&str>, request: &Value) -> Option<String> {
+    session.map(|s| format!("{s}\u{0}{request}"))
+}
+
+/// The key a call is registered under: [`inflight_key`], or a key of its own without a session.
+fn call_key(session: Option<&str>, request: &Value) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    inflight_key(session, request)
+        .unwrap_or_else(|| format!("\u{1}{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
 }
 
 /// Asks the client for its roots in the background when it has some, they are not
@@ -257,7 +269,9 @@ fn initialize(shared: &Arc<Shared>, ctx: &Ctx, id: Value, params: &Map<String, V
         _ => {
             let s =
                 Arc::new(Session::new(uuid::Uuid::new_v4().simple().to_string(), false, ctx.project_header.clone()));
-            shared.add_session(s.clone());
+            if !shared.add_session(s.clone()) {
+                return (None, error(id, SERVER_BUSY, "Too many active MCP sessions; end an unused one and try again"));
+            }
             (s.clone(), Some(s.id.clone()))
         }
     };
@@ -334,8 +348,10 @@ async fn call_tool(shared: &Arc<Shared>, ctx: &Ctx, id: Value, mut params: Map<S
     shared.history.set_project(&started, &root);
 
     let cancel = shared.stop.lock().child_token();
-    let key = inflight_key(session.as_ref().map(|s| s.id.as_str()), &id);
+    let key = call_key(session.as_ref().map(|s| s.id.as_str()), &id);
     shared.inflight.lock().insert(key.clone(), cancel.clone());
+    // A session with a call running is not evicted.
+    let _running = session.as_ref().map(|s| s.call_started());
     let token = meta.and_then(|m| m.get("progressToken")).filter(|t| t.is_string() || t.is_number()).cloned();
     let (forwarder, progress) = match (&session, token) {
         (Some(s), Some(token)) => {
@@ -408,6 +424,15 @@ fn tool_error(message: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calls_without_a_session_have_keys_of_their_own() {
+        let id = json!(1);
+        assert_ne!(call_key(None, &id), call_key(None, &id));
+        assert_eq!(inflight_key(None, &id), None, "nothing to cancel by id");
+        assert_eq!(call_key(Some("s"), &id), inflight_key(Some("s"), &id).unwrap());
+        assert_ne!(call_key(Some("s"), &id), call_key(Some("t"), &id));
+    }
 
     #[test]
     fn strips_project_path_from_schemas() {

@@ -122,13 +122,30 @@ impl CallHistory {
     }
 }
 
-/// Whether an argument's name says its value is a secret.
+/// Whether an argument's (or environment variable's) name says its value is a secret.
 fn is_secret(name: &str) -> bool {
     let n = name.to_ascii_lowercase().replace(['_', '-'], "");
     ["token", "secret", "password", "passwd", "apikey", "authorization", "credential", "privatekey", "cookie"]
         .iter()
         .any(|s| n.contains(s))
         || n == "auth"
+        || is_secret_env(name)
+}
+
+/// Environment-style names of secrets: `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_KEY`, `*_PAT`,
+/// `DATABASE_URL`, `AWS_ACCESS_KEY_ID`.
+fn is_secret_env(name: &str) -> bool {
+    let n = name.to_ascii_uppercase();
+    ["_TOKEN", "_SECRET", "_PASSWORD", "_KEY", "_PAT"].iter().any(|s| n.ends_with(s))
+        || n == "DATABASE_URL"
+        || n == "AWS_ACCESS_KEY_ID"
+}
+
+/// A command-line flag whose value is a secret: `--*pass*`, `--*token*`, `--*secret*`, `--*key*`.
+fn is_secret_flag(flag: &str) -> bool {
+    let Some(name) = flag.strip_prefix("--") else { return false };
+    let name = name.to_ascii_lowercase();
+    !name.is_empty() && ["pass", "token", "secret", "key"].iter().any(|s| name.contains(s))
 }
 
 /// `args` as compact JSON with secret-looking values replaced by `***` and long strings cut.
@@ -159,23 +176,91 @@ pub fn summarize_arguments(args: &Map<String, Value>) -> String {
     }
 }
 
-/// `API_TOKEN=abc` and `Bearer abc` inside a string (a command line) with the value replaced by `***`.
+/// Secrets inside a string (a command line) with the value replaced by `***`: `API_TOKEN=abc`,
+/// `Bearer abc`, `--password abc` / `--token=abc`, `-u user:pass` (curl), and the user info of
+/// URLs (`https://user:pass@host` → `https://***@host`).
 fn redact_assignments(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut bearer = false;
+    let mut mask_next = false;
+    let mut basic_auth_next = false;
     for (i, word) in s.split(' ').enumerate() {
         if i > 0 {
             out.push(' ');
         }
+        let (masked, basic_auth) = (mask_next, basic_auth_next);
+        mask_next = false;
+        basic_auth_next = false;
+        if word.is_empty() {
+            // Several spaces: the value is the next word.
+            (mask_next, basic_auth_next) = (masked, basic_auth);
+            continue;
+        }
+        if masked {
+            out.push_str("***");
+            continue;
+        }
+        if basic_auth && let Some((user, _)) = word.split_once(':') {
+            out.push_str(user);
+            out.push_str(":***");
+            continue;
+        }
+        let word = redact_url_userinfo(word);
         match word.split_once('=') {
-            _ if bearer && !word.is_empty() => out.push_str("***"),
-            Some((key, value)) if !value.is_empty() && is_secret(key.trim_start_matches('-')) => {
+            Some((key, value))
+                if !value.is_empty() && (is_secret(key.trim_start_matches('-')) || is_secret_flag(key)) =>
+            {
                 out.push_str(key);
                 out.push_str("=***");
             }
-            _ => out.push_str(word),
+            _ => {
+                out.push_str(&word);
+                mask_next = word.eq_ignore_ascii_case("bearer") || is_secret_flag(&word);
+                basic_auth_next = word == "-u" || word == "--user";
+            }
         }
-        bearer = word.eq_ignore_ascii_case("bearer");
     }
     out
+}
+
+/// `scheme://user:pass@host/...` with the user info replaced by `***`.
+fn redact_url_userinfo(word: &str) -> std::borrow::Cow<'_, str> {
+    let Some(scheme_end) = word.find("://") else { return word.into() };
+    let authority_start = scheme_end + 3;
+    let rest = &word[authority_start..];
+    let authority_len = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..authority_len].rfind('@') {
+        Some(at) => format!("{}***{}", &word[..authority_start], &rest[at..]).into(),
+        None => word.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn masks_secret_flags_urls_and_environment_names() {
+        let cases = [
+            ("mysql --password hunter2 -h db", "mysql --password *** -h db"),
+            ("tool --api-token=abc --verbose", "tool --api-token=*** --verbose"),
+            ("cli --client-secret  s3cr3t", "cli --client-secret  ***"),
+            ("ssh-add --key ~/.ssh/id", "ssh-add --key ***"),
+            ("curl -u alice:wonderland https://x", "curl -u alice:*** https://x"),
+            ("curl -u alice https://x", "curl -u alice https://x"),
+            ("git clone https://bob:pw@github.com/o/r.git", "git clone https://***@github.com/o/r.git"),
+            ("psql postgres://u:p@localhost:5432/db?x=y@z", "psql postgres://***@localhost:5432/db?x=y@z"),
+            ("open https://example.com/a@b", "open https://example.com/a@b"),
+            (
+                "GITHUB_PAT=ghp_1 DATABASE_URL=pg://h AWS_ACCESS_KEY_ID=AK STRIPE_KEY=sk run",
+                "GITHUB_PAT=*** DATABASE_URL=*** AWS_ACCESS_KEY_ID=*** STRIPE_KEY=*** run",
+            ),
+            ("PATH=/bin MONKEY=1 ls", "PATH=/bin MONKEY=1 ls"),
+            ("curl -H 'Authorization: Bearer xyz'", "curl -H 'Authorization: Bearer ***"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(redact_assignments(input), expected, "{input}");
+        }
+        assert!(is_secret("OPENAI_API_KEY") && is_secret("my_pat") && is_secret("DATABASE_URL"));
+        assert!(!is_secret("path") && !is_secret("keyword"));
+    }
 }
