@@ -1,6 +1,13 @@
-//! Patches as AI agents write them: the Codex `apply_patch` format and unified
-//! (git) diffs. Parsing and applying hunks to a text are pure, so they are tested
-//! here; the tool in `edit.rs` resolves paths and writes through the documents.
+// Ported from JetBrains intellij-community plugins/mcp-server (mcpserver.toolsets/src/general/PatchApplyEngine.kt), Apache-2.0.
+//! Patches as AI agents write them: the Codex `apply_patch` format (with the
+//! strict `@@` pair blocks some models write) and unified (git) diffs, bare or
+//! inside `*** Begin Patch`. Parsing and applying hunks to a text are pure, so
+//! they are tested here; the tool in `edit.rs` resolves paths and writes through
+//! the documents.
+//!
+//! Beyond JetBrains: stacked `@@` anchors, unified hunk line numbers as hints,
+//! `\ No newline at end of file`, plain `diff -u` / `diff -ru` names, and errors
+//! that show where a hunk went wrong.
 
 use std::fmt::Write as _;
 
@@ -25,14 +32,22 @@ pub enum FileOp {
     },
 }
 
+impl FileOp {
+    pub fn path(&self) -> &str {
+        match self {
+            FileOp::Add { path, .. } | FileOp::Delete { path } | FileOp::Update { path, .. } => path,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hunk {
-    /// Codex `@@ <line>` anchors: found in order before the hunk's lines.
+    /// `@@ <line>` anchors: found in order before the hunk's lines.
     pub anchors: Vec<String>,
-    /// Unified diffs: the 1-based start in the old file, a hint where to look.
+    /// `@@ -a,b +c,d @@`: the 1-based start in the old file, a hint where to look.
     pub old_start: Option<usize>,
     pub lines: Vec<Line>,
-    /// Codex `*** End of File`: the lines end the file.
+    /// `*** End of File`: the lines end the file.
     pub at_eof: bool,
     /// `\ No newline at end of file` after the old / new side.
     pub old_no_newline: bool,
@@ -77,72 +92,125 @@ impl Hunk {
     }
 }
 
-/// Parses either format (detected from its first header).
-pub fn parse(input: &str) -> Result<Vec<FileOp>, String> {
-    let lines: Vec<&str> = input.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
-    let codex = lines.iter().position(|l| l.trim() == "*** Begin Patch");
-    let unified = lines.iter().position(|l| {
-        l.starts_with("diff --git ") || l.starts_with("--- ") || l.starts_with("+++ ") || l.starts_with("@@ -")
-    });
-    let ops = match (codex, unified) {
-        (Some(c), u) if u.is_none_or(|u| c < u) => parse_codex(&lines, c)?,
-        (_, Some(_)) => parse_unified(&lines)?,
-        _ => {
-            return Err("the input is not a patch: expected the apply_patch format (`*** Begin Patch` … \
-`*** End Patch`) or a unified diff (`--- a/path`, `+++ b/path`, `@@ -1,2 +1,3 @@`)"
-                .into());
-        }
-    };
-    if ops.is_empty() {
-        return Err("the patch changes no files".into());
-    }
-    Ok(ops)
-}
-
-// --- the Codex format -----------------------------------------------------------
-
+const BEGIN_PATCH: &str = "*** Begin Patch";
+const END_PATCH: &str = "*** End Patch";
 const ADD: &str = "*** Add File: ";
 const DELETE: &str = "*** Delete File: ";
 const UPDATE: &str = "*** Update File: ";
 const MOVE: &str = "*** Move to: ";
-const END_PATCH: &str = "*** End Patch";
 const END_OF_FILE: &str = "*** End of File";
+const DIFF_GIT: &str = "diff --git ";
 
-fn is_codex_header(line: &str) -> bool {
-    line.starts_with(ADD) || line.starts_with(DELETE) || line.starts_with(UPDATE) || line.trim() == END_PATCH
-}
-
-fn header_path(line: &str, prefix: &str, n: usize) -> Result<String, String> {
-    let path = line[prefix.len()..].trim();
-    if path.is_empty() { Err(format!("line {n}: `{}` without a path", prefix.trim())) } else { Ok(path.to_owned()) }
-}
-
-fn parse_codex(lines: &[&str], start: usize) -> Result<Vec<FileOp>, String> {
-    let mut ops = Vec::new();
-    let mut i = start + 1;
-    loop {
-        let Some(&line) = lines.get(i) else {
-            return Err(format!("missing `{END_PATCH}`: the patch looks truncated"));
-        };
-        let n = i + 1;
-        if line.trim() == END_PATCH {
-            return Ok(ops);
+/// Parses either format: `*** Begin Patch` … `*** End Patch` (holding the Codex
+/// format or a git diff), else a bare unified diff.
+pub fn parse(input: &str) -> Result<Vec<FileOp>, String> {
+    let lines: Vec<&str> = input.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    let ops = match lines.iter().position(|l| l.trim() == BEGIN_PATCH) {
+        Some(begin) => {
+            let end = lines[begin + 1..]
+                .iter()
+                .position(|l| l.trim() == END_PATCH)
+                .map(|e| begin + 1 + e)
+                .ok_or("patch must include *** End Patch (the patch looks truncated)")?;
+            let body = &lines[begin + 1..end];
+            // `--- x` also removes a `-- x` line (SQL, Lua comments): only a body without
+            // Codex headers is read as a diff.
+            let codex = body.iter().any(|l| {
+                let t = l.trim_start();
+                t.starts_with(ADD) || t.starts_with(DELETE) || t.starts_with(UPDATE)
+            });
+            if !codex && looks_like_git_diff(body) {
+                parse_unified(body, begin + 1)?
+            } else {
+                parse_codex(body, begin + 1)?
+            }
         }
-        if line.starts_with(ADD) {
-            let path = header_path(line, ADD, n)?;
+        None if looks_like_git_diff(&lines) => parse_unified(&lines, 0)?,
+        None => {
+            return Err("patch must include *** Begin Patch (or be a unified diff with `--- a/path` and \
+`+++ b/path` headers)"
+                .into());
+        }
+    };
+    if ops.is_empty() {
+        return Err("patch did not contain any operations".into());
+    }
+    Ok(ops)
+}
+
+fn looks_like_git_diff(lines: &[&str]) -> bool {
+    let mut markers = false;
+    for line in lines {
+        let t = line.trim_start();
+        if t.starts_with(DIFF_GIT) || t.starts_with("rename from ") || t.starts_with("rename to ") {
+            return true;
+        }
+        markers |= line.starts_with("--- ") || line.starts_with("+++ ");
+    }
+    markers
+}
+
+/// Refuses paths with control characters, or with `\n`-style escapes a model wrote
+/// instead of a real path.
+fn ensure_safe_path(path: &str, label: &str) -> Result<(), String> {
+    let control = path.chars().any(|c| c.is_ascii_control());
+    let escaped = ["\\n", "\\r", "\\t"].iter().any(|e| path.contains(e));
+    if control || escaped {
+        Err(format!("{label} path contains control characters or escape sequences"))
+    } else {
+        Ok(())
+    }
+}
+
+// --- the Codex format -----------------------------------------------------------
+
+fn is_diff_prefix(c: char) -> bool {
+    matches!(c, ' ' | '+' | '-')
+}
+
+/// `*** Add File:` and the like (not `*** End of File`, which belongs to a hunk).
+fn is_patch_header(line: &str) -> bool {
+    match line.chars().next() {
+        None => false,
+        Some(c) if is_diff_prefix(c) => false,
+        Some(_) => {
+            let t = line.trim_start();
+            t.starts_with("*** ") && t.trim_end() != END_OF_FILE
+        }
+    }
+}
+
+fn is_hunk_header(line: &str) -> bool {
+    line.chars().next().is_some_and(|c| !is_diff_prefix(c)) && line.trim_start().starts_with("@@")
+}
+
+fn op_path(rest: &str, label: &str) -> Result<String, String> {
+    let path = rest.trim();
+    if path.is_empty() {
+        return Err(format!("{label} requires a path"));
+    }
+    ensure_safe_path(path, label)?;
+    Ok(path.to_owned())
+}
+
+/// `lines[start..]` is the body after `*** Begin Patch`; `offset` numbers lines in errors.
+fn parse_codex(body: &[&str], offset: usize) -> Result<Vec<FileOp>, String> {
+    let mut ops = Vec::new();
+    let mut i = 0;
+    let n = |i: usize| i + offset + 1;
+    while i < body.len() {
+        let line = body[i];
+        let header = line.trim_start();
+        if let Some(rest) = header.strip_prefix(ADD) {
+            let path = op_path(rest, "Add File")?;
             i += 1;
             // (text, written with `+`): blank separator lines before the next header are dropped.
             let mut content: Vec<(&str, bool)> = Vec::new();
-            while let Some(&l) = lines.get(i).filter(|l| !is_codex_header(l)) {
+            while let Some(&l) = body.get(i).filter(|l| !is_patch_header(l)) {
                 match l.strip_prefix('+') {
                     Some(text) => content.push((text, true)),
                     None if l.trim().is_empty() => content.push(("", false)),
-                    None => {
-                        return Err(format!(
-                            "line {}: every line of `{ADD}{path}` must start with `+`, found `{l}`",
-                            i + 1
-                        ));
-                    }
+                    None => return Err(format!("Add File lines must start with + (line {}: `{l}`)", n(i))),
                 }
                 i += 1;
             }
@@ -154,87 +222,136 @@ fn parse_codex(lines: &[&str], start: usize) -> Result<Vec<FileOp>, String> {
                 text.push('\n');
             }
             ops.push(FileOp::Add { path, text });
-        } else if line.starts_with(DELETE) {
-            ops.push(FileOp::Delete { path: header_path(line, DELETE, n)? });
+        } else if let Some(rest) = header.strip_prefix(DELETE) {
+            ops.push(FileOp::Delete { path: op_path(rest, "Delete File")? });
             i += 1;
-        } else if line.starts_with(UPDATE) {
-            let path = header_path(line, UPDATE, n)?;
+        } else if let Some(rest) = header.strip_prefix(UPDATE) {
+            let path = op_path(rest, "Update File")?;
             i += 1;
             let mut move_to = None;
-            if let Some(&l) = lines.get(i).filter(|l| l.starts_with(MOVE)) {
-                move_to = Some(header_path(l, MOVE, i + 1)?);
+            if let Some(rest) =
+                body.get(i).filter(|l| is_patch_header(l)).and_then(|l| l.trim_start().strip_prefix(MOVE))
+            {
+                move_to = Some(op_path(rest, "Move to")?);
                 i += 1;
             }
-            let hunks = parse_codex_hunks(lines, &mut i, &path)?;
+            let mut hunks = Vec::new();
+            while i < body.len() && !is_patch_header(body[i]) {
+                if body[i].trim().is_empty() {
+                    i += 1;
+                    continue;
+                }
+                hunks.push(parse_codex_hunk(body, &mut i, hunks.is_empty(), offset)?);
+            }
+            // A move alone needs no hunk (JetBrains requires one).
             if hunks.is_empty() && move_to.is_none() {
-                return Err(format!("line {n}: `{UPDATE}{path}` has no changes"));
+                return Err("Update File requires at least one hunk".into());
             }
             ops.push(FileOp::Update { path, move_to, hunks, or: Vec::new() });
         } else if line.trim().is_empty() {
             i += 1;
         } else {
-            return Err(format!("line {n}: expected `{ADD}`, `{DELETE}`, `{UPDATE}` or `{END_PATCH}`, found `{line}`"));
+            return Err(format!("Unexpected patch line: {line}"));
         }
     }
+    Ok(ops)
 }
 
-fn parse_codex_hunks(lines: &[&str], i: &mut usize, path: &str) -> Result<Vec<Hunk>, String> {
-    let mut hunks = Vec::new();
-    let mut cur: Option<Hunk> = None;
+fn parse_codex_hunk(body: &[&str], i: &mut usize, first: bool, offset: usize) -> Result<Hunk, String> {
+    let mut hunk = Hunk::default();
+    let mut bare = false;
+    let mut headed = false;
+    // Several `@@` lines narrow the place down, as in Codex.
+    while let Some(&line) = body.get(*i).filter(|l| is_hunk_header(l)) {
+        let trimmed = line.trim();
+        match parse_range_header(trimmed) {
+            Some((start, ..)) => hunk.old_start = Some(start),
+            None => {
+                let text = trimmed.trim_start_matches('@').trim();
+                // `@@ fn main() @@` repeats the marker at the end sometimes.
+                let text = text.trim_end_matches('@').trim_end();
+                if !text.is_empty() {
+                    hunk.anchors.push(text.to_owned());
+                }
+            }
+        }
+        bare = trimmed == "@@";
+        headed = true;
+        *i += 1;
+    }
+    let n = |i: usize| i + offset + 1;
+    if !headed {
+        let line = body[*i];
+        if !first || !line.chars().next().is_none_or(is_diff_prefix) {
+            return Err(format!("Expected @@ hunk header (line {}: `{line}`)", n(*i)));
+        }
+    }
+    let is_strict_start =
+        |l: &str| !l.is_empty() && !is_patch_header(l) && !is_hunk_header(l) && !l.starts_with(is_diff_prefix);
+    if bare && body.get(*i).is_some_and(|l| is_strict_start(l)) {
+        return parse_strict_pair(body, i);
+    }
     // Blank lines at the end of a hunk are usually separators, not context.
     let mut implicit_blanks = 0usize;
-    let finish = |h: Option<Hunk>, blanks: usize, hunks: &mut Vec<Hunk>| {
-        if let Some(mut h) = h {
-            h.lines.truncate(h.lines.len() - blanks);
-            if !h.lines.is_empty() {
-                hunks.push(h);
-            }
-        }
-    };
-    while let Some(&line) = lines.get(*i).filter(|l| !is_codex_header(l)) {
-        let n = *i + 1;
-        *i += 1;
+    while let Some(&line) = body.get(*i).filter(|l| !is_hunk_header(l) && !is_patch_header(l)) {
         if line.trim_end() == END_OF_FILE {
-            match cur.as_mut() {
-                Some(h) => h.at_eof = true,
-                None => return Err(format!("line {n}: `{END_OF_FILE}` before any change in `{path}`")),
-            }
-            finish(cur.take(), implicit_blanks, &mut hunks);
-            implicit_blanks = 0;
-            continue;
+            hunk.at_eof = true;
+            *i += 1;
+            break;
         }
-        if let Some(anchor) = line.strip_prefix("@@") {
-            if cur.as_ref().is_some_and(|h| !h.lines.is_empty()) {
-                finish(cur.take(), implicit_blanks, &mut hunks);
-            }
-            implicit_blanks = 0;
-            // `@@ fn main() @@` repeats the marker at the end sometimes.
-            let anchor = anchor.trim();
-            let anchor = anchor.strip_suffix("@@").map(str::trim_end).unwrap_or(anchor);
-            let h = cur.get_or_insert_with(Hunk::default);
-            if !anchor.is_empty() {
-                h.anchors.push(anchor.to_owned());
-            }
-            continue;
-        }
-        let h = cur.get_or_insert_with(Hunk::default);
         let parsed = match line.chars().next() {
+            None => Line::Context(String::new()),
             Some(' ') => Line::Context(line[1..].to_owned()),
             Some('-') => Line::Remove(line[1..].to_owned()),
             Some('+') => Line::Add(line[1..].to_owned()),
-            None => Line::Context(String::new()),
-            Some(_) => {
-                return Err(format!(
-                    "line {n}: unexpected `{line}` in the changes of `{path}`: lines must start with ' ' (context), \
-'-' (remove) or '+' (add)"
-                ));
+            Some(_) if hunk.lines.is_empty() => {
+                return Err(format!("Hunk lines must start with space, +, or - (line {}: `{line}`)", n(*i)));
             }
+            Some(_) => break,
         };
         implicit_blanks = if line.is_empty() { implicit_blanks + 1 } else { 0 };
-        h.lines.push(parsed);
+        hunk.lines.push(parsed);
+        *i += 1;
     }
-    finish(cur, implicit_blanks, &mut hunks);
-    Ok(hunks)
+    hunk.lines.truncate(hunk.lines.len() - implicit_blanks);
+    if hunk.lines.is_empty() {
+        return Err("Empty hunk in Update File".into());
+    }
+    Ok(hunk)
+}
+
+/// `@@`, the old lines, `@@`, the new lines: whole lines without `-` / `+` prefixes.
+fn parse_strict_pair(body: &[&str], i: &mut usize) -> Result<Hunk, String> {
+    let mut old = Vec::new();
+    let mut closed = false;
+    while let Some(&line) = body.get(*i).filter(|l| !is_patch_header(l)) {
+        *i += 1;
+        if line.trim() == "@@" {
+            closed = true;
+            break;
+        }
+        old.push(line);
+    }
+    if !closed {
+        return Err("Strict @@ pair hunk requires second @@ delimiter".into());
+    }
+    let mut new = Vec::new();
+    while let Some(&line) = body.get(*i).filter(|l| !is_patch_header(l) && !is_hunk_header(l)) {
+        new.push(line);
+        *i += 1;
+    }
+    while new.last().is_some_and(|l| l.trim().is_empty()) {
+        new.pop();
+    }
+    if old.is_empty() && new.is_empty() {
+        return Err("Empty hunk in Update File".into());
+    }
+    let lines = old
+        .into_iter()
+        .map(|l| Line::Remove(l.to_owned()))
+        .chain(new.into_iter().map(|l| Line::Add(l.to_owned())))
+        .collect();
+    Ok(Hunk { lines, ..Hunk::default() })
 }
 
 // --- unified diffs -------------------------------------------------------------
@@ -256,25 +373,24 @@ struct Section {
 
 fn is_file_start(lines: &[&str], i: usize) -> bool {
     let l = lines[i];
-    l.starts_with("diff --git ")
+    l.starts_with(DIFF_GIT)
         || (l.starts_with("--- ") && lines.get(i + 1).is_some_and(|n| n.starts_with("+++ ")) && l != "--- ")
 }
 
-fn parse_unified(lines: &[&str]) -> Result<Vec<FileOp>, String> {
+/// `offset` numbers lines in errors (the diff may sit inside `*** Begin Patch`).
+fn parse_unified(lines: &[&str], offset: usize) -> Result<Vec<FileOp>, String> {
     let mut ops = Vec::new();
     let mut i = 0;
     let mut section: Option<Section> = None;
     while i < lines.len() {
         let line = lines[i];
-        let n = i + 1;
-        if is_file_start(lines, i)
-            && (line.starts_with("diff --git ") || section.as_ref().is_none_or(|s| s.old.is_some()))
-        {
+        let n = i + offset + 1;
+        if is_file_start(lines, i) && (line.starts_with(DIFF_GIT) || section.as_ref().is_none_or(|s| s.old.is_some())) {
             if let Some(s) = section.take() {
                 ops.push(finish_section(s)?);
             }
             let mut s = Section { line: n, ..Section::default() };
-            if let Some(rest) = line.strip_prefix("diff --git ") {
+            if let Some(rest) = line.strip_prefix(DIFF_GIT) {
                 (s.git_old, s.git_new) = split_git_paths(rest);
                 i += 1;
             }
@@ -289,21 +405,22 @@ fn parse_unified(lines: &[&str]) -> Result<Vec<FileOp>, String> {
             i += 1;
             continue;
         };
+        let trimmed = line.trim_start();
         if let Some(p) = line.strip_prefix("--- ") {
             s.old = Some(diff_path(p, "a/"));
         } else if let Some(p) = line.strip_prefix("+++ ") {
             s.new = Some(diff_path(p, "b/"));
-        } else if line.starts_with("new file mode") {
+        } else if trimmed.starts_with("new file mode") {
             s.new_file = true;
-        } else if line.starts_with("deleted file mode") {
+        } else if trimmed.starts_with("deleted file mode") {
             s.deleted = true;
-        } else if let Some(p) = line.strip_prefix("rename from ") {
-            s.rename_from = Some(unquote(p.trim()));
-        } else if let Some(p) = line.strip_prefix("rename to ") {
-            s.rename_to = Some(unquote(p.trim()));
-        } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
-            return Err(format!("line {n}: binary patches are not supported"));
-        } else if line.starts_with("copy from ") || line.starts_with("copy to ") {
+        } else if let Some(p) = trimmed.strip_prefix("rename from ") {
+            s.rename_from = Some(rename_path(p)?);
+        } else if let Some(p) = trimmed.strip_prefix("rename to ") {
+            s.rename_to = Some(rename_path(p)?);
+        } else if trimmed.starts_with("Binary files ") || trimmed == "GIT binary patch" {
+            return Err(format!("Binary git patch is not supported (line {n})"));
+        } else if trimmed.starts_with("copy from ") || trimmed.starts_with("copy to ") {
             return Err(format!("line {n}: copies are not supported; add the new file instead"));
         } else if line.starts_with("@@") {
             if s.old.is_none() && s.new.is_none() && s.git_old.is_none() {
@@ -343,9 +460,15 @@ fn parse_unified_hunk(lines: &[&str], i: &mut usize, header: &str, n: usize) -> 
     let mut hunk = Hunk { old_start: counts.map(|c| c.0), ..Hunk::default() };
     let (mut old_left, mut new_left) = counts.map_or((usize::MAX, usize::MAX), |c| (c.1, c.2));
     let mut implicit_blanks = 0usize;
+    let first = *i;
     while let Some(&line) = lines.get(*i) {
         let done = old_left == 0 && new_left == 0;
         if line.starts_with("@@") || is_file_start(lines, *i) {
+            break;
+        }
+        if line.trim_end() == END_OF_FILE {
+            hunk.at_eof = true;
+            *i += 1;
             break;
         }
         if line.starts_with('\\') {
@@ -368,6 +491,12 @@ fn parse_unified_hunk(lines: &[&str], i: &mut usize, header: &str, n: usize) -> 
             Some('+') => Line::Add(line[1..].to_owned()),
             // Editors strip the space of empty context lines.
             None => Line::Context(String::new()),
+            Some(_) if hunk.lines.is_empty() => {
+                return Err(format!(
+                    "Hunk lines must start with space, +, or - (line {}: `{line}`)",
+                    n + 1 + *i - first
+                ));
+            }
             Some(_) => break,
         };
         match parsed {
@@ -386,15 +515,15 @@ fn parse_unified_hunk(lines: &[&str], i: &mut usize, header: &str, n: usize) -> 
         hunk.lines.truncate(hunk.lines.len() - implicit_blanks);
     }
     if hunk.lines.is_empty() {
-        return Err(format!("line {n}: the hunk `{header}` has no lines"));
+        return Err(format!("Empty hunk in Update File (line {n}: `{header}`)"));
     }
     Ok(hunk)
 }
 
-/// (old start, old count, new count) of `@@ -a[,b] +c[,d] @@`.
+/// (old start, old count, new count) of `@@ -a[,b] +c[,d] @@`; extra `@`s (`@@@`) are accepted.
 fn parse_range_header(header: &str) -> Option<(usize, usize, usize)> {
-    let rest = header.strip_prefix("@@ -")?;
-    let (ranges, _) = rest.split_once(" @@").unwrap_or((rest, ""));
+    let rest = header.trim_start_matches('@').trim_start().strip_prefix('-')?;
+    let (ranges, _) = rest.split_once(" @@").unwrap_or((rest.trim_end_matches('@'), ""));
     let (old, new) = ranges.split_once(" +")?;
     let range = |r: &str| -> Option<(usize, usize)> {
         match r.trim().split_once(',') {
@@ -431,6 +560,11 @@ fn diff_path(raw: &str, prefix: &str) -> Option<String> {
     Some(strip_prefix(&path, prefix))
 }
 
+fn rename_path(raw: &str) -> Result<String, String> {
+    let path = unquote(raw.trim());
+    if path.is_empty() { Err("Could not determine file path from git diff".into()) } else { Ok(path) }
+}
+
 fn strip_prefix(path: &str, prefix: &str) -> String {
     path.strip_prefix(prefix).unwrap_or(path).to_owned()
 }
@@ -456,6 +590,7 @@ fn unquote(s: &str) -> String {
 }
 
 fn finish_section(s: Section) -> Result<FileOp, String> {
+    const NO_PATH: &str = "Could not determine file path from git diff";
     let n = s.line;
     let old = match &s.old {
         Some(p) => p.clone(),
@@ -466,7 +601,8 @@ fn finish_section(s: Section) -> Result<FileOp, String> {
         None => s.rename_to.clone().or_else(|| s.git_new.clone()),
     };
     if s.new_file || (s.old.as_ref().is_some_and(|o| o.is_none())) {
-        let path = new.ok_or_else(|| format!("line {n}: a new file without a path"))?;
+        let path = new.ok_or_else(|| format!("{NO_PATH} (line {n})"))?;
+        ensure_safe_path(&path, "Add File")?;
         let mut lines = Vec::new();
         let mut no_newline = false;
         for h in &s.hunks {
@@ -485,20 +621,26 @@ fn finish_section(s: Section) -> Result<FileOp, String> {
         return Ok(FileOp::Add { path, text });
     }
     if s.deleted || (s.new.as_ref().is_some_and(|n| n.is_none())) {
-        let path = old.ok_or_else(|| format!("line {n}: a deleted file without a path"))?;
+        let path = old.ok_or_else(|| format!("{NO_PATH} (line {n})"))?;
+        ensure_safe_path(&path, "Delete File")?;
         return Ok(FileOp::Delete { path });
     }
     // Only git's rename headers say a file moves: plain diffs often name the sides
     // differently (`--- a.txt.orig` / `+++ a.txt`, `diff -ru old/ new/`).
     if s.rename_from.is_some() || s.rename_to.is_some() {
-        let path = old.or(new.clone()).ok_or_else(|| format!("line {n}: a file without a path"))?;
+        let path = old.or(new.clone()).ok_or_else(|| format!("{NO_PATH} (line {n})"))?;
+        ensure_safe_path(&path, "Update File")?;
         let move_to = new.filter(|p| *p != path);
+        if let Some(m) = &move_to {
+            ensure_safe_path(m, "Move to")?;
+        }
         if s.hunks.is_empty() && move_to.is_none() {
             return Err(format!("line {n}: `{path}` has no changes"));
         }
         return Ok(FileOp::Update { path, move_to, hunks: s.hunks, or: Vec::new() });
     }
-    let path = new.clone().or(old.clone()).ok_or_else(|| format!("line {n}: a file without a path"))?;
+    let path = new.clone().or(old.clone()).ok_or_else(|| format!("{NO_PATH} (line {n})"))?;
+    ensure_safe_path(&path, "Update File")?;
     if s.hunks.is_empty() {
         return Err(format!("line {n}: `{path}` has no changes"));
     }
@@ -516,12 +658,14 @@ fn finish_section(s: Section) -> Result<FileOp, String> {
 
 // --- applying -------------------------------------------------------------------
 
-/// How exactly a hunk's lines matched the file.
+/// How exactly a hunk's lines matched the file, tried in this order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Fuzz {
     Exact,
     TrailingWhitespace,
     Whitespace,
+    /// Whitespace, and typographic dashes, quotes and spaces as their ASCII forms.
+    Punctuation,
 }
 
 impl Fuzz {
@@ -530,11 +674,31 @@ impl Fuzz {
             Fuzz::Exact => a == b,
             Fuzz::TrailingWhitespace => a.trim_end() == b.trim_end(),
             Fuzz::Whitespace => a.trim() == b.trim(),
+            Fuzz::Punctuation => a.trim().chars().map(normalize_char).eq(b.trim().chars().map(normalize_char)),
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Fuzz::Exact => "exactly",
+            Fuzz::TrailingWhitespace => "ignoring trailing whitespace",
+            Fuzz::Whitespace => "ignoring indentation and whitespace",
+            Fuzz::Punctuation => "ignoring whitespace and typographic punctuation (dashes, quotes, spaces)",
         }
     }
 }
 
-const LEVELS: [Fuzz; 3] = [Fuzz::Exact, Fuzz::TrailingWhitespace, Fuzz::Whitespace];
+fn normalize_char(c: char) -> char {
+    match c {
+        '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+        '\u{2018}'..='\u{201B}' => '\'',
+        '\u{201C}'..='\u{201F}' => '"',
+        '\u{00A0}' | '\u{2002}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
+        c => c,
+    }
+}
+
+const LEVELS: [Fuzz; 4] = [Fuzz::Exact, Fuzz::TrailingWhitespace, Fuzz::Whitespace, Fuzz::Punctuation];
 
 /// The result of [`apply`]: the new text and the hunks that matched only loosely.
 #[derive(Debug, PartialEq, Eq)]
@@ -544,57 +708,64 @@ pub struct Applied {
     pub fuzzy: Vec<(usize, Fuzz)>,
 }
 
-/// Applies `hunks` in order to `text` (`\n` line endings). Errors name the
-/// hunk and the lines that were not found.
+/// Applies `hunks` in order to `text` (`\n` line endings). A hunk is searched
+/// after the previous one, then (unless it ends the file) from the top. Errors
+/// name the hunk and the lines that were not found.
 pub fn apply(text: &str, hunks: &[Hunk]) -> Result<Applied, String> {
     let trailing_newline = text.ends_with('\n');
-    let lines: Vec<&str> = if text.is_empty() {
+    let mut lines: Vec<String> = if text.is_empty() {
         Vec::new()
     } else {
-        let mut l: Vec<&str> = text.split('\n').collect();
+        let mut l: Vec<String> = text.split('\n').map(str::to_owned).collect();
         if trailing_newline {
             l.pop();
         }
         l
     };
+    let original_len = lines.len();
     let mut cursor = 0usize;
-    // (start, removed count, replacement lines), in file order.
-    let mut replacements: Vec<(usize, usize, Vec<&str>)> = Vec::new();
     let mut fuzzy = Vec::new();
     let mut ends_without_newline = None;
     for (index, hunk) in hunks.iter().enumerate() {
         let n = index + 1;
+        let file: Vec<&str> = lines.iter().map(String::as_str).collect();
         let mut anchor_line = None;
         for anchor in &hunk.anchors {
-            let found = LEVELS
-                .iter()
-                .find_map(|level| (cursor..lines.len()).find(|&i| level.same(lines[i], anchor)))
-                .ok_or_else(|| {
-                format!("{}: cannot find the line `{anchor}` its `@@` header names", hunk.label(n))
+            let find =
+                |from: usize| LEVELS.iter().find_map(|level| (from..file.len()).find(|&i| level.same(file[i], anchor)));
+            let found = find(cursor).or_else(|| find(0)).ok_or_else(|| {
+                format!(
+                    "Hunk context not found: {}: cannot find the line `{anchor}` its `@@` header names",
+                    hunk.label(n)
+                )
             })?;
             anchor_line = Some(found);
             cursor = found + 1;
         }
+        // Line numbers of a diff count the original file: shift them by what earlier hunks added.
+        let shift = |s: usize| (s as isize + lines.len() as isize - original_len as isize).max(0) as usize;
         let mut old = hunk.old_lines();
-        let hint = hunk.old_start.map(|s| s.saturating_sub(1));
         if old.is_empty() {
             let at = if !hunk.anchors.is_empty() {
                 cursor
             } else if hunk.at_eof {
-                lines.len()
+                file.len()
             } else {
                 // `@@ -5,0 +6,2 @@` inserts after line 5; without a position, at the end.
-                hunk.old_start.map_or(lines.len(), |s| s.min(lines.len())).max(cursor)
+                hunk.old_start.map_or(file.len(), |s| shift(s).min(file.len()))
             };
-            replacements.push((at, 0, hunk.new_lines()));
-            cursor = at;
+            let new: Vec<String> = hunk.new_lines().into_iter().map(str::to_owned).collect();
+            cursor = at + new.len();
+            lines.splice(at..at, new);
             continue;
         }
+        let hint = hunk.old_start.map(|s| shift(s.saturating_sub(1)));
         // Models often repeat the `@@` line as the hunk's first context line: then the
         // block starts at the anchor rather than after it.
         let find = |old: &[&str]| {
-            find_block(&lines, old, cursor, hint, hunk.at_eof)
-                .or_else(|| anchor_line.and_then(|a| find_block(&lines, old, a, hint, hunk.at_eof)))
+            find_block(&file, old, cursor, hint, hunk.at_eof)
+                .or_else(|| anchor_line.and_then(|a| find_block(&file, old, a, hint, hunk.at_eof)))
+                .or_else(|| (cursor > 0 && !hunk.at_eof).then(|| find_block(&file, old, 0, hint, false)).flatten())
         };
         let mut found = find(&old);
         // A blank last line in the patch that the file does not have (Codex does the same).
@@ -605,12 +776,12 @@ pub fn apply(text: &str, hunks: &[Hunk]) -> Result<Applied, String> {
             }
         }
         let Some((at, level)) = found else {
-            return Err(mismatch(&lines, &old, cursor, hint, &hunk.label(n)));
+            return Err(mismatch(&file, &old, hint, &hunk.label(n), hunk.at_eof));
         };
         if level != Fuzz::Exact {
             fuzzy.push((n, level));
         }
-        if at + old.len() == lines.len() {
+        if at + old.len() == file.len() {
             if hunk.new_no_newline {
                 ends_without_newline = Some(true);
             } else if hunk.old_no_newline {
@@ -624,37 +795,30 @@ pub fn apply(text: &str, hunks: &[Hunk]) -> Result<Applied, String> {
             match line {
                 Line::Context(_) | Line::Remove(_) if matched >= old.len() => {}
                 Line::Context(_) => {
-                    new.push(lines[at + matched]);
+                    new.push(file[at + matched].to_owned());
                     matched += 1;
                 }
                 Line::Remove(_) => matched += 1,
-                Line::Add(s) => new.push(s.as_str()),
+                Line::Add(s) => new.push(s.clone()),
             }
         }
-        replacements.push((at, old.len(), new));
-        cursor = at + old.len();
+        let removed = old.len();
+        cursor = at + new.len();
+        lines.splice(at..at + removed, new);
     }
-    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
-    let mut pos = 0;
-    for (at, removed, new) in &replacements {
-        out.extend_from_slice(&lines[pos..*at]);
-        out.extend(new.iter().copied());
-        pos = at + removed;
-    }
-    out.extend_from_slice(&lines[pos.min(lines.len())..]);
-    let mut result = out.join("\n");
+    let mut result = lines.join("\n");
     let newline = match ends_without_newline {
         Some(no) => !no,
         None => trailing_newline || text.is_empty(),
     };
-    if newline && !out.is_empty() {
+    if newline && !lines.is_empty() {
         result.push('\n');
     }
     Ok(Applied { text: result, fuzzy })
 }
 
 /// Where `old` occurs at or after `from`, as exactly as possible; with a hint,
-/// the occurrence nearest to it.
+/// the occurrence nearest to it. A hunk that ends the file must match its end.
 fn find_block(lines: &[&str], old: &[&str], from: usize, hint: Option<usize>, at_eof: bool) -> Option<(usize, Fuzz)> {
     if old.len() > lines.len() {
         return None;
@@ -662,8 +826,11 @@ fn find_block(lines: &[&str], old: &[&str], from: usize, hint: Option<usize>, at
     let last = lines.len() - old.len();
     let matches = |at: usize, level: Fuzz| old.iter().zip(&lines[at..]).all(|(o, l)| level.same(l, o));
     for level in LEVELS {
-        if at_eof && last >= from && matches(last, level) {
-            return Some((last, level));
+        if at_eof {
+            if last >= from && matches(last, level) {
+                return Some((last, level));
+            }
+            continue;
         }
         let mut best: Option<usize> = None;
         for at in from..=last {
@@ -687,19 +854,15 @@ fn find_block(lines: &[&str], old: &[&str], from: usize, hint: Option<usize>, at
 }
 
 /// The error for lines that were not found, with the closest partial match.
-fn mismatch(lines: &[&str], old: &[&str], from: usize, hint: Option<usize>, label: &str) -> String {
-    let mut msg = format!("{label} does not apply: these lines were not found");
-    if from > 0 {
-        let _ = write!(msg, " after line {from}");
-    }
-    msg.push_str(":\n");
+fn mismatch(lines: &[&str], old: &[&str], hint: Option<usize>, label: &str, at_eof: bool) -> String {
+    let mut msg = format!("Hunk context not found: {label} does not apply: these lines were not found:\n");
     for l in old {
         let _ = writeln!(msg, "  {l}");
     }
     // The start with the longest run of matching lines (ignoring whitespace).
     let mut best: Option<(usize, usize)> = None;
     for at in 0..lines.len() {
-        let run = old.iter().zip(&lines[at..]).take_while(|(o, l)| o.trim() == l.trim()).count();
+        let run = old.iter().zip(&lines[at..]).take_while(|(o, l)| Fuzz::Punctuation.same(o, l)).count();
         let better = match best {
             None => run > 0,
             Some((b, r)) => run > r || (run == r && hint.is_some_and(|h| at.abs_diff(h) < b.abs_diff(h))),
@@ -719,8 +882,15 @@ fn mismatch(lines: &[&str], old: &[&str], from: usize, hint: Option<usize>, labe
                 old[run]
             );
         }
+        Some((at, _)) if at_eof => {
+            let _ = write!(
+                msg,
+                "They occur at line {}, but the hunk is marked `*** End of File` and they do not end the file.",
+                at + 1
+            );
+        }
         Some((at, _)) => {
-            let _ = write!(msg, "They occur at line {}, before the previous hunk; keep hunks in file order.", at + 1);
+            let _ = write!(msg, "They occur at line {}.", at + 1);
         }
         None => {
             // A common mistake: only part of a line after `-` / ` `.
@@ -745,363 +915,4 @@ fn mismatch(lines: &[&str], old: &[&str], from: usize, hint: Option<usize>, labe
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn update(ops: &[FileOp]) -> &[Hunk] {
-        match &ops[0] {
-            FileOp::Update { hunks, .. } => hunks,
-            other => panic!("not an update: {other:?}"),
-        }
-    }
-
-    fn apply_patch(text: &str, patch: &str) -> Result<String, String> {
-        let ops = parse(patch)?;
-        apply(text, update(&ops)).map(|a| a.text)
-    }
-
-    // --- Codex format -------------------------------------------------------
-
-    #[test]
-    fn parses_every_codex_operation() {
-        let ops = parse(
-            "*** Begin Patch\n*** Add File: new.txt\n+one\n+two\n*** Delete File: old.txt\n*** Update File: a.rs\n\
-*** Move to: b.rs\n@@ fn main\n ctx\n-old\n+new\n*** End Patch\n",
-        )
-        .unwrap();
-        assert_eq!(
-            ops,
-            vec![
-                FileOp::Add { path: "new.txt".into(), text: "one\ntwo\n".into() },
-                FileOp::Delete { path: "old.txt".into() },
-                FileOp::Update {
-                    path: "a.rs".into(),
-                    move_to: Some("b.rs".into()),
-                    hunks: vec![Hunk {
-                        anchors: vec!["fn main".into()],
-                        lines: vec![Line::Context("ctx".into()), Line::Remove("old".into()), Line::Add("new".into())],
-                        ..Hunk::default()
-                    }],
-                    or: vec![],
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn codex_tolerates_wrappers_crlf_and_blank_separators() {
-        let ops = parse(
-            "apply_patch <<'EOF'\r\n*** Begin Patch\r\n*** Add File: x\r\n+a\r\n+\r\n\r\n*** Update File: y\r\n-a\r\n+b\r\n\r\n*** End Patch\r\nEOF",
-        )
-        .unwrap();
-        assert_eq!(ops[0], FileOp::Add { path: "x".into(), text: "a\n\n".into() });
-        assert_eq!(update(&ops[1..])[0].lines, vec![Line::Remove("a".into()), Line::Add("b".into())]);
-    }
-
-    #[test]
-    fn codex_empty_add_and_move_only() {
-        let ops = parse("*** Begin Patch\n*** Add File: e\n*** Update File: a\n*** Move to: b\n*** End Patch").unwrap();
-        assert_eq!(ops[0], FileOp::Add { path: "e".into(), text: String::new() });
-        assert_eq!(ops[1], FileOp::Update { path: "a".into(), move_to: Some("b".into()), hunks: vec![], or: vec![] });
-    }
-
-    #[test]
-    fn codex_errors() {
-        let e = parse("*** Begin Patch\n*** Update File: a\n-x\n+y\n").unwrap_err();
-        assert!(e.contains("truncated"), "{e}");
-        let e = parse("*** Begin Patch\n*** Add File: a\nno plus\n*** End Patch").unwrap_err();
-        assert!(e.contains("line 3") && e.contains("must start with `+`"), "{e}");
-        let e = parse("*** Begin Patch\n*** Update File: a\n*** End Patch").unwrap_err();
-        assert!(e.contains("no changes"), "{e}");
-        let e = parse("*** Begin Patch\n*** Frobnicate: a\n*** End Patch").unwrap_err();
-        assert!(e.contains("line 2"), "{e}");
-        let e = parse("*** Begin Patch\n*** Update File: a\n@@\n#bad\n*** End Patch").unwrap_err();
-        assert!(e.contains("line 4") && e.contains("unexpected"), "{e}");
-        assert!(parse("*** Begin Patch\n*** End Patch").unwrap_err().contains("no files"));
-        assert!(parse("just some text").unwrap_err().contains("not a patch"));
-        assert!(parse("*** Begin Patch\n*** Add File: \n*** End Patch").unwrap_err().contains("without a path"));
-    }
-
-    #[test]
-    fn codex_hunks_split_on_markers_and_stack_anchors() {
-        let ops = parse(
-            "*** Begin Patch\n*** Update File: a\n@@ class A\n@@ def f():\n-x\n+y\n@@\n-p\n+q\n*** End of File\n*** End Patch",
-        )
-        .unwrap();
-        let hunks = update(&ops);
-        assert_eq!(hunks.len(), 2);
-        assert_eq!(hunks[0].anchors, vec!["class A".to_owned(), "def f():".to_owned()]);
-        assert!(!hunks[0].at_eof && hunks[1].at_eof);
-        assert!(hunks[1].anchors.is_empty());
-    }
-
-    #[test]
-    fn applies_codex_hunks_with_anchors() {
-        let text = "class A:\n    def f():\n        return 1\nclass B:\n    def f():\n        return 1\n";
-        let patch = "*** Begin Patch\n*** Update File: a.py\n@@ class B:\n     def f():\n-        return 1\n+        return 2\n*** End Patch";
-        assert_eq!(
-            apply_patch(text, patch).unwrap(),
-            "class A:\n    def f():\n        return 1\nclass B:\n    def f():\n        return 2\n"
-        );
-    }
-
-    #[test]
-    fn applies_several_hunks_in_order() {
-        let text = "a\nb\nc\nd\ne\nf\n";
-        let patch = "*** Begin Patch\n*** Update File: x\n@@\n a\n-b\n+B\n@@\n e\n-f\n+F\n+G\n*** End Patch";
-        assert_eq!(apply_patch(text, patch).unwrap(), "a\nB\nc\nd\ne\nF\nG\n");
-    }
-
-    #[test]
-    fn same_lines_twice_match_in_order() {
-        let text = "x\ny\nx\ny\n";
-        let patch = "*** Begin Patch\n*** Update File: f\n@@\n-x\n+1\n@@\n-x\n+2\n*** End Patch";
-        assert_eq!(apply_patch(text, patch).unwrap(), "1\ny\n2\ny\n");
-    }
-
-    #[test]
-    fn end_of_file_prefers_the_last_occurrence() {
-        let text = "end\nmid\nend\n";
-        let patch = "*** Begin Patch\n*** Update File: f\n@@\n-end\n+END\n*** End of File\n*** End Patch";
-        assert_eq!(apply_patch(text, patch).unwrap(), "end\nmid\nEND\n");
-    }
-
-    #[test]
-    fn accepts_the_anchor_repeated_as_context() {
-        let text = "package greet\n\nfunc prefix() string {\n\treturn \"Merhaba, \"\n}\n";
-        let patch = "*** Begin Patch\n*** Update File: f\n@@ func prefix() string {\n func prefix() string {\n-\treturn \"Merhaba, \"\n+\treturn \"Selam, \"\n }\n*** End Patch";
-        assert_eq!(
-            apply_patch(text, patch).unwrap(),
-            "package greet\n\nfunc prefix() string {\n\treturn \"Selam, \"\n}\n"
-        );
-    }
-
-    #[test]
-    fn pure_additions_go_after_the_anchor_or_at_the_end() {
-        let text = "fn a() {}\nfn b() {}\n";
-        let after = "*** Begin Patch\n*** Update File: f\n@@ fn a() {}\n+fn a2() {}\n*** End Patch";
-        assert_eq!(apply_patch(text, after).unwrap(), "fn a() {}\nfn a2() {}\nfn b() {}\n");
-        let end = "*** Begin Patch\n*** Update File: f\n@@\n+fn c() {}\n*** End Patch";
-        assert_eq!(apply_patch(text, end).unwrap(), "fn a() {}\nfn b() {}\nfn c() {}\n");
-    }
-
-    #[test]
-    fn whitespace_tolerance_is_reported() {
-        let text = "fn main() {   \n    let x = 1;\n}\n";
-        let ops = parse(
-            "*** Begin Patch\n*** Update File: f\n@@\n fn main() {\n-    let x = 1;\n+    let x = 2;\n*** End Patch",
-        )
-        .unwrap();
-        let a = apply(text, update(&ops)).unwrap();
-        assert_eq!(a.text, "fn main() {   \n    let x = 2;\n}\n");
-        assert_eq!(a.fuzzy, vec![(1, Fuzz::TrailingWhitespace)]);
-        let ops =
-            parse("*** Begin Patch\n*** Update File: f\n@@\n-let x = 1;\n+    let y = 1;\n*** End Patch").unwrap();
-        let a = apply(text, update(&ops)).unwrap();
-        assert_eq!(a.text, "fn main() {   \n    let y = 1;\n}\n");
-        assert_eq!(a.fuzzy, vec![(1, Fuzz::Whitespace)]);
-    }
-
-    #[test]
-    fn a_trailing_blank_context_line_is_optional() {
-        let text = "a\nb";
-        let patch = "*** Begin Patch\n*** Update File: f\n@@\n-b\n+c\n \n*** End Patch";
-        assert_eq!(apply_patch(text, patch).unwrap(), "a\nc");
-    }
-
-    #[test]
-    fn keeps_a_missing_final_newline_and_handles_empty_files() {
-        assert_eq!(apply_patch("a\nb", "*** Begin Patch\n*** Update File: f\n-b\n+c\n*** End Patch").unwrap(), "a\nc");
-        assert_eq!(apply_patch("", "*** Begin Patch\n*** Update File: f\n+x\n*** End Patch").unwrap(), "x\n");
-        assert_eq!(apply_patch("a\n", "*** Begin Patch\n*** Update File: f\n-a\n*** End Patch").unwrap(), "");
-    }
-
-    #[test]
-    fn reports_where_a_hunk_went_wrong() {
-        let text = "fn a() {\n    one();\n    two();\n}\n";
-        let patch = "*** Begin Patch\n*** Update File: f\n@@\n fn a() {\n     one();\n-    three();\n+    four();\n*** End Patch";
-        let e = apply_patch(text, patch).unwrap_err();
-        assert!(e.starts_with("hunk 1 does not apply"), "{e}");
-        assert!(e.contains("  fn a() {\n      one();\n      three();\n"), "{e}");
-        assert!(
-            e.contains("Closest match at line 1: line 3 is `    two();`, but the patch expects `    three();`"),
-            "{e}"
-        );
-        let e = apply_patch(text, "*** Begin Patch\n*** Update File: f\n@@ fn zzz\n-x\n*** End Patch").unwrap_err();
-        assert!(e.contains("hunk 1 (@@ fn zzz)") && e.contains("`fn zzz`"), "{e}");
-        let e = apply_patch(text, "*** Begin Patch\n*** Update File: f\n-nothing\n*** End Patch").unwrap_err();
-        assert!(e.contains("No line of them"), "{e}");
-        let e = apply_patch(text, "*** Begin Patch\n*** Update File: f\n-two\n+three\n*** End Patch").unwrap_err();
-        assert!(e.contains("Line 3 contains `two` but is `    two();`: patch lines must be whole lines"), "{e}");
-        let e =
-            apply_patch(text, "*** Begin Patch\n*** Update File: f\n@@\n-    two();\n@@\n-    one();\n*** End Patch")
-                .unwrap_err();
-        assert!(e.contains("hunk 2") && e.contains("file order"), "{e}");
-    }
-
-    // --- unified diffs ------------------------------------------------------
-
-    const GIT: &str = "diff --git a/src/lib.rs b/src/lib.rs
-index 3b18e51..a9e0c2f 100644
---- a/src/lib.rs
-+++ b/src/lib.rs
-@@ -1,3 +1,3 @@ mod x;
- fn a() {}
--fn b() {}
-+fn b() { todo!() }
- fn c() {}
-@@ -10,2 +10,3 @@
- fn j() {}
-+fn k() {}
- fn l() {}
-diff --git a/new.txt b/new.txt
-new file mode 100644
-index 0000000..e69de29
---- /dev/null
-+++ b/new.txt
-@@ -0,0 +1,2 @@
-+hello
-+world
-diff --git a/gone.txt b/gone.txt
-deleted file mode 100644
---- a/gone.txt
-+++ /dev/null
-@@ -1 +0,0 @@
--bye
-diff --git a/old name.txt b/new name.txt
-similarity index 90%
-rename from old name.txt
-rename to new name.txt
---- a/old name.txt
-+++ b/new name.txt
-@@ -1 +1 @@
--x
-+y
-";
-
-    #[test]
-    fn parses_git_diffs() {
-        let ops = parse(GIT).unwrap();
-        assert_eq!(ops.len(), 4);
-        match &ops[0] {
-            FileOp::Update { path, move_to: None, hunks, or } => {
-                assert_eq!(path, "src/lib.rs");
-                assert!(or.is_empty(), "{or:?}");
-                assert_eq!(hunks.len(), 2);
-                assert_eq!(hunks[0].old_start, Some(1));
-                assert_eq!(hunks[1].lines.len(), 3);
-            }
-            other => panic!("{other:?}"),
-        }
-        assert_eq!(ops[1], FileOp::Add { path: "new.txt".into(), text: "hello\nworld\n".into() });
-        assert_eq!(ops[2], FileOp::Delete { path: "gone.txt".into() });
-        assert!(matches!(&ops[3], FileOp::Update { path, move_to: Some(to), .. }
-            if path == "old name.txt" && to == "new name.txt"));
-    }
-
-    #[test]
-    fn parses_plain_unified_diffs_and_pure_renames() {
-        let ops =
-            parse("--- a.txt\t2024-01-01 10:00:00\n+++ a.txt\t2024-01-02 10:00:00\n@@ -1,2 +1,2 @@\n-a\n+b\n c\n")
-                .unwrap();
-        assert!(
-            matches!(&ops[0], FileOp::Update { path, move_to: None, hunks, .. } if path == "a.txt" && hunks.len() == 1)
-        );
-        // Differently named sides are not a move: the `+++` path, else the others.
-        let ops = parse("--- a.txt.orig\n+++ a.txt\n@@ -1 +1 @@\n-a\n+b\n").unwrap();
-        assert!(matches!(&ops[0], FileOp::Update { path, move_to: None, or, .. }
-            if path == "a.txt" && or == &["a.txt.orig"]));
-        let ops = parse("diff -ru old/src/a.txt new/src/a.txt\n--- old/src/a.txt\t2024-01-01\n+++ new/src/a.txt\t2024-01-02\n@@ -1 +1 @@\n-a\n+b\n").unwrap();
-        assert!(matches!(&ops[0], FileOp::Update { path, move_to: None, or, .. }
-            if path == "new/src/a.txt" && or == &["old/src/a.txt", "src/a.txt"]));
-        let ops =
-            parse("diff --git a/x.rs b/y/x.rs\nsimilarity index 100%\nrename from x.rs\nrename to y/x.rs\n").unwrap();
-        assert_eq!(
-            ops[0],
-            FileOp::Update { path: "x.rs".into(), move_to: Some("y/x.rs".into()), hunks: vec![], or: vec![] }
-        );
-        let ops = parse("diff --git a/e b/e\nnew file mode 100644\nindex 0000000..e69de29\n").unwrap();
-        assert_eq!(ops[0], FileOp::Add { path: "e".into(), text: String::new() });
-        let ops = parse("diff --git \"a/sp ace\" \"b/sp ace\"\ndeleted file mode 100644\n").unwrap();
-        assert_eq!(ops[0], FileOp::Delete { path: "sp ace".into() });
-    }
-
-    #[test]
-    fn unified_counts_are_tolerated() {
-        // Counts too large: the next header ends the hunk.
-        let ops = parse("--- a/f\n+++ b/f\n@@ -1,9 +1,9 @@\n-a\n+b\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-c\n+d\n").unwrap();
-        assert_eq!(ops.len(), 2);
-        assert_eq!(update(&ops)[0].lines.len(), 2);
-        // Counts too small: following hunk lines still belong to it.
-        let ops = parse("--- a/f\n+++ b/f\n@@ -1,1 +1,1 @@\n-a\n+b\n c\n").unwrap();
-        assert_eq!(update(&ops)[0].lines.len(), 3);
-        // A bare `@@` reads to the next header; empty lines are empty context.
-        let ops = parse("--- a/f\n+++ b/f\n@@\n x\n\n-y\n+z\n\n").unwrap();
-        assert_eq!(
-            update(&ops)[0].lines,
-            vec![
-                Line::Context("x".into()),
-                Line::Context(String::new()),
-                Line::Remove("y".into()),
-                Line::Add("z".into())
-            ]
-        );
-        // `git format-patch` signature.
-        let ops = parse("Subject: x\n---\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n-- \n2.43.0\n").unwrap();
-        assert_eq!(ops.len(), 1);
-    }
-
-    #[test]
-    fn unified_errors() {
-        assert!(parse("@@ -1 +1 @@\n-a\n+b\n").unwrap_err().contains("without a `--- a/path`"));
-        assert!(parse("--- a/f\n+++ b/f\n@@ -x +y @@\n-a\n").unwrap_err().contains("cannot read"));
-        assert!(parse("diff --git a/f b/f\nBinary files a/f and b/f differ\n").unwrap_err().contains("binary"));
-        assert!(parse("diff --git a/f b/f\nindex 1..2\n").unwrap_err().contains("no changes"));
-        assert!(parse("--- /dev/null\n+++ b/n\n@@ -1 +1 @@\n x\n").unwrap_err().contains("new file"));
-    }
-
-    #[test]
-    fn applies_unified_hunks_near_their_line_numbers() {
-        let text = "x\nsame\nx\nx\nx\nsame\nx\n";
-        let ops = parse("--- a/f\n+++ b/f\n@@ -6,1 +6,1 @@\n-same\n+changed\n").unwrap();
-        assert_eq!(apply(text, update(&ops)).unwrap().text, "x\nsame\nx\nx\nx\nchanged\nx\n");
-        // Wrong line numbers still apply where the context is.
-        let ops = parse("--- a/f\n+++ b/f\n@@ -40,2 +40,2 @@\n x\n-same\n+changed\n").unwrap();
-        assert_eq!(apply(text, update(&ops)).unwrap().text, "x\nsame\nx\nx\nx\nchanged\nx\n");
-        // Insertion after line 2 (`-2,0`).
-        let ops = parse("--- a/f\n+++ b/f\n@@ -2,0 +3,1 @@\n+new\n").unwrap();
-        assert_eq!(apply(text, update(&ops)).unwrap().text, "x\nsame\nnew\nx\nx\nx\nsame\nx\n");
-    }
-
-    #[test]
-    fn applies_the_git_example() {
-        let text = "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\nfn e() {}\nfn f() {}\nfn g() {}\nfn h() {}\nfn i() {}\nfn j() {}\nfn l() {}\n";
-        let ops = parse(GIT).unwrap();
-        let out = apply(text, update(&ops)).unwrap().text;
-        assert_eq!(
-            out,
-            "fn a() {}\nfn b() { todo!() }\nfn c() {}\nfn d() {}\nfn e() {}\nfn f() {}\nfn g() {}\nfn h() {}\nfn i() {}\nfn j() {}\nfn k() {}\nfn l() {}\n"
-        );
-    }
-
-    #[test]
-    fn no_newline_markers() {
-        let add = parse("--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+x\n\\ No newline at end of file\n").unwrap();
-        assert_eq!(add[0], FileOp::Add { path: "n".into(), text: "x".into() });
-        // Adding the final newline.
-        let ops = parse("--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n").unwrap();
-        assert_eq!(apply("a\nb", update(&ops)).unwrap().text, "a\nb\n");
-        // Removing it.
-        let ops = parse("--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n-b\n+b\n\\ No newline at end of file\n").unwrap();
-        assert_eq!(apply("a\nb\n", update(&ops)).unwrap().text, "a\nb");
-    }
-
-    #[test]
-    fn splits_git_paths() {
-        assert_eq!(split_git_paths("a/x y b/x y"), (Some("x y".into()), Some("x y".into())));
-        assert_eq!(split_git_paths("a/x b/y"), (Some("x".into()), Some("y".into())));
-        assert_eq!(parse_range_header("@@ -3 +4,0 @@"), Some((3, 1, 0)));
-        assert_eq!(parse_range_header("@@ -1,2 +1,3 @@ fn x"), Some((1, 2, 3)));
-        assert_eq!(unquote("\"a\\\"b\\\\c\""), "a\"b\\c");
-    }
-}
+mod tests;
