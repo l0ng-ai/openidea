@@ -3,6 +3,7 @@
 //! processes, SFTP, local port forwarding, and askpass for `ssh` / `git`.
 
 pub mod askpass;
+pub mod filesystem;
 pub mod git_creds;
 pub mod manager;
 pub mod secrets;
@@ -14,9 +15,10 @@ pub mod target;
 pub mod testing;
 pub mod tunnel;
 
+pub use filesystem::{FsConnection, RemoteFs};
 pub use manager::SshManager;
 pub use russh::Sig;
 pub use session::{ConnectError, ExecOutput, Output, RemoteProcess, Session, UnknownHostKey};
-pub use sftp::{RemoteEntry, RemoteFs};
+pub use sftp::RemoteEntry;
 pub use target::{SshFiles, SshTarget, expand, openssh_args};
 pub use tunnel::Tunnel;

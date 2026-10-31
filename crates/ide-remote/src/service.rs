@@ -1,14 +1,14 @@
-//! The deployment and run-target operations of one app, over the shared SSH
-//! connections: what the IPC commands and the save hook call.
+//! Deployment over SFTP or local folders, and SSH run targets.
+//! Shared by IPC commands and project save/delete hooks.
 
 use crate::deploy::{Deployment, SyncEntry, SyncStep, TransferReport};
 use crate::mapping::{Excludes, Mappings};
 use crate::target::{RemoteRuns, RemoteStart, SyncFn};
-use ide_core::remote_settings::{AutoUpload, DeploymentServer, RunTarget};
+use ide_core::remote_settings::{AutoUpload, DeploymentServer, DeploymentType, RunTarget};
 use ide_core::settings::Settings;
 use ide_core::{CancellationToken, IdeError, IdeResult, SharedSink};
 use ide_run::{OutputChunk, RunConfig, RunInfo};
-use ide_ssh::{RemoteEntry, RemoteFs, SshManager};
+use ide_ssh::{FsConnection, RemoteEntry, RemoteFs, SshManager};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -22,7 +22,7 @@ pub type Progress<'a> = &'a mut (dyn FnMut(&str, usize, usize) + Send);
 /// A remote file opened for editing (a local copy uploaded back on save).
 #[derive(Debug, Clone)]
 struct RemoteEdit {
-    ssh_config: String,
+    connection: FsConnection,
     remote: String,
 }
 
@@ -37,7 +37,7 @@ pub struct DeployedPath {
 
 pub struct RemoteService {
     ssh: Arc<SshManager>,
-    /// Local copies of remote files: `<cache>/<ssh config>/<remote path>`.
+    /// Local copies of remote files, separated by filesystem connection.
     cache: PathBuf,
     edits: Mutex<HashMap<PathBuf, RemoteEdit>>,
     pub runs: RemoteRuns,
@@ -71,12 +71,24 @@ impl RemoteService {
         Self { ssh, cache, edits: Mutex::default(), runs: RemoteRuns::new() }
     }
 
-    async fn fs(&self, ssh_config: &str) -> IdeResult<RemoteFs> {
-        if ssh_config.is_empty() {
-            return Err(IdeError::invalid("the deployment server has no SSH configuration"));
+    async fn fs(&self, connection: &FsConnection) -> IdeResult<RemoteFs> {
+        match connection {
+            FsConnection::Local => Ok(RemoteFs::Local),
+            FsConnection::Sftp { ssh } => {
+                if ssh.is_empty() {
+                    return Err(IdeError::invalid("the deployment server has no SSH configuration"));
+                }
+                let session = self.ssh.session(ssh).await?;
+                Ok(RemoteFs::new(session.sftp().await?))
+            }
         }
-        let session = self.ssh.session(ssh_config).await?;
-        Ok(RemoteFs::new(session.sftp().await?))
+    }
+
+    pub async fn test_connection(&self, connection: &FsConnection, path: &str) -> IdeResult<()> {
+        let fs = self.fs(connection).await?;
+        let result = fs.test(path).await;
+        fs.close().await;
+        result
     }
 
     /// Runs `f` with a [`Deployment`] on `server`.
@@ -88,7 +100,7 @@ impl RemoteService {
         cancel: CancellationToken,
         f: impl AsyncFnOnce(&Deployment<'_>) -> T,
     ) -> IdeResult<T> {
-        let fs = self.fs(&server.ssh_config).await?;
+        let fs = self.fs(&connection(server)).await?;
         let remote_root = match fs.resolve(&server.root_path).await {
             Ok(r) => r,
             Err(e) => {
@@ -198,54 +210,57 @@ impl RemoteService {
     /// The server root of `server_id`, resolved on the host.
     pub async fn server_root(&self, settings: &Settings, server_id: &str) -> IdeResult<String> {
         let server = server(settings, Some(server_id))?;
-        let fs = self.fs(&server.ssh_config).await?;
+        let fs = self.fs(&connection(&server)).await?;
         let r = fs.resolve(&server.root_path).await;
         fs.close().await;
         r
     }
 
-    pub async fn list(&self, ssh_config: &str, path: &str) -> IdeResult<Vec<RemoteEntry>> {
-        let fs = self.fs(ssh_config).await?;
+    pub async fn list(&self, connection: &FsConnection, path: &str) -> IdeResult<Vec<RemoteEntry>> {
+        let fs = self.fs(connection).await?;
         let r = async { fs.list(&fs.resolve(path).await?).await }.await;
         fs.close().await;
         r
     }
 
     /// Downloads a remote file for editing; saving the copy uploads it back.
-    pub async fn open_remote(&self, ssh_config: &str, remote: &str) -> IdeResult<PathBuf> {
-        let rel = remote.split('/').filter(|s| !s.is_empty() && *s != "..").fold(PathBuf::new(), |p, s| p.join(s));
-        let local = self.cache.join(sanitize(ssh_config)).join(rel);
-        let fs = self.fs(ssh_config).await?;
+    pub async fn open_remote(&self, connection: &FsConnection, remote: &str) -> IdeResult<PathBuf> {
+        let rel = remote
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".." && *s != ".")
+            .fold(PathBuf::new(), |p, s| p.join(s.replace('%', "%25").replace(':', "%3A").replace('\\', "%5C")));
+        let local = self.cache.join(sanitize(&cache_key(connection))).join(rel);
+        let fs = self.fs(connection).await?;
         let r = fs.download(remote, &local).await;
         fs.close().await;
         r?;
         self.edits
             .lock()
-            .insert(local.clone(), RemoteEdit { ssh_config: ssh_config.to_owned(), remote: remote.to_owned() });
+            .insert(local.clone(), RemoteEdit { connection: connection.clone(), remote: remote.to_owned() });
         Ok(local)
     }
 
     /// The remote file a local copy stands for.
-    pub fn remote_of(&self, local: &Path) -> Option<(String, String)> {
-        self.edits.lock().get(local).map(|e| (e.ssh_config.clone(), e.remote.clone()))
+    pub fn remote_of(&self, local: &Path) -> Option<(FsConnection, String)> {
+        self.edits.lock().get(local).map(|e| (e.connection.clone(), e.remote.clone()))
     }
 
-    pub async fn remote_delete(&self, ssh_config: &str, remote: &str) -> IdeResult<()> {
-        let fs = self.fs(ssh_config).await?;
+    pub async fn remote_delete(&self, connection: &FsConnection, remote: &str) -> IdeResult<()> {
+        let fs = self.fs(connection).await?;
         let r = fs.remove(remote).await;
         fs.close().await;
         r
     }
 
-    pub async fn remote_mkdir(&self, ssh_config: &str, remote: &str) -> IdeResult<()> {
-        let fs = self.fs(ssh_config).await?;
+    pub async fn remote_mkdir(&self, connection: &FsConnection, remote: &str) -> IdeResult<()> {
+        let fs = self.fs(connection).await?;
         let r = fs.mkdir_all(remote).await;
         fs.close().await;
         r
     }
 
-    pub async fn remote_rename(&self, ssh_config: &str, from: &str, to: &str) -> IdeResult<()> {
-        let fs = self.fs(ssh_config).await?;
+    pub async fn remote_rename(&self, connection: &FsConnection, from: &str, to: &str) -> IdeResult<()> {
+        let fs = self.fs(connection).await?;
         let r = fs.rename(from, to).await;
         fs.close().await;
         r
@@ -365,4 +380,19 @@ impl RemoteService {
 
 fn sanitize(s: &str) -> String {
     s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+}
+
+/// A server's transport, also used by the browser and remote editor save hook.
+pub fn connection(server: &DeploymentServer) -> FsConnection {
+    match server.kind {
+        DeploymentType::Local => FsConnection::Local,
+        DeploymentType::Sftp => FsConnection::Sftp { ssh: server.ssh_config.clone() },
+    }
+}
+
+fn cache_key(connection: &FsConnection) -> String {
+    match connection {
+        FsConnection::Local => "local".to_owned(),
+        FsConnection::Sftp { ssh } => format!("sftp-{ssh}"),
+    }
 }

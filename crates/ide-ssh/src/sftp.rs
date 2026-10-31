@@ -41,7 +41,7 @@ pub fn parent(path: &str) -> Option<&str> {
     Some(if i == 0 { "/" } else { &trimmed[..i] })
 }
 
-fn mode_string(mode: u32) -> String {
+pub(crate) fn mode_string(mode: u32) -> String {
     let bits = [
         (0o400, 'r'),
         (0o200, 'w'),
@@ -78,11 +78,11 @@ fn err(path: &str, e: SftpError) -> IdeError {
 }
 
 /// Higher-level operations on an [`SftpSession`].
-pub struct RemoteFs {
+pub struct SftpFs {
     sftp: SftpSession,
 }
 
-impl RemoteFs {
+impl SftpFs {
     pub fn new(sftp: SftpSession) -> Self {
         Self { sftp }
     }

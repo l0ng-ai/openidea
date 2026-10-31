@@ -1,5 +1,5 @@
 //! Upload, download, delete and synchronise project files with a deployment
-//! server over SFTP.
+//! server through a shared filesystem interface.
 
 use crate::mapping::{Excludes, Mappings, posix};
 use ide_core::{CancellationToken, IdeError, IdeResult};
@@ -96,7 +96,7 @@ pub fn status(local: Option<FileStamp>, remote: Option<FileStamp>) -> SyncStatus
     }
 }
 
-/// Operations on one server through one SFTP session.
+/// Operations on one server through its filesystem.
 pub struct Deployment<'a> {
     pub fs: &'a RemoteFs,
     pub map: &'a Mappings,
