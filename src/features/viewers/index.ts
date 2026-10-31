@@ -28,6 +28,7 @@ import { ImageViewer, toggleChessboard, useImageViewers } from "./ImageViewer";
 import { HexViewer } from "./HexViewer";
 import { registerMarkdownLiveSource } from "./markdown/live";
 import { setMarkdownMode, type MarkdownMode } from "./markdown/modes";
+import { MarkdownLayoutActions } from "./markdown/MarkdownLayoutActions";
 
 const titleOf = (input: EditorInput) => basename(input.path ?? input.key);
 const iconOf = (input: EditorInput) => fileIconName(titleOf(input));
@@ -70,9 +71,9 @@ function markdownActions(): Action[] {
     },
   });
   return [
-    mode("markdown.editorOnly", "Editor Only", "editor", "edit"),
-    mode("markdown.editorAndPreview", "Editor and Preview", "split", "split"),
-    mode("markdown.previewOnly", "Preview Only", "preview", "eye"),
+    mode("markdown.editorOnly", "Editor Only", "editor", "editor-only"),
+    mode("markdown.editorAndPreview", "Editor and Preview", "split", "editor-preview"),
+    mode("markdown.previewOnly", "Preview Only", "preview", "preview-only"),
   ];
 }
 
@@ -97,6 +98,7 @@ export function activate(): () => void {
       id: "viewers.markdown",
       matches: isMarkdownPath,
       component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor)),
+      tabActions: MarkdownLayoutActions,
     }),
     registerMarkdownLiveSource(),
     registerActions([...imageActions(), ...markdownActions()]),

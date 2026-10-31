@@ -257,6 +257,7 @@ function PaneView({ paneId }: { paneId: string }) {
   const onFocus = () => {
     setContext("editorFocus", true);
     if (!isActivePane) useTabs.setState((s) => ({ ...s, activePane: paneId }), true);
+    ctrl.publishContext();
   };
   const onBlur = (e: FocusEvent) => {
     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("editorFocus", false);
@@ -298,7 +299,7 @@ function PaneView({ paneId }: { paneId: string }) {
       trailing={trailing}
     />
   );
-  const actions = active ? <EditorTabActions paneId={paneId} tab={active} /> : undefined;
+  const actions = active && !hidden ? <EditorTabActions paneId={paneId} tab={active} /> : undefined;
 
   return (
     <section
@@ -330,7 +331,7 @@ function PaneView({ paneId }: { paneId: string }) {
         aria-labelledby={active ? `editor-${paneId}-tab-${active.id}` : undefined}
         ref={contentRef}
       >
-        {active ? <PaneContent paneId={paneId} tab={active} /> : <EmptyEditor />}
+        {active ? <PaneContent paneId={paneId} tab={active} tabsVisible={!hidden} /> : <EmptyEditor />}
         {dropZone && <div className={clsx(styles.dropZone, styles[`drop-${dropZone}`])} aria-hidden="true" />}
       </div>
     </section>
@@ -344,7 +345,7 @@ function virtualTooltip(input: EditorInput): string | null {
   return [d?.description, input.path].filter(Boolean).join("\n");
 }
 
-function PaneContent({ paneId, tab }: { paneId: string; tab: Tab }) {
+function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; tabsVisible: boolean }) {
   const kinds = useContributions((s) => s.editorKinds);
   const crumbs = !useDistractionFree((s) => s.active);
   const wrappers = useTextEditorWrappers((s) => s.wrappers);
@@ -362,7 +363,12 @@ function PaneContent({ paneId, tab }: { paneId: string; tab: Tab }) {
         <FindBar paneId={paneId} />
         {crumbs && <CodeBreadcrumbs path={tab.input.path!} tabId={tab.id} position="top" />}
         {wrapper ? (
-          <wrapper.component key={tab.id} path={tab.input.path} tabId={tab.id}>
+          <wrapper.component
+            key={tab.id}
+            path={tab.input.path}
+            tabId={tab.id}
+            actionsInTabs={tabsVisible && !!wrapper.tabActions}
+          >
             {host}
           </wrapper.component>
         ) : (
@@ -385,10 +391,16 @@ function PaneContent({ paneId, tab }: { paneId: string; tab: Tab }) {
 /** Actions at the right end of the tab row (IDEA: split, tab actions ⋮). */
 function EditorTabActions({ paneId, tab }: { paneId: string; tab: Tab }) {
   const ctrl = editorController();
+  const wrappers = useTextEditorWrappers((s) => s.wrappers);
+  const LayoutActions =
+    tab.input.kind === "file" && tab.input.path
+      ? textEditorWrapperFor(wrappers, tab.input.path)?.tabActions
+      : undefined;
   const [open, setOpen] = useState(false);
   const moreRef = useRef<HTMLButtonElement>(null);
   return (
     <div className={styles.tabActions}>
+      {LayoutActions && <LayoutActions path={tab.input.path!} tabId={tab.id} />}
       <IconButton
         icon="split"
         title="Split Right"
