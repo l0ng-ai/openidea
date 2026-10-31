@@ -66,7 +66,7 @@ export function useProjectHeaderMenu(): MenuItem[] {
     })),
     { kind: "separator" },
     { kind: "header", label: "Behavior" },
-    ...OPTION_LABELS.slice(4).map(([key, label]) => option(key, label, options)),
+    ...OPTION_LABELS.slice(5).map(([key, label]) => option(key, label, options)),
   ];
 }
 

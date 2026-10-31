@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ProjectNode } from "./model";
+import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import { importExternal, paste, selectionAfterDelete, transfer } from "./operations";
 import { IpcError } from "@/platform/ipc";
 import { pendingFileRefactorDialog } from "./FileRefactorDialogs";
 import { useRemote } from "@/platform/remote";
 import { provideNotificationService } from "@/workbench/contributions";
 import { MemoryFs, setProjectFsForTests } from "./fs";
-import { initProjectTree, loadDir, setClipboard } from "./store";
+import { initProjectTree, loadDir, setClipboard, setSelection } from "./store";
 import { setOsClipboardForTests } from "./clipboard";
 
 let fs: MemoryFs;
@@ -58,6 +58,18 @@ describe("OS file imports", () => {
     useRemote.setState({ session: null });
     setProjectFsForTests(null);
     setOsClipboardForTests(null);
+  });
+
+  it("does not paste into the project root when a member row is selected", async () => {
+    const files = vi.fn(async () => ["/outside/local.txt"]);
+    setOsClipboardForTests({ files, hasFiles: async () => true, setFiles: async () => {} });
+    const imported = vi.spyOn(fs, "importLocal");
+    const key = `${MEMBER_PREFIX}/p/local.txt\0function:main`;
+    setSelection(new Set([key]), key);
+    await paste();
+    expect(files).not.toHaveBeenCalled();
+    expect(imported).not.toHaveBeenCalled();
+    expect(pendingFileRefactorDialog()).toBeNull();
   });
 
   it.each(["paste", "drop"])(

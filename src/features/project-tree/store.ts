@@ -45,7 +45,7 @@ export interface ViewOptions extends TreeOptions {
   singleClickExpand: boolean;
   /** Single click shows files in the preview tab (IDEA's "Enable Preview Tab"). */
   previewTab: boolean;
-  /** Show a file's declarations as rows below it, like GoLand's "Show Members". */
+  /** Show a file's declarations as expandable rows below it. */
   showMembers: boolean;
 }
 

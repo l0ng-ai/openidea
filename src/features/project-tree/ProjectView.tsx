@@ -18,7 +18,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { useEditorRegistry } from "@/editor/api";
+import { revealRange, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
@@ -44,7 +44,7 @@ import {
   type TreeHandle,
   type TreeRowState,
 } from "@/ui";
-import { badgeKind, openLocation } from "@/features/search/common/open";
+import { badgeKind } from "@/ui/symbolKind";
 import { contextMenuItems, menuGroupContext, newMenuItems } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
 import { presentationIcon, useJvmPresentation } from "@/platform/filePresentation";
@@ -467,15 +467,17 @@ export function ProjectView() {
     const { options: o } = useProjectTree.getState();
     if (revealing.current || !o.autoscrollToSource || !lead || lead.dir || lead.placeholder || next.size !== 1) return;
     if (lead.member) {
-      const p = lead.member.selection_range.start;
-      void openLocation(lead.path, { line: p.line, col: p.col }, { preview: o.previewTab, focus: false });
+      void revealRange(
+        lead.path,
+        { start: lead.member.selection_range.start },
+        { preview: o.previewTab, focus: false },
+      );
     } else void openFile(lead.path, { preview: o.previewTab, focus: false });
   }, []);
 
   const onActivate = useCallback((node: ProjectNode) => {
     if (node.member) {
-      const p = node.member.selection_range.start;
-      void openLocation(node.path, { line: p.line, col: p.col }, { focus: true });
+      void revealRange(node.path, { start: node.member.selection_range.start }, { focus: true });
     } else if (!node.dir && !node.placeholder) void openFile(node.path, { focus: true });
   }, []);
 
