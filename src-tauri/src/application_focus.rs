@@ -86,13 +86,7 @@ fn application_active(app: &tauri::AppHandle) -> bool {
         unsafe { GetWindowThreadProcessId(GetForegroundWindow(), &mut process) };
         process == std::process::id()
     }
-    #[cfg(target_os = "linux")]
-    {
-        use gtk::prelude::*;
-        let _ = app;
-        gtk::Window::list_toplevels().iter().any(|w| w.is_active())
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     app.webview_windows().values().any(|w| w.is_focused().unwrap_or(true))
 }
 

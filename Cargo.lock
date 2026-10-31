@@ -6147,7 +6147,6 @@ dependencies = [
  "block2 0.6.2",
  "dirs 6.0.0",
  "dunce",
- "gtk",
  "ide-agent",
  "ide-analysis",
  "ide-build",
