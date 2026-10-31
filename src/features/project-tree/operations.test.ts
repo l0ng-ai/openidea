@@ -1,12 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectNode } from "./model";
-import { importExternal, paste, selectionAfterDelete, transfer } from "./operations";
+import {
+  canPaste,
+  copySelection,
+  importExternal,
+  paste,
+  refreshOsClipboard,
+  selectionAfterDelete,
+  transfer,
+} from "./operations";
 import { IpcError } from "@/platform/ipc";
-import { pendingFileRefactorDialog } from "./FileRefactorDialogs";
+import { closeFileRefactorDialog, pendingFileRefactorDialog } from "./FileRefactorDialogs";
 import { useRemote } from "@/platform/remote";
 import { provideNotificationService } from "@/workbench/contributions";
 import { MemoryFs, setProjectFsForTests } from "./fs";
-import { initProjectTree, loadDir, setClipboard } from "./store";
+import { initProjectTree, loadDir, setClipboard, setSelection, useProjectTree } from "./store";
 import { setOsClipboardForTests } from "./clipboard";
 
 let fs: MemoryFs;
@@ -66,7 +74,7 @@ describe("OS file imports", () => {
       setOsClipboardForTests({
         files: async () => ["/p/local.txt"],
         hasFiles: async () => true,
-        setFiles: async () => {},
+        setFiles: async () => false,
       });
       const imported = vi.spyOn(fs, "importLocal");
       for (let i = 0; i < 2; i++) {
@@ -97,7 +105,7 @@ describe("OS file imports", () => {
         throw new Error("clipboard unavailable");
       },
       hasFiles: async () => true,
-      setFiles: async () => {},
+      setFiles: async () => false,
     });
     await paste("/p/target");
     expect(notify).toHaveBeenCalledWith(
@@ -111,7 +119,7 @@ describe("OS file imports", () => {
         throw new Error("busy");
       },
       hasFiles: async () => false,
-      setFiles: async () => {},
+      setFiles: async () => false,
     });
     setClipboard({ paths: ["/p/local.txt"], cut });
     await paste("/p/target");
@@ -142,5 +150,150 @@ describe("OS file imports", () => {
     await transfer(["/p/local.txt"], "/p/target", "copy");
     expect(copied).toHaveBeenCalledWith("/p/local.txt", "/p/target/local.txt");
     expect(imported).not.toHaveBeenCalled();
+  });
+});
+
+describe("project clipboard ownership", () => {
+  beforeEach(async () => {
+    fs = new MemoryFs({ "/p/target": null, "/p/source.txt": "source", "/other.txt": "other" }, "/p");
+    setProjectFsForTests(fs, "/p");
+    initProjectTree("/p", "p");
+    await loadDir("/p");
+    setSelection(new Set(["/p/source.txt"]), "/p/source.txt");
+    closeFileRefactorDialog();
+  });
+
+  afterEach(() => {
+    useRemote.setState({ session: null });
+    setProjectFsForTests(null);
+    setOsClipboardForTests(null);
+    closeFileRefactorDialog();
+  });
+
+  const cases = [false, true].flatMap((handedOff) =>
+    ["same", "other", "empty", "error"].flatMap((osList) =>
+      [false, true].flatMap((cut) => ["focus", "paste"].map((entry) => ({ handedOff, osList, cut, entry }))),
+    ),
+  );
+
+  it.each(cases)("hand-off=$handedOff OS=$osList cut=$cut on $entry", async ({ handedOff, osList, cut, entry }) => {
+    const files = vi.fn(async () => {
+      if (osList === "error") throw new Error("busy");
+      return osList === "same" ? ["/p/source.txt"] : osList === "other" ? ["/other.txt"] : [];
+    });
+    const setFiles = vi.fn(async () => handedOff);
+    setOsClipboardForTests({ files, hasFiles: async () => osList === "same" || osList === "other", setFiles });
+    copySelection(cut);
+    const clipboard = useProjectTree.getState().clipboard;
+    expect(clipboard).toEqual(expect.objectContaining({ paths: ["/p/source.txt"], cut }));
+    expect(setFiles).toHaveBeenCalledWith(["/p/source.txt"]);
+    const stale = handedOff && (osList === "other" || osList === "empty");
+    if (entry === "focus") await refreshOsClipboard();
+    else await paste("/p/target");
+    expect(useProjectTree.getState().clipboard).toBe(stale ? null : clipboard);
+    expect(canPaste()).toBe(!(handedOff && osList === "empty"));
+    // canPaste only consults cached state, even when called repeatedly by menus.
+    canPaste();
+    expect(files).toHaveBeenCalledTimes(1);
+    if (entry === "paste") {
+      if (osList === "other") {
+        expect(fs.nodes.has("/p/target/other.txt")).toBe(true);
+        expect(fs.nodes.has("/p/target/source.txt")).toBe(false);
+        expect(pendingFileRefactorDialog()).toBeNull();
+      } else if (stale) {
+        expect(pendingFileRefactorDialog()).toBeNull();
+        expect(fs.nodes.has("/p/target/source.txt")).toBe(false);
+      } else {
+        expect(pendingFileRefactorDialog()).toEqual(
+          expect.objectContaining({ kind: cut ? "move" : "copy", paths: ["/p/source.txt"] }),
+        );
+      }
+    }
+  });
+
+  it.each([false, true])("keeps the internal clipboard after a rejected hand-off (cut=%s)", async (cut) => {
+    setOsClipboardForTests({
+      files: async () => [],
+      hasFiles: async () => false,
+      setFiles: async () => {
+        throw new Error("unavailable");
+      },
+    });
+    copySelection(cut);
+    await refreshOsClipboard();
+    await paste("/p/target");
+    expect(pendingFileRefactorDialog()?.kind).toBe(cut ? "move" : "copy");
+  });
+
+  it.each([false, true].flatMap((cut) => ["same", "other", "empty", "error"].map((osList) => ({ cut, osList }))))(
+    "keeps remote paths internal (cut=$cut OS=$osList)",
+    async ({ cut, osList }) => {
+      useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+      const setFiles = vi.fn(async () => true);
+      setOsClipboardForTests({
+        files: async () => {
+          if (osList === "error") throw new Error("busy");
+          return osList === "same" ? ["/p/source.txt"] : osList === "other" ? ["/other.txt"] : [];
+        },
+        hasFiles: async () => false,
+        setFiles,
+      });
+      copySelection(cut);
+      await refreshOsClipboard();
+      await paste("/p/target");
+      expect(setFiles).not.toHaveBeenCalled();
+      expect(useProjectTree.getState().clipboard?.paths).toEqual(["/p/source.txt"]);
+      expect(pendingFileRefactorDialog()?.kind).toBe(cut ? "move" : "copy");
+      if (!cut) {
+        const copied = vi.spyOn(fs, "copy");
+        const imported = vi.spyOn(fs, "importLocal");
+        const dialog = pendingFileRefactorDialog()!;
+        if (dialog.kind !== "copy") throw new Error("expected Copy dialog");
+        await dialog.copy("/p/target", null, false);
+        expect(copied).toHaveBeenCalledWith("/p/source.txt", "/p/target/source.txt");
+        expect(imported).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("waits for the hand-off before reading the OS clipboard", async () => {
+    let finish!: (written: boolean) => void;
+    const files = vi.fn(async () => ["/p/source.txt"]);
+    setOsClipboardForTests({
+      files,
+      hasFiles: async () => false,
+      setFiles: () =>
+        new Promise((r) => {
+          finish = r;
+        }),
+    });
+    copySelection(true);
+    const refreshing = refreshOsClipboard();
+    await Promise.resolve();
+    expect(files).not.toHaveBeenCalled();
+    finish(true);
+    await refreshing;
+    expect(useProjectTree.getState().clipboard?.cut).toBe(true);
+  });
+
+  it("ignores a stale read that completes after a newer Copy", async () => {
+    let finish!: (paths: string[]) => void;
+    setOsClipboardForTests({
+      files: () =>
+        new Promise((r) => {
+          finish = r;
+        }),
+      hasFiles: async () => true,
+      setFiles: async () => true,
+    });
+    copySelection(true);
+    const refreshing = refreshOsClipboard();
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    copySelection(false);
+    const newer = useProjectTree.getState().clipboard;
+    finish([]);
+    await refreshing;
+    expect(useProjectTree.getState().clipboard).toBe(newer);
+    expect(canPaste()).toBe(true);
   });
 });

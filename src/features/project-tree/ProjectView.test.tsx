@@ -10,7 +10,7 @@ import { MessagesHost } from "@/workbench/messages";
 import { FileRefactorDialogHost } from "./FileRefactorDialogs";
 import { setRefactorBackendForTests } from "./fileRefactor";
 import { ProjectView } from "./ProjectView";
-import { beginNew } from "./operations";
+import { beginNew, canPaste } from "./operations";
 import { initProjectTree, setViewOption, useProjectTree } from "./store";
 
 const ROOT = "/w/acme";
@@ -81,7 +81,7 @@ describe("ProjectView", () => {
     setOsClipboardForTests({
       files: async () => ["/elsewhere/Photo.png"],
       hasFiles: async () => true,
-      setFiles: async () => {},
+      setFiles: async () => false,
     });
     try {
       const { tree, row, rows } = setup();
@@ -93,6 +93,40 @@ describe("ProjectView", () => {
       await waitFor(() => expect(fs.nodes.has("/w/acme/src/Photo.png")).toBe(true));
       // A copy, not a move: the dropped-from path stays where it was.
       expect(fs.nodes.has("/elsewhere/Photo.png")).toBe(true);
+    } finally {
+      setOsClipboardForTests(null);
+    }
+  });
+
+  it("clears cut dimming and disables Paste on focus after the OS clipboard becomes text", async () => {
+    let files: string[] = [];
+    setOsClipboardForTests({
+      files: async () => files,
+      hasFiles: async () => files.length > 0,
+      setFiles: async (paths) => {
+        files = paths;
+        return true;
+      },
+    });
+    try {
+      const { tree, row, rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      fireEvent.mouseDown(row("README.md"));
+      tree.focus();
+      fireEvent.keyDown(tree, { key: "x", code: "KeyX", metaKey: true });
+      const content = row("README.md").querySelector("[data-project-path]")!;
+      expect(content.className).toMatch(/cut/);
+      await act(async () => {
+        await useProjectTree.getState().clipboard?.osWrite;
+      });
+      files = [];
+      fireEvent.focus(window);
+      await waitFor(() => expect(content.className).not.toMatch(/cut/));
+      expect(useProjectTree.getState().clipboard).toBeNull();
+      expect(canPaste()).toBe(false);
+      fireEvent.keyDown(tree, { key: "v", code: "KeyV", metaKey: true });
+      expect(screen.queryByRole("dialog", { name: "Copy" })).toBeNull();
+      expect(screen.queryByRole("dialog", { name: "Move" })).toBeNull();
     } finally {
       setOsClipboardForTests(null);
     }
