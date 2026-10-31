@@ -1,8 +1,18 @@
 use crate::state::AppState;
 use ide_core::{IdeResult, IpcPath, RequestId};
-use ide_remote::{DeployedPath, SyncEntry, SyncStep, TransferReport};
+use ide_remote::{DeployedPath, DeploymentCoverage, SyncEntry, SyncStep, TransferReport};
 use ide_ssh::{FsConnection, RemoteEntry};
 use tauri::{State, Window};
+
+#[tauri::command]
+#[specta::specta]
+pub async fn deploy_coverage(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<IpcPath>,
+) -> IdeResult<Vec<DeploymentCoverage>> {
+    ide_host::ops::deploy::deploy_coverage(window.label(), &state.host, paths).await
+}
 
 #[tauri::command]
 #[specta::specta]

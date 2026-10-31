@@ -451,6 +451,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         ssh::git_credentials,
         ssh::git_credential_forget,
         ssh::ssh_terminal_command,
+        deploy::deploy_coverage,
         deploy::deploy_upload,
         deploy::deploy_download,
         deploy::deploy_delete_remote,
