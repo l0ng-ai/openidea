@@ -1,8 +1,15 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FileMatches, SearchQuery } from "@/platform/ipc";
 import { buildFindTree } from "../find/FindToolWindow";
 import type { FindDeps } from "../find/session";
-import { disposeFindWindow, openInFindWindow, pinFindTab, useFindWindow } from "../find/windowStore";
+import {
+  disposeFindWindow,
+  openEditorResults,
+  openInFindWindow,
+  pinFindTab,
+  rerunFindTab,
+  useFindWindow,
+} from "../find/windowStore";
 
 const q = (pattern: string): SearchQuery => ({
   pattern,
@@ -65,5 +72,25 @@ describe("buildFindTree", () => {
       ["/", 1],
       ["src", 2],
     ]);
+  });
+});
+
+describe("editor-backed Find results", () => {
+  it("uses the shared session and recomputes live results on rerun without IPC", async () => {
+    const current = file("unsaved.ts");
+    current.matches[0]!.text = "foo foo";
+    current.matches[0]!.ranges.push([4, 7]);
+    const read = vi.fn(() => current);
+    const id = openEditorResults({ title: "Occurrences of 'foo'", query: q("foo"), read });
+    await vi.waitFor(() => expect(useFindWindow.getState().tabs[0]?.state.status).toBe("done"));
+    expect(useFindWindow.getState().tabs[0]?.state.files).toEqual([current]);
+    expect(useFindWindow.getState().tabs[0]?.state.matchCount).toBe(2);
+    const tree = buildFindTree(useFindWindow.getState().tabs[0]!.state.files);
+    expect(tree[0]).toMatchObject({ kind: "file", count: 2 });
+    read.mockReturnValue({ ...file("unsaved.ts"), matches: [] });
+    rerunFindTab(id);
+    await vi.waitFor(() => expect(useFindWindow.getState().tabs[0]?.state.files).toEqual([]));
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(useFindWindow.getState().tabs[0]?.state.summary?.matches).toBe(0);
   });
 });

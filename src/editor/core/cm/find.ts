@@ -28,6 +28,7 @@ import {
   setSearchQuery,
 } from "@codemirror/search";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import type { LineMatch } from "@/platform/ipc";
 import { contextAccepts, preserveCase, type SearchContext } from "@/platform/search";
 import { literalKindAt, literalsExtension } from "./literals";
 
@@ -375,4 +376,27 @@ export function excludeCurrent(view: EditorView): boolean {
   view.dispatch({ effects: toggleFindExcluded.of({ from, to }) });
   if (!excluded) step(view, true);
   return true;
+}
+
+/** Result lines from the same query, scope and syntax filters used by the bar. */
+export function findResultLines(state: EditorState, options: FindOptions, scope = scopeOf(state)) {
+  const query = makeQuery(options);
+  const lines = new Map<number, LineMatch>();
+  if (!query.valid) return [];
+  const cursor = query.getCursor(state, Math.min(scope.from, state.doc.length), Math.min(scope.to, state.doc.length));
+  for (let r = cursor.next(); !r.done; r = cursor.next()) {
+    const { from, to } = r.value;
+    const first = state.doc.lineAt(from);
+    const last = state.doc.lineAt(Math.max(from, to - 1));
+    for (let number = first.number; number <= last.number; number++) {
+      const line = state.doc.line(number);
+      let result = lines.get(number);
+      if (!result) {
+        result = { line: number - 1, text: line.text, textOffset: 0, ranges: [] };
+        lines.set(number, result);
+      }
+      result.ranges.push([Math.max(from, line.from) - line.from, Math.min(to, line.to) - line.from]);
+    }
+  }
+  return [...lines.values()];
 }

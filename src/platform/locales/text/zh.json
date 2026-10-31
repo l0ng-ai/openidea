@@ -5228,5 +5228,10 @@
   "For clipboard images: {timestamp} becomes YYYYMMDD-HHmmss. Source file names are preserved.": "剪贴板图片中的 {timestamp} 替换为 YYYYMMDD-HHmmss。保留源文件名称。",
   "Image folder must be relative.": "图片文件夹必须使用相对路径。",
   "Image exceeds 16 MB.": "图片超过 16 MB。",
-  "Cannot insert image": "无法插入图片"
+  "Cannot insert image": "无法插入图片",
+  "Open Results in Find Window": "在查找窗口中打开结果",
+  "Multiple Cursors": "多个光标",
+  "Scroll to Results During Typing": "键入时滚动到结果",
+  "Find options": "查找选项",
+  "Occurrences of '{0}'": "“{0}”的出现位置"
 }
