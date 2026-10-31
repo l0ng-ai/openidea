@@ -22,19 +22,31 @@ const CONFIRM_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How long the UI gets for requests it answers by itself.
 const UI_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Requests waiting for a window's answer.
+/// Requests waiting for a window's answer, with the window they went to.
 #[derive(Default)]
 pub struct Pending {
     next: AtomicU64,
-    waiting: Mutex<HashMap<u64, oneshot::Sender<McpAnswer>>>,
+    waiting: Mutex<HashMap<u64, (String, oneshot::Sender<McpAnswer>)>>,
 }
 
 impl Pending {
     /// Delivers `answer` to request `id`; false if it is no longer waiting.
     pub fn answer(&self, id: u64, answer: McpAnswer) -> bool {
         match self.waiting.lock().remove(&id) {
-            Some(tx) => tx.send(answer).is_ok(),
+            Some((_, tx)) => tx.send(answer).is_ok(),
             None => false,
+        }
+    }
+
+    /// `window` closed: its requests fail rather than wait for their timeout.
+    pub fn window_closed(&self, window: &str) {
+        let closed: Vec<_> = {
+            let mut waiting = self.waiting.lock();
+            let ids: Vec<u64> = waiting.iter().filter(|(_, (w, _))| w == window).map(|(id, _)| *id).collect();
+            ids.into_iter().filter_map(|id| waiting.remove(&id)).collect()
+        };
+        for (_, tx) in closed {
+            let _ = tx.send(McpAnswer::Failed { message: "The OpenIDEA window closed.".into() });
         }
     }
 }
@@ -58,9 +70,9 @@ impl ide_mcp::McpHost for TauriMcpHost {
     fn ask(&self, window: &str, request: McpUiRequest) -> BoxFuture<'static, IdeResult<Value>> {
         let id = self.pending.next.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = oneshot::channel();
-        self.pending.waiting.lock().insert(id, tx);
-        let timeout = if matches!(request, McpUiRequest::Confirm { .. }) { CONFIRM_TIMEOUT } else { UI_TIMEOUT };
+        self.pending.waiting.lock().insert(id, (window.to_owned(), tx));
         let confirm = matches!(request, McpUiRequest::Confirm { .. });
+        let timeout = if confirm { CONFIRM_TIMEOUT } else { UI_TIMEOUT };
         let sink = TauriSink { app: self.app.clone(), window: Some(window.to_owned()) };
         if confirm {
             // A confirmation needs the user: bring the window forward.
@@ -70,12 +82,12 @@ impl ide_mcp::McpHost for TauriMcpHost {
             }
         }
         sink.emit(IdeEvent::McpRequest { id, request });
-        let pending = self.pending.clone();
+        // Closes the dialog and forgets the request however the wait ends: answered,
+        // timed out, or dropped because the call was cancelled.
+        let done = Done { sink, id, pending: self.pending.clone() };
         Box::pin(async move {
             let outcome = tokio::time::timeout(timeout, rx).await;
-            pending.waiting.lock().remove(&id);
-            // Closes the dialog when it timed out or the call was cancelled.
-            let done = Guard(Some(sink), id);
+            drop(done);
             let answer = match outcome {
                 Ok(Ok(a)) => a,
                 Ok(Err(_)) => return Err(IdeError::cancelled()),
@@ -84,7 +96,6 @@ impl ide_mcp::McpHost for TauriMcpHost {
                 }
                 Err(_) => return Err(IdeError::unavailable("The OpenIDEA window did not answer.")),
             };
-            drop(done);
             match answer {
                 McpAnswer::Confirm { allow } => Ok(Value::Bool(allow)),
                 McpAnswer::Done => Ok(Value::Null),
@@ -101,14 +112,17 @@ impl ide_mcp::McpHost for TauriMcpHost {
     }
 }
 
-/// Tells the window that request `.1` is over when dropped (answered, timed out, cancelled).
-struct Guard(Option<TauriSink>, u64);
+/// Ends request `id` when dropped: forgets it and tells the window to close its dialog.
+struct Done {
+    sink: TauriSink,
+    id: u64,
+    pending: Arc<Pending>,
+}
 
-impl Drop for Guard {
+impl Drop for Done {
     fn drop(&mut self) {
-        if let Some(sink) = self.0.take() {
-            sink.emit(IdeEvent::McpRequestDone { id: self.1 });
-        }
+        self.pending.waiting.lock().remove(&self.id);
+        self.sink.emit(IdeEvent::McpRequestDone { id: self.id });
     }
 }
 
@@ -121,8 +135,11 @@ pub fn token_file(data_dir: &std::path::Path) -> std::path::PathBuf {
 pub fn apply_settings(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else { return };
     let server = state.mcp.clone();
-    let settings = state.global_settings.effective().mcp;
+    let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        // Read when the task runs: the last of several quick changes applies the latest settings.
+        let Some(state) = app.try_state::<AppState>() else { return };
+        let settings = state.global_settings.effective().mcp;
         server.apply(&settings).await;
     });
 }

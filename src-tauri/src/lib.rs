@@ -122,6 +122,7 @@ pub fn run() {
                     let _ = settings.destroy();
                 }
                 if let Some(state) = window.try_state::<AppState>() {
+                    state.mcp_pending.window_closed(window.label());
                     state.close_project(window.label());
                 }
                 if let Some(w) = window.try_state::<WindowsState>() {
