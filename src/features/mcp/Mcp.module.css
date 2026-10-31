@@ -78,3 +78,89 @@
 .statusError {
   color: var(--danger);
 }
+.statusOff {
+  color: var(--fg-subtle);
+}
+
+/* Status bar popup */
+.popup {
+  display: flex;
+  flex-direction: column;
+  width: 360px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+}
+.popupHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+.popupTitle {
+  color: var(--fg-emphasis);
+  font-weight: 600;
+}
+.spacer {
+  flex: 1;
+}
+.popupBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+.popupText {
+  color: var(--fg-subtle);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.popupHint {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.popupLinks {
+  display: flex;
+  gap: 12px;
+}
+.popupList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.popupClient {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+}
+.popupWarning {
+  width: 100%;
+  color: var(--warning);
+  font-size: var(--fs-small);
+}
+.clientName {
+  color: var(--fg-emphasis);
+}
+.ok {
+  color: var(--success);
+}
+.popupFooter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-popup, var(--border));
+}
+.copyList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0 12px 8px;
+  list-style: none;
+}

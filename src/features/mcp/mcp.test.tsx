@@ -273,13 +273,13 @@ describe("MCP status bar widget", () => {
     expect(statusTooltip(null, tx)).toBe("MCP Server not running");
   });
 
-  it("shows only while the server runs or failed to start, and opens its settings", () => {
+  it("shows the server's state, disabled too, and opens the popup instead of the settings", () => {
     act(() => useMcpStatus.setState({ status: null }));
     const view = render(<McpStatusWidget />);
     expect(screen.queryByRole("button", { name: "MCP Server" })).toBeNull();
-    // Disabled in the global settings (whatever this project's layer says).
+    // Disabled in the global settings: shown muted, IDEA's "MCP Server (Disabled)".
     act(() => useMcpStatus.setState({ status: { ...running, running: false, url: null, port: null, clients: [] } }));
-    expect(screen.queryByRole("button", { name: "MCP Server" })).toBeNull();
+    expect(screen.getByRole("button", { name: "MCP Server" })).toHaveAttribute("data-tooltip", "MCP Server (Disabled)");
 
     act(() => useMcpStatus.setState({ status: running }));
     const widget = screen.getByRole("button", { name: "MCP Server" });
@@ -292,7 +292,8 @@ describe("MCP status bar widget", () => {
     );
     expect(widget).toHaveAttribute("data-tooltip", "MCP Server not running: Port in use");
     fireEvent.click(widget);
-    expect(executeAction).toHaveBeenCalledWith("file.settings", "tools.mcpServer");
+    expect(executeAction).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "MCP Server" })).toBeInTheDocument();
     view.unmount();
     act(() => useMcpStatus.setState({ status: null }));
   });
