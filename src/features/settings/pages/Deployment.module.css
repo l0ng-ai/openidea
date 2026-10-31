@@ -54,11 +54,21 @@
 }
 .wide {
   width: 320px;
+  max-width: 100%;
 }
 .field {
   display: flex;
+  flex: 1;
+  min-width: 0;
   align-items: center;
   gap: 6px;
+}
+.field > input {
+  min-width: 0;
+  flex: 1;
+}
+.field > button {
+  flex-shrink: 0;
 }
 .note {
   color: var(--fg-subtle);
