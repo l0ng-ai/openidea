@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectNode } from "./model";
 import { importExternal, paste, selectionAfterDelete, transfer } from "./operations";
+import { IpcError } from "@/platform/ipc";
+import { pendingFileRefactorDialog } from "./FileRefactorDialogs";
 import { useRemote } from "@/platform/remote";
 import { provideNotificationService } from "@/workbench/contributions";
 import { MemoryFs, setProjectFsForTests } from "./fs";
-import { initProjectTree, loadDir } from "./store";
+import { initProjectTree, loadDir, setClipboard } from "./store";
 import { setOsClipboardForTests } from "./clipboard";
 
 let fs: MemoryFs;
@@ -72,8 +74,8 @@ describe("OS file imports", () => {
         else await importExternal(["/p/local.txt"], "/p/target");
       }
       expect(imported.mock.calls).toEqual([
-        ["/p/local.txt", "/p/target/local.txt"],
-        ["/p/local.txt", "/p/target/local copy.txt"],
+        ["/p/local.txt", "/p/target/local.txt", expect.anything()],
+        ["/p/local.txt", "/p/target/local copy.txt", expect.anything()],
       ]);
       expect(notify).not.toHaveBeenCalled();
     },
@@ -101,6 +103,37 @@ describe("OS file imports", () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Cannot access the clipboard", body: "clipboard unavailable" }),
     );
+  });
+
+  it.each([false, true])("falls back to internal clipboard (cut=%s) when another app holds it", async (cut) => {
+    setOsClipboardForTests({
+      files: async () => {
+        throw new Error("busy");
+      },
+      hasFiles: async () => false,
+      setFiles: async () => {},
+    });
+    setClipboard({ paths: ["/p/local.txt"], cut });
+    await paste("/p/target");
+    expect(pendingFileRefactorDialog()).toEqual(
+      expect.objectContaining({ kind: cut ? "move" : "copy", paths: ["/p/local.txt"] }),
+    );
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("stops a multi-path import quietly on cancellation", async () => {
+    const imported = vi
+      .spyOn(fs, "importLocal")
+      .mockRejectedValueOnce(new IpcError({ kind: "cancelled", message: "Cancelled" }));
+    await importExternal(["/p/local.txt", "/p/another.txt"], "/p/target");
+    expect(imported).toHaveBeenCalledTimes(1);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("reports skipped entries while keeping the imported folder", async () => {
+    vi.spyOn(fs, "importLocal").mockResolvedValueOnce(["bundle/pipe: skipped special file"]);
+    expect(await transfer(["/bundle"], "/p/target", "copy", undefined, "local")).toBe("/p/target/bundle");
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: "bundle/pipe: skipped special file" }));
   });
 
   it("keeps internal remote copies on the project filesystem", async () => {

@@ -90,15 +90,37 @@ async fn client_imports_preserve_conflicts_and_report_failure_over_sftp_and_loca
         assert!(fs.stat(&format!("{base}/cancelled")).await.unwrap().is_none());
         #[cfg(unix)]
         {
-            let source = env.project.join("bad-tree");
+            use std::os::unix::fs::PermissionsExt;
+            let source = env.project.join("links-tree");
             std::fs::create_dir_all(&source).unwrap();
-            std::os::unix::fs::symlink("missing", source.join("link")).unwrap();
-            assert!(
-                ide_remote::import::import_local(&fs, &source, &format!("{base}/partial"), &CancellationToken::new())
-                    .await
-                    .is_err()
-            );
-            assert!(fs.stat(&format!("{base}/partial")).await.unwrap().is_none());
+            std::fs::write(source.join("run.sh"), "#!/bin/sh\necho imported\n").unwrap();
+            std::fs::set_permissions(source.join("run.sh"), std::fs::Permissions::from_mode(0o751)).unwrap();
+            std::os::unix::fs::symlink("run.sh", source.join("link")).unwrap();
+            std::os::unix::fs::symlink("missing", source.join("dangling")).unwrap();
+            std::os::unix::fs::symlink(".", source.join("cycle")).unwrap();
+            let socket = std::os::unix::net::UnixListener::bind(source.join("socket")).unwrap();
+            let dest = format!("{base}/links");
+            let skipped =
+                ide_remote::import::import_local(&fs, &source, &dest, &CancellationToken::new()).await.unwrap();
+            assert_eq!(skipped, vec![format!("{}: skipped special file", source.join("socket").display())]);
+            let on_disk = if sftp { env.server_root.join("imports/links") } else { std::path::PathBuf::from(&dest) };
+            for (name, target) in [("link", "run.sh"), ("dangling", "missing"), ("cycle", ".")] {
+                assert_eq!(std::fs::read_link(on_disk.join(name)).unwrap(), std::path::PathBuf::from(target));
+            }
+            assert_eq!(std::fs::metadata(on_disk.join("run.sh")).unwrap().permissions().mode() & 0o777, 0o751);
+            assert_eq!(fs.read(&format!("{dest}/run.sh")).await.unwrap(), b"#!/bin/sh\necho imported\n");
+            assert!(!on_disk.join("socket").exists());
+            let skipped = ide_remote::import::import_local(
+                &fs,
+                &source.join("socket"),
+                &format!("{base}/socket"),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(skipped.len(), 1);
+            assert!(fs.stat(&format!("{base}/socket")).await.unwrap().is_none());
+            drop(socket);
             std::fs::remove_dir_all(source).unwrap();
         }
         fs.close().await;

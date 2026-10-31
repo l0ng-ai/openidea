@@ -477,7 +477,7 @@ pub async fn remote_import_local(
     from: std::path::PathBuf,
     to: String,
     request: ide_core::RequestId,
-) -> IdeResult<()> {
+) -> IdeResult<Vec<String>> {
     let label = AppState::owner_window(window.label());
     let c = state.remote_dev.get(label).ok_or_else(|| IdeError::unavailable("Remote project is disconnected"))?;
     c.authorize_command(label, "fs_copy").await?;

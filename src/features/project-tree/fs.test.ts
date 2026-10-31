@@ -3,7 +3,7 @@ import { commands } from "@/platform/ipc";
 import { useRemote } from "@/platform/remote";
 import { invokeLocal } from "@/platform/tauriCore";
 import { useTasks } from "@/workbench/tasks";
-import { tauriFs } from "./fs";
+import { beginLocalImport, tauriFs } from "./fs";
 
 vi.mock("@/platform/tauriCore", async (original) => ({
   ...(await original<typeof import("@/platform/tauriCore")>()),
@@ -24,7 +24,7 @@ afterEach(() => {
 
 describe("client file routing", () => {
   it("uploads OS files locally and cancels the client request rather than a remote one", async () => {
-    let finish!: (r: { status: "ok"; data: null }) => void;
+    let finish!: (r: { status: "ok"; data: string[] }) => void;
     const upload = vi.spyOn(commands, "remoteImportLocal").mockReturnValue(
       new Promise((resolve) => {
         finish = resolve;
@@ -36,7 +36,7 @@ describe("client file routing", () => {
     const request = upload.mock.calls[0]![2];
     task.cancel!();
     expect(invokeLocal).toHaveBeenCalledWith("cancel_request", { id: request });
-    finish({ status: "ok", data: null });
+    finish({ status: "ok", data: [] });
     await work;
     expect(upload).toHaveBeenCalledWith("/client/a", "/remote/a", request);
     expect(copy).not.toHaveBeenCalled();
@@ -49,6 +49,20 @@ describe("client file routing", () => {
       error: { kind: "unavailable", message: "Remote project is disconnected" },
     });
     await expect(tauriFs.importLocal("/client/a", "/remote/a")).rejects.toThrow("Remote project is disconnected");
+    expect(useTasks.getState().tasks[0]?.done).toBe(true);
+  });
+
+  it("shares one task across paths and prevents starting another after Cancel", async () => {
+    const upload = vi.spyOn(commands, "remoteImportLocal").mockResolvedValue({ status: "ok", data: [] });
+    const batch = beginLocalImport();
+    await tauriFs.importLocal("/client/a", "/remote/a", batch);
+    await tauriFs.importLocal("/client/b", "/remote/b", batch);
+    expect(useTasks.getState().tasks).toHaveLength(1);
+    expect(useTasks.getState().tasks[0]?.done).toBe(false);
+    useTasks.getState().tasks[0]!.cancel!();
+    await expect(tauriFs.importLocal("/client/c", "/remote/c", batch)).rejects.toMatchObject({ kind: "cancelled" });
+    expect(upload).toHaveBeenCalledTimes(2);
+    batch.finish();
     expect(useTasks.getState().tasks[0]?.done).toBe(true);
   });
 

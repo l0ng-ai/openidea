@@ -125,13 +125,30 @@ impl RemoteFs {
             Self::Local => {
                 let mut input = tokio::fs::File::open(local).await?;
                 let mut output = tokio::fs::OpenOptions::new().write(true).create_new(true).open(remote).await?;
-                let result = copy_stream(&mut input, &mut output, cancel).await;
+                let result = async {
+                    copy_stream(&mut input, &mut output, cancel).await?;
+                    #[cfg(unix)]
+                    output.set_permissions(input.metadata().await?.permissions()).await?;
+                    Ok(())
+                }
+                .await;
                 drop(output);
                 if result.is_err() {
                     let _ = tokio::fs::remove_file(remote).await;
                 }
                 result
             }
+        }
+    }
+
+    /// Creates the link itself, preserving a relative or dangling target.
+    pub async fn symlink(&self, target: &str, link: &str) -> IdeResult<()> {
+        match self {
+            Self::Sftp(fs) => fs.symlink(target, link).await,
+            #[cfg(unix)]
+            Self::Local => Ok(tokio::fs::symlink(target, link).await?),
+            #[cfg(not(unix))]
+            Self::Local => Err(IdeError::invalid("Cannot create a symbolic link on this client")),
         }
     }
 

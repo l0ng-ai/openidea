@@ -10,7 +10,8 @@ import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
 import { runFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
-import { projectFs } from "./fs";
+import { beginLocalImport, projectFs } from "./fs";
+import { isCancelled } from "@/platform/ipc";
 import type { ProjectNode } from "./model";
 import {
   isInside,
@@ -501,12 +502,14 @@ export function canPaste(): boolean {
 export async function paste(target = targetFolder()) {
   const { clipboard } = get();
   if (!target || isReadOnlyPath(target)) return;
-  let external: string[];
+  let external: string[] = [];
   try {
     external = await osClipboard().files();
   } catch (e) {
-    fail("Cannot access the clipboard", e);
-    return;
+    if (!clipboard?.paths.length) {
+      fail("Cannot access the clipboard", e);
+      return;
+    }
   }
   // The last copy is the one the user expects to paste, so another app's files
   // win over ours — unless they are the copy we handed to the OS ourselves.
@@ -582,29 +585,38 @@ export async function transfer(
   const errors: string[] = [];
   let first: string | null = null;
   const newName = name;
-  for (const src of paths) {
-    const name = nameOf(src);
-    if (
-      !(source === "local" && isRemoteWindow()) &&
-      isSameOrInside(target, src) &&
-      target !== parentOf(src) &&
-      src !== target
-    ) {
-      errors.push(`${name}: cannot copy a folder into itself`);
-      continue;
+  const upload = source === "local" && isRemoteWindow() ? beginLocalImport() : undefined;
+  try {
+    for (const src of paths) {
+      if (upload?.cancelled) break;
+      const name = nameOf(src);
+      if (
+        !(source === "local" && isRemoteWindow()) &&
+        isSameOrInside(target, src) &&
+        target !== parentOf(src) &&
+        src !== target
+      ) {
+        errors.push(`${name}: cannot copy a folder into itself`);
+        continue;
+      }
+      const srcIsDir =
+        get().listings.has(src) || currentModel().byKey.get(currentModel().keyOfPath.get(src) ?? src)?.dir === true;
+      const finalName = paths.length === 1 && newName ? newName : uniqueName(name, isTaken, srcIsDir);
+      const to = joinPath(target, finalName);
+      try {
+        if (source === "local") {
+          const skipped = await fs.importLocal(src, to, upload);
+          errors.push(...skipped);
+        } else await fs.copy(src, to);
+        taken.add(caseInsensitive ? finalName.toLowerCase() : finalName);
+        first ??= to;
+      } catch (e) {
+        if (isCancelled(e)) break;
+        errors.push(`${name}: ${errorMessage(e)}`);
+      }
     }
-    const srcIsDir =
-      get().listings.has(src) || currentModel().byKey.get(currentModel().keyOfPath.get(src) ?? src)?.dir === true;
-    const finalName = paths.length === 1 && newName ? newName : uniqueName(name, isTaken, srcIsDir);
-    const to = joinPath(target, finalName);
-    try {
-      if (source === "local") await fs.importLocal(src, to);
-      else await fs.copy(src, to);
-      taken.add(caseInsensitive ? finalName.toLowerCase() : finalName);
-      first ??= to;
-    } catch (e) {
-      errors.push(`${name}: ${errorMessage(e)}`);
-    }
+  } finally {
+    upload?.finish();
   }
   if (errors.length)
     notifications().notify({ level: "error", title: "Some items could not be copied", body: errors.join("\n") });

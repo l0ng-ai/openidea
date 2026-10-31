@@ -179,11 +179,28 @@ impl SftpFs {
         let result = crate::filesystem::copy_stream(&mut input, &mut output, cancel).await;
         let closed = output.shutdown().await.map_err(IdeError::from);
         drop(output);
-        let result = result.and(closed);
+        let result = async {
+            result.and(closed)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = input.metadata().await?.permissions().mode() & 0o7777;
+                self.sftp
+                    .set_metadata(remote, FileAttributes { permissions: Some(mode), ..FileAttributes::empty() })
+                    .await
+                    .map_err(|e| err(remote, e))?;
+            }
+            Ok(())
+        }
+        .await;
         if result.is_err() {
             let _ = self.sftp.remove_file(remote).await;
         }
         result
+    }
+
+    pub async fn symlink(&self, target: &str, link: &str) -> IdeResult<()> {
+        self.sftp.symlink(target, link).await.map_err(|e| err(link, e))
     }
 
     pub async fn create_dir(&self, path: &str) -> IdeResult<()> {

@@ -1017,7 +1017,7 @@ export const commands = {
 	 */
 	remoteInvoke: (cmd: string, args: string, onChannel: Channel<ChannelFrame>) => typedError<string, IdeError>(__TAURI_INVOKE("remote_invoke", { cmd, args, onChannel })),
 	/**  A client OS file belongs to this machine even when its destination is remote. */
-	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
+	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
 	/**
 	 *  Reload Environment: new child processes get the login shell's current environment
 	 *  (and the project's `remoteEnv` on a remote host); running ones keep theirs.
