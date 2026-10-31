@@ -88,6 +88,8 @@ export interface TabsProps {
   onClose?: (id: string) => void;
   /** Alt+click on a close button (IDEA: close all other tabs). */
   onCloseOthers?: (id: string) => void;
+  /** Shift+left-click a tab closes it (editor tabs; plain clicks still select). */
+  closeOnShiftClick?: boolean;
   onDoubleClick?: (id: string) => void;
   onContextMenu?: (id: string, e: MouseEvent) => void;
   /** `editor`: 30px with separators (editor tabs); `compact`: 28px plain (popups, tool window sub-tabs). */
@@ -114,6 +116,7 @@ export function Tabs({
   onSelect,
   onClose,
   onCloseOthers,
+  closeOnShiftClick,
   onDoubleClick,
   onContextMenu,
   variant = "editor",
@@ -287,7 +290,8 @@ export function Tabs({
               onPointerDown={
                 dnd
                   ? (e) => {
-                      if ((e.target as Element).closest("[data-tab-close]")) return;
+                      if ((closeOnShiftClick && e.shiftKey) || (e.target as Element).closest("[data-tab-close]"))
+                        return;
                       startPointerDrag(
                         e,
                         e.currentTarget,
@@ -336,7 +340,15 @@ export function Tabs({
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
                 className={styles.tabButton}
                 style={item.color ? { color: item.color } : undefined}
-                onClick={() => onSelect(item.id)}
+                onClick={(e) => {
+                  // Shift+click is mouse-only: a keyboard Enter with Shift held still selects.
+                  if (closeOnShiftClick && e.shiftKey && e.detail > 0 && closable) {
+                    e.preventDefault();
+                    onClose!(item.id);
+                    return;
+                  }
+                  onSelect(item.id);
+                }}
                 onDoubleClick={onDoubleClick ? () => onDoubleClick(item.id) : undefined}
                 onKeyDown={(e) => onKeyDown(e, index, item)}
                 {...tooltipAttrs(item.tooltip)}

@@ -279,6 +279,7 @@ function PaneView({ paneId }: { paneId: string }) {
       onSelect={(id) => ctrl.activate(paneId, id)}
       onClose={(id) => void ctrl.closeTab(paneId, id)}
       onCloseOthers={(id) => void ctrl.closeOthers(paneId, id)}
+      closeOnShiftClick
       onDoubleClick={(id) => {
         // IDEA: a preview tab becomes a regular one; any other tab maximizes the editor.
         if (pane.tabs.find((t) => t.id === id)?.preview) ctrl.keepTab(paneId, id);
