@@ -738,6 +738,50 @@ async fn a_stop_ahead_of_its_prompt_cancels_it() {
     assert!(cli.sent.lock()[0].iter().all(|m| m["type"] != "user"), "nothing was sent");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_turn_reports_its_failure() {
+    let text = "Failed to authenticate: OAuth session expired and could not be refreshed";
+    let lifecycle = |uuid: &str, state: &str| {
+        Frame::Cli(json!({ "type": "command_lifecycle", "command_uuid": uuid, "state": state }))
+    };
+    let result = |uuid: &str| {
+        Frame::Cli(json!({
+            "type": "result", "subtype": "success", "is_error": true, "result": text, "stop_reason": "stop_sequence",
+            "terminal_reason": "api_error", "origin": { "kind": "human" }, "user_message_uuids": [uuid],
+        }))
+    };
+    // As Claude Code sends it, and with the turn's end ahead of its result.
+    for lifecycle_first in [false, true] {
+        let mut process = load_fixture("simple").remove(0);
+        process.truncate(6);
+        let Some(Frame::Shim(prompt)) = process.last() else { panic!("the fixture's prompt") };
+        let uuid = prompt["uuid"].as_str().unwrap().to_owned();
+        process.push(Frame::Cli(json!({
+            "type": "assistant", "error": "authentication_failed", "parent_tool_use_id": null,
+            "message": { "id": "m", "model": "<synthetic>", "content": [{ "type": "text", "text": text }] },
+        })));
+        if lifecycle_first {
+            process.extend([lifecycle(&uuid, "cancelled"), result(&uuid)]);
+        } else {
+            process.extend([result(&uuid), lifecycle(&uuid, "cancelled")]);
+        }
+        let cli = Arc::new(Replay {
+            processes: Mutex::new(VecDeque::from([process])),
+            sent: Arc::default(),
+            launched: Mutex::default(),
+            errors: Arc::default(),
+        });
+        let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let h =
+            Harness::connect(cli.clone(), dir.path().into(), dir.path().join("p"), cwd.path().into(), Vec::new()).await;
+        let s = h.new_session().await;
+        let Err(RpcError::Server { message, .. }) = h.prompt(&s, "hi").await else {
+            panic!("the turn should fail (lifecycle first: {lifecycle_first})");
+        };
+        assert_eq!(message, format!("Claude Code authentication failed: {text}"));
+    }
+}
+
 /// Fork and undo against the real CLI, across connections, in a symlinked directory
 /// (macOS `/tmp`).
 #[tokio::test(flavor = "multi_thread")]
@@ -829,6 +873,7 @@ fn which_result_ends_a_turn() {
     assert!(!belongs(&t, &json!({"user_message_uuids": ["a"]})), "a steer superseded it");
     assert!(belongs(&t, &json!({"subtype": "error_during_execution"})), "names no message");
     assert!(!belongs(&t, &json!({"origin": {"kind": "task-notification"}})), "Claude Code's own turn");
+    assert!(belongs(&t, &json!({"origin": {"kind": "human"}, "user_message_uuids": ["b"]})), "the prompt's own result");
     assert!(belongs(&turn(&["a", "b"], true), &json!({"user_message_uuids": ["a"]})));
 }
 

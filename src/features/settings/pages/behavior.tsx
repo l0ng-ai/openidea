@@ -11,6 +11,7 @@ import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
 import { usePlatform } from "@/platform/platformInfo";
 import { isTauri } from "@/platform/ipc";
+import { ZOOM_LIMITS } from "@/platform/zoom";
 import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
 import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
@@ -18,7 +19,6 @@ import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
 import { ColorSwatches, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import {
-  ZOOM_LIMITS,
   IDLE_LIMITS,
   type Antialiasing,
   type ConcreteTheme,

@@ -297,6 +297,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         .and_then(|b| b.build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     apply_zoom(app, &window);
+    #[cfg(target_os = "macos")]
+    align_titlebar(app, &window);
     // "Sync with OS" needs the OS mode, known once the window exists.
     if let Some(a) = appearance.filter(|a| plugin_frame.is_none() && (a.sync_with_os || a.theme == "system"))
         && window.theme().is_ok_and(|t| t == Theme::Dark)
@@ -315,6 +317,20 @@ fn apply_zoom(app: &AppHandle, window: &WebviewWindow) {
     if zoom != 100 {
         let _ = window.set_zoom(f64::from(zoom) / 100.0);
     }
+}
+
+/// Aligns the native window buttons before the page reports its title bar height,
+/// so they don't visibly move once it loads.
+#[cfg(target_os = "macos")]
+fn align_titlebar(app: &AppHandle, window: &WebviewWindow) {
+    // `--h-titlebar` in tokens.css.
+    const HEIGHT: f64 = 40.0;
+    const COMPACT_HEIGHT: f64 = 32.0;
+    let Some(a) = app.try_state::<AppState>().map(|s| s.global_settings.effective().appearance) else {
+        return;
+    };
+    let height = if a.compact_mode { COMPACT_HEIGHT } else { HEIGHT };
+    let _ = crate::titlebar::set_height(window, height * f64::from(a.zoom.clamp(50, 300)) / 100.0);
 }
 
 /// The first window (`create: false` in tauri.conf.json so it can take the theme's colour).
@@ -747,6 +763,8 @@ pub fn open_settings_window(
         .and_then(|b| b.build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
     apply_zoom(app, &window);
+    #[cfg(target_os = "macos")]
+    align_titlebar(app, &window);
     // Restore runs during build; fit its size to the parent's current display before showing.
     #[cfg(target_os = "macos")]
     if let Err(e) = fit_settings_window(&window, &parent) {

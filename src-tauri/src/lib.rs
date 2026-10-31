@@ -14,6 +14,8 @@ mod remote_dev;
 
 mod state;
 mod theme_frame;
+#[cfg(target_os = "macos")]
+mod titlebar;
 mod window_groups;
 mod windows;
 
@@ -141,6 +143,8 @@ pub fn run() {
             }
         }
         tauri::WindowEvent::Destroyed => {
+            #[cfg(target_os = "macos")]
+            titlebar::forget(window);
             window_groups::destroyed(window.app_handle(), window.label());
             if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {
                 let _ = settings.destroy();

@@ -10,7 +10,7 @@ import { uiFontFamily } from "@/platform/fonts";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { setDragRequiresAlt } from "@/ui";
-import { ZOOM_LIMITS } from "./model/behaviorSchema";
+import { ZOOM_LIMITS } from "@/platform/zoom";
 import { DEFAULT_SETTINGS, validateSettings, type ValidSettings } from "./model/schema";
 
 const FONT_VARS = [

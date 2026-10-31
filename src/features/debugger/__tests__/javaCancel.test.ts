@@ -118,6 +118,30 @@ it("still reports a real resolve failure in the preparation console", async () =
   expect(ipc.debugStart).not.toHaveBeenCalled();
 });
 
+it.each([
+  "jdtls: Given URI does not belong to any Java project.",
+  "jdtls: Launch configuration 1793460461218 references non-existing project parent.",
+])("explains how to import a module when Debug fails with %s", async (message) => {
+  const starting = executeAction("debug.startConfig", { ...config, module: "web" });
+  await vi.waitFor(() => expect(ipc.javaResolveLaunch).toHaveBeenCalledOnce());
+  respond({ status: "error", error: { kind: "protocol", message } });
+  await starting;
+  expect(notify).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      title: "Cannot start debugging",
+      body: expect.stringContaining("Java module 'web' is not imported."),
+    }),
+  );
+  expect(
+    Object.values(useDebug.getState().console)
+      .flat()
+      .map((line) => line.text)
+      .join("\n"),
+  ).toContain("open its folder as a project");
+  expect(ipc.javaDebugServer).not.toHaveBeenCalled();
+  expect(ipc.debugStart).not.toHaveBeenCalled();
+});
+
 it("keeps progress and the originating configuration when DAP takes over", async () => {
   const starting = executeAction("debug.startConfig", config);
   await vi.waitFor(() => expect(ipc.javaResolveLaunch).toHaveBeenCalledOnce());
