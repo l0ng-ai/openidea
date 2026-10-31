@@ -76,16 +76,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## JetBrains IntelliJ Platform MCP server
-
-`crates/ide-mcp/**` (the built-in MCP server) is a Rust port of the MCP server plugin of
-[intellij-community](https://github.com/JetBrains/intellij-community) (Apache-2.0):
-`plugins/mcp-server` (the tool sets of `mcpserver.toolsets`, `mcpserver.terminal` and
-`mcpserver.vcs`, the session / transport, elicitation, client configuration, stdio runner,
-tool filter and bundled skills of the plugin, and their tests), adapted to OpenIDEA's backend.
-Tool names, parameters, descriptions and messages follow the original. Modified from the
-originals. Copyright 2000-2026 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
-
 ## Tools downloaded on request (not bundled)
 
 The tool installer (`crates/ide-tools`, Settings › Languages & Frameworks ›
