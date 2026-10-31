@@ -137,7 +137,18 @@ export function DebugTabs() {
 export function DebugToolWindow() {
   const active = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const muted = useBreakpoints((s) => s.muted);
-  const [tab, setTab] = useState<Tab>("variables");
+  const [view, setView] = useState<{
+    session: number | undefined;
+    status: DebugSession["status"] | undefined;
+    tab: Tab;
+  }>({ session: undefined, status: undefined, tab: "variables" });
+  if (active && (view.session !== active.startedAt || view.status !== active.status))
+    setView({
+      session: active.startedAt,
+      status: active.status,
+      tab: active.status === "starting" ? "console" : active.status === "paused" ? "variables" : view.tab,
+    });
+  const tab = view.tab;
 
   if (!active) {
     return (
@@ -168,7 +179,7 @@ export function DebugToolWindow() {
               aria-selected={tab === id}
               aria-controls={`debug-panel-${id}`}
               className={clsx(styles.tab, tab === id && styles.tabActive)}
-              onClick={() => setTab(id)}
+              onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
             >
               {label}
             </button>

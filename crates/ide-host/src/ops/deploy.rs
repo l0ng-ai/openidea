@@ -1,6 +1,6 @@
 use crate::Host;
 use ide_core::{CancellationToken, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
-use ide_remote::{DeployedPath, SyncEntry, SyncStep, TransferReport};
+use ide_remote::{DeployedPath, DeploymentCoverage, SyncEntry, SyncStep, TransferReport};
 use ide_ssh::{FsConnection, RemoteEntry};
 use std::path::PathBuf;
 
@@ -29,6 +29,12 @@ fn progress(
 
 fn local(paths: Vec<IpcPath>) -> Vec<PathBuf> {
     paths.into_iter().map(|p| p.to_path_buf()).collect()
+}
+
+/// Eligible paths per server, without contacting any deployment host.
+pub async fn deploy_coverage(window: &str, state: &Host, paths: Vec<IpcPath>) -> IdeResult<Vec<DeploymentCoverage>> {
+    let project = state.project(window)?;
+    Ok(ide_remote::coverage(&project.settings.effective(), &project.root, &local(paths)))
 }
 
 /// Tools › Deployment › Upload to…: files and folders to `server` (default server when `None`).
@@ -169,6 +175,7 @@ pub async fn deploy_test_connection(state: &Host, connection: FsConnection, path
 }
 
 pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
+    d.add("deploy_coverage", |c| async move { deploy_coverage(&c.window, &c.host, c.arg("paths")?).await });
     d.add("deploy_upload", |c| async move {
         deploy_upload(&c.window, &c.host, c.arg("paths")?, c.arg("server")?, c.arg("request")?).await
     });

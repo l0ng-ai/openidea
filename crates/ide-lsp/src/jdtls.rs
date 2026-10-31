@@ -30,6 +30,55 @@ const MAX_LAUNCH_ERRORS: usize = 10;
 /// Build markers can be published just after `java/buildWorkspace` answers.
 const ERRORS_WAIT: Duration = Duration::from_secs(2);
 
+const ACCESS_OPTIONS: [&str; 2] = [
+    "org.eclipse.jdt.core.compiler.problem.forbiddenReference",
+    "org.eclipse.jdt.core.compiler.problem.discouragedReference",
+];
+
+fn compiler_defaults(cfg: &ide_language::LanguageServerConfig) -> Value {
+    // updateSettings persists project options. Only use it when jdtls redirects
+    // generated metadata into its workspace, and never touch an existing .settings.
+    let metadata = cfg.args.iter().rev().find_map(|a| {
+        a.strip_prefix("--jvm-arg=").unwrap_or(a).strip_prefix("-Djava.import.generatesMetadataFilesAtProjectRoot=")
+    });
+    if metadata != Some("false") {
+        return json!({});
+    }
+    let settings = crate::handler::all_settings(cfg);
+    let Some(url) = settings
+        .pointer("/java/settings/url")
+        .or_else(|| settings.pointer("/settings/java/settings/url"))
+        .and_then(Value::as_str)
+    else {
+        return json!({});
+    };
+    let path = crate::uri::uri_to_path(url).unwrap_or_else(|| PathBuf::from(url));
+    let Ok(prefs) = std::fs::read_to_string(path) else { return json!({}) };
+    let mut options = serde_json::Map::new();
+    for line in prefs.lines() {
+        if let Some((key, value)) = line.split_once('=')
+            && ACCESS_OPTIONS.contains(&key.trim())
+            && ["error", "warning", "info", "ignore"].contains(&value.trim())
+        {
+            options.insert(key.trim().into(), json!(value.trim()));
+        }
+    }
+    Value::Object(options)
+}
+
+fn cache_owned_maven_settings(root: &Path) -> bool {
+    root.join("pom.xml").is_file() && matches!(root.join(".settings").try_exists(), Ok(false))
+}
+
+fn project_path(uri: &str) -> Option<PathBuf> {
+    // jdtls commands use Java's `file:/p` as well as LSP's `file:///p`.
+    let normalized = match uri.strip_prefix("file:") {
+        Some(rest) if !rest.starts_with("//") => format!("file://{rest}"),
+        _ => uri.to_owned(),
+    };
+    crate::uri::uri_to_path(&normalized)
+}
+
 /// Result of `java/buildWorkspace` (jdtls `BuildWorkspaceStatus`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -128,14 +177,10 @@ pub fn parse_classpaths(v: &Value) -> JavaClasspath {
             .unwrap_or_default()
     };
     JavaClasspath {
-        project_root: v.get("projectRoot").and_then(Value::as_str).map(|r| {
-            // jdtls answers `file:/p/demo` (Java URI style) as well as `file:///p/demo`.
-            let normalized = match r.strip_prefix("file:") {
-                Some(rest) if !rest.starts_with("//") => format!("file://{rest}"),
-                _ => r.to_owned(),
-            };
-            crate::uri::uri_to_path(&normalized).unwrap_or_else(|| PathBuf::from(r)).into()
-        }),
+        project_root: v
+            .get("projectRoot")
+            .and_then(Value::as_str)
+            .map(|r| project_path(r).unwrap_or_else(|| PathBuf::from(r)).into()),
         class_paths: strings("classpaths"),
         module_paths: strings("modulepaths"),
     }
@@ -176,6 +221,56 @@ async fn cancellable_wait<T>(cancel: &CancellationToken, wait: impl std::future:
 }
 
 impl LspManager {
+    /// m2e generates a project-specific forbidden-reference error, overriding
+    /// workspace defaults. Apply those defaults only to cache-owned metadata.
+    async fn java_configure_compiler(&self, server: &Server, run: &Running) -> IdeResult<bool> {
+        let options = compiler_defaults(&server.effective_config());
+        if options.as_object().is_none_or(|o| o.is_empty()) {
+            return Ok(false);
+        }
+        let command = |name: &str, arguments: Value| {
+            let params = json!({"command": name, "arguments": arguments});
+            let peer = run.peer.clone();
+            async move {
+                tokio::time::timeout(
+                    COMMAND_TIMEOUT,
+                    peer.request::<_, Value>("workspace/executeCommand", params, None),
+                )
+                .await
+                .unwrap_or(Err(ide_jsonrpc::RpcError::Timeout))
+                .map_err(|e| crate::rpc_err(SERVER, "workspace/executeCommand", e))
+            }
+        };
+        let projects = command("java.project.getAll", json!([])).await?;
+        let mut changed = false;
+        for uri in projects.as_array().into_iter().flatten().filter_map(Value::as_str) {
+            let Some(root) = project_path(uri) else { continue };
+            // An existing .settings is owned by the project, even if it currently
+            // contains preferences for another Eclipse plugin.
+            if !cache_owned_maven_settings(&root) {
+                continue;
+            }
+            let keys: Vec<_> = options.as_object().unwrap().keys().collect();
+            let current = command("java.project.getSettings", json!([uri, keys])).await?;
+            if options.as_object().unwrap().iter().all(|(k, v)| current.get(k) == Some(v)) {
+                continue;
+            }
+            command("java.project.updateSettings", json!([uri, options])).await?;
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    pub(crate) fn java_import_ready(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
+        let mgr = self.clone();
+        self.runtime.spawn(async move {
+            let Some(run) = server.running_gen(generation) else { return };
+            if let Err(e) = mgr.java_configure_compiler(&server, &run).await {
+                tracing::warn!("jdtls: cannot apply compiler defaults: {e}");
+            }
+        });
+    }
+
     /// The jdtls instance serving `path` (a module directory or source file),
     /// started if needed and waited for.
     async fn jdtls(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<(Arc<Server>, Running)> {
@@ -211,9 +306,12 @@ impl LspManager {
         timeout: Duration,
         cancel: &CancellationToken,
     ) -> IdeResult<Value> {
+        let started = Instant::now();
         let (server, run) = self.jdtls(path, cancel).await?;
+        let ready_ms = started.elapsed().as_millis();
+        let phase = params.get("command").and_then(Value::as_str).unwrap_or(method).to_owned();
         let fut = run.peer.request::<Value, Value>(method, params, Some(cancel.clone()));
-        match tokio::time::timeout(timeout, fut).await {
+        let result = match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| crate::rpc_err(&server.name, method, e)),
             Err(_) => Err(IdeError::new(
                 ErrorKind::Protocol,
@@ -222,7 +320,15 @@ impl LspManager {
                     timeout.as_secs()
                 ),
             )),
-        }
+        };
+        tracing::info!(
+            phase,
+            ready_ms,
+            request_ms = started.elapsed().as_millis() - ready_ms,
+            success = result.is_ok(),
+            "Java launch request"
+        );
+        result
     }
 
     /// `workspace/executeCommand` on the jdtls serving `path`.
@@ -288,7 +394,16 @@ impl LspManager {
     /// Incremental build of the jdtls workspace (`java/buildWorkspace`), so
     /// class files are up to date before a launch.
     pub async fn java_build(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<JavaBuildStatus> {
-        let v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT, cancel).await?;
+        let mut v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT, cancel).await?;
+        // The first build can finish the Maven import before ServiceReady is handled.
+        let (server, run) = self.jdtls(path, cancel).await?;
+        let changed = cancellable_wait(cancel, self.java_configure_compiler(&server, &run)).await??;
+        // ServiceReady can update the options concurrently with that first build.
+        let recheck = v.as_i64() == Some(2)
+            && compiler_defaults(&server.effective_config()).as_object().is_some_and(|o| !o.is_empty());
+        if changed || recheck {
+            v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT, cancel).await?;
+        }
         Ok(JavaBuildStatus::from_code(v.as_i64().unwrap_or(0)))
     }
 
@@ -437,6 +552,79 @@ mod tests {
         assert_eq!(count, 3);
         let shown: Vec<(u32, u32, &str)> = errors.iter().map(|e| (e.line, e.column, e.message.as_str())).collect();
         assert_eq!(shown, [(4, 5, "a1"), (10, 5, "a2")]);
+    }
+
+    #[test]
+    fn compiler_defaults_require_redirected_metadata_and_respect_server_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("compiler defaults 测试.prefs");
+        std::fs::write(&file, format!("{}=warning\n{}=ignore\nother=error\n", ACCESS_OPTIONS[0], ACCESS_OPTIONS[1]))
+            .unwrap();
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        cfg.initialization_options = Some(
+            toml::Value::try_from(json!({"settings": {"java": {"settings": {"url": file.to_string_lossy()}}}}))
+                .unwrap(),
+        );
+        assert_eq!(compiler_defaults(&cfg), json!({}));
+        for prefix in ["", "--jvm-arg="] {
+            cfg.args = vec![format!("{prefix}-Djava.import.generatesMetadataFilesAtProjectRoot=false")];
+            assert_eq!(compiler_defaults(&cfg), json!({ACCESS_OPTIONS[0]: "warning", ACCESS_OPTIONS[1]: "ignore"}));
+        }
+        cfg.args.push("--jvm-arg=-Djava.import.generatesMetadataFilesAtProjectRoot=true".into());
+        assert_eq!(compiler_defaults(&cfg), json!({}), "the final JVM property wins");
+        cfg.args.pop();
+        cfg.settings = Some(json!({"java": {"settings": {"url": "https://example.invalid/custom.prefs"}}}));
+        assert_eq!(compiler_defaults(&cfg), json!({}), "explicit server settings win");
+    }
+
+    #[test]
+    fn project_settings_are_never_updated_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(!cache_owned_maven_settings(root));
+        std::fs::write(root.join("pom.xml"), "<project/>").unwrap();
+        assert!(cache_owned_maven_settings(root));
+        let lsp_uri = crate::uri::path_to_uri_string(root);
+        let java_uri = lsp_uri.replacen("file://", "file:", 1);
+        for uri in [lsp_uri, java_uri] {
+            assert_eq!(project_path(&uri).as_deref(), Some(root));
+            assert!(cache_owned_maven_settings(&project_path(&uri).unwrap()));
+        }
+        std::fs::create_dir(root.join(".settings")).unwrap();
+        assert!(!cache_owned_maven_settings(root), "even unrelated Eclipse settings belong to the project");
+        let prefs = root.join(".settings/org.eclipse.jdt.core.prefs");
+        std::fs::write(&prefs, format!("{}=error\n", ACCESS_OPTIONS[0])).unwrap();
+        assert!(!cache_owned_maven_settings(root));
+        assert_eq!(std::fs::read_to_string(prefs).unwrap(), format!("{}=error\n", ACCESS_OPTIONS[0]));
+    }
+
+    #[test]
+    fn access_warnings_do_not_hide_real_compile_errors() {
+        let path = PathBuf::from("src/Main.java");
+        let restriction =
+            "Access restriction: The type 'BASE64Decoder' is not accessible (restriction on required library rt.jar)";
+        let diagnostic = |severity, message: &str| lsp_types::Diagnostic {
+            severity: Some(severity),
+            message: message.into(),
+            ..Default::default()
+        };
+        let warnings: Vec<_> = [restriction, "The type 'BASE64Encoder' is discouraged"]
+            .into_iter()
+            .map(|message| (path.clone(), diagnostic(lsp_types::DiagnosticSeverity::WARNING, message)))
+            .collect();
+        assert_eq!(compile_errors(warnings.clone(), 10), (Vec::new(), 0));
+        let mut diagnostics = warnings;
+        diagnostics.push((
+            path.clone(),
+            diagnostic(lsp_types::DiagnosticSeverity::ERROR, "Missing cannot be resolved to a type"),
+        ));
+        let (errors, count) = compile_errors(diagnostics, 10);
+        assert_eq!(count, 1);
+        assert_eq!(errors[0].message, "Missing cannot be resolved to a type");
+        // A project's explicit error severity must still be respected.
+        let (_, count) =
+            compile_errors(vec![(path, diagnostic(lsp_types::DiagnosticSeverity::ERROR, restriction))], 10);
+        assert_eq!(count, 1);
     }
 
     #[test]

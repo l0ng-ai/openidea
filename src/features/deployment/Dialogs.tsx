@@ -78,7 +78,7 @@ function SyncDialog() {
   const shown = entries?.filter((e) => !sync.hideSame || e.status !== "same") ?? [];
   const steps = syncSteps(sync.choices);
   const same = entries?.filter((e) => e.status === "same").length ?? 0;
-  const where = root ? relativePath(root, sync.path) || "/" : sync.path;
+  const where = sync.paths.map((path) => (root ? relativePath(root, path) || "/" : path)).join(", ");
 
   return (
     <Dialog
@@ -110,6 +110,12 @@ function SyncDialog() {
           <span className={styles.mono}>{where}</span>
           {entries && <> · {txt(`${steps.length} of ${entries.length} files will change`)}</>}
         </div>
+        {!!sync.skipped?.length && (
+          <div className={styles.note}>
+            {txt(`Skipped: ${sync.skipped.length}`)}:{" "}
+            {sync.skipped.map((s) => (root ? relativePath(root, s.path) : s.path)).join(", ")}
+          </div>
+        )}
         {sync.error && <div className={styles.error}>{sync.error}</div>}
         {!entries && !sync.error && (
           <div className={styles.center}>

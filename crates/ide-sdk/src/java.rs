@@ -333,6 +333,7 @@ pub fn configure_jdtls(
     if cfg.name != "jdtls" {
         return;
     }
+    crate::apply::configure_java_compiler(cfg, data_dir);
     // A Lombok agent from the user's JVM arguments wins.
     let own_agent = crate::lombok::agent_in_args(cfg.args.iter().map(String::as_str));
     let agent = own_agent.as_deref().or(lombok);

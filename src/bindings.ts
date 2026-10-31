@@ -968,6 +968,7 @@ export const commands = {
 	 *  (run in a terminal tab, so prompts and host-key questions are answered there).
 	 */
 	sshTerminalCommand: (id: string) => typedError<SshTerminalCommand, IdeError>(__TAURI_INVOKE("ssh_terminal_command", { id })),
+	deployCoverage: (paths: IpcPath[]) => typedError<DeploymentCoverage[], IdeError>(__TAURI_INVOKE("deploy_coverage", { paths })),
 	deployUpload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_upload", { paths, server, request })),
 	deployDownload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_download", { paths, server, request })),
 	deployDeleteRemote: (paths: IpcPath[], server: string | null) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_delete_remote", { paths, server })),
@@ -2394,6 +2395,16 @@ export type DeployedPath = {
 	server: string,
 	remotePath: string,
 	webUrl: string | null,
+};
+
+/**
+ *  Mapping eligibility uses a common synthetic server root: mapping and exclusion
+ *  paths are both relative to that root, so checking never opens a connection.
+ */
+export type DeploymentCoverage = {
+	server: string,
+	paths: string[],
+	skipped: TransferError[],
 };
 
 export type DeploymentMapping = {

@@ -72,6 +72,7 @@ describe("Stop during Java launch resolution", () => {
     expect(request).toEqual(expect.any(Number));
     await stopSession(session.id);
     expect(ipc.cancelRequest).toHaveBeenCalledExactlyOnceWith(request);
+    expect(useRun.getState().sessions[0]?.status).toBe("finished");
     resolve(
       response === "cancelled"
         ? { status: "error", error: { kind: "cancelled", message: "request cancelled" } }
