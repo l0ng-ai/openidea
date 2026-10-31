@@ -15,34 +15,62 @@ const usePrompt = create<{ path: string | null; folder: boolean; finish: ((open:
   finish: null,
 }));
 
+/** One line; a long path loses its middle, so the final folder stays visible. */
+function PathLine({ path }: { path: string }) {
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return (
+    <span className={styles.pathLine} title={path}>
+      <span className={styles.pathHead}>{path.slice(0, Math.max(cut, 0))}</span>
+      <span className={styles.pathTail}>{path.slice(Math.max(cut, 0))}</span>
+    </span>
+  );
+}
+
 function TrustDialog() {
   const { path, folder } = usePrompt();
   return (
     <Dialog
       open={!!path}
-      title="Trust this project?"
+      icon="app"
+      width={560}
+      title="Trust and Open Project?"
       onClose={() => void executeAction("project.dontOpen")}
       buttons={[
-        { label: "Trust and Open", role: "default", onClick: () => void executeAction("project.trust") },
-        { label: "Preview in Restricted Mode", onClick: () => void executeAction("project.previewRestricted") },
-        { label: "Don't Open", role: "cancel", onClick: () => void executeAction("project.dontOpen") },
+        {
+          label: "Preview in Restricted Mode",
+          autoFocus: true,
+          onClick: () => void executeAction("project.previewRestricted"),
+        },
+        { label: "Don't Open", onClick: () => void executeAction("project.dontOpen") },
+        { label: "Trust Project", role: "default", onClick: () => void executeAction("project.trust") },
       ]}
-    >
-      <div className={`${styles.content} ${styles.dialogContent}`}>
-        <p>
-          <T>Only trust projects from sources you know. Project commands and tools can run code on your computer.</T>
-        </p>
-        <p className={styles.path}>{path}</p>
+      footerStart={
         <Checkbox
           checked={folder}
           onChange={(folder) => usePrompt.setState({ folder })}
+          className={styles.folderOption}
           label={
-            <>
-              <T>Trust projects in this folder</T>
-              {path ? `: ${dirname(path)}` : ""}
-            </>
+            <span className={styles.folderLabel}>
+              <span className={styles.folderPrefix}>
+                <T>Trust projects in</T>
+              </span>{" "}
+              <PathLine path={path ? dirname(path) : ""} />
+            </span>
           }
         />
+      }
+    >
+      <div className={styles.content}>
+        <PathLine path={path ?? ""} />
+        <p>
+          <T>
+            If you don't trust the source, preview the project in Restricted Mode, where project commands and tools
+            can't run.
+          </T>
+        </p>
+        <p>
+          <T>Loading, running or building a project may execute potentially malicious code from its build scripts.</T>
+        </p>
       </div>
     </Dialog>
   );

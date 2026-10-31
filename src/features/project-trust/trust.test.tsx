@@ -51,8 +51,8 @@ it("saves the parent-folder choice and reuses a persisted decision", async () =>
   render(<OverlayHost />);
   const opening = confirmProjectTrust("/projects/new");
   await screen.findByRole("dialog");
-  fireEvent.click(screen.getByRole("checkbox", { name: /Trust projects in this folder/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Trust and Open" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Trust projects in/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Trust Project" }));
   await act(async () => opening);
   expect(decide).toHaveBeenCalledWith("/projects/new", true, true);
   status.mockResolvedValue({ status: "ok", data: { trusted: true, decided: true } });
@@ -76,8 +76,8 @@ it("shows and trusts the canonical folder when opening through a symlink", async
   render(<OverlayHost />);
   const opening = confirmProjectTrust("/aliases/new");
   await screen.findByRole("dialog");
-  fireEvent.click(screen.getByRole("checkbox", { name: /Trust projects in this folder: \/real\/projects/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Trust and Open" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Trust projects in \/real\/projects/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Trust Project" }));
   await act(async () => opening);
   expect(decide).toHaveBeenCalledWith("/real/projects/new", true, true);
 });
