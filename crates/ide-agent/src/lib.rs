@@ -1180,9 +1180,10 @@ impl Task {
         let init = peer.initialize(&client_info()).await.map_err(|e| self.describe(e))?;
         let can_load = init.load_session();
         let (capabilities, embedded) = capabilities_of(&init);
-        let mcp = mcp_servers_for(&init);
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
-        let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
+        let cwd = dunce::canonicalize(&cwd).unwrap_or(cwd);
+        let mcp = mcp_servers_for(&init, &cwd);
+        let cwd_s = cwd.to_string_lossy().into_owned();
 
         let mut session = None;
         if let (Some(id), true) = (saved, can_load) {
@@ -1642,8 +1643,9 @@ fn client_info() -> Value {
 }
 
 /// What the agent said it can do, and whether it takes embedded files.
-/// The MCP servers every agent session gets (ACP `McpServer` objects), e.g. the IDE's own.
-pub type McpServers = Arc<dyn Fn() -> Vec<Value> + Send + Sync>;
+/// The MCP servers every agent session gets (ACP `McpServer` objects), e.g. the IDE's own,
+/// for the session's working directory (the IDE's server is told it as the session's project).
+pub type McpServers = Arc<dyn Fn(&std::path::Path) -> Vec<Value> + Send + Sync>;
 
 static MCP_SERVERS: parking_lot::RwLock<Option<McpServers>> = parking_lot::RwLock::new(None);
 
@@ -1652,11 +1654,11 @@ pub fn set_mcp_servers(servers: Option<McpServers>) {
     *MCP_SERVERS.write() = servers;
 }
 
-/// The configured servers this agent can connect to: stdio always, `http` / `sse` only
-/// when its `mcpCapabilities` say so.
-fn mcp_servers_for(init: &acp::Negotiated) -> Vec<Value> {
+/// The configured servers this agent can connect to from `cwd`: stdio always, `http` /
+/// `sse` only when its `mcpCapabilities` say so.
+fn mcp_servers_for(init: &acp::Negotiated, cwd: &std::path::Path) -> Vec<Value> {
     match MCP_SERVERS.read().clone() {
-        Some(servers) => supported_mcp_servers(servers(), &init.capabilities),
+        Some(servers) => supported_mcp_servers(servers(cwd), &init.capabilities),
         None => Vec::new(),
     }
 }

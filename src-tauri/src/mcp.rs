@@ -151,17 +151,41 @@ pub fn apply_settings(app: &AppHandle) {
 /// Gives the IDE's own agents the server (Settings › Tools › MCP Server › agents), while it runs.
 pub fn offer_to_agents(app: &AppHandle) {
     let app = app.clone();
-    ide_agent::set_mcp_servers(Some(Arc::new(move || {
+    ide_agent::set_mcp_servers(Some(Arc::new(move |cwd: &std::path::Path| {
         let Some(state) = app.try_state::<AppState>() else { return Vec::new() };
         if !state.global_settings.effective().mcp.agents {
             return Vec::new();
         }
         let Some((url, token)) = state.mcp.endpoint() else { return Vec::new() };
-        vec![serde_json::json!({
-            "type": "http",
-            "name": ide_mcp::clients::SERVER_NAME,
-            "url": url,
-            "headers": [{ "name": "Authorization", "value": format!("Bearer {token}") }],
-        })]
+        vec![agent_server(&url, &token, cwd)]
     })));
+}
+
+/// The ACP `McpServer` entry of this server for an agent session in `cwd`: the session's
+/// directory names its project, so its calls need no `projectPath`.
+fn agent_server(url: &str, token: &str, cwd: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({
+        "type": "http",
+        "name": ide_mcp::clients::SERVER_NAME,
+        "url": url,
+        "headers": [
+            { "name": "Authorization", "value": format!("Bearer {token}") },
+            { "name": ide_mcp::project::PROJECT_PATH_HEADER, "value": cwd.to_string_lossy() },
+        ],
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn agent_sessions_name_their_project() {
+        let entry = super::agent_server("http://127.0.0.1:1/mcp", "t", std::path::Path::new("/work/app"));
+        assert_eq!(
+            entry["headers"],
+            serde_json::json!([
+                { "name": "Authorization", "value": "Bearer t" },
+                { "name": "OPENIDEA_MCP_PROJECT_PATH", "value": "/work/app" },
+            ])
+        );
+    }
 }
