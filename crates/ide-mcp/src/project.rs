@@ -188,9 +188,12 @@ pub fn resolve(root: &Path, path: &str) -> IdeResult<PathBuf> {
 /// Directories (or, for `.git` in a worktree, files) of version control metadata.
 const VCS_METADATA: &[&str] = &[".git", ".hg", ".svn", ".jj", ".bzr"];
 
-/// Errors unless `path` (resolved, symlinks included where they exist) is inside `root`
-/// and not version control metadata.
-pub fn ensure_inside(root: &Path, path: &Path) -> IdeResult<()> {
+/// The directory of the IDE's own project configuration (run configurations, settings).
+pub const IDE_CONFIG_DIR: &str = ".openidea";
+
+/// `path` relative to `root` after resolving symlinks (of its deepest existing ancestor),
+/// or `None` outside `root`.
+fn real_relative(root: &Path, path: &Path) -> Option<PathBuf> {
     let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     // The deepest existing ancestor decides where symlinks lead.
     let mut existing = path.to_path_buf();
@@ -208,30 +211,43 @@ pub fn ensure_inside(root: &Path, path: &Path) -> IdeResult<()> {
     for name in rest.into_iter().rev() {
         real.push(name);
     }
-    if let Ok(rel) = real.strip_prefix(&root) {
+    real.strip_prefix(&root).ok().map(Path::to_path_buf)
+}
+
+fn has_component(rel: &Path, names: &[&str]) -> bool {
+    rel.components().any(|c| {
+        let name = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+        names.contains(&name.as_str())
+    })
+}
+
+/// Errors unless `path` (resolved, symlinks included where they exist) is inside `root`
+/// and not version control metadata.
+pub fn ensure_inside(root: &Path, path: &Path) -> IdeResult<()> {
+    match real_relative(root, path) {
         // Hooks and config there (`core.fsmonitor`, `core.hooksPath`) run code on the next
         // VCS command: changing them must not bypass the confirmation of the execute tools.
-        let metadata = rel.components().any(|c| {
-            let name = c.as_os_str().to_string_lossy().to_ascii_lowercase();
-            VCS_METADATA.contains(&name.as_str())
-        });
-        if metadata {
-            return Err(IdeError::new(
-                ide_core::error::ErrorKind::PermissionDenied,
-                format!("{} is version control metadata; the MCP tools do not change it", path.display()),
-            ));
-        }
-        Ok(())
-    } else {
-        Err(IdeError::new(
+        Some(rel) if has_component(&rel, VCS_METADATA) => Err(IdeError::new(
+            ide_core::error::ErrorKind::PermissionDenied,
+            format!("{} is version control metadata; the MCP tools do not change it", path.display()),
+        )),
+        Some(_) => Ok(()),
+        None => Err(IdeError::new(
             ide_core::error::ErrorKind::PermissionDenied,
             format!(
                 "{} is outside the project ({}); only project files can be changed",
                 path.display(),
                 root.display()
             ),
-        ))
+        )),
     }
+}
+
+/// Whether `path` (inside `root`) is the IDE's project configuration ([`IDE_CONFIG_DIR`]):
+/// run configurations and settings there carry commands (before-launch tasks, shells,
+/// language servers) the IDE runs later, so changing them asks first.
+pub fn is_ide_config(root: &Path, path: &Path) -> bool {
+    real_relative(root, path).is_some_and(|rel| has_component(&rel, &[IDE_CONFIG_DIR]))
 }
 
 /// Project-relative (with `/`) inside `root`, else absolute.
@@ -290,6 +306,23 @@ mod tests {
             let outside = tempfile::tempdir().unwrap();
             std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
             assert!(ensure_inside(root, &root.join("link/x.txt")).is_err());
+        }
+    }
+
+    #[test]
+    fn recognizes_the_ide_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(is_ide_config(root, &root.join(".openidea/runConfigurations/app.json")));
+        assert!(is_ide_config(root, &root.join(".OpenIDEA/settings.json")));
+        assert!(is_ide_config(root, &root.join(".openidea")));
+        assert!(!is_ide_config(root, &root.join("src/openidea.rs")));
+        assert!(!is_ide_config(root, &root.join(".openidea-notes.txt")));
+        #[cfg(unix)]
+        {
+            std::fs::create_dir(root.join(".openidea")).unwrap();
+            std::os::unix::fs::symlink(root.join(".openidea"), root.join("cfg")).unwrap();
+            assert!(is_ide_config(root, &root.join("cfg/settings.json")));
         }
     }
 }

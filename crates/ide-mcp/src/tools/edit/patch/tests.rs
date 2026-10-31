@@ -529,3 +529,56 @@ fn splits_git_paths() {
     assert_eq!(parse_range_header("@@ fn x"), None);
     assert_eq!(unquote("\"a\\\"b\\\\c\""), "a\"b\\c");
 }
+
+#[test]
+fn mode_changes_and_copies_do_not_fail_the_patch() {
+    // A mode-only section is an update without hunks; the hunks of the others still apply.
+    let diff = patch(&[
+        "diff --git a/run.sh b/run.sh",
+        "old mode 100644",
+        "new mode 100755",
+        "diff --git a/a.txt b/a.txt",
+        "--- a/a.txt",
+        "+++ b/a.txt",
+        "@@ -1 +1 @@",
+        "-x",
+        "+y",
+    ]);
+    let ops = parse(&diff).unwrap();
+    assert_eq!(ops.len(), 2);
+    assert_eq!(ops[0], FileOp::Update { path: "run.sh".into(), move_to: None, hunks: Vec::new(), or: Vec::new() });
+    assert_eq!(update(&ops[1..]).len(), 1);
+
+    // A mode change together with a rename is a move.
+    let ops = parse("diff --git a/x b/y\nold mode 100644\nnew mode 100755\nrename from x\nrename to y\n").unwrap();
+    assert!(matches!(&ops[0], FileOp::Update { move_to: Some(m), .. } if m == "y"));
+
+    // A copy is skipped with a note.
+    let diff = patch(&[
+        "diff --git a/src/a.rs b/src/b.rs",
+        "similarity index 90%",
+        "copy from src/a.rs",
+        "copy to src/b.rs",
+        "--- a/src/a.rs",
+        "+++ b/src/b.rs",
+        "@@ -1 +1 @@",
+        "-a",
+        "+b",
+        "diff --git a/c.txt b/c.txt",
+        "--- a/c.txt",
+        "+++ b/c.txt",
+        "@@ -1 +1 @@",
+        "-1",
+        "+2",
+    ]);
+    let ops = parse(&diff).unwrap();
+    assert_eq!(ops.len(), 2);
+    match &ops[0] {
+        FileOp::Skip { path, note } => {
+            assert_eq!(path, "src/b.rs");
+            assert!(note.contains("copy of src/a.rs to src/b.rs") && note.contains("not supported"), "{note}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(ops[1].path(), "c.txt");
+}

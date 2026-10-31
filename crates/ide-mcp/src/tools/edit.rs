@@ -113,9 +113,20 @@ fn apply_text_edits(text: &str, edits: &[TextEdit]) -> Option<String> {
     Some(out)
 }
 
-/// Whether two paths name the same file (language servers report canonical paths).
+/// Whether two paths name the same file (language servers report canonical paths; on a
+/// case-insensitive file system `a.txt` and `A.txt` are one file).
 fn same_file(a: &Path, b: &Path) -> bool {
-    a == b || matches!((dunce::canonicalize(a), dunce::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    if a == b || matches!((dunce::canonicalize(a), dunce::canonicalize(b)), (Ok(x), Ok(y)) if x == y) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(x), Ok(y)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            return x.dev() == y.dev() && x.ino() == y.ino();
+        }
+    }
+    false
 }
 
 /// The text edits of `edit` for `path`.
@@ -130,9 +141,18 @@ fn edits_for(edit: &WorkspaceEdit, path: &Path) -> Vec<TextEdit> {
         .collect()
 }
 
+/// Re-reads the open, unmodified documents of `paths` whose files changed on disk, before
+/// a tool reads or changes them: an agent that just wrote a file itself must not have
+/// that write undone from a stale buffer because the file watcher has not caught up yet
+/// (JetBrains refreshes the VFS first). Documents with unsaved changes are left alone.
+fn refresh_from_disk(project: &Project, paths: &[PathBuf]) {
+    project.documents.on_disk_changed(paths);
+}
+
 /// Project files a tool works on: `files` resolved inside the project, existing,
-/// regular, without duplicates (the first spelling is kept).
-fn requested_files(call: &Call) -> IdeResult<Vec<(String, PathBuf)>> {
+/// regular, without duplicates (the first spelling is kept), changeable
+/// ([`Call::check_writable`]) and with their open documents up to date with the disk.
+async fn requested_files(call: &Call) -> IdeResult<Vec<(String, PathBuf)>> {
     let files = call.str_list("files")?;
     if files.is_empty() {
         return Err(IdeError::invalid("files must contain at least one path"));
@@ -154,6 +174,16 @@ fn requested_files(call: &Call) -> IdeResult<Vec<(String, PathBuf)>> {
             out.push((raw.to_owned(), path));
         }
     }
+    for (_, path) in &out {
+        call.check_writable(path).await?;
+    }
+    let (project, paths) = (call.project().clone(), out.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>());
+    call.host()
+        .blocking(move || {
+            refresh_from_disk(&project, &paths);
+            Ok(())
+        })
+        .await?;
     Ok(out)
 }
 
@@ -169,7 +199,7 @@ Use this tool to generate new files in your project structure.
 Note: Creates any necessary parent directories automatically",
         |call| async move {
             let raw = call.str("pathInProject")?;
-            let path = call.resolve_inside(&raw)?;
+            let path = call.resolve_writable(&raw).await?;
             let text = call.opt_str("text")?.map(|t| normalize_newlines(&t));
             let overwrite = call.flag("overwrite", false)?;
             let cannot =
@@ -228,12 +258,16 @@ Paths must stay inside the project directory.",
                 .find(|s| !s.trim().is_empty())
                 .ok_or_else(|| IdeError::invalid("input must be a non-empty string"))?;
             let ops = patch::parse(&input).map_err(IdeError::invalid)?;
-            let total = ops.len();
+            let total = ops.iter().filter(|op| !matches!(op, FileOp::Skip { .. })).count();
             let mut applied = 0usize;
             let mut errors = Vec::new();
             let mut notes = Vec::new();
             // Each operation stands alone, as in JetBrains: a failed one leaves the others applied.
             for op in ops {
+                if let FileOp::Skip { path, note } = op {
+                    notes.push(format!("{path}: {note}"));
+                    continue;
+                }
                 let path = op.path().to_owned();
                 match apply_op(&call, op, &mut notes).await {
                     Ok(()) => applied += 1,
@@ -276,8 +310,10 @@ async fn apply_op(call: &Call, op: FileOp, notes: &mut Vec<String>) -> IdeResult
     let host = call.host();
     let project = call.project().clone();
     match op {
+        // Noted by the caller.
+        FileOp::Skip { .. } => Ok(()),
         FileOp::Add { path: raw, text } => {
-            let path = call.resolve_inside(&raw)?;
+            let path = call.resolve_writable(&raw).await?;
             if path.exists() {
                 return Err(IdeError::new(
                     ide_core::error::ErrorKind::AlreadyExists,
@@ -293,7 +329,7 @@ async fn apply_op(call: &Call, op: FileOp, notes: &mut Vec<String>) -> IdeResult
             host.blocking(move || write_document(&project, &target, &text)).await
         }
         FileOp::Delete { path: raw } => {
-            let path = call.resolve_inside(&raw)?;
+            let path = call.resolve_writable(&raw).await?;
             if !path.exists() {
                 return Err(IdeError::not_found(format!("File not found: {raw}")));
             }
@@ -334,10 +370,14 @@ async fn apply_op(call: &Call, op: FileOp, notes: &mut Vec<String>) -> IdeResult
             if !path.is_file() {
                 return Err(IdeError::invalid(format!("Path is not a file: {raw}")));
             }
+            if !hunks.is_empty() || move_to.is_some() {
+                call.check_writable(&path).await?;
+            }
             let to = match &move_to {
                 Some(m) => {
-                    let to = call.resolve_inside(m)?;
-                    if to != path && to.exists() {
+                    let to = call.resolve_writable(m).await?;
+                    // A move that changes only the case on a case-insensitive file system finds itself.
+                    if to != path && to.exists() && !same_file(&to, &path) {
                         return Err(IdeError::new(
                             ide_core::error::ErrorKind::AlreadyExists,
                             format!("File already exists: {m}"),
@@ -353,6 +393,7 @@ async fn apply_op(call: &Call, op: FileOp, notes: &mut Vec<String>) -> IdeResult
                 let (p, target) = (project.clone(), path.clone());
                 let (text, dirty, applied) = host
                     .blocking(move || {
+                        refresh_from_disk(&p, std::slice::from_ref(&target));
                         let text = p.text_of(&target)?;
                         let dirty = is_dirty(&p, &target);
                         let applied = patch::apply(&text, &hunks).map_err(|e| {
@@ -422,7 +463,8 @@ The file path can be absolute or relative to the project root.
 Optionally puts the caret at a 1-based line and column.",
         |call| async move {
             let raw = call.str("filePath")?;
-            let path = call.resolve(&raw)?;
+            // Opening shows the file to the user: outside the project the user agrees first.
+            let path = call.resolve_readable(&raw).await?;
             if !path.is_file() {
                 return Err(IdeError::not_found(format!("File {raw} doesn't exist or can't be opened")));
             }

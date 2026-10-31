@@ -356,6 +356,34 @@ impl Call {
         Ok(resolved)
     }
 
+    /// Resolves `path` for a change: inside the project, not VCS metadata, and, for the
+    /// IDE's own configuration (`.openidea/`), confirmed by the user ([`Call::check_writable`]).
+    pub async fn resolve_writable(&self, path: &str) -> IdeResult<PathBuf> {
+        let resolved = self.resolve_inside(path)?;
+        self.check_writable(&resolved).await?;
+        Ok(resolved)
+    }
+
+    /// Errors unless an (absolute) `path` may be changed: inside the project, not VCS
+    /// metadata; the IDE's own configuration (`.openidea/`: run configurations and settings
+    /// that carry before-launch commands, environments, shells, language server commands)
+    /// only after the user agrees, unless brave mode is on.
+    pub async fn check_writable(&self, path: &Path) -> IdeResult<()> {
+        crate::project::ensure_inside(self.root(), path)?;
+        if crate::project::is_ide_config(self.root(), path) {
+            self.confirm(
+                &format!("Change {}", self.display(path)),
+                Some(
+                    "This is OpenIDEA's project configuration (run configurations, settings): it can hold commands, \
+environments and shells the IDE runs later."
+                        .into(),
+                ),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     /// Resolves a path to read. Outside the project (and its content roots) the user is
     /// asked first unless brave mode is on: a client could otherwise read `~/.ssh` or
     /// credentials of other tools.

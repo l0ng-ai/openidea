@@ -30,12 +30,20 @@ pub enum FileOp {
         hunks: Vec<Hunk>,
         or: Vec<String>,
     },
+    /// A git section the tool does not apply (a copy): skipped with `note`, the others go on.
+    Skip {
+        path: String,
+        note: String,
+    },
 }
 
 impl FileOp {
     pub fn path(&self) -> &str {
         match self {
-            FileOp::Add { path, .. } | FileOp::Delete { path } | FileOp::Update { path, .. } => path,
+            FileOp::Add { path, .. }
+            | FileOp::Delete { path }
+            | FileOp::Update { path, .. }
+            | FileOp::Skip { path, .. } => path,
         }
     }
 }
@@ -367,6 +375,11 @@ struct Section {
     deleted: bool,
     rename_from: Option<String>,
     rename_to: Option<String>,
+    /// `old mode` / `new mode`: a permission change, which the tool leaves alone.
+    mode_change: bool,
+    /// `copy from` / `copy to`.
+    copy_from: Option<String>,
+    copy_to: Option<String>,
     hunks: Vec<Hunk>,
     line: usize,
 }
@@ -420,8 +433,12 @@ fn parse_unified(lines: &[&str], offset: usize) -> Result<Vec<FileOp>, String> {
             s.rename_to = Some(rename_path(p)?);
         } else if trimmed.starts_with("Binary files ") || trimmed == "GIT binary patch" {
             return Err(format!("Binary git patch is not supported (line {n})"));
-        } else if trimmed.starts_with("copy from ") || trimmed.starts_with("copy to ") {
-            return Err(format!("line {n}: copies are not supported; add the new file instead"));
+        } else if let Some(p) = trimmed.strip_prefix("copy from ") {
+            s.copy_from = Some(rename_path(p)?);
+        } else if let Some(p) = trimmed.strip_prefix("copy to ") {
+            s.copy_to = Some(rename_path(p)?);
+        } else if trimmed.starts_with("old mode ") || trimmed.starts_with("new mode ") {
+            s.mode_change = true;
         } else if line.starts_with("@@") {
             if s.old.is_none() && s.new.is_none() && s.git_old.is_none() {
                 return Err(format!("line {n}: a hunk without a `--- a/path` / `+++ b/path` header before it"));
@@ -600,6 +617,16 @@ fn finish_section(s: Section) -> Result<FileOp, String> {
         Some(p) => p.clone(),
         None => s.rename_to.clone().or_else(|| s.git_new.clone()),
     };
+    if s.copy_from.is_some() || s.copy_to.is_some() {
+        // Git writes a copy only with `-C`; JetBrains reads it as a change of the source.
+        let to = s.copy_to.clone().or(new).ok_or_else(|| format!("{NO_PATH} (line {n})"))?;
+        let from = s.copy_from.clone().or(old).unwrap_or_default();
+        let note = format!(
+            "the copy of {from} to {to} was skipped: copies are not supported; add the new file with `*** Add File` \
+instead"
+        );
+        return Ok(FileOp::Skip { path: to, note });
+    }
     if s.new_file || (s.old.as_ref().is_some_and(|o| o.is_none())) {
         let path = new.ok_or_else(|| format!("{NO_PATH} (line {n})"))?;
         ensure_safe_path(&path, "Add File")?;
@@ -634,7 +661,7 @@ fn finish_section(s: Section) -> Result<FileOp, String> {
         if let Some(m) = &move_to {
             ensure_safe_path(m, "Move to")?;
         }
-        if s.hunks.is_empty() && move_to.is_none() {
+        if s.hunks.is_empty() && move_to.is_none() && !s.mode_change {
             return Err(format!("line {n}: `{path}` has no changes"));
         }
         return Ok(FileOp::Update { path, move_to, hunks: s.hunks, or: Vec::new() });
@@ -642,6 +669,10 @@ fn finish_section(s: Section) -> Result<FileOp, String> {
     let path = new.clone().or(old.clone()).ok_or_else(|| format!("{NO_PATH} (line {n})"))?;
     ensure_safe_path(&path, "Update File")?;
     if s.hunks.is_empty() {
+        // Only the file mode changes: nothing to do to the text, as in JetBrains.
+        if s.mode_change {
+            return Ok(FileOp::Update { path, move_to: None, hunks: Vec::new(), or: Vec::new() });
+        }
         return Err(format!("line {n}: `{path}` has no changes"));
     }
     let below_first_dir = |p: &Option<String>| p.as_ref().and_then(|p| p.split_once('/')).map(|(_, r)| r.to_owned());

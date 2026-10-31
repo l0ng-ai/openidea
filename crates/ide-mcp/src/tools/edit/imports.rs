@@ -152,50 +152,71 @@ async fn run(call: &Call) -> IdeResult<Output> {
     let opts = Options { apply, take_best, optimize: call.flag("optimize", false)? };
     let timeout = call.count("timeout", DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)?;
     let deadline = Instant::now() + Duration::from_millis(timeout as u64);
-    let files = requested_files(call)?;
+    let files = requested_files(call).await?;
     let mut result = ImportsResult { items: Vec::new(), timed_out: false, partial_result_reason: None };
     for (raw, path) in files {
-        match tokio::time::timeout_at(deadline, file_imports(call, &raw, &path, opts, deadline)).await {
-            Ok(Ok((item, note))) => {
+        // Only the analysis runs under the timeout: once the new text goes into the
+        // document, the write runs to its save, so a timeout never leaves a half-done file.
+        let analysis = match tokio::time::timeout_at(deadline, analyze(call, &raw, &path, opts, deadline)).await {
+            Ok(Ok(Analysis::Skipped(item))) => {
                 result.items.push(item);
-                if let Some(note) = note {
-                    result.partial_result_reason.get_or_insert(note);
-                }
+                continue;
             }
+            Ok(Ok(Analysis::Found(found))) => found,
             Ok(Err(e)) => return Err(e),
             Err(_) => {
                 result.timed_out = true;
                 break;
             }
+        };
+        let (item, note) = write(call, &raw, &path, opts, *analysis).await?;
+        result.items.push(item);
+        if let Some(note) = note {
+            result.partial_result_reason.get_or_insert(note);
         }
     }
     Output::json(result)
 }
 
-/// One file: its result, and a note when a part of the job was skipped.
-async fn file_imports(
-    call: &Call,
-    raw: &str,
-    path: &Path,
-    opts: Options,
-    deadline: Instant,
-) -> IdeResult<(FileResult, Option<String>)> {
+/// Closes a transient document on every path out, a timeout included.
+struct Close(std::sync::Arc<ide_host::Project>, Option<DocId>);
+
+impl Drop for Close {
+    fn drop(&mut self) {
+        if let Some(doc) = self.1 {
+            self.0.documents.close(doc);
+        }
+    }
+}
+
+enum Analysis {
+    /// The file was not analyzed.
+    Skipped(FileResult),
+    Found(Box<Found>),
+}
+
+/// What the analysis of one file found: the merged import edits and what it could not import.
+struct Found {
+    doc: DocId,
+    transient: bool,
+    _close: Close,
+    read_only: bool,
+    text: String,
+    version: u32,
+    accepted: Vec<TextEdit>,
+    ambiguous: Vec<Ambiguous>,
+    unresolved: Vec<Unresolved>,
+}
+
+/// One file's unresolved names and the import fixes for them; changes nothing.
+async fn analyze(call: &Call, raw: &str, path: &Path, opts: Options, deadline: Instant) -> IdeResult<Analysis> {
     let host = call.host();
     let project = call.project().clone();
     let was_open = project.documents.by_path(path).is_some();
     let since = std::time::Instant::now();
     let (p, target) = (project.clone(), path.to_path_buf());
     let (doc, transient) = host.blocking(move || open_document(&p, &target)).await?;
-    // Closed on every path out, a timeout included.
-    struct Close(std::sync::Arc<ide_host::Project>, Option<DocId>);
-    impl Drop for Close {
-        fn drop(&mut self) {
-            if let Some(doc) = self.1 {
-                self.0.documents.close(doc);
-            }
-        }
-    }
-    let _close = Close(project.clone(), transient.then_some(doc));
+    let close = Close(project.clone(), transient.then_some(doc));
     let skipped = |reason: String| FileResult {
         file_path: raw.into(),
         not_analyzed_reason: Some(reason),
@@ -210,28 +231,17 @@ async fn file_imports(
             Ok(None) => {
                 let reason = "No language server for this file became ready, so the tool cannot find the missing \
 imports.";
-                return Ok((skipped(reason.into()), None));
+                return Ok(Analysis::Skipped(skipped(reason.into())));
             }
             Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-            Err(e) => return Ok((skipped(format!("The language server failed: {}", e.message)), None)),
+            Err(e) => return Ok(Analysis::Skipped(skipped(format!("The language server failed: {}", e.message)))),
         };
     let read_only = project.documents.snapshot(doc)?.read_only;
     let snap = project.documents.text_snapshot(doc)?;
     let text = snap.text;
     let lines: Vec<&str> = text.split('\n').collect();
 
-    // The unresolved names, first reference of each, in document order.
-    let mut names: Vec<(String, ide_core::Range, String)> = Vec::new();
-    for d in diagnostics {
-        if d.severity != Severity::Error || d.range.start.line != d.range.end.line {
-            continue;
-        }
-        let Some(name) = range_text(&lines, d.range).filter(|n| is_name(n)) else { continue };
-        if !names.iter().any(|(n, ..)| *n == name) {
-            names.push((name, d.range, d.message));
-        }
-    }
-    names.sort_by_key(|(_, r, _)| r.start);
+    let names = unresolved_names(diagnostics, &lines);
 
     let mut ambiguous = Vec::new();
     let mut unresolved = Vec::new();
@@ -271,16 +281,75 @@ imports.";
             Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
             Err(_) => Vec::new(),
         };
-        // Two names from one module can bring the same edit.
-        let new: Vec<TextEdit> = edits.into_iter().filter(|e| !accepted.contains(e)).collect();
-        let merged: Vec<TextEdit> = accepted.iter().chain(&new).cloned().collect();
-        let fits = !merged.is_empty() && apply_text_edits(&text, &merged).is_some();
-        if fits {
-            accepted = merged;
-        } else {
+        if !merge_fix(&text, &mut accepted, edits) {
             unresolved.push(Unresolved { short_name: name, line, reason: REASON_FIX_NOT_APPLIED });
         }
     }
+    let found = Found {
+        doc,
+        transient,
+        _close: close,
+        read_only,
+        text,
+        version: snap.version,
+        accepted,
+        ambiguous,
+        unresolved,
+    };
+    Ok(Analysis::Found(Box::new(found)))
+}
+
+/// The unresolved names of `diagnostics` (single-line errors over a name), each with its
+/// first reference in the document and that diagnostic's message, in document order.
+fn unresolved_names(
+    mut diagnostics: Vec<ide_core::Diagnostic>,
+    lines: &[&str],
+) -> Vec<(String, ide_core::Range, String)> {
+    // Servers publish in any order: the first reference is the earliest range.
+    diagnostics.sort_by_key(|d| d.range.start);
+    let mut names: Vec<(String, ide_core::Range, String)> = Vec::new();
+    for d in diagnostics {
+        if d.severity != Severity::Error || d.range.start.line != d.range.end.line {
+            continue;
+        }
+        let Some(name) = range_text(lines, d.range).filter(|n| is_name(n)) else { continue };
+        if !names.iter().any(|(n, ..)| *n == name) {
+            names.push((name, d.range, d.message));
+        }
+    }
+    names
+}
+
+/// Adds a fix's `edits` to the `accepted` ones when they apply together to `text`;
+/// `false` when the fix brings no edit at all or conflicts with the accepted ones.
+fn merge_fix(text: &str, accepted: &mut Vec<TextEdit>, edits: Vec<TextEdit>) -> bool {
+    if edits.is_empty() {
+        return false;
+    }
+    // Two names from one module can bring the same edit.
+    let new: Vec<TextEdit> = edits.into_iter().filter(|e| !accepted.contains(e)).collect();
+    let merged: Vec<TextEdit> = accepted.iter().chain(&new).cloned().collect();
+    if apply_text_edits(text, &merged).is_none() {
+        return false;
+    }
+    *accepted = merged;
+    true
+}
+
+/// Writes (or, in `diff` mode, previews) what [`analyze`] found: the result and a note
+/// when a part of the job was skipped. Not cancelled halfway: once the text is in the
+/// document it is saved.
+async fn write(
+    call: &Call,
+    raw: &str,
+    path: &Path,
+    opts: Options,
+    found: Found,
+) -> IdeResult<(FileResult, Option<String>)> {
+    let host = call.host();
+    let project = call.project().clone();
+    let Found { doc, transient, _close, read_only, text, version, accepted, ambiguous, unresolved } = found;
+    let lines: Vec<&str> = text.split('\n').collect();
     let mut after = apply_text_edits(&text, &accepted).unwrap_or_else(|| text.clone());
 
     let mut note = None;
@@ -288,7 +357,7 @@ imports.";
     let writable = opts.apply && !read_only;
     if writable || (opts.optimize && transient) {
         // The new text goes into the document: to be written, or (a transient one) to be optimized.
-        let (p, new_text, version) = (project.clone(), after.clone(), snap.version);
+        let (p, new_text) = (project.clone(), after.clone());
         let current = host
             .blocking(move || {
                 // A file the user changed meanwhile is left alone.
@@ -299,21 +368,26 @@ imports.";
             })
             .await?;
         if current {
+            let mut cancelled = None;
             if opts.optimize {
                 match organize_imports(call, doc, path).await {
-                    Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                    Err(e) if e.kind == ErrorKind::Cancelled => cancelled = Some(e),
                     Err(e) => note = Some(format!("{raw}: imports not optimized: {}", e.message)),
                     Ok(()) => {}
                 }
             }
             after = project.documents.text_snapshot(doc)?.text;
             if writable {
+                // Saved even when the call was cancelled meanwhile: the imports are in the buffer.
                 let p = project.clone();
                 host.blocking(move || p.documents.save(doc)).await?;
                 applied = after != text;
                 if applied {
                     call.record_change(path);
                 }
+            }
+            if let Some(e) = cancelled {
+                return Err(e);
             }
         }
     } else if opts.optimize {
@@ -418,5 +492,45 @@ mod tests {
         assert!(looks_unresolved("List cannot be resolved to a type"));
         assert!(!looks_unresolved("mismatched types"));
         assert!(is_name("HashMap") && is_name("$x") && !is_name("a.b") && !is_name("1a"));
+    }
+
+    fn range(line: u32, from: u32, to: u32) -> ide_core::Range {
+        ide_core::Range::new(ide_core::Pos::new(line, from), ide_core::Pos::new(line, to))
+    }
+
+    #[test]
+    fn a_name_is_reported_at_its_first_reference() {
+        let lines = ["fn f() {", "  let a: HashMap = x;", "  let b: HashMap = y;", "}"];
+        let diagnostic = |line| ide_core::Diagnostic {
+            range: range(line, 9, 16),
+            severity: Severity::Error,
+            message: format!("cannot find type `HashMap` (line {line})"),
+            source: None,
+            code: None,
+            unnecessary: false,
+            deprecated: false,
+            server: None,
+        };
+        // Published last reference first.
+        let names = unresolved_names(vec![diagnostic(2), diagnostic(1)], &lines);
+        assert_eq!(names.len(), 1);
+        assert_eq!((names[0].0.as_str(), names[0].1.start.line), ("HashMap", 1));
+    }
+
+    #[test]
+    fn a_fix_without_edits_is_not_applied() {
+        let text = "use a;\nfn f() {}\n";
+        let import = TextEdit { range: range(0, 0, 0), new_text: "use b;\n".into() };
+        let mut accepted = Vec::new();
+        assert!(merge_fix(text, &mut accepted, vec![import.clone()]));
+        // A second name whose fix resolved to nothing: not silently counted as imported.
+        assert!(!merge_fix(text, &mut accepted, Vec::new()));
+        // One that brings the same import as an earlier name: fine.
+        assert!(merge_fix(text, &mut accepted, vec![import.clone()]));
+        assert_eq!(accepted, vec![import]);
+        let overlapping = TextEdit { range: range(0, 0, 5), new_text: "x".into() };
+        let inside = TextEdit { range: range(0, 2, 3), new_text: "y".into() };
+        let mut accepted = vec![overlapping];
+        assert!(!merge_fix(text, &mut accepted, vec![inside]));
     }
 }

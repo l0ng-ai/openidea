@@ -69,7 +69,7 @@ struct Job {
 }
 
 async fn run(call: &Call, job: Job) -> IdeResult<Output> {
-    let files = requested_files(call)?;
+    let files = requested_files(call).await?;
     let mut changed = Vec::new();
     let mut problems = Vec::new();
     for (raw, path) in &files {

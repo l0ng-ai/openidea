@@ -229,12 +229,34 @@ async fn run(call: &Call) -> IdeResult<Output> {
     let host = call.host();
     let project = call.project().clone();
     let (p, target) = (project.clone(), path.clone());
-    let (doc, transient) = host.blocking(move || super::open_document(&p, &target)).await?;
-    let result = rename(call, doc, &path, &request).await;
-    if transient {
-        project.documents.close(doc);
+    let (doc, transient) = host
+        .blocking(move || {
+            // The rename reads and changes files across the project: no buffer may be older than its file.
+            let open: Vec<PathBuf> = p
+                .documents
+                .open_documents()
+                .into_iter()
+                .filter_map(|d| p.documents.snapshot(d).ok().map(|i| i.path.to_path_buf()))
+                .chain(std::iter::once(target.clone()))
+                .collect();
+            super::refresh_from_disk(&p, &open);
+            super::open_document(&p, &target)
+        })
+        .await?;
+    // Closed on every path out, a panic or a dropped call included.
+    let _close = CloseDocument(project.clone(), transient.then_some(doc));
+    Output::json(rename(call, doc, &path, &request).await?)
+}
+
+/// Closes a transient document when dropped.
+struct CloseDocument(Arc<ide_host::Project>, Option<DocId>);
+
+impl Drop for CloseDocument {
+    fn drop(&mut self) {
+        if let Some(doc) = self.1 {
+            self.0.documents.close(doc);
+        }
     }
-    Output::json(result?)
 }
 
 async fn rename(call: &Call, doc: DocId, path: &Path, req: &Request) -> IdeResult<RenameResult> {
@@ -342,6 +364,20 @@ targetIndex, or narrow the call with a contextSnippet that shows the one you mea
     let note = (!notes.is_empty()).then(|| notes.join(" "));
     if req.preview {
         return Ok(RenameResult { ok: true, affects, resolved_symbol: symbol, note, ..RenameResult::default() });
+    }
+    // The IDE's configuration among the files: the user agrees first.
+    let mut checked: Vec<&Path> = Vec::new();
+    for f in &edit.files {
+        let paths: Vec<&Path> = match f {
+            FileEdit::Edit { path, .. } | FileEdit::Create { path, .. } | FileEdit::Delete { path, .. } => vec![path],
+            FileEdit::Rename { from, to } => vec![from, to],
+        };
+        for p in paths {
+            if !checked.contains(&p) {
+                checked.push(p);
+                call.check_writable(p).await?;
+            }
+        }
     }
     let renamed_file = edit.files.iter().find_map(|f| match f {
         FileEdit::Rename { from, to } if super::same_file(from, path) => {
@@ -535,34 +571,41 @@ async fn by_snippet(file: &File<'_>, snippet: &str, name: &str) -> Resolution {
             format!("contextSnippet does not contain '{name}'. Pass a snippet that shows the symbol."),
         );
     }
-    let Some(start) = file.text.find(&needle) else {
-        return Resolution::Unresolved(
-            "snippet_not_found",
-            "contextSnippet is not in this file. Read the file again and copy the snippet from its current text."
-                .into(),
-        );
+    let start = match find_snippet(file.text, &needle) {
+        SnippetMatch::NotFound => {
+            return Resolution::Unresolved(
+                "snippet_not_found",
+                "contextSnippet is not in this file. Read the file again and copy the snippet from its current text."
+                    .into(),
+            );
+        }
+        SnippetMatch::NotUnique => {
+            return Resolution::Unresolved(
+                "snippet_not_unique",
+                "contextSnippet matches this file more than once. Extend it until it is unique.".into(),
+            );
+        }
+        SnippetMatch::At(start) => start,
     };
-    if file.text[start + 1..].contains(&needle) {
-        return Resolution::Unresolved(
-            "snippet_not_unique",
-            "contextSnippet matches this file more than once. Extend it until it is unique.".into(),
-        );
-    }
-    let before = &file.text[..start];
-    let base_line = before.matches('\n').count() as u32;
-    let base_col = before.rsplit('\n').next().unwrap_or("").encode_utf16().count() as u32;
     let mut symbols: Vec<(Option<(PathBuf, Pos)>, Pos)> = Vec::new();
-    for p in word_positions(&needle, name) {
-        let pos = if p.line == 0 { Pos::new(base_line, base_col + p.col) } else { Pos::new(base_line + p.line, p.col) };
+    // Why an occurrence could not be asked about; reported only when no other one resolves.
+    let mut refused = None;
+    for pos in snippet_occurrences(file.text, start, needle.len(), name) {
         match file.renameable(pos).await {
             Ok(true) => {}
             Ok(false) => continue,
-            Err(no_server) => return no_server,
+            Err(no_server) => {
+                refused.get_or_insert(no_server);
+                continue;
+            }
         }
         let definition = file.definition(pos).await;
         if definition.is_none() || !symbols.iter().any(|(d, _)| *d == definition) {
             symbols.push((definition, pos));
         }
+    }
+    if let (true, Some(refused)) = (symbols.is_empty(), refused) {
+        return refused;
     }
     match symbols.len() {
         0 => Resolution::Unresolved(
@@ -673,6 +716,40 @@ fn word_at(units: &[u16], col: usize) -> Option<(usize, String)> {
     let start = (0..=at).rev().take_while(|&i| touches(i)).last().unwrap_or(at);
     let end = (at..units.len()).take_while(|&i| touches(i)).last().map_or(at, |e| e + 1);
     Some((start, String::from_utf16_lossy(&units[start..end])))
+}
+
+enum SnippetMatch {
+    NotFound,
+    NotUnique,
+    /// The byte offset of the only occurrence.
+    At(usize),
+}
+
+/// Where `needle` occurs in `text`, overlapping occurrences included.
+fn find_snippet(text: &str, needle: &str) -> SnippetMatch {
+    let Some(start) = text.find(needle) else { return SnippetMatch::NotFound };
+    // One character further, not one byte: the needle may start with a multibyte character.
+    let step = needle.chars().next().map_or(1, char::len_utf8);
+    if text[start + step..].contains(needle) { SnippetMatch::NotUnique } else { SnippetMatch::At(start) }
+}
+
+/// Whole-word occurrences of `name` inside the `len` bytes of `text` from byte `start`
+/// (a snippet's place in the file): the file's text around an occurrence decides whether
+/// it is a whole word, so a snippet cut in the middle of a word does not make one.
+fn snippet_occurrences(text: &str, start: usize, len: usize, name: &str) -> Vec<Pos> {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut out = Vec::new();
+    for (at, _) in text[start..start + len].match_indices(name) {
+        let at = start + at;
+        let before = text[..at].chars().next_back();
+        let after = text[at + name.len()..].chars().next();
+        if before.is_some_and(is_word) || after.is_some_and(is_word) {
+            continue;
+        }
+        let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+        out.push(Pos::new(text[..at].matches('\n').count() as u32, units_len(&text[line_start..at])));
+    }
+    out
 }
 
 /// Whole-word occurrences of `name` (0-based line, UTF-16 column).
@@ -856,6 +933,27 @@ mod tests {
         assert_eq!(word_at(&units, 6), Some((6, "counter".into())));
         assert_eq!(word_at(&units, 13), Some((6, "counter".into())));
         assert_eq!(word_at(&units, 0), None);
+    }
+
+    #[test]
+    fn finds_snippets_starting_with_multibyte_characters() {
+        let text = "let äb = 1;\nlet äb2 = äb;\n";
+        assert!(matches!(find_snippet(text, "äb"), SnippetMatch::NotUnique));
+        assert!(matches!(find_snippet(text, "äb = 1"), SnippetMatch::At(4)));
+        assert!(matches!(find_snippet(text, "ö"), SnippetMatch::NotFound));
+        // Overlapping occurrences are two.
+        assert!(matches!(find_snippet("aaa", "aa"), SnippetMatch::NotUnique));
+    }
+
+    #[test]
+    fn snippet_occurrences_are_whole_words_of_the_file() {
+        let text = "let beta = 1;\nlet x = alphabeta + beta;\n";
+        // The snippet starts inside `alphabeta`: its `beta` is not a word of the file.
+        let needle = "beta + beta";
+        let SnippetMatch::At(start) = find_snippet(text, needle) else { panic!() };
+        assert_eq!(snippet_occurrences(text, start, needle.len(), "beta"), vec![Pos::new(1, 20)]);
+        let text = "ä beta";
+        assert_eq!(snippet_occurrences(text, 0, text.len(), "beta"), vec![Pos::new(0, 2)]);
     }
 
     #[test]

@@ -544,3 +544,152 @@ async fn the_call_history_lists_the_files_a_call_changed() {
     h.call("create_new_file", json!({ "pathInProject": "a.txt", "overwrite": true })).await;
     assert!(h.server.call_history()[0].changed_files.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn changing_the_ide_configuration_asks_first() {
+    let h = Harness::new(&[(".openidea/runConfigurations/app.json", "{}\n"), ("a.txt", "a\n")]).await;
+    let asked = |h: &Harness| {
+        h.ui.asked
+            .lock()
+            .iter()
+            .filter_map(|r| match r {
+                McpUiRequest::Confirm { subject, .. } => Some(subject.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // Declined: nothing changes.
+    *h.ui.answer.lock() = json!(false);
+    let e =
+        h.call_err("create_new_file", json!({ "pathInProject": ".openidea/settings.json", "text": "{\"x\":1}" })).await;
+    assert!(e.contains("declined"), "{e}");
+    assert!(!h.path(".openidea/settings.json").exists());
+    assert_eq!(asked(&h), ["Change .openidea/settings.json"]);
+    let out = patch(
+        &h,
+        &[
+            "*** Begin Patch",
+            "*** Update File: .openidea/runConfigurations/app.json",
+            "@@",
+            "-{}",
+            "+{\"x\":1}",
+            "*** End Patch",
+        ],
+    )
+    .await;
+    assert!(out.starts_with("0 out of 1") && out.contains("declined"), "{out}");
+    let out =
+        patch(&h, &["*** Begin Patch", "*** Delete File: .openidea/runConfigurations/app.json", "*** End Patch"]).await;
+    assert!(out.starts_with("0 out of 1"), "{out}");
+    // Moving a file into it asks too.
+    let out =
+        patch(&h, &["*** Begin Patch", "*** Update File: a.txt", "*** Move to: .openidea/a.txt", "*** End Patch"])
+            .await;
+    assert!(out.starts_with("0 out of 1"), "{out}");
+    assert_eq!(read(&h, ".openidea/runConfigurations/app.json"), "{}\n");
+    assert!(h.path("a.txt").exists());
+    let e = h.call_err("reformat_file", json!({ "files": [".openidea/runConfigurations/app.json"] })).await;
+    assert!(e.contains("declined"), "{e}");
+    assert_eq!(asked(&h).len(), 5);
+    // Other files do not ask.
+    h.call("create_new_file", json!({ "pathInProject": "src/x.txt", "text": "x" })).await;
+    assert_eq!(asked(&h).len(), 5);
+
+    // Allowed.
+    *h.ui.answer.lock() = json!(true);
+    h.call("create_new_file", json!({ "pathInProject": ".openidea/settings.json", "text": "{}" })).await;
+    assert_eq!(read(&h, ".openidea/settings.json"), "{}");
+    // Brave mode does not ask.
+    h.server.apply(&ide_core::mcp::McpSettings { brave_mode: true, ..Default::default() }).await;
+    let before = asked(&h).len();
+    h.call("create_new_file", json!({ "pathInProject": ".openidea/other.json", "text": "{}", "overwrite": true }))
+        .await;
+    assert_eq!(asked(&h).len(), before);
+    // VCS metadata stays refused, brave or not.
+    let e = h.call_err("create_new_file", json!({ "pathInProject": ".git/config", "text": "x" })).await;
+    assert!(e.contains("version control metadata"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn opening_a_file_outside_the_project_asks_first() {
+    let h = Harness::new(&[("a.txt", "a\n")]).await;
+    let outside = h.root.parent().unwrap().join("outside.txt");
+    std::fs::write(&outside, "secret\n").unwrap();
+    *h.ui.answer.lock() = json!(false);
+    let e = h.call_err("open_file_in_editor", json!({ "filePath": outside.to_str().unwrap() })).await;
+    assert!(e.contains("declined"), "{e}");
+    let asked = h.ui.asked.lock().clone();
+    assert!(matches!(&asked[..], [McpUiRequest::Confirm { subject, .. }] if subject.starts_with("Read ")), "{asked:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_read_the_disk_not_a_stale_buffer() {
+    let h = Harness::new(&[("a.txt", "one\n"), ("b.txt", "x\n")]).await;
+    let host = h.host().clone();
+    let a = ide_host::ops::doc::open(&host, "main", h.path("a.txt")).await.unwrap();
+    let b = ide_host::ops::doc::open(&host, "main", h.path("b.txt")).await.unwrap();
+    // The agent wrote the files itself; the editor's (clean) buffers have not caught up.
+    std::fs::write(h.path("a.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(h.path("b.txt"), "written by the agent\n").unwrap();
+    let out =
+        patch(&h, &["*** Begin Patch", "*** Update File: a.txt", "@@", " one", "-two", "+TWO", "*** End Patch"]).await;
+    assert_eq!(out, "1 out of 1 operations applied.");
+    assert_eq!(read(&h, "a.txt"), "one\nTWO\n");
+    // Reformatting (no server here) leaves the agent's write alone, and the buffer follows the disk.
+    h.call_err("reformat_file", json!({ "files": ["b.txt"] })).await;
+    assert_eq!(read(&h, "b.txt"), "written by the agent\n");
+    let project = host.project("main").unwrap();
+    assert_eq!(project.documents.text_snapshot(b.id).unwrap().text, "written by the agent\n");
+    ide_host::ops::doc::close(&host, "main", a.id).unwrap();
+    ide_host::ops::doc::close(&host, "main", b.id).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn git_mode_changes_and_copies_do_not_fail_the_patch() {
+    let h = Harness::new(&[("run.sh", "echo\n"), ("a.txt", "1\n"), ("src/a.rs", "a\n")]).await;
+    let diff = "diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+diff --git a/src/a.rs b/src/b.rs
+similarity index 90%
+copy from src/a.rs
+copy to src/b.rs
+--- a/src/a.rs
++++ b/src/b.rs
+@@ -1 +1 @@
+-a
++b
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-1
++2
+";
+    let out = h.call("apply_patch", json!({ "input": diff })).await;
+    assert!(out.starts_with("2 out of 2 operations applied.\nNotes:"), "{out}");
+    assert!(out.contains("src/b.rs: the copy of src/a.rs to src/b.rs was skipped"), "{out}");
+    assert_eq!((read(&h, "run.sh"), read(&h, "a.txt")), ("echo\n".into(), "2\n".into()));
+    assert!(!h.path("src/b.rs").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moves_that_change_only_the_case() {
+    let h = Harness::new(&[("readme.md", "hi\n")]).await;
+    let case_insensitive = h.path("README.md").exists();
+    let out =
+        patch(&h, &["*** Begin Patch", "*** Update File: readme.md", "*** Move to: README.md", "*** End Patch"]).await;
+    assert_eq!(out, "1 out of 1 operations applied.");
+    let names: Vec<String> =
+        std::fs::read_dir(&h.root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert!(names.contains(&"README.md".to_owned()), "{names:?}");
+    assert!(!names.contains(&"readme.md".to_owned()), "{names:?}");
+    // On a case-sensitive file system an existing other file still blocks the move.
+    if !case_insensitive {
+        std::fs::write(h.path("readme.md"), "other\n").unwrap();
+        let out =
+            patch(&h, &["*** Begin Patch", "*** Update File: README.md", "*** Move to: readme.md", "*** End Patch"])
+                .await;
+        assert!(out.contains("File already exists"), "{out}");
+    }
+}
