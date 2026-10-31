@@ -70,12 +70,24 @@
 }
 .clientHead {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   min-height: 24px;
+}
+/* Name, badges and buttons keep their text on one line; a narrow row wraps between them instead. */
+.clientHead > * {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .clientName {
   font-weight: 600;
+}
+/* The buttons stay together at the right, also when they wrap below the name and badges. */
+.clientActions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
 }
 .spacer {
   flex: 1;
