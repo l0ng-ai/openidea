@@ -49,7 +49,7 @@ let dispose: () => void;
 beforeEach(() => {
   localStorage.clear();
   useProject.setState({
-    project: { root: "/services-debug", name: "app", isGit: false, settings: validateSettings({}) },
+    project: { root: "/services-debug", name: "app", isGit: false, settings: validateSettings({}) } as never,
   });
   useRun.setState({ configs: [config], sessions: [], loaded: true });
   useDebug.setState({ sessions: {}, console: {}, active: null });

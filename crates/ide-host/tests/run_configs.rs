@@ -90,6 +90,8 @@ async fn workspace_cmake_before_launch_tasks_resolve_in_the_member() {
     let workspace = root.join("workspace");
     ide_workspace::workspace::Workspace::save(&workspace, "Native", vec![member.clone()], true).unwrap();
     let host = host(&root.join("app"));
+    host.trust.decide(&workspace, true, false).unwrap();
+    host.trust.decide(&member, true, false).unwrap();
     host.open_project("main", &workspace).unwrap();
     let configs = ops::run::configs(&host, "main").unwrap();
     let build = configs.iter().find(|c| c.kind == "cmake" && c.args.first().is_some_and(|a| a == "--build")).unwrap();

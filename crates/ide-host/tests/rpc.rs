@@ -260,6 +260,7 @@ async fn local_deployment_runs_on_the_project_host() {
     tokio::spawn(rpc::serve(host, dispatcher, slot, sr, sw));
     let (cr, cw) = tokio::io::split(client_io);
     let peer = Peer::connect(cr, cw, Arc::new(Client::default()));
+    invoke(&peer, "project_trust_set", json!({"path": project, "trusted": true, "folder": false})).await.unwrap();
     invoke(&peer, "open_project", json!({"path": project})).await.unwrap();
     let deployment = json!({"servers": [{"id":"local", "kind":"local", "rootPath":target}], "defaultServer":"local"});
     invoke(&peer, "settings_set", json!({"scope":"project", "key":"deployment", "value":deployment.to_string()}))
