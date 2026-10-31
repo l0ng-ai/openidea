@@ -1118,10 +1118,14 @@ mod workspace_edit_tests {
         let doc = documents.open(&alias).unwrap();
         let changes = |path: PathBuf| FileEdit::Edit {
             path: path.into(),
+            version: None,
             edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "sum_values".into() }],
         };
-        apply_workspace_edit(&documents, &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)] })
-            .unwrap();
+        apply_workspace_edit(
+            &documents,
+            &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)], ..Default::default() },
+        )
+        .unwrap();
         assert_eq!(std::fs::read_to_string(real).unwrap(), "sum_values();\n");
         assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
     }

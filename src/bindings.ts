@@ -415,6 +415,7 @@ export const commands = {
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	prepareWorkspaceEdit: (edit: WorkspaceEdit) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("prepare_workspace_edit", { edit })),
 	undoWorkspaceEdit: (id: number) => typedError<null, IdeError>(__TAURI_INVOKE("undo_workspace_edit", { id })),
+	redoWorkspaceEdit: (id: number) => typedError<null, IdeError>(__TAURI_INVOKE("redo_workspace_edit", { id })),
 	/**
 	 *  Runs a server command (`workspace/executeCommand`), e.g. a completion item's
 	 *  follow-up command. Edits the server requests arrive via `workspace/applyEdit`.
@@ -3471,11 +3472,13 @@ export type IdeEvent =
  *  The backend changed a document (reload from disk, formatting, refactoring).
  *  The UI applies `changes` on top of `base_version`, yielding `version`.
  */
-{ type: "docPatched"; doc: DocId; baseVersion: number; version: number; changes: TextChange[] } | 
+{ type: "docPatched"; doc: DocId; baseVersion: number; version: number; changes: TextChange[]; 
+/**  Part of a grouped transaction; the editor must not record a file-local undo. */
+workspaceEdit?: boolean } | 
 /**  A document's dirty flag changed (saved / modified externally). */
 { type: "docDirty"; doc: DocId; dirty: boolean } | 
 /**  A complete workspace edit can be undone as one operation. */
-{ type: "workspaceEditApplied"; id: number } | 
+{ type: "workspaceEditApplied"; id: number; paths: IpcPath[] } | 
 /**
  *  An open document's language changed (Settings › File Types, Override File
  *  Type), or its UI mode (a framework's root marker appeared or went).

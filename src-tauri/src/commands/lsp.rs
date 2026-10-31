@@ -347,6 +347,12 @@ pub async fn undo_workspace_edit(window: Window, state: State<'_, AppState>, id:
     ide_host::ops::lsp::undo_workspace_edit(&state.host, window.label(), id).await
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn redo_workspace_edit(window: Window, state: State<'_, AppState>, id: u32) -> IdeResult<()> {
+    ide_host::ops::lsp::redo_workspace_edit(&state.host, window.label(), id).await
+}
+
 /// Runs a server command (`workspace/executeCommand`), e.g. a completion item's
 /// follow-up command. Edits the server requests arrive via `workspace/applyEdit`.
 #[tauri::command]

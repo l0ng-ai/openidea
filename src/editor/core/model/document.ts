@@ -61,6 +61,7 @@ import {
 import { setMethodLines, softWrapActive } from "../cm/prefs";
 import type { EditorSlot } from "./slot";
 import { tx } from "@/platform/i18n";
+import { WorkspaceHistory } from "./workspaceHistory";
 
 export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
 
@@ -260,7 +261,7 @@ export class DocModel {
         snapshot: () => manager.backend.snapshot(this.doc),
       },
       {
-        applyRemote: (cs) => this.applyRemote(cs),
+        applyRemote: (cs, grouped) => this.applyRemote(cs, grouped),
         onDiscarded: () =>
           manager.notify({
             level: "warning",
@@ -343,14 +344,14 @@ export class DocModel {
     this.scheduleRefresh();
   }
 
-  private applyRemote(cs: ChangeSet) {
+  private applyRemote(cs: ChangeSet, grouped = false) {
     this.modified.map(cs);
     this.changeCounter++;
     const primary = this.primarySlot();
     for (const s of this.slots)
-      s.applyExternal(cs, [remoteChange.of(true), Transaction.addToHistory.of(s === primary)]);
+      s.applyExternal(cs, [remoteChange.of(true), Transaction.addToHistory.of(!grouped && s === primary)]);
     // Without a tab, the first attached view keeps backend edits (Replace in Files…) undoable.
-    let first = !primary;
+    let first = !grouped && !primary;
     for (const a of this.attachments) {
       a.applyExternal(cs, [remoteChange.of(true), Transaction.addToHistory.of(first)]);
       first = false;
@@ -624,6 +625,12 @@ export interface ManagerHost {
 }
 
 export class DocumentManager {
+  readonly workspaceHistory = new WorkspaceHistory(
+    async () => {
+      await Promise.all([...this.byPath.values()].map((m) => m.sync.whenIdle()));
+    },
+    (n) => this.notify(n),
+  );
   readonly byPath = new Map<string, DocModel>();
   readonly byId = new Map<DocId, DocModel>();
   private opening = new Map<string, Promise<DocModel>>();
@@ -646,6 +653,7 @@ export class DocumentManager {
 
   start() {
     this.disposers.push(
+      this.workspaceHistory.start(),
       this.backend.onPatched((e) => this.byId.get(e.doc)?.sync.remote(e)),
       this.backend.onLanguage?.((e) => this.byId.get(e.doc)?.setLanguage(e.language, e.uiMode)) ?? (() => {}),
       this.backend.onDirty((e) => {

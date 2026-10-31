@@ -350,6 +350,11 @@ pub async fn undo_workspace_edit(host: &Host, window: &str, id: u32) -> IdeResul
     blocking(move || project.documents.undo_workspace_edit(id)).await
 }
 
+pub async fn redo_workspace_edit(host: &Host, window: &str, id: u32) -> IdeResult<()> {
+    let project = host.project(window)?;
+    blocking(move || project.documents.redo_workspace_edit(id)).await
+}
+
 /// Runs a server command (`workspace/executeCommand`), e.g. a completion item's
 /// follow-up command. Edits the server requests arrive via `workspace/applyEdit`.
 pub async fn lsp_execute_command(host: &Host, window: &str, doc: DocId, command: Command) -> IdeResult<()> {
@@ -444,6 +449,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "prepare_workspace_edit",
         |c| async move { prepare_workspace_edit(&c.host, &c.window, c.arg("edit")?).await },
     );
+    d.add("redo_workspace_edit", |c| async move { redo_workspace_edit(&c.host, &c.window, c.arg("id")?).await });
     d.add("undo_workspace_edit", |c| async move { undo_workspace_edit(&c.host, &c.window, c.arg("id")?).await });
     d.add("lsp_execute_command", |c| async move {
         lsp_execute_command(&c.host, &c.window, c.arg("doc")?, c.arg("command")?).await

@@ -604,3 +604,18 @@ export function codePreviewExtensions(path: string): Promise<Extension> {
 export function _provideCodePreview(provider: ((path: string) => Promise<Extension>) | null) {
   codePreviewProvider = provider;
 }
+
+let workspaceHistory: ((id: number, redo: boolean) => Promise<void>) | null = null;
+
+/** Undo/redo a refactoring through the same history used by editor commands. */
+export function workspaceEditHistory(id: number, redo = false): Promise<void> {
+  return workspaceHistory ? workspaceHistory(id, redo) : Promise.reject(new Error("Editor history is unavailable"));
+}
+
+/** @internal editor/core only. */
+export function _provideWorkspaceHistory(run: (id: number, redo: boolean) => Promise<void>): () => void {
+  workspaceHistory = run;
+  return () => {
+    if (workspaceHistory === run) workspaceHistory = null;
+  };
+}
