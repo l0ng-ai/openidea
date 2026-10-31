@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { AgentCommand, AgentProvider } from "@/bindings";
 
@@ -65,6 +65,28 @@ beforeEach(() => {
 });
 
 describe("New Task composer commands", () => {
+  it("names the icon-only Start action and disables it while starting", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [] });
+    let finish!: (value: unknown) => void;
+    agentCreate.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    render(<HomeEditor />);
+    const start = screen.getByRole("button", { name: "Start" });
+    expect(start.textContent).toBe("");
+    expect(start).toHaveAttribute("data-tooltip", "Start");
+    expect(start).toBeDisabled();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Do the task" } });
+    expect(start).toBeEnabled();
+    fireEvent.click(start);
+    const starting = screen.getByRole("button", { name: "Starting…" });
+    expect(starting).toBeDisabled();
+    expect(starting.textContent).toBe("");
+    expect(starting).toHaveAttribute("data-tooltip", "Starting…");
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    expect(agentCreate).toHaveBeenCalledTimes(1);
+    await act(async () => finish({ status: "error", error: { kind: "invalid", message: "stop here" } }));
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
+  });
+
   it("completes the project's skills merged with the agent's commands", async () => {
     agentCommands.mockResolvedValue({
       status: "ok",

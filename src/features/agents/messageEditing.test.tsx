@@ -119,6 +119,15 @@ describe("a sent message with images", () => {
 });
 
 describe("editing a sent agent message", () => {
+  it("names the icon-only edit-and-resend action and disables empty edits", async () => {
+    const { box, send } = await edit();
+    expect(send.textContent).toBe("");
+    expect(send).toHaveAttribute("data-tooltip", "Send");
+    expect(send).toBeEnabled();
+    fireEvent.change(box, { target: { value: "" } });
+    expect(send).toBeDisabled();
+  });
+
   it("keeps Enter, Shift+Enter and IME confirmation for editing", async () => {
     const { box } = await edit();
     fireEvent.keyDown(box, { key: "Enter" });
@@ -156,6 +165,9 @@ describe("editing a sent agent message", () => {
     expect(ipc.rollback).toHaveBeenCalledWith(task.id, 0);
     expect(ipc.prompt).not.toHaveBeenCalled();
     expect(send).toBeDisabled();
+    expect(send).toHaveAccessibleName("Send");
+    expect(send.textContent).toBe("");
+    expect(send.querySelector('[role="status"]')).toBeInTheDocument();
     fireEvent.keyDown(box, { key: "Enter", metaKey: true });
     expect(ipc.rollback).toHaveBeenCalledTimes(1);
     await act(async () => finish({ status: "ok", data: null }));
@@ -222,4 +234,36 @@ describe("editing a sent agent message", () => {
       expect(screen.getAllByRole("textbox", { name: "Message" })[0]).toHaveValue("Original message");
     },
   );
+});
+
+describe("session composer submission", () => {
+  it.each(["click", "Enter"])("keeps an accessible icon-only Send action with %s submission", async (method) => {
+    let finish!: (value: unknown) => void;
+    ipc.prompt.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send.textContent).toBe("");
+    expect(send).toHaveAttribute("data-tooltip", "Send");
+    expect(send).toBeDisabled();
+    const box = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(box, { target: { value: "Follow up" } });
+    expect(send).toBeEnabled();
+    if (method === "click") fireEvent.click(send);
+    else fireEvent.keyDown(box, { key: "Enter" });
+    expect(ipc.prompt).toHaveBeenCalledExactlyOnceWith(task.id, { text: "Follow up", files: [], images: [] }, false);
+    expect(send).toBeDisabled();
+    await act(async () => finish({ status: "ok", data: null }));
+    expect(box).toHaveValue("");
+  });
+
+  it("keeps Queue named and leaves Stop unchanged while the agent works", async () => {
+    useAgents.setState({ tasks: new Map([[task.id, { ...task, status: "running" }]]) });
+    render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+    const queue = screen.getByRole("button", { name: "Queue" });
+    expect(queue.textContent).toBe("");
+    expect(queue).toHaveAttribute("data-tooltip", "Queue");
+    expect(queue).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: "Stop" }).some((button) => button.textContent === "Stop")).toBe(true);
+    await screen.findByText("Original message");
+  });
 });
