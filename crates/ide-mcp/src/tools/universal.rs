@@ -65,6 +65,7 @@ async fn execute_tool(call: Call) -> IdeResult<Output> {
         }
         None => call.target.clone(),
     };
+    crate::tools::check_trust(tool.name, &target.project)?;
     let root = target.project.root.clone();
     let started = call.shared.history.begin(&call.client, tool.name, &json_args, true, Some(&root));
     // The routed call's changes are the router call's too.

@@ -346,6 +346,10 @@ async fn call_tool(shared: &Arc<Shared>, ctx: &Ctx, id: Value, mut params: Map<S
     };
     let root = target.project.root.clone();
     shared.history.set_project(&started, &root);
+    if let Err(e) = crate::tools::check_trust(tool.name, &target.project) {
+        shared.history.finish(started, Ended::error(&e));
+        return result(id, tool_error(&e.message));
+    }
 
     let cancel = shared.stop.lock().child_token();
     let key = call_key(session.as_ref().map(|s| s.id.as_str()), &id);

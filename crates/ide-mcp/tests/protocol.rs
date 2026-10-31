@@ -222,3 +222,23 @@ async fn rejects_strangers_before_reading_bodies_and_restarts_quickly() {
     }
     h.server.apply(&off).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restricted_mode_keeps_execution_and_language_servers_off() {
+    let h = Harness::restricted(&[("a.txt", "hello\n")]).await;
+    assert!(h.call("read_file", json!({ "file_path": "a.txt" })).await.contains("hello"));
+    h.call("search_text", json!({ "q": "hello" })).await;
+    for (tool, args) in [
+        ("execute_terminal_command", json!({ "command": "echo hi" })),
+        ("git_status", json!({})),
+        ("get_file_problems", json!({ "filePath": "a.txt" })),
+        ("build_project", json!({})),
+    ] {
+        let msg = h.call_err(tool, args).await;
+        assert!(msg.contains("Restricted Mode"), "{tool}: {msg}");
+    }
+    // Nothing was asked: the call is refused before any confirmation.
+    assert!(h.ui.asked.lock().is_empty());
+    let msg = h.call_err("execute_tool", json!({ "command": "execute_terminal_command --command 'echo hi'" })).await;
+    assert!(msg.contains("Restricted Mode"), "{msg}");
+}

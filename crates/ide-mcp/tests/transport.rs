@@ -56,6 +56,7 @@ async fn setup() -> (Harness, McpServer, PathBuf) {
     let h = Harness::new(&[("a.txt", "x\n")]).await;
     let second = dunce::canonicalize(h.dir.path()).unwrap().join("second");
     std::fs::create_dir_all(&second).unwrap();
+    h.host().trust.decide(&second, true, false).unwrap();
     h.host().open_project("second", &second).unwrap();
     let server = McpServer::with_tools(h.ui.clone(), TOKEN.into(), test_tools());
     server.set_timing_for_test(Duration::from_millis(50), Duration::from_millis(100), Duration::from_secs(10));

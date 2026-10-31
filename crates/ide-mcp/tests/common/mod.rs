@@ -50,6 +50,15 @@ pub struct Harness {
 impl Harness {
     /// A project at `<tmp>/project` holding `files` (relative path, contents), open in window `main`.
     pub async fn new(files: &[(&str, &str)]) -> Self {
+        Self::with_trust(files, true).await
+    }
+
+    /// A project the user has not trusted (Restricted Mode).
+    pub async fn restricted(files: &[(&str, &str)]) -> Self {
+        Self::with_trust(files, false).await
+    }
+
+    async fn with_trust(files: &[(&str, &str)], trusted: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(dir.path()).unwrap();
         let root = base.join("project");
@@ -69,6 +78,7 @@ impl Harness {
             runtime: tokio::runtime::Handle::current(),
             project_environment: false,
         }));
+        host.trust.decide(&root, trusted, false).unwrap();
         let project = host.open_project("main", &root).unwrap();
         project.index.wait_idle(std::time::Duration::from_secs(10));
         let ui = Arc::new(FakeUi {

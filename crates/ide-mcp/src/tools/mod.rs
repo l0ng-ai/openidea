@@ -13,6 +13,36 @@ pub mod util;
 pub mod vcs;
 
 use crate::tool::Tool;
+use ide_core::{IdeError, IdeResult};
+use ide_host::Project;
+
+/// Tools that only read files, search, or change files the way the editor does: they
+/// work in a project in Restricted Mode. The others start language servers, git or
+/// processes, which an untrusted project could turn into running its code.
+const RESTRICTED_MODE_TOOLS: &[&str] = &[
+    "read_file",
+    "list_directory_tree",
+    "search_text",
+    "search_regex",
+    "search_file",
+    "create_new_file",
+    "apply_patch",
+    "open_file_in_editor",
+    "get_all_open_file_paths",
+    "get_project_modules",
+    "get_ide_diagnostics",
+    "execute_tool",
+];
+
+/// Errors when `tool` needs a trusted project and `project` is in Restricted Mode.
+pub fn check_trust(tool: &str, project: &Project) -> IdeResult<()> {
+    if project.is_trusted() || RESTRICTED_MODE_TOOLS.contains(&tool) {
+        return Ok(());
+    }
+    Err(IdeError::unavailable(format!(
+        "The project is in Restricted Mode, so `{tool}` is not available. Ask the user to trust the project in OpenIDEA."
+    )))
+}
 
 /// Every tool the server offers (before Settings › Tools › MCP Server disables some).
 pub fn all() -> Vec<Tool> {
