@@ -12,7 +12,7 @@
 }
 /* Room for the native macOS traffic lights (Overlay title bar). */
 .overlay {
-  padding-left: 82px;
+  padding-left: max(82px, calc(82px / var(--titlebar-zoom, 1)));
 }
 /* Welcome window: plain title on the frame colour with a hairline, like IntelliJ's welcome frame. */
 .minimal {
@@ -125,7 +125,32 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
-/* The expanded main menu: File Edit View … in place of the project widgets. */
+/* Preserve the menu's natural width while allowing its slot to yield to toolbar controls. */
+.mainMenuSlot {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 34px;
+  height: 30px;
+  overflow: hidden;
+}
+.mainMenuSlot ~ .item,
+.mainMenuSlot ~ .tools {
+  flex-shrink: 0;
+}
+.menuMeasure {
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+}
+.menuPresentation {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+/* The main menu titles. */
 .menuBar {
   flex: none;
   display: flex;

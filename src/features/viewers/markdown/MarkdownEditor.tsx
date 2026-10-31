@@ -1,6 +1,6 @@
 /**
  * Text editor wrapper of Markdown files: the editor, a live preview, or both
- * side by side, switched from the floating toolbar at the top right. The
+ * side by side, switched from the tab strip or a floating toolbar. The
  * preview follows the editor's scroll position in the split layout.
  */
 import {
@@ -19,10 +19,11 @@ import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { IconButton, selectableText } from "@/ui";
+import { FloatingToolbar, selectableText } from "@/ui";
 import { useLiveMarkdown } from "./live";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn, subscribeTheme, themeKey } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
+import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import { ANCHOR_PREFIX, previewOffsetForLine, renderMarkdown, resolveLink, slugify } from "./render";
 import styles from "./Markdown.module.css";
 import { tx } from "@/platform/i18n";
@@ -47,35 +48,28 @@ function openExternal(url: string) {
   else window.open(url, "_blank", "noopener");
 }
 
-export function MarkdownEditor({ path, children }: { path: string; tabId: string; children: ReactNode }) {
+export function MarkdownEditor({
+  path,
+  tabId,
+  children,
+  actionsInTabs = false,
+}: {
+  path: string;
+  tabId: string;
+  children: ReactNode;
+  actionsInTabs?: boolean;
+}) {
   const mode = useMarkdownModes((s) => modeOf(s, path));
+  const ref = useRef<HTMLDivElement>(null);
   return (
-    <div className={clsx(styles.split, styles[`mode-${mode}`])}>
+    <div ref={ref} className={clsx(styles.split, styles[`mode-${mode}`])}>
       <div className={styles.editor}>{children}</div>
       {mode !== "editor" && <MarkdownPreview path={path} sync={mode === "split"} />}
-      <div className={styles.modeBar} role="toolbar" aria-label={tx("Markdown editor layout")}>
-        <IconButton
-          icon="edit"
-          size="small"
-          action="markdown.editorOnly"
-          actionArg={path}
-          pressed={mode === "editor"}
-        />
-        <IconButton
-          icon="split"
-          size="small"
-          action="markdown.editorAndPreview"
-          actionArg={path}
-          pressed={mode === "split"}
-        />
-        <IconButton
-          icon="eye"
-          size="small"
-          action="markdown.previewOnly"
-          actionArg={path}
-          pressed={mode === "preview"}
-        />
-      </div>
+      {!actionsInTabs && (
+        <FloatingToolbar targetRef={ref}>
+          <MarkdownLayoutActions path={path} tabId={tabId} />
+        </FloatingToolbar>
+      )}
     </div>
   );
 }

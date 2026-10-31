@@ -102,6 +102,20 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     Ok(on)
 }
 
+/// Height of the web title bar in native logical pixels (CSS height × IDE zoom).
+#[tauri::command]
+#[specta::specta]
+pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResult<()> {
+    if !height.is_finite() || !(1.0..=1000.0).contains(&height) {
+        return Err(IdeError::invalid("invalid title bar height"));
+    }
+    #[cfg(target_os = "macos")]
+    crate::titlebar::set_height(&window, height).map_err(|e| IdeError::internal(e.to_string()))?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+    Ok(())
+}
+
 /// What this window was opened for (taken once).
 #[tauri::command]
 #[specta::specta]

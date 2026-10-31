@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { RunConfig } from "@/platform/ipc";
-import { findJavaModule } from "@/platform/javaLaunch";
+import { IpcError, type RunConfig } from "@/platform/ipc";
+import { findJavaModule, prepareJavaLaunch } from "@/platform/javaLaunch";
+import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { provideNotificationService } from "@/workbench/contributions";
 import { applicationConfig } from "./application";
-import { resetRuns, saveUserConfigs, startRun } from "./store";
+import { resetRuns, runtime, saveUserConfigs, startRun } from "./store";
 import { applicationType } from "./jvmTypes";
 import { withParams } from "./types";
 
@@ -63,7 +64,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   provideNotificationService({ notify: vi.fn() });
 });
-afterEach(() => resetRuns());
+afterEach(() => {
+  resetRuns();
+  _resetI18nForTests();
+});
 
 it.each(["sibling", "/outside/modules"])("runs from %s using the stored module's classpath", async (cwd) => {
   const session = await startRun({ ...config, module: "app", cwd });
@@ -111,4 +115,47 @@ it("does not substitute the working directory when sources are missing or ambigu
     ],
   });
   expect(await findJavaModule(config)).toBeNull();
+});
+
+it.each([
+  "jdtls: Given URI does not belong to any Java project.",
+  "jdtls: Launch configuration 1793460461218 references non-existing project parent.",
+])("explains how to import a module when Run fails with %s", async (message) => {
+  ipc.javaResolveLaunch.mockResolvedValueOnce({ status: "error", error: { kind: "protocol", message } } as never);
+  const session = await startRun({ ...config, module: "web" });
+  expect(session?.status).toBe("failed");
+  const output = runtime(session!.id)!
+    .console.lines.map((line) => line.text)
+    .join("\n");
+  expect(output).toContain("Java module 'web' is not imported.");
+  expect(output).toContain("parent Maven or Gradle build");
+  expect(output).toContain("open its folder as a project");
+  expect(ipc.runStart).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["unavailable", "jdtls is not installed (Settings › Languages & Frameworks › Language Servers)"],
+  ["unavailable", "jdtls exited with code 1: wrong Java version"],
+  ["protocol", "jdtls: workspace/executeCommand timed out after 90 s"],
+  ["internal", "Build failed"],
+  ["cancelled", "jdtls: Given URI does not belong to any Java project."],
+] as const)("preserves other launch errors (%s: %s)", async (kind, message) => {
+  const error = new IpcError({ kind, message });
+  ipc.javaResolveLaunch.mockRejectedValueOnce(error);
+  await expect(
+    prepareJavaLaunch({ ...config, module: "web" }, { request: 1, signal: new AbortController().signal }),
+  ).rejects.toBe(error);
+});
+
+it("translates import recovery guidance for a root Spring Boot configuration", async () => {
+  await setLocale("zh");
+  ipc.javaResolveLaunch.mockRejectedValueOnce(
+    new IpcError({ kind: "protocol", message: "jdtls: Given URI does not belong to any Java project." }),
+  );
+  await expect(
+    prepareJavaLaunch(
+      { ...config, kind: "spring-boot", module: "" },
+      { request: 1, signal: new AbortController().signal },
+    ),
+  ).rejects.toThrow("Java 模块 '.' 尚未导入");
 });

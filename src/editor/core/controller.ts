@@ -3,6 +3,7 @@
  * status, navigation history, autosave. The React views and actions talk to
  * this singleton; other features use the EditorService and editor/api.
  */
+import { pasteEditorClipboard } from "./cm/clipboard";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
@@ -72,6 +73,7 @@ import {
   type TabsState,
 } from "./model/tabs";
 import { DocumentManager, useDocMeta } from "./model/document";
+import { installDiskSync } from "./diskSync";
 import {
   closedDocuments,
   combinedError,
@@ -313,6 +315,13 @@ export class EditorController implements SlotHost {
     };
     const onPageHide = () => this.saveSession();
     if (typeof window !== "undefined") {
+      if (this.manager.backend.syncFromDisk)
+        this.disposers.push(
+          installDiskSync(
+            () => this.manager.backend.syncFromDisk!(),
+            () => !this.closeSession,
+          ),
+        );
       window.addEventListener("blur", onWindowBlur);
       window.addEventListener("pagehide", onPageHide);
       window.addEventListener("beforeunload", onPageHide);
@@ -633,18 +642,7 @@ export class EditorController implements SlotHost {
         icon: "paste",
         shortcut: "⌘V",
         disabled: view.state.readOnly,
-        run: () => {
-          void navigator.clipboard
-            ?.readText()
-            .then((text) => {
-              view.dispatch(view.state.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
-              view.focus();
-            })
-            .catch(() => {
-              view.focus();
-              document.execCommand("paste");
-            });
-        },
+        run: () => void pasteEditorClipboard(view),
       },
       { kind: "separator" },
       {

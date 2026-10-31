@@ -1,6 +1,8 @@
 //! The file list on the OS clipboard: what Explorer copies when the user
 //! copies files, so the project view can paste them, and what the project view
-//! writes so Explorer can paste the files it copied (IDEA does both).
+//! writes so Explorer can paste the files it copied (IDEA does both). The
+//! written list comes with the paths as text, so a paste into an editor
+//! inserts them instead of doing nothing.
 //!
 //! Windows keeps it as `CF_HDROP`: a `DROPFILES` header and a double-NUL
 //! terminated list of absolute paths, wide when `fWide` is set. The data is set
@@ -111,6 +113,8 @@ mod imp {
 
     /// `CF_HDROP`, the clipboard format holding a file list.
     const CF_HDROP: u32 = 15;
+    /// `CF_UNICODETEXT`, so an editor paste of copied files inserts the paths.
+    const CF_UNICODETEXT: u32 = 13;
 
     /// An `HGLOBAL` or a `HANDLE`: both are opaque pointers here.
     type Handle = *mut c_void;
@@ -182,12 +186,37 @@ mod imp {
         paths
     }
 
+    /// An `HGLOBAL` holding `text` as UTF-16 with a terminating NUL, and its
+    /// byte size. Null when the allocation failed.
+    fn global_text(text: &str) -> (Handle, usize) {
+        let mut units: Vec<u16> = text.encode_utf16().collect();
+        units.push(0);
+        let bytes = units.len() * 2;
+        unsafe {
+            let memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if memory.is_null() {
+                return (ptr::null_mut(), 0);
+            }
+            let data = GlobalLock(memory);
+            if data.is_null() {
+                GlobalFree(memory);
+                return (ptr::null_mut(), 0);
+            }
+            ptr::copy_nonoverlapping(units.as_ptr() as *const u8, data as *mut u8, bytes);
+            GlobalUnlock(memory);
+            (memory, bytes)
+        }
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         let bytes = encode(paths);
         if bytes.len() <= HEADER {
             return false;
         }
-        // SAFETY: the block is allocated, filled, handed to the clipboard and
+        // The paths as text, newline-separated, so pasting into an editor
+        // inserts them (IDEA writes the list and the text together).
+        let text = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\r\n");
+        // SAFETY: the blocks are allocated, filled, handed to the clipboard and
         // freed only on the paths where the clipboard did not take ownership.
         unsafe {
             let memory = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
@@ -205,17 +234,27 @@ mod imp {
                 GlobalFree(memory);
                 return false;
             }
-            // Replacing the list also drops the text the user copied before.
+            // Replacing the list also drops the text the user copied before;
+            // the paths' own text is set back with it.
             if EmptyClipboard() == 0 {
                 CloseClipboard();
                 GlobalFree(memory);
                 return false;
             }
-            let taken = !SetClipboardData(CF_HDROP, memory).is_null();
-            CloseClipboard();
+            let mut taken = !SetClipboardData(CF_HDROP, memory).is_null();
             if !taken {
                 GlobalFree(memory);
             }
+            let (text_memory, _) = global_text(&text);
+            if !text_memory.is_null() {
+                // The text alone still pastes somewhere useful.
+                let text_taken = !SetClipboardData(CF_UNICODETEXT, text_memory).is_null();
+                taken |= text_taken;
+                if !text_taken {
+                    GlobalFree(text_memory);
+                }
+            }
+            CloseClipboard();
             taken
         }
     }
@@ -227,9 +266,10 @@ mod imp {
     use objc2::rc::{Retained, autoreleasepool};
     use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
     use objc2_app_kit::{
-        NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting,
+        NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardTypeString, NSPasteboardURLReadingFileURLsOnlyKey,
+        NSPasteboardWriting,
     };
-    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSURL};
+    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL};
     use std::path::PathBuf;
 
     /// `NSURL` as the one class to read, limited to file URLs: a web link the
@@ -285,9 +325,15 @@ mod imp {
             let writers: Vec<&ProtocolObject<dyn NSPasteboardWriting>> =
                 urls.iter().map(|url| ProtocolObject::from_ref(&**url)).collect();
             let board = NSPasteboard::generalPasteboard();
-            // Replacing the list also drops the text the user copied before.
+            // Replacing the list also drops the text the user copied before;
+            // the paths' own text is set back with it, so an editor paste
+            // inserts them (IDEA writes the list and the text together).
             board.clearContents();
-            board.writeObjects(&NSArray::from_slice(&writers))
+            board.writeObjects(&NSArray::from_slice(&writers));
+            let text = NSString::from_str(
+                &paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"),
+            );
+            board.setString_forType(&text, unsafe { NSPasteboardTypeString })
         })
     }
 }

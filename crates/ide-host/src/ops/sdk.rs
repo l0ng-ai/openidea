@@ -22,12 +22,14 @@ pub struct LocatedTools {
 
 /// Installed interpreters / toolchains of `kind`; project-local ones first.
 pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<Vec<Sdk>> {
+    host.require_trust(window)?;
     let root = host.project(window).ok().map(|p| p.root.clone());
     tokio::task::spawn_blocking(move || ide_sdk::detect(kind, root.as_deref())).await.map_err(join_err)
 }
 
 /// The interpreter the project uses: the configured one, else its virtualenv.
 pub fn sdk_python_effective(host: &Host, window: &str) -> IdeResult<Option<ide_core::IpcPath>> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     Ok(ide_sdk::apply::python_interpreter(&project.root, &project.settings.effective()).map(Into::into))
 }
@@ -35,6 +37,7 @@ pub fn sdk_python_effective(host: &Host, window: &str) -> IdeResult<Option<ide_c
 /// SDK / library source folders shown under "External Libraries" in the Project view,
 /// with the Maven / Gradle dependency jars of the build model.
 pub async fn sdk_project_libraries(host: &Host, window: &str) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
     tokio::task::spawn_blocking(move || {
@@ -56,11 +59,12 @@ pub async fn sdk_project_libraries(host: &Host, window: &str) -> IdeResult<Vec<i
 
 /// Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path.
 pub async fn sdk_locate_tools(
-    _host: &Host,
-    _window: &str,
+    host: &Host,
+    window: &str,
     names: Vec<String>,
     near: Option<PathBuf>,
 ) -> IdeResult<LocatedTools> {
+    host.require_trust(window)?;
     tokio::task::spawn_blocking(move || LocatedTools {
         tools: ide_sdk::locate::locate_tools(&names, near.as_deref()),
         compile_dir: ide_sdk::locate::compile_dir().into(),
@@ -72,13 +76,14 @@ pub async fn sdk_locate_tools(
 /// `base -m venv location`; output lines stream through `on_output`.
 pub async fn sdk_python_create_venv(
     host: &Host,
-    _window: &str,
+    window: &str,
     base: PathBuf,
     location: PathBuf,
     request: RequestId,
     on_output: Channel<String>,
 ) -> IdeResult<Sdk> {
-    let cancel = host.begin_request(request);
+    host.require_trust(window)?;
+    let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         ide_sdk::python::create_venv(&base, &location, &cancel, &|line| {
             let _ = on_output.send(line);
@@ -92,11 +97,12 @@ pub async fn sdk_python_create_venv(
 
 pub async fn sdk_python_packages(
     host: &Host,
-    _window: &str,
+    window: &str,
     python: PathBuf,
     request: RequestId,
 ) -> IdeResult<Vec<PythonPackage>> {
-    let cancel = host.begin_request(request);
+    host.require_trust(window)?;
+    let cancel = host.begin_project_request(window, request);
     let result =
         tokio::task::spawn_blocking(move || ide_sdk::python::list_packages(&python, &cancel)).await.map_err(join_err);
     host.end_request(request);
@@ -107,7 +113,7 @@ pub async fn sdk_python_packages(
 #[allow(clippy::too_many_arguments)]
 pub async fn sdk_python_pip(
     host: &Host,
-    _window: &str,
+    window: &str,
     python: PathBuf,
     requirement: String,
     uninstall: bool,
@@ -115,7 +121,8 @@ pub async fn sdk_python_pip(
     request: RequestId,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
-    let cancel = host.begin_request(request);
+    host.require_trust(window)?;
+    let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         let send = |line: String| {
             let _ = on_output.send(line);

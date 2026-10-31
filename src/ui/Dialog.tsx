@@ -7,6 +7,7 @@ import { Icon } from "./icons";
 import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
 import { useTx } from "@/platform/i18n";
 import { selectableText } from "./selectableText";
+import appIcon from "../../src-tauri/icons/128x128.png";
 import styles from "./Dialog.module.css";
 import { isImeKey } from "@/platform/ime";
 
@@ -135,7 +136,7 @@ export interface DialogProps {
    * A Messages alert (IDEA `MessageDialogBuilder`): no title bar, this icon on the
    * left, the title in bold above the content, `footerStart` under the text.
    */
-  icon?: MessageIconKind;
+  icon?: MessageIconKind | "app";
 }
 
 export type MessageIconKind = "question" | "info" | "warning" | "error";
@@ -398,7 +399,11 @@ function DialogInner({
         )}
         {icon ? (
           <div className={styles.message} data-dialog-body="" onPointerDown={drag}>
-            <MessageIcon kind={icon} />
+            {icon === "app" ? (
+              <img className={styles.messageAppIcon} src={appIcon} alt="" draggable={false} />
+            ) : (
+              <MessageIcon kind={icon} />
+            )}
             <div className={styles.messageText}>
               {title != null && <div className={clsx(styles.messageTitle, selectableText)}>{title}</div>}
               <div className={clsx(styles.messageBody, selectableText)}>

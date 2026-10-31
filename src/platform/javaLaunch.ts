@@ -4,7 +4,7 @@
  * `${classpath}` (or `${testClasspath}`) and the `java` launcher are resolved
  * through jdtls when the configuration starts.
  */
-import { call, commands, type JavaLaunchInfo, type RunConfig, type RequestId } from "@/platform/ipc";
+import { call, commands, IpcError, type JavaLaunchInfo, type RunConfig, type RequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 
 export const CLASSPATH = "${classpath}";
@@ -167,7 +167,21 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   const module = await resolveJavaModule(config);
   signal.throwIfAborted();
   const moduleMs = performance.now() - started;
-  const info = await call(commands.javaResolveLaunch(module, parsed.classpath === "test", true, preparation.request));
+  const info = await call(
+    commands.javaResolveLaunch(module, parsed.classpath === "test", true, preparation.request),
+  ).catch((error: unknown) => {
+    if (
+      error instanceof IpcError &&
+      error.kind !== "cancelled" &&
+      /^jdtls:.*(?:does not belong to any java project|references non-existing project|not a java project)/i.test(
+        error.message,
+      )
+    )
+      throw new Error(
+        tx`Java module '${module || "."}' is not imported. Wait for Java project import to finish. If it still fails, check the run configuration's module and whether it is included in the parent Maven or Gradle build, or open its folder as a project.`,
+      );
+    throw error;
+  });
   signal.throwIfAborted();
   console.info("Java launch preparation", { module, moduleMs, resolveMs: performance.now() - started - moduleMs });
   if (info.build === "withErrors")

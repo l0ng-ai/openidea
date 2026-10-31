@@ -70,16 +70,9 @@ pub(crate) fn merge_sides(r: &Repo) -> IdeResult<MergeSides> {
 /// Three-way merge of file contents (`git merge-file --diff3`): changes that don't
 /// conflict are merged, each conflict is left as a diff3 block.
 pub(crate) fn merge_file(r: &Repo, ours: &str, base: &str, theirs: &str) -> IdeResult<String> {
-    struct TempDir(std::path::PathBuf);
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let dir = TempDir(r.git_dir.join(format!("openidea-merge-{}", std::process::id())));
-    std::fs::create_dir_all(&dir.0)?;
+    let dir = tempfile::tempdir()?;
     let file = |name: &str, text: &str| -> IdeResult<String> {
-        let path = dir.0.join(name);
+        let path = dir.path().join(name);
         std::fs::write(&path, text)?;
         Ok(path.to_string_lossy().into_owned())
     };
@@ -345,6 +338,38 @@ pub(crate) fn tags(r: &Repo) -> IdeResult<Vec<String>> {
 /// Tracked files that differ between `rev` and the working tree (Compare with Local).
 pub(crate) fn diff_with_worktree(r: &Repo, rev: &str) -> IdeResult<Vec<ChangedFile>> {
     check_commits(&[rev.to_string()])?;
+    if !crate::execution_allowed() {
+        let out = run(
+            r.root(),
+            &["diff", "--cached", "--name-status", "-z", "--no-ext-diff", "--no-textconv", rev, "--"],
+            None,
+        )?;
+        let mut paths: std::collections::BTreeSet<String> =
+            parse_name_status(&out.stdout_str()).into_iter().map(|c| c.path).collect();
+        paths.extend(r.status()?.into_iter().filter(|s| s.unstaged != Some(ChangeKind::Untracked)).map(|s| s.rel_path));
+        let repo = r.gix()?;
+        let mut changes = Vec::new();
+        for path in paths {
+            let old = crate::repo::blob_at(&repo, &path, rev)?;
+            let new = match std::fs::read(r.abs_path(&path)) {
+                Ok(bytes) => Some(bytes),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.into()),
+            };
+            if old == new {
+                continue;
+            }
+            let kind = if old.is_none() {
+                ChangeKind::Added
+            } else if new.is_none() {
+                ChangeKind::Deleted
+            } else {
+                ChangeKind::Modified
+            };
+            changes.push(ChangedFile { path, kind, old_path: None });
+        }
+        return Ok(changes);
+    }
     let out = run(r.root(), &["diff", "--name-status", "-z", "-M", "--no-ext-diff", rev, "--"], None)?;
     Ok(parse_name_status(&out.stdout_str()))
 }
@@ -372,7 +397,8 @@ pub(crate) fn parse_numstat(text: &str) -> Vec<(String, u32, u32)> {
 /// Files that differ between two revisions (Update Project's "N files updated").
 pub(crate) fn diff_revisions(r: &Repo, from: &str, to: &str) -> IdeResult<Vec<ChangedFile>> {
     check_commits(&[from.to_string(), to.to_string()])?;
-    let out = run(r.root(), &["diff", "--name-status", "-z", "-M", "--no-ext-diff", from, to, "--"], None)?;
+    let out =
+        run(r.root(), &["diff", "--name-status", "-z", "-M", "--no-ext-diff", "--no-textconv", from, to, "--"], None)?;
     Ok(parse_name_status(&out.stdout_str()))
 }
 

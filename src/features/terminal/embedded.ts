@@ -4,6 +4,7 @@
  * and size go to the owner instead of a terminal PTY (a Run console emulating
  * a terminal feeds its process).
  */
+import { installTerminalPaste } from "./paste";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -83,6 +84,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
       },
     }),
   ];
+  const removePaste = installTerminalPaste(host, (text) => term.paste(text));
   term.open(host);
   if (opts["aria-label"]) term.textarea?.setAttribute("aria-label", opts["aria-label"]);
 
@@ -109,6 +111,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
       fitter.cancel();
       processResize.cancel();
       observer.disconnect();
+      removePaste();
       for (const d of disposables) d.dispose();
       live.delete(term);
       term.dispose();

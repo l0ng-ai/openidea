@@ -15,9 +15,11 @@ use ide_workspace::{DocumentInfo, Documents, FileMoves, LocalHistory, ProjectRoo
 use parking_lot::{Mutex, RwLock};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Everything bound to one open project folder.
 pub struct Project {
+    pub(crate) trusted: Arc<AtomicBool>,
     pub root: PathBuf,
     /// Window-scoped event sink, for commands that emit project events.
     pub sink: SharedSink,
@@ -80,7 +82,9 @@ impl Host {
         self.close_project(window);
         let sink: SharedSink = (self.sink_for)(window);
         // Before anything the project starts: its children get the project's environment.
-        let post_start = self.environment.project_opened(&root, &sink);
+        let trusted = Arc::new(AtomicBool::new(self.trust.trusted(&root)?));
+        let post_start =
+            trusted.load(Ordering::Acquire).then(|| self.environment.project_opened(&root, &sink)).flatten();
         let settings = SettingsStore::load(&self.config_dir, Some(&root));
         let detected_roots = Arc::new(RwLock::new(ide_workspace::roots::detect(&root)));
         let excludes = exclude_globs(&root, &settings.effective(), &detected_roots.read());
@@ -114,6 +118,7 @@ impl Host {
         )?;
         mark("index");
         let lsp = LspManager::new(root.clone(), languages.clone(), sink.clone());
+        lsp.set_execution_allowed(trusted.load(Ordering::Acquire));
         lsp.set_content_roots(extra_roots.clone());
         let settings = Arc::new(settings);
         {
@@ -210,9 +215,13 @@ impl Host {
             root: root.clone(),
             sink: sink.clone(),
             runtime: self.runtime.clone(),
+            trusted: trusted.clone(),
         }));
 
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
+        for repo in repos.read().all() {
+            repo.set_execution_allowed(trusted.load(Ordering::Acquire));
+        }
         let watcher = {
             let repos = repos.clone();
             let settings = settings.clone();
@@ -226,6 +235,7 @@ impl Host {
             let remote = self.remote.clone();
             let runtime = self.runtime.clone();
             let lsp = lsp.clone();
+            let trusted = trusted.clone();
             Watcher::start(
                 &root.clone(),
                 excludes.clone(),
@@ -243,7 +253,7 @@ impl Host {
                         documents.redetect_languages();
                     }
                     record_external_changes(&history, &changed, &batch.removed);
-                    if !batch.removed.is_empty() {
+                    if trusted.load(Ordering::Acquire) && !batch.removed.is_empty() {
                         delete_deployed(
                             &runtime,
                             remote.clone(),
@@ -333,6 +343,7 @@ impl Host {
         );
         ide_agent::registry::maintain(crate::ops::agent::registry_paths(self));
         let project = Arc::new(Project {
+            trusted,
             root,
             sink,
             languages,
@@ -448,6 +459,7 @@ impl Host {
             sink.clone(),
         );
         let project = Arc::new(Project {
+            trusted: Arc::new(AtomicBool::new(true)),
             sink,
             languages,
             settings,
@@ -478,6 +490,18 @@ impl Host {
 }
 
 impl Project {
+    pub fn is_trusted(&self) -> bool {
+        self.trusted.load(Ordering::Acquire)
+    }
+
+    pub fn require_trust(&self) -> IdeResult<()> {
+        if self.is_trusted() {
+            Ok(())
+        } else {
+            Err(IdeError::unavailable("Project is in Restricted Mode. Trust the project to enable execution."))
+        }
+    }
+
     /// LightEdit: follow external changes to the files of `dir` (its own entries only).
     pub fn watch_light_dir(&self, dir: &Path) {
         if !self.light {
@@ -552,7 +576,11 @@ impl Project {
 
     /// The project's git repositories.
     pub fn repos(&self) -> Repos {
-        self.repos.read().clone()
+        let repos = self.repos.read().clone();
+        for repo in repos.all() {
+            repo.set_execution_allowed(self.is_trusted());
+        }
+        repos
     }
 
     /// Runs `f` with the repository whose root is `at`, the project's primary repository
@@ -584,7 +612,9 @@ impl Project {
 
     fn run_in<T>(&self, repo: &Repo, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
         let settings = self.settings.effective();
-        apply_git_executable(&settings);
+        if self.is_trusted() {
+            apply_git_executable(&settings);
+        }
         repo.set_ignored_names(settings.ignored_names());
         f(repo)
     }
@@ -983,6 +1013,7 @@ impl DocumentObserver for HistoryObserver {
 
 /// Uploads saved files: remote files' local copies, and automatic upload to the default server.
 struct DeployObserver {
+    trusted: Arc<AtomicBool>,
     remote: Arc<ide_remote::RemoteService>,
     settings: Arc<SettingsStore>,
     root: PathBuf,
@@ -992,6 +1023,9 @@ struct DeployObserver {
 
 impl DocumentObserver for DeployObserver {
     fn saved(&self, _doc: ide_core::DocId, path: &Path, _text: &str) {
+        if !self.trusted.load(Ordering::Acquire) {
+            return;
+        }
         let (remote, settings, root, sink, path) =
             (self.remote.clone(), self.settings.clone(), self.root.clone(), self.sink.clone(), path.to_path_buf());
         self.runtime.spawn(async move {

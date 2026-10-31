@@ -46,6 +46,7 @@ struct StopCommand {
 }
 
 struct Entry {
+    project_root: PathBuf,
     id: RunId,
     config_id: String,
     name: String,
@@ -337,7 +338,7 @@ impl ProcessManager {
             return Err(IdeError::invalid("Go build and run requires the output console"));
         }
         if extras.emulate_terminal {
-            return self.start_pty(config, &inv, &cwd, &env, stop, options, sink, on_output, temp);
+            return self.start_pty(root, config, &inv, &cwd, &env, stop, options, sink, on_output, temp);
         }
 
         let mut cmd = Command::new(&inv.program);
@@ -384,6 +385,7 @@ impl ProcessManager {
             _ => None,
         };
         let entry = Arc::new(Entry {
+            project_root: root.to_path_buf(),
             id,
             config_id: config.id.clone(),
             name: config.name.clone(),
@@ -444,6 +446,7 @@ impl ProcessManager {
     #[allow(clippy::too_many_arguments)]
     fn start_pty(
         &self,
+        root: &Path,
         config: &RunConfig,
         inv: &Invocation,
         cwd: &Path,
@@ -493,6 +496,7 @@ impl ProcessManager {
 
         let id = RunId::next();
         let entry = Arc::new(Entry {
+            project_root: root.to_path_buf(),
             id,
             config_id: config.id.clone(),
             name: config.name.clone(),
@@ -640,6 +644,16 @@ impl ProcessManager {
     }
 
     /// Kills every running process tree at once (shutting down).
+    pub fn kill_project(&self, root: &Path) {
+        for entry in self.runs.lock().values().filter(|e| e.project_root == root) {
+            if !entry.exited.load(Ordering::Acquire)
+                && let Some(pid) = *entry.pid.lock()
+            {
+                kill_tree(pid, true);
+            }
+        }
+    }
+
     pub fn kill_all(&self) {
         for entry in self.runs.lock().values() {
             entry.stopping.store(true, Ordering::Release);

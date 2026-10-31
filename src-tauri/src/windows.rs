@@ -297,6 +297,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         .and_then(|b| b.build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     apply_zoom(app, &window);
+    #[cfg(target_os = "macos")]
+    align_titlebar(app, &window);
     // "Sync with OS" needs the OS mode, known once the window exists.
     if let Some(a) = appearance.filter(|a| plugin_frame.is_none() && (a.sync_with_os || a.theme == "system"))
         && window.theme().is_ok_and(|t| t == Theme::Dark)
@@ -315,6 +317,20 @@ fn apply_zoom(app: &AppHandle, window: &WebviewWindow) {
     if zoom != 100 {
         let _ = window.set_zoom(f64::from(zoom) / 100.0);
     }
+}
+
+/// Aligns the native window buttons before the page reports its title bar height,
+/// so they don't visibly move once it loads.
+#[cfg(target_os = "macos")]
+fn align_titlebar(app: &AppHandle, window: &WebviewWindow) {
+    // `--h-titlebar` in tokens.css.
+    const HEIGHT: f64 = 40.0;
+    const COMPACT_HEIGHT: f64 = 32.0;
+    let Some(a) = app.try_state::<AppState>().map(|s| s.global_settings.effective().appearance) else {
+        return;
+    };
+    let height = if a.compact_mode { COMPACT_HEIGHT } else { HEIGHT };
+    let _ = crate::titlebar::set_height(window, height * f64::from(a.zoom.clamp(50, 300)) / 100.0);
 }
 
 /// The first window (`create: false` in tauri.conf.json so it can take the theme's colour).
@@ -747,20 +763,16 @@ pub fn open_settings_window(
         .and_then(|b| b.build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
     apply_zoom(app, &window);
+    #[cfg(target_os = "macos")]
+    align_titlebar(app, &window);
     // Restore runs during build; fit its size to the parent's current display before showing.
     #[cfg(target_os = "macos")]
     if let Err(e) = fit_settings_window(&window, &parent) {
         tracing::warn!("cannot fit settings window: {e}");
     }
-    // Elsewhere the remembered size is kept and the position follows the parent.
     #[cfg(not(target_os = "macos"))]
-    if let (Ok(pos), Ok(size), Ok(own), Ok(scale)) =
-        (parent.outer_position(), parent.outer_size(), window.outer_size(), parent.scale_factor())
-    {
-        let (pos, size, own) =
-            (pos.to_logical::<f64>(scale), size.to_logical::<f64>(scale), own.to_logical::<f64>(scale));
-        let at = centered(pos.x, pos.y, size.width, size.height, own.width, own.height);
-        let _ = window.set_position(tauri::LogicalPosition::new(at.0, at.1));
+    if let Err(e) = place_settings_window(&window, &parent) {
+        tracing::warn!("cannot place settings window: {e}");
     }
     focus(&window);
     Ok(())
@@ -805,7 +817,45 @@ fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri:
     ))
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Centres the settings window over its owner, inside the owner's monitor work area. The window
+/// may still be on another display with a different scale, so its size is converted with its own
+/// scale and its position is given in physical pixels.
+#[cfg(not(target_os = "macos"))]
+fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+    let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
+        return Ok(());
+    };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let origin = area.position.to_logical::<f64>(scale);
+    let available = area.size.to_logical::<f64>(scale);
+    let pos = parent.outer_position()?.to_logical::<f64>(scale);
+    let size = parent.outer_size()?.to_logical::<f64>(scale);
+    let own_scale = window.scale_factor()?;
+    let own = window.outer_size()?.to_logical::<f64>(own_scale);
+    let inner = window.inner_size()?.to_logical::<f64>(own_scale);
+    let frame = (own.width - inner.width, own.height - inner.height);
+    let bounds = fit_bounds(
+        (pos.x, pos.y, size.width, size.height),
+        (own.width, own.height),
+        (origin.x, origin.y, available.width, available.height),
+    );
+    window.set_position(tauri::PhysicalPosition::new(
+        (bounds.0 * scale).round() as i32,
+        (bounds.1 * scale).round() as i32,
+    ))?;
+    if (bounds.2, bounds.3) != (own.width, own.height) {
+        // Sizes are set on the client area, and even an undecorated window has a resize frame.
+        let (width, height) = ((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0));
+        window.set_min_size(Some(tauri::LogicalSize::new(
+            SETTINGS_MIN_SIZE.0.min(width),
+            SETTINGS_MIN_SIZE.1.min(height),
+        )))?;
+        window.set_size(tauri::LogicalSize::new(width, height))?;
+    }
+    Ok(())
+}
+
 fn fit_bounds(parent: (f64, f64, f64, f64), size: (f64, f64), work: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
     let width = size.0.min(work.2);
     let height = size.1.min(work.3);
@@ -1094,6 +1144,8 @@ mod tests {
                 (0.0, 0.0, 1280.0, 1040.0 / 1.5),
                 (150.0, 0.0, 980.0, 1040.0 / 1.5),
             ),
+            // 3840×2160 at 250% scaling: an owner taller than the work area must not push it off screen.
+            ((100.0, 60.0, 1440.0, 900.0), (980.0, 720.0), (0.0, 0.0, 1536.0, 816.0), (330.0, 96.0, 980.0, 720.0)),
             // Restored geometry from a larger display.
             ((100.0, 50.0, 1440.0, 900.0), (2400.0, 1600.0), (0.0, 24.0, 1920.0, 1016.0), (0.0, 24.0, 1920.0, 1016.0)),
             // Secondary display with a negative origin and reserved top/left space.

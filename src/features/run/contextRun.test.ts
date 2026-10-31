@@ -42,7 +42,7 @@ const labels = (items: Item[]): string[] =>
 
 describe("run context menu group", () => {
   beforeEach(() => {
-    useProject.setState({ project: { name: "app", root: ROOT, isGit: false, settings: {} } as never });
+    useProject.setState({ project: { name: "app", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
     useRun.setState({ configs: [npmTest], loaded: true });
   });
   afterEach(() => {
@@ -127,7 +127,7 @@ describe("menuGroupItems", () => {
 
 describe("debug entry", () => {
   beforeEach(() => {
-    useProject.setState({ project: { name: "app", root: ROOT, isGit: false, settings: {} } as never });
+    useProject.setState({ project: { name: "app", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
     useRun.setState({ configs: [], loaded: true });
   });
   afterEach(() => useProject.setState({ project: null }));
@@ -150,7 +150,7 @@ describe("run gutter popup", () => {
     );
 
   beforeEach(() => {
-    useProject.setState({ project: { name: "app", root: ROOT, isGit: false, settings: {} } as never });
+    useProject.setState({ project: { name: "app", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
     useRun.setState({ configs: [npmTest], loaded: true });
   });
   afterEach(() => {

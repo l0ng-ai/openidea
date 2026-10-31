@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { RemoteEntry } from "@/platform/ipc";
-import { forgetRemote, parseRemoteLocation, recentRemotes, rememberRemote, remoteLocation } from "@/platform/remote";
+import {
+  initializeRemoteTrustMigration,
+  takeLegacyRemoteTrust,
+  forgetRemote,
+  parseRemoteLocation,
+  recentRemotes,
+  rememberRemote,
+  remoteLocation,
+} from "@/platform/remote";
 import { browsableFolders, listedDirectory, remoteParent } from "./model";
 
 const entry = (path: string, isDir = true): RemoteEntry => ({
@@ -56,4 +64,16 @@ describe("remote project locations", () => {
     forgetRemote("a", "/p");
     expect(recentRemotes().map((r) => r.path)).toEqual(["/q"]);
   });
+});
+
+it("migrates only the original remote recents once, scoped to the saved host", () => {
+  localStorage.clear();
+  rememberRemote({ sshConfig: "a", path: "/old", host: "me@old", name: "old", openedAtMs: 1 });
+  initializeRemoteTrustMigration();
+  rememberRemote({ sshConfig: "a", path: "/new", host: "me@old", name: "new", openedAtMs: 2 });
+  initializeRemoteTrustMigration();
+  expect(takeLegacyRemoteTrust("a", "/new", "me@old")).toBe(false);
+  expect(takeLegacyRemoteTrust("a", "/old", "me@other")).toBe(false);
+  expect(takeLegacyRemoteTrust("a", "/old", "me@old")).toBe(true);
+  expect(takeLegacyRemoteTrust("a", "/old", "me@old")).toBe(false);
 });

@@ -147,6 +147,11 @@ describe("settings staging", () => {
 });
 
 describe("validateSettings", () => {
+  it("defaults focus synchronization on and preserves an explicit opt-out", () => {
+    expect(validateSettings({ files: {} }).files.syncOnFocus).toBe(true);
+    expect(validateSettings({ files: { syncOnFocus: false } }).files.syncOnFocus).toBe(false);
+  });
+
   it("fills defaults for missing or malformed values", () => {
     expect(validateSettings(undefined)).toEqual(DEFAULT_SETTINGS);
     expect(validateSettings("garbage")).toEqual(DEFAULT_SETTINGS);

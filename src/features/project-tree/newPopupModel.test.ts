@@ -20,7 +20,7 @@ let disposers: Array<() => void> = [];
 beforeEach(() => {
   useProjectTree.setState({ root: ROOT });
   useProject.setState({
-    project: { name: "p", root: ROOT, isGit: false, settings: {} } as never,
+    project: { name: "p", root: ROOT, trusted: true, isGit: false, settings: {} } as never,
     settings: {} as never,
   });
   disposers = [

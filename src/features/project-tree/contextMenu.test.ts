@@ -44,6 +44,7 @@ const OTHER_ACTIONS = [
   "vcs.addToVcs",
   "vcs.annotate",
   "vcs.showDiff",
+  "vcs.compareWithBranch",
   "vcs.rollback",
   "vcs.push",
 ];
@@ -53,7 +54,7 @@ let disposers: Array<() => void> = [];
 beforeEach(() => {
   useProjectTree.setState({ root: ROOT });
   useProject.setState({
-    project: { name: "p", root: ROOT, isGit: true, settings: {} } as never,
+    project: { name: "p", root: ROOT, trusted: true, isGit: true, settings: {} } as never,
     settings: {} as never,
   });
   disposers = [
@@ -129,6 +130,17 @@ describe("project view context menu", () => {
     }
   });
 
+  it("offers branch comparison for files, folders, their union and the project root", () => {
+    for (const nodes of [
+      [node("/p/a.py")],
+      [node("/p/src", true)],
+      [node("/p/src", true), node("/p/lib", true)],
+      [node("/p", true, true)],
+    ]) {
+      expect(sub(contextMenuItems(nodes), "Git")).toContain("Compare with Branch…");
+    }
+  });
+
   it("offers Show History for files, directories, multi-selection and the project root", () => {
     const dispose = registerActions([{ id: "vcs.showHistory", title: "Show History", run: () => undefined }]);
     try {
@@ -179,7 +191,7 @@ describe("project view context menu", () => {
 
   it("offers Compare With… in a non-git project too", () => {
     useProject.setState({
-      project: { name: "p", root: ROOT, isGit: false, settings: {} } as never,
+      project: { name: "p", root: ROOT, trusted: true, isGit: false, settings: {} } as never,
       settings: {} as never,
     });
     const l = labels(contextMenuItems([node(`${ROOT}/a.py`)]));
@@ -192,7 +204,7 @@ describe("project view context menu", () => {
     disposers.forEach((d) => d());
     disposers = [];
     useProject.setState({
-      project: { name: "p", root: ROOT, isGit: true, settings: {} } as never,
+      project: { name: "p", root: ROOT, trusted: true, isGit: true, settings: {} } as never,
       settings: {} as never,
     });
     const l = labels(contextMenuItems([node(`${ROOT}/a.py`)]));
@@ -208,6 +220,7 @@ it("offers workspace removal for every member root", () => {
       root: "/workspace",
       name: "A",
       settings: {},
+      trusted: true,
       isGit: false,
       workspace: { version: 1, name: "A", projects: ["/a", "/b"] },
     },

@@ -15,6 +15,10 @@ use std::sync::Arc;
 pub enum IdeEvent {
     /// Project window membership or selection changed.
     WindowGroupsChanged,
+    ProjectTrustChanged {
+        root: crate::IpcPath,
+        trusted: bool,
+    },
     /// Files or directories changed on disk (after debouncing, ignore rules applied).
     FsChanged {
         created: Vec<crate::IpcPath>,

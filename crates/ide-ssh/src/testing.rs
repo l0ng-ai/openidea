@@ -164,6 +164,7 @@ impl russh_sftp::server::Handler for Sftp {
             .read(pflags.contains(OpenFlags::READ))
             .write(pflags.contains(OpenFlags::WRITE))
             .create(pflags.contains(OpenFlags::CREATE))
+            .create_new(pflags.contains(OpenFlags::EXCLUDE))
             .truncate(pflags.contains(OpenFlags::TRUNCATE))
             .open(path)
             .map_err(code)?;
@@ -213,6 +214,11 @@ impl russh_sftp::server::Handler for Sftp {
     }
 
     async fn setstat(&mut self, id: u32, path: String, attrs: FileAttributes) -> Result<Status, Self::Error> {
+        #[cfg(unix)]
+        if let Some(mode) = attrs.permissions {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(self.local(&path), std::fs::Permissions::from_mode(mode)).map_err(code)?;
+        }
         if let Some(t) = attrs.mtime {
             let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(t.into());
             let f = std::fs::File::options().write(true).open(self.local(&path)).map_err(code)?;
@@ -252,6 +258,12 @@ impl russh_sftp::server::Handler for Sftp {
 
     async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
         std::fs::remove_dir(self.local(&path)).map_err(code)?;
+        Ok(ok(id))
+    }
+
+    #[cfg(unix)]
+    async fn symlink(&mut self, id: u32, target: String, link: String) -> Result<Status, Self::Error> {
+        std::os::unix::fs::symlink(target, self.local(&link)).map_err(code)?;
         Ok(ok(id))
     }
 

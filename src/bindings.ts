@@ -11,6 +11,10 @@ export const commands = {
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
+	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
+	projectTrustList: () => typedError<TrustDecisions, IdeError>(__TAURI_INVOKE("project_trust_list")),
+	projectTrustSet: (path: string, trusted: boolean, folder: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_set", { path, trusted, folder })),
+	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_remove_location", { path })),
 	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
 	workspaceAttach: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_attach", { path })),
 	workspaceUpdate: (name: string, projects: string[]) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("workspace_update", { name, projects })),
@@ -28,6 +32,7 @@ export const commands = {
 	lightEditOpen: (path: string) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("light_edit_open", { path })),
 	/**  The project open in this window (a settings window: its parent's), if any. */
 	projectCurrent: () => __TAURI_INVOKE<{
+	trusted: boolean,
 	root: IpcPath,
 	name: string,
 	isGit: boolean,
@@ -199,6 +204,7 @@ export const commands = {
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
+	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
 	/**
 	 *  The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
@@ -503,6 +509,8 @@ export const commands = {
 	vcsRemoveWorktree: (repo: string | null, path: string, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_remove_worktree", { repo, path, force })),
 	/**  Compare with Local: tracked files that differ between `rev` and the working tree. */
 	vcsDiffWithWorktree: (repo: string | null, rev: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_with_worktree", { repo, rev })),
+	vcsCompareScope: (paths: string[]) => typedError<CompareScope, IdeError>(__TAURI_INVOKE("vcs_compare_scope", { paths })),
+	vcsComparePaths: (paths: string[], revision: string, repositories: string[] | null, request: RequestId) => typedError<CompareResult, IdeError>(__TAURI_INVOKE("vcs_compare_paths", { paths, revision, repositories, request })),
 	/**  Files that differ between two revisions (the "N files updated" of Update Project). */
 	vcsDiffRevisions: (repo: string | null, from: string, to: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_revisions", { repo, from, to })),
 	/**  The best common ancestor of `a` and `b` (`git merge-base`), if any. */
@@ -714,6 +722,8 @@ export const commands = {
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
+	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
+	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
 	/**  What this window was opened for (taken once). */
 	windowTakeLaunch: () => __TAURI_INVOKE<{
 	/**  Project folder to open. */
@@ -1008,6 +1018,8 @@ export const commands = {
 	 *  `on_channel` tagged with the id.
 	 */
 	remoteInvoke: (cmd: string, args: string, onChannel: Channel<ChannelFrame>) => typedError<string, IdeError>(__TAURI_INVOKE("remote_invoke", { cmd, args, onChannel })),
+	/**  A client OS file belongs to this machine even when its destination is remote. */
+	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
 	/**
 	 *  Reload Environment: new child processes get the login shell's current environment
 	 *  (and the project's `remoteEnv` on a remote host); running ones keep theirs.
@@ -1407,6 +1419,8 @@ export type AppearanceSettings = {
 	projectColorsInToolbar?: boolean,
 	dndWithAltOnly?: boolean,
 	menuIcons?: boolean,
+	/**  `hamburger` | `merged`: main menu presentation in the frameless title bar. */
+	mainMenuStyle?: string,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing?: string,
 	editorAntialiasing?: string,
@@ -1881,6 +1895,18 @@ export type CommitSettings = {
 	bodyLimit?: number,
 	showRightMargin?: boolean,
 	wrapAtMargin?: boolean,
+};
+
+export type CompareResult = {
+	repositories: RepositoryComparison[],
+	skippedPaths: IpcPath[],
+};
+
+export type CompareScope = {
+	repositories: IpcPath[],
+	/**  Selected content outside registered repositories; workspace parents expand to their skipped children. */
+	skippedPaths: IpcPath[],
+	singleFile: boolean,
 };
 
 export type CompletionItem = {
@@ -3057,6 +3083,8 @@ export type FileRenameEdits = {
 export type FileSettings = {
 	/**  Save on focus loss / tab switch, like IDEA. */
 	autoSave?: boolean,
+	/**  Re-check open files against disk when the IDE window gains focus. */
+	syncOnFocus?: boolean,
 	exclude?: string[],
 	/**  Ignored Files and Folders: name patterns hidden everywhere; see [`crate::ignored`]. */
 	ignoredNames?: string[],
@@ -3465,7 +3493,7 @@ export type IdeError = {
 
 export type IdeEvent = 
 /**  Project window membership or selection changed. */
-{ type: "windowGroupsChanged" } | 
+{ type: "windowGroupsChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[] } | 
 /**  Excluded or ignored folders whose contents changed; they stay out of `FsChanged`. */
@@ -4772,6 +4800,7 @@ export type ProjectFileSet =
 export type ProjectInfo = ProjectInfo_Serialize | ProjectInfo_Deserialize;
 
 export type ProjectInfo_Deserialize = {
+	trusted: boolean,
 	root: IpcPath,
 	name: string,
 	isGit: boolean,
@@ -4780,6 +4809,7 @@ export type ProjectInfo_Deserialize = {
 };
 
 export type ProjectInfo_Serialize = {
+	trusted: boolean,
 	root: IpcPath,
 	name: string,
 	isGit: boolean,
@@ -5120,6 +5150,16 @@ export type ReplaceTarget = {
 	 *  Positions where no match starts any more are skipped.
 	 */
 	only?: Pos[] | null,
+};
+
+export type RepositoryComparison = {
+	root: IpcPath,
+	/**  Resolved commit, so opening a diff later uses the same left side as the listing. */
+	revision: string | null,
+	files: WorkingTreeChange[],
+	error: string | null,
+	/**  The requested revision does not resolve to a commit in this repository. */
+	missingRevision?: boolean,
 };
 
 /**  A cancellable, streaming backend request issued by the UI. */
@@ -6119,6 +6159,18 @@ export type TransferReport = {
 	errors: TransferError[],
 };
 
+export type TrustDecisions = {
+	projects: string[],
+	locations: string[],
+	restricted: string[],
+};
+
+export type TrustStatus = {
+	root: IpcPath,
+	trusted: boolean,
+	decided: boolean,
+};
+
 export type TypeScriptSettings = {
 	/**
 	 *  `bundled` (the server's own TypeScript), `workspace` (`node_modules/typescript`),
@@ -6277,6 +6329,14 @@ export type WindowTab = {
 	name: string,
 	root: IpcPath | null,
 	current: boolean,
+};
+
+export type WorkingTreeChange = {
+	path: string,
+	kind: ChangeKind,
+	oldPath: string | null,
+	added: number,
+	removed: number,
 };
 
 export type Workspace = Workspace_Serialize | Workspace_Deserialize;

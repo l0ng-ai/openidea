@@ -59,6 +59,75 @@ fn no_progress() -> impl FnMut(&str, usize, usize) + Send {
 }
 
 #[tokio::test]
+async fn client_imports_preserve_conflicts_and_report_failure_over_sftp_and_local() {
+    let env = env().await;
+    for sftp in [false, true] {
+        let fs = if sftp { RemoteFs::new(env.session.sftp().await.unwrap()) } else { RemoteFs::Local };
+        let base =
+            if sftp { "/imports".to_owned() } else { env.server_root.join("local").to_string_lossy().into_owned() };
+        fs.mkdir_all(&base).await.unwrap();
+        let to = ide_ssh::sftp::join(&base, "copy");
+        let cancel = CancellationToken::new();
+        std::fs::create_dir_all(env.project.join("empty")).unwrap();
+        ide_remote::import::import_local(&fs, &env.project, &to, &cancel).await.unwrap();
+        assert_eq!(fs.read(&format!("{to}/src/main.py")).await.unwrap(), b"print('hi')\n");
+        assert!(fs.stat(&format!("{to}/empty")).await.unwrap().unwrap().is_dir);
+        let err = ide_remote::import::import_local(&fs, &env.project, &to, &cancel).await.unwrap_err();
+        assert_eq!(err.kind, ide_core::error::ErrorKind::AlreadyExists);
+        let file = format!("{to}/README.md");
+        assert!(fs.upload_new(&env.project.join("src/main.py"), &file, &cancel).await.is_err());
+        assert_eq!(fs.read(&file).await.unwrap(), b"# demo\n");
+        let missing =
+            ide_remote::import::import_local(&fs, &env.project.join("missing"), &format!("{base}/missing"), &cancel)
+                .await
+                .unwrap_err();
+        assert_eq!(missing.kind, ide_core::error::ErrorKind::NotFound);
+        cancel.cancel();
+        let err = ide_remote::import::import_local(&fs, &env.project, &format!("{base}/cancelled"), &cancel)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+        assert!(fs.stat(&format!("{base}/cancelled")).await.unwrap().is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let source = env.project.join("links-tree");
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(source.join("run.sh"), "#!/bin/sh\necho imported\n").unwrap();
+            std::fs::set_permissions(source.join("run.sh"), std::fs::Permissions::from_mode(0o751)).unwrap();
+            std::os::unix::fs::symlink("run.sh", source.join("link")).unwrap();
+            std::os::unix::fs::symlink("missing", source.join("dangling")).unwrap();
+            std::os::unix::fs::symlink(".", source.join("cycle")).unwrap();
+            let socket = std::os::unix::net::UnixListener::bind(source.join("socket")).unwrap();
+            let dest = format!("{base}/links");
+            let skipped =
+                ide_remote::import::import_local(&fs, &source, &dest, &CancellationToken::new()).await.unwrap();
+            assert_eq!(skipped, vec![format!("{}: skipped special file", source.join("socket").display())]);
+            let on_disk = if sftp { env.server_root.join("imports/links") } else { std::path::PathBuf::from(&dest) };
+            for (name, target) in [("link", "run.sh"), ("dangling", "missing"), ("cycle", ".")] {
+                assert_eq!(std::fs::read_link(on_disk.join(name)).unwrap(), std::path::PathBuf::from(target));
+            }
+            assert_eq!(std::fs::metadata(on_disk.join("run.sh")).unwrap().permissions().mode() & 0o777, 0o751);
+            assert_eq!(fs.read(&format!("{dest}/run.sh")).await.unwrap(), b"#!/bin/sh\necho imported\n");
+            assert!(!on_disk.join("socket").exists());
+            let skipped = ide_remote::import::import_local(
+                &fs,
+                &source.join("socket"),
+                &format!("{base}/socket"),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(skipped.len(), 1);
+            assert!(fs.stat(&format!("{base}/socket")).await.unwrap().is_none());
+            drop(socket);
+            std::fs::remove_dir_all(source).unwrap();
+        }
+        fs.close().await;
+    }
+}
+
+#[tokio::test]
 async fn uploads_compares_syncs_and_downloads() {
     let env = env().await;
     let fs = RemoteFs::new(env.session.sftp().await.unwrap());

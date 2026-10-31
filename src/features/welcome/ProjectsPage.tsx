@@ -14,6 +14,7 @@ import {
   Kbd,
   SearchField,
   Spinner,
+  isPopupOpen,
   listNavigate,
   showContextMenu,
   T,
@@ -263,7 +264,7 @@ export function ProjectsPage() {
           aria-label="Search projects"
           aria-controls={`${baseId}-list`}
           aria-activedescendant={items.length ? optionId(current) : undefined}
-          autoFocus
+          autoFocus={!isPopupOpen()}
           data-autofocus
           onKeyDown={onKeyDown}
           className={styles.search}

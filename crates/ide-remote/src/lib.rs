@@ -2,6 +2,7 @@
 //! configurations on run targets ([`target`]).
 
 pub mod deploy;
+pub mod import;
 pub mod mapping;
 pub mod service;
 pub mod target;

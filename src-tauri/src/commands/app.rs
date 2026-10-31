@@ -266,3 +266,41 @@ pub fn log_frontend(level: LogLevel, message: String) {
         LogLevel::Error => tracing::error!(target: "frontend", "{message}"),
     }
 }
+
+#[tauri::command]
+#[specta::specta]
+pub fn project_trust_status(state: State<'_, AppState>, path: PathBuf) -> IdeResult<ide_host::trust::TrustStatus> {
+    state.trust.status(&path)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn project_trust_list(state: State<'_, AppState>) -> IdeResult<ide_host::trust::TrustDecisions> {
+    state.trust.decisions()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn project_trust_set(
+    state: State<'_, AppState>,
+    path: PathBuf,
+    trusted: bool,
+    folder: bool,
+) -> IdeResult<()> {
+    state.host.set_project_trust(&path, trusted, folder).await?;
+    if !trusted {
+        state.plugins.restrict_project(&dunce::canonicalize(&path).unwrap_or(path));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn project_trust_remove_location(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
+    state.trust.remove_location(&path)?;
+    state.host.refresh_project_trust().await?;
+    for project in state.host.projects().into_iter().filter(|p| !p.is_trusted()) {
+        state.plugins.restrict_project(&project.root);
+    }
+    Ok(())
+}

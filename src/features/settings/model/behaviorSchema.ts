@@ -5,6 +5,7 @@
  */
 
 import { BUILTIN_THEME_IDS, type BuiltinThemeId } from "@/platform/themes";
+import { ZOOM_LIMITS } from "@/platform/zoom";
 
 export type Antialiasing = "subpixel" | "greyscale" | "none";
 export type OpenProjectIn = "ask" | "new" | "same" | "attach";
@@ -27,6 +28,7 @@ export interface AppearanceExtras {
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
   menuIcons: boolean;
+  mainMenuStyle: "hamburger" | "merged";
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
@@ -60,7 +62,6 @@ export interface NotificationsValid {
   groups: Record<string, NotificationGroupValid>;
 }
 
-export const ZOOM_LIMITS = { min: 50, max: 300 } as const;
 export const IDLE_LIMITS = { min: 1, max: 3600 } as const;
 
 export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
@@ -78,6 +79,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   projectColorsInToolbar: true,
   dndWithAltOnly: false,
   menuIcons: true,
+  mainMenuStyle: "hamburger",
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
@@ -127,6 +129,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
     menuIcons: b("menuIcons"),
+    mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged"], d.mainMenuStyle),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),

@@ -1,0 +1,27 @@
+.toolbar {
+  position: absolute;
+  top: var(--floating-toolbar-top);
+  right: var(--floating-toolbar-right);
+  z-index: 5;
+  display: flex;
+  padding: 2px;
+  border-radius: var(--radius-floating-toolbar);
+  background: color-mix(in srgb, var(--bg-floating-toolbar) var(--floating-toolbar-opacity), transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-floating-toolbar-hide) ease;
+}
+.toolbar button {
+  width: var(--h-floating-toolbar-button);
+  height: var(--h-floating-toolbar-button);
+}
+.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transition-duration: var(--dur-floating-toolbar-show);
+}
+@media (prefers-reduced-motion: reduce) {
+  .toolbar {
+    transition: none;
+  }
+}

@@ -30,6 +30,7 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
         project_environment: false,
     });
     std::fs::write(root.join("internal-needle.txt"), "needle").unwrap();
+    host.trust.decide(&root, true, false).unwrap();
     let project = host.open_project("main", &root).unwrap();
     assert_eq!(ops::project::info(&project).name, "Full stack");
     assert_eq!(ops::project::attach_workspace(&host, "main", &roots[1]).unwrap().as_ref(), root.as_path());

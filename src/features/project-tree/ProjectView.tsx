@@ -23,6 +23,7 @@ import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { isTauri } from "@/platform/ipc";
+import { nativeDropPoint } from "@/platform/nativeDrop";
 import type { RootFolder } from "@/platform/languageSettings";
 import { useDetectedRoots, useEffectiveRoots } from "@/platform/projectRoots";
 import { macStroke, strokeOf } from "@/platform/keymap";
@@ -550,9 +551,7 @@ export function ProjectView() {
         .onDragDropEvent((event) => {
           const p = event.payload;
           if (p.type === "leave") return setDropTarget(null);
-          const ratio = window.devicePixelRatio || 1;
-          const x = p.position.x / ratio,
-            y = p.position.y / ratio;
+          const { x, y } = nativeDropPoint(p.position);
           const target = folderAt(containerRef.current, x, y);
           if (p.type === "drop") {
             setDropTarget(null);

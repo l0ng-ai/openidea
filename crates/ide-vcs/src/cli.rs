@@ -202,7 +202,25 @@ pub(crate) fn run_paths(root: &Path, args: &[&str], paths: &[String]) -> IdeResu
 
 /// Builds a `git` command with the environment every invocation needs.
 pub(crate) fn command(root: &Path) -> IdeResult<Command> {
-    let mut cmd = Command::new(git_binary()?);
+    let restricted = !crate::execution_allowed();
+    let binary = if restricted {
+        detected_git().ok_or_else(|| IdeError::unavailable("git executable not found"))?.to_path_buf()
+    } else {
+        git_binary()?
+    };
+    let mut cmd = Command::new(binary);
+    if restricted {
+        for setting in [
+            "core.fsmonitor=false",
+            "core.hooksPath=",
+            "diff.external=",
+            "core.attributesFile=",
+            "submodule.recurse=false",
+        ] {
+            cmd.arg("-c").arg(setting);
+        }
+        cmd.env_remove("GIT_EXTERNAL_DIFF").env("GIT_NO_LAZY_FETCH", "1");
+    }
     cmd.current_dir(root)
         .arg("-c")
         .arg("core.quotepath=off")
@@ -328,6 +346,55 @@ fn run_raw_env_once(
     }
     session.finish(out.status.success(), &String::from_utf8_lossy(&out.stderr));
     Ok(Output { stdout: out.stdout, stderr: out.stderr, code: out.status.code() })
+}
+
+/// Captures binary/NUL-delimited read output while allowing cancellation to kill git.
+pub(crate) fn run_cancellable(root: &Path, args: &[&str], cancel: &CancellationToken) -> IdeResult<Output> {
+    let out = run_cancellable_raw(root, args, cancel)?;
+    if out.code == Some(0) { Ok(out) } else { Err(failure(args, &out.stderr, &out.stdout, out.code)) }
+}
+
+/// Cancellable capture preserving exit codes for commands with documented non-error states.
+pub(crate) fn run_cancellable_raw(root: &Path, args: &[&str], cancel: &CancellationToken) -> IdeResult<Output> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let mut cmd = command(root)?;
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut session = CommandSession::start(&mut cmd);
+    let mut child = cmd.spawn().map_err(spawn_error)?;
+    let capture = |mut pipe: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).map(|_| bytes)
+        })
+    };
+    let stdout = capture(Box::new(child.stdout.take().expect("piped stdout")));
+    let stderr = capture(Box::new(child.stderr.take().expect("piped stderr")));
+    let status = loop {
+        if cancel.is_cancelled() {
+            kill(&mut child);
+            let _ = child.wait();
+            let _ = stdout.join();
+            let _ = stderr.join();
+            return Err(IdeError::cancelled());
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let join = |thread: std::thread::JoinHandle<std::io::Result<Vec<u8>>>| {
+        thread.join().map_err(|_| IdeError::internal("git output reader panicked"))?.map_err(IdeError::from)
+    };
+    let out = Output { stdout: join(stdout)?, stderr: join(stderr)?, code: status.code() };
+    session.finish(status.success(), &String::from_utf8_lossy(&out.stderr));
+    Ok(out)
 }
 
 /// Runs git and maps a non-zero exit status to an error carrying git's message.

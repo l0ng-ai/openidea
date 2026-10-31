@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { getContext, setContext } from "@/platform/context";
 import { registerAction } from "@/platform/actions";
 import { Popup } from "./Popup";
-import { Menu, MenuList } from "./Menu";
+import { ContextMenuHost, Menu, MenuList, hideContextMenu, showContextMenu } from "./Menu";
 import { Dialog } from "./Dialog";
 
 function Harness({ onClose }: { onClose?: (r: string) => void }) {
@@ -177,6 +177,21 @@ describe("Dialog initial focus", () => {
 });
 
 describe("Menu action enablement", () => {
+  it("returns focus to the element focused before a context menu opened", () => {
+    render(
+      <>
+        <textarea aria-label="input" />
+        <ContextMenuHost />
+      </>,
+    );
+    const input = screen.getByRole("textbox", { name: "input" });
+    input.focus();
+    act(() => showContextMenu({ x: 0, y: 0 }, [{ label: "Paste", run: () => undefined }]));
+    expect(screen.getByRole("menuitem", { name: /Paste/ })).toHaveFocus();
+    act(() => hideContextMenu());
+    expect(input).toHaveFocus();
+  });
+
   it("follows context changes after the menu opened", () => {
     const dispose = registerAction({ id: "test.menuWhen", title: "Needs Flag", when: "qaMenuFlag", run: () => {} });
     setContext("qaMenuFlag", false);

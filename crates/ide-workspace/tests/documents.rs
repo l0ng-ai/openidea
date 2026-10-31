@@ -597,6 +597,10 @@ fn archive_entries_open_read_only_without_observers() {
     assert_eq!((info.text.as_str(), info.language.as_str(), info.read_only), ("fn main() {}\n", "rust", true));
     assert_eq!(*info.path, *path);
     assert!(f.rec.log.lock().is_empty(), "language servers / history never see archive entries");
+    fs::remove_file(&jar).unwrap();
+    f.docs.sync_from_disk();
+    assert_eq!(f.docs.snapshot(info.id).unwrap().version, info.version);
+    assert_eq!(f.docs.snapshot(info.id).unwrap().text, info.text);
     f.docs.close(info.id);
 }
 

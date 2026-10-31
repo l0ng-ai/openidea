@@ -165,7 +165,12 @@ export async function connect(): Promise<void> {
   };
   let tasks: AgentTask[], providers: AgentProvider[];
   try {
-    [tasks, providers] = await Promise.all([call(commands.agentSubscribe(channel)), call(commands.agentProviders())]);
+    [tasks, providers] = await Promise.all([
+      call(commands.agentSubscribe(channel)),
+      useProject.getState().project?.trusted === false
+        ? Promise.resolve([] as AgentProvider[])
+        : call(commands.agentProviders()),
+    ]);
   } catch (e) {
     if (gen === generation) useAgents.setState({ loaded: true, error: e instanceof Error ? e.message : String(e) });
     return;

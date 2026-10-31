@@ -20,7 +20,8 @@ pub async fn java_resolve_launch(
     build: bool,
     request: RequestId,
 ) -> IdeResult<JavaLaunchInfo> {
-    let cancel = host.begin_request(request);
+    host.require_trust(window)?;
+    let cancel = host.begin_project_request(window, request);
     let result = resolve_launch(host, window, module, test, build, &cancel).await;
     host.end_request(request);
     result
@@ -104,6 +105,7 @@ async fn resolve_launch(
 
 /// Port of java-debug's DAP server inside the jdtls serving `module` (started on demand).
 pub async fn java_debug_server(host: &Host, window: &str, module: PathBuf) -> IdeResult<u16> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let module = project.root.join(module);
     project.lsp.java_debug_server(&module).await
@@ -115,6 +117,7 @@ pub async fn java_build_workspace(
     window: &str,
     module: PathBuf,
 ) -> IdeResult<ide_lsp::jdtls::JavaBuildStatus> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let module = project.root.join(module);
     project.lsp.java_build(&module, &CancellationToken::new()).await

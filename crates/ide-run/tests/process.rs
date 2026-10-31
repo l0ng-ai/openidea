@@ -475,6 +475,26 @@ fn python_scripts_import_sibling_packages_and_preserve_env_file_paths() {
 }
 
 #[test]
+fn revoking_one_project_stops_only_its_runs() {
+    let h = harness();
+    let other = tempfile::tempdir().unwrap();
+    let (mine, _) = start(&h, &cfg("mine", "/bin/sh", &["-c", "sleep 30"]));
+    let theirs =
+        h.pm.start(
+            other.path(),
+            &cfg("theirs", "/bin/sh", &["-c", "sleep 30"]),
+            &StartOptions::default(),
+            h.sink.clone(),
+            Box::new(|_| {}),
+        )
+        .unwrap();
+    h.pm.kill_project(h.root.path());
+    wait_exit(&h, mine, Duration::from_secs(5));
+    assert!(h.pm.list().iter().any(|run| run.id == theirs.id && run.running));
+    h.pm.stop(theirs.id).unwrap();
+}
+
+#[test]
 #[ignore = "requires CMake, CTest and a C++ compiler"]
 fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
     let h = harness();

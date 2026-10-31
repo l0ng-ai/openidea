@@ -18,7 +18,7 @@ vi.mock("@/platform/ipc", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   useProject.setState({
-    project: { root: "/a", name: "A", settings: {}, isGit: false },
+    project: { root: "/a", name: "A", settings: {}, trusted: true, isGit: false },
     settings: {},
     lightEdit: false,
   });

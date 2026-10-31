@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { getAction } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProjectViewRoots } from "@/workbench/contributions";
@@ -103,12 +104,20 @@ describe("creating scratch files", () => {
         await action.run({ ctx: {} as never, arg: undefined });
       });
       render(<ScratchChooserHost />);
-      const dialog = screen.getByRole("dialog", { name: "New Scratch File" });
-      const body = dialog.querySelector<HTMLElement>("[tabindex]")!;
-      for (const ch of "pyt") fireEvent.keyDown(body, { key: ch });
-      expect(dialog.textContent).toContain("pyt");
+      const user = userEvent.setup();
+      const input = screen.getByRole("textbox", { name: "Filter languages" });
+      expect(input).toHaveFocus();
+      await user.paste("java");
+      expect(input).toHaveValue("java");
+      expect(screen.queryByText("Python")).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      expect(input).toHaveFocus();
+      expect(input).toHaveValue("");
+      await user.type(input, "pyton");
+      await user.keyboard("{ArrowLeft}{ArrowLeft}h");
+      expect(input).toHaveValue("python");
       await act(async () => {
-        fireEvent.keyDown(body, { key: "Enter" });
+        fireEvent.keyDown(input, { key: "Enter" });
       });
       await vi.waitFor(() => expect(opened).toEqual(["/data/scratches/scratch.py"]));
       expect(useScratch.getState().languages).toBeNull();

@@ -10,7 +10,8 @@ import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
 import { runFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
-import { projectFs } from "./fs";
+import { beginLocalImport, projectFs } from "./fs";
+import { isCancelled } from "@/platform/ipc";
 import type { ProjectNode } from "./model";
 import {
   isInside,
@@ -38,6 +39,7 @@ import {
   useProjectTree,
 } from "./store";
 import { tx } from "@/platform/i18n";
+import { isRemoteWindow } from "@/platform/remote";
 
 /** Nodes that may be renamed, moved or deleted (not roots, groups or library sources). */
 const mutable = (n: ProjectNode) => !n.root && !n.placeholder && !n.readOnly;
@@ -500,11 +502,22 @@ export function canPaste(): boolean {
 export async function paste(target = targetFolder()) {
   const { clipboard } = get();
   if (!target || isReadOnlyPath(target)) return;
-  const external = await osClipboard().files();
+  let external: string[] = [];
+  try {
+    external = await osClipboard().files();
+  } catch (e) {
+    if (!clipboard?.paths.length) {
+      fail("Cannot access the clipboard", e);
+      return;
+    }
+  }
   // The last copy is the one the user expects to paste, so another app's files
   // win over ours — unless they are the copy we handed to the OS ourselves.
   if (external.length && !sameFiles(external, clipboard?.paths)) return pasteFromOsClipboard(external, target);
-  if (!clipboard?.paths.length) return;
+  if (!clipboard?.paths.length) {
+    notifications().notify({ level: "info", title: "No files on the clipboard" });
+    return;
+  }
   const isDir = (p: string) =>
     get().listings.has(p) || currentModel().byKey.get(currentModel().keyOfPath.get(p) ?? p)?.dir === true;
   const single = clipboard.paths.length === 1 && isDir(clipboard.paths[0]!);
@@ -519,7 +532,7 @@ export async function paste(target = targetFolder()) {
 /** Pasting from Explorer copies, whatever the source: never a move or a refactoring. */
 async function pasteFromOsClipboard(paths: string[], target: string) {
   osHasFiles = true;
-  await transfer(paths, target, "copy");
+  await transfer(paths, target, "copy", undefined, "local");
 }
 
 /** The same files, as the clipboard keeps them (`/`-separated, any order). */
@@ -559,6 +572,7 @@ export async function transfer(
   target: string,
   mode: "move" | "copy",
   name?: string,
+  source: "project" | "local" = "project",
 ): Promise<string | boolean> {
   if (mode === "move") return moveInto(paths, target);
   const { root } = get();
@@ -571,23 +585,38 @@ export async function transfer(
   const errors: string[] = [];
   let first: string | null = null;
   const newName = name;
-  for (const src of paths) {
-    const name = nameOf(src);
-    if (isSameOrInside(target, src) && target !== parentOf(src) && src !== target) {
-      errors.push(`${name}: cannot copy a folder into itself`);
-      continue;
+  const upload = source === "local" && isRemoteWindow() ? beginLocalImport() : undefined;
+  try {
+    for (const src of paths) {
+      if (upload?.cancelled) break;
+      const name = nameOf(src);
+      if (
+        !(source === "local" && isRemoteWindow()) &&
+        isSameOrInside(target, src) &&
+        target !== parentOf(src) &&
+        src !== target
+      ) {
+        errors.push(`${name}: cannot copy a folder into itself`);
+        continue;
+      }
+      const srcIsDir =
+        get().listings.has(src) || currentModel().byKey.get(currentModel().keyOfPath.get(src) ?? src)?.dir === true;
+      const finalName = paths.length === 1 && newName ? newName : uniqueName(name, isTaken, srcIsDir);
+      const to = joinPath(target, finalName);
+      try {
+        if (source === "local") {
+          const skipped = await fs.importLocal(src, to, upload);
+          errors.push(...skipped);
+        } else await fs.copy(src, to);
+        taken.add(caseInsensitive ? finalName.toLowerCase() : finalName);
+        first ??= to;
+      } catch (e) {
+        if (isCancelled(e)) break;
+        errors.push(`${name}: ${errorMessage(e)}`);
+      }
     }
-    const srcIsDir =
-      get().listings.has(src) || currentModel().byKey.get(currentModel().keyOfPath.get(src) ?? src)?.dir === true;
-    const finalName = paths.length === 1 && newName ? newName : uniqueName(name, isTaken, srcIsDir);
-    const to = joinPath(target, finalName);
-    try {
-      await fs.copy(src, to);
-      taken.add(caseInsensitive ? finalName.toLowerCase() : finalName);
-      first ??= to;
-    } catch (e) {
-      errors.push(`${name}: ${errorMessage(e)}`);
-    }
+  } finally {
+    upload?.finish();
   }
   if (errors.length)
     notifications().notify({ level: "error", title: "Some items could not be copied", body: errors.join("\n") });
@@ -650,10 +679,11 @@ export async function dropPaths(paths: string[], target: string, copy: boolean) 
 export async function importExternal(paths: string[], target: string) {
   const { root } = get();
   if (!root || !paths.length || isReadOnlyPath(target)) return;
+  if (isRemoteWindow()) return void (await transfer(paths, target, "copy", undefined, "local"));
   const inside = paths.filter((p) => isSameOrInside(p, root));
   const outside = paths.filter((p) => !isSameOrInside(p, root));
   if (inside.length) await dropPaths(inside, target, false);
-  if (outside.length) await transfer(outside, target, "copy");
+  if (outside.length) await transfer(outside, target, "copy", undefined, "local");
 }
 
 // ---------------------------------------------------------------------------

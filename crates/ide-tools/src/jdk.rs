@@ -323,9 +323,9 @@ impl Tools {
             picked =
                 adoptium_pick(&http.get_text(&adoptium_assets_url(feature, self.platform), cancel)?, self.platform)?;
         }
-        if picked.is_none() && self.platform.os == Os::Mac && self.platform.arch == Arch::Arm64 {
-            // Java 8 has no Apple Silicon build: the Intel one runs under Rosetta.
-            let intel = Platform { os: Os::Mac, arch: Arch::X64 };
+        if picked.is_none() && matches!(self.platform.os, Os::Mac | Os::Windows) && self.platform.arch == Arch::Arm64 {
+            // Older JDKs may need the OS-provided x64 emulation.
+            let intel = Platform { os: self.platform.os, arch: Arch::X64 };
             picked = adoptium_pick(&http.get_text(&adoptium_assets_url(feature, intel), cancel)?, intel)?;
         }
         let (dl, major) = picked.ok_or_else(|| {
