@@ -5356,5 +5356,15 @@
   "Classes were compiled. Restart the application to load them, or launch with the debugger to use HotSwap.": "类已编译。重启应用以加载新类，或通过调试启动以使用 HotSwap。",
   "Application update build failed": "应用更新构建失败",
   "The Spring Boot configuration has no main class": "Spring Boot 配置未指定主类",
-  "Do nothing": "不执行任何操作"
+  "Do nothing": "不执行任何操作",
+  "Cannot compare {root} against {label}: {error}": "无法将 {root} 与 {label} 比较：{error}",
+  "Compare with Branch or Revision": "与分支或修订比较",
+  "No changes against {revision} in 1 repository": "在 1 个仓库中与 {revision} 相比没有更改",
+  "No changes against {revision} in {repositories} repositories": "在 {repositories} 个仓库中与 {revision} 相比没有更改",
+  "Open or select a file or folder to compare": "打开或选择要比较的文件或文件夹",
+  "Selection is outside Git repositories": "所选内容不在 Git 仓库中",
+  "Skipped content outside Git repositories: {skippedLabel}": "已跳过 Git 仓库之外的内容：{skippedLabel}",
+  "in {length} repositories": "在 {length} 个仓库中",
+  "No repository in the selection has revision {label}": "所选内容中的仓库均无版本 {label}",
+  "{repoName} has no revision {label}": "{repoName} 没有版本 {label}"
 }

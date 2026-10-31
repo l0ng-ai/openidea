@@ -44,6 +44,7 @@ const OTHER_ACTIONS = [
   "vcs.addToVcs",
   "vcs.annotate",
   "vcs.showDiff",
+  "vcs.compareWithBranch",
   "vcs.rollback",
   "vcs.push",
 ];
@@ -126,6 +127,17 @@ describe("project view context menu", () => {
       expect(sub(folder, "Mark Directory as")).toContain("Excluded");
     } finally {
       dispose();
+    }
+  });
+
+  it("offers branch comparison for files, folders, their union and the project root", () => {
+    for (const nodes of [
+      [node("/p/a.py")],
+      [node("/p/src", true)],
+      [node("/p/src", true), node("/p/lib", true)],
+      [node("/p", true, true)],
+    ]) {
+      expect(sub(contextMenuItems(nodes), "Git")).toContain("Compare with Branch…");
     }
   });
 

@@ -680,3 +680,26 @@ pub async fn vcs_shelf_import(
 ) -> IdeResult<()> {
     ide_host::ops::vcs::vcs_shelf_import(&state.host, window.label(), name, patch).await
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_compare_scope(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<PathBuf>,
+) -> IdeResult<ide_vcs::CompareScope> {
+    ide_host::ops::vcs::vcs_compare_scope(&state.host, window.label(), paths).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_compare_paths(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<PathBuf>,
+    revision: String,
+    repositories: Option<Vec<PathBuf>>,
+    request: RequestId,
+) -> IdeResult<ide_vcs::CompareResult> {
+    ide_host::ops::vcs::vcs_compare_paths(&state.host, window.label(), paths, revision, repositories, request).await
+}

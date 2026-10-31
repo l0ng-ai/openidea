@@ -1555,6 +1555,14 @@ fn restricted_reads_ignore_executable_repository_configuration() {
     assert!(!repo.log(&LogQuery::default()).unwrap().is_empty());
     repo.merge_versions(&f.path("a.txt"), encoding_rs::UTF_8).unwrap();
     assert!(!f.path("execution.marker").exists());
+    let repos = ide_vcs::Repos::discover(&f.dir, &|_| false).unwrap();
+    for r in repos.all() {
+        r.set_execution_allowed(false);
+    }
+    let compared =
+        repos.compare_paths(std::slice::from_ref(&f.dir), "HEAD", None, &ide_core::CancellationToken::new()).unwrap();
+    assert!(compared.repositories.iter().all(|r| r.error.is_none()));
+    assert!(!f.path("execution.marker").exists());
     // Positive control: the same filter really executes without restriction.
     f.git(&["-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"]);
     assert!(f.path("execution.marker").exists());

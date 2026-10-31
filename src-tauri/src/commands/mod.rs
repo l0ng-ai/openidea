@@ -271,6 +271,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_add_worktree,
         vcs::vcs_remove_worktree,
         vcs::vcs_diff_with_worktree,
+        vcs::vcs_compare_scope,
+        vcs::vcs_compare_paths,
         vcs::vcs_diff_revisions,
         vcs::vcs_merge_base,
         vcs::vcs_create_patch,

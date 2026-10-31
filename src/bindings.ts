@@ -509,6 +509,8 @@ export const commands = {
 	vcsRemoveWorktree: (repo: string | null, path: string, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_remove_worktree", { repo, path, force })),
 	/**  Compare with Local: tracked files that differ between `rev` and the working tree. */
 	vcsDiffWithWorktree: (repo: string | null, rev: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_with_worktree", { repo, rev })),
+	vcsCompareScope: (paths: string[]) => typedError<CompareScope, IdeError>(__TAURI_INVOKE("vcs_compare_scope", { paths })),
+	vcsComparePaths: (paths: string[], revision: string, repositories: string[] | null, request: RequestId) => typedError<CompareResult, IdeError>(__TAURI_INVOKE("vcs_compare_paths", { paths, revision, repositories, request })),
 	/**  Files that differ between two revisions (the "N files updated" of Update Project). */
 	vcsDiffRevisions: (repo: string | null, from: string, to: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_revisions", { repo, from, to })),
 	/**  The best common ancestor of `a` and `b` (`git merge-base`), if any. */
@@ -1888,6 +1890,18 @@ export type CommitSettings = {
 	bodyLimit?: number,
 	showRightMargin?: boolean,
 	wrapAtMargin?: boolean,
+};
+
+export type CompareResult = {
+	repositories: RepositoryComparison[],
+	skippedPaths: IpcPath[],
+};
+
+export type CompareScope = {
+	repositories: IpcPath[],
+	/**  Selected content outside registered repositories; workspace parents expand to their skipped children. */
+	skippedPaths: IpcPath[],
+	singleFile: boolean,
 };
 
 export type CompletionItem = {
@@ -5127,6 +5141,16 @@ export type ReplaceTarget = {
 	only?: Pos[] | null,
 };
 
+export type RepositoryComparison = {
+	root: IpcPath,
+	/**  Resolved commit, so opening a diff later uses the same left side as the listing. */
+	revision: string | null,
+	files: WorkingTreeChange[],
+	error: string | null,
+	/**  The requested revision does not resolve to a commit in this repository. */
+	missingRevision?: boolean,
+};
+
 /**  A cancellable, streaming backend request issued by the UI. */
 export type RequestId = number;
 
@@ -6294,6 +6318,14 @@ export type WindowTab = {
 	name: string,
 	root: IpcPath | null,
 	current: boolean,
+};
+
+export type WorkingTreeChange = {
+	path: string,
+	kind: ChangeKind,
+	oldPath: string | null,
+	added: number,
+	removed: number,
 };
 
 export type Workspace = Workspace_Serialize | Workspace_Deserialize;

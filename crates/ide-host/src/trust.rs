@@ -276,6 +276,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_remotes"
             | "vcs_worktrees"
             | "vcs_diff_with_worktree"
+            | "vcs_compare_scope"
+            | "vcs_compare_paths"
             | "vcs_diff_revisions"
             | "vcs_merge_base"
             | "vcs_shelves"

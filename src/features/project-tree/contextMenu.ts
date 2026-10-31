@@ -335,7 +335,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           { kind: "separator" },
           singleFile && act("vcs.annotate", singleFile.path, "Annotate with Git Blame"),
           act("vcs.showDiff", arg, "Show Diff"),
-          singleFile && act("vcs.compareWithBranch", { path: singleFile.path }, "Compare with Branch…"),
+          nodes.length > 0 &&
+            nodes.every((n) => !n.placeholder) &&
+            act("vcs.compareWithBranch", arg, "Compare with Branch…"),
           nodes.length > 0 && nodes.every((n) => !n.placeholder) && act("vcs.showHistory", arg, "Show History"),
           act("vcs.rollback", arg, "Rollback…"),
           { kind: "separator" },
