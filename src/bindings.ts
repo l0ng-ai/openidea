@@ -955,6 +955,25 @@ export const commands = {
 	mcpClients: () => typedError<McpClientConfig[], IdeError>(__TAURI_INVOKE("mcp_clients")),
 	/**  Auto-Configure: writes the `openidea` entry into `client`'s user configuration. */
 	mcpConfigureClient: (client: McpClientKind) => typedError<McpClientConfig, IdeError>(__TAURI_INVOKE("mcp_configure_client", { client })),
+	/**
+	 *  Writes the `openidea` entry into `client`'s configuration inside `project`
+	 *  (`.mcp.json`, `.cursor/mcp.json`, ...); returns the file.
+	 */
+	mcpConfigureProjectClient: (client: McpClientKind, project: IpcPath) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("mcp_configure_project_client", { client, project })),
+	/**
+	 *  The MCP clients installed for this user (and configured in `project`), with whether
+	 *  their configuration reaches this server or points at a stale port.
+	 */
+	mcpDetectClients: (project: string | null) => typedError<McpDetectedClient[], IdeError>(__TAURI_INVOKE("mcp_detect_clients", { project })),
+	/**
+	 *  The bundled agent skills, with where they are installed (the user's agent
+	 *  directories, or `project`'s).
+	 */
+	mcpSkills: (project: string | null) => typedError<McpSkillInfo[], IdeError>(__TAURI_INVOKE("mcp_skills", { project })),
+	/**  Installs (or updates) bundled skill `id` for `target`; returns the skills afterwards. */
+	mcpInstallSkill: (id: string, target: McpSkillTarget, project: string | null) => typedError<McpSkillInfo[], IdeError>(__TAURI_INVOKE("mcp_install_skill", { id, target, project })),
+	/**  Removes bundled skill `id` for `target` (only a copy OpenIDEA installed); returns the skills afterwards. */
+	mcpRemoveSkill: (id: string, target: McpSkillTarget, project: string | null) => typedError<McpSkillInfo[], IdeError>(__TAURI_INVOKE("mcp_remove_skill", { id, target, project })),
 	/**  Replaces the token; configured clients need the new one. */
 	mcpRegenerateToken: () => typedError<null, IdeError>(__TAURI_INVOKE("mcp_regenerate_token")),
 	/**  A window's answer to `IdeEvent::McpRequest { id }`. */
@@ -4308,7 +4327,32 @@ export type McpClientConfig = {
 };
 
 /**  An MCP client whose configuration Tools › MCP Server can show or write. */
-export type McpClientKind = "claudeCode" | "codex" | "cursor" | "vsCode" | "windsurf" | "gemini";
+export type McpClientKind = "claudeCode" | "codex" | "cursor" | "vsCode" | "windsurf" | "gemini" | 
+/**  The Claude desktop app: it starts servers as commands (`openidea mcp-stdio`). */
+"claudeDesktop" | "junie" | 
+/**  JetBrains Air. */
+"air" | "gitHubCopilotCli" | 
+/**  The GitHub Copilot plugin for JetBrains IDEs. */
+"gitHubCopilotIdePlugin";
+
+/**
+ *  An MCP client found on this machine (`mcp_detect_clients`), and whether its
+ *  configuration reaches this server.
+ */
+export type McpDetectedClient = {
+	client: McpClientKind,
+	/**  The project whose configuration this is; `None` for the user-level one. */
+	project: IpcPath | null,
+	file: IpcPath,
+	/**  Some entry points at OpenIDEA (any port); `None` when the file lists no servers. */
+	configured: boolean | null,
+	/**  The entries that look like OpenIDEA's use this server's port (`false`: a stale port). */
+	portCorrect: boolean,
+	/**  The `openidea` entry has this server's URL and token. */
+	current: boolean,
+	/**  The transports of all the file's server entries. */
+	transports: McpTransport[],
+};
 
 /**  The answer to [`McpUiRequest::OpenEditors`]. */
 export type McpOpenEditors = {
@@ -4328,6 +4372,30 @@ export type McpSettings = {
 	/**  Give the IDE's own agents (Agents tool window) these tools too. */
 	agents?: boolean,
 };
+
+/**  A skill OpenIDEA bundles for agents that use its MCP tools. */
+export type McpSkillInfo = {
+	id: string,
+	description: string,
+	targets: McpSkillTarget[],
+	/**  The MCP tools the skill uses. */
+	tools: string[],
+	/**  Settings disable none of the tools the skill needs. */
+	available: boolean,
+	/**  Where it is installed now. */
+	installed: McpSkillTarget[],
+};
+
+/**  An agent a bundled skill can be installed for. */
+export type McpSkillTarget = 
+/**  Claude Code (`~/.claude/skills`). */
+"claude" | 
+/**  Codex (`~/.codex/skills`). */
+"codex" | 
+/**  Junie (`~/.junie/skills`). */
+"junie" | 
+/**  Agents reading the shared `~/.agents/skills`. */
+"other";
 
 /**  Whether the server runs, and where. */
 export type McpStatus = {
@@ -4357,6 +4425,13 @@ export type McpToolKind =
 "edit" | 
 /**  Runs processes (terminal commands, run configurations, builds). */
 "execute";
+
+/**  How a configured server entry talks to its server. */
+export type McpTransport = 
+/**  The client starts a command and talks over its stdin / stdout. */
+"stdio" | "sse" | 
+/**  Streamable HTTP. */
+"http";
 
 /**  What the server needs from a project window's UI; answered with `mcp_respond`. */
 export type McpUiRequest = 
