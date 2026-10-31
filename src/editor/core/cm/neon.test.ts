@@ -16,8 +16,8 @@ const highlighter = tagHighlighter([
   { tag: t.invalid, class: "invalid" },
 ]);
 
-async function tokens(source: string) {
-  const support = await loadSupport(findLanguageDescription("NEON", "services.neon")!);
+async function tokens(source: string, fileName = "services.neon") {
+  const support = await loadSupport(findLanguageDescription("NEON", fileName)!);
   const state = EditorState.create({ doc: source, extensions: [support!] });
   ensureSyntaxTree(state, state.doc.length, 1000);
   const out: [string, string][] = [];
@@ -205,6 +205,30 @@ g: !hello
 
   it("does not open a multiline string when text follows the quotes", async () => {
     expect(await tokens(`a: """b"""\nc: 1\n`)).toContainEqual(["c", "key"]);
+  });
+
+  // From intellij-neon's testTranslationValuesArePlainStrings and testTranslationKeepsKeysAndKeywords.
+  it.each(["messages.cs.neon", "messages+intl-icu.cs.neon"])("reads the values of %s as prose", async (fileName) => {
+    for (const text of ["@routerFactory", "App\\Model\\Foo", "app/Model/Foo.php"]) {
+      expect((await tokens(`[${text}]`, fileName))[0]).toEqual([text, "string"]);
+    }
+    expect(await tokens("key: no\n", fileName)).toEqual([
+      ["key", "key"],
+      ["no", "constant"],
+    ]);
+  });
+
+  it("marks %name% in a catalogue, but not in an ICU one", async () => {
+    expect(await tokens("a: Hi %name%\n", "messages.cs.neon")).toContainEqual(["%name%", "variable"]);
+    expect(await tokens("a: Hi %name%\n", "messages+intl-icu.cs.neon")).toEqual([
+      ["a", "key"],
+      ["Hi %name%", "string"],
+    ]);
+  });
+
+  it("keeps a config with a locale-like name a config", async () => {
+    expect((await tokens("[@a]", "config.dev.neon"))[0]).toEqual(["@a", "service"]);
+    expect((await tokens("[@a]", "phpstan.cs.neon"))[0]).toEqual(["@a", "service"]);
   });
 
   it("flags a character NEON has no token for", async () => {

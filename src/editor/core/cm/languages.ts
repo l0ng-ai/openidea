@@ -18,6 +18,7 @@ import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
 import { _languageMode } from "@/editor/api";
+import { neonFileKind } from "./neonFileKind";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
@@ -72,6 +73,14 @@ const OWN_MODES = [
     name: "NEON",
     extensions: ["neon"],
     load: async () => new LanguageSupport((await import("./neon")).neonLanguage),
+  }),
+  LanguageDescription.of({
+    name: "NEON Translation",
+    load: async () => new LanguageSupport((await import("./neon")).neonTranslationLanguage),
+  }),
+  LanguageDescription.of({
+    name: "NEON ICU Translation",
+    load: async () => new LanguageSupport((await import("./neon")).neonIcuTranslationLanguage),
   }),
   LanguageDescription.of({
     name: "Shell",
@@ -171,6 +180,16 @@ const batchLanguageDescription = LanguageDescription.of({
 const BUILTIN_MODES: readonly LanguageDescription[] = [...languageData, batchLanguageDescription];
 
 export function findLanguageDescription(uiMode: string | null, path: string): LanguageDescription | null {
+  const found = describeLanguage(uiMode, path);
+  if (found?.name !== "NEON") return found;
+  // One language to the backend; only the highlighting depends on what the file is for.
+  const kind = neonFileKind(path.slice(path.lastIndexOf("/") + 1));
+  if (kind === "config") return found;
+  const name = kind === "translation" ? "NEON Translation" : "NEON ICU Translation";
+  return OWN_MODES.find((l) => l.name === name)!;
+}
+
+function describeLanguage(uiMode: string | null, path: string): LanguageDescription | null {
   if (uiMode) {
     const contributed = _languageMode(uiMode) ?? OWN_MODES.find((l) => l.name === uiMode);
     if (contributed) return contributed;
