@@ -81,22 +81,21 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
             .filter(|s| !s.is_empty())
             .or_else(|| artifacts.first().map(|a| &a.id))
             .ok_or_else(|| IdeError::invalid("Choose a WAR artifact"))?;
-        let plan = ide_build::web::build(
+        let mut plan = ide_build::web::build(
             &project.root,
             &model,
             id,
             &ide_run::tomcat::base_dir(&project.cache_dir, &config.id),
         )?;
-        let mut env = plan.env;
-        env.extend(config.env.clone());
-        Ok(Some(RunConfig {
+        plan.env.extend(config.env.clone());
+        let mut build = RunConfig {
             id: format!("tomcat-build:{}", config.id),
             name: format!("Build {}", config.name),
             kind: if id.starts_with("maven:") { "maven" } else { "gradle" }.into(),
-            command: plan.command,
-            args: plan.args,
-            cwd: Some(std::path::PathBuf::from(plan.cwd).into()),
-            env,
+            command: plan.command.clone(),
+            args: vec![],
+            cwd: Some(std::path::PathBuf::from(&plan.cwd).into()),
+            env: plan.env.clone(),
             detected: false,
             is_test: false,
             debug_adapter: None,
@@ -106,7 +105,14 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
                 env_files: config.extras.env_files,
                 ..Default::default()
             },
-        }))
+        };
+        plan.resolve_project(
+            &project.root,
+            &ide_run::resolved_env(&project.root, &build)?,
+            &ide_core::CancellationToken::new(),
+        )?;
+        build.args = plan.args;
+        Ok(Some(build))
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?

@@ -58,6 +58,18 @@ pub(crate) fn run(
     cwd: &Path,
     env: &BTreeMap<String, String>,
     cancel: &CancellationToken,
+    on_line: impl FnMut(Stream, &str),
+) -> IdeResult<Output> {
+    run_with_env(program, args, cwd, env, false, cancel, on_line)
+}
+
+pub(crate) fn run_with_env(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+    clear_env: bool,
+    cancel: &CancellationToken,
     mut on_line: impl FnMut(Stream, &str),
 ) -> IdeResult<Output> {
     tracing::info!("build: {program} {} (in {})", args.join(" "), cwd.display());
@@ -66,7 +78,7 @@ pub(crate) fn run(
         ide_core::output_encoding::fix(program, args, env, |k| std::env::var(k).ok(), "UTF-8", cfg!(windows));
     let program = program_path(program, env);
     let mut command = Command::new(&program);
-    command.args(args).current_dir(cwd).envs(env).envs(encoding.env).stdin(Stdio::null());
+    command.args(args).current_dir(cwd).envs(env).envs(encoding.env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     {
@@ -74,6 +86,9 @@ pub(crate) fn run(
         command.process_group(0);
     }
     ide_core::process::prepare(&mut command);
+    if clear_env {
+        command.env_clear().envs(env).envs(encoding.env);
+    }
     let mut child =
         command.spawn().map_err(|e| IdeError::unavailable(format!("cannot start {}: {e}", program.display())))?;
     let (tx, rx) = mpsc::channel::<(Stream, String)>();
