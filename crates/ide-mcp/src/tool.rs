@@ -54,9 +54,12 @@ impl Param {
 
 /// Described on every tool: which open project the call is for.
 pub const PROJECT_PATH: &str = "projectPath";
-const PROJECT_PATH_DESCRIPTION: &str = "Absolute path of the project (or of any directory inside it) the call is \
-for. Always pass it when you know it, for example your working directory; without it the call goes to the focused \
-OpenIDEA window, or to the only open project.";
+/// JetBrains' `projectPathParameterStub` description, naming OpenIDEA and what a path may be.
+const PROJECT_PATH_DESCRIPTION: &str = "The project path. Pass this value ALWAYS if you are aware of it. It reduces \
+numbers of ambiguous calls.
+In the case you know only the current working directory you can use it as the project path.
+If you're not aware about the project path you can ask user about it.
+An absolute path of a project open in OpenIDEA, or of any directory inside it.";
 
 #[derive(Clone)]
 pub struct Tool {
