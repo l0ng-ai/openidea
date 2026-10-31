@@ -118,9 +118,10 @@ async fn tool_calls_go_to_the_configured_project() {
     let missing = h.dir.path().join("elsewhere").display().to_string();
     let mut client = Client::start(port, Some(missing));
     client.initialize().await;
+    // The bridge names the project in a header: one that is not open is passed over, as in
+    // JetBrains' chain, and the call goes to the only open project.
     let reply = client.read_file(1, "a.txt").await;
-    assert_eq!(reply["result"]["isError"], true, "{reply}");
-    assert!(text(&reply).contains("doesn't correspond to any open project"), "{reply}");
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
     client.close().await;
 
     let mut client = Client::start(port, Some(h.root.display().to_string()));

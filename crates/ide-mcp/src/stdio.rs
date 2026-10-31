@@ -190,21 +190,7 @@ impl Link {
         }
     }
 
-    /// Tool calls without `projectPath` go to the configured project.
-    fn add_project(&self, message: &mut Value) {
-        let Some(project) = &self.bridge.project_path else { return };
-        if method(message) != Some("tools/call") {
-            return;
-        }
-        let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) else { return };
-        let arguments = params.entry("arguments").or_insert_with(|| json!({}));
-        if let Some(arguments) = arguments.as_object_mut() {
-            arguments.entry("projectPath").or_insert_with(|| Value::String(project.clone()));
-        }
-    }
-
-    async fn forward(&self, mut message: Value) {
-        self.add_project(&mut message);
+    async fn forward(&self, message: Value) {
         if let Err(e) = self.deliver(&message).await {
             match request_id(&message) {
                 Some(id) => self.send(&crate::protocol::error(id, -32000, e)),
@@ -336,6 +322,11 @@ impl Link {
         }
         if let Some(session) = session {
             head.push_str(&format!("Mcp-Session-Id: {session}\r\n"));
+        }
+        // The server picks the project from this header and leaves `projectPath` out of the
+        // tool schemas, as JetBrains' stdio runner does.
+        if let Some(project) = self.bridge.project_path.as_deref().filter(|p| !p.contains(['\r', '\n'])) {
+            head.push_str(&format!("{}: {project}\r\n", crate::project::PROJECT_PATH_HEADER));
         }
         if let Some(version) = self.protocol_version.lock().as_deref() {
             head.push_str(&format!("MCP-Protocol-Version: {version}\r\n"));
