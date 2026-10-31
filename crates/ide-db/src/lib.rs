@@ -2,6 +2,7 @@
 //! execution ([`conn`]), introspection, table data paging / editing ([`sql`])
 //! and statement splitting ([`split`]), for SQLite, PostgreSQL and MySQL/MariaDB.
 
+pub mod activity;
 pub mod conn;
 pub mod history;
 pub mod plan;
@@ -10,6 +11,7 @@ pub mod source;
 pub mod split;
 pub mod sql;
 
+pub use activity::{QueryWork, WorkState, WorkStatus};
 pub use conn::{Held, Pool, QueryResult, ResultColumn};
 pub use history::HistoryEntry;
 pub use plan::{PlanNode, PlanProperty};
@@ -220,6 +222,8 @@ pub struct DbManager {
     /// Manual-commit data sources, each with the connection of its open
     /// transaction (taken by the first statement after a commit / rollback).
     sessions: Mutex<HashMap<String, Session>>,
+    /// Statements running and recently run, by connection target (query sessions).
+    activity: activity::SharedActivity,
 }
 
 type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
@@ -307,6 +311,15 @@ fn keep_alive(pool: &Arc<Pool>, every: Duration) {
     });
 }
 
+/// How a statement of a query session ended.
+fn work_status(r: &IdeResult<QueryResult>) -> WorkStatus {
+    match r {
+        Ok(_) => WorkStatus::Success,
+        Err(e) if e.kind == ErrorKind::Cancelled => WorkStatus::Cancelled,
+        Err(_) => WorkStatus::Error,
+    }
+}
+
 /// Rolls back a session's transaction and releases its connection.
 async fn end_session(session: &Session) {
     let held = session.lock().await.take();
@@ -347,6 +360,7 @@ impl DbManager {
             ssh,
             session_passwords: Mutex::default(),
             sessions: Mutex::default(),
+            activity: Mutex::default(),
         }
     }
 
@@ -929,7 +943,9 @@ impl DbManager {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
-        let r = self.run(id, statement, max_rows, cancel).await;
+        let ticket = self.activity.lock().start(id, activity::CONSOLE, statement, cancel);
+        let r = self.run(id, statement, max_rows, &ticket.cancel).await;
+        self.activity.lock().finish(&ticket, work_status(&r));
         let ran = match &r {
             Ok(_) => true,
             Err(e) => !matches!(e.kind, ErrorKind::Cancelled | ErrorKind::PermissionDenied),
@@ -938,6 +954,87 @@ impl DbManager {
             self.remember_statement(id, statement);
         }
         r
+    }
+
+    /// Runs `text` (one or more statements) on a connection of its own in auto-commit
+    /// mode, with `schema` as the current schema (PostgreSQL `search_path`, MySQL `USE`)
+    /// when given: what external tools run (the MCP server's `execute_sql_query`). The
+    /// text is one entry of the target's tools session ([`activity::TOOLS`]) and of the
+    /// query history. The result is the first result set, else the last statement's.
+    pub async fn execute_isolated(
+        &self,
+        id: &str,
+        schema: Option<&str>,
+        text: &str,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        let ticket = self.activity.lock().start(id, activity::TOOLS, text, cancel);
+        let r = self.run_isolated(id, schema, text, max_rows, &ticket.cancel).await;
+        self.activity.lock().finish(&ticket, work_status(&r));
+        if !matches!(&r, Err(e) if matches!(e.kind, ErrorKind::Cancelled | ErrorKind::PermissionDenied)) {
+            self.remember_statement(id, text);
+        }
+        r
+    }
+
+    async fn run_isolated(
+        &self,
+        id: &str,
+        schema: Option<&str>,
+        text: &str,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        let pool = self.pool(id).await?;
+        let driver = pool.driver();
+        let mut statements: Vec<String> = split::split(text, driver).into_iter().map(|s| s.text).collect();
+        if statements.is_empty() {
+            statements.push(text.trim().to_owned());
+        }
+        let mut conn = Held::acquire(&pool).await?;
+        let switch = schema.filter(|s| !s.is_empty()).and_then(|s| match driver {
+            DbDriver::Postgres => Some(format!("SET search_path TO {}", sql::quote_ident(driver, s))),
+            DbDriver::Mysql => Some(format!("USE {}", sql::quote_ident(driver, s))),
+            DbDriver::Sqlite | DbDriver::SqlServer => None,
+        });
+        // A switched connection never goes back to the pool: consoles would inherit its schema.
+        let mut dirty = false;
+        let result = async {
+            if let Some(sql) = &switch {
+                dirty = true;
+                conn.command(sql).await?;
+            }
+            let mut last: Option<QueryResult> = None;
+            let mut first_set: Option<QueryResult> = None;
+            for statement in &statements {
+                let r = conn.execute(&pool, statement, max_rows, cancel).await?;
+                if first_set.is_none() && !r.columns.is_empty() {
+                    first_set = Some(r);
+                } else {
+                    last = Some(r);
+                }
+            }
+            first_set.or(last).ok_or_else(|| IdeError::invalid("no statement to run"))
+        }
+        .await;
+        if dirty || cancel.is_cancelled() {
+            conn.discard().await;
+        }
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        result
+    }
+
+    /// The running and recent statements of data source `id`'s query sessions.
+    pub fn query_sessions(&self, id: &str) -> Vec<QueryWork> {
+        self.activity.lock().list(split_target(id).0)
+    }
+
+    /// Cancels what query session `session` runs; `false` when there is no such session.
+    pub fn cancel_session(&self, session: u64) -> bool {
+        self.activity.lock().cancel_session(session)
     }
 
     fn remember_statement(&self, id: &str, statement: &str) {
