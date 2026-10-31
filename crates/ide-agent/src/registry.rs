@@ -211,6 +211,12 @@ fn choose<'a>(entry: &'a Entry, platform: Platform, on_path: &dyn Fn(&str) -> bo
     if let Some(b) = d.binary.get(&platform_key(platform)) {
         return Some(Choice::Binary(b));
     }
+    if platform.os == Os::Windows
+        && platform.arch == Arch::Arm64
+        && let Some(b) = d.binary.get("windows-x86_64")
+    {
+        return Some(Choice::Binary(b));
+    }
     if let Some(p) = &d.npx
         && on_path("npm")
         && on_path("node")
@@ -688,6 +694,18 @@ mod tests {
     const MAC_ARM: Platform = Platform { os: Os::Mac, arch: Arch::Arm64 };
     const LINUX: Platform = Platform { os: Os::Linux, arch: Arch::X64 };
     const WINDOWS: Platform = Platform { os: Os::Windows, arch: Arch::X64 };
+
+    #[test]
+    fn windows_arm_binary_prefers_native_then_x64() {
+        let mut entry = parse(INDEX).unwrap().remove(0);
+        let arm = Platform { os: Os::Windows, arch: Arch::Arm64 };
+        assert!(matches!(choose(&entry, arm, &|_| false), Some(Choice::Binary(_))));
+        assert!(choose(&entry, Platform { os: Os::Linux, arch: Arch::Arm64 }, &|_| false).is_none());
+        let mut native = entry.distribution.binary["windows-x86_64"].clone();
+        native.cmd = "native.exe".into();
+        entry.distribution.binary.insert("windows-aarch64".into(), native);
+        assert!(matches!(choose(&entry, arm, &|_| false), Some(Choice::Binary(b)) if b.cmd == "native.exe"));
+    }
 
     const INDEX: &str = r#"{"version":"1.0.0","agents":[
         {"id":"amp-acp","name":"Amp","version":"0.10.0","description":"Amp over ACP",
