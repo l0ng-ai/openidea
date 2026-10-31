@@ -1,9 +1,7 @@
 {
   "Uploading files": "正在上传文件",
   "No files on the clipboard": "剪贴板中没有文件",
-  "Remote project is disconnected": "远程项目已断开连接",
   "File name is not valid UTF-8": "文件名不是有效的 UTF-8",
-  "Cannot import a symbolic link or special file: {path}": "无法导入符号链接或特殊文件：{path}",
   "Project opening cancelled": "已取消打开项目",
   "Project is in Restricted Mode": "项目处于受限模式",
   "Project is in Restricted Mode. Trust the project to enable execution.": "项目处于受限模式。信任项目后可启用执行功能。",
