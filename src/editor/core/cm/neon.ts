@@ -1,6 +1,6 @@
 /** NEON highlighting: the lexer and token classes of noctud/intellij-neon, on one line at a time. */
 import { StreamLanguage, type StreamParser, type StringStream } from "@codemirror/language";
-import type { NeonFileKind } from "./neonFileKind";
+import { isNeonTranslation, type NeonFileKind } from "./neonFileKind";
 
 interface State {
   /** The closing `"""` or `'''` of the multiline string we are in. */
@@ -21,6 +21,8 @@ const NUMBER = /^-?(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|[0-9]*\.?[0-9]+(?:[eE][+-]
 const DATETIME = /^\d{4}-\d{1,2}-\d{1,2}(?:[Tt ]\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\s*(?:Z|[-+]\d{1,2}:?\d{0,2})?)?$/;
 const FILE_PATH = /.+\.(?:php|neon)$/;
 const VARIABLE = /%%|%[a-zA-Z_][a-zA-Z0-9._-]*%(?!%)/g;
+// `identifier: argument.type` of a PHPStan config, on the key's line. The plugin reads this from its PSI.
+const IDENTIFIER_KEY = /(?:^|[\s,{([-])identifier[ \t]*[:=][ \t]*$/;
 const PUNCTUATION: Record<string, string> = {
   "(": "paren",
   ")": "paren",
@@ -39,7 +41,7 @@ function literalStyle(text: string, key: boolean, kind: NeonFileKind): string {
   if (DATETIME.test(text) || NUMBER.test(text)) return "number";
   if (key) return "propertyName";
   // A catalogue's values are prose: `@user` and `C:\temp` mean nothing there.
-  if (kind !== "config") return "string";
+  if (isNeonTranslation(kind)) return "string";
   if (text.startsWith("@")) return "meta";
   return text.includes("\\") || FILE_PATH.test(text) ? "className" : "string";
 }
@@ -95,7 +97,9 @@ function parser(kind: NeonFileKind): StreamParser<State> {
       const literal = stream.match(LITERAL);
       if (literal) {
         const end = stream.pos;
-        const style = literalStyle((literal as RegExpMatchArray)[0], !!stream.match(KEY_MARK, false), kind);
+        const key = !!stream.match(KEY_MARK, false);
+        const identifier = kind === "phpstan" && !key && IDENTIFIER_KEY.test(stream.string.slice(0, start));
+        const style = identifier ? "meta" : literalStyle((literal as RegExpMatchArray)[0], key, kind);
         stream.pos = start;
         return startScalar(stream, state, end, style);
       }
@@ -104,6 +108,6 @@ function parser(kind: NeonFileKind): StreamParser<State> {
   };
 }
 
-export const neonLanguage = StreamLanguage.define(parser("config"));
-export const neonTranslationLanguage = StreamLanguage.define(parser("translation"));
-export const neonIcuTranslationLanguage = StreamLanguage.define(parser("icuTranslation"));
+export function neonLanguage(kind: NeonFileKind): StreamLanguage<State> {
+  return StreamLanguage.define(parser(kind));
+}

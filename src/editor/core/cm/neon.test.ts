@@ -226,6 +226,16 @@ g: !hello
     ]);
   });
 
+  it("marks a PHPStan error identifier, in a PHPStan config only", async () => {
+    const source = "- identifier: argument.type\n- { identifier: return.type, path: src/a.php }\n- other: x.y\n";
+    const out = await tokens(source, "phpstan.neon");
+    expect(out).toContainEqual(["argument.type", "service"]);
+    expect(out).toContainEqual(["return.type", "service"]);
+    expect(out).toContainEqual(["x.y", "string"]);
+    expect(await tokens(source)).toContainEqual(["argument.type", "string"]);
+    expect(await tokens(source, "messages.cs.neon")).toContainEqual(["argument.type", "string"]);
+  });
+
   it("keeps a config with a locale-like name a config", async () => {
     expect((await tokens("[@a]", "config.dev.neon"))[0]).toEqual(["@a", "service"]);
     expect((await tokens("[@a]", "phpstan.cs.neon"))[0]).toEqual(["@a", "service"]);

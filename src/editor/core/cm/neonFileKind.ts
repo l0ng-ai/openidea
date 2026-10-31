@@ -1,5 +1,9 @@
 /** What a `.neon` file is for, from its name alone, like intellij-neon's `NeonFileKind`. */
-export type NeonFileKind = "config" | "translation" | "icuTranslation";
+export type NeonFileKind = "config" | "phpstan" | "translation" | "icuTranslation";
+
+export function isNeonTranslation(kind: NeonFileKind): boolean {
+  return kind === "translation" || kind === "icuTranslation";
+}
 
 // <domain>.<locale>.neon. The locale is a BCP 47 or POSIX tag: sk, sk_SK, pt-BR, zh-Hant, es-419.
 const TRANSLATION_NAME = /^(.+)\.([a-z]{2,3})(?:[-_][a-z]{4})?(?:[-_](?:[a-z]{2}|[0-9]{3}))?\.neon$/i;
@@ -19,7 +23,7 @@ vo vun wa wae wo xh xnr xog yav yi yo yrl yue za zgh zh zu`.split(/\s+/),
 );
 
 export function neonFileKind(fileName: string): NeonFileKind {
-  if (/phpstan/i.test(fileName)) return "config";
+  if (/phpstan/i.test(fileName) && fileName.endsWith(".neon")) return "phpstan";
   const match = TRANSLATION_NAME.exec(fileName);
   if (!match || !LANGUAGES.has(match[2]!.toLowerCase())) return "config";
   return match[1]!.endsWith("+intl-icu") ? "icuTranslation" : "translation";

@@ -18,7 +18,7 @@ import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
 import { _languageMode } from "@/editor/api";
-import { neonFileKind } from "./neonFileKind";
+import { neonFileKind, type NeonFileKind } from "./neonFileKind";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
@@ -61,6 +61,13 @@ export function uiModeForPath(path: string): string | null | undefined {
 
 const supports = new Map<string, Promise<LanguageSupport | null>>();
 
+const NEON_MODES: Record<NeonFileKind, string> = {
+  config: "NEON",
+  phpstan: "NEON PHPStan",
+  translation: "NEON Translation",
+  icuTranslation: "NEON ICU Translation",
+};
+
 /** Frontend modes that extend or replace the bundled parsers. */
 const OWN_MODES = [
   LanguageDescription.of({
@@ -69,19 +76,13 @@ const OWN_MODES = [
     filename: /^(?:CMakeLists\.txt|.*\.cmake(?:\.in)?)$/,
     load: async () => new LanguageSupport((await import("./cmake")).cmakeLanguage),
   }),
-  LanguageDescription.of({
-    name: "NEON",
-    extensions: ["neon"],
-    load: async () => new LanguageSupport((await import("./neon")).neonLanguage),
-  }),
-  LanguageDescription.of({
-    name: "NEON Translation",
-    load: async () => new LanguageSupport((await import("./neon")).neonTranslationLanguage),
-  }),
-  LanguageDescription.of({
-    name: "NEON ICU Translation",
-    load: async () => new LanguageSupport((await import("./neon")).neonIcuTranslationLanguage),
-  }),
+  ...(Object.entries(NEON_MODES) as [NeonFileKind, string][]).map(([kind, name]) =>
+    LanguageDescription.of({
+      name,
+      extensions: kind === "config" ? ["neon"] : [],
+      load: async () => new LanguageSupport((await import("./neon")).neonLanguage(kind)),
+    }),
+  ),
   LanguageDescription.of({
     name: "Shell",
     load: async () => {
@@ -183,9 +184,7 @@ export function findLanguageDescription(uiMode: string | null, path: string): La
   const found = describeLanguage(uiMode, path);
   if (found?.name !== "NEON") return found;
   // One language to the backend; only the highlighting depends on what the file is for.
-  const kind = neonFileKind(path.slice(path.lastIndexOf("/") + 1));
-  if (kind === "config") return found;
-  const name = kind === "translation" ? "NEON Translation" : "NEON ICU Translation";
+  const name = NEON_MODES[neonFileKind(path.slice(path.lastIndexOf("/") + 1))];
   return OWN_MODES.find((l) => l.name === name)!;
 }
 
