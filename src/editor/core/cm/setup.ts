@@ -51,6 +51,7 @@ import { editorBaseKeymap } from "./baseKeymap";
 import { occurrenceSearch } from "./editing";
 import { gutterLineDrag } from "./gutterDrag";
 import { overwriteField } from "./overwrite";
+import { clipboardFilesExtension } from "./clipboard";
 import { clipboardHistoryExtension } from "../clipboardHistory";
 import type { LanguageInfo } from "../backend";
 import { tx } from "@/platform/i18n";
@@ -336,6 +337,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     overwriteField,
     gutterLineDrag,
     clipboardHistoryExtension,
+    clipboardFilesExtension,
     indentOnInput(),
     syntaxHighlighting(openideaHighlightStyle),
     syntaxHighlightField,
