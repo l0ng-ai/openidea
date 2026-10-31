@@ -137,3 +137,15 @@ async fn status_without_git_is_empty() {
     let r = h.call_json("get_repositories", json!({})).await;
     assert_eq!(r["roots"], json!([]));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repository_found_from_the_path_reports_its_branch() {
+    let h = Harness::new(&[("other/x.txt", "x\n")]).await;
+    // Not discovered yet (no refresh): found by walking up from the path.
+    git(&h.path("other"), &["init", "-q", "-b", "feature"]);
+    let r = h.call_json("git_status", json!({ "repositoryPathRelativeToProject": "other/x.txt" })).await;
+    let repo = &r["repositories"][0];
+    assert_eq!(repo["repositoryPathRelativeToProject"], "other", "{r}");
+    assert_eq!(repo["currentBranch"], "feature", "{r}");
+    assert_eq!(codes(repo, "x.txt").as_deref(), Some("??"));
+}

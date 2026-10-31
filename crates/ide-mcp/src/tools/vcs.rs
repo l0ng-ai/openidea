@@ -14,12 +14,42 @@ pub fn tools() -> Vec<Tool> {
     vec![get_repositories(), git_status()]
 }
 
-/// A path relative to the project root with `/`; empty for the root itself.
-fn relative_to_project(call: &Call, path: &Path) -> String {
-    match path.strip_prefix(call.root()) {
-        Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
-        Err(_) => path.to_string_lossy().into_owned(),
+/// `path` with symbolic links resolved (macOS `/var` is `/private/var`), as given when it
+/// does not exist.
+fn canonical(path: &Path) -> PathBuf {
+    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// A path relative to the project root with `/`; empty for the root itself. Either may
+/// name the other through a symbolic link.
+fn relative_to(root: &Path, path: &Path) -> String {
+    let rel = match path.strip_prefix(root) {
+        Ok(rel) => Some(rel.to_path_buf()),
+        Err(_) => canonical(path).strip_prefix(canonical(root)).ok().map(Path::to_path_buf),
+    };
+    match rel {
+        Some(rel) => rel.to_string_lossy().replace('\\', "/"),
+        None => path.to_string_lossy().into_owned(),
     }
+}
+
+fn relative_to_project(call: &Call, path: &Path) -> String {
+    relative_to(call.root(), path)
+}
+
+/// The repository whose roots contain `path` most specifically (paths compared canonically).
+fn innermost_repo<T>(repos: Vec<(PathBuf, T)>, path: &Path) -> Option<(PathBuf, T)> {
+    let path = canonical(path);
+    repos.into_iter().filter(|r| path.starts_with(canonical(&r.0))).max_by_key(|r| canonical(&r.0).components().count())
+}
+
+/// The branch HEAD is on (unborn too); `None` when HEAD is detached or git fails.
+fn read_branch(git: &str, root: &Path) -> Option<String> {
+    let mut cmd = std::process::Command::new(git);
+    cmd.current_dir(root).args(["symbolic-ref", "--short", "-q", "HEAD"]);
+    ide_core::process::prepare(&mut cmd);
+    let out = cmd.output().ok().filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_owned()).filter(|b| !b.is_empty())
 }
 
 fn get_repositories() -> Tool {
@@ -121,8 +151,9 @@ fn read_status(git: &str, root: &Path, untracked: bool, ignored: bool) -> IdeRes
 /// A git repository in the project, for paths outside the repositories IDEA knows: the
 /// closest folder with `.git` from `start` up to the project root.
 fn find_git_root(root: &Path, start: &Path) -> Option<PathBuf> {
-    let mut current = if start.is_dir() { start } else { start.parent().unwrap_or(start) };
-    while current.starts_with(root) {
+    let (root, start) = (canonical(root), canonical(start));
+    let mut current = if start.is_dir() { start.as_path() } else { start.parent().unwrap_or(&start) };
+    while current.starts_with(&root) {
         if current.join(".git").exists() {
             return Some(current.to_path_buf());
         }
@@ -152,16 +183,21 @@ By default all Git repositories are returned.",
                 .map(|r| (r.root.into_path_buf(), r.head))
                 .collect();
             let wanted = call.opt_str("repositoryPathRelativeToProject")?;
+            let git = git_executable(&call);
             let mut roots: Vec<(PathBuf, Option<String>)> = match &wanted {
                 None => repos,
                 Some(wanted) => {
                     let path = call.resolve_inside(wanted)?;
                     // The innermost repository containing the path.
-                    match repos.into_iter().filter(|r| path.starts_with(&r.0)).max_by_key(|r| r.0.components().count())
-                    {
+                    match innermost_repo(repos, &path) {
                         Some(repo) => vec![repo],
                         None => match find_git_root(call.root(), &path) {
-                            Some(root) => vec![(root, None)],
+                            Some(root) => {
+                                // JetBrains reads the branch of any repository it reports.
+                                let (git, dir) = (git.clone(), root.clone());
+                                let branch = host.blocking(move || Ok(read_branch(&git, &dir))).await?;
+                                vec![(root, branch)]
+                            }
                             None => {
                                 return Err(IdeError::not_found(format!("No git repository found for path: {wanted}")));
                             }
@@ -170,7 +206,6 @@ By default all Git repositories are returned.",
                 }
             };
             roots.sort_by_key(|r| relative_to_project(&call, &r.0));
-            let git = git_executable(&call);
             let mut repositories = Vec::new();
             for (root, branch) in roots {
                 let rel = relative_to_project(&call, &root);
@@ -238,5 +273,23 @@ mod tests {
         assert!(e[0].staged() && !e[0].unstaged());
         assert!(e[2].untracked() && !e[2].staged());
         assert!(e[3].conflicted() && !e[3].staged() && !e[3].unstaged());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn paths_through_a_symlinked_root_compare_canonically() {
+        // As macOS `/var` → `/private/var`: the project opened through the link, git reporting real paths.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dunce::canonicalize(dir.path()).unwrap().join("real");
+        std::fs::create_dir_all(real.join("sub/.git")).unwrap();
+        std::fs::write(real.join("sub/f.txt"), "x").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(relative_to(&link, &real.join("sub")), "sub");
+        assert_eq!(relative_to(&real, &link.join("sub")), "sub");
+        assert_eq!(relative_to(&link, &link), "");
+        let repos = vec![(real.clone(), 1), (real.join("sub"), 2)];
+        assert_eq!(innermost_repo(repos, &link.join("sub/f.txt")).map(|r| r.1), Some(2));
+        assert_eq!(find_git_root(&link, &real.join("sub/f.txt")), Some(real.join("sub")));
     }
 }
