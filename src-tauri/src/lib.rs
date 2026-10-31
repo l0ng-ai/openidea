@@ -95,10 +95,19 @@ pub fn run() {
                 let label = label.to_owned();
                 let command = request.message.command().to_owned();
                 let invoke = invoke.clone();
+                let app = webview.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
                     match connection.authorize_command(&label, &command).await {
                         Ok(()) => {
-                            invoke(request);
+                            let resolver = request.resolver.clone();
+                            // Sync commands must run on the main thread, as they do in local windows.
+                            if let Err(error) = app.run_on_main_thread(move || {
+                                invoke(request);
+                            }) {
+                                resolver.reject(ide_core::IdeError::internal(format!(
+                                    "failed to dispatch command on the main thread: {error}"
+                                )));
+                            }
                         }
                         Err(error) => request.resolver.reject(error),
                     }
