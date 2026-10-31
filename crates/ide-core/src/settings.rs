@@ -285,6 +285,8 @@ pub struct AppearanceSettings {
     pub project_colors_in_toolbar: bool,
     pub dnd_with_alt_only: bool,
     pub menu_icons: bool,
+    /// `hamburger` | `merged`: main menu presentation in the frameless title bar.
+    pub main_menu_style: String,
     /// `subpixel` | `greyscale` | `none`
     pub ide_antialiasing: String,
     pub editor_antialiasing: String,
@@ -331,6 +333,7 @@ impl Default for AppearanceSettings {
             project_colors_in_toolbar: true,
             dnd_with_alt_only: false,
             menu_icons: true,
+            main_menu_style: "hamburger".into(),
             ide_antialiasing: "greyscale".into(),
             editor_antialiasing: "greyscale".into(),
             show_tool_window_bars: true,
@@ -712,6 +715,15 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_menu_style_defaults_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"compactMode":true}}"#).unwrap();
+        assert_eq!(old.appearance.main_menu_style, "hamburger");
+        let merged: Settings = serde_json::from_str(r#"{"appearance":{"mainMenuStyle":"merged"}}"#).unwrap();
+        assert_eq!(merged.appearance.main_menu_style, "merged");
+        assert_eq!(serde_json::to_value(merged).unwrap()["appearance"]["mainMenuStyle"], "merged");
+    }
 
     #[test]
     fn editor_font_weights_default_to_regular_and_bold() {
