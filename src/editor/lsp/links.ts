@@ -14,7 +14,7 @@ import { openExternalUrl } from "@/platform/openUrl";
 import { executeAction } from "@/platform/actions";
 import { editorService } from "@/workbench/contributions";
 import { lspRequest } from "./lsp";
-import { isNeonTranslation, neonFileKind } from "@/editor/core/cm/neonFileKind";
+import { isNeonFilePath, isNeonTranslation, neonFileKind } from "@/editor/core/cm/neonFileKind";
 import { rangeToOffsets } from "./positions";
 
 export type Reference =
@@ -102,11 +102,10 @@ export function textReference(text: Text, offset: number): Reference | null {
 }
 
 const NEON_VALUE = /(^|[\s,=([{-])(%[a-zA-Z_][\w.-]*%[/\\]?)?([^\s,:=()[\]{}"'#]+)(?=$|[\s,:=)\]}#])/g;
-const NEON_FILE = /.+\.(?:php|neon)$/;
 
 /**
  * A bare path in a NEON file, as in `- app/adminer.php` or `%rootDir%/a.neon`,
- * without the leading parameter. By default only `.php` and `.neon`, which can be
+ * without the leading parameter. By default only what reads as a file, which can be
  * underlined unseen; `anyValue` also takes what only the file system can tell from
  * a word, such as the folder in `- app`. Catalogues hold prose instead.
  */
@@ -121,7 +120,7 @@ export function neonReference(text: Text, offset: number, path: string, anyValue
     const end = m.index + m[0].length;
     if (col < start || col > end) continue;
     const isKey = /^[ \t]*[:=]/.test(line.text.slice(end));
-    if (!NEON_FILE.test(m[3]!) && (!anyValue || isKey)) return null;
+    if (!isNeonFilePath(m[3]!) && (!anyValue || isKey)) return null;
     return { kind: "path", from: line.from + start, to: line.from + end, value: m[3]! };
   }
   return null;

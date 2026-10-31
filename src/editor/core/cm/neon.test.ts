@@ -157,7 +157,7 @@ services:
     expect(await value(text)).toEqual([text, "service"]);
   });
 
-  it.each(["App\\Model\\Foo", "app/Model/Foo.php", "src/test.neon", "services.neon", "Foo.php"])(
+  it.each(["App\\Model\\Foo", "app/Model/Foo.php", "src/test.neon", "services.neon", "Foo.php", "phpstan-plugin.stub"])(
     "marks %s as a class or file",
     async (text) => {
       expect(await value(text)).toEqual([text, "class"]);

@@ -22,6 +22,11 @@ sq sr ss st su sv sw syr szl ta te teo tg th ti tk tl tn to tok tr ts tt tw twq 
 vo vun wa wae wo xh xnr xog yav yi yo yrl yue za zgh zh zu`.split(/\s+/),
 );
 
+/** A value that reads as a file: the plugin's `.php` and `.neon`, and the `.stub` of PHPStan's `stubFiles`. */
+export function isNeonFilePath(text: string): boolean {
+  return /.+\.(?:php|neon|stub)$/.test(text);
+}
+
 export function neonFileKind(fileName: string): NeonFileKind {
   if (/phpstan/i.test(fileName) && fileName.endsWith(".neon")) return "phpstan";
   const match = TRANSLATION_NAME.exec(fileName);

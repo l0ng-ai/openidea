@@ -88,6 +88,7 @@ describe("neonReference", () => {
       from: stub.text.line(2).from + 6,
       to: stub.text.line(2).to,
     });
+    expect(neonReference(stub.text, stub.offset, "/p/phpstan.neon")).toMatchObject({ value: "phpstan-plugin.stub" });
     const key = at("serv|ices:\n");
     expect(neonReference(key.text, key.offset, "/p/phpstan.neon", true)).toBeNull();
   });

@@ -1,6 +1,6 @@
 /** NEON highlighting: the lexer and token classes of noctud/intellij-neon, on one line at a time. */
 import { StreamLanguage, type StreamParser, type StringStream } from "@codemirror/language";
-import { isNeonTranslation, type NeonFileKind } from "./neonFileKind";
+import { isNeonFilePath, isNeonTranslation, type NeonFileKind } from "./neonFileKind";
 
 interface State {
   /** The closing `"""` or `'''` of the multiline string we are in. */
@@ -19,7 +19,6 @@ const STRING = /^(?:'[^']*'|"(?:\\.|[^"\\])*")/;
 const CONSTANT = /^(?:true|false|null|yes|no|on|off|True|False|Null|Yes|No|On|Off|TRUE|FALSE|NULL|YES|NO|ON|OFF)$/;
 const NUMBER = /^-?(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|[0-9]*\.?[0-9]+(?:[eE][+-]?[0-9]+)?)$/;
 const DATETIME = /^\d{4}-\d{1,2}-\d{1,2}(?:[Tt ]\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\s*(?:Z|[-+]\d{1,2}:?\d{0,2})?)?$/;
-const FILE_PATH = /.+\.(?:php|neon)$/;
 const VARIABLE = /%%|%[a-zA-Z_][a-zA-Z0-9._-]*%(?!%)/g;
 // `identifier: argument.type` of a PHPStan config, on the key's line. The plugin reads this from its PSI.
 const IDENTIFIER_KEY = /(?:^|[\s,{([-])identifier[ \t]*[:=][ \t]*$/;
@@ -43,7 +42,7 @@ function literalStyle(text: string, key: boolean, kind: NeonFileKind): string {
   // A catalogue's values are prose: `@user` and `C:\temp` mean nothing there.
   if (isNeonTranslation(kind)) return "string";
   if (text.startsWith("@")) return "meta";
-  return text.includes("\\") || FILE_PATH.test(text) ? "className" : "string";
+  return text.includes("\\") || isNeonFilePath(text) ? "className" : "string";
 }
 
 /** The next piece of the scalar up to `scalarEnd`: a `%parameter%`, or the text before one. */
