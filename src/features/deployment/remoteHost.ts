@@ -2,7 +2,7 @@
 import { txTemplate } from "@/platform/i18n";
 import { call, commands, type RemoteEntry } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import type { DeploymentServerValid } from "@/platform/remoteSettings";
+import { deploymentConnection, type DeploymentServerValid } from "@/platform/remoteSettings";
 import { copyText } from "@/ui";
 import { editorService, notifications } from "@/workbench/contributions";
 import { promptInput } from "@/workbench/inputDialogs";
@@ -12,7 +12,9 @@ import { joinRemote, localPathForRemote, remoteName, remoteParent } from "./mode
 import { withSsh } from "./ssh";
 import { EMPTY_TREE, patchTree, useDeployment } from "./store";
 
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const errorText = (e: unknown) => txTemplate(e instanceof Error ? e.message : String(e));
+
+const sourceKey = (server: DeploymentServerValid) => JSON.stringify([deploymentConnection(server), server.rootPath]);
 
 const tree = (server: string) => useDeployment.getState().trees[server] ?? EMPTY_TREE;
 
@@ -25,14 +27,19 @@ function fail(title: string, e: unknown) {
 }
 
 export async function loadFolder(server: DeploymentServerValid, path: string) {
+  const source = sourceKey(server);
   try {
-    const entries = await withSsh(server.sshConfig, () => call(commands.remoteList(server.sshConfig, path)));
+    const entries = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      call(commands.remoteList(deploymentConnection(server), path)),
+    );
+    if (tree(server.id).source !== source) return;
     patchTree(server.id, (t) => {
       const folderErrors = { ...t.folderErrors };
       delete folderErrors[path];
       return { listings: { ...t.listings, [path]: sortEntries(entries) }, folderErrors };
     });
   } catch (e) {
+    if (tree(server.id).source !== source) return;
     patchTree(server.id, (t) =>
       path === t.root ? { error: errorText(e) } : { folderErrors: { ...t.folderErrors, [path]: errorText(e) } },
     );
@@ -41,6 +48,8 @@ export async function loadFolder(server: DeploymentServerValid, path: string) {
 
 /** Resolves the server root once per session and lists it. */
 export async function ensureRoot(server: DeploymentServerValid, force = false) {
+  const source = sourceKey(server);
+  if (tree(server.id).source !== source) patchTree(server.id, { ...EMPTY_TREE, source });
   const current = tree(server.id);
   if (current.root && !force && current.listings[current.root]) return;
   patchTree(server.id, { error: null });
@@ -48,10 +57,14 @@ export async function ensureRoot(server: DeploymentServerValid, force = false) {
     const root =
       current.root && !force
         ? current.root
-        : await withSsh(server.sshConfig, () => call(commands.deployServerRoot(server.id)));
+        : await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+            call(commands.deployServerRoot(server.id)),
+          );
+    if (tree(server.id).source !== source) return;
     patchTree(server.id, { root });
     await loadFolder(server, root);
   } catch (e) {
+    if (tree(server.id).source !== source) return;
     patchTree(server.id, { error: errorText(e) });
   }
 }
@@ -59,7 +72,7 @@ export async function ensureRoot(server: DeploymentServerValid, force = false) {
 /** Reloads the root and the expanded folders. */
 export async function refreshAll(server: DeploymentServerValid) {
   const t = tree(server.id);
-  if (!t.root) return ensureRoot(server, true);
+  if (!t.root || t.source !== sourceKey(server)) return ensureRoot(server, true);
   patchTree(server.id, { listings: {}, folderErrors: {}, error: null });
   await loadFolder(server, t.root);
   await Promise.all([...t.expanded].map((p) => loadFolder(server, p)));
@@ -67,7 +80,9 @@ export async function refreshAll(server: DeploymentServerValid) {
 
 export async function openRemote(server: DeploymentServerValid, entry: RemoteEntry) {
   try {
-    const local = await withSsh(server.sshConfig, () => call(commands.remoteOpen(server.sshConfig, entry.path)));
+    const local = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      call(commands.remoteOpen(deploymentConnection(server), entry.path)),
+    );
     await editorService().openFile(local, { focus: true });
   } catch (e) {
     fail(`Cannot open ${entry.name}`, e);
@@ -82,7 +97,9 @@ export async function newFolder(server: DeploymentServerValid, parent: string) {
   });
   if (!name) return;
   try {
-    await withSsh(server.sshConfig, () => call(commands.remoteMkdir(server.sshConfig, joinRemote(parent, name))));
+    await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      call(commands.remoteMkdir(deploymentConnection(server), joinRemote(parent, name))),
+    );
     patchTree(server.id, (t) => ({ expanded: new Set([...t.expanded, parent]) }));
     await loadFolder(server, parent);
   } catch (e) {
@@ -100,8 +117,8 @@ export async function renameEntry(server: DeploymentServerValid, entry: RemoteEn
   if (!name || name === entry.name) return;
   const parent = remoteParent(entry.path);
   try {
-    await withSsh(server.sshConfig, () =>
-      call(commands.remoteRename(server.sshConfig, entry.path, joinRemote(parent, name))),
+    await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      call(commands.remoteRename(deploymentConnection(server), entry.path, joinRemote(parent, name))),
     );
     await loadFolder(server, parent);
   } catch (e) {
@@ -127,7 +144,9 @@ export async function deleteEntries(server: DeploymentServerValid, entries: Remo
   const parents = new Set<string>();
   for (const entry of entries) {
     try {
-      await withSsh(server.sshConfig, () => call(commands.remoteDelete(server.sshConfig, entry.path)));
+      await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+        call(commands.remoteDelete(deploymentConnection(server), entry.path)),
+      );
       parents.add(remoteParent(entry.path));
     } catch (e) {
       fail(`Cannot delete ${entry.name}`, e);

@@ -8,7 +8,7 @@
  * Attribute ids are stable (they key `editor.colorOverrides[scheme][id]`).
  */
 import tokensCss from "@/styles/tokens.css?raw";
-import type { TextAttributesOverride } from "./editorSettings";
+import type { CustomColorSchemes, TextAttributesOverride } from "./editorSettings";
 import { BUILTIN_THEMES, isBuiltinTheme, themeKind, type BuiltinThemeId } from "./themes";
 
 export type SchemeId = BuiltinThemeId;
@@ -253,8 +253,9 @@ export function schemeTokens(id: SchemeId, css: string = source): Vars {
 export function effectiveScheme(
   setting: string | undefined,
   root: HTMLElement | null = typeof document !== "undefined" ? document.documentElement : null,
-): SchemeId {
-  if (isBuiltinTheme(setting)) return setting;
+  customs: CustomColorSchemes = {},
+): string {
+  if (isBuiltinTheme(setting) || (setting && Object.hasOwn(customs, setting))) return setting;
   return themeScheme(root);
 }
 
@@ -289,10 +290,10 @@ export function overrideDeclarations(
   for (const attr of ATTRIBUTES) {
     const o = overrides[attr.id];
     if (!o) continue;
-    if (o.foreground && attr.fg) out.push([attr.fg, o.foreground]);
-    if (o.background && attr.bg) out.push([attr.bg, o.background]);
-    if (o.effectColor && attr.effect) out.push([attr.effect, o.effectColor]);
-    if (attr.effect && o.effectColor) {
+    if (isHexColor(o.foreground) && attr.fg) out.push([attr.fg, o.foreground]);
+    if (isHexColor(o.background) && attr.bg) out.push([attr.bg, o.background]);
+    if (isHexColor(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
+    if (attr.effect && isHexColor(o.effectColor)) {
       if (attr.id === "error") out.push(["--editor-error-decoration", `underline wavy ${o.effectColor}`]);
       if (attr.id === "warning") out.push(["--editor-warning-decoration", `underline wavy ${o.effectColor}`]);
     }
@@ -303,11 +304,56 @@ export function overrideDeclarations(
         out.push([`--syn-${t}-italic`, o.italic ? "italic" : "normal"]);
         if (t === "comment") out.push(["--syn-comment-style", o.italic ? "italic" : "normal"]);
       }
-      if (o.background) out.push([`--syn-${t}-bg`, o.background]);
-      if (o.effect) out.push([`--syn-${t}-effect`, EFFECT_CSS[o.effect]?.(o.effectColor ?? "currentColor") ?? "none"]);
+      if (isHexColor(o.background)) out.push([`--syn-${t}-bg`, o.background]);
+      if (o.effect)
+        out.push([
+          `--syn-${t}-effect`,
+          EFFECT_CSS[o.effect]?.(isHexColor(o.effectColor) ? o.effectColor : "currentColor") ?? "none",
+        ]);
     }
   }
   return out;
+}
+
+export const isHexColor = (value: unknown): value is string =>
+  typeof value === "string" && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value);
+
+/** Validate persisted imports too: settings files are user editable. */
+export function customSchemes(raw: unknown): CustomColorSchemes {
+  const out: CustomColorSchemes = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [id, value] of Object.entries(raw)) {
+    if (!/^custom-[\w-]+$/.test(id) || !value || typeof value !== "object") continue;
+    const v = value as Record<string, unknown>;
+    if (typeof v.name !== "string" || !v.name.trim() || (v.parent !== "light" && v.parent !== "dark")) continue;
+    const attributes: Record<string, TextAttributesOverride> = {};
+    if (v.attributes && typeof v.attributes === "object") {
+      for (const attr of ATTRIBUTES) {
+        const a = (v.attributes as Record<string, TextAttributesOverride>)[attr.id];
+        if (!a || typeof a !== "object") continue;
+        const safe: TextAttributesOverride = {};
+        for (const key of ["foreground", "background", "effectColor"] as const)
+          if (isHexColor(a[key])) safe[key] = a[key];
+        for (const key of ["bold", "italic"] as const) if (typeof a[key] === "boolean") safe[key] = a[key];
+        if (a.effect && Object.hasOwn(EFFECT_CSS, a.effect)) safe.effect = a.effect;
+        attributes[attr.id] = safe;
+      }
+    }
+    out[id] = { name: v.name, parent: v.parent, attributes };
+  }
+  return out;
+}
+
+export function listSchemes(customs: CustomColorSchemes = {}) {
+  return [...SCHEMES, ...Object.entries(customSchemes(customs)).map(([id, s]) => ({ id, name: s.name }))];
+}
+
+export function resolvedSchemeTokens(id: string, customs: CustomColorSchemes = {}): Vars {
+  const custom = customSchemes(customs)[id];
+  const base = isBuiltinTheme(id) ? id : (custom?.parent ?? "light");
+  const tokens = new Map(schemeTokens(base));
+  for (const [key, value] of overrideDeclarations(custom?.attributes)) tokens.set(key, value);
+  return tokens;
 }
 
 const SAFE = /^[^;{}<>]*$/;
@@ -317,14 +363,16 @@ export function schemeCss(
   setting: string | undefined,
   overrides: Record<string, Record<string, TextAttributesOverride>> | undefined,
   root?: HTMLElement | null,
+  customs: CustomColorSchemes = {},
 ): string {
-  const id = effectiveScheme(setting, root);
+  const valid = customSchemes(customs);
+  const id = effectiveScheme(setting, root, valid);
   const decls: Array<[string, string]> = [];
   // A plugin theme brings its own editor colours: an explicit scheme replaces them even on the same base.
   const el = root === undefined ? (typeof document !== "undefined" ? document.documentElement : null) : root;
   const pluginTheme = !!el?.dataset.pluginTheme && id === setting;
   if (id !== themeScheme(root) || pluginTheme) {
-    const tokens = schemeTokens(id);
+    const tokens = resolvedSchemeTokens(id, valid);
     for (const [k, v] of tokens) if (SCHEME_VARS.has(k) || k.startsWith("--syn-")) decls.push([k, v]);
     // The editor surface follows the scheme, not the island colour of the UI theme.
     const bg = tokens.get("--bg-editor") ?? tokens.get("--bg-island");

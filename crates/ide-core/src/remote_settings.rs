@@ -103,10 +103,19 @@ impl Default for DeploymentSettings {
     }
 }
 
-/// An SFTP server and how project folders map onto it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DeploymentType {
+    #[default]
+    Sftp,
+    Local,
+}
+
+/// A deployment filesystem and how project folders map onto it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DeploymentServer {
+    pub kind: DeploymentType,
     pub id: String,
     pub name: String,
     /// [`SshConfiguration::id`].
@@ -147,4 +156,24 @@ pub struct RunTarget {
     pub python: String,
     pub node: String,
     pub java: String,
+}
+
+#[cfg(test)]
+mod deployment_tests {
+    use super::*;
+
+    #[test]
+    fn deployment_type_defaults_and_round_trips() {
+        let legacy: DeploymentServer =
+            serde_json::from_str(r#"{"id":"existing","sshConfig":"ssh","rootPath":"/srv"}"#).unwrap();
+        assert_eq!(legacy.kind, DeploymentType::Sftp);
+        assert_eq!(legacy.ssh_config, "ssh");
+        for kind in [DeploymentType::Sftp, DeploymentType::Local] {
+            let server = DeploymentServer { kind, ..legacy.clone() };
+            assert_eq!(
+                serde_json::from_str::<DeploymentServer>(&serde_json::to_string(&server).unwrap()).unwrap(),
+                server
+            );
+        }
+    }
 }

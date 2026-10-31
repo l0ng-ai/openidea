@@ -27,6 +27,12 @@ pub enum SettingsScope {
     Project,
 }
 
+fn remove_custom_schemes(layer: &mut Json) {
+    if let Some(editor) = layer.get_mut("editor").and_then(Json::as_object_mut) {
+        editor.remove("customSchemes");
+    }
+}
+
 fn defaults_json() -> Json {
     serde_json::to_value(Settings::default()).expect("settings serialize")
 }
@@ -178,10 +184,12 @@ impl SettingsStore {
 
     fn compute(&self) -> Settings {
         let mut merged = defaults_json();
-        for (_, file) in self.layers() {
-            if let Some(layer) = read_layer(&file)
-                && let Err(e) = try_merge(&mut merged, layer)
-            {
+        for (scope, file) in self.layers() {
+            let Some(mut layer) = read_layer(&file) else { continue };
+            if scope == SettingsScope::Project {
+                remove_custom_schemes(&mut layer);
+            }
+            if let Err(e) = try_merge(&mut merged, layer) {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
             }
         }
@@ -205,6 +213,13 @@ impl SettingsStore {
     /// `null` removes the key from that layer. Unknown keys and values of the
     /// wrong type are rejected with `InvalidInput`; the file is left untouched.
     pub fn set(&self, scope: SettingsScope, key: &str, value: serde_json::Value) -> IdeResult<Settings> {
+        if scope == SettingsScope::Project
+            && (key == "editor.customSchemes"
+                || key.starts_with("editor.customSchemes.")
+                || (key == "editor" && value.get("customSchemes").is_some()))
+        {
+            return Err(IdeError::invalid("custom color schemes belong to user settings"));
+        }
         let file = self.file(scope).ok_or_else(|| IdeError::invalid("no project is open"))?.to_path_buf();
         let segments: Vec<&str> = key.split('.').collect();
         if segments.iter().any(|s| s.is_empty()) {
@@ -242,7 +257,10 @@ impl SettingsStore {
         for (layer_scope, layer_file) in self.layers() {
             let is_target = layer_scope == scope;
             let layer = if is_target { parse_layer(&new_text).ok() } else { read_layer(&layer_file) };
-            let Some(layer) = layer else { continue };
+            let Some(mut layer) = layer else { continue };
+            if layer_scope == SettingsScope::Project {
+                remove_custom_schemes(&mut layer);
+            }
             if let Err(e) = try_merge(&mut merged, layer)
                 && is_target
             {
@@ -315,6 +333,38 @@ struct SettingsBundle {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn custom_color_schemes_are_user_settings_and_survive_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(proj.join(".openidea")).unwrap();
+        let store = SettingsStore::load(&cfg, Some(&proj));
+        let schemes = json!({"custom-forest": {"name": "Forest", "parent": "dark", "attributes": {
+            "keyword": {"foreground": "#99dd77", "bold": true}
+        }}});
+        store.set(SettingsScope::Global, "editor.customSchemes", schemes.clone()).unwrap();
+        store.set(SettingsScope::Global, "editor.colorScheme", json!("custom-forest")).unwrap();
+        let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
+        assert_eq!(loaded.editor.color_scheme, "custom-forest");
+        assert_eq!(serde_json::to_value(&loaded.editor.custom_schemes).unwrap(), schemes);
+        assert!(store.set(SettingsScope::Project, "editor.customSchemes", schemes.clone()).is_err());
+        assert!(
+            store
+                .set(SettingsScope::Project, "editor.customSchemes.custom-other", schemes["custom-forest"].clone())
+                .is_err()
+        );
+        assert!(store.set(SettingsScope::Project, "editor", json!({"customSchemes": schemes})).is_err());
+        std::fs::write(
+            proj.join(".openidea/settings.toml"),
+            "[editor.customSchemes.custom-forest]\nname = \"Project\"\nparent = \"light\"\nattributes = {}\n",
+        )
+        .unwrap();
+        assert_eq!(store.reload().editor.custom_schemes["custom-forest"].name, "Forest");
+        store.set(SettingsScope::Global, "editor.customSchemes", json!({})).unwrap();
+        assert!(SettingsStore::load(&cfg, Some(&proj)).effective().editor.custom_schemes.is_empty());
+    }
 
     #[test]
     fn layering_and_fallback() {
