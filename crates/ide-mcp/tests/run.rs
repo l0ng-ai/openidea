@@ -32,6 +32,28 @@ args = ["-c", "echo ran"]
 beforeLaunch = [{ kind = "command", target = "echo cannot resolve example:library:1.0; exit 1" }]
 
 [[configurations]]
+id = "user:detailed"
+name = "Detailed"
+kind = "shell"
+command = "sh"
+args = ["-c", "echo ran"]
+env = { STORED = "1" }
+env-files = [".env"]
+stop-command = "echo stopping"
+beforeLaunch = [
+  { kind = "build" },
+  { kind = "run", target = "user:greet" },
+  { kind = "command", target = "rm -rf cache" },
+  { kind = "toolWindow", target = "run" },
+]
+
+[[configurations]]
+id = "user:nocommand"
+name = "NoCommandXyz"
+kind = "shell"
+command = ""
+
+[[configurations]]
 id = "user:both"
 name = "Both"
 kind = "compound"
@@ -177,6 +199,132 @@ async fn keeps_the_output_file_when_running_or_truncated() {
         h.call_json("execute_run_configuration", json!({ "configurationName": "Greet", "waitForExit": false })).await;
     assert!(r.get("exitCode").is_none(), "{r}");
     assert!(r["fullOutputPath"].is_string());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_confirmation_shows_everything_that_runs() {
+    let h = Harness::new(&fixture()).await;
+    *h.ui.answer.lock() = Value::Bool(false);
+    let e = h
+        .call_err("execute_run_configuration", json!({ "configurationName": "Detailed", "envs": { "EXTRA": "x" } }))
+        .await;
+    assert!(e.contains("declined"), "{e}");
+    let detail = match &h.ui.asked.lock()[0] {
+        McpUiRequest::Confirm { detail, .. } => detail.clone().unwrap(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        detail,
+        "sh -c 'echo ran'\nin .\nbefore launch:\n  Build Project\n  Run 'Greet': sh -c 'echo hello $GREETING; echo \
+oops >&2; exit 3'\n  Run command: rm -rf cache\nenv files: .env\nenvironment:\n  STORED=1\nenvironment overrides:\n  \
+EXTRA=x\non stop: echo stopping"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_line_inside_a_test_runs_that_test() {
+    let h = Harness::new(&fixture()).await;
+    *h.ui.answer.lock() = Value::Bool(false);
+    // Line 3 is in the body of `test_add`: that test, not the whole file.
+    let _ = h.call_err("execute_run_configuration", json!({ "filePath": "tests/test_calc.py", "line": 3 })).await;
+    let _ = h.call_err("execute_run_configuration", json!({ "filePath": "tests/test_calc.py", "line": 6 })).await;
+    let asked = h.ui.asked.lock();
+    let subjects: Vec<&str> = asked
+        .iter()
+        .map(|r| match r {
+            McpUiRequest::Confirm { subject, .. } => subject.as_str(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(subjects, ["TestCalc.test_add", "test_calc.py"]);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_zero_timeout_returns_at_once() {
+    let h = Harness::new(&fixture()).await;
+    let r = h
+        .call_json(
+            "execute_run_configuration",
+            json!({ "configurationName": "Greet", "programArguments": "-c 'sleep 2; echo done'", "timeout": 0 }),
+        )
+        .await;
+    assert!(r.get("exitCode").is_none(), "{r}");
+    assert!(r["fullOutputPath"].is_string(), "{r}");
+    // Without waiting, `timeout` is ignored.
+    let r = h
+        .call_json(
+            "execute_run_configuration",
+            json!({ "configurationName": "Greet", "waitForExit": false, "timeout": -1 }),
+        )
+        .await;
+    assert!(r.get("exitCode").is_none(), "{r}");
+    for run in ide_host::ops::run::list(h.host()).into_iter().filter(|r| r.running) {
+        let _ = ide_host::ops::run::stop(h.host(), "main", run.id);
+    }
+
+    let asked = h.ui.asked.lock().len();
+    let r = h.call_json("execute_terminal_command", json!({ "command": "touch created.txt", "timeout": 0 })).await;
+    assert_eq!(r, json!({ "is_timed_out": true, "command_output": "" }));
+    assert!(!h.path("created.txt").exists());
+    let r = h.call_json("build_project", json!({ "timeout": -5 })).await;
+    assert_eq!(r, json!({ "isSuccess": false, "problems": [], "timedOut": true }));
+    assert_eq!(h.ui.asked.lock().len(), asked, "nothing ran, nothing was asked");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn terminal_confirmation_shows_the_configured_shell_and_variables() {
+    let settings = "[terminal]\nshellPath = \"/bin/sh -e\"\nenv = { MY_VAR = \"$PROJECT_DIR$/x\" }\n";
+    let h = Harness::new(&[(".openidea/settings.toml", settings)]).await;
+    let r = h.call_json("execute_terminal_command", json!({ "command": "echo $MY_VAR", "executeInShell": true })).await;
+    assert_eq!(r["command_output"], format!("{}/x\n", h.root.display()), "{r}");
+    match &h.ui.asked.lock()[0] {
+        McpUiRequest::Confirm { detail, .. } => assert_eq!(
+            detail.as_deref().unwrap(),
+            format!("in {root}\nshell: /bin/sh -e\nMY_VAR={root}/x", root = h.root.display())
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn terminal_output_beyond_memory_truncates_from_either_end() {
+    let h = Harness::new(&[]).await;
+    // About 21 MB, more than is kept in memory.
+    let args = |mode: &str| json!({ "command": "seq -f %.0f 1 3000000", "maxLinesCount": 4, "truncateMode": mode });
+    let marker = "<<<...content truncated...>>>";
+    let r = h.call_json("execute_terminal_command", args("END")).await;
+    assert_eq!(r["command_output"], format!("{marker}\n2999999\n3000000\n"));
+    let path = r["fullOutputPath"].as_str().unwrap().to_owned();
+    let full = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(full.lines().count(), 3_000_000);
+    assert!(full.ends_with("2999999\n3000000\n"));
+    let _ = std::fs::remove_file(path);
+    let r = h.call_json("execute_terminal_command", args("START")).await;
+    assert_eq!(r["command_output"], format!("1\n2\n3\n{marker}"));
+    let _ = std::fs::remove_file(r["fullOutputPath"].as_str().unwrap());
+    let r = h.call_json("execute_terminal_command", args("MIDDLE")).await;
+    assert_eq!(r["command_output"], format!("1\n2\n{marker}\n"));
+    let _ = std::fs::remove_file(r["fullOutputPath"].as_str().unwrap());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_launch_leaves_no_output_file() {
+    let h = Harness::new(&fixture()).await;
+    // SAFETY: getuid has no preconditions.
+    let dir = std::env::temp_dir().join(format!("openidea-mcp-{}", unsafe { libc::getuid() }));
+    let leftovers = || {
+        std::fs::read_dir(&dir)
+            .map(|d| d.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("run-NoCommandXyz")).count())
+            .unwrap_or(0)
+    };
+    let e = h.call_err("execute_run_configuration", json!({ "configurationName": "NoCommandXyz" })).await;
+    assert!(e.starts_with("Execution failed: "), "{e}");
+    assert_eq!(leftovers(), 0);
 }
 
 #[cfg(unix)]

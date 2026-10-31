@@ -85,7 +85,8 @@ Use this tool to build the project or compile files and get detailed information
 You have to use this tool after performing edits to validate if the edits are valid.
 In OpenIDEA the project's build system builds it (Maven, Gradle, Cargo, Go or TypeScript); with `filesToRebuild`, the \
 modules containing those files. Asks the user first unless brave mode is on. Problems have the project-relative \
-`file` and 1-based `line` / `column`. On timeout the build is stopped.",
+`file` and 1-based `line` / `column`; at most 300 problems are listed, and `isSuccess` is false whenever one of them \
+is an ERROR. On timeout (at most 1 hour; 0 times out at once) the build is stopped.",
         |call| async move {
             let files: Vec<String> =
                 call.str_list("filesToRebuild")?.into_iter().filter(|f| !f.trim().is_empty()).collect();
@@ -107,6 +108,10 @@ modules containing those files. Asks the user first unless brave mode is on. Pro
             }
             if targets.is_empty() {
                 targets.push(None);
+            }
+            if limit.is_zero() {
+                // JetBrains' `withTimeoutOrNull(0)`: nothing is built.
+                return Output::json(json!({ "isSuccess": false, "problems": [], "timedOut": true }));
             }
             let subject = if rebuild { "Rebuild project" } else { "Build project" };
             let detail = targets.iter().flatten().map(|p| call.display(p)).collect::<Vec<_>>().join(", ");
@@ -137,8 +142,9 @@ modules containing those files. Asks the user first unless brave mode is on. Pro
                 .filter(|m| matches!(m.severity, Severity::Error | Severity::Warning))
                 .collect();
             let mut problems: Vec<Value> = messages.iter().take(MAX_PROBLEMS).map(|m| problem(&call, m)).collect();
+            let has_errors = messages.iter().any(|m| m.severity == Severity::Error);
             let failed = results.iter().any(|r| !r.success);
-            if failed && !messages.iter().any(|m| m.severity == Severity::Error) {
+            if failed && !has_errors {
                 let tail = truncate_text(
                     console.lock().trim_end(),
                     CONSOLE_LINES,
@@ -153,7 +159,7 @@ modules containing those files. Asks the user first unless brave mode is on. Pro
                 }));
             }
             let mut result = Map::new();
-            result.insert("isSuccess".into(), (!timed_out && !failed).into());
+            result.insert("isSuccess".into(), is_success(timed_out, &results).into());
             result.insert("problems".into(), problems.into());
             if timed_out {
                 result.insert("timedOut".into(), true.into());
@@ -173,4 +179,38 @@ specified.",
         "If specified, only compile files with the specified paths. Paths are relative to the project root.",
     ))
     .param(Param::optional("timeout", ParamType::Integer, "Timeout in milliseconds"))
+}
+
+/// JetBrains' `isSuccess`: finished in time, every build succeeded and no ERROR was reported
+/// (a build tool may exit 0 after printing errors).
+fn is_success(timed_out: bool, results: &[BuildResult]) -> bool {
+    !timed_out && results.iter().all(|r| r.success && r.messages.iter().all(|m| m.severity != Severity::Error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(success: bool, severities: &[Severity]) -> BuildResult {
+        BuildResult {
+            system: ide_build::compile::BuildSystem::Cargo,
+            title: "build".into(),
+            success,
+            errors: 0,
+            warnings: 0,
+            duration_ms: 0.0,
+            messages: severities
+                .iter()
+                .map(|s| BuildMessage { severity: *s, text: "m".into(), path: None, range: None, code: None })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn an_error_problem_fails_the_build() {
+        assert!(is_success(false, &[result(true, &[Severity::Warning])]));
+        assert!(!is_success(false, &[result(true, &[Severity::Warning, Severity::Error])]));
+        assert!(!is_success(false, &[result(false, &[])]));
+        assert!(!is_success(true, &[result(true, &[])]));
+    }
 }

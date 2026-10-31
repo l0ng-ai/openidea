@@ -11,10 +11,11 @@ use crate::tools::run::timeout;
 use ide_build::compile::BuildKind;
 use ide_core::mcp::McpToolKind;
 use ide_core::{IdeError, IdeResult, RunId, Severity};
+use ide_host::Project;
 use ide_run::{OutputChunk, RunConfig};
 use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -59,20 +60,37 @@ fn describe_config(call: &Call, c: &RunConfig) -> Value {
     v
 }
 
-/// A file of the project to look for run points in: its path, `/`-separated project-relative
-/// path and current text (unsaved edits included).
-fn read_file(call: &Call, file: &str) -> IdeResult<(PathBuf, String, String)> {
-    let path = call.resolve_inside(file)?;
-    let meta = std::fs::metadata(&path).map_err(|_| IdeError::not_found(format!("File not found: {file}")))?;
+/// A file of the project to look for run points in: its `/`-separated project-relative path
+/// and current text (unsaved edits included).
+fn read_file(project: &Project, path: &Path, file: &str) -> IdeResult<(String, String)> {
+    let meta = std::fs::metadata(path).map_err(|_| IdeError::not_found(format!("File not found: {file}")))?;
     if !meta.is_file() {
         return Err(IdeError::invalid(format!("Not a file: {file}")));
     }
-    let rel = path.strip_prefix(call.root()).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-    let text = match call.project().documents.text_of(&path) {
+    let rel = path.strip_prefix(&project.root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+    let text = match project.documents.text_of(path) {
         Some(text) => text,
-        None => std::fs::read_to_string(&path).map_err(|e| IdeError::invalid(format!("Cannot read {file}: {e}")))?,
+        None => std::fs::read_to_string(path).map_err(|e| IdeError::invalid(format!("Cannot read {file}: {e}")))?,
     };
-    Ok((path, rel, text))
+    Ok((rel, text))
+}
+
+/// Reads `file` and runs `scan` (root, relative path, text) over it off the async threads:
+/// the run point patterns go over up to 400 KB of text.
+async fn scan_file<T: Send + 'static>(
+    call: &Call,
+    file: &str,
+    scan: impl FnOnce(&Path, &str, &str) -> IdeResult<T> + Send + 'static,
+) -> IdeResult<T> {
+    let path = call.resolve_inside(file)?;
+    let project = call.project().clone();
+    let file = file.to_owned();
+    call.host()
+        .blocking(move || {
+            let (rel, text) = read_file(&project, &path, &file)?;
+            scan(&project.root, &rel, &text)
+        })
+        .await
 }
 
 pub fn get_run_configurations() -> Tool {
@@ -98,22 +116,25 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
         |call| async move {
             let configs = load_configs(&call).await?;
             if let Some(file) = call.opt_str("filePath")? {
-                let (_, rel, text) = read_file(&call, &file)?;
-                let mut points: Vec<Value> = Vec::new();
-                let mut lines = std::collections::HashSet::new();
-                for t in targets::detect(&text, &rel) {
-                    if lines.contains(&t.line) {
-                        continue;
+                let points = scan_file(&call, &file, move |root, rel, text| {
+                    let mut points: Vec<Value> = Vec::new();
+                    let mut lines = std::collections::HashSet::new();
+                    for t in targets::detect(text, rel) {
+                        if lines.contains(&t.line) {
+                            continue;
+                        }
+                        if let Some(config) = targets::target_config(root, &t, rel, &configs, text) {
+                            lines.insert(t.line);
+                            points.push(json!({
+                                "line": t.line + 1,
+                                "description": format!("Run '{}'", config.name),
+                                "elementText": t.name,
+                            }));
+                        }
                     }
-                    if let Some(config) = targets::target_config(call.root(), &t, &rel, &configs, &text) {
-                        lines.insert(t.line);
-                        points.push(json!({
-                            "line": t.line + 1,
-                            "description": format!("Run '{}'", config.name),
-                            "elementText": t.name,
-                        }));
-                    }
-                }
+                    Ok(points)
+                })
+                .await?;
                 return Output::json(json!({ "filePath": file, "runPoints": points }));
             }
             let list: Vec<Value> = configs.iter().map(|c| describe_config(&call, c)).collect();
@@ -150,29 +171,36 @@ fn execution_target(name: Option<String>, file: Option<String>, line: Option<i64
     }
 }
 
-/// The temporary configuration of the run point at `file:line` (1-based): the target declared
-/// on that line, else the whole file's (its tests, its main function).
-fn config_from_code_location(call: &Call, configs: &[RunConfig], file: &str, line: i64) -> IdeResult<RunConfig> {
-    let (_, rel, text) = read_file(call, file)?;
-    if line < 1 {
-        return Err(IdeError::invalid(format!("Line number must be >= 1, got: {line}")));
-    }
-    let count = text.split('\n').count();
-    if line as usize > count {
-        return Err(IdeError::invalid(format!("Line {line} is out of range (file has {count} lines)")));
-    }
-    let root = call.root();
-    targets::detect(&text, &rel)
-        .iter()
-        .filter(|t| t.line + 1 == line as usize)
-        .find_map(|t| targets::target_config(root, t, &rel, configs, &text))
-        .or_else(|| targets::context_config(root, &rel, configs, &text))
-        .ok_or_else(|| {
-            IdeError::not_found(format!(
-                "No run configuration could be created from {file}:{line}. Use get_run_configurations with filePath \
-to find valid run locations."
-            ))
-        })
+/// The temporary configuration of the run point at `file:line` (1-based): the innermost target
+/// enclosing that line (as JetBrains walks up to the enclosing test), else the whole file's
+/// (its tests, its main function).
+async fn config_from_code_location(
+    call: &Call,
+    configs: Vec<RunConfig>,
+    file: &str,
+    line: i64,
+) -> IdeResult<RunConfig> {
+    let file_name = file.to_owned();
+    scan_file(call, file, move |root, rel, text| {
+        if line < 1 {
+            return Err(IdeError::invalid(format!("Line number must be >= 1, got: {line}")));
+        }
+        let count = text.split('\n').count();
+        if line as usize > count {
+            return Err(IdeError::invalid(format!("Line {line} is out of range (file has {count} lines)")));
+        }
+        targets::enclosing(text, rel, line as usize - 1)
+            .iter()
+            .find_map(|t| targets::target_config(root, t, rel, &configs, text))
+            .or_else(|| targets::context_config(root, rel, &configs, text))
+            .ok_or_else(|| {
+                IdeError::not_found(format!(
+                    "No run configuration could be created from {file_name}:{line}. Use get_run_configurations with \
+filePath to find valid run locations."
+                ))
+            })
+    })
+    .await
 }
 
 /// Applies the one-off overrides (JetBrains' `prepareRunConfigurationForExecution`): a missing or
@@ -394,6 +422,83 @@ async fn before_launch(
     Ok(None)
 }
 
+/// The before-launch tasks of `config` as the confirmation lists them, nested ones indented.
+fn describe_before_launch(
+    config: &RunConfig,
+    configs: &[RunConfig],
+    depth: usize,
+    chain: &mut Vec<String>,
+    out: &mut String,
+) {
+    chain.push(config.id.clone());
+    let indent = "  ".repeat(depth + 1);
+    for task in &config.extras.before_launch {
+        let target = task.target.as_str();
+        match task.kind.as_str() {
+            "build" => out.push_str(&format!("\n{indent}Build Project")),
+            "command" => out.push_str(&format!("\n{indent}Run command: {target}")),
+            "run" => match configs.iter().find(|c| c.id == target) {
+                Some(other) => {
+                    let line = if other.extras.compound.is_empty() { command_line(other) } else { "compound".into() };
+                    out.push_str(&format!("\n{indent}Run '{}': {line}", other.name));
+                    if !chain.contains(&other.id) {
+                        describe_before_launch(other, configs, depth + 1, chain, out);
+                    }
+                }
+                None => out.push_str(&format!("\n{indent}Run '{target}' (missing)")),
+            },
+            "toolWindow" => {}
+            "tool" => out.push_str(&format!("\n{indent}External tool '{target}'")),
+            other => out.push_str(&format!("\n{indent}{other} '{target}'")),
+        }
+    }
+    chain.pop();
+}
+
+/// What the user approves for `config` besides its command line: everything else that runs
+/// or applies — before-launch tasks, the stored environment (for a configuration made from
+/// code, the one of the configuration it derives from), `.env` files, the `envs` overrides
+/// (`NODE_OPTIONS`, `PATH`, ...), the stop command and a remote run target.
+fn confirmation_detail(
+    config: &RunConfig,
+    cwd: &str,
+    stored_env: &std::collections::BTreeMap<String, String>,
+    overrides: &[(String, String)],
+    configs: &[RunConfig],
+) -> String {
+    let mut detail = format!("{}\nin {cwd}", command_line(config));
+    if let Some(target) = config.extras.target.as_deref().filter(|t| !t.is_empty()) {
+        detail.push_str(&format!("\non run target {target}"));
+    }
+    let mut tasks = String::new();
+    describe_before_launch(config, configs, 0, &mut Vec::new(), &mut tasks);
+    if !tasks.is_empty() {
+        detail.push_str(&format!("\nbefore launch:{tasks}"));
+    }
+    if !config.extras.env_files.is_empty() {
+        detail.push_str(&format!("\nenv files: {}", config.extras.env_files.join(", ")));
+    }
+    if !config.extras.include_system_env {
+        detail.push_str("\nwithout the system environment");
+    }
+    if !stored_env.is_empty() {
+        detail.push_str("\nenvironment:");
+        for (k, v) in stored_env {
+            detail.push_str(&format!("\n  {k}={v}"));
+        }
+    }
+    if !overrides.is_empty() {
+        detail.push_str("\nenvironment overrides:");
+        for (k, v) in overrides {
+            detail.push_str(&format!("\n  {k}={v}"));
+        }
+    }
+    if let Some(stop) = config.extras.stop_command.as_deref().filter(|s| !s.trim().is_empty()) {
+        detail.push_str(&format!("\non stop: {stop}"));
+    }
+    detail
+}
+
 fn execution_failed(details: &[Option<String>]) -> IdeError {
     let details: Vec<&str> = details.iter().flatten().map(String::as_str).collect();
     IdeError::invalid(format!("Execution failed: {}", details.join("\n")))
@@ -434,7 +539,8 @@ tool window; output files are private and deleted after a day.",
                 call.opt_i64("line")?,
             )?;
             let wait = call.flag("waitForExit", true)?;
-            let limit = timeout(&call, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)?;
+            // As JetBrains: `timeout` is ignored without waiting, and 0 returns without waiting.
+            let limit = if wait { Some(timeout(&call, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)?) } else { None };
             let envs = call.args.get("envs").filter(|v| !v.is_null()).map(|_| call.str_map("envs")).transpose()?;
             let configs = load_configs(&call).await?;
             let mut config = match &target {
@@ -443,10 +549,12 @@ tool window; output files are private and deleted after a day.",
                     .find(|c| c.name == *name)
                     .cloned()
                     .ok_or_else(|| IdeError::not_found(format!("Run configuration with name '{name}' not found.")))?,
-                ExecutionTarget::ByContext(file, line) => config_from_code_location(&call, &configs, file, *line)?,
+                ExecutionTarget::ByContext(file, line) => {
+                    config_from_code_location(&call, configs.clone(), file, *line).await?
+                }
             };
-            // The user approves the environment overrides too (`NODE_OPTIONS`, `PATH`, ...).
-            let env_detail: String = envs.iter().flatten().map(|(k, v)| format!("\n{k}={v}")).collect();
+            let stored_env = config.env.clone();
+            let overrides: Vec<(String, String)> = envs.clone().unwrap_or_default();
             apply_overrides(
                 &mut config,
                 call.root(),
@@ -466,21 +574,29 @@ one by one",
                 Some(p) => call.root().join(p),
                 None => call.root().to_path_buf(),
             };
-            call.confirm(&config.name, Some(format!("{}\nin {}{env_detail}", command_line(&config), call.display(&cwd))))
-                .await?;
+            let detail = confirmation_detail(&config, &call.display(&cwd), &stored_env, &overrides, &configs);
+            call.confirm(&config.name, Some(detail)).await?;
 
             let mut errors = BuildErrors::default();
             if let Some(reason) = before_launch(&call, &config, &configs, &mut Vec::new(), &mut errors).await? {
                 return Err(execution_failed(&[errors.text(), Some(reason)]));
             }
             let collector = Arc::new(Mutex::new(OutputCollector::create(&config.name)?));
+            let output_path = collector.lock().path.clone();
             let sink = collector.clone();
             let emit = process_output(move |text| sink.lock().append(text));
-            let info = ide_host::ops::run::start(&call.host(), call.window(), config, emit)
-                .await
-                .map_err(|e| execution_failed(&[errors.text(), Some(e.message)]))?;
+            let info = match ide_host::ops::run::start(&call.host(), call.window(), config, emit).await {
+                Ok(info) => info,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&output_path);
+                    return Err(execution_failed(&[errors.text(), Some(e.message)]));
+                }
+            };
 
-            let exit = if wait { wait_exit(&call, info.id, Some(Instant::now() + limit)).await? } else { None };
+            let exit = match limit {
+                Some(limit) if !limit.is_zero() => wait_exit(&call, info.id, Some(Instant::now() + limit)).await?,
+                _ => None,
+            };
             let c = collector.lock();
             let mut result = Map::new();
             if let Some(Some(code)) = exit {
@@ -547,7 +663,7 @@ mod tests {
             kind: "shell".into(),
             command: "prog".into(),
             args: vec!["a".into()],
-            cwd: Some(PathBuf::from("sub").into()),
+            cwd: Some(std::path::PathBuf::from("sub").into()),
             env: [("A".to_owned(), "1".to_owned())].into(),
             detected: false,
             is_test: false,
