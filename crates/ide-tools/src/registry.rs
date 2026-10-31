@@ -440,6 +440,7 @@ pub static TOOLS: &[ToolSpec] = &[
                 rule(Linux, X64, "terraform-ls_*_linux_amd64.zip"),
                 rule(Linux, Arm64, "terraform-ls_*_linux_arm64.zip"),
                 rule(Windows, X64, "terraform-ls_*_windows_amd64.zip"),
+                rule(Windows, Arm64, "terraform-ls_*_windows_arm64.zip"),
             ],
             locate: &["terraform-ls"],
         },

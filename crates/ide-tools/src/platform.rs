@@ -195,6 +195,7 @@ mod tests {
         let platform = Platform { os: Os::Windows, arch: Arch::Arm64 };
         for (tool, asset) in [
             ("zls", "zls-aarch64-windows.zip"),
+            ("terraform-ls", "terraform-ls_0.39.1_windows_arm64.zip"),
             ("taplo", "taplo-windows-aarch64.zip"),
             ("buf", "buf-Windows-arm64.zip"),
             ("texlab", "texlab-aarch64-windows.zip"),
