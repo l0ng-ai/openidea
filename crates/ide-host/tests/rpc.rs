@@ -112,6 +112,14 @@ async fn serves_projects_files_documents_search_and_runs() {
     invoke(&peer, "doc_save", json!({ "doc": id })).await.unwrap();
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "print('needle')\nprint('more')\n");
 
+    let outside = tmp.path().join("outside.txt");
+    std::fs::write(&outside, "original\n").unwrap();
+    let external = invoke(&peer, "doc_open", json!({ "path": outside })).await.unwrap();
+    std::fs::write(&outside, "external change\n").unwrap();
+    invoke(&peer, "doc_sync_from_disk", json!({})).await.unwrap();
+    let snapshot = invoke(&peer, "doc_snapshot", json!({ "doc": external["id"] })).await.unwrap();
+    assert_eq!(snapshot["text"], "external change\n");
+
     // Commands shared with the desktop shell (camelCase argument names, as Tauri takes them).
     invoke(&peer, "doc_set_line_ending", json!({ "doc": id, "lineEnding": "crLf" })).await.unwrap();
     invoke(&peer, "doc_save", json!({ "doc": id })).await.unwrap();

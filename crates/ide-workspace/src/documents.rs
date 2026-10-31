@@ -791,6 +791,21 @@ impl Documents {
         })
     }
 
+    /// Re-checks open file buffers, including files outside the watched roots.
+    /// Call from a blocking worker; unchanged files only need their metadata.
+    pub fn sync_from_disk(&self) {
+        let slots: Vec<Slot> = self.registry.lock().docs.values().map(|e| e.slot.clone()).collect();
+        let paths: Vec<PathBuf> = slots
+            .iter()
+            .filter_map(|slot| {
+                let st = slot.lock();
+                (!st.closed && st.uri.is_none() && !st.binary && !ide_vfs::is_archive_path(&st.path))
+                    .then(|| st.path.clone())
+            })
+            .collect();
+        self.on_disk_changed(&paths);
+    }
+
     /// Re-reads from disk after an external change. Clean documents reload
     /// silently; dirty ones are left alone and reported via `IdeEvent::Notify`.
     /// Changes matching our own last save are ignored.
@@ -798,6 +813,9 @@ impl Documents {
         for path in paths {
             let Some(id) = self.by_path(path) else { continue };
             let result = self.with_doc(id, |st| {
+                if st.uri.is_some() || st.binary || ide_vfs::is_archive_path(&st.path) {
+                    return Ok(());
+                }
                 let Ok(meta) = std::fs::metadata(&st.path) else { return Ok(()) };
                 let mtime = ide_vfs::mtime_ms(&meta);
                 if mtime == st.disk_mtime && meta.len() == st.disk_len {

@@ -72,6 +72,7 @@ import {
   type TabsState,
 } from "./model/tabs";
 import { DocumentManager, useDocMeta } from "./model/document";
+import { installDiskSync } from "./diskSync";
 import {
   closedDocuments,
   combinedError,
@@ -313,6 +314,13 @@ export class EditorController implements SlotHost {
     };
     const onPageHide = () => this.saveSession();
     if (typeof window !== "undefined") {
+      if (this.manager.backend.syncFromDisk)
+        this.disposers.push(
+          installDiskSync(
+            () => this.manager.backend.syncFromDisk!(),
+            () => !this.closeSession,
+          ),
+        );
       window.addEventListener("blur", onWindowBlur);
       window.addEventListener("pagehide", onPageHide);
       window.addEventListener("beforeunload", onPageHide);
