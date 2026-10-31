@@ -3,7 +3,7 @@
  * nodes (filtering, sorting, IDEA's "Compact Middle Packages") and plans the
  * incremental refresh for `fsChanged` events. No React, no IPC.
  */
-import type { FileEntry } from "@/bindings";
+import type { FileEntry, OutlineItem } from "@/bindings";
 import { isIgnoredName } from "@/platform/ignoredNames";
 import { ancestorsWithin, isInside, isSameOrInside, nameOf, parentOf, relativeTo } from "./paths";
 
@@ -54,6 +54,8 @@ export interface ProjectNode {
   group?: boolean;
   /** Library sources: no new / rename / move / delete. */
   readOnly?: boolean;
+  /** A declaration of the file itself ("Show Members"); navigating lands on its `selection_range`. */
+  member?: OutlineItem;
 }
 
 export interface TreeModel {
@@ -274,6 +276,42 @@ export function pathOfKey(key: string): string {
 /** The key of `path` in the same subtree as the node keyed `like`. */
 export function keyLike(like: string, path: string): string {
   return isLibKey(like) ? like.slice(0, like.indexOf(LIB_SEP, LIB_PREFIX.length) + 1) + path : path;
+}
+
+// ---------------------------------------------------------------------------
+// "Show Members": a file's declarations as rows below the file
+
+/**
+ * Key prefix of member rows (`\0sym:<file>\0<kind>:<name>#<n>`): never a path,
+ * so file operations resolving keys through `byKey` skip them naturally.
+ */
+export const MEMBER_PREFIX = "\0sym:";
+
+/** The key of a member row; `n` disambiguates same-named siblings. */
+export function memberKey(file: string, item: OutlineItem, n = 0): string {
+  return `${MEMBER_PREFIX}${file}\u0000${item.kind}:${item.name}${n ? `#${n}` : ""}`;
+}
+
+/** The member rows of a file's outline, nested symbols as their parent row's children. */
+export function memberNodes(file: string, items: readonly OutlineItem[]): ProjectNode[] {
+  const seen = new Map<string, number>();
+  return items.map((item) => {
+    const n = seen.get(item.name) ?? 0;
+    seen.set(item.name, n + 1);
+    return {
+      key: memberKey(file, item, n),
+      path: file,
+      chain: [],
+      label: item.name,
+      dir: false,
+      root: false,
+      entry: null,
+      ignored: false,
+      excluded: false,
+      symlink: false,
+      member: item,
+    };
+  });
 }
 
 /**
