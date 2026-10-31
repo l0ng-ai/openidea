@@ -358,6 +358,18 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     }
 
     if name == "gopls" {
+        let build = crate::go::build_settings(&s.languages.go.build_tags);
+        let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
+        // gopls retains omitted keys on reconfiguration. Explicit empty values
+        // restore defaults when the last project constraint is cleared.
+        let init = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok());
+        for (key, default) in [("buildFlags", json!([])), ("env", json!({}))] {
+            if settings.get(key).is_none() {
+                settings[key] = init.as_ref().and_then(|v| v.get(key)).cloned().unwrap_or(default);
+            }
+        }
+        merge(&mut settings, build);
+        cfg.settings = Some(settings);
         if let Some(goroot) = goroot(root, s) {
             path_dirs.push(goroot.join("bin"));
             cfg.env.insert("GOROOT".into(), goroot.to_string_lossy().into_owned());

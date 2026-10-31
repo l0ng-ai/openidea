@@ -5,6 +5,26 @@
 import { useMemo } from "react";
 import { useProject } from "./project";
 
+export interface GoBuildTags {
+  os: string;
+  arch: string;
+  version: string;
+  compiler: string;
+  cgo: string;
+  custom: string;
+  experiments: string;
+}
+
+const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
+  os: "",
+  arch: "",
+  version: "",
+  compiler: "",
+  cgo: "",
+  custom: "",
+  experiments: "",
+};
+
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
   node: { interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
@@ -15,7 +35,7 @@ export interface LanguagesValid {
     checkCommand: "check" | "clippy";
     rustfmtArgs: string;
   };
-  go: { goroot: string; gopath: string };
+  go: { goroot: string; gopath: string; buildTags: GoBuildTags };
   typescript: { version: string };
   java: {
     jdk: string;
@@ -53,7 +73,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
   node: { interpreter: "", packageManager: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
-  go: { goroot: "", gopath: "" },
+  go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS },
   typescript: { version: "bundled" },
   java: {
     jdk: "",
@@ -114,6 +134,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const node = obj(l.node);
   const rust = obj(l.rust);
   const go = obj(l.go);
+  const tags = obj(go.buildTags);
   const ts = obj(l.typescript);
   const java = obj(l.java);
   const maven = obj(java.maven);
@@ -134,7 +155,13 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       checkCommand: oneOf(rust.checkCommand, ["check", "clippy"] as const, d.rust.checkCommand),
       rustfmtArgs: typeof rust.rustfmtArgs === "string" ? rust.rustfmtArgs : d.rust.rustfmtArgs,
     },
-    go: { goroot: text(go.goroot, d.go.goroot), gopath: text(go.gopath, d.go.gopath) },
+    go: {
+      goroot: text(go.goroot, d.go.goroot),
+      gopath: text(go.gopath, d.go.gopath),
+      buildTags: Object.fromEntries(
+        Object.entries(DEFAULT_GO_BUILD_TAGS).map(([key, value]) => [key, text(tags[key], value)]),
+      ) as unknown as GoBuildTags,
+    },
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
     java: {
       jdk: text(java.jdk, d.java.jdk),

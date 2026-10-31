@@ -967,3 +967,43 @@ fn node_on_the_search_path_keeps_its_version_manager_as_source() {
     assert_eq!(source("/home/me/.local/bin/node"), "path");
     assert_eq!(source("/usr/bin/node"), "system");
 }
+
+#[test]
+fn go_constraints_change_only_protocol_settings() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    let mut original = server("gopls");
+    original.settings = Some(json!({"analyses":{"unusedparams":true}}));
+    let mut defaults = original.clone();
+    configure_server(&mut defaults, tmp.path(), tmp.path(), &settings);
+    assert_eq!(defaults.settings, Some(json!({"analyses":{"unusedparams":true}, "buildFlags":[], "env":{}})));
+    defaults.settings = original.settings.clone();
+    assert_eq!(defaults, original);
+    settings.languages.go.build_tags.custom = "integration".into();
+    settings.languages.go.build_tags.os = "linux".into();
+    let mut configured = original.clone();
+    configure_server(&mut configured, tmp.path(), tmp.path(), &settings);
+    assert_eq!(
+        configured.settings.take(),
+        Some(json!({
+            "analyses":{"unusedparams":true}, "buildFlags":["-tags=integration"], "env":{"GOOS":"linux"}
+        }))
+    );
+    configured.settings = original.settings.clone();
+    assert_eq!(configured, original, "launch configuration stays unchanged for in-place reconfiguration");
+    let mut other = server("rust-analyzer");
+    configure_server(&mut other, tmp.path(), tmp.path(), &settings);
+    assert_eq!(other.settings, None);
+}
+
+#[test]
+fn go_empty_constraints_preserve_explicit_server_defaults() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("gopls");
+    cfg.initialization_options =
+        Some(toml::Value::try_from(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})).unwrap());
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(cfg.settings, Some(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})));
+}

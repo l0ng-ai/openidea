@@ -546,6 +546,21 @@ pub struct GoSettings {
     pub goroot: String,
     /// Empty = `go env GOPATH`.
     pub gopath: String,
+    pub build_tags: GoBuildTags,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GoBuildTags {
+    /// Empty values inherit the selected toolchain's defaults.
+    pub os: String,
+    pub arch: String,
+    pub version: String,
+    pub compiler: String,
+    /// Empty = automatic, "1" = enabled, "0" = disabled.
+    pub cgo: String,
+    pub custom: String,
+    pub experiments: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]

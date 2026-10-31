@@ -5228,5 +5228,12 @@
   "For clipboard images: {timestamp} becomes YYYYMMDD-HHmmss. Source file names are preserved.": "剪贴板图片中的 {timestamp} 替换为 YYYYMMDD-HHmmss。保留源文件名称。",
   "Image folder must be relative.": "图片文件夹必须使用相对路径。",
   "Image exceeds 16 MB.": "图片超过 16 MB。",
-  "Cannot insert image": "无法插入图片"
+  "Cannot insert image": "无法插入图片",
+  "Build Tags": "构建标签",
+  "Go Version": "Go 版本",
+  "CGO": "CGO",
+  "Custom Tags": "自定义标签",
+  "Experiments": "实验功能",
+  "Open a project to configure Go build tags.": "打开项目以配置 Go 构建标签。",
+  "This Go file is excluded by the current build constraints.": "当前构建约束排除了此 Go 文件。"
 }
