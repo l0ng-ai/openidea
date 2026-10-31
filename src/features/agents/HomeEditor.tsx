@@ -117,7 +117,14 @@ export function HomeEditor() {
               <ConfigPickers config={provider?.config ?? []} values={draft.config} onChange={setOption} />
             </>
           }
-          actions={<SubmitButton label={starting ? "Starting…" : "Start"} disabled={!canStart} onClick={start} />}
+          actions={
+            <SubmitButton
+              label={starting ? "Starting…" : "Start"}
+              pending={starting}
+              disabled={!canStart}
+              onClick={start}
+            />
+          }
         />
         <div className={styles.where}>
           {members.length > 1 ? (

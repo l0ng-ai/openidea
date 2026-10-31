@@ -1189,6 +1189,7 @@ function SessionComposer({
             )}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
+              pending={sending}
               variant={busy ? "secondary" : "primary"}
               disabled={!canSend(composer) || sending || task.status === "archived"}
               onClick={() => send(false)}
