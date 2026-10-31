@@ -11,6 +11,7 @@
     "--bg-app": "#14171c",
     "--bg-elev": "#1b2027",
     "--bg-popup": "#1f252e",
+    "--bg-floating-toolbar": "#1f252e",
     "--bg-hover": "#262c33",
     "--bg-selected": "#22484b",
     "--bg-selected-strong": "#285a5d",

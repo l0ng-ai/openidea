@@ -432,7 +432,9 @@ export async function resolveFileEditor(path: string): Promise<FileEditorResolut
 export interface TextEditorWrapperContribution {
   id: string;
   matches(path: string): boolean;
-  component: ComponentType<{ path: string; tabId: string; children: ReactNode }>;
+  component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
+  /** Layout controls in the tab strip; the wrapper supplies a floating fallback when tabs are hidden. */
+  tabActions?: ComponentType<{ path: string; tabId: string }>;
 }
 
 export const useTextEditorWrappers = create<{ wrappers: Map<string, TextEditorWrapperContribution> }>(() => ({

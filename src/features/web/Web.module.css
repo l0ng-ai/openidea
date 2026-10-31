@@ -15,28 +15,12 @@
   border-right: 1px solid var(--border-editor-tabs, var(--border));
 }
 
-/* Below the inspection widget; shown while the pointer is over the editor, like IDEA. */
-.bar {
-  position: absolute;
-  top: 32px;
-  right: 20px;
-  z-index: 5;
+.actions {
   display: flex;
-  gap: 1px;
-  padding: 2px;
-  border: 1px solid var(--border-popup);
-  border-radius: var(--radius-toolbar-button);
-  background: var(--bg-popup);
-  box-shadow: var(--shadow-popup);
-  opacity: 0;
-  transition: opacity 120ms ease;
+  align-items: center;
 }
-.editor:hover .bar {
-  opacity: 0.85;
-}
-.bar:hover,
-.bar:focus-within {
-  opacity: 1;
+.browserBar {
+  top: var(--floating-toolbar-browser-top);
 }
 
 .preview {
