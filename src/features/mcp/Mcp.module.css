@@ -1,0 +1,75 @@
+/* Confirmation dialog */
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.tool {
+  color: var(--fg);
+}
+.mono {
+  font-family: var(--font-mono);
+}
+.subject {
+  max-height: 180px;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-input);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code, var(--fs-small));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.detail {
+  color: var(--fg-subtle);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.hint {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.link:hover {
+  text-decoration: underline;
+}
+.waiting {
+  color: var(--fg-subtle);
+}
+
+/* Status bar widget */
+.statusItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.statusItem:hover {
+  background: var(--bg-hover);
+}
+.statusError {
+  color: var(--danger);
+}
+.statusStopped {
+  color: var(--fg-subtle);
+}
