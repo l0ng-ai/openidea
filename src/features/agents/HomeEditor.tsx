@@ -5,10 +5,11 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
-import { Button, Icon, Select, T, type SelectOption } from "@/ui";
+import { Icon, Select, T, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
 import { maybeEditorService } from "@/workbench/contributions";
 import { Composer } from "./Composer";
+import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { providerIcon } from "./model";
@@ -117,9 +118,12 @@ export function HomeEditor() {
             </>
           }
           actions={
-            <Button variant="primary" size="small" disabled={!canStart} onClick={start}>
-              {starting ? "Starting…" : "Start"}
-            </Button>
+            <SubmitButton
+              label={starting ? "Starting…" : "Start"}
+              pending={starting}
+              disabled={!canStart}
+              onClick={start}
+            />
           }
         />
         <div className={styles.where}>
