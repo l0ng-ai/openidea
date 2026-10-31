@@ -66,6 +66,8 @@ The confirmation is not a sandbox. Edit tools change files without asking, and t
 
 The server serves at most 64 connections at once (more get `503`) and keeps at most 256 sessions; when they are all busy with an open stream or a running call, a new session is refused until one ends.
 
+In a project in **Restricted Mode** (not trusted yet), only the tools that read, search or change files the way the editor does work (`read_file`, `list_directory_tree`, `search_text`, `search_regex`, `search_file`, `create_new_file`, `apply_patch`, `open_file_in_editor`, `get_all_open_file_paths`, `get_project_modules`, `get_ide_diagnostics` and the `execute_tool` router for those). Tools that start language servers, git, builds or processes answer that the project has to be trusted first.
+
 ## Limitations
 
 - Runs started by `execute_run_configuration` do not appear in the Run tool window, and before-launch tasks are not run.
