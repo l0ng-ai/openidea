@@ -122,7 +122,13 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
   // Measuring the allocated slot includes all neighbouring toolbar/caption controls.
   useLayoutEffect(() => {
     if (!merged || !slot.current || !measure.current) return;
-    const update = () => setFits(menus.length > 0 && slot.current!.clientWidth >= measure.current!.scrollWidth);
+    const update = () => {
+      const next = menus.length > 0 && slot.current!.clientWidth >= measure.current!.scrollWidth;
+      setFits(next);
+      // Each presentation's menu closes with it, and must not reopen when it returns.
+      if (next) setExpanded(false);
+      else setOpen(null);
+    };
     const observer = new ResizeObserver(update);
     observer.observe(slot.current);
     observer.observe(measure.current);
@@ -161,8 +167,11 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
         close();
         if (persistent) focusTitle(focused);
       } else if (persistent) {
-        previousFocus.current = document.activeElement as HTMLElement;
-        focusTitle(0);
+        if (bar?.contains(document.activeElement)) previousFocus.current?.focus();
+        else {
+          previousFocus.current = document.activeElement as HTMLElement;
+          focusTitle(0);
+        }
       } else void expand();
     }),
   );

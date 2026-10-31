@@ -156,6 +156,45 @@ describe("main menu presentation", () => {
     expect(editor).toHaveFocus();
   });
 
+  it("returns focus on a second lone Alt", async () => {
+    setStyle("merged");
+    render(
+      <>
+        <button>Editor</button>
+        <MainMenu />
+      </>,
+    );
+    await screen.findByRole("menubar");
+    const editor = screen.getByRole("button", { name: "Editor" });
+    editor.focus();
+    alt();
+    expect(titles().getByRole("menuitem", { name: "File" })).toHaveFocus();
+    alt();
+    expect(editor).toHaveFocus();
+    alt();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(editor).toHaveFocus();
+  });
+
+  it("does not reopen a title's menu after the titles collapse and return", async () => {
+    setStyle("merged");
+    render(<MainMenu />);
+    await screen.findByRole("menubar");
+    fireEvent.click(titles().getByRole("menuitem", { name: "Edit" }));
+    expect(await screen.findByRole("menu", { name: "Edit" })).toBeInTheDocument();
+    act(() => {
+      available = 100;
+      resize();
+    });
+    expect(screen.queryByRole("menu")).toBeNull();
+    act(() => {
+      available = 500;
+      resize();
+    });
+    expect(screen.getByRole("menubar")).toBeInTheDocument();
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("falls back to a hamburger popup when narrow and restores titles when space returns", async () => {
     available = 100;
     setStyle("merged");
