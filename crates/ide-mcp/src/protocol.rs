@@ -180,7 +180,8 @@ async fn call_tool(shared: &Arc<Shared>, session: Option<&str>, id: Value, mut p
     let cancel = shared.stop.lock().child_token();
     let key = inflight_key(session, &id);
     shared.inflight.lock().insert(key.clone(), cancel.clone());
-    let call = Call { shared: shared.clone(), target, args, client, tool: tool.name, cancel: cancel.clone() };
+    let call =
+        Call { shared: shared.clone(), target, args, client, tool: tool.name, cancel: cancel.clone(), progress: None };
     let handler = tool.handler.clone();
     // Its own task: a panicking tool fails the call, not the connection.
     let outcome = tokio::spawn(async move { handler(call).await }).await;

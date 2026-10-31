@@ -63,6 +63,8 @@ pub struct Tool {
     pub description: &'static str,
     pub kind: McpToolKind,
     pub params: Vec<Param>,
+    /// JSON schema of `structuredContent` (MCP `outputSchema`), when the tool declares one.
+    pub output_schema: Option<Value>,
     pub handler: Handler,
 }
 
@@ -72,11 +74,24 @@ impl Tool {
         F: Fn(Call) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = IdeResult<Output>> + Send + 'static,
     {
-        Self { name, description, kind, params: Vec::new(), handler: Arc::new(move |call| Box::pin(handler(call))) }
+        Self {
+            name,
+            description,
+            kind,
+            params: Vec::new(),
+            output_schema: None,
+            handler: Arc::new(move |call| Box::pin(handler(call))),
+        }
     }
 
     pub fn param(mut self, param: Param) -> Self {
         self.params.push(param);
+        self
+    }
+
+    /// Declares the JSON schema of the tool's structured result.
+    pub fn output(mut self, schema: Value) -> Self {
+        self.output_schema = Some(schema);
         self
     }
 
@@ -105,7 +120,7 @@ impl Tool {
 
     /// The `tools/list` entry.
     pub fn descriptor(&self) -> Value {
-        json!({
+        let mut d = json!({
             "name": self.name,
             "description": self.description,
             "inputSchema": self.input_schema(),
@@ -114,7 +129,11 @@ impl Tool {
                 "destructiveHint": self.kind != McpToolKind::Read,
                 "openWorldHint": false,
             },
-        })
+        });
+        if let Some(schema) = &self.output_schema {
+            d["outputSchema"] = schema.clone();
+        }
+        d
     }
 }
 
@@ -149,7 +168,12 @@ pub struct Call {
     pub tool: &'static str,
     /// Cancelled when the client sends `notifications/cancelled` or the server stops.
     pub cancel: CancellationToken,
+    /// Where `notifications/progress` go when the client asked for them (`_meta.progressToken`).
+    pub progress: Option<ProgressSink>,
 }
+
+/// Receives `(progress, total, message)` for `notifications/progress`.
+pub type ProgressSink = Arc<dyn Fn(f64, Option<f64>, Option<String>) + Send + Sync>;
 
 impl Call {
     pub fn host(&self) -> Arc<Host> {
@@ -171,6 +195,13 @@ impl Call {
 
     pub fn root(&self) -> &Path {
         &self.target.project.root
+    }
+
+    /// Reports progress of a long call; a no-op when the client did not ask for progress.
+    pub fn report_progress(&self, progress: f64, total: Option<f64>, message: Option<&str>) {
+        if let Some(sink) = &self.progress {
+            sink(progress, total, message.map(str::to_owned));
+        }
     }
 
     // --- arguments -------------------------------------------------------------
