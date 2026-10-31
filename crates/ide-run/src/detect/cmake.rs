@@ -130,7 +130,7 @@ fn targets(root: &Path, build: &Path, dir: &str, prefix: &str, out: &mut Vec<Run
             if !name.is_empty() {
                 args.extend(["--config", name]);
             }
-            let mut build_config =
+            let build_config =
                 config(&target_build_id, format!("Build {target_name} ({dir} {name})"), "cmake", "cmake", &args);
             out.push(build_config);
             let binary = build.join(artifact);

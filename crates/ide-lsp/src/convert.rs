@@ -714,10 +714,8 @@ pub fn goto_response(conv: &Conv, r: lsp::GotoDefinitionResponse) -> Vec<Locatio
 pub fn dedup_locations(v: &mut Vec<Location>) {
     let mut canonical = std::collections::HashMap::new();
     for location in v.iter_mut().filter(|l| l.uri.is_none()) {
-        let path = canonical
-            .entry(location.path.clone())
-            .or_insert_with(|| dunce::canonicalize(&location.path).ok())
-            .clone();
+        let path =
+            canonical.entry(location.path.clone()).or_insert_with(|| dunce::canonicalize(&location.path).ok()).clone();
         if let Some(path) = path {
             location.path = path.into();
         }
