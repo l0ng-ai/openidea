@@ -1,0 +1,4 @@
+services:
+    cache: Symfony\Component\Cache\Adapter\FilesystemAdapter(directory: %tempDir%/cache)
+    mailer: Nette\Mail\SmtpMailer(host: smtp.example.com, port: 587, encryption: tls)
+    simple: Foo\Bar(arg1, arg2, key: value)

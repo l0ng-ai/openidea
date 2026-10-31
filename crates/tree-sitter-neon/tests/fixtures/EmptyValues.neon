@@ -1,0 +1,9 @@
+one:
+two:
+three: null
+list:
+    -
+    -
+inline_empty: {a:, b:}
+inline_list: []
+inline_hash: {}

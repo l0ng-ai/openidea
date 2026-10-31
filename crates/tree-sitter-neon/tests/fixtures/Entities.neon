@@ -1,0 +1,8 @@
+simple: Foo\Bar()
+with_args: Foo\Bar(1, 2, 3)
+with_named: Foo\Bar(type: int, nullable: true)
+nested_entity: Foo\Bar(Baz\Qux())
+empty_parens: SomeClass()
+inline_entity: [Foo(), Bar()]
+entity_value:
+    factory: Foo\Bar\Factory(arg1, key: val)

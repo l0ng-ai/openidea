@@ -1,0 +1,33 @@
+strings:
+    simple: hello
+    quoted_single: 'hello world'
+    quoted_double: "hello world"
+    empty_single: ''
+    empty_double: ""
+    with_hash: 'value # not a comment'
+    with_colon: 'key: value'
+    special_chars: hello-world
+    dash_start: -abc
+    at_prefix: @service
+    unquoted_colon: a:bc
+
+numbers:
+    integer: 42
+    negative: -1
+    float: 3.14
+    negative_float: -1.5
+    zero: 0
+
+booleans:
+    bool_true: true
+    bool_false: false
+    bool_yes: yes
+    bool_no: no
+    bool_TRUE: TRUE
+    bool_FALSE: FALSE
+    bool_null: null
+    bool_NULL: NULL
+
+nulls:
+    explicit: null
+    empty_value:

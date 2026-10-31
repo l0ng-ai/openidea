@@ -921,6 +921,17 @@ fn outline_more_languages() {
         ",
     );
     check_outline(
+        "neon",
+        "parameters:\n    debug: true\nservices:\n    - a: Foo(x=1)\n      b: @c::d\n",
+        "
+        Key parameters
+          Key debug
+        Key services
+          Key a
+          Key b
+        ",
+    );
+    check_outline(
         "cmake",
         "project(Foo)\nfunction(my_fn arg)\n  message(${arg})\nendfunction()\nadd_executable(app main.c)\n",
         "
@@ -1104,6 +1115,14 @@ fn folding_swift_control_flow_and_haskell_binds() {
     assert_eq!(
         folds("haskell", "main :: IO ()\nmain = do\n  putStrLn \"a\"\n  putStrLn \"b\"\n"),
         vec![(1, 3, FoldKind::Region)]
+    );
+}
+
+#[test]
+fn folding_neon() {
+    assert_eq!(
+        folds("neon", "a:\n    b: 1\n    c:\n        - d\nmulti: \"\"\"\n    x\n    \"\"\"\n"),
+        vec![(0, 3, FoldKind::Region), (2, 3, FoldKind::Region), (4, 6, FoldKind::Region)]
     );
 }
 

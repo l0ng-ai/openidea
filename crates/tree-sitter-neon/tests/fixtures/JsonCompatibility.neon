@@ -1,0 +1,6 @@
+json_hash: {"key": "value"}
+json_bool: {"a": true, "b": false, "c": null}
+json_nested: {"nested": {"x": 1, "y": 2}}
+json_array: [1, 2, 3]
+json_strings: ["hello", "world"]
+mixed: {"key": [1, 2, {"inner": true}]}

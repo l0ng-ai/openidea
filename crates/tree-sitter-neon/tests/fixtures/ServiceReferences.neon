@@ -1,0 +1,25 @@
+services:
+    app: @Nette\Application\Application
+    router: @Nette\Application\Routers\RouteList
+    session: @Nette\Http\Session
+
+    Nette\Http\Request:
+        class: self
+        factory: @httpRequestFactory::createHttpRequest
+
+    Nette\Application\Application:
+        class: self
+        setup:
+            - $catchExceptions(%productionMode%)
+            - Nette\Diagnostics\RoutingPanel::initialize
+
+    templateCacheStorage:
+        class: Nette\Caching\Storages\PhpFileStorage(%tempDir%/cache)
+        autowired: no
+
+factories:
+    httpRequestFactory:
+        class: Nette\Http\RequestFactory
+        setup:
+            - setEncoding(UTF-8)
+        internal: TRUE

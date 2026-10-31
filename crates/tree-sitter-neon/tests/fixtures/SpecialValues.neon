@@ -1,0 +1,33 @@
+keywords:
+    t1: true
+    t2: True
+    t3: TRUE
+    t4: yes
+    t5: Yes
+    t6: YES
+    f1: false
+    f2: False
+    f3: FALSE
+    f4: no
+    f5: No
+    f6: NO
+    n1: null
+    n2: Null
+    n3: NULL
+
+special_strings:
+    colon_start: :abc
+    colon_mid: a:bc
+    dash_mid: a-bc
+    dash_end: abc-
+    double_colon: ::
+    at_sign: @service
+    at_true: @true
+    exclamation: !hello
+
+special_numbers:
+    int_zero: 0
+    int_pos: 42
+    int_neg: -1
+    float_simple: 3.14
+    float_neg: -1.5

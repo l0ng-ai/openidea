@@ -4,3 +4,4 @@ extensions = ["neon"]
 line-comment = "#"
 indent = { tab-size = 4, insert-spaces = true }
 ui-mode = "NEON"
+tree-sitter = "neon"

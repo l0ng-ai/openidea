@@ -147,7 +147,8 @@ MIT licence, full text in `crates/ide-spell/src/dict/LICENSE-cspell-dicts`.
 
 ## NEON language support
 
-`src/editor/core/cm/neon.ts` ports the lexer and token classes of, and
+`src/editor/core/cm/neon.ts` and `crates/tree-sitter-neon` port the lexer, grammar and
+token classes of, `crates/tree-sitter-neon/tests/fixtures` derive from the parser fixtures of, and
 `src/ui/openidea/fileTypes/neon*.svg` are copied from,
 [intellij-neon](https://github.com/noctud/intellij-neon), MIT:
 

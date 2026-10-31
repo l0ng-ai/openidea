@@ -1,0 +1,15 @@
+single_escape: 'fo''o'
+double_escape: "f\no"
+json_escapes: "\b\f\n\r\t\"\/\\"
+special_literal: the"string#literal
+hash_truncates: the"string #literal
+empty_single: ''
+empty_double: ""
+unicode: "\u0040"
+dash_colon: -:
+colon_zero: :0
+colon_neg: :-1
+colon_true: :true
+colon_null: :null
+minus_true: -true
+double_dash: --1
