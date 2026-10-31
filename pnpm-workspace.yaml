@@ -1,6 +1,6 @@
 allowBuilds:
   simple-git-hooks: true
-  "@codemirror/view": true
+  "@codemirror/view@git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e": true
 
 # Temporary upstream pin for Safari tooltip positioning (codemirror/dev#1783).
 # Return to an npm release containing 9869833, then remove this override and build allowance.
