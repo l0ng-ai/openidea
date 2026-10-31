@@ -683,7 +683,24 @@ fn mismatch(lines: &[&str], old: &[&str], from: usize, hint: Option<usize>, labe
         Some((at, _)) => {
             let _ = write!(msg, "They occur at line {}, before the previous hunk; keep hunks in file order.", at + 1);
         }
-        None => msg.push_str("No line of them is in the file; read the file again before patching it."),
+        None => {
+            // A common mistake: only part of a line after `-` / ` `.
+            let partial = old
+                .iter()
+                .filter(|o| !o.trim().is_empty())
+                .find_map(|o| lines.iter().position(|l| l.contains(o.trim())).map(|i| (o.trim(), i)));
+            match partial {
+                Some((o, i)) => {
+                    let _ = write!(
+                        msg,
+                        "Line {} contains `{o}` but is `{}`: patch lines must be whole lines, with their indentation.",
+                        i + 1,
+                        lines[i]
+                    );
+                }
+                None => msg.push_str("No line of them is in the file; read the file again before patching it."),
+            }
+        }
     }
     msg
 }
@@ -864,6 +881,8 @@ mod tests {
         assert!(e.contains("hunk 1 (@@ fn zzz)") && e.contains("`fn zzz`"), "{e}");
         let e = apply_patch(text, "*** Begin Patch\n*** Update File: f\n-nothing\n*** End Patch").unwrap_err();
         assert!(e.contains("No line of them"), "{e}");
+        let e = apply_patch(text, "*** Begin Patch\n*** Update File: f\n-two\n+three\n*** End Patch").unwrap_err();
+        assert!(e.contains("Line 3 contains `two` but is `    two();`: patch lines must be whole lines"), "{e}");
         let e =
             apply_patch(text, "*** Begin Patch\n*** Update File: f\n@@\n-    two();\n@@\n-    one();\n*** End Patch")
                 .unwrap_err();
