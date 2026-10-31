@@ -5,14 +5,7 @@
  * JVMs started by Maven / Gradle with a JDWP agent are attached to.
  */
 import { executeAction } from "@/platform/actions";
-import {
-  call,
-  commands,
-  IpcError,
-  nextRequestId,
-  type LaunchConfig,
-  type RunConfig,
-} from "@/platform/ipc";
+import { call, commands, IpcError, nextRequestId, type LaunchConfig, type RunConfig } from "@/platform/ipc";
 import {
   formatCompileErrors,
   isJvmApplication,
