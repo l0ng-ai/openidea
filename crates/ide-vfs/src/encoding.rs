@@ -33,7 +33,8 @@ fn unicode_character(text: &str) -> Option<(char, usize)> {
         let low = unicode_escape(&text[6..]).filter(|low| (0xDC00..=0xDFFF).contains(low))?;
         char::from_u32(0x10000 + ((unit as u32 - 0xD800) << 10) + low as u32 - 0xDC00).map(|c| (c, 12))
     } else {
-        char::from_u32(unit as u32).map(|c| (c, 6))
+        // A decoded line terminator would save as a real line break and split the property.
+        char::from_u32(unit as u32).filter(|c| !matches!(c, '\n' | '\r')).map(|c| (c, 6))
     }
 }
 
@@ -391,6 +392,14 @@ mod tests {
             assert!(ascii.is_ascii());
             assert_eq!(decode_properties_escapes(&ascii), text, "{ascii}");
         }
+    }
+
+    #[test]
+    fn properties_line_terminator_escapes_survive_an_edit() {
+        let source = r"key=one\u000Atwo\u000Dthree";
+        let displayed = decode_properties_escapes(source);
+        assert_eq!(displayed, source);
+        assert_eq!(encode_properties_ascii(&displayed.replace("three", "3")), r"key=one\u000Atwo\u000D3");
     }
 
     #[test]

@@ -7,11 +7,11 @@
  * Scheme (Default / Project) is the scope these pages share; the Formatter tab
  * feeds `platform/formatGuard`.
  */
-import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
 import { useId, useState } from "react";
 import { Button, Checkbox, Input, type SelectOption, T } from "@/ui";
 import { commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
 import { ENCODING_CHOICES, lineCommentDefaults, type LanguageCodeStyle } from "@/platform/editorSettings";
+import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
 import { NumberInput, Row } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import type { PageSpec } from "../spec";

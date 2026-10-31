@@ -85,7 +85,7 @@ async fn properties_search_git_and_document_coordinates_agree() {
     let mut defaults = project.documents.file_defaults();
     defaults.native_to_ascii = true;
     project.documents.set_file_defaults(defaults);
-    let displayed = "hello=你好😀target\nsecond=unchanged\nescaped=line\nlogical\n";
+    let displayed = "hello=你好😀target\nsecond=unchanged\nescaped=line\\u000Alogical\n";
     assert_eq!(project.text_of(&path).unwrap(), displayed);
     let closed = find(&host, vec![path.clone()], "target").await;
     let closed_json = serde_json::to_value(&closed).unwrap();
