@@ -211,9 +211,12 @@ impl LspManager {
         timeout: Duration,
         cancel: &CancellationToken,
     ) -> IdeResult<Value> {
+        let started = Instant::now();
         let (server, run) = self.jdtls(path, cancel).await?;
+        let ready_ms = started.elapsed().as_millis();
+        let phase = params.get("command").and_then(Value::as_str).unwrap_or(method).to_owned();
         let fut = run.peer.request::<Value, Value>(method, params, Some(cancel.clone()));
-        match tokio::time::timeout(timeout, fut).await {
+        let result = match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| crate::rpc_err(&server.name, method, e)),
             Err(_) => Err(IdeError::new(
                 ErrorKind::Protocol,
@@ -222,7 +225,15 @@ impl LspManager {
                     timeout.as_secs()
                 ),
             )),
-        }
+        };
+        tracing::info!(
+            phase,
+            ready_ms,
+            request_ms = started.elapsed().as_millis() - ready_ms,
+            success = result.is_ok(),
+            "Java launch request"
+        );
+        result
     }
 
     /// `workspace/executeCommand` on the jdtls serving `path`.
@@ -271,6 +282,7 @@ impl LspManager {
     /// so it re-imports their projects (e.g. after `~/.m2` gained an artifact it could
     /// not resolve). Best-effort: skipped while jdtls is not already running.
     pub async fn java_update_project_configs(&self, path: &Path, uris: Vec<String>) -> IdeResult<()> {
+        self.java_launch_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if uris.is_empty() {
             return Ok(());
         }
@@ -323,6 +335,257 @@ impl LspManager {
 
     /// Builds (when asked), then resolves the classpath and JDK of the module at `module`.
     pub async fn java_launch(
+        &self,
+        module: &Path,
+        test: bool,
+        build: bool,
+        cancel: &CancellationToken,
+    ) -> IdeResult<JavaLaunchInfo> {
+        use crate::java_launch_cache::{Entry, Snapshot, artifact_roots, dependency_poms};
+        use std::sync::atomic::Ordering;
+
+        if !build {
+            return self.java_launch_uncached(module, test, false, cancel).await;
+        }
+        let started = Instant::now();
+        let mut cache = cancellable_wait(cancel, self.java_launch_cache.lock()).await?;
+        let already_running = self
+            .servers_for(&LanguageId::new("java"), module)
+            .iter()
+            .any(|s| s.name == SERVER && s.running().is_some());
+        let (server, mut run) = self.jdtls(module, cancel).await?;
+        let ready_ms = started.elapsed().as_millis();
+        let epochs =
+            || (self.java_launch_epoch.load(Ordering::SeqCst), self.java_document_epoch.load(Ordering::SeqCst));
+        let mut epoch = epochs();
+        let key = (module.to_owned(), test);
+        let mut roots = self.content_roots.read().clone();
+        roots.push(self.project_root.clone());
+        let mut external_inputs = cache.entries.get(&key).map(|e| e.external_inputs.clone()).unwrap_or_default();
+        roots.extend(external_inputs.clone());
+        // Parent POMs can live above an explicitly opened module.
+        for ancestor in self.project_root.ancestors().skip(1) {
+            roots.push(ancestor.join("pom.xml"));
+        }
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            roots.push(PathBuf::from(home).join(".m2/settings.xml"));
+        }
+        let snapshot = |roots: Vec<PathBuf>, inputs, previous: Option<Snapshot>| {
+            let cancel = cancel.clone();
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    Snapshot::capture_with_previous(&roots, inputs, &cancel, previous.as_ref())
+                })
+                .await
+                .map_err(|e| IdeError::internal(e.to_string()))?
+            }
+        };
+        let inputs = snapshot(roots.clone(), true, None).await;
+        let mut inputs = match inputs {
+            Ok(inputs) => inputs,
+            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+            Err(e) => {
+                tracing::debug!("{e}; resolving without a launch cache");
+                cache.entries.remove(&key);
+                if cancel.is_cancelled() {
+                    return Err(IdeError::cancelled());
+                }
+                self.restart(server.id).await?;
+                self.jdtls(module, cancel).await?;
+                self.java_classpath(module, test, cancel).await?;
+                return self.java_launch_uncached(module, test, true, cancel).await;
+            }
+        };
+        let previous = cache.entries.remove(&key);
+        let mut previous_artifacts = None;
+        let mut refresh_model = already_running && previous.is_none();
+        let mut changed_sources: Vec<PathBuf> =
+            inputs.0.keys().filter(|p| p.extension().is_some_and(|e| e == "java")).cloned().collect();
+        if let Some(previous) = previous.filter(|p| p.server == server.id && p.generation == run.generation) {
+            let artifacts = snapshot(artifact_roots(&previous.info), false, Some(previous.artifacts.clone())).await?;
+            if previous.epoch == epoch
+                && previous.inputs == inputs
+                && previous.artifacts == artifacts
+                && epoch == epochs()
+                && server.running().is_some_and(|r| r.generation == run.generation)
+                && server.progress.lock().is_empty()
+            {
+                let info = previous.info.clone();
+                cache.entries.insert(key, previous);
+                tracing::info!(
+                    ready_ms,
+                    fingerprint_ms = started.elapsed().as_millis() - ready_ms,
+                    "Java launch cache hit"
+                );
+                return Ok(info);
+            }
+            previous_artifacts = Some(artifacts.clone());
+            let changes = inputs.changes(&previous.inputs);
+            changed_sources.clear();
+            refresh_model = previous.epoch.0 != epoch.0;
+            for change in &changes {
+                let Some(path) = change["uri"].as_str().and_then(crate::uri::uri_to_path) else { continue };
+                if path.extension().is_some_and(|e| e == "java") && change["type"] != 3 {
+                    changed_sources.push(path);
+                } else {
+                    refresh_model = true;
+                }
+            }
+            let dependencies_changed = artifacts.0.iter().chain(&previous.artifacts.0).any(|(p, _)| {
+                matches!(p.extension().and_then(|e| e.to_str()), Some("jar" | "pom"))
+                    && artifacts.0.get(p) != previous.artifacts.0.get(p)
+            });
+            refresh_model |= dependencies_changed || changes.is_empty() && artifacts != previous.artifacts;
+        }
+        let fingerprint_ms = started.elapsed().as_millis() - ready_ms;
+        let refreshing = Instant::now();
+        if refresh_model {
+            // jdtls queues watched-file/configuration notifications without a completion
+            // acknowledgement. Re-import model/resource changes before trusting its outputs.
+            self.restart(server.id).await?;
+            run = self.jdtls(module, cancel).await?.1;
+            epoch = epochs();
+            previous_artifacts = None;
+            changed_sources = inputs.0.keys().filter(|p| p.extension().is_some_and(|e| e == "java")).cloned().collect();
+        }
+        // Resolve first so project import completes before refreshing compilation units.
+        let cp = self.java_classpath(module, test, cancel).await?;
+        let hook = self.java_model_inputs_hook.read().clone();
+        let mut cacheable = true;
+        if let Some(hook) = hook {
+            let poms = dependency_poms(cp.class_paths.iter().chain(&cp.module_paths).map(PathBuf::from));
+            let model_root = server.root.clone();
+            let extra = tokio::task::spawn_blocking(move || hook(&model_root, &poms))
+                .await
+                .map_err(|e| IdeError::internal(e.to_string()))?;
+            if let Some(extra) = extra {
+                let added: Vec<_> = extra.into_iter().filter(|p| !external_inputs.contains(p)).collect();
+                let extra_snapshot = snapshot(added.clone(), true, None).await?;
+                for (path, hash) in extra_snapshot.0 {
+                    inputs.0.entry(path).or_insert(hash);
+                }
+                roots.extend(added.clone());
+                external_inputs.extend(added);
+            } else {
+                cacheable = false;
+            }
+        }
+        if !changed_sources.is_empty() || refresh_model {
+            epoch = epochs();
+            if !self.java_refresh_sources(&server, &run, changed_sources, cancel).await? {
+                // Let jdtls decode sources in project encodings we cannot transiently open as UTF-8.
+                self.restart(server.id).await?;
+                run = self.jdtls(module, cancel).await?.1;
+                self.java_classpath(module, test, cancel).await?;
+                epoch = epochs();
+            }
+        }
+        let refresh_ms = refreshing.elapsed().as_millis();
+        let info = self.java_launch_uncached(module, test, true, cancel).await?;
+        let validating = Instant::now();
+        if cacheable && info.build == Some(JavaBuildStatus::Succeeded) && !info.class_paths.is_empty() {
+            let after = snapshot(roots, true, None).await?;
+            let artifacts = snapshot(artifact_roots(&info), false, previous_artifacts).await?;
+            // Never bless a build when its inputs changed while it was running.
+            if inputs == after
+                && !cancel.is_cancelled()
+                && epoch == epochs()
+                && server.running().is_some_and(|r| r.generation == run.generation)
+            {
+                cache.entries.insert(
+                    key,
+                    Entry {
+                        server: server.id,
+                        generation: run.generation,
+                        epoch,
+                        inputs,
+                        artifacts,
+                        info: info.clone(),
+                        external_inputs,
+                    },
+                );
+            }
+        }
+        tracing::info!(
+            ready_ms,
+            fingerprint_ms,
+            refresh_ms,
+            validation_ms = validating.elapsed().as_millis(),
+            total_ms = started.elapsed().as_millis(),
+            "Java launch cache miss"
+        );
+        Ok(info)
+    }
+
+    async fn java_refresh_sources(
+        &self,
+        server: &Arc<Server>,
+        run: &Running,
+        sources: Vec<PathBuf>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<bool> {
+        let sources: Vec<_> = {
+            let docs = self.docs.lock();
+            sources.into_iter().filter(|p| !docs.values().any(|d| d.path == *p)).collect()
+        };
+        let token = cancel.clone();
+        let read = tokio::task::spawn_blocking(move || {
+            sources
+                .into_iter()
+                .map(|path| {
+                    if token.is_cancelled() {
+                        return Err(IdeError::cancelled());
+                    }
+                    let text = std::fs::read_to_string(&path).map_err(IdeError::from)?;
+                    Ok((path, text))
+                })
+                .collect::<IdeResult<Vec<_>>>()
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+        let read = match read {
+            Ok(read) => read,
+            Err(e) if e.kind == ErrorKind::InvalidInput => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        let target = crate::Target { server: server.clone(), run: run.clone() };
+        let mut guard = crate::scope::TransientFiles::empty(self, &target);
+        for (path, text) in read {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            // Keep the working-copy check and notifications atomic with user didOpen.
+            let docs = self.docs.lock();
+            if docs.values().any(|d| d.path == path) {
+                continue;
+            }
+            let uri = crate::uri::path_to_uri(&path);
+            let opened = server.hold_transient(&path, run.generation);
+            guard.files.push((path.clone(), uri.clone()));
+            if opened {
+                run.peer
+                    .notify(
+                        "textDocument/didOpen",
+                        json!({ "textDocument": {
+                    "uri": uri, "languageId": "java", "version": 0, "text": text
+                } }),
+                    )
+                    .map_err(|e| crate::rpc_err(SERVER, "textDocument/didOpen", e))?;
+            }
+            run.peer
+                .notify(
+                    "textDocument/didSave",
+                    json!({ "textDocument": { "uri": crate::uri::path_to_uri_string(&path) } }),
+                )
+                .map_err(|e| crate::rpc_err(SERVER, "textDocument/didSave", e))?;
+        }
+        // didOpen/didSave synchronously refresh resources; didClose releases working copies
+        // before the following incremental build is read by jdtls.
+        drop(guard);
+        Ok(true)
+    }
+
+    async fn java_launch_uncached(
         &self,
         module: &Path,
         test: bool,

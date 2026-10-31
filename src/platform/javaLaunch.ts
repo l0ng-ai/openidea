@@ -4,7 +4,7 @@
  * `${classpath}` (or `${testClasspath}`) and the `java` launcher are resolved
  * through jdtls when the configuration starts.
  */
-import { call, commands, type JavaLaunchInfo, type RunConfig } from "@/platform/ipc";
+import { call, commands, type JavaLaunchInfo, type RunConfig, type RequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 
 export const CLASSPATH = "${classpath}";
@@ -148,4 +148,34 @@ export async function resolveJavaModule(config: RunConfig): Promise<string> {
   if (module === null)
     throw new Error(tx`Cannot determine the module for main class '${parseJavaArgs(config.args).mainClass}'`);
   return module;
+}
+
+/** Shared, cancellable build and classpath preparation for Run and Debug. */
+export interface JavaPreparation {
+  request: RequestId;
+  signal: AbortSignal;
+  report?: (text: string, kind?: "system" | "stderr") => void;
+}
+
+export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPreparation) {
+  const { signal, report } = preparation;
+  signal.throwIfAborted();
+  const parsed = parseJavaArgs(config.args);
+  if (!parsed.mainClass) throw new Error(`No main class in '${config.name}'`);
+  report?.(tx`Building and resolving the classpath of ${parsed.mainClass}…` + "\n");
+  const started = performance.now();
+  const module = await resolveJavaModule(config);
+  signal.throwIfAborted();
+  const moduleMs = performance.now() - started;
+  const info = await call(commands.javaResolveLaunch(module, parsed.classpath === "test", true, preparation.request));
+  signal.throwIfAborted();
+  console.info("Java launch preparation", { module, moduleMs, resolveMs: performance.now() - started - moduleMs });
+  if (info.build === "withErrors")
+    report?.(tx("Build completed with errors; launching with the last compiled classes.") + "\n", "stderr");
+  if (info.build === "failed") report?.(tx("Build failed; launching with the last compiled classes.") + "\n", "stderr");
+  const errors = formatCompileErrors(info);
+  if (errors) report?.(errors, "stderr");
+  if (parsed.classpath && !info.classPaths.length)
+    throw new Error(tx("The classpath is empty: is the module imported by the Java language server?"));
+  return { module, info, resolved: resolveJavaCommand(config, info) };
 }

@@ -245,6 +245,7 @@ struct RawPom {
     profiles: Vec<RawProfile>,
     /// `<build><plugins>` `maven-compiler-plugin` `<release>` / `<source>`.
     compiler_release: Option<String>,
+    untracked_profile_inputs: bool,
 }
 
 fn read_dep(e: &Element) -> Option<RawDep> {
@@ -334,6 +335,10 @@ fn read_raw(project: &Element) -> RawPom {
             deps: p.list("dependencies", "dependency").into_iter().filter_map(read_dep).collect(),
             ..RawProfile::default()
         };
+        pom.untracked_profile_inputs |= p
+            .list("dependencyManagement/dependencies", "dependency")
+            .iter()
+            .any(|d| d.text_of("scope").as_deref() == Some("import"));
         let mut managed = Vec::new();
         read_build(p, &mut profile.plugins, &mut managed);
         pom.profiles.push(profile);
@@ -443,6 +448,7 @@ struct Resolver {
     local_repo: Option<PathBuf>,
     poms: HashMap<PathBuf, Option<RawPom>>,
     contexts: HashMap<PathBuf, Inherited>,
+    complete: std::cell::Cell<bool>,
 }
 
 /// `~/.m2/repository`, or `<localRepository>` from `~/.m2/settings.xml`.
@@ -459,7 +465,7 @@ pub(crate) fn default_local_repo() -> Option<PathBuf> {
 
 impl Resolver {
     fn new(local_repo: Option<PathBuf>) -> Self {
-        Self { local_repo, poms: HashMap::new(), contexts: HashMap::new() }
+        Self { local_repo, poms: HashMap::new(), contexts: HashMap::new(), complete: std::cell::Cell::new(true) }
     }
 
     fn pom(&mut self, path: &Path) -> Option<RawPom> {
@@ -471,14 +477,22 @@ impl Resolver {
 
     fn repo_pom(&self, group: &str, artifact: &str, version: &str) -> Option<PathBuf> {
         if version.is_empty() || version.contains("${") {
+            self.complete.set(false);
             return None;
         }
-        let mut p = self.local_repo.clone()?;
+        let Some(mut p) = self.local_repo.clone() else {
+            self.complete.set(false);
+            return None;
+        };
         p.extend(group.split('.'));
         p.push(artifact);
         p.push(version);
         p.push(format!("{artifact}-{version}.pom"));
-        p.is_file().then_some(p)
+        if !p.is_file() {
+            self.complete.set(false);
+            return None;
+        }
+        Some(p)
     }
 
     /// The parent POM file of the POM in `dir`: in the project via `relativePath`
@@ -506,6 +520,11 @@ impl Resolver {
             return c.clone();
         }
         let Some(pom) = self.pom(path) else { return Inherited::default() };
+        if depth >= MAX_PARENT_DEPTH
+            && (pom.parent.is_some() || pom.managed.iter().any(|m| m.scope.as_deref() == Some("import")))
+        {
+            self.complete.set(false);
+        }
         let dir = path.parent().unwrap_or(Path::new("")).to_path_buf();
         let mut ctx = match &pom.parent {
             Some(parent) if depth < MAX_PARENT_DEPTH => match self.parent_path(&dir, parent) {
@@ -861,6 +880,110 @@ pub fn load(root: &Path) -> MavenModel {
 }
 
 pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenModel {
+    load_resolved(root, local_repo).0
+}
+
+/// POMs read to resolve a launch model, including repository parents/BOMs and
+/// external reactor modules. None means the static resolver cannot cover all inputs.
+pub fn launch_model_inputs(
+    root: &Path,
+    local_repo: Option<PathBuf>,
+    dependency_poms: &[PathBuf],
+) -> Option<Vec<PathBuf>> {
+    let (model, mut resolver) = load_resolved(root, local_repo.or_else(default_local_repo));
+    // Modules of repository parents/BOMs are not part of this reactor.
+    for project in &model.projects {
+        if resolver.pom(&root.join(&project.pom)).is_some_and(|pom| {
+            pom.profiles.iter().any(|profile| !profile.active_by_default && !profile.modules.is_empty())
+        }) {
+            return None;
+        }
+    }
+    for pom in dependency_poms.iter().filter(|p| p.is_file()) {
+        resolver.context(pom, 0);
+    }
+    // A child can override a property used by an inherited BOM import. Keep
+    // both interpretations as inputs; jdtls supplies the authoritative classpath.
+    for project in &model.projects {
+        let path = root.join(&project.pom);
+        let Some(pom) = resolver.pom(&path) else { continue };
+        let ctx = resolver.context(&path, 0);
+        let props = resolver.properties_for(&pom, &ctx, path.parent().unwrap_or(root));
+        let mut ancestor = Some(path);
+        for _ in 0..MAX_PARENT_DEPTH {
+            let Some(path) = ancestor.take() else { break };
+            let Some(pom) = resolver.pom(&path) else { break };
+            for import in pom.managed.iter().filter(|d| d.scope.as_deref() == Some("import")) {
+                if let Some(bom) = resolver.repo_pom(
+                    &interpolate(&import.group_id, &props),
+                    &interpolate(&import.artifact_id, &props),
+                    &interpolate(import.version.as_deref().unwrap_or_default(), &props),
+                ) {
+                    resolver.context(&bom, 0);
+                }
+            }
+            ancestor = pom.parent.as_ref().and_then(|p| resolver.parent_path(path.parent().unwrap_or(root), p));
+        }
+    }
+    let mut referenced = HashSet::new();
+    for pom in resolver.poms.values().flatten() {
+        for import in pom.managed.iter().filter(|d| d.scope.as_deref() == Some("import")) {
+            model_property_names(import.version.as_deref().unwrap_or_default(), &mut referenced);
+            model_property_names(&import.group_id, &mut referenced);
+            model_property_names(&import.artifact_id, &mut referenced);
+        }
+    }
+    loop {
+        let before = referenced.len();
+        for pom in resolver.poms.values().flatten() {
+            for (key, value) in &pom.properties {
+                if referenced.contains(key) {
+                    model_property_names(value, &mut referenced);
+                }
+            }
+        }
+        if before == referenced.len() {
+            break;
+        }
+    }
+    if resolver
+        .poms
+        .values()
+        .flatten()
+        .any(|p| p.profiles.iter().any(|profile| profile.properties.iter().any(|(key, _)| referenced.contains(key))))
+    {
+        return None;
+    }
+    if !resolver.complete.get()
+        || resolver.poms.iter().any(|(path, pom)| {
+            pom.as_ref().is_some_and(|p| p.untracked_profile_inputs) || pom.is_none() && path.is_file()
+        })
+    {
+        return None;
+    }
+    let mut inputs: Vec<_> = resolver.poms.into_keys().collect();
+    for project in model.projects {
+        let dir = root.join(&project.dir);
+        if !dir.starts_with(root) || project.dir.starts_with("..") {
+            inputs.push(dir);
+        }
+    }
+    inputs.sort();
+    inputs.dedup();
+    Some(inputs)
+}
+
+fn model_property_names(text: &str, names: &mut HashSet<String>) {
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        rest = &rest[start + 2..];
+        let Some(end) = rest.find('}') else { break };
+        names.insert(rest[..end].to_owned());
+        rest = &rest[end + 1..];
+    }
+}
+
+fn load_resolved(root: &Path, local_repo: Option<PathBuf>) -> (MavenModel, Resolver) {
     let mut resolver = Resolver::new(local_repo);
     let mut model = MavenModel::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
@@ -973,7 +1096,7 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
             stack.push((m, true));
         }
     }
-    model
+    (model, resolver)
 }
 
 /// Shared linkage decision for every Maven consumer, including modules outside a reactor directory.
@@ -1209,6 +1332,85 @@ mod tests {
         <profile><id>extra</id><modules><module>extra</module></modules></profile>
       </profiles>
     </project>"#;
+
+    #[test]
+    fn launch_inputs_include_external_parents_and_imported_boms() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("app");
+        let repo = dir.path().join("repo");
+        write(
+            &root,
+            "pom.xml",
+            r#"<project><parent><groupId>g</groupId><artifactId>parent</artifactId><version>1</version><relativePath>../shared/pom.xml</relativePath></parent><artifactId>app</artifactId><dependencies><dependency><groupId>g</groupId><artifactId>lib</artifactId></dependency></dependencies></project>"#,
+        );
+        write(
+            dir.path(),
+            "shared/pom.xml",
+            r#"<project><groupId>g</groupId><artifactId>parent</artifactId><version>1</version><properties><bom.version>1</bom.version></properties><dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>bom</artifactId><version>${bom.version}</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement></project>"#,
+        );
+        let bom = r#"<project><groupId>g</groupId><artifactId>bom</artifactId><version>1</version><dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>lib</artifactId><version>1</version></dependency></dependencies></dependencyManagement></project>"#;
+        write(&repo, "g/bom/1/bom-1.pom", bom);
+        let inputs = launch_model_inputs(&root, Some(repo.clone()), &[]).unwrap();
+        assert!(
+            inputs
+                .iter()
+                .any(|p| dunce::canonicalize(p).ok() == dunce::canonicalize(dir.path().join("shared/pom.xml")).ok())
+        );
+        assert!(inputs.contains(&repo.join("g/bom/1/bom-1.pom")));
+        assert_eq!(load_with_repo(&root, Some(repo.clone())).projects[0].dependencies[0].version.as_deref(), Some("1"));
+        write(
+            &repo,
+            "g/bom/1/bom-1.pom",
+            &bom.replace("<artifactId>lib</artifactId><version>1", "<artifactId>lib</artifactId><version>2"),
+        );
+        assert_eq!(load_with_repo(&root, Some(repo)).projects[0].dependencies[0].version.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn unresolved_or_profile_model_inputs_cannot_be_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "pom.xml",
+            r#"<project><artifactId>app</artifactId><dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>bom</artifactId><version>${unknown}</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement></project>"#,
+        );
+        assert!(launch_model_inputs(dir.path(), Some(dir.path().join("repo")), &[]).is_none());
+        write(
+            dir.path(),
+            "pom.xml",
+            r#"<project><artifactId>app</artifactId><profiles><profile><id>prod</id><dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>bom</artifactId><version>1</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement></profile></profiles></project>"#,
+        );
+        assert!(launch_model_inputs(dir.path(), Some(dir.path().join("repo")), &[]).is_none());
+        write(
+            dir.path(),
+            "repo/g/bom/1/bom-1.pom",
+            "<project><groupId>g</groupId><artifactId>bom</artifactId><version>1</version></project>",
+        );
+        write(
+            dir.path(),
+            "pom.xml",
+            r#"<project><artifactId>app</artifactId><properties><bom.version>1</bom.version></properties><dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>bom</artifactId><version>${bom.version}</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement><profiles><profile><id>prod</id><properties><bom.version>2</bom.version></properties></profile></profiles></project>"#,
+        );
+        assert!(
+            launch_model_inputs(dir.path(), Some(dir.path().join("repo")), &[]).is_none(),
+            "profile property overrides can select another BOM"
+        );
+    }
+
+    #[test]
+    fn repository_release_modules_do_not_disable_reactor_launch_caching() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("app");
+        let repo = dir.path().join("repo");
+        let profile =
+            "<profiles><profile><id>release</id><modules><module>website</module></modules></profile></profiles>";
+        let dependency = repo.join("g/lib/1/lib-1.pom");
+        write(&root, "pom.xml", "<project><artifactId>app</artifactId></project>");
+        write(&repo, "g/lib/1/lib-1.pom", &format!("<project><artifactId>lib</artifactId>{profile}</project>"));
+        assert!(launch_model_inputs(&root, Some(repo.clone()), std::slice::from_ref(&dependency)).is_some());
+        write(&root, "pom.xml", &format!("<project><artifactId>app</artifactId>{profile}</project>"));
+        assert!(launch_model_inputs(&root, Some(repo), &[dependency]).is_none());
+    }
 
     #[test]
     fn multi_module_parent_properties_and_managed_versions() {

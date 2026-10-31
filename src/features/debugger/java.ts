@@ -11,7 +11,6 @@ import {
   IpcError,
   nextRequestId,
   type LaunchConfig,
-  type RequestId,
   type RunConfig,
 } from "@/platform/ipc";
 import {
@@ -19,8 +18,8 @@ import {
   isJvmApplication,
   joinJavaArgs,
   parseJavaArgs,
-  resolveJavaCommand,
-  resolveJavaModule,
+  prepareJavaLaunch,
+  type JavaPreparation,
 } from "@/platform/javaLaunch";
 import { notifications } from "@/workbench/contributions";
 
@@ -84,19 +83,20 @@ async function debugServer(module: string, signal?: AbortSignal): Promise<number
 export async function javaLaunchConfig(
   rc: RunConfig,
   root: string,
-  preparation?: { request: RequestId; signal: AbortSignal },
+  preparation?: JavaPreparation,
 ): Promise<LaunchConfig> {
   const cwd = rc.cwd ? join(root, rc.cwd) : root;
   const parsed = parseJavaArgs(rc.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${rc.name}'`);
   preparation?.signal.throwIfAborted();
-  const module = await resolveJavaModule(rc);
-  preparation?.signal.throwIfAborted();
-  const info = await call(
-    commands.javaResolveLaunch(module, parsed.classpath === "test", true, preparation?.request ?? nextRequestId()),
+  const { module, info, resolved } = await prepareJavaLaunch(
+    rc,
+    preparation ?? {
+      request: nextRequestId(),
+      signal: new AbortController().signal,
+    },
   );
-  preparation?.signal.throwIfAborted();
-  if (info.errorCount > 0)
+  if (info.errorCount > 0 && !preparation?.report)
     notifications().notify({
       group: "run",
       level: "warning",
@@ -104,7 +104,6 @@ export async function javaLaunchConfig(
       title: `'${rc.name}' has compile errors; debugging the last compiled classes`,
       body: formatCompileErrors(info).trimEnd(),
     });
-  const resolved = resolveJavaCommand(rc, info);
   const kotlin = rc.debugAdapter === KOTLIN_ADAPTER || (await moduleHasKotlinSources(join(root, module)));
   preparation?.signal.throwIfAborted();
   const classPaths = parsed.explicitClasspath
