@@ -342,6 +342,8 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           act("vcs.push", undefined, "Push…"),
           act("vcs.update", undefined, "Pull…"),
           act("vcs.fetch", undefined, "Fetch"),
+          act("vcs.merge", undefined, "Merge…"),
+          act("vcs.rebase", undefined, "Rebase…"),
           { kind: "separator" },
           act("vcs.branches", undefined, "Branches…"),
           act("vcs.newBranch", undefined, "New Branch…"),
