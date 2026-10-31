@@ -167,15 +167,19 @@ impl LspManager {
     /// readable as text are left out and flagged on the guard.
     async fn open_transient(&self, t: &Target, files: Vec<PathBuf>, cancel: &CancellationToken) -> TransientFiles<'_> {
         // The server already sees the user's files, however large.
-        let open: HashSet<PathBuf> = self.docs.lock().values().map(|d| d.path.clone()).collect();
+        let open: HashSet<PathBuf> = self.docs.lock().values().map(|d| d.canonical.clone()).collect();
         let (read, skipped) = {
             let cancel = cancel.clone();
             tokio::task::spawn_blocking(move || {
                 let mut read = Vec::new();
                 let mut skipped = false;
-                for f in files.into_iter().filter(|f| !open.contains(f)) {
+                for f in files {
                     if cancel.is_cancelled() {
                         break;
+                    }
+                    let canonical = dunce::canonicalize(&f).unwrap_or_else(|_| f.clone());
+                    if open.contains(&canonical) {
+                        continue;
                     }
                     // A file gone since the search no longer mentions anything.
                     let Ok(meta) = std::fs::metadata(&f) else { continue };
@@ -183,7 +187,7 @@ impl LspManager {
                         continue;
                     }
                     match (meta.len() <= MAX_CANDIDATE_BYTES).then(|| std::fs::read_to_string(&f)) {
-                        Some(Ok(text)) => read.push((f, text)),
+                        Some(Ok(text)) => read.push((f, canonical, text)),
                         _ => skipped = true,
                     }
                 }
@@ -198,8 +202,8 @@ impl LspManager {
             return guard;
         }
         let docs = self.docs.lock();
-        for (path, text) in read {
-            if docs.values().any(|d| d.path == path) {
+        for (path, canonical, text) in read {
+            if docs.values().any(|d| d.canonical == canonical) {
                 continue;
             }
             let uri = crate::uri::path_to_uri(&path);

@@ -55,6 +55,15 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
  * chose a verbosity already.
  */
 export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" | "args">>(config: T): T {
+  if (frameworkFor(config) === "go" && config.args[0] === "test") {
+    const boundary = config.args.findIndex((a) => a === "-args" || a === "--");
+    const tool = boundary < 0 ? config.args : config.args.slice(0, boundary);
+    const args = tool.filter((a) => a !== "-json" && !a.startsWith("-json="));
+    return {
+      ...config,
+      args: ["test", "-json", ...args.slice(1), ...(boundary < 0 ? [] : config.args.slice(boundary))],
+    };
+  }
   if (frameworkFor(config) !== "pytest") return config;
   const cmd = [config.command, ...config.args];
   const pytestAt = cmd.findIndex((a) => /(^|[/\\])pytest(\.exe)?$/.test(a));

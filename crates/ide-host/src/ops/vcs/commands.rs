@@ -187,10 +187,13 @@ pub async fn vcs_branch_info(host: &Host, window: &str, repo: Option<PathBuf>) -
 }
 
 /// Gutter change markers for a file, computed against its current (unsaved) text.
-pub fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
+pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
     let project = host.project(window)?;
-    let text = project.text_of(&path)?;
-    project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
+    blocking(move || {
+        let text = project.text_of(&path)?;
+        project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
+    })
+    .await
 }
 
 pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<String>) -> IdeResult<Option<String>> {
@@ -210,8 +213,8 @@ pub async fn vcs_blame(
 ) -> IdeResult<Vec<BlameLine>> {
     let project = host.project(window)?;
     // An explicit text wins (merge view annotates its side panes, not the worktree).
-    let text = text.or_else(|| project.documents.text_of(&path));
     blocking(move || {
+        let text = text.or_else(|| project.documents.text_of(&path));
         project.with_repo_of(&path, |r| {
             r.blame(&path, text.as_deref(), revision.as_deref(), project.vcs_encoding(&path, revision.as_deref())?)
         })
@@ -510,14 +513,17 @@ pub fn vcs_diff_hunks(_host: &Host, _window: &str, old_text: String, new_text: S
 
 /// Stages only the selected hunks of a file's working-tree changes.
 /// Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
-pub fn vcs_stage_hunks(host: &Host, window: &str, path: PathBuf, hunks: Vec<u32>) -> IdeResult<()> {
+pub async fn vcs_stage_hunks(host: &Host, window: &str, path: PathBuf, hunks: Vec<u32>) -> IdeResult<()> {
     let project = host.project(window)?;
-    let encoding = project.vcs_encoding(&path, Some(":0"))?;
-    let current = ide_vfs::load_text_as(&path, encoding.name())?.text;
-    project.with_repo_of(&path, |r| {
-        let selected: Vec<usize> = hunks.iter().map(|&h| h as usize).collect();
-        r.stage_hunks(&path, &current, &selected, encoding)
+    blocking(move || {
+        let encoding = project.vcs_encoding(&path, Some(":0"))?;
+        let current = project.documents.load_file_as(&path, encoding.charset.name())?.text;
+        project.with_repo_of(&path, |r| {
+            let selected: Vec<usize> = hunks.iter().map(|&h| h as usize).collect();
+            r.stage_hunks(&path, &current, &selected, encoding)
+        })
     })
+    .await
 }
 
 /// Clones a repository (Get from VCS). Works without an open project.
@@ -874,7 +880,7 @@ pub async fn vcs_write_patch(_host: &Host, _window: &str, path: PathBuf, patch: 
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_roots", |c| async move { vcs_roots(&c.host, &c.window) });
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
-    d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?) });
+    d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
     d.add("vcs_blame", |c| async move {
         vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?, c.arg("revision")?).await
@@ -958,7 +964,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "vcs_diff_hunks",
         |c| async move { Ok(vcs_diff_hunks(&c.host, &c.window, c.arg("oldText")?, c.arg("newText")?)) },
     );
-    d.add("vcs_stage_hunks", |c| async move { vcs_stage_hunks(&c.host, &c.window, c.arg("path")?, c.arg("hunks")?) });
+    d.add(
+        "vcs_stage_hunks",
+        |c| async move { vcs_stage_hunks(&c.host, &c.window, c.arg("path")?, c.arg("hunks")?).await },
+    );
     d.add("vcs_clone", |c| async move {
         vcs_clone(&c.host, &c.window, c.arg("request")?, c.arg("url")?, c.arg("dest")?, c.sender("onOutput")?).await
     });

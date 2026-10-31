@@ -340,7 +340,11 @@ fn write_array(path: &Path, key: &str, configs: &[&RunConfig], suppressed: Optio
 
 /// Keeps the workspace-local file out of version control (`.openidea/.gitignore`).
 fn ignore_local(root: &Path) -> IdeResult<()> {
-    let entry = format!("/{LOCAL_FILE}");
+    ignore_private(root, &format!("/{LOCAL_FILE}"))
+}
+
+/// Adds `entry` to `.openidea/.gitignore` unless it is already listed.
+pub(crate) fn ignore_private(root: &Path, entry: &str) -> IdeResult<()> {
     let file = project_dir::path(root, ".gitignore");
     let current = fs::read_to_string(&file).unwrap_or_default();
     if current.lines().any(|l| l.trim() == entry) {
@@ -352,7 +356,7 @@ fn ignore_local(root: &Path) -> IdeResult<()> {
     } else if !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&entry);
+    text.push_str(entry);
     text.push('\n');
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;

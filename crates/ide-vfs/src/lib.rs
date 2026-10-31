@@ -22,7 +22,8 @@ pub use archive::{
 pub use bytes::{ByteRange, FileProbe, MAX_RANGE_LEN, base64, image_mime, probe, read_data_url, read_range};
 use encoding::SNIFF_LEN;
 pub use encoding::{
-    LARGE_FILE_THRESHOLD, MAX_OPEN_SIZE, READ_ONLY_THRESHOLD, encode, write_atomic, write_atomic_strict,
+    LARGE_FILE_THRESHOLD, MAX_OPEN_SIZE, READ_ONLY_THRESHOLD, decode_properties_escapes, encode,
+    encode_properties_ascii, save_properties_text, write_atomic, write_atomic_strict,
 };
 pub use rules::ExcludeMatcher;
 pub use watch::{WatchMode, Watcher};

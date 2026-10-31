@@ -6,6 +6,8 @@
 import { GoPage, JavaPage, NodePage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
 import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
+import { GoBuildTagsPage, GO_BUILD_TAG_SECTIONS } from "../languages/GoBuildTags";
+import { GoModulesPage, GO_MODULE_SECTIONS } from "../languages/GoModules";
 import type { PageSpec } from "./spec";
 
 export const LANGUAGES_GROUP = "Languages & Frameworks";
@@ -50,6 +52,28 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 390,
     keywords: ["goroot", "gopath", "go sdk", "gopls"],
     component: GoPage,
+  },
+  {
+    id: "languages.go.buildTags",
+    title: "Build Tags",
+    group: LANGUAGES_GROUP,
+    order: 391,
+    projectScope: true,
+    defaultScope: "project",
+    ownScopeSwitch: true,
+    sections: GO_BUILD_TAG_SECTIONS,
+    component: GoBuildTagsPage,
+  },
+  {
+    id: "languages.go.modules",
+    title: "Go Modules",
+    group: LANGUAGES_GROUP,
+    order: 392,
+    projectScope: true,
+    defaultScope: "project",
+    ownScopeSwitch: true,
+    sections: GO_MODULE_SECTIONS,
+    component: GoModulesPage,
   },
   {
     id: "languages.java",
