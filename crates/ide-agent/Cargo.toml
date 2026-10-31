@@ -22,6 +22,7 @@ parking_lot.workspace = true
 dunce.workspace = true
 uuid.workspace = true
 which = "8"
+tempfile.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

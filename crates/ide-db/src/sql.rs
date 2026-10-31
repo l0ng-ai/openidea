@@ -105,15 +105,18 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
             "SELECT name, type, CASE WHEN \"notnull\" = 0 THEN 'YES' ELSE 'NO' END, dflt_value, \
              CASE WHEN pk > 0 THEN 1 ELSE 0 END FROM pragma_table_info({t}, {s}) ORDER BY cid"
         ),
+        // The catalog rather than `information_schema`: full types (`numeric(10,2)`, `varchar(36)`)
+        // and the columns of materialized views, which `information_schema.columns` leaves out.
         DbDriver::Postgres => format!(
-            "SELECT c.column_name, c.data_type, c.is_nullable, c.column_default, \
-             CASE WHEN EXISTS (SELECT 1 FROM information_schema.table_constraints tc \
-               JOIN information_schema.key_column_usage k ON k.constraint_name = tc.constraint_name \
-               AND k.table_schema = tc.table_schema AND k.table_name = tc.table_name \
-               WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = c.table_schema \
-               AND tc.table_name = c.table_name AND k.column_name = c.column_name) THEN 1 ELSE 0 END \
-             FROM information_schema.columns c WHERE c.table_schema = {s} AND c.table_name = {t} \
-             ORDER BY c.ordinal_position"
+            "SELECT a.attname, format_type(a.atttypid, a.atttypmod), \
+             CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, pg_get_expr(d.adbin, d.adrelid), \
+             CASE WHEN EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary \
+               AND a.attnum = ANY(i.indkey)) THEN 1 ELSE 0 END \
+             FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             WHERE n.nspname = {s} AND c.relname = {t} AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum"
         ),
         DbDriver::Mysql => format!(
             "SELECT column_name, column_type, is_nullable, column_default, \

@@ -8,6 +8,7 @@ mod commands;
 mod dev;
 mod events;
 mod logging;
+mod mcp;
 mod menu;
 mod remote_dev;
 
@@ -126,6 +127,8 @@ pub fn run() {
         app.manage(state);
         app.manage(windows);
         app.manage(menu_state);
+        mcp::apply_settings(app.handle());
+        mcp::offer_to_agents(app.handle());
         if let Some(paths) = setup_opens.lock().take() {
             windows::open_paths_at_launch(app.handle(), paths);
         }
@@ -147,6 +150,7 @@ pub fn run() {
                 let _ = settings.destroy();
             }
             if let Some(state) = window.try_state::<AppState>() {
+                state.mcp_pending.window_closed(window.label());
                 state.close_project(window.label());
             }
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -174,6 +178,7 @@ pub fn run() {
         let _ = &early_opens;
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
+                state.mcp.shutdown();
                 state.host.shutdown_notebooks_on_exit();
             }
             // Cleanup must finish before update/restart replaces this process.

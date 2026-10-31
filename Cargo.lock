@@ -4387,6 +4387,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-mcp"
+version = "0.1.32"
+dependencies = [
+ "dunce",
+ "futures",
+ "globset",
+ "ide-build",
+ "ide-core",
+ "ide-db",
+ "ide-host",
+ "ide-index",
+ "ide-language",
+ "ide-lsp",
+ "ide-run",
+ "ide-search",
+ "ide-syntax",
+ "ide-terminal",
+ "ide-vcs",
+ "ide-vfs",
+ "ide-workspace",
+ "libc",
+ "parking_lot",
+ "regex-lite",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "toml_edit 0.25.17+spec-1.1.0",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ide-notebook"
 version = "0.1.32"
 dependencies = [
@@ -6147,6 +6182,7 @@ dependencies = [
  "block2 0.6.2",
  "dirs 6.0.0",
  "dunce",
+ "futures",
  "ide-agent",
  "ide-analysis",
  "ide-build",
@@ -6164,6 +6200,7 @@ dependencies = [
  "ide-jsonrpc",
  "ide-language",
  "ide-lsp",
+ "ide-mcp",
  "ide-notebook",
  "ide-plugin",
  "ide-profiler",

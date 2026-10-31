@@ -1,0 +1,108 @@
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.search {
+  flex: 1;
+  max-width: 360px;
+}
+.counts {
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.note {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
+.spacer {
+  flex: 1;
+}
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.link:hover {
+  text-decoration: underline;
+}
+.filter {
+  width: 100%;
+  max-width: 640px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-input);
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  resize: vertical;
+}
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+}
+.groupHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+}
+.groupTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-emphasis);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.tools {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0 0 0 20px;
+  list-style: none;
+}
+.tool {
+  padding: 4px 0;
+}
+.toolHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+.toolName {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.description {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}

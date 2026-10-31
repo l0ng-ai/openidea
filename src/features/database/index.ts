@@ -7,6 +7,7 @@
 import { lazyComponent } from "@/ui";
 import { activeEditor, registerEditorContribution } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
+import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import {
   registerEditorKind,
@@ -33,6 +34,9 @@ import {
   useDatabase,
   watchIdleConnections,
 } from "./store";
+
+/** The project's data sources (`ide-db::source`). */
+const DATA_SOURCES_FILE = /(?:^|[\\/])\.openidea[\\/]data-sources\.toml$/;
 
 export function activate(): () => void {
   const disposers = [
@@ -87,6 +91,11 @@ export function activate(): () => void {
         dialog: null,
         newMenuOpen: false,
       });
+    }),
+    // Data sources changed on disk (the MCP server's create / edit connection tools, a VCS update): re-read them.
+    onIdeEvent("fsChanged", (e) => {
+      const paths = [...e.created, ...e.modified, ...e.removed];
+      if (useDatabase.getState().loaded && paths.some((p) => DATA_SOURCES_FILE.test(p))) void loadSources();
     }),
     // Consoles of coloured data sources get a tinted tab.
     useDatabase.subscribe((s, prev) => {

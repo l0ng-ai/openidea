@@ -205,6 +205,8 @@ struct Live {
     capabilities: AgentCapabilities,
     /// `promptCapabilities.embeddedContext`: referenced files are sent with their text.
     embedded: bool,
+    /// The `mcpServers` the session got (the IDE's own MCP server).
+    mcp: Vec<Value>,
 }
 
 struct Task {
@@ -589,7 +591,7 @@ impl AgentManager {
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
             .peer
-            .request("session/fork", json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": [] }), None)
+            .request("session/fork", json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": live.mcp }), None)
             .await
             .map_err(|e| IdeError::internal(source.describe(e)))?;
         let session = reply
@@ -1179,13 +1181,15 @@ impl Task {
         let can_load = init.load_session();
         let (capabilities, embedded) = capabilities_of(&init);
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
-        let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
+        let cwd = dunce::canonicalize(&cwd).unwrap_or(cwd);
+        let mcp = mcp_servers_for(&init, &cwd);
+        let cwd_s = cwd.to_string_lossy().into_owned();
 
         let mut session = None;
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
             let loaded: Result<Value, RpcError> =
-                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": [] }), None).await;
+                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": mcp }), None).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
             match loaded {
@@ -1198,7 +1202,7 @@ impl Task {
             Some(s) => s,
             None => {
                 let v: Value = peer
-                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": [] }), None)
+                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": mcp }), None)
                     .await
                     .map_err(|e| match e {
                         RpcError::Server { ref message, .. } if message.to_lowercase().contains("auth") => {
@@ -1271,7 +1275,7 @@ impl Task {
         }
         self.persist();
         self.emit_task();
-        let live = Live { peer, session: session_id, capabilities, embedded };
+        let live = Live { peer, session: session_id, capabilities, embedded, mcp };
         *self.live.lock() = Some(live.clone());
         Ok(live)
     }
@@ -1639,6 +1643,37 @@ fn client_info() -> Value {
 }
 
 /// What the agent said it can do, and whether it takes embedded files.
+/// The MCP servers every agent session gets (ACP `McpServer` objects), e.g. the IDE's own,
+/// for the session's working directory (the IDE's server is told it as the session's project).
+pub type McpServers = Arc<dyn Fn(&std::path::Path) -> Vec<Value> + Send + Sync>;
+
+static MCP_SERVERS: parking_lot::RwLock<Option<McpServers>> = parking_lot::RwLock::new(None);
+
+/// Sets (or clears) what [`McpServers`] new sessions get.
+pub fn set_mcp_servers(servers: Option<McpServers>) {
+    *MCP_SERVERS.write() = servers;
+}
+
+/// The configured servers this agent can connect to from `cwd`: stdio always, `http` /
+/// `sse` only when its `mcpCapabilities` say so.
+fn mcp_servers_for(init: &acp::Negotiated, cwd: &std::path::Path) -> Vec<Value> {
+    match MCP_SERVERS.read().clone() {
+        Some(servers) => supported_mcp_servers(servers(cwd), &init.capabilities),
+        None => Vec::new(),
+    }
+}
+
+fn supported_mcp_servers(servers: Vec<Value>, capabilities: &Value) -> Vec<Value> {
+    let supports = |kind: &str| capabilities.pointer(&format!("/mcpCapabilities/{kind}")) == Some(&Value::Bool(true));
+    servers
+        .into_iter()
+        .filter(|s| match s.get("type").and_then(Value::as_str) {
+            Some(kind @ ("http" | "sse")) => supports(kind),
+            _ => true,
+        })
+        .collect()
+}
+
 fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
     let meta = |p: &str| init.meta(p).and_then(Value::as_bool) == Some(true);
     let capabilities = AgentCapabilities {

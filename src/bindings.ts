@@ -956,6 +956,40 @@ export const commands = {
 	dbTrustSshHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_trust_ssh_host", { id })),
 	/**  Test Connection: connects with `config` as edited (not necessarily saved). */
 	sshTest: (config: SshConfiguration, secret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("ssh_test", { config, secret })),
+	mcpStatus: () => __TAURI_INVOKE<McpStatus>("mcp_status"),
+	/**  Every tool, with whether Settings disabled it. */
+	mcpTools: () => __TAURI_INVOKE<McpToolInfo[]>("mcp_tools"),
+	/**  The recent tool calls, most recent first. */
+	mcpCallHistory: () => __TAURI_INVOKE<McpCallRecord[]>("mcp_call_history"),
+	/**  The tools offered under the current settings as Markdown (Exposed Tools › Export). */
+	mcpExportToolsMarkdown: () => __TAURI_INVOKE<string>("mcp_export_tools_markdown"),
+	/**  What each supported client needs, and whether its configuration is current. */
+	mcpClients: () => typedError<McpClientConfig[], IdeError>(__TAURI_INVOKE("mcp_clients")),
+	/**  Auto-Configure: writes the `openidea` entry into `client`'s user configuration. */
+	mcpConfigureClient: (client: McpClientKind) => typedError<McpClientConfig, IdeError>(__TAURI_INVOKE("mcp_configure_client", { client })),
+	/**
+	 *  Writes the `openidea` entry into `client`'s configuration inside `project`
+	 *  (`.mcp.json`, `.cursor/mcp.json`, ...); returns the file.
+	 */
+	mcpConfigureProjectClient: (client: McpClientKind, project: IpcPath) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("mcp_configure_project_client", { client, project })),
+	/**
+	 *  The MCP clients installed for this user (and configured in `project`), with whether
+	 *  their configuration reaches this server or points at a stale port.
+	 */
+	mcpDetectClients: (project: string | null) => typedError<McpDetectedClient[], IdeError>(__TAURI_INVOKE("mcp_detect_clients", { project })),
+	/**
+	 *  The bundled agent skills, with where they are installed (the user's agent
+	 *  directories, or `project`'s).
+	 */
+	mcpSkills: (project: string | null) => typedError<McpSkillInfo[], IdeError>(__TAURI_INVOKE("mcp_skills", { project })),
+	/**  Installs (or updates) bundled skill `id` for `target`; returns the skills afterwards. */
+	mcpInstallSkill: (id: string, target: McpSkillTarget, project: string | null) => typedError<McpSkillInfo[], IdeError>(__TAURI_INVOKE("mcp_install_skill", { id, target, project })),
+	/**  Removes bundled skill `id` for `target` (only a copy OpenIDEA installed); returns the skills afterwards. */
+	mcpRemoveSkill: (id: string, target: McpSkillTarget, project: string | null) => typedError<McpSkillInfo[], IdeError>(__TAURI_INVOKE("mcp_remove_skill", { id, target, project })),
+	/**  Replaces the token; configured clients need the new one. */
+	mcpRegenerateToken: () => typedError<null, IdeError>(__TAURI_INVOKE("mcp_regenerate_token")),
+	/**  A window's answer to `IdeEvent::McpRequest { id }`. */
+	mcpRespond: (id: number, answer: McpAnswer) => __TAURI_INVOKE<void>("mcp_respond", { id, answer }),
 	/**  Remembers the password / passphrase of configuration `id` (`None` forgets it). */
 	sshSetSecret: (id: string, secret: string | null, save: boolean) => __TAURI_INVOKE<void>("ssh_set_secret", { id, secret, save }),
 	/**  Whether connecting with configuration `id` needs a password first. */
@@ -3527,6 +3561,12 @@ cancellable: boolean } |
 remember: boolean } | 
 /**  Prompt `id` was answered (in any window) or gave up. */
 { type: "askpassDone"; id: number } | 
+/**  The MCP server needs this window's UI; answered with `mcp_respond(id, ...)`. */
+{ type: "mcpRequest"; id: number; request: McpUiRequest } | 
+/**  MCP request `id` was answered or given up (its dialog closes). */
+{ type: "mcpRequestDone"; id: number } | 
+/**  The MCP server started, stopped or saw a new client. */
+{ type: "mcpStatusChanged"; status: McpStatus } | 
 /**
  *  The kernel of an open notebook changed state (`starting`, `idle`, `busy`,
  *  `dead`); `message` says why it failed to start or died.
@@ -4270,6 +4310,266 @@ export type MavenSettings = {
 	/**  Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`. */
 	localRepository?: string,
 };
+
+/**  A window's answer to an [`McpUiRequest`] (`mcp_respond`). */
+export type McpAnswer = 
+/**  To `Confirm`; `remember`: its "always allow" checkbox was checked. */
+{ type: "confirm"; allow: boolean; remember?: boolean } | 
+/**  To `OpenFile`. */
+{ type: "done" } | 
+/**  To `OpenEditors`. */
+{ type: "openEditors"; editors: McpOpenEditors } | 
+/**  The UI could not do it. */
+{ type: "failed"; message: string };
+
+/**  How a recorded tool call ended. */
+export type McpCallOutcome = "inProgress" | "success" | 
+/**  The tool returned an error. */
+"error" | 
+/**  The client or the user cancelled it. */
+"cancelled" | 
+/**  The tool failed unexpectedly (it panicked). */
+"failed";
+
+/**  One tool call, for the server's call history (`mcp_call_history`, `get_ide_diagnostics`). */
+export type McpCallRecord = {
+	/**  Counts up from 1 since the application started. */
+	id: number,
+	client: string,
+	tool: string,
+	/**  The arguments, shortened and with secret-looking values replaced by `***`. */
+	arguments: string,
+	/**  Milliseconds since the Unix epoch. */
+	startedAtMs: number | null,
+	/**  Set when the call ended. */
+	durationMs: number | null,
+	outcome: McpCallOutcome,
+	/**  Why the call did not succeed (an error, a cancellation, a failure). */
+	error: string | null,
+	/**  Called through `execute_tool`. */
+	viaRouter: boolean,
+	/**  The root of the project the call ran against, once it was known. */
+	project: string | null,
+	/**  Files the call created, changed, moved or deleted (project-relative inside the project). */
+	changedFiles: string[],
+};
+
+export type McpClient = {
+	name: string,
+	version: string,
+	/**  Tool calls this client made. */
+	calls: number,
+};
+
+/**  A client's configuration for this server. */
+export type McpClientConfig = {
+	client: McpClientKind,
+	/**  The file the configuration goes into (`~/.cursor/mcp.json`), if it has one. */
+	file: IpcPath | null,
+	/**
+	 *  The snippet to paste there (JSON or TOML); it never is a command line, which would
+	 *  leave the token in the shell history.
+	 */
+	snippet: string,
+	/**  `json` or `toml`. */
+	format: string,
+	/**  The file already has an `openidea` entry. */
+	configured: boolean,
+	/**  Auto-Configure can write the file. */
+	canWrite: boolean,
+};
+
+/**  An MCP client whose configuration Tools › MCP Server can show or write. */
+export type McpClientKind = "claudeCode" | "codex" | "cursor" | "vsCode" | "windsurf" | "gemini" | 
+/**  The Claude desktop app: it starts servers as commands (`openidea mcp-stdio`). */
+"claudeDesktop" | "junie" | 
+/**  JetBrains Air. */
+"air" | "gitHubCopilotCli" | 
+/**  The GitHub Copilot plugin for JetBrains IDEs. */
+"gitHubCopilotIdePlugin";
+
+/**
+ *  Database operations MCP clients may run without asking: one flag per operation type, for every client,
+ *  project and data source. Statements whose kind is unknown always ask.
+ */
+export type McpDatabaseConsents = {
+	/**  Read data (`SELECT`). */
+	readData?: boolean,
+	/**  Modify data (`INSERT`, `UPDATE`, `DELETE`, calling routines). */
+	writeData?: boolean,
+	/**  Read the schema (list schema objects). */
+	readSchema?: boolean,
+	/**  Modify the schema (`CREATE`, `ALTER`, `DROP`). */
+	writeSchema?: boolean,
+};
+
+/**
+ *  An MCP client found on this machine (`mcp_detect_clients`), and whether its
+ *  configuration reaches this server.
+ */
+export type McpDetectedClient = {
+	client: McpClientKind,
+	/**  The project whose configuration this is; `None` for the user-level one. */
+	project: IpcPath | null,
+	file: IpcPath,
+	/**  Some entry points at OpenIDEA (any port); `None` when the file lists no servers. */
+	configured: boolean | null,
+	/**  The entries that look like OpenIDEA's use this server's port (`false`: a stale port). */
+	portCorrect: boolean,
+	/**
+	 *  The `openidea` entry has this server's URL and token (a project's: the stdio bridge
+	 *  with this port, token file and project).
+	 */
+	current: boolean,
+	/**  The transports of all the file's server entries. */
+	transports: McpTransport[],
+};
+
+/**  How a session's client reaches the tools. */
+export type McpInvocationMode = 
+/**  Every tool is listed and called directly. */
+"direct" | 
+/**  Only `execute_tool` (and tools whose state is not router-only) is listed; it calls the others by name. */
+"viaRouter";
+
+/**  The answer to [`McpUiRequest::OpenEditors`]. */
+export type McpOpenEditors = {
+	active: IpcPath | null,
+	open: IpcPath[],
+};
+
+/**  Tools › MCP Server (global only). */
+export type McpSettings = {
+	/**  Serve the MCP endpoint on `127.0.0.1:<port>`. */
+	enabled?: boolean,
+	port?: number,
+	/**  Run shell commands and run configurations without asking first. */
+	braveMode?: boolean,
+	/**
+	 *  Ask confirmations in the MCP client (`elicitation/create`) when it supports that,
+	 *  instead of in the IDE. Off by default: a client could answer its own elicitations.
+	 */
+	clientConfirmations?: boolean,
+	/**  Tool names that are not offered to clients (the first disallow list; `tool_states` supersedes it). */
+	disabledTools?: string[],
+	/**  Give the IDE's own agents (Agents tool window) these tools too. */
+	agents?: boolean,
+	/**
+	 *  Comma-separated masks over fully qualified tool names (`-*,+general.SearchToolset.*,-*.read_file`):
+	 *  `+` (or nothing) allows, `-` hides, `*` / `?` are wildcards, the last matching mask wins.
+	 *  Empty means no filter.
+	 */
+	toolsFilter?: string,
+	/**  Per-tool state by fully qualified name (or plain name), as Exposed Tools stores it. */
+	toolStates?: { [key in string]: McpToolState },
+	/**  How clients reach the tools: each directly, or through the `execute_tool` router. */
+	invocationMode?: McpInvocationMode,
+	/**  Offer experimental tools (`get_ide_diagnostics`, ...) too. */
+	experimentalTools?: boolean,
+	/**  What the database tools may do without asking ("Always allow" of their consent). */
+	databaseConsents?: McpDatabaseConsents,
+};
+
+/**  A skill OpenIDEA bundles for agents that use its MCP tools. */
+export type McpSkillInfo = {
+	id: string,
+	description: string,
+	targets: McpSkillTarget[],
+	/**  The MCP tools the skill uses. */
+	tools: string[],
+	/**  Settings disable none of the tools the skill needs. */
+	available: boolean,
+	/**  Where it is installed now. */
+	installed: McpSkillTarget[],
+};
+
+/**  An agent a bundled skill can be installed for. */
+export type McpSkillTarget = 
+/**  Claude Code (`~/.claude/skills`). */
+"claude" | 
+/**  Codex (`~/.codex/skills`). */
+"codex" | 
+/**  Junie (`~/.junie/skills`). */
+"junie" | 
+/**  Agents reading the shared `~/.agents/skills`. */
+"other";
+
+/**  Whether the server runs, and where. */
+export type McpStatus = {
+	running: boolean,
+	/**  The endpoint (`http://127.0.0.1:64352/mcp`) while running. */
+	url: string | null,
+	port: number | null,
+	/**  Why it is not running although enabled (port in use, ...). */
+	error: string | null,
+	/**  Clients that initialized a session since the server started, most recent first. */
+	clients: McpClient[],
+};
+
+/**  One tool, for the settings page's tool list. */
+export type McpToolInfo = {
+	name: string,
+	description: string,
+	/**  `read`, `edit` or `execute` (asks first unless brave mode is on). */
+	kind: McpToolKind,
+	/**  Offered to clients under the current settings (filter, tool states, experimental tools). */
+	enabled: boolean,
+	/**  The toolset (`general.SearchToolset`), as the JetBrains IDEs group their tools. */
+	group: string,
+	/**  The toolset's display name (`Search`). */
+	groupName: string,
+	/**  `<group>.<name>`: what `toolsFilter` masks and `toolStates` keys match. */
+	fullyQualifiedName: string,
+	/**  Hidden unless experimental tools are on. */
+	experimental: boolean,
+	/**  In router mode, reachable only through `execute_tool`. */
+	routerOnly: boolean,
+};
+
+export type McpToolKind = 
+/**  Reads the project; no side effects. */
+"read" | 
+/**  Changes files of the project or the editor state. */
+"edit" | 
+/**  Runs processes (terminal commands, run configurations, builds). */
+"execute";
+
+/**  One tool's entry in [`McpSettings::tool_states`]. */
+export type McpToolState = {
+	/**  Offered at all. */
+	enabled?: boolean,
+	/**  In router mode, reachable only through `execute_tool` instead of listed directly. */
+	routerOnly?: boolean,
+};
+
+/**  How a configured server entry talks to its server. */
+export type McpTransport = 
+/**  The client starts a command and talks over its stdin / stdout. */
+"stdio" | "sse" | 
+/**  Streamable HTTP. */
+"http";
+
+/**  What the server needs from a project window's UI; answered with `mcp_respond`. */
+export type McpUiRequest = 
+/**
+ *  Ask before running something: answered with `true` (allow) or `false`, or with
+ *  `{ "allow": bool, "remember": bool }` when it has a `remember` checkbox.
+ */
+{ type: "confirm"; 
+/**  The MCP client's name (`claude-code`). */
+client: string; tool: string; 
+/**  What will run (a command line, a configuration's name). */
+subject: string; 
+/**  Extra detail (working directory, ...). */
+detail: string | null; 
+/**  The dialog's title instead of the default one (database consents). */
+title?: string | null; 
+/**  Label of an "always allow" checkbox; the answer's `remember` tells whether it was checked. */
+remember?: string | null } | 
+/**  Open `path` in an editor at the 1-based `line` / `column`: answered with `null`. */
+{ type: "openFile"; path: IpcPath; line: number | null; column: number | null } | 
+/**  The open editors: answered with an [`McpOpenEditors`]. */
+{ type: "openEditors" };
 
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */
@@ -5521,6 +5821,8 @@ export type Settings_Deserialize = {
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets?: RunTarget[],
+	/**  Tools › MCP Server (global only). */
+	mcp?: McpSettings,
 };
 
 export type Settings_Serialize = {
@@ -5576,6 +5878,8 @@ export type Settings_Serialize = {
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets: RunTarget[],
+	/**  Tools › MCP Server (global only). */
+	mcp: McpSettings,
 };
 
 export type Severity = "error" | "warning" | "info" | "hint";

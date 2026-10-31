@@ -159,6 +159,9 @@ pub fn settings_set(
     value: String,
 ) -> IdeResult<Settings> {
     let applied = ide_host::ops::project::set_settings(&state.host, window.label(), scope, &key, &value)?;
+    if key == "mcp" || key.starts_with("mcp.") {
+        crate::mcp::apply_settings(&state.app);
+    }
     // A project value concerns only that project's window (and its settings window).
     let event = ide_core::IdeEvent::SettingsChanged { key };
     if applied.project_scope {

@@ -132,6 +132,19 @@ pub enum IdeEvent {
     AskpassDone {
         id: u64,
     },
+    /// The MCP server needs this window's UI; answered with `mcp_respond(id, ...)`.
+    McpRequest {
+        id: u64,
+        request: crate::mcp::McpUiRequest,
+    },
+    /// MCP request `id` was answered or given up (its dialog closes).
+    McpRequestDone {
+        id: u64,
+    },
+    /// The MCP server started, stopped or saw a new client.
+    McpStatusChanged {
+        status: crate::mcp::McpStatus,
+    },
     /// The kernel of an open notebook changed state (`starting`, `idle`, `busy`,
     /// `dead`); `message` says why it failed to start or died.
     NotebookKernel {

@@ -26,6 +26,10 @@ pub struct AppState {
     pub remote_dev: crate::remote_dev::Connections,
     /// Broadcasts to every window.
     pub sink: SharedSink,
+    /// The built-in MCP server (Settings › Tools › MCP Server).
+    pub mcp: Arc<ide_mcp::McpServer>,
+    /// Its requests waiting for a window's answer.
+    pub mcp_pending: Arc<crate::mcp::Pending>,
 }
 
 impl std::ops::Deref for AppState {
@@ -88,7 +92,18 @@ impl AppState {
             runtime: tauri::async_runtime::handle().inner().clone(),
             project_environment: false,
         }));
+        let mcp_pending = Arc::new(crate::mcp::Pending::default());
+        let mcp_token = ide_mcp::load_or_create_token(&crate::mcp::token_file(&data_dir)).unwrap_or_else(|e| {
+            tracing::warn!("cannot store the MCP token: {e}");
+            ide_mcp::random_token()
+        });
+        let mcp = Arc::new(ide_mcp::McpServer::new(
+            Arc::new(crate::mcp::TauriMcpHost { app: app.clone(), host: host.clone(), pending: mcp_pending.clone() }),
+            mcp_token,
+        ));
         Ok(Self {
+            mcp,
+            mcp_pending,
             recent: RecentProjects::load(&config_dir),
             askpass: start_askpass(&app),
             sink: global_sink,

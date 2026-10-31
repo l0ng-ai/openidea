@@ -252,6 +252,18 @@ pub fn validate_query(query: &SearchQuery) -> IdeResult<()> {
     Ok(())
 }
 
+/// Byte ranges of the matches of `query` in `text`, matched as [`search`] does.
+/// Unlike [`LineMatch`]es, a match spanning lines comes back whole.
+pub fn match_ranges(text: &str, query: &SearchQuery) -> IdeResult<Vec<(usize, usize)>> {
+    if query.pattern.is_empty() {
+        return Ok(Vec::new());
+    }
+    let compiled = query::compile(query)?;
+    let mut out = Vec::new();
+    iter::for_each_match(&compiled.matcher, text.as_bytes(), 0, |m| out.push((m.start(), m.end())));
+    Ok(out)
+}
+
 /// Computes the replacement text for every match of `query` in `text`
 /// (supports `$1` group references for regex queries).
 ///
