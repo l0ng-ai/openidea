@@ -128,7 +128,8 @@ function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null
  */
 export function testBasesFor(relPath: string, configs: RunConfig[]): RunConfig[] {
   const kinds = testKinds(relPath);
-  const candidates = configs.filter((c) => c.isTest && kinds.includes(c.kind));
+  // Configurations produced from a test or file are results of narrowing, never bases for it.
+  const candidates = configs.filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"));
   const best = allClosest(candidates, relPath);
   if (best.length) return best;
   const fallback = candidates[0] ?? implicitPytest(relPath, configs);

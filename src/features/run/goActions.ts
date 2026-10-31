@@ -4,8 +4,8 @@ import type { RunConfig } from "@/platform/ipc";
 import { registerMenuGroup, maybeEditorService, type MenuGroupContext } from "@/workbench/contributions";
 import { promptInput } from "@/workbench/inputDialogs";
 import { goGenerateConfig, goGenerateMenu } from "./goGenerate";
-import { invalidateGoModules } from "./goModules";
-import { loadConfigs, startRun } from "./store";
+import { invalidateGoModules, loadGoModules } from "./goModules";
+import { loadConfigs, startRun, useRun } from "./store";
 
 export type GoModuleOperation = "tidy" | "download" | "sync" | "use";
 const ACTIONS = {
@@ -76,6 +76,7 @@ export function registerGoActions(): () => void {
           onExit: () => {
             if (useProject.getState().project?.root !== root) return;
             invalidateGoModules();
+            void loadGoModules(root ?? null, useRun.getState().configs);
             void loadConfigs();
             if (getAction("libraries.reload")) void executeAction("libraries.reload");
           },

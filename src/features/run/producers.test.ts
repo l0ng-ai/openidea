@@ -455,6 +455,20 @@ describe("project producers", () => {
     expect(at(7)).toMatchObject({ name: "m.test.ts", scope: "file" });
   });
 
+  it("does not offer configurations produced by an earlier run as choices", () => {
+    const earlier = cfg({
+      id: "context:target:npm:test:src/m.test.ts:other",
+      name: "other",
+      kind: "npm",
+      command: "npm",
+      args: ["run", "test", "--", "src/m.test.ts"],
+      isTest: true,
+    });
+    const src = "describe('math', () => {\n  it('adds', () => {\n  });\n});\n";
+    const input = { path: `${ROOT}/src/m.test.ts`, root: ROOT, configs: [...configs, earlier], content: src, line: 1 };
+    expect(produceContextChoices(input, ALL).map((c) => c.name)).toEqual(["math > adds"]);
+  });
+
   it("several equally close test configurations: one choice each, the default first", () => {
     const withUnit = [
       ...configs,
