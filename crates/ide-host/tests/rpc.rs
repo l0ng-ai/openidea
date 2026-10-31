@@ -216,6 +216,7 @@ async fn local_deployment_runs_on_the_project_host() {
     }));
     let dispatcher = Dispatcher::standard();
     for cmd in [
+        "deploy_coverage",
         "deploy_upload",
         "deploy_download",
         "deploy_delete_remote",
@@ -243,6 +244,9 @@ async fn local_deployment_runs_on_the_project_host() {
     invoke(&peer, "settings_set", json!({"scope":"project", "key":"deployment", "value":deployment.to_string()}))
         .await
         .unwrap();
+    let coverage = invoke(&peer, "deploy_coverage", json!({"paths":[file]})).await.unwrap();
+    assert_eq!(coverage[0]["server"], "local");
+    assert_eq!(coverage[0]["paths"], json!([ide_core::IpcPath::from(&file)]));
     invoke(&peer, "deploy_test_connection", json!({"connection":{"kind":"local"}, "path":target})).await.unwrap();
     let report = invoke(&peer, "deploy_upload", json!({"paths":[file], "request":1001})).await.unwrap();
     assert_eq!(report["files"], 1, "{report}");

@@ -5313,5 +5313,10 @@
   "Architecture": "架构",
   "Compiler": "编译器",
   "No CMake executable target for this file": "此文件没有对应的 CMake 可执行目标",
-  "Run CMake Configure from the Run selector, then choose the executable target. Files in a CMake project are built with their target.": "请从运行选择器执行 CMake Configure，然后选择可执行目标。CMake 项目中的文件由所属目标构建，不会单独编译。"
+  "Run CMake Configure from the Run selector, then choose the executable target. Files in a CMake project are built with their target.": "请从运行选择器执行 CMake Configure，然后选择可执行目标。CMake 项目中的文件由所属目标构建，不会单独编译。",
+  "Cannot check deployment mappings": "无法检查部署映射",
+  "No selected paths can be deployed to {server}": "所选路径均无法部署到 {server}",
+  "No deployment server covers the selected paths": "没有部署服务器覆盖所选路径",
+  "Not covered by this server's mappings": "此服务器的映射未覆盖该路径",
+  "Excluded from deployment": "已从部署中排除"
 }
