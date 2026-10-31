@@ -1,6 +1,6 @@
 import type { RunConfig } from "@/platform/ipc";
 import type { DebugServiceSession } from "@/workbench/contributions";
-import { stopSession, type RunSession } from "./store";
+import { stopSession, useRun, waitForExit, type RunSession } from "./store";
 
 /** One execution: a Run process and its attached debuggers, or a direct debug launch. */
 export interface ServiceSession {
@@ -77,8 +77,20 @@ export async function stopServiceSessions(sessions: readonly ServiceSession[]): 
     }
   }
   for (const [processId, group] of groups) {
-    for (const d of group.slice(0, -1)) await d.stop({ stopProcess: false });
-    await group.at(-1)!.stop();
+    const run = [...runs.values()].find((s) => s.runId === processId);
+    if (run) {
+      // Detaching a live JVM republishes its JDWP port and can trigger another attachment.
+      await stopSession(run.id);
+      await waitForExit([run.id]);
+      if (useRun.getState().sessions.some((s) => s.id === run.id && running(s))) {
+        runs.delete(run.id);
+        continue;
+      }
+      for (const d of group) await d.stop({ stopProcess: false });
+    } else {
+      for (const d of group.slice(0, -1)) await d.stop({ stopProcess: false });
+      await group.at(-1)!.stop();
+    }
     for (const [id, run] of runs) if (run.runId === processId) runs.delete(id);
   }
   for (const run of runs.values()) await stopSession(run.id);

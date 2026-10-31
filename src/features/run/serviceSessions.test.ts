@@ -4,8 +4,16 @@ import type { DebugServiceSession } from "@/workbench/contributions";
 import type { RunSession } from "./store";
 import { currentServiceSession, serviceDebugger, serviceSessions, stopServiceSessions } from "./serviceSessions";
 
-const stopRun = vi.hoisted(() => vi.fn());
-vi.mock("./store", () => ({ stopSession: stopRun }));
+const { stopRun, waitForExit, getSession } = vi.hoisted(() => ({
+  stopRun: vi.fn(),
+  waitForExit: vi.fn(),
+  getSession: vi.fn(),
+}));
+vi.mock("./store", () => ({
+  stopSession: stopRun,
+  waitForExit,
+  useRun: { getState: () => ({ sessions: [getSession()].filter(Boolean) }) },
+}));
 const config = (id = "app"): RunConfig => ({
   id,
   name: "same name",
@@ -85,7 +93,7 @@ it("stops the displayed execution without stopping another parallel instance", a
   expect(first.stop).not.toHaveBeenCalled();
 });
 
-it("awaits shared debugger stops and terminates their owning process only once", async () => {
+it("awaits shared debugger stops without a retained Run and terminates their process only once", async () => {
   stopRun.mockClear();
   const calls: string[] = [];
   const first = debug(1, 1, {
@@ -101,10 +109,51 @@ it("awaits shared debugger stops and terminates their owning process only once",
       calls.push(options?.stopProcess === false ? "detach last" : "stop process last");
     }),
   });
-  const targets = serviceSessions([run("maven", 0)], [first, last]);
+  const targets = serviceSessions([], [first, last]);
   await stopServiceSessions([...targets, ...targets]);
   expect(calls).toEqual(["detach first", "stop process last"]);
   expect(stopRun).not.toHaveBeenCalled();
+});
+
+it("stops the owning Run before detaching shared roots so JDWP cannot trigger another attachment", async () => {
+  stopRun.mockClear();
+  let processAlive = true;
+  let reattachments = 0;
+  const calls: string[] = [];
+  stopRun.mockImplementationOnce(async () => {
+    calls.push("stop run");
+  });
+  let exit!: () => void;
+  waitForExit.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        exit = () => {
+          processAlive = false;
+          resolve();
+        };
+      }),
+  );
+  getSession.mockImplementationOnce(() => run("maven", 0, { status: "finished" }));
+  const roots = [1, 2].map((id) =>
+    debug(id, id, {
+      processId: 7,
+      stop: vi.fn(async () => {
+        await Promise.resolve();
+        if (processAlive) reattachments++;
+        calls.push(`detach ${id}`);
+      }),
+    }),
+  );
+  const targets = serviceSessions([run("maven", 0)], roots);
+  const stopping = stopServiceSessions([...targets, ...targets]);
+  await vi.waitFor(() => expect(stopRun).toHaveBeenCalledOnce());
+  for (const root of roots) expect(root.stop).not.toHaveBeenCalled();
+  exit();
+  await stopping;
+  expect(reattachments).toBe(0);
+  expect(calls).toEqual(["stop run", "detach 1", "detach 2"]);
+  expect(stopRun).toHaveBeenCalledExactlyOnceWith("maven");
+  for (const root of roots) expect(root.stop).toHaveBeenCalledExactlyOnceWith({ stopProcess: false });
 });
 
 it("stops all group executions including unpaired Run and ignores finished roots", async () => {
@@ -115,4 +164,11 @@ it("stops all group executions including unpaired Run and ignores finished roots
   expect(stopRun).toHaveBeenCalledWith("plain");
   expect(running.stop).toHaveBeenCalledOnce();
   expect(done.stop).not.toHaveBeenCalled();
+});
+
+it("does not detach a JVM still running after the exit wait expires", async () => {
+  getSession.mockReturnValueOnce(run("maven", 0));
+  const root = debug(1, 1, { processId: 7 });
+  await stopServiceSessions(serviceSessions([run("maven", 0)], [root]));
+  expect(root.stop).not.toHaveBeenCalled();
 });

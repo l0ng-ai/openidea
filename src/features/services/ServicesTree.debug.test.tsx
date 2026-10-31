@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import type { RunConfig } from "@/platform/ipc";
+import { commands, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { validateSettings } from "@/features/settings/model/schema";
 import { adoptSession, appendConsole, useDebug } from "@/features/debugger/state";
 import { DebugServiceConsole } from "@/features/debugger/ui/DebugConsole";
 import { runServiceProvider } from "@/features/run/services";
-import { runtime, startRun, useRun } from "@/features/run/store";
+import { onRunExited, runtime, startRun, useRun } from "@/features/run/store";
 import { registerServiceProvider, useDebugRunSessions, type DebugServiceSession } from "@/workbench/contributions";
 import { ServicesTreeView } from "./ServicesTree";
 import { useServicesTree } from "./tree";
@@ -63,6 +63,7 @@ beforeEach(() => {
   dispose = registerServiceProvider(runServiceProvider);
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   dispose();
   useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null });
 });
@@ -119,6 +120,10 @@ it("keeps the other parallel instance alive and then displays it", async () => {
 });
 
 it("shows the owning Run output for attached debugging and overrides both sets of controls", async () => {
+  const stopRun = vi.spyOn(commands, "runStop").mockImplementation(async (id) => {
+    queueMicrotask(() => onRunExited(id, 130));
+    return { status: "ok", data: null };
+  });
   const c = { ...config, kind: "shell", command: "echo", debugAdapter: null };
   const s = await startRun(c);
   expect(s).not.toBeNull();
@@ -133,8 +138,9 @@ it("shows the owning Run output for attached debugging and overrides both sets o
   const actions = within(screen.getByRole("toolbar", { name: "Run actions" }));
   fireEvent.click(actions.getByRole("button", { name: "Rerun" }));
   expect(d.rerun).toHaveBeenCalledOnce();
-  fireEvent.click(actions.getByRole("button", { name: "Stop" }));
-  expect(d.stop).toHaveBeenCalledOnce();
+  await act(async () => fireEvent.click(actions.getByRole("button", { name: "Stop" })));
+  expect(stopRun).toHaveBeenCalledExactlyOnceWith(7);
+  await vi.waitFor(() => expect(d.stop).toHaveBeenCalledExactlyOnceWith({ stopProcess: false }));
   act(() => useRun.setState({ sessions: [{ ...active, status: "finished" }] }));
   expect(actions.getByRole("button", { name: "Stop" })).toBeEnabled();
 });
