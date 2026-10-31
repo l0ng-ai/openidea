@@ -297,13 +297,25 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         .and_then(|b| b.build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     apply_zoom(app, &window);
+    match_native_theme(&window, config.background_color);
     // "Sync with OS" needs the OS mode, known once the window exists.
     if let Some(a) = appearance.filter(|a| plugin_frame.is_none() && (a.sync_with_os || a.theme == "system"))
         && window.theme().is_ok_and(|t| t == Theme::Dark)
     {
-        let _ = window.set_background_color(Some(frame_color(&a, true)));
+        let color = frame_color(&a, true);
+        let _ = window.set_background_color(Some(color));
+        match_native_theme(&window, Some(color));
     }
     Ok(window)
+}
+
+/// Pins the native window appearance (outline, shadow, traffic lights) to the light/dark
+/// of the app's frame colour; otherwise it follows the OS, so a light app theme in OS dark
+/// mode gets a dark window border.
+fn match_native_theme(window: &WebviewWindow, frame: Option<Color>) {
+    let Some(Color(r, g, b, _)) = frame else { return };
+    let luma = 0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b);
+    let _ = window.set_theme(Some(if luma < 128.0 { Theme::Dark } else { Theme::Light }));
 }
 
 /// Sets the saved IDE zoom before the page loads; applied later by the frontend,
@@ -747,6 +759,7 @@ pub fn open_settings_window(
         .and_then(|b| b.build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
     apply_zoom(app, &window);
+    match_native_theme(&window, config.background_color);
     // Restore runs during build; fit its size to the parent's current display before showing.
     #[cfg(target_os = "macos")]
     if let Err(e) = fit_settings_window(&window, &parent) {
