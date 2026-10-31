@@ -12,16 +12,6 @@ import { editorService, OWNS_FILE_DROP } from "./contributions";
 
 const OWNER_ATTR = Object.keys(OWNS_FILE_DROP)[0]!;
 
-type FileDropHandler = (paths: readonly string[], x: number, y: number) => boolean;
-const fileDropHandlers = new Set<FileDropHandler>();
-
-export function registerFileDropHandler(handler: FileDropHandler): () => void {
-  fileDropHandlers.add(handler);
-  return () => {
-    fileDropHandlers.delete(handler);
-  };
-}
-
 export interface FileDropDeps {
   isDir(path: string): Promise<boolean>;
   openFile(path: string, focus: boolean): Promise<void>;
@@ -56,7 +46,6 @@ export function handleFileDrop(
   y: number,
   deps: FileDropDeps = defaultDeps,
 ): Promise<void> | null {
-  for (const handler of fileDropHandlers) if (paths.length && handler(paths, x, y)) return Promise.resolve();
   const { project, lightEdit } = useProject.getState();
   if (!paths.length || !(project || lightEdit) || isRemoteWindow() || dropOwnedAt(x, y)) return null;
   return openDropped(paths, deps);

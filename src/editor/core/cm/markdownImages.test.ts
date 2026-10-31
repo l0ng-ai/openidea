@@ -1,3 +1,5 @@
+import type { RemoteSession } from "@/platform/ipc";
+import { useRemote } from "@/platform/remote";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -70,6 +72,9 @@ describe("Markdown images", () => {
   });
   it("leaves non-Markdown image paste and text paste untouched", () => {
     expect(markdownImages({ path: "/p/code.ts", folder: "assets", pattern: "image" })).toEqual([]);
+    useRemote.setState({ session: { id: "remote" } as unknown as RemoteSession });
+    expect(markdownImages({ path: "/p/a.md", folder: "assets", pattern: "image" })).toEqual([]);
+    useRemote.setState({ session: null });
     const editor = view();
     const create = vi.spyOn(commands, "fsCreateFileBytes");
     paste(editor, []);

@@ -168,9 +168,6 @@ impl Dispatcher {
         .add("cancel_task", |c| async move { Ok(ide_core::task::cancel(c.arg::<TaskId>("id")?)) })
         .add("fs_read_dir", |c| async move { ops::fs::read_dir(&c.host, &c.window, c.arg("path")?) })
         .add("fs_create_file", |c| async move { ops::fs::create_file(&c.host, &c.window, c.arg("path")?) })
-        .add("fs_create_file_bytes", |c| async move {
-            ops::fs::create_file_bytes(&c.host, c.arg("path")?, c.arg("data")?).await
-        })
         .add("fs_create_dir", |c| async move { ide_vfs::create_dir(&c.arg::<PathBuf>("path")?) })
         .add("fs_rename", |c| async move { ide_vfs::rename(&c.arg::<PathBuf>("from")?, &c.arg::<PathBuf>("to")?) })
         .add("fs_set_writable", |c| async move {

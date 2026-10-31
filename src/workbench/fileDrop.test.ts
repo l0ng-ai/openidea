@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import type { RemoteSession } from "@/platform/ipc";
-import { handleFileDrop, registerFileDropHandler, type FileDropDeps } from "./fileDrop";
+import { handleFileDrop, type FileDropDeps } from "./fileDrop";
 
 function deps(dirs: string[] = []) {
   const calls: string[] = [];
@@ -36,20 +36,6 @@ describe("files dropped from the OS", () => {
     useProject.setState({ project: null } as never);
     useRemote.setState({ session: null });
     document.body.innerHTML = "";
-  });
-
-  it("lets an editor consume image drops before opening files, including remote windows", async () => {
-    useRemote.setState({ session: { id: "remote" } as unknown as RemoteSession });
-    const { d, calls } = deps();
-    const handler = vi.fn(() => true);
-    const unregister = registerFileDropHandler(handler);
-    try {
-      await handleFileDrop(["/local/image.png"], 1, 1, d);
-      expect(handler).toHaveBeenCalledWith(["/local/image.png"], 1, 1);
-      expect(calls).toEqual([]);
-    } finally {
-      unregister();
-    }
   });
 
   it("opens each dropped file in its own tab, focusing the last; works for files outside the project", async () => {
