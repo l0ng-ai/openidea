@@ -98,8 +98,9 @@ pub(super) struct Shim {
 struct Session {
     id: String,
     cwd: PathBuf,
-    /// `--mcp-config` for the session's `mcpServers` (the IDE's MCP server).
-    mcp_config: Option<String>,
+    /// `--mcp-config` file for the session's `mcpServers` (the IDE's MCP server); a file
+    /// readable by this user only rather than an argument, which `ps` would show with its token.
+    mcp_config: Option<tempfile::TempPath>,
     shim: Weak<Shim>,
     st: Mutex<State>,
     /// Serializes (re)starting the process.
@@ -274,6 +275,13 @@ impl Shim {
         pending: bool,
         mcp_config: Option<String>,
     ) -> Arc<Session> {
+        let mcp_config = mcp_config.and_then(|json| match write_mcp_config(&json) {
+            Ok(path) => Some(path),
+            Err(e) => {
+                tracing::warn!("Claude Code session {id}: cannot write its MCP configuration: {e}");
+                None
+            }
+        });
         let session = Arc::new(Session {
             id: id.to_owned(),
             mcp_config,
@@ -567,7 +575,7 @@ impl Session {
         }
         let mut args = shim.config.args.clone();
         if let Some(config) = &self.mcp_config {
-            args.extend(["--mcp-config".to_owned(), config.clone()]);
+            args.extend(["--mcp-config".to_owned(), config.to_string_lossy().into_owned()]);
         }
         args.extend(start.args());
         let launch =
@@ -1342,6 +1350,13 @@ fn start_from_json(v: &Value) -> Option<Start> {
         return Some(Start::Resume { id, at: s("at") });
     }
     Some(Start::Fork { from: s("fork")?, id: s("id")?, at: s("at") })
+}
+
+/// Writes `json` to a new file only this user can read (removed when the path is dropped).
+fn write_mcp_config(json: &str) -> std::io::Result<tempfile::TempPath> {
+    let mut file = tempfile::Builder::new().prefix("openidea-mcp-").suffix(".json").tempfile()?;
+    std::io::Write::write_all(&mut file, json.as_bytes())?;
+    Ok(file.into_temp_path())
 }
 
 /// ACP `mcpServers` as Claude Code's `--mcp-config` JSON (`None` when there are none).

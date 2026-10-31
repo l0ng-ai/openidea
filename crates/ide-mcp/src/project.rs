@@ -107,7 +107,11 @@ pub fn resolve(root: &Path, path: &str) -> IdeResult<PathBuf> {
     Ok(normalize(&joined))
 }
 
-/// Errors unless `path` (resolved, symlinks included where they exist) is inside `root`.
+/// Directories (or, for `.git` in a worktree, files) of version control metadata.
+const VCS_METADATA: &[&str] = &[".git", ".hg", ".svn", ".jj", ".bzr"];
+
+/// Errors unless `path` (resolved, symlinks included where they exist) is inside `root`
+/// and not version control metadata.
 pub fn ensure_inside(root: &Path, path: &Path) -> IdeResult<()> {
     let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     // The deepest existing ancestor decides where symlinks lead.
@@ -126,7 +130,19 @@ pub fn ensure_inside(root: &Path, path: &Path) -> IdeResult<()> {
     for name in rest.into_iter().rev() {
         real.push(name);
     }
-    if real.starts_with(&root) {
+    if let Ok(rel) = real.strip_prefix(&root) {
+        // Hooks and config there (`core.fsmonitor`, `core.hooksPath`) run code on the next
+        // VCS command: changing them must not bypass the confirmation of the execute tools.
+        let metadata = rel.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+            VCS_METADATA.contains(&name.as_str())
+        });
+        if metadata {
+            return Err(IdeError::new(
+                ide_core::error::ErrorKind::PermissionDenied,
+                format!("{} is version control metadata; the MCP tools do not change it", path.display()),
+            ));
+        }
         Ok(())
     } else {
         Err(IdeError::new(
@@ -186,6 +202,11 @@ mod tests {
         std::fs::create_dir(root.join("src")).unwrap();
         assert!(ensure_inside(root, &root.join("src/new/file.txt")).is_ok());
         assert!(ensure_inside(root, &normalize(&root.join("../escape.txt"))).is_err());
+        for meta in [".git/config", ".git/hooks/pre-commit", ".GIT/config", "sub/.hg/hgrc", ".git"] {
+            assert!(ensure_inside(root, &root.join(meta)).is_err(), "{meta}");
+        }
+        assert!(ensure_inside(root, &root.join(".github/workflows/ci.yml")).is_ok());
+        assert!(ensure_inside(root, &root.join(".gitignore")).is_ok());
         #[cfg(unix)]
         {
             let outside = tempfile::tempdir().unwrap();

@@ -1032,4 +1032,12 @@ fn mcp_servers_become_an_mcp_config() {
         json!({ "type": "http", "url": "http://127.0.0.1:1/mcp", "headers": { "Authorization": "Bearer t" } })
     );
     assert_eq!(v["mcpServers"]["local"], json!({ "command": "srv", "args": ["-x"], "env": { "K": "V" } }));
+
+    let path = write_mcp_config(&config).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+    #[cfg(unix)]
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o077, 0);
+    let kept = path.to_path_buf();
+    drop(path);
+    assert!(!kept.exists());
 }

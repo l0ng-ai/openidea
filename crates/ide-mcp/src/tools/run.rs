@@ -104,13 +104,46 @@ pub(crate) fn truncate(text: &str, max: usize, mode: Truncate) -> (String, usize
 }
 
 fn temp_output_file(prefix: &str) -> IdeResult<(PathBuf, std::fs::File)> {
-    let dir = std::env::temp_dir().join("openidea-mcp");
-    std::fs::create_dir_all(&dir)?;
+    let dir = output_dir()?;
     let safe: String =
         prefix.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).take(40).collect();
     let path = dir.join(format!("{safe}-{}.log", uuid::Uuid::new_v4().simple()));
-    let file = std::fs::File::create(&path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options.open(&path)?;
     Ok((path, file))
+}
+
+/// A directory only this user can read: output may hold secrets, and `/tmp` is shared on Linux.
+fn output_dir() -> IdeResult<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        // SAFETY: getuid has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        let dir = std::env::temp_dir().join(format!("openidea-mcp-{uid}"));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
+        }
+        let meta = std::fs::symlink_metadata(&dir)?;
+        if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+            return Err(IdeError::new(
+                ide_core::error::ErrorKind::PermissionDenied,
+                format!("{} is not a private directory of this user", dir.display()),
+            ));
+        }
+        Ok(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        let dir = std::env::temp_dir().join("openidea-mcp");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
 }
 
 /// POSIX-like word splitting: whitespace separates, quotes group, `\` escapes (not inside `'…'`).
@@ -417,19 +450,29 @@ IDE's Run tool window.",
                     config.extras.compound.join(", ")
                 )));
             }
+            let envs = call.str_map("envs")?;
+            // The user approves the environment overrides too (`NODE_OPTIONS`, `PATH`, ...).
+            let env_detail: String = envs
+                .iter()
+                .map(|(k, v)| if v.trim().is_empty() { format!("\nunset {k}") } else { format!("\n{k}={v}") })
+                .collect();
             apply_overrides(
                 &mut config,
                 call.root(),
                 call.opt_str("programArguments")?,
                 call.opt_str("workingDirectory")?,
-                call.str_map("envs")?,
+                envs,
             )?;
             let cwd = match config.cwd.as_deref() {
                 Some(p) if p.is_absolute() => p.to_path_buf(),
                 Some(p) => call.root().join(p),
                 None => call.root().to_path_buf(),
             };
-            call.confirm(&config.name, Some(format!("{}\nin {}", command_line(&config), call.display(&cwd)))).await?;
+            call.confirm(
+                &config.name,
+                Some(format!("{}\nin {}{env_detail}", command_line(&config), call.display(&cwd))),
+            )
+            .await?;
 
             let (path, file) = temp_output_file(&format!("run-{}", config.name))?;
             let capture = Arc::new(Mutex::new(RunCapture { tail: String::new(), dropped: false, file: Some(file) }));
