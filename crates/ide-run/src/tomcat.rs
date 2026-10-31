@@ -216,7 +216,7 @@ pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: 
                 .map_err(|_| invalid("Build the WAR artifact before launching Tomcat"))?;
             let war = PathBuf::from(war.trim());
             if !war.is_file() || !war.extension().is_some_and(|e| e.eq_ignore_ascii_case("war")) {
-                return Err(invalid("The built WAR artifact does not exist"));
+                return Err(invalid(format!("The built WAR artifact does not exist: {}", war.display())));
             }
             let dest = base.join("deployment");
             explode(&war, &dest, resources_only)?;
@@ -227,11 +227,14 @@ pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: 
                 .get("deploymentPath")
                 .filter(|v| !v.trim().is_empty())
                 .ok_or_else(|| invalid("Choose a WAR file or exploded directory"))?;
-            let path = root.join(value).canonicalize()?;
+            let path = root.join(value);
+            let path = path
+                .canonicalize()
+                .map_err(|e| invalid(format!("Invalid Tomcat deployment: {} ({e})", path.display())))?;
             if (kind == "war" && (!path.is_file() || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("war"))))
                 || (kind == "directory" && !path.is_dir())
             {
-                return Err(invalid("Invalid Tomcat deployment"));
+                return Err(invalid(format!("Invalid Tomcat deployment: {}", path.display())));
             }
             Ok(path)
         }
@@ -434,6 +437,28 @@ mod tests {
         c.extras.params.insert("deployment".into(), "directory".into());
         c.extras.params.insert("deploymentPath".into(), "WebContent".into());
         assert!(deployment(tmp.path(), &base, &c, false).unwrap().ends_with("WebContent"));
+    }
+    #[test]
+    fn deployment_errors_identify_the_checked_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("cache");
+        fs::create_dir_all(&base).unwrap();
+        for path in ["missing.war", r"C:\工作\timesheet\target\timesheet.war", r"\\server\share\timesheet.war"] {
+            fs::write(base.join("artifact-path.txt"), format!("{path}\r\n")).unwrap();
+            let error = deployment(tmp.path(), &base, &config(), false).unwrap_err().to_string();
+            assert!(error.contains(path), "{error}");
+        }
+        for kind in ["war", "directory"] {
+            let mut c = config();
+            c.extras.params.insert("deployment".into(), kind.into());
+            c.extras.params.insert("deploymentPath".into(), "missing".into());
+            let error = deployment(tmp.path(), &base, &c, false).unwrap_err().to_string();
+            assert!(error.contains(&tmp.path().join("missing").display().to_string()), "{error}");
+            c.extras.params.insert("deploymentPath".into(), "cache".into());
+            if kind == "war" {
+                assert!(deployment(tmp.path(), &base, &c, false).unwrap_err().to_string().contains("cache"));
+            }
+        }
     }
     #[test]
     fn prepares_isolated_base_and_jdwp_only_for_run() {
