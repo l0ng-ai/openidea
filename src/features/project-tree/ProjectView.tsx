@@ -127,7 +127,7 @@ function iconFor(
     const rel = root ? (node.path === root ? "" : relativePath(root, node.path)) : null;
     const module = rel === null ? null : moduleFolderIcon(rel, node.root, build.modules);
     if (module) return module;
-    return "folder";
+    return node.root ? "module" : "folder";
   }
   return fileIconName(node.label);
 }

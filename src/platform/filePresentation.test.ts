@@ -24,6 +24,9 @@ describe("JVM file presentation", () => {
     ["exception", "exception"],
     ["object", "kotlin-object"],
   ] as const)("maps %s to %s", (kind, expected) => expect(icon("Foo.java", type(kind))).toBe(expected));
+  it.each(["LIMIT.java", "AUDIT.java", "Contest.java"])("keeps the type icon of %s", (path) =>
+    expect(icon(path, type("class"))).toBe("class"),
+  );
   it.each(["FooTest.java", "FooTests.java", "FooIT.java", "FooTest.kt", "src/test/java/Anything.java"])(
     "marks test classes: %s",
     (path) => expect(icon(path, type("class"))).toBe("jvm-test"),

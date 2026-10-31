@@ -34,8 +34,10 @@ let generation = 0;
 let dispose: (() => void) | undefined;
 async function load() {
   const gen = ++generation;
-  useBuildPresentation.setState(EMPTY);
-  if (!useProject.getState().project || !isTauri()) return;
+  if (!useProject.getState().project || !isTauri()) {
+    useBuildPresentation.setState(EMPTY);
+    return;
+  }
   try {
     const model = await call(commands.buildModel());
     if (generation === gen) useBuildPresentation.setState(buildPresentation(model));
@@ -49,7 +51,9 @@ export function useProjectPresentation(): BuildPresentation {
     if (users++ === 0) {
       void load();
       const project = useProject.subscribe((s, prev) => {
-        if (s.project !== prev.project) void load();
+        if (s.project === prev.project) return;
+        useBuildPresentation.setState(EMPTY);
+        void load();
       });
       const roots = onIdeEvent("projectRootsChanged", () => void load());
       let timer: ReturnType<typeof setTimeout> | undefined;
