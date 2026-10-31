@@ -5265,5 +5265,10 @@
   "Refresh Shelf": "刷新搁置",
   "Show Shelved Diff": "显示搁置差异",
   "Compare Shelved Changes with Local": "比较搁置更改与本地版本",
-  "Create Patch from Shelved Changes…": "从搁置更改创建补丁…"
+  "Create Patch from Shelved Changes…": "从搁置更改创建补丁…",
+  "Cannot check deployment mappings": "无法检查部署映射",
+  "No selected paths can be deployed to {server}": "所选路径均无法部署到 {server}",
+  "No deployment server covers the selected paths": "没有部署服务器覆盖所选路径",
+  "Not covered by this server's mappings": "此服务器的映射未覆盖该路径",
+  "Excluded from deployment": "已从部署中排除"
 }
