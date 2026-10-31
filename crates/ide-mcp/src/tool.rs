@@ -381,8 +381,8 @@ impl Call {
     // --- the UI ----------------------------------------------------------------
 
     /// Asks the user before running `subject` unless brave mode is on; errors when declined.
-    /// A client that supports elicitation asks its user; otherwise (or when it cannot be
-    /// reached) the IDE asks.
+    /// With client confirmations on, a client that supports elicitation asks its user;
+    /// otherwise (or when it cannot be reached) the IDE asks.
     pub async fn confirm(&self, subject: &str, detail: Option<String>) -> IdeResult<()> {
         if self.shared.config.read().brave_mode {
             return Ok(());
@@ -420,6 +420,9 @@ impl Call {
     /// The client's answer to a confirmation, or `None` when it has no elicitation
     /// support or no stream reaches it.
     async fn elicit_confirmation(&self, subject: &str, detail: Option<&str>) -> IdeResult<Option<bool>> {
+        if !self.shared.config.read().client_confirmations {
+            return Ok(None);
+        }
         let Some(session) = &self.session else { return Ok(None) };
         let protocol = {
             let client = session.client.read();

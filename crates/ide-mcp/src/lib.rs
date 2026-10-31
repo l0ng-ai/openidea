@@ -5,8 +5,8 @@
 //! It serves the streamable HTTP transport and the legacy SSE transport ([`http`]) on
 //! `127.0.0.1` and needs a bearer token. Tools ([`tools`]) run on the [`ide_host::Host`]
 //! against the project a call is for ([`project`]); what only a window can answer
-//! (confirmations, open editors) goes through [`McpHost::ask`], and confirmations go
-//! to the client as elicitations when it supports them.
+//! (confirmations, open editors) goes through [`McpHost::ask`]; confirmations go to the
+//! client as elicitations only when the settings opt in and the client supports them.
 
 pub mod clients;
 mod elicitation;
@@ -54,6 +54,8 @@ pub trait McpHost: Send + Sync + 'static {
 pub(crate) struct Config {
     pub token: String,
     pub brave_mode: bool,
+    /// Confirmations may go to the client as elicitations ([`McpSettings::client_confirmations`]).
+    pub client_confirmations: bool,
     /// Which tools are offered, and how ([`filter`]).
     pub filter: filter::FilterSettings,
 }
@@ -217,7 +219,12 @@ impl McpServer {
             shared: Arc::new(Shared {
                 ui,
                 tools,
-                config: RwLock::new(Config { token, brave_mode: false, filter: Default::default() }),
+                config: RwLock::new(Config {
+                    token,
+                    brave_mode: false,
+                    client_confirmations: false,
+                    filter: Default::default(),
+                }),
                 sessions: Mutex::default(),
                 clients: Mutex::default(),
                 timing: RwLock::default(),
@@ -238,6 +245,7 @@ impl McpServer {
         let tools_changed = {
             let mut config = self.shared.config.write();
             config.brave_mode = settings.brave_mode;
+            config.client_confirmations = settings.client_confirmations;
             let before = config.filter.offered(&self.shared.tools);
             config.filter = settings.into();
             config.filter.offered(&self.shared.tools) != before

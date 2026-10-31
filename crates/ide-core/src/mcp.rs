@@ -18,6 +18,9 @@ pub struct McpSettings {
     pub port: u16,
     /// Run shell commands and run configurations without asking first.
     pub brave_mode: bool,
+    /// Ask confirmations in the MCP client (`elicitation/create`) when it supports that,
+    /// instead of in the IDE. Off by default: a client could answer its own elicitations.
+    pub client_confirmations: bool,
     /// Tool names that are not offered to clients (the first disallow list; `tool_states` supersedes it).
     pub disabled_tools: Vec<String>,
     /// Give the IDE's own agents (Agents tool window) these tools too.
@@ -40,6 +43,7 @@ impl Default for McpSettings {
             enabled: false,
             port: DEFAULT_MCP_PORT,
             brave_mode: false,
+            client_confirmations: false,
             disabled_tools: Vec::new(),
             agents: true,
             tools_filter: String::new(),

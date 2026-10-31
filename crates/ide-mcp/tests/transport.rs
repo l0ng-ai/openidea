@@ -217,6 +217,7 @@ async fn sends_progress_of_json_answered_calls_on_the_notification_stream() {
 #[tokio::test(flavor = "multi_thread")]
 async fn confirms_through_elicitation_when_the_client_supports_it() {
     let (h, server, _) = setup().await;
+    server.apply(&McpSettings { client_confirmations: true, ..Default::default() }).await;
     let mut c = Client::new(&server);
     c.initialize(json!({ "elicitation": {} }), &[]).await;
     let call = |id: u64| json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": "guarded", "arguments": {} } });
@@ -254,6 +255,20 @@ async fn confirms_through_elicitation_when_the_client_supports_it() {
     let result = c.call(4, "guarded", json!({}), &[]).await;
     assert_eq!(text(&result), "ran");
     assert_eq!(h.ui.asked.lock().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn confirmations_stay_in_the_ide_unless_client_confirmations_are_on() {
+    let (h, server, _) = setup().await;
+    let mut c = Client::new(&server);
+    c.initialize(json!({ "elicitation": {} }), &[]).await;
+    let call =
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "guarded", "arguments": {} } });
+    let r = c.request("POST", "/mcp", call, true, &[]).await;
+    // No elicitation goes out: the IDE asks, and the answer is plain JSON.
+    assert!(r.events.is_none());
+    assert_eq!(text(&serde_json::from_str::<Value>(&r.body).unwrap()["result"]), "ran");
+    assert_eq!(h.ui.asked.lock().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

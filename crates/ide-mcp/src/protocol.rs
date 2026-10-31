@@ -86,14 +86,15 @@ pub(crate) async fn handle(shared: &Arc<Shared>, ctx: &Ctx, body: Value, new_ses
 }
 
 /// Whether a POST of `message` is better answered with an SSE stream (when the client
-/// accepts one): a tool call that may report progress, ask for confirmation or need the
-/// client's roots, all of which the server sends while the call runs.
-pub(crate) fn wants_stream(session: &Session, message: &Value) -> bool {
+/// accepts one): a tool call that may report progress, ask the client for confirmation
+/// (with client confirmations on) or need the client's roots, all of which the server
+/// sends while the call runs.
+pub(crate) fn wants_stream(shared: &Shared, session: &Session, message: &Value) -> bool {
     if message.get("method").and_then(Value::as_str) != Some("tools/call") || message.get("id").is_none() {
         return false;
     }
     message.pointer("/params/_meta/progressToken").is_some_and(|t| !t.is_null())
-        || session.client.read().elicitation
+        || (session.client.read().elicitation && shared.config.read().client_confirmations)
         || session.roots_wanted()
 }
 

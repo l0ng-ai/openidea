@@ -524,7 +524,7 @@ async fn post(shared: &Arc<Shared>, request: &Request) -> Response {
     let project_header = request.project_header();
     if let Some(s) = &session
         && accepts_sse(request)
-        && protocol::wants_stream(s, &body)
+        && protocol::wants_stream(shared, s, &body)
     {
         let (tx, rx) = mpsc::unbounded_channel();
         let id = body.get("id").map(Value::to_string).unwrap_or_default();

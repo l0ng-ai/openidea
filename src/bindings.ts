@@ -4410,6 +4410,11 @@ export type McpSettings = {
 	port?: number,
 	/**  Run shell commands and run configurations without asking first. */
 	braveMode?: boolean,
+	/**
+	 *  Ask confirmations in the MCP client (`elicitation/create`) when it supports that,
+	 *  instead of in the IDE. Off by default: a client could answer its own elicitations.
+	 */
+	clientConfirmations?: boolean,
 	/**  Tool names that are not offered to clients (the first disallow list; `tool_states` supersedes it). */
 	disabledTools?: string[],
 	/**  Give the IDE's own agents (Agents tool window) these tools too. */
