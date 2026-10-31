@@ -12,12 +12,13 @@ icon set, copied unmodified (some renamed) from JetBrains' open-source repositor
   `python/python-requirements` (`fileTypes/requirements`); `python/pipenv`
   (`fileTypes/pipenv`); `python/python-pyproject` (`expui/toml.svg` →
   `fileTypes/pyprojectToml`); `plugins/kotlin/base` (`fileTypes/kotlin`,
-  `kotlinScript`, `kotlinGradleScript`); `java/openapi` (`fileTypes/maven`);
+  `kotlinScript`, `kotlinGradleScript`, `icons/expui/objectKotlin` → `kotlin/objectKotlin`); `java/openapi` (`fileTypes/maven`);
   `plugins/markdown` (`fileTypes/markdown`); `plugins/toml` (`fileTypes/toml`);
   `plugins/terminal` (`toolwindows/terminal`); `plugins/maven`
   (`images/expui/toolwindow/maven` → `toolwindows/maven`, `images/expui/build/maven*`
   → `maven/`); `plugins/gradle` (`icons/expui/gradle` → `toolwindows/gradle`,
-  `icons/expui/gradleLoadChanges` → `build/gradleLoadChanges`);
+  `icons/expui/gradleLoadChanges` → `build/gradleLoadChanges`,
+  `icons/expui/gradle`, `icons/gradleSubproject` → `gradle/`);
   `platform/external-system-impl` (`icons/newui/task` → `externalSystem/task`).
   Copyright 2000-2026 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
 - [intellij-plugins](https://github.com/JetBrains/intellij-plugins) (each plugin

@@ -237,9 +237,109 @@ pub fn find_executable(name: &str, search: &OsStr) -> Option<std::path::PathBuf>
     find_executable_in(name, search, cfg!(windows), pathext.as_deref().and_then(|p| p.to_str()))
 }
 
+/// The user's own `PATH` entries on Windows (`HKCU\Environment`), the part of the
+/// merged `PATH` a process may not inherit — an IDE started before the variable was
+/// edited, or as a different user, sees only the machine entries. `%VAR%` references
+/// (`REG_EXPAND_SZ`) are expanded against the current environment. `None` elsewhere:
+/// there a login shell already supplies the user's whole `PATH`.
+#[cfg(windows)]
+pub fn user_path() -> Option<OsString> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, KEY_READ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegCloseKey, RegGetValueW,
+        RegOpenKeyExW,
+    };
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    unsafe {
+        let mut key: HKEY = std::ptr::null_mut();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, wide("Environment").as_ptr(), 0, KEY_READ, &mut key) != ERROR_SUCCESS {
+            return None;
+        }
+        let read = || {
+            // Only `Path`; `REG_EXPAND_SZ` is accepted so `%USERPROFILE%\…` entries expand.
+            let mut kind = 0u32;
+            let mut len = 0u32;
+            let name = wide("Path");
+            let status = RegGetValueW(
+                key,
+                std::ptr::null(),
+                name.as_ptr(),
+                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                &mut kind,
+                std::ptr::null_mut(),
+                &mut len,
+            );
+            if status != ERROR_SUCCESS || len == 0 {
+                return None;
+            }
+            let mut buf = vec![0u16; (len as usize).div_ceil(2)];
+            let status = RegGetValueW(
+                key,
+                std::ptr::null(),
+                name.as_ptr(),
+                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                &mut kind,
+                buf.as_mut_ptr() as *mut _,
+                &mut len,
+            );
+            if status != ERROR_SUCCESS {
+                return None;
+            }
+            let text = String::from_utf16_lossy(&buf);
+            Some(text.trim_end_matches('\0').to_owned())
+        };
+        let value = read();
+        RegCloseKey(key);
+        value.filter(|v| !v.trim().is_empty()).map(OsString::from)
+    }
+}
+
+/// The user's own `PATH` entries; `None` outside Windows (see the Windows impl).
+#[cfg(not(windows))]
+pub fn user_path() -> Option<OsString> {
+    None
+}
+
+/// `path` followed by the [`user_path`] entries it lacks.
+pub fn with_user_path(path: &OsStr) -> OsString {
+    user_path().map_or_else(|| path.to_owned(), |user| append_path_entries(path, &user))
+}
+
+fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
+    let mut dirs: Vec<std::path::PathBuf> = std::env::split_paths(path).filter(|d| !d.as_os_str().is_empty()).collect();
+    for dir in std::env::split_paths(extra).filter(|d| !d.as_os_str().is_empty()) {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| path.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn user_path_reads_the_current_users_path() {
+        // This host has a user `Path` only when the test account set one; either way the call
+        // must not fail, and a present value is a non-empty `;`-joined list of directories.
+        if let Some(path) = user_path() {
+            let dirs: Vec<_> = std::env::split_paths(&path).collect();
+            assert!(!dirs.is_empty(), "user PATH should hold at least one directory");
+        }
+    }
+
+    #[test]
+    fn append_path_entries_keeps_the_order_and_adds_what_is_missing() {
+        let join = |dirs: &[&str]| std::env::join_paths(dirs).unwrap();
+        assert_eq!(append_path_entries(&join(&["a", "b"]), &join(&["b", "c"])), join(&["a", "b", "c"]));
+        assert_eq!(append_path_entries(OsStr::new(""), &join(&["c"])), join(&["c"]));
+    }
 
     #[test]
     fn shell_env_adds_only_what_the_process_lacks_and_the_overlay_wins() {

@@ -291,6 +291,10 @@ fn env_files_system_env_and_redirects() {
     config.extras.include_system_env = false;
     config.extras.stdin_file = Some("input.txt".into());
     config.extras.output_file = Some("logs/out.log".into());
+    let prepared = ide_run::resolved_env(root, &config).unwrap();
+    assert_eq!(prepared.get("FROM_FILE").map(String::as_str), Some("file"));
+    assert_eq!(prepared.get("OVERRIDDEN").map(String::as_str), Some("config"));
+    assert!(!prepared.contains_key("HOME"));
     let (id, chunks) = start(&h, &config);
     // stdin comes from the file: writing to it is refused.
     assert!(h.pm.write_stdin(id, "x").is_err());
@@ -302,6 +306,7 @@ fn env_files_system_env_and_redirects() {
 
     // With the system environment, HOME is inherited.
     config.extras.include_system_env = true;
+    assert!(ide_run::resolved_env(root, &config).unwrap().contains_key("HOME"));
     config.extras.stdin_file = None;
     config.extras.output_file = None;
     config.args = vec!["-c".into(), "printf '%s' \"${HOME:+set}\"".into()];
@@ -500,4 +505,77 @@ fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
     let ctest = configs.iter().find(|c| c.command == "ctest").unwrap();
     let (id, output) = start(&h, ctest);
     assert_eq!(wait_exit(&h, id, Duration::from_secs(10)), Some(0), "{}", text(&output, stdout));
+}
+
+#[test]
+fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
+    let h = harness();
+    let go =
+        ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()).expect("Go toolchain");
+    let module = h.root.path().join("module");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("go.mod"), "module example.com/demo\ngo 1.22\n").unwrap();
+    std::fs::write(module.join("main.go"), "//go:build demo\n\npackage main\nimport (\"fmt\"; \"os\")\nfunc main(){cwd,_:=os.Getwd();fmt.Printf(\"%q %s %s\\n\",os.Args[1:],os.Getenv(\"GO_RUN_VALUE\"),cwd)}\n").unwrap();
+    let mut c = cfg("go-config", &go.to_string_lossy(), &["build", "-tags", "demo", "."]);
+    c.kind = "go".into();
+    c.env.insert("GO_RUN_VALUE".into(), "configured".into());
+    c.extras.params = BTreeMap::from([
+        ("goKind".into(), "build".into()),
+        ("scope".into(), "package".into()),
+        ("target".into(), ".".into()),
+        ("module".into(), "module".into()),
+        ("outputDir".into(), "bin with spaces".into()),
+        ("runAfterBuild".into(), "true".into()),
+        ("programArgv".into(), r#"["-tags","two words"]"#.into()),
+    ]);
+    let (id, out) = start(&h, &c);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&out, stderr));
+    let output = text(&out, stdout);
+    assert!(output.contains(r#"["-tags" "two words"] configured"#), "{output}");
+    assert!(output.contains(&h.root.path().display().to_string()), "{output}");
+    assert!(std::fs::read_dir(h.root.path().join("bin with spaces")).unwrap().next().is_some());
+
+    c.extras.params.insert("runAfterBuild".into(), "false".into());
+    let (id, out) = start(&h, &c);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0));
+    assert!(text(&out, stdout).is_empty());
+
+    c.extras.params.insert("runAfterBuild".into(), "true".into());
+    c.args = vec!["build".into(), "missing.go".into()];
+    let (id, out) = start(&h, &c);
+    assert_ne!(wait_exit(&h, id, Duration::from_secs(60)), Some(0));
+    assert!(text(&out, stdout).is_empty(), "a failed build must never run an older binary");
+}
+
+#[test]
+fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
+    let h = harness();
+    let go =
+        ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()).expect("Go toolchain");
+    std::fs::write(h.root.path().join("go.mod"), "module example.com/filetests\ngo 1.22\n").unwrap();
+    std::fs::write(h.root.path().join("main.go"), "package filetests\nfunc value() int { return 2 }\n").unwrap();
+    std::fs::write(h.root.path().join("generate.go"), "//go:build ignore\n\npackage main\nfunc main() {}\n").unwrap();
+    std::fs::write(
+        h.root.path().join("demo_test.go"),
+        "package filetests\nimport \"testing\"\nfunc TestChosen(t *testing.T) { if value()!=2 { t.Fatal(\"bad\") } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        h.root.path().join("other_test.go"),
+        "package filetests\nimport \"testing\"\nfunc TestOther(t *testing.T) { t.Fatal(\"must not run\") }\n",
+    )
+    .unwrap();
+    let mut c = cfg("go-file", &go.to_string_lossy(), &["test", "-json", "demo_test.go"]);
+    c.kind = "go".into();
+    c.extras.params = BTreeMap::from([
+        ("goKind".into(), "test".into()),
+        ("scope".into(), "file".into()),
+        ("target".into(), "demo_test.go".into()),
+    ]);
+    ide_run::go::prepare_test_file(h.root.path(), &mut c).unwrap();
+    assert!(!c.args.iter().any(|a| a.ends_with("generate.go") || a.ends_with("other_test.go")));
+    let (id, out) = start(&h, &c);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&out, stderr));
+    assert!(text(&out, stdout).contains("TestChosen"));
+    assert!(!text(&out, stdout).contains("TestOther"));
 }

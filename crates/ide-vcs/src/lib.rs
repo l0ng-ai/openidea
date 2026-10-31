@@ -897,7 +897,7 @@ impl Repo {
     /// Patch of the local changes of `paths` against HEAD (untracked files included).
     pub fn create_patch(&self, paths: &[PathBuf], reverse: bool) -> IdeResult<String> {
         let rel = self.rel_paths(paths)?;
-        Ok(patch::working_patch(self, &rel, reverse)?.0)
+        Ok(patch::working_patch(self, &rel, reverse, true)?.0)
     }
     /// Patch of the changes made by `commits` (oldest first).
     pub fn create_commits_patch(&self, commits: &[String], reverse: bool) -> IdeResult<String> {

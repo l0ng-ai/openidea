@@ -16,7 +16,7 @@ export function installColorScheme(): () => void {
   const apply = () => {
     const settings = useProject.getState().settings;
     const prefs = editorPrefs(settings);
-    const css = schemeCss(settings?.editor?.colorScheme, prefs.colorOverrides);
+    const css = schemeCss(settings?.editor?.colorScheme, prefs.colorOverrides, undefined, prefs.customSchemes);
     if (el.textContent !== css) el.textContent = css;
     for (const [name, value] of Object.entries(fontWeightVars(prefs.fontWeight, prefs.boldFontWeight)))
       if (root.style.getPropertyValue(name) !== value) root.style.setProperty(name, value);

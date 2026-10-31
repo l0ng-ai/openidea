@@ -66,13 +66,15 @@ afterEach(() => vi.clearAllMocks());
 describe("Install and Restart", () => {
   it("runs as a background task with download progress, then restarts", async () => {
     const done = installUpdate("0.1.22");
-    expect(expired).toEqual([UPDATE_KEY]);
+    expect(notes.at(-1)).toMatchObject({ title: "Downloading OpenIDEA 0.1.22", key: UPDATE_KEY, sticky: true });
+    expect(notes.at(-1)!.actions![0]!.label).toBe("Cancel");
     expect(task(INSTALL_TASK_ID)).toMatchObject({ title: "Downloading OpenIDEA 0.1.22", fraction: null, done: false });
     expect(task(INSTALL_TASK_ID)?.cancel).toBeTypeOf("function");
 
     channel!.onmessage({ type: "downloading", downloaded: 21 * 1024 * 1024, total: 84 * 1024 * 1024 });
     expect(task(INSTALL_TASK_ID)).toMatchObject({ fraction: 0.25, message: "21.0 MB of 84.0 MB" });
     channel!.onmessage({ type: "installing" });
+    expect(notes.at(-1)!.actions).toBeUndefined();
     expect(task(INSTALL_TASK_ID)).toMatchObject({ fraction: null, message: "Installing…", cancel: undefined });
 
     install.resolve(ok(null));
@@ -99,7 +101,7 @@ describe("Install and Restart", () => {
       ok({ enabled: true, update: { version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null } }),
     );
     await checked;
-    expect(notes).toHaveLength(1);
+    expect(notes.map((n) => n.title)).toEqual(["OpenIDEA 0.1.22 is available", "Downloading OpenIDEA 0.1.22"]);
 
     install.resolve(ok(null));
     await tick();
@@ -107,7 +109,7 @@ describe("Install and Restart", () => {
     expect(appInstallUpdate).toHaveBeenCalledTimes(2);
   });
 
-  it("reports a failure with Retry, and stays quiet when cancelled", async () => {
+  it("reports a failure with Retry, and a cancellation", async () => {
     const failed = installUpdate("0.1.22");
     install.resolve({ status: "error", error: { kind: "unavailable", message: "connection reset" } });
     await failed;
@@ -127,7 +129,7 @@ describe("Install and Restart", () => {
     expect(cancelRequest).toHaveBeenCalledWith(appInstallUpdate.mock.calls.at(-1)![0]);
     install.resolve({ status: "error", error: { kind: "cancelled", message: "cancelled" } });
     await cancelled;
-    expect(notes).toEqual([]);
+    expect(notes.at(-1)).toMatchObject({ level: "info", title: "Update cancelled", key: UPDATE_KEY });
     expect(appRestart).not.toHaveBeenCalled();
   });
 });

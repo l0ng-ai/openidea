@@ -32,6 +32,7 @@ vi.mock("@/platform/ipc", async (orig) => {
           projectRoot: "/p",
           classPaths: ["/p/target/classes", "/m2/a.jar"],
           modulePaths: [],
+          pathListSeparator: ":",
           javaHome: "/jdk21",
           javaExec: "/jdk21/bin/java",
           shortenCommandLine,

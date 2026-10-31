@@ -49,7 +49,7 @@ struct Entry {
     id: RunId,
     config_id: String,
     name: String,
-    pid: Option<u32>,
+    pid: Mutex<Option<u32>>,
     stdin: Mutex<Option<Box<dyn Write + Send>>>,
     /// The PTY master of a terminal-emulated run (resize; dropped on exit).
     pty: Option<Mutex<Option<Box<dyn MasterPty + Send>>>>,
@@ -65,7 +65,7 @@ impl Entry {
             id: self.id,
             config_id: self.config_id.clone(),
             name: self.name.clone(),
-            pid: self.pid,
+            pid: *self.pid.lock(),
             running: !self.exited.load(Ordering::Acquire),
             pty: self.pty.is_some(),
         }
@@ -299,6 +299,12 @@ impl ProcessManager {
         if config.command.trim().is_empty() {
             return Err(IdeError::invalid("run configuration has no command"));
         }
+        let plan = crate::go::plan(root, config)?;
+        let followup = plan.as_ref().and_then(|p| p.run.as_ref()).map(|run| {
+            let cwd = resolve_cwd(root, run.cwd.as_deref());
+            (run.clone(), cwd)
+        });
+        let config = plan.as_ref().map_or(config, |p| &p.build);
         let cwd = resolve_cwd(root, config.cwd.as_deref());
         if !cwd.is_dir() {
             return Err(IdeError::not_found(format!("working directory does not exist: {}", cwd.display())));
@@ -327,6 +333,9 @@ impl ProcessManager {
         let notice =
             if extras.emulate_terminal { None } else { match_console_encoding(&mut inv, &mut env, config, options) };
         let temp = shorten_java(&mut inv, config, &cwd)?;
+        if extras.emulate_terminal && followup.is_some() {
+            return Err(IdeError::invalid("Go build and run requires the output console"));
+        }
         if extras.emulate_terminal {
             return self.start_pty(config, &inv, &cwd, &env, stop, options, sink, on_output, temp);
         }
@@ -378,7 +387,7 @@ impl ProcessManager {
             id,
             config_id: config.id.clone(),
             name: config.name.clone(),
-            pid: Some(child.id()),
+            pid: Mutex::new(Some(child.id())),
             stdin: Mutex::new(stdin),
             pty: None,
             stop,
@@ -400,7 +409,7 @@ impl ProcessManager {
             if let Some(err) = stderr {
                 spawn_reader(id, Stream::Stderr, err, tx.clone())?;
             }
-            spawn_pump(rx, on_output, entry.clone(), sink, options.encoding.clone(), notice)?;
+            spawn_pump(rx, on_output.clone(), entry.clone(), sink, options.encoding.clone(), notice)?;
             Ok(())
         })();
         if let Err(e) = result {
@@ -411,10 +420,17 @@ impl ProcessManager {
         }
         // The waiter owns the child; it must exist for the pump to ever finish.
         let waiter_tx = tx;
+        let waiter_entry = entry.clone();
+        let run_root = root.to_path_buf();
         std::thread::Builder::new()
             .name(format!("openidea-run-wait-{}", id.0))
             .spawn(move || {
-                let status = child.wait();
+                let mut status = child.wait();
+                if status.as_ref().is_ok_and(ExitStatus::success)
+                    && let Some((run, cwd)) = followup
+                {
+                    status = run_followup(&run_root, &run, &cwd, &waiter_entry, &waiter_tx);
+                }
                 drop(temp);
                 let _ = waiter_tx.send(Msg::Exited(Exit::Pipes(status)));
             })
@@ -480,7 +496,7 @@ impl ProcessManager {
             id,
             config_id: config.id.clone(),
             name: config.name.clone(),
-            pid: child.process_id(),
+            pid: Mutex::new(child.process_id()),
             stdin: Mutex::new(Some(writer)),
             pty: Some(Mutex::new(Some(pair.master))),
             stop,
@@ -579,8 +595,9 @@ impl ProcessManager {
         if entry.exited.load(Ordering::Acquire) {
             return Ok(());
         }
-        let Some(pid) = entry.pid else { return Ok(()) };
-        if entry.stopping.swap(true, Ordering::AcqRel) {
+        let already_stopping = entry.stopping.swap(true, Ordering::AcqRel);
+        let Some(pid) = *entry.pid.lock() else { return Ok(()) };
+        if already_stopping {
             // Second stop request: don't wait out the grace period.
             kill_tree(pid, true);
             return Ok(());
@@ -625,8 +642,9 @@ impl ProcessManager {
     /// Kills every running process tree at once (shutting down).
     pub fn kill_all(&self) {
         for entry in self.runs.lock().values() {
+            entry.stopping.store(true, Ordering::Release);
             if !entry.exited.load(Ordering::Acquire)
-                && let Some(pid) = entry.pid
+                && let Some(pid) = *entry.pid.lock()
             {
                 kill_tree(pid, true);
             }
@@ -642,6 +660,67 @@ impl Drop for ProcessManager {
 
 /// The environment a configuration's process gets on top of the inherited one: `.env`
 /// files, then the configured variables (later wins).
+fn run_followup(
+    root: &Path,
+    config: &RunConfig,
+    cwd: &Path,
+    entry: &Entry,
+    tx: &Sender<Msg>,
+) -> std::io::Result<ExitStatus> {
+    let mut pid = entry.pid.lock();
+    if entry.stopping.load(Ordering::Acquire) {
+        return Err(std::io::Error::other("run stopped after build"));
+    }
+    let inv = invocation(config, cwd);
+    let mut cmd = Command::new(&inv.program);
+    cmd.args(&inv.args).current_dir(cwd).stdout(Stdio::piped()).stderr(Stdio::piped());
+    match config.extras.stdin_file.as_deref() {
+        Some(file) => {
+            cmd.stdin(std::fs::File::open(resolve_cwd(root, Some(Path::new(file))))?);
+        }
+        None => {
+            cmd.stdin(Stdio::piped());
+        }
+    }
+    let env = launch_env(root, config).map_err(|e| std::io::Error::other(e.to_string()))?;
+    apply_env(&mut cmd, &env);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_0200 | ide_core::process::CREATE_NO_WINDOW);
+    }
+    (entry.output)(OutputChunk::System { text: format!("{}\n", inv.display) });
+    let mut child = cmd.spawn()?;
+    *pid = Some(child.id());
+    *entry.stdin.lock() = child.stdin.take().map(|p| Box::new(p) as Box<dyn Write + Send>);
+    drop(pid);
+    let readers = (|| {
+        if let Some(out) = child.stdout.take() {
+            spawn_reader(entry.id, Stream::Stdout, out, tx.clone())?;
+        }
+        if let Some(err) = child.stderr.take() {
+            spawn_reader(entry.id, Stream::Stderr, err, tx.clone())?;
+        }
+        Ok::<_, std::io::Error>(())
+    })();
+    if let Err(e) = readers {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e);
+    }
+    child.wait()
+}
+
+pub(crate) fn configure_environment(command: &mut Command, root: &Path, config: &RunConfig) -> IdeResult<()> {
+    apply_env(command, &launch_env(root, config)?);
+    Ok(())
+}
+
 fn launch_env(root: &Path, config: &RunConfig) -> IdeResult<LaunchEnv> {
     let extras = &config.extras;
     let mut vars = if extras.env_files.is_empty() {
@@ -660,6 +739,18 @@ fn launch_env(root: &Path, config: &RunConfig) -> IdeResult<LaunchEnv> {
     }
     vars.extend(config.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     Ok(LaunchEnv { clear: !extras.include_system_env, vars })
+}
+
+pub(crate) fn resolved_env(root: &Path, config: &RunConfig) -> IdeResult<BTreeMap<String, String>> {
+    let env = launch_env(root, config)?;
+    let mut vars = if env.clear { BTreeMap::new() } else { crate::system_env() };
+    if !env.clear {
+        vars.extend(
+            ide_core::process::shell_env().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))),
+        );
+    }
+    vars.extend(env.vars);
+    Ok(vars)
 }
 
 fn apply_env(cmd: &mut Command, env: &LaunchEnv) {

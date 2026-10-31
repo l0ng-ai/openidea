@@ -4463,6 +4463,7 @@ version = "0.1.29"
 dependencies = [
  "dunce",
  "encoding_rs",
+ "ide-build",
  "ide-core",
  "libc",
  "parking_lot",

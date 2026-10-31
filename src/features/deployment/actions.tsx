@@ -17,7 +17,7 @@ import styles from "./Deployment.module.css";
 
 const GROUP = "tools";
 const CATEGORY = "Deployment";
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const errorText = (e: unknown) => txTemplate(e instanceof Error ? e.message : String(e));
 const projectRoot = () => useProject.getState().project?.root ?? null;
 const deployment = () => workflowSettings().deployment;
 
@@ -80,7 +80,7 @@ function ReportBody({ report }: { report: TransferReport }) {
         <ul className={styles.reportErrors}>
           {shown.map((e, i) => (
             <li key={i}>
-              <span className={styles.mono}>{root ? relativePath(root, e.path) : e.path}</span>: {e.message}
+              <span className={styles.mono}>{root ? relativePath(root, e.path) : e.path}</span>: {txt(e.message)}
             </li>
           ))}
         </ul>
@@ -120,7 +120,7 @@ async function transfer(direction: "upload" | "download", server: DeploymentServ
   if (!server) return;
   const request = nextRequestId();
   try {
-    const report = await withSsh(server.sshConfig, () =>
+    const report = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
       call(
         direction === "upload"
           ? commands.deployUpload(paths, server.id, request)
@@ -155,7 +155,9 @@ async function deleteRemote(paths: string[]) {
   });
   if (!ok) return;
   try {
-    const report = await withSsh(server.sshConfig, () => call(commands.deployDeleteRemote(paths, server.id)));
+    const report = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      call(commands.deployDeleteRemote(paths, server.id)),
+    );
     showReport(report, "delete", server);
   } catch (e) {
     showFailure("Cannot delete from {server}", server, e);
@@ -179,7 +181,9 @@ export async function openSync(server: DeploymentServerValid, path: string) {
     },
   });
   try {
-    const entries = await withSsh(server.sshConfig, () => call(commands.deployCompare(path, server.id, request)));
+    const entries = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      call(commands.deployCompare(path, server.id, request)),
+    );
     if (useDeployment.getState().sync?.request !== request) return;
     patchSync({ entries, choices: initialSyncChoices(entries), request: null });
   } catch (e) {
@@ -203,7 +207,9 @@ export async function runSync(steps: { path: string; action: SyncAction }[]) {
   const request = nextRequestId();
   patchSync({ running: true, request });
   try {
-    const report = await withSsh(server.sshConfig, () => call(commands.deploySync(steps, server.id, request)));
+    const report = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      call(commands.deploySync(steps, server.id, request)),
+    );
     useDeployment.setState({ sync: null });
     showReport(report, "sync", server);
   } catch (e) {

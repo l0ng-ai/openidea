@@ -1,5 +1,5 @@
 /**
- * Windows caption buttons (minimise, maximise / restore, close) for the frameless
+ * Caption buttons (minimise, maximise / restore, close) for the frameless
  * title bar. Dialog windows (Settings) only have close, as in IDEA.
  */
 import { useEffect, useState } from "react";

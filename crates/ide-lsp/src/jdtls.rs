@@ -71,6 +71,8 @@ pub struct JavaLaunchInfo {
     pub project_root: Option<ide_core::IpcPath>,
     pub class_paths: Vec<String>,
     pub module_paths: Vec<String>,
+    /// Path list separator of the host that runs the JVM.
+    pub path_list_separator: String,
     /// JDK home jdtls compiles the project against.
     pub java_home: Option<ide_core::IpcPath>,
     /// The `java` launcher to use (filled in by the caller from the installed JDKs).
@@ -351,6 +353,7 @@ impl LspManager {
             project_root: cp.project_root,
             class_paths: cp.class_paths,
             module_paths: cp.module_paths,
+            path_list_separator: if cfg!(windows) { ";" } else { ":" }.into(),
             java_home: java_home.map(Into::into),
             java_exec: None,
             shorten_command_line: None,

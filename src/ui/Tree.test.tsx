@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createRef } from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { Tree, type TreeHandle } from "./Tree";
+import { getContext } from "@/platform/context";
 
 interface N {
   id: string;
@@ -44,6 +45,97 @@ const labels = (tree: HTMLElement) =>
   within(tree)
     .queryAllByRole("treeitem")
     .map((el) => el.textContent);
+
+describe("Tree directory context", () => {
+  it("does not contribute virtual document URIs as filesystem directories", () => {
+    const { key } = setup({ getDirectory: () => "jdt://contents/library.jar/package" });
+    key("Home");
+    expect(getContext().focusedDirectory).toBeUndefined();
+  });
+
+  it("follows the selected lead, clears on non-path rows, blur and unmount", () => {
+    const { tree, key, unmount } = setup({
+      getDirectory: (n) => (n.id === "main" ? null : `/p/${n.id}`),
+    });
+    expect(getContext().focusedDirectory).toBeUndefined();
+    key("ArrowDown");
+    expect(getContext().focusedDirectory).toBe("/p/src");
+    key("End", { shiftKey: true });
+    expect(getContext().focusedDirectory).toBe("/p/README.md");
+    key("Home");
+    key("ArrowRight");
+    key("ArrowRight");
+    expect(getContext().focusedDirectory).toBeUndefined();
+    key("Home");
+    fireEvent.blur(tree);
+    expect(getContext().focusedDirectory).toBeUndefined();
+    fireEvent.focus(tree);
+    expect(getContext().focusedDirectory).toBe("/p/src");
+    unmount();
+    expect(getContext().focusedDirectory).toBeUndefined();
+  });
+
+  it("updates a controlled selection while focused and clears a removed selection", () => {
+    const view = (selected: Set<string>, roots = data) => (
+      <Tree<N>
+        roots={roots}
+        getKey={(n) => n.id}
+        getLabel={(n) => n.id}
+        getChildren={(n) => n.children}
+        isExpandable={(n) => !!n.children}
+        selected={selected}
+        getDirectory={(n) => `/p/${n.id}`}
+      />
+    );
+    const { rerender } = render(view(new Set(["src"])));
+    screen.getByRole("tree").focus();
+    expect(getContext().focusedDirectory).toBe("/p/src");
+    rerender(view(new Set()));
+    expect(getContext().focusedDirectory).toBeUndefined();
+    rerender(view(new Set(["src"])));
+    expect(getContext().focusedDirectory).toBe("/p/src");
+    rerender(view(new Set(["src"]), []));
+    expect(getContext().focusedDirectory).toBeUndefined();
+  });
+
+  it("clears on focus transfer and an old tree's unmount does not clear the new owner", () => {
+    const view = (showFirst: boolean) => (
+      <>
+        {showFirst && (
+          <Tree<N>
+            roots={data}
+            getKey={(n) => n.id}
+            getLabel={(n) => n.id}
+            getChildren={() => []}
+            isExpandable={() => false}
+            defaultSelected={["src"]}
+            getDirectory={() => "/first"}
+          />
+        )}
+        <Tree<N>
+          roots={data}
+          getKey={(n) => n.id}
+          getLabel={(n) => n.id}
+          getChildren={() => []}
+          isExpandable={() => false}
+          defaultSelected={["src"]}
+          getDirectory={() => "/second"}
+        />
+        <input aria-label="Editor" />
+      </>
+    );
+    const { rerender } = render(view(true));
+    const [first, second] = screen.getAllByRole("tree");
+    first!.focus();
+    expect(getContext().focusedDirectory).toBe("/first");
+    second!.focus();
+    expect(getContext().focusedDirectory).toBe("/second");
+    rerender(view(false));
+    expect(getContext().focusedDirectory).toBe("/second");
+    screen.getByLabelText("Editor").focus();
+    expect(getContext().focusedDirectory).toBeUndefined();
+  });
+});
 
 describe("Tree keyboard navigation", () => {
   it("moves with arrows, expands with Right and collapses / goes to parent with Left", () => {

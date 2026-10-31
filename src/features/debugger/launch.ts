@@ -1,3 +1,4 @@
+import { parseArgs, formatArgs } from "@/platform/commandLine";
 /** Run configuration → DAP launch configuration, per adapter. */
 import { workflowSettings } from "@/platform/workflowSettings";
 import type { LaunchConfig, RunConfig } from "@/platform/ipc";
@@ -169,34 +170,98 @@ function jsDebugLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   return out;
 }
 
-function delveLaunch(rc: RunConfig, cwd: string): LaunchConfig {
+function delveLaunch(rc: RunConfig, cwd: string, root: string): LaunchConfig {
   const out = base(rc, "delve", cwd);
-  const [sub, ...rest] = rc.args;
-  const [goArgs, programArgs] = splitAtDashDash(rest);
-  if (sub === "test") {
-    // `go test` selection flags become the test binary's (`-run ^TestX$` → `-test.run ^TestX$`).
-    const testFlags: string[] = [];
-    let pkg: string | undefined;
-    for (let i = 0; i < goArgs.length; i++) {
-      const a = goArgs[i]!;
-      const flag = /^--?(run|skip)(?:=(.*))?$/.exec(a);
-      if (flag) {
-        const value = flag[2] ?? goArgs[++i];
-        if (value !== undefined) testFlags.push(`-test.${flag[1]}`, value);
-      } else if (!a.startsWith("-")) pkg ??= a;
-    }
-    pkg ??= ".";
-    out.program = pkg.endsWith("/...") ? cwd : join(cwd, pkg);
-    out.extraJson = JSON.stringify({ mode: "test" });
-    out.args = [...testFlags, ...programArgs];
-  } else {
-    const flags = goArgs.filter((a) => a.startsWith("-"));
-    const positional = goArgs.filter((a) => !a.startsWith("-"));
-    const target = positional[0] ?? ".";
-    out.program = join(cwd, target);
-    out.args = [...positional.slice(1), ...programArgs];
-    out.extraJson = JSON.stringify(flags.length ? { mode: "debug", buildFlags: flags.join(" ") } : { mode: "debug" });
+  const p = rc.params;
+  if (p?.goKind) {
+    const module = join(root, p.module || ".");
+    const target = p.target || ".";
+    out.program =
+      p.scope === "package" && !target.startsWith(".") && !isAbsolute(target)
+        ? target
+        : join(module, target.split("|")[0]!.trim());
+    const test = p.goKind === "test";
+    const parsed = delveLaunch(
+      {
+        ...rc,
+        params: undefined,
+        args: [
+          test ? "test" : "build",
+          ...parseArgs(p.toolArgs ?? ""),
+          ...(test && p.pattern ? ["-run", p.pattern] : []),
+          target,
+          ...(test ? ["-args", ...parseArgs(p.programArgs ?? "")] : []),
+        ],
+      },
+      module,
+      root,
+    );
+    const toolArgs = parseArgs(JSON.parse(parsed.extraJson!).buildFlags ?? "");
+    out.args = test ? parsed.args : parseArgs(p.programArgs ?? "");
+    out.extraJson = JSON.stringify({
+      mode: p.goKind === "test" ? "test" : "debug",
+      buildFlags: toolArgs,
+      dlvCwd: module,
+      ...(p.scope === "file" ? { __goFiles: target.split("|").map((f) => join(module, f.trim())) } : {}),
+      __goToolArgs: toolArgs,
+      __goUseTags: p.useTags === "true",
+      ...(p.outputDir ? { output: join(root, `${p.outputDir}/go-debug`) } : {}),
+    });
+    return out;
   }
+  const [sub, ...rest] = rc.args;
+  const test = sub === "test";
+  const flags: string[] = [];
+  const testFlags: string[] = [];
+  const targets: string[] = [];
+  let programArgs: string[] = [];
+  const boolFlags = new Set([
+    "-a",
+    "-n",
+    "-race",
+    "-msan",
+    "-asan",
+    "-cover",
+    "-linkshared",
+    "-modcacherw",
+    "-buildvcs",
+    "-trimpath",
+    "-v",
+    "-work",
+    "-x",
+    "-json",
+    "-c",
+  ]);
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]!;
+    if (a === "--" || (test && a === "-args")) {
+      programArgs = rest.slice(i + 1);
+      break;
+    }
+    const selection =
+      test &&
+      /^-(run|skip|bench|benchtime|count|timeout|parallel|cpu|list|fuzz|fuzztime|fuzzminimizetime)(?:=(.*))?$/.exec(a);
+    if (test && /^-(short|failfast|benchmem|fullpath|v)(?:=|$)/.test(a)) {
+      testFlags.push(a.replace(/^-/, "-test."));
+    } else if (selection) {
+      const value = selection[2] ?? rest[++i];
+      if (value !== undefined) testFlags.push(`-test.${selection[1]}`, value);
+    } else if (a.startsWith("-")) {
+      if (test && (a === "-json" || a === "-c")) continue;
+      flags.push(a);
+      if (!a.includes("=") && !boolFlags.has(a) && rest[i + 1] !== undefined) flags.push(rest[++i]!);
+    } else if (!test && targets.length) {
+      programArgs = rest.slice(i);
+      break;
+    } else targets.push(a);
+  }
+  const target = targets[0] ?? ".";
+  out.program = target.endsWith("/...") ? cwd : join(cwd, target);
+  out.args = [...testFlags, ...programArgs];
+  out.extraJson = JSON.stringify({
+    mode: test ? "test" : "debug",
+    ...(flags.length ? { buildFlags: formatArgs(flags) } : {}),
+  });
   return out;
 }
 
@@ -246,7 +311,7 @@ export function launchConfigFor(rc: RunConfig, root: string): LaunchConfig | nul
   }
   if (adapter === "debugpy") return debugpyLaunch(rc, cwd);
   if (adapter === "js-debug") return jsDebugLaunch(rc, cwd);
-  if (adapter === "delve") return delveLaunch(rc, cwd);
+  if (adapter === "delve") return delveLaunch(rc, cwd, root);
   if (adapter === "godot") return godotLaunch(rc, cwd);
   // Adapters without a template (hidden in Edit Configurations): generic arguments.
   return {

@@ -65,7 +65,10 @@ pub(super) fn detect(root: &Path, out: &mut Vec<RunConfig>) {
             "cmake",
             &["--build", &dir, "--config", &configuration],
         );
-        before(&mut all, &configure_id);
+        // `cmake --build` regenerates by itself once a build directory is configured.
+        if !build.join("CMakeCache.txt").is_file() {
+            before(&mut all, &configure_id);
+        }
         out.push(all);
         let mut test = config(
             format!("{prefix}:test"),
@@ -76,11 +79,11 @@ pub(super) fn detect(root: &Path, out: &mut Vec<RunConfig>) {
         );
         before(&mut test, &build_id);
         out.push(test);
-        targets(root, &build, &dir, &prefix, &configure_id, out);
+        targets(root, &build, &dir, &prefix, out);
     }
 }
 
-fn targets(root: &Path, build: &Path, dir: &str, prefix: &str, configure_id: &str, out: &mut Vec<RunConfig>) {
+fn targets(root: &Path, build: &Path, dir: &str, prefix: &str, out: &mut Vec<RunConfig>) {
     let reply = build.join(".cmake/api/v1/reply");
     let Some(index_path) = fs::read_dir(&reply).ok().and_then(|entries| {
         entries
@@ -129,7 +132,6 @@ fn targets(root: &Path, build: &Path, dir: &str, prefix: &str, configure_id: &st
             }
             let mut build_config =
                 config(&target_build_id, format!("Build {target_name} ({dir} {name})"), "cmake", "cmake", &args);
-            before(&mut build_config, configure_id);
             out.push(build_config);
             let binary = build.join(artifact);
             let mut run =

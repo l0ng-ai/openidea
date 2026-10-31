@@ -41,6 +41,7 @@ import {
   type TestEvent,
   type TestOutputParser,
 } from "./testing";
+import { GoTestOutput } from "./testing/go";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
 import { compoundChildren } from "./configs";
@@ -82,6 +83,7 @@ interface SessionRuntime {
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
+  goOutput: GoTestOutput | null;
   queue: OutputChunk[];
   /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
   flushHandle: { raf: number } | { timeout: number } | null;
@@ -361,7 +363,10 @@ function flush(sessionId: string) {
   cancelFlush(rt);
   if (rt.queue.length === 0) return;
   const chunks = rt.queue.splice(0);
-  for (const c of chunks) rt.console.append(c);
+  for (const c of chunks) {
+    const text = c.kind === "stdout" && rt.goOutput ? rt.goOutput.feed(c.text) : c.text;
+    if (text) rt.console.append({ ...c, text });
+  }
   bump(sessionId);
 }
 
@@ -426,13 +431,18 @@ export function applyConsoleSettings() {
 function newRuntime(config: RunConfig): SessionRuntime {
   const tests = config.isTest ? new TestResults() : null;
   const parser = config.isTest ? createTestParser(config) : null;
+  const goOutput =
+    tests && parser && frameworkFor(config) === "go"
+      ? new GoTestOutput((line) => tests.apply(parser.feed(line)))
+      : null;
   const runtime: SessionRuntime = {
+    goOutput,
     tests,
     parser,
     console: new ConsoleModel({
       maxChars: consoleCharLimit(),
       onLine: (text, kind) => {
-        if (parser && tests && kind !== "system") tests.apply(parser.feed(text));
+        if (parser && tests && kind !== "system" && !(kind === "stdout" && goOutput)) tests.apply(parser.feed(text));
         if (kind !== "system") for (const l of runtime.lineListeners) l(text);
       },
     }),
@@ -691,8 +701,6 @@ function revealSession(sessionId: string) {
   }
 }
 
-const pathSeparator = () => (typeof navigator !== "undefined" && /win/i.test(navigator.platform) ? ";" : ":");
-
 /**
  * Builds the module (jdtls workspace build) and resolves `${classpath}` and the
  * project JDK of a Java application configuration. Null (and a console message) on failure.
@@ -737,7 +745,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       say("The classpath is empty: is the module imported by the Java language server?\n", "stderr");
       return null;
     }
-    return resolveJavaCommand(config, info, pathSeparator());
+    return resolveJavaCommand(config, info);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (request.cancelled || isCancelled(e)) {
@@ -772,6 +780,10 @@ function finishSession(sessionId: string, code: number | null) {
     void (async () => {
       if (runtimes.get(sessionId) !== rt) return;
       flush(sessionId);
+      if (rt.goOutput) {
+        const text = rt.goOutput.end();
+        if (text) rt.console.append({ kind: "stdout", text });
+      }
       rt.console.flush();
       if (rt.tests && rt.parser) {
         rt.tests.apply(rt.parser.end?.() ?? []);

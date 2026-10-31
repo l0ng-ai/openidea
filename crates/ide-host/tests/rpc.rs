@@ -81,6 +81,27 @@ async fn serves_projects_files_documents_search_and_runs() {
     let entries = invoke(&peer, "fs_read_dir", json!({ "path": project })).await.unwrap();
     assert!(entries.as_array().unwrap().iter().any(|e| e["name"] == "src"), "{entries}");
 
+    // JVM icons use the same read-only protocol as local windows.
+    let java = project.join("src/Foo.java");
+    let kotlin = project.join("src/Singleton.kt");
+    std::fs::write(&java, "abstract class Foo {}").unwrap();
+    std::fs::write(&kotlin, "object Singleton {}").unwrap();
+    let icons = invoke(&peer, "jvm_file_presentations", json!({ "paths": [java, kotlin] })).await.unwrap();
+    assert_eq!(icons[0]["presentation"]["kind"], "abstractClass");
+    assert_eq!(icons[1]["presentation"]["kind"], "object");
+    // Replacing a file invalidates its cached metadata, including same-size writes.
+    std::fs::write(&java, "interface Foo {}     ").unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&java)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let icons = invoke(&peer, "jvm_file_presentations", json!({ "paths": [java] })).await.unwrap();
+    assert_eq!(icons[0]["presentation"]["kind"], "interface");
+    let oversized = invoke(&peer, "jvm_file_presentations", json!({ "paths": vec![java.clone(); 65] })).await;
+    assert!(oversized.is_err());
+
     // Edit and save a document.
     let file = project.join("src/main.py");
     let doc = invoke(&peer, "doc_open", json!({ "path": file })).await.unwrap();
@@ -169,4 +190,70 @@ impl EventType for EventMessage {
     fn event_type(&self) -> String {
         serde_json::to_value(&self.event).unwrap()["type"].as_str().unwrap_or_default().to_owned()
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_deployment_runs_on_the_project_host() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("project");
+    let target = tmp.path().join("mounted");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::create_dir(&target).unwrap();
+    let project = dunce::canonicalize(project).unwrap();
+    let file = project.join("local.txt");
+    std::fs::write(&file, "host file").unwrap();
+    let slot = Arc::new(OnceLock::new());
+    let sink_slot = slot.clone();
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: tmp.path().join("config"),
+        data_dir: tmp.path().join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(move |w| rpc::event_sink(sink_slot.clone(), Some(w.to_owned()))),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let dispatcher = Dispatcher::standard();
+    for cmd in [
+        "deploy_upload",
+        "deploy_download",
+        "deploy_delete_remote",
+        "deploy_compare",
+        "deploy_sync",
+        "deploy_info",
+        "deploy_server_root",
+        "deploy_test_connection",
+        "remote_list",
+        "remote_open",
+        "remote_of",
+        "remote_delete",
+        "remote_mkdir",
+        "remote_rename",
+    ] {
+        assert!(dispatcher.commands().contains(&cmd), "missing host command {cmd}");
+    }
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (sr, sw) = tokio::io::split(server_io);
+    tokio::spawn(rpc::serve(host, dispatcher, slot, sr, sw));
+    let (cr, cw) = tokio::io::split(client_io);
+    let peer = Peer::connect(cr, cw, Arc::new(Client::default()));
+    invoke(&peer, "open_project", json!({"path": project})).await.unwrap();
+    let deployment = json!({"servers": [{"id":"local", "kind":"local", "rootPath":target}], "defaultServer":"local"});
+    invoke(&peer, "settings_set", json!({"scope":"project", "key":"deployment", "value":deployment.to_string()}))
+        .await
+        .unwrap();
+    invoke(&peer, "deploy_test_connection", json!({"connection":{"kind":"local"}, "path":target})).await.unwrap();
+    let report = invoke(&peer, "deploy_upload", json!({"paths":[file], "request":1001})).await.unwrap();
+    assert_eq!(report["files"], 1, "{report}");
+    assert_eq!(std::fs::read_to_string(target.join("local.txt")).unwrap(), "host file");
+    let entries = invoke(&peer, "remote_list", json!({"connection":{"kind":"local"}, "path":target})).await.unwrap();
+    assert_eq!(entries[0]["name"], "local.txt");
+    std::fs::write(target.join("local.txt"), "host download").unwrap();
+    let report = invoke(&peer, "deploy_download", json!({"paths":[file], "request":1002})).await.unwrap();
+    assert_eq!(report["files"], 1);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "host download");
+    invoke(&peer, "deploy_delete_remote", json!({"paths":[file]})).await.unwrap();
+    assert!(!target.join("local.txt").exists());
+    invoke(&peer, "close_project", json!({})).await.unwrap();
 }

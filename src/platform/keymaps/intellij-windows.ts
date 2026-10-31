@@ -394,6 +394,7 @@ export const intellijWindows: Record<string, string[]> = {
   "find.popup.openResult": ["F4"],
   "find.popup.recentSearches": ["Alt+Down"],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.
+  "find.openInWindow": ["Alt+F7"],
   "find.field.newLine": ["Ctrl+Shift+Enter"],
   "find.field.recentSearches": ["Alt+Down"],
 };
