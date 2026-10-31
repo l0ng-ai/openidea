@@ -80,7 +80,9 @@ describe("remote client settings", () => {
             commands: [...served],
             project: { root: "/remote", name: "remote", settings: remote },
           }
-        : local,
+        : cmd === "remote_invoke"
+          ? "null"
+          : local,
     );
     await connectRemote("test", "/remote");
     expect(useProject.getState().settings).toMatchObject({ keymap: "my-map", editor: { tabSize: 2, fontSize: 19 } });
