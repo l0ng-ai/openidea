@@ -145,6 +145,35 @@ shell and css dictionaries of [cspell-dicts](https://github.com/streetsidesoftwa
 (October 2026): lowercased, filtered and merged by OpenIDEA. Copyright Street Side Software;
 MIT licence, full text in `crates/ide-spell/src/dict/LICENSE-cspell-dicts`.
 
+## NEON language support
+
+`src/editor/core/cm/neon.ts` ports the lexer and token classes of, and
+`src/ui/openidea/fileTypes/neon*.svg` are copied from,
+[intellij-neon](https://github.com/noctud/intellij-neon), MIT:
+
+```text
+Copyright (c) 2025 Noctud.dev
+Copyright (c) 2019-2025 David Matejka, Jan Dolecek, Matouš Němec
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## CodeMirror Angular template language
 
 `src/editor/core/cm/angular/` (`angular.grammar`, `tokens.ts`, `index.ts` and the

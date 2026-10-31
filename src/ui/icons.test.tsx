@@ -133,6 +133,7 @@ describe("fileIconName", () => {
     ["license.ts", "file-ts"],
     ["CHANGELOG", "file-text"],
     ["config.yml", "file-yaml"],
+    ["common.neon", "file-neon"],
     ["config.toml", "file-toml"],
     ["schema.sql", "file-sql"],
     ["schema.graphql", "file-graphql"],

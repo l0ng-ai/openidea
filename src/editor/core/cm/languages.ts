@@ -69,6 +69,11 @@ const OWN_MODES = [
     load: async () => new LanguageSupport((await import("./cmake")).cmakeLanguage),
   }),
   LanguageDescription.of({
+    name: "NEON",
+    extensions: ["neon"],
+    load: async () => new LanguageSupport((await import("./neon")).neonLanguage),
+  }),
+  LanguageDescription.of({
     name: "Shell",
     load: async () => {
       const { shell } = await import("@codemirror/legacy-modes/mode/shell");
@@ -250,7 +255,7 @@ const NO_INDENT_LANGS = new Set(["plaintext", "markdown", "log", "diff", "ignore
 function opensBlock(code: string, language: string | undefined): boolean {
   if (!code) return false;
   if (/[{([]$/.test(code)) return true;
-  if (COLON_INDENT_LANGS.has(language ?? "") && code.endsWith(":")) return true;
+  if ((COLON_INDENT_LANGS.has(language ?? "") || language === "neon") && code.endsWith(":")) return true;
   if (language === "elixir") return /\bdo$|->$/.test(code);
   if (KEYWORD_OPEN_LANGS.has(language ?? "") && !/\bend$/.test(code) && KEYWORD_OPEN.test(code)) return true;
   return false;
