@@ -1812,6 +1812,7 @@
   "Save Files": "保存文件",
   "Save files if the IDE is idle for": "IDE 空闲以下时长时保存文件",
   "Save files when switching to a different application or a built-in terminal": "切换到其他应用程序或内置终端时保存文件",
+  "Synchronize external changes when switching to the IDE window": "切换回 IDE 窗口时同步外部更改",
   "Save or roll back the changes before reloading it from disk.": "从磁盘重新加载前，请先保存或回滚更改。",
   "Save password": "保存密码",
   "Save to file:": "保存到文件：",

@@ -204,6 +204,7 @@ export const commands = {
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
+	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
 	/**
 	 *  The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
@@ -3055,6 +3056,8 @@ export type FileRenameEdits = {
 export type FileSettings = {
 	/**  Save on focus loss / tab switch, like IDEA. */
 	autoSave?: boolean,
+	/**  Re-check open files against disk when the IDE window gains focus. */
+	syncOnFocus?: boolean,
 	exclude?: string[],
 	/**  Ignored Files and Folders: name patterns hidden everywhere; see [`crate::ignored`]. */
 	ignoredNames?: string[],

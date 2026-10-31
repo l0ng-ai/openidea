@@ -446,6 +446,8 @@ impl Default for EditorSettings {
 pub struct FileSettings {
     /// Save on focus loss / tab switch, like IDEA.
     pub auto_save: bool,
+    /// Re-check open files against disk when the IDE window gains focus.
+    pub sync_on_focus: bool,
     pub exclude: Vec<String>,
     /// Ignored Files and Folders: name patterns hidden everywhere; see [`crate::ignored`].
     pub ignored_names: Vec<String>,
@@ -477,6 +479,7 @@ impl Default for FileSettings {
     fn default() -> Self {
         Self {
             auto_save: true,
+            sync_on_focus: true,
             exclude: vec!["**/.git".into(), "**/node_modules".into(), "**/target".into()],
             ignored_names: crate::ignored::DEFAULT_IGNORED_NAMES.iter().map(|s| (*s).into()).collect(),
             trim_trailing_whitespace: true,

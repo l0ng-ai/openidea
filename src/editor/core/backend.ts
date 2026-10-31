@@ -38,6 +38,8 @@ export interface DocBackend {
   close(doc: DocId): Promise<void>;
   edit(doc: DocId, baseVersion: number, changes: TextChange[]): Promise<number>;
   save(doc: DocId): Promise<void>;
+  /** Re-check every open file for external changes missed by file watchers. */
+  syncFromDisk?(): Promise<void>;
   snapshot(doc: DocId): Promise<DocumentInfo>;
   setLineEnding(doc: DocId, lineEnding: LineEnding): Promise<void>;
   /** "Reload with Encoding" (`reload`) or "Convert to Encoding"; resolves to the new encoding. */
@@ -67,6 +69,7 @@ export const ipcBackend: DocBackend = {
   close: async (doc) => void (await call(commands.docClose(doc))),
   edit: (doc, baseVersion, changes) => call(commands.docEdit(doc, baseVersion, { changes })),
   save: async (doc) => void (await call(commands.docSave(doc))),
+  syncFromDisk: async () => void (await call(commands.docSyncFromDisk())),
   snapshot: (doc) => call(commands.docSnapshot(doc)),
   setLineEnding: async (doc, le) => void (await call(commands.docSetLineEnding(doc, le))),
   setEncoding: (doc, encoding, reload) => call(commands.docSetEncoding(doc, encoding, reload)),
