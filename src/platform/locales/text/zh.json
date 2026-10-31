@@ -5265,5 +5265,9 @@
   "Refresh Shelf": "刷新搁置",
   "Show Shelved Diff": "显示搁置差异",
   "Compare Shelved Changes with Local": "比较搁置更改与本地版本",
-  "Create Patch from Shelved Changes…": "从搁置更改创建补丁…"
+  "Create Patch from Shelved Changes…": "从搁置更改创建补丁…",
+  "No debug output available": "暂无可用的调试输出",
+  "The attached process may not provide standard output to the debugger.": "附加的进程可能不会向调试器提供标准输出。",
+  "Show in Debug Tool Window": "在调试工具窗口中显示",
+  "Suspended": "已暂停"
 }

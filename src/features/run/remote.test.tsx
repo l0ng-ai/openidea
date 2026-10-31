@@ -50,6 +50,7 @@ import { activate } from "./index";
 import { remoteDebugBlocked, remoteLabel, startRemedy, startWithRemedies, withTarget, type RemedyDeps } from "./remote";
 import { resetRuns, saveUserConfigs, startRun, useRun } from "./store";
 import { newConfigOfType } from "./types";
+import { readRan } from "./services";
 
 const cfg = (id: string, extra: Partial<RunConfig> = {}): RunConfig => ({
   id,
@@ -174,6 +175,14 @@ describe("remote debugging", () => {
     expect(remoteDebugBlocked(local)).toBe(false);
     await executeAction("run.debugConfig", local.id);
     expect(startConfig).toHaveBeenCalledWith(local);
+  });
+
+  it("remembers a non-Spring-Boot configuration accepted for debugging", async () => {
+    useProject.setState({ project: { root: "/remember-debug" } as never });
+    const local = cfg("python:debug", { debugAdapter: "debugpy" });
+    useRun.setState({ configs: [local], loaded: true });
+    await executeAction("run.debugConfig", local.id);
+    expect(readRan("/remember-debug")).toContain(local.id);
   });
 });
 
