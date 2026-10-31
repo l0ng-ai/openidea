@@ -22,6 +22,7 @@ html {
   --bg-app: #191a1c;
   --bg-elev: #212326;
   --bg-popup: #26282c;
+  --bg-floating-toolbar: #33353b;
   --bg-hover: #2e2f30;
   --bg-selected: #2a4371;
   --bg-selected-strong: #2e4d89;
@@ -240,6 +241,14 @@ html {
   --radius-control: 4px;
   --radius-tab: 6px;
   --radius-toolbar-button: 6px;
+  --radius-floating-toolbar: 3px;
+  --h-floating-toolbar-button: 22px;
+  --floating-toolbar-top: 25px;
+  --floating-toolbar-browser-top: 32px;
+  --floating-toolbar-right: 20px;
+  --floating-toolbar-opacity: 55%;
+  --dur-floating-toolbar-show: 500ms;
+  --dur-floating-toolbar-hide: 1000ms;
   --radius-tooltip: 6px;
 
   --shadow-popup: 0 6px 20px rgba(0, 0, 0, 0.45);
@@ -403,6 +412,7 @@ html {
   --bg-app: #ffffff;
   --bg-elev: #f7f8f9;
   --bg-popup: #ffffff;
+  --bg-floating-toolbar: #ffffff;
   --bg-hover: #ededed;
   --bg-selected: #d0dffe;
   --bg-selected-strong: #bdd3ff;
@@ -663,6 +673,8 @@ html {
   --bg-app: #000000;
   --bg-elev: #0e0f11;
   --bg-popup: #111214;
+  --bg-floating-toolbar: #1a1b1e;
+  --floating-toolbar-opacity: 100%;
   --bg-hover: #1c1e22;
   --bg-selected: #1f3a73;
   --bg-selected-strong: #2a4b8f;
@@ -917,6 +929,7 @@ html {
   --bg-inlay: var(--palette-panel);
   --bg-fold-placeholder: var(--palette-panel);
   --bg-popup: var(--palette-popup);
+  --bg-floating-toolbar: var(--palette-popup);
   --bg-tooltip: var(--palette-popup);
   --bg-hover: var(--palette-hover);
   --bg-control-hover: var(--palette-hover);

@@ -3,11 +3,11 @@
  * floating "open in browser" toolbar) and the built-in preview beside the
  * editor, served by the built-in server and reloaded when files are saved.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { IconButton } from "@/ui";
+import { FloatingToolbar, IconButton } from "@/ui";
 import { browserIcon, openInBrowser, useBrowsers, useWebPreview, webUrl } from "./browsers";
 import styles from "./Web.module.css";
 import { tx } from "@/platform/i18n";
@@ -17,29 +17,34 @@ const RELOAD_DELAY = 250;
 export function WebEditor({ path, children }: { path: string; tabId: string; children: ReactNode }) {
   const preview = useWebPreview((s) => !!s[path]);
   const browsers = useBrowsers((s) => s.list);
+  const ref = useRef<HTMLDivElement>(null);
   return (
     <div className={clsx(styles.split, preview && styles.withPreview)}>
-      <div className={styles.editor}>
+      <div ref={ref} className={styles.editor}>
         {children}
-        <div className={styles.bar} role="toolbar" aria-label={tx("Open in browser")}>
-          <IconButton
-            icon="eye"
-            size="small"
-            action="web.togglePreview"
-            actionArg={path}
-            pressed={preview}
-            title="Built-in Preview"
-          />
-          {browsers.map((b) => (
+        <FloatingToolbar targetRef={ref} className={styles.browserBar} hideOnTyping={false} retentionMs={1500}>
+          <div className={styles.actions} role="toolbar" aria-label={tx("Open in browser")}>
             <IconButton
-              key={b.id}
-              icon={browserIcon(b.id)}
+              icon="eye"
               size="small"
-              title={b.name}
-              onClick={() => void openInBrowser(path, b.id)}
+              iconSize={16}
+              action="web.togglePreview"
+              actionArg={path}
+              pressed={preview}
+              title="Built-in Preview"
             />
-          ))}
-        </div>
+            {browsers.map((b) => (
+              <IconButton
+                key={b.id}
+                icon={browserIcon(b.id)}
+                size="small"
+                iconSize={16}
+                title={b.name}
+                onClick={() => void openInBrowser(path, b.id)}
+              />
+            ))}
+          </div>
+        </FloatingToolbar>
       </div>
       {preview && <WebPreview path={path} />}
     </div>
