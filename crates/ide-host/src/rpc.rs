@@ -183,9 +183,14 @@ impl Dispatcher {
         .add("fs_copy", |c| async move { ops::fs::copy(&c.host, c.arg("from")?, c.arg("to")?).await })
         .add("fs_read_text", |c| async move { ops::fs::read_text(&c.host, &c.window, c.arg("path")?).await })
         .add("doc_open", |c| async move { ops::doc::open(&c.host, &c.window, c.arg("path")?).await })
-        .add("doc_close", |c| async move { ops::doc::close(&c.host, &c.window, c.arg("doc")?) })
+        .add("doc_close", |c| async move {
+            ops::doc::blocking(move || ops::doc::close(&c.host, &c.window, c.arg("doc")?)).await
+        })
         .add("doc_edit", |c| async move {
-            ops::doc::edit(&c.host, &c.window, c.arg("doc")?, c.arg("baseVersion")?, c.arg("changes")?)
+            ops::doc::blocking(move || {
+                ops::doc::edit(&c.host, &c.window, c.arg("doc")?, c.arg("baseVersion")?, c.arg("changes")?)
+            })
+            .await
         })
         .add("doc_save", |c| async move { ops::doc::save(&c.host, &c.window, c.arg("doc")?).await })
         .add("doc_save_all", |c| async move { ops::doc::save_all(&c.host, &c.window).await })

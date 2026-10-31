@@ -29,9 +29,19 @@ export async function attachDocument(manager: DocumentManager, path: string): Pr
   const target = new AttachedView();
   model.attach(target);
   let released = false;
+  const historyTarget = {
+    path,
+    state: () => target.view!.state,
+    dispatch: (tr: Transaction) => target.view?.dispatch(tr),
+  };
 
   const plugin = ViewPlugin.define((view) => {
     target.view = view;
+    let detachHistory = () => {};
+    let destroyed = false;
+    queueMicrotask(() => {
+      if (!destroyed) detachHistory = model.manager.workspaceHistory.attach(historyTarget);
+    });
     const handle: TextEditorHandle = { view, ctx: model.ctx() };
     _addEditor(handle);
     // The model may have moved on between `text()` and the view's creation.
@@ -46,6 +56,8 @@ export async function attachDocument(manager: DocumentManager, path: string): Pr
       });
     return {
       destroy() {
+        destroyed = true;
+        detachHistory();
         _removeEditor(handle);
         if (target.view === view) target.view = null;
       },
@@ -57,6 +69,7 @@ export async function attachDocument(manager: DocumentManager, path: string): Pr
     text: () => model.sync.localText.toString(),
     readOnly: model.getMeta().readOnly || model.virtual,
     extension: [
+      model.manager.workspaceHistory.extension(historyTarget),
       plugin,
       documentSynced.of(() => model.sync.whenIdle()),
       EditorView.updateListener.of((u) => {

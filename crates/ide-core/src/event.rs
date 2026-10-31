@@ -32,11 +32,20 @@ pub enum IdeEvent {
         base_version: u32,
         version: u32,
         changes: Vec<TextChange>,
+        /// Part of a grouped transaction; the editor must not record a file-local undo.
+        #[serde(default)]
+        #[specta(optional)]
+        workspace_edit: bool,
     },
     /// A document's dirty flag changed (saved / modified externally).
     DocDirty {
         doc: DocId,
         dirty: bool,
+    },
+    /// A complete workspace edit can be undone as one operation.
+    WorkspaceEditApplied {
+        id: u32,
+        paths: Vec<crate::IpcPath>,
     },
     /// An open document's language changed (Settings › File Types, Override File
     /// Type), or its UI mode (a framework's root marker appeared or went).

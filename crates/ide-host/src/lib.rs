@@ -139,6 +139,7 @@ impl Host {
             if !project.light {
                 self.environment.project_closed();
             }
+            project.documents.clear_workspace_edit_history();
             project.agents.shutdown();
             project.notebooks.stop_admission();
             self.shutdown_notebooks_blocking(vec![project.notebooks.clone()]);
@@ -180,6 +181,13 @@ impl Host {
         self.shutdown_notebooks_blocking(self.projects().iter().map(|project| project.notebooks.clone()).collect());
     }
 
+    /// Called before desktop exit, which may bypass document destructors.
+    pub fn clear_workspace_edit_history_on_exit(&self) {
+        for project in self.projects() {
+            project.documents.clear_workspace_edit_history();
+        }
+    }
+
     /// Stops what this host started: notebook kernels, language servers, agents, runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
     pub async fn shutdown(&self) {
@@ -188,6 +196,7 @@ impl Host {
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
+            project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
             project.agents.shutdown();
         }

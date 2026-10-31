@@ -410,6 +410,29 @@ describe("rename wiring", () => {
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("only local variables");
   });
 
+  it.each(["typescript", "java"])("previews a %s multi-file rename and retains version guards", async (language) => {
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 3)));
+    const edit = {
+      files: ["/p/Main.java", "/p/Use.java"].map((path) => ({
+        kind: "edit",
+        path,
+        version: 7,
+        edits: [{ range: r(0, 0, 3), new_text: "new" }],
+      })),
+      preconditions: [{ path: "/p/Main.java", hash: "original" }],
+    };
+    cmd.lspRename.mockReturnValueOnce(ok({ edit, incomplete: null }));
+    const view = editor("old", language, 0);
+    await renameNamePart(view, { from: 0, to: 3 }, "new");
+    const preview = useLspPopup.getState().popup;
+    expect(preview?.kind).toBe("preview");
+    expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+    if (preview?.kind !== "preview") throw new Error("missing rename preview");
+    expect(preview.summary.files).toBe(2);
+    preview.onConfirm();
+    await vi.waitFor(() => expect(cmd.applyWorkspaceEdit).toHaveBeenCalledExactlyOnceWith(edit));
+  });
+
   describe("Typo: Rename to (issue #42)", () => {
     it("renames the whole name through the server, references included", async () => {
       cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 12)));

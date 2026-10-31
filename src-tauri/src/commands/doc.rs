@@ -20,22 +20,26 @@ pub async fn doc_open(window: Window, state: State<'_, AppState>, path: PathBuf)
 
 #[tauri::command]
 #[specta::specta]
-pub fn doc_close(window: Window, state: State<'_, AppState>, doc: DocId) -> IdeResult<()> {
-    ide_host::ops::doc::close(&state.host, window.label(), doc)
+pub async fn doc_close(window: Window, state: State<'_, AppState>, doc: DocId) -> IdeResult<()> {
+    let host = state.host.clone();
+    let window = window.label().to_owned();
+    blocking(move || ide_host::ops::doc::close(&host, &window, doc)).await
 }
 
 /// Applies a CodeMirror change set; returns the new version. Rejects with
 /// `outOfSync` when `base_version` is stale; the UI then calls `doc_snapshot`.
 #[tauri::command]
 #[specta::specta]
-pub fn doc_edit(
+pub async fn doc_edit(
     window: Window,
     state: State<'_, AppState>,
     doc: DocId,
     base_version: u32,
     changes: ChangeSet,
 ) -> IdeResult<u32> {
-    ide_host::ops::doc::edit(&state.host, window.label(), doc, base_version, changes)
+    let host = state.host.clone();
+    let window = window.label().to_owned();
+    blocking(move || ide_host::ops::doc::edit(&host, &window, doc, base_version, changes)).await
 }
 
 #[tauri::command]
@@ -86,13 +90,15 @@ pub async fn doc_set_encoding(
 
 #[tauri::command]
 #[specta::specta]
-pub fn doc_set_line_ending(
+pub async fn doc_set_line_ending(
     window: Window,
     state: State<'_, AppState>,
     doc: DocId,
     line_ending: LineEnding,
 ) -> IdeResult<()> {
-    ide_host::ops::doc::doc_set_line_ending(&state.host, window.label(), doc, line_ending)
+    let host = state.host.clone();
+    let window = window.label().to_owned();
+    blocking(move || ide_host::ops::doc::doc_set_line_ending(&host, &window, doc, line_ending)).await
 }
 
 /// Structure view: LSP document symbols when available (with tree-sitter

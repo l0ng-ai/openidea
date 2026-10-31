@@ -97,6 +97,16 @@ pub struct TextEdit {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct WorkspaceEdit {
     pub files: Vec<FileEdit>,
+    /// Content fingerprints captured before presenting an edit for confirmation.
+    #[serde(default)]
+    #[specta(optional)]
+    pub preconditions: Vec<WorkspaceEditPrecondition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct WorkspaceEditPrecondition {
+    pub path: crate::IpcPath,
+    pub hash: String,
 }
 
 impl WorkspaceEdit {
@@ -108,17 +118,26 @@ impl WorkspaceEdit {
         let mut resolve_aliases = true;
         for file in std::mem::take(&mut self.files) {
             match file {
-                FileEdit::Edit { path, edits } => {
+                FileEdit::Edit { path, edits, version } => {
                     let path = if resolve_aliases {
                         dunce::canonicalize(&path).unwrap_or_else(|_| path.to_path_buf())
                     } else {
                         path.to_path_buf()
                     };
                     let index = *batch.entry(path.clone()).or_insert_with(|| {
-                        files.push(FileEdit::Edit { path: path.into(), edits: Vec::new() });
+                        files.push(FileEdit::Edit { path: path.clone().into(), edits: Vec::new(), version });
                         files.len() - 1
                     });
-                    let FileEdit::Edit { edits: own, .. } = &mut files[index] else { unreachable!() };
+                    let FileEdit::Edit { edits: own, version: expected, .. } = &mut files[index] else {
+                        unreachable!()
+                    };
+                    if expected.is_some() && version.is_some() && *expected != version {
+                        // Keep incompatible constraints so application rejects them
+                        // before changing any file instead of silently losing one.
+                        files.push(FileEdit::Edit { path: path.into(), edits, version });
+                        continue;
+                    }
+                    *expected = expected.or(version);
                     for edit in edits {
                         if !own.contains(&edit) {
                             own.push(edit);
@@ -140,10 +159,26 @@ impl WorkspaceEdit {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FileEdit {
-    Edit { path: crate::IpcPath, edits: Vec<TextEdit> },
-    Create { path: crate::IpcPath, overwrite: bool },
-    Rename { from: crate::IpcPath, to: crate::IpcPath },
-    Delete { path: crate::IpcPath, recursive: bool },
+    Edit {
+        path: crate::IpcPath,
+        edits: Vec<TextEdit>,
+        /// LSP TextDocumentEdit version; null/unversioned edits use content preconditions.
+        #[serde(default)]
+        #[specta(optional)]
+        version: Option<i32>,
+    },
+    Create {
+        path: crate::IpcPath,
+        overwrite: bool,
+    },
+    Rename {
+        from: crate::IpcPath,
+        to: crate::IpcPath,
+    },
+    Delete {
+        path: crate::IpcPath,
+        recursive: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
@@ -254,7 +289,7 @@ mod workspace_edit_tests {
         std::fs::write(&real, "add()").unwrap();
         std::os::unix::fs::symlink(&real, &alias).unwrap();
         let change = TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "sum_values".into() };
-        let edit = |path: PathBuf| FileEdit::Edit { path: path.into(), edits: vec![change.clone()] };
+        let edit = |path: PathBuf| FileEdit::Edit { path: path.into(), edits: vec![change.clone()], version: None };
         let mut workspace = WorkspaceEdit {
             files: vec![
                 edit(real.clone()),
@@ -262,6 +297,7 @@ mod workspace_edit_tests {
                 FileEdit::Create { path: dir.path().join("other").into(), overwrite: false },
                 edit(real),
             ],
+            ..Default::default()
         };
         workspace.deduplicate();
         assert_eq!(workspace.files.len(), 3);
