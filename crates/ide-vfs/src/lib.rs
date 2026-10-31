@@ -316,11 +316,18 @@ pub struct FsBatch {
     /// refresh as a worktree edit and schedule another `vcs_status` (which
     /// writes `.git/index` again — an idle refresh loop).
     pub vcs: Vec<PathBuf>,
+    /// Folders holding changes filtered out as excluded or ignored. Only a view already
+    /// showing such a folder cares, so they don't count as worktree changes.
+    pub excluded_dirs: Vec<PathBuf>,
 }
 
 impl FsBatch {
     pub fn is_empty(&self) -> bool {
-        self.created.is_empty() && self.modified.is_empty() && self.removed.is_empty() && self.vcs.is_empty()
+        self.created.is_empty()
+            && self.modified.is_empty()
+            && self.removed.is_empty()
+            && self.vcs.is_empty()
+            && self.excluded_dirs.is_empty()
     }
 }
 

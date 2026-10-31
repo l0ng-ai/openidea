@@ -60,7 +60,7 @@ async function runTask(task: BeforeLaunchTask, config: RunConfig, chain: readonl
   switch (task.kind) {
     case "build": {
       if (!getAction(BUILD_ACTION)) return "Building is not available";
-      if (!(await executeAction(BUILD_ACTION))) return "A build is already running";
+      if (!(await executeAction(BUILD_ACTION, { activate: false }))) return "A build is already running";
       return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
     }
     case "run": {

@@ -223,6 +223,7 @@ impl Host {
             let history = history.clone();
             let remote = self.remote.clone();
             let runtime = self.runtime.clone();
+            let lsp = lsp.clone();
             Watcher::start(
                 &root.clone(),
                 excludes.clone(),
@@ -230,6 +231,7 @@ impl Host {
                 Box::new(move |batch| {
                     let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
                     index.update(&changed, &batch.removed);
+                    lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&changed);
                     // A framework's root marker (`angular.json`) created or deleted: its
@@ -356,6 +358,12 @@ impl Host {
             let weak = Arc::downgrade(&project);
             project.lsp.set_candidates_hook(Box::new(move |q, cancel| {
                 weak.upgrade().map(|p| p.reference_candidates(q, cancel)).unwrap_or_default()
+            }));
+        }
+        {
+            let weak = Arc::downgrade(&project);
+            project.lsp.set_project_excludes_hook(Box::new(move || {
+                weak.upgrade().map(|p| p.exclude_globs()).unwrap_or_default()
             }));
         }
         self.insert_project(window, project.clone());

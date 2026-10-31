@@ -1,4 +1,5 @@
 /** The focused diff editor's chunk navigation, for actions that must not load the diff editor. */
+import type { DiffViewerHost } from "./diffViewerProviders";
 
 export interface DiffNavigator {
   next(): void;
@@ -10,6 +11,8 @@ export interface DiffNavigator {
   file(dir: 1 | -1): void;
   /** The viewer's settings as a popup menu (⇧⌘D). */
   showSettings(): void;
+  /** The built panes, for diff viewer contributions' actions (null while loading). */
+  viewer?(): DiffViewerHost | null;
 }
 
 let focused: DiffNavigator | null = null;

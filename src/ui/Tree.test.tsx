@@ -214,3 +214,61 @@ describe("siblingPositions", () => {
     ]);
   });
 });
+
+describe("Tree horizontal scrolling", () => {
+  const spacer = (tree: HTMLElement) => tree.querySelector<HTMLElement>("[data-content-width]");
+
+  it("is off unless asked for", () => {
+    const { tree } = setup();
+    expect(spacer(tree)).toBeNull();
+  });
+
+  it("remeasures mounted rows with the same key, including narrower content", () => {
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(640);
+    try {
+      const { tree, key } = setup({ horizontalScroll: true, defaultExpanded: ["src"] });
+      expect(spacer(tree)?.style.width).toBe("640px");
+      width.mockReturnValue(100);
+      key("ArrowDown");
+      expect(spacer(tree)?.style.width).toBe("100px");
+    } finally {
+      width.mockRestore();
+    }
+  });
+
+  it("removes widths belonging to collapsed descendants", () => {
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.textContent === "util.ts" ? 640 : 100;
+    });
+    try {
+      const { tree, key } = setup({ horizontalScroll: true, defaultExpanded: ["src"] });
+      expect(spacer(tree)?.style.width).toBe("640px");
+      key("Home");
+      key("ArrowLeft");
+      expect(spacer(tree)?.style.width).toBe("100px");
+    } finally {
+      width.mockRestore();
+    }
+  });
+
+  it("measures without the viewport minimum and restores it before returning", () => {
+    const minimums: string[] = [];
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.hasAttribute("data-row")) minimums.push(this.style.minWidth);
+      return parseFloat(this.style.minWidth) === 0 ? 100 : 800;
+    });
+    try {
+      const { tree } = setup({ horizontalScroll: true });
+      expect(spacer(tree)?.style.width).toBe("100px");
+      expect(minimums.length).toBeGreaterThan(0);
+      expect(minimums.every((value) => parseFloat(value) === 0)).toBe(true);
+      for (const row of tree.querySelectorAll<HTMLElement>("[data-row]")) expect(row.style.minWidth).toBe("");
+    } finally {
+      width.mockRestore();
+    }
+  });
+});

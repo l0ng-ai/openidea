@@ -1,0 +1,265 @@
+/*
+ * The pull request list (IntelliJ's `GHPRListPanelFactory`, `ReviewListCellRenderer`,
+ * `ReviewListSearchPanelFactory`). Sizes are IntelliJ's at 100% scale.
+ */
+.panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Search panel: 0 / 10px (the tab adds 8px above). */
+.search {
+  flex: none;
+  padding: 0 10px;
+}
+.filterRow {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+  min-width: 0;
+}
+.quickFilter {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+}
+/* BadgeIconSupplier's live indicator. */
+.badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gh-unread);
+  box-shadow: 0 0 0 1.5px var(--bg-elev);
+  pointer-events: none;
+}
+/* Chips: a horizontally scrolling row, 4px apart, faded 10px at the clipped edges, thin overlay scrollbar. */
+.chips {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 10px 4px;
+  margin-bottom: -2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.chips::-webkit-scrollbar {
+  height: 4px;
+}
+.chips::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background: transparent;
+}
+.chips:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+}
+.chips::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chips[data-fade="left"] {
+  mask-image: linear-gradient(to right, transparent 0, #000 10px);
+}
+.chips[data-fade="right"] {
+  mask-image: linear-gradient(to left, transparent 0, #000 10px);
+}
+.chips[data-fade="both"] {
+  mask-image: linear-gradient(to right, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
+}
+
+/* FilterComponent: the name and a chevron, or the value and a reset ✕. */
+.chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  border-radius: var(--radius-small);
+  color: var(--fg);
+  white-space: nowrap;
+}
+.chip:hover {
+  background: var(--bg-toolbar-hover);
+}
+.chip[data-set] {
+  color: var(--fg-strong);
+}
+.chipMain {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 100%;
+  max-width: 200px;
+  padding: 0 4px 0 6px;
+  overflow: hidden;
+  font-size: var(--fs-ui);
+  text-overflow: ellipsis;
+}
+.chip[data-set] .chipMain {
+  padding-right: 2px;
+}
+.chipText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chipChevron,
+.chipReset {
+  flex: none;
+  color: var(--fg-icon);
+}
+.chipReset {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 4px 0 0;
+}
+.chipReset:hover {
+  color: var(--fg-strong);
+}
+.chipMain:focus-visible,
+.chipReset:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  border-radius: var(--radius-small);
+}
+
+/* List area with the progress stripe over its top edge. */
+.body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: 4px;
+}
+.stripe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+}
+/* New UI selection: rounded, inset 13px; the row's text 19px from the edges. */
+.list {
+  --list-inset: 13px;
+  flex: 1;
+  min-height: 0;
+}
+.row {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  height: 100%;
+  margin: 0 -2px;
+  padding: 4px 0 5px;
+}
+.line {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  min-width: 0;
+}
+.left,
+.right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.left {
+  flex: 0 1 auto;
+}
+.right {
+  flex: none;
+  margin-left: auto;
+  padding-left: 6px;
+}
+.unread {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: var(--gh-unread);
+}
+.title {
+  flex: 0 1 auto;
+  min-width: 30px;
+  overflow: hidden;
+  color: var(--fg-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+.tintedIcon {
+  display: inline-flex;
+  flex: none;
+  --icon-color: currentColor;
+}
+.comments {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding-right: 1px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.info {
+  overflow: hidden;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emptyLink {
+  color: var(--link);
+  cursor: pointer;
+}
+.emptyLink:hover {
+  text-decoration: underline;
+}
+.error {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 0 16px;
+}
+.errorBody {
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+/* Hover balloons (labels, assignees, reviewers). */
+.balloon {
+  padding: 8px 10px 6px;
+  background: var(--bg-tooltip);
+  color: var(--fg-tooltip);
+}
+.balloonTitle {
+  padding: 0 10px 4px 0;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.balloonRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  white-space: nowrap;
+}

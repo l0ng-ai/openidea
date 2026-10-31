@@ -11,11 +11,13 @@ import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { projectLocation, useRemote } from "@/platform/remote";
 import { tx, useT, useTxTemplate } from "@/platform/i18n";
 import { Button, EmptyState, T } from "@/ui";
 import type { MenuItem } from "@/ui";
 import {
   toolWindowService,
+  notifications,
   useRunConfigTypes,
   type ServiceItemAction,
   type ServiceProviderContribution,
@@ -25,6 +27,14 @@ import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
 import { SessionPanel } from "./RunView";
 import { startRun, stopSession, useRun, type RunSession } from "./store";
 import { isDebugOnly } from "./types";
+import {
+  currentServiceOrder,
+  moveServiceOrder,
+  orderServices,
+  saveServiceOrder,
+  useServiceOrder,
+  type ServiceOrder,
+} from "./serviceOrder";
 import styles from "./RunServices.module.css";
 
 export const RUN_PROVIDER = "runConfigurations";
@@ -151,6 +161,7 @@ export function runServiceItems(
   sessions: readonly RunSession[],
   added: readonly string[],
   ran: readonly string[] = [],
+  order: ServiceOrder = {},
 ): ServiceTreeItem[] {
   const latest = latestSessions(sessions);
   const kinds = [...added];
@@ -166,7 +177,7 @@ export function runServiceItems(
     for (const s of latest.values())
       if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
     if (!entries.length && DEFAULT_TYPES.includes(kind)) return [];
-    const children = entries.map((c): ServiceTreeItem => {
+    const children = orderServices(entries, order[kind]).map((c): ServiceTreeItem => {
       const s = latest.get(c.id);
       return {
         key: CONFIG_PREFIX + c.id,
@@ -195,6 +206,8 @@ export function runServiceItems(
 
 function useRoots(): ServiceTreeItem[] {
   const root = useProject((s) => s.project?.root ?? null);
+  useRemote((s) => s.session);
+  const order = useServiceOrder(projectLocation(root));
   const configs = useRun((s) => s.configs);
   const sessions = useRun((s) => s.sessions);
   const types = useAddedTypes((s) => s.types);
@@ -206,8 +219,8 @@ function useRoots(): ServiceTreeItem[] {
     if (ranRoot !== root) useRanConfigs.setState({ root, ids: root ? readRan(root) : [] });
   }, [root, typesRoot, ranRoot]);
   return useMemo(
-    () => runServiceItems(configs, sessions, typesRoot === root ? types : [], ranRoot === root ? ran : []),
-    [configs, sessions, types, typesRoot, ran, ranRoot, root],
+    () => runServiceItems(configs, sessions, typesRoot === root ? types : [], ranRoot === root ? ran : [], order),
+    [configs, sessions, types, typesRoot, ran, ranRoot, root, order],
   );
 }
 
@@ -391,4 +404,42 @@ export const runServiceProvider: ServiceProviderContribution = {
   },
   detail: RunDetail,
   addMenu,
+  reorder: {
+    canMove: (source, target) => {
+      if (!source.key.startsWith(CONFIG_PREFIX) || !target.key.startsWith(CONFIG_PREFIX) || source.key === target.key)
+        return false;
+      const from = resolve(source),
+        to = resolve(target);
+      return !!from.config && !!to.config && from.kind === to.kind;
+    },
+    move: (source, target, position) => {
+      if (!runServiceProvider.reorder!.canMove(source, target)) return;
+      const location = projectLocation(useProject.getState().project?.root);
+      const kind = resolve(source).kind;
+      if (!location || !kind) return;
+      const { configs, sessions } = useRun.getState();
+      const order = currentServiceOrder(location);
+      const group = runServiceItems(
+        configs,
+        sessions,
+        currentTypes(),
+        ranIds(useProject.getState().project?.root ?? null),
+        order,
+      ).find((g) => g.key === TYPE_PREFIX + kind);
+      const ids = group?.children?.map((c) => c.key.slice(CONFIG_PREFIX.length)) ?? [];
+      const from = source.key.slice(CONFIG_PREFIX.length),
+        to = target.key.slice(CONFIG_PREFIX.length);
+      if (!ids.includes(from) || !ids.includes(to)) return;
+      if (
+        !saveServiceOrder(location, { ...order, [kind]: moveServiceOrder(order[kind] ?? [], ids, from, to, position) })
+      ) {
+        notifications().notify({
+          group: "run",
+          level: "warning",
+          title: "Cannot save service order",
+          body: "The order will be kept for this session only.",
+        });
+      }
+    },
+  },
 };

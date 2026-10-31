@@ -27,6 +27,7 @@ const config: RunConfig = {
   command: "java",
   args: ["-cp", "${classpath}", "Main"],
   cwd: null,
+  module: "",
   env: {},
   detected: false,
   isTest: false,

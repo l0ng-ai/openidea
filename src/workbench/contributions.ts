@@ -19,6 +19,7 @@ import {
 } from "react";
 import type { RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
+import type { TreeReorder } from "@/ui/Tree";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
@@ -232,6 +233,8 @@ export interface ServiceProviderContribution {
   banner?: ComponentType;
   /** Entries of the "Add Service" (+, ⌘N) menu. */
   addMenu?(): MenuItem[];
+  /** Optional sibling display ordering; does not move services between groups. */
+  reorder?: TreeReorder<ServiceTreeItem>;
 }
 
 export const useServiceProviders = create<{ providers: Map<string, ServiceProviderContribution> }>(() => ({

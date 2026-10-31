@@ -113,7 +113,7 @@ describe("Services selection → actions", () => {
       menu: () => [{ label: "Prune", submenu: [{ label: "Containers", run: () => run(id) }] }],
     }));
     const items = selectionMenu(
-      providers.map((p) => ({ provider: p.id, item: roots[0]! })),
+      providers.map((p) => ({ provider: p.id, item: roots[0]!, parent: null })),
       providers,
     );
     const submenu = items[0];
@@ -129,8 +129,8 @@ it("ignores removed rows and avoids invoking a selected group's descendants twic
   const child = roots[0]!;
   const parent = { key: "group", label: "group", icon: "run", children: [child] };
   const index = new Map([
-    [parent.key, { item: parent, provider: "test" }],
-    [child.key, { item: child, provider: "test" }],
+    [parent.key, { item: parent, provider: "test", parent: null }],
+    [child.key, { item: child, provider: "test", parent }],
   ]);
   const selection = selectedServices(new Set([parent.key, child.key, "removed"]), index);
   const actions = selectionActions(selection, [...useServiceProviders.getState().providers.values()]);
@@ -146,9 +146,9 @@ it("disables actions when no selected row can run them", () => {
 
 it("disables dialog entries for a multi-selection", () => {
   const providers = [{ id: "a", useRoots: () => [], menu: () => [{ label: "Edit Configuration…", run }] }];
-  const one = selectionMenu([{ provider: "a", item: roots[0]! }], providers)[0] as { disabled?: boolean };
+  const one = selectionMenu([{ provider: "a", item: roots[0]!, parent: null }], providers)[0] as { disabled?: boolean };
   const many = selectionMenu(
-    roots.slice(0, 2).map((item) => ({ provider: "a", item })),
+    roots.slice(0, 2).map((item) => ({ provider: "a", item, parent: null })),
     providers,
   )[0] as { disabled?: boolean };
   expect(one.disabled).toBeFalsy();

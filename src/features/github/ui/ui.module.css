@@ -1,0 +1,270 @@
+/* Shared GitHub UI. */
+
+/* Avatar: a circle; the ring (outlined avatars) is 2px with a 1px gap, outside the size. */
+.avatar {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--bg-hover);
+  color: var(--gh-avatar-fg);
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+  vertical-align: middle;
+}
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ringed {
+  margin: 3px;
+  overflow: visible;
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.ringed img {
+  border-radius: 50%;
+}
+
+/* AvatarStack: overlapping avatars, later ones under earlier ones. */
+.stack {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+.stack > * + * {
+  margin-left: calc(var(--overlap) * -1);
+}
+.stack > .ringed + .ringed {
+  margin-left: calc(var(--overlap) * -1 + 3px);
+}
+
+/* State tag (DRAFT / CLOSED / MERGED). */
+.stateTag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--gh-tag-bg);
+  color: var(--gh-tag-fg);
+  font-size: var(--fs-tiny);
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* Label chip: the label's colour as background, readable text on it. */
+.labelChip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  max-width: 100%;
+  height: 18px;
+  padding: 0 6px;
+  overflow: hidden;
+  border-radius: 9px;
+  font-size: var(--fs-small);
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.labelSwatch {
+  display: inline-block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+/* Branch chip: branch icon and name. */
+.branchChip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.branchChip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Chooser popup */
+.chooser {
+  display: flex;
+  flex-direction: column;
+  width: var(--chooser-width, 250px);
+  min-width: 160px;
+  height: var(--chooser-height, 300px);
+  min-height: 120px;
+  overflow: hidden;
+  resize: both;
+}
+.chooserSearch {
+  flex: none;
+  padding: 6px 8px 4px;
+}
+.chooserList {
+  flex: 1;
+  min-height: 0;
+  padding-bottom: 4px;
+}
+.chooserRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.chooserRow[data-active] {
+  background: var(--bg-list-selected);
+  border-radius: var(--radius-selection);
+}
+.chooserText {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chooserDetail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-secondary);
+  text-overflow: ellipsis;
+}
+.chooserCheck {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  justify-content: center;
+}
+.chooserStatus {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 6px;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.chooserError {
+  color: var(--danger);
+}
+.chooserEmpty {
+  padding: 8px 10px;
+  color: var(--fg-faint);
+}
+
+/* Markdown bodies */
+.markdown {
+  color: var(--fg);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown :global(pre) {
+  padding: 6px 8px;
+  overflow: auto;
+  background: var(--bg-editor);
+  border-radius: var(--radius-small);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.markdown :global(code) {
+  font-family: var(--font-mono);
+}
+.markdown :global(a) {
+  color: var(--link);
+}
+.markdown :global(img) {
+  max-width: 100%;
+}
+.markdown :global(blockquote) {
+  margin: 0 0 8px;
+  padding: 0 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--fg-secondary);
+}
+.markdown :global(table) {
+  border-collapse: collapse;
+}
+.markdown :global(th),
+.markdown :global(td) {
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+}
+.markdown :global(h1),
+.markdown :global(h2),
+.markdown :global(h3) {
+  font-size: var(--fs-ui);
+  color: var(--fg-strong);
+}
+.markdownEmpty {
+  color: var(--fg-secondary);
+  font-style: italic;
+}
+
+/* Stub panels of the parts still to be ported. */
+.placeholder {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 0;
+  padding: 16px;
+  color: var(--fg-secondary);
+  text-align: center;
+}
+.placeholderTitle {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* Dialogs */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+}
+.formRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.fieldLabel {
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.textarea {
+  resize: vertical;
+  min-height: 48px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-input);
+  color: var(--fg);
+  font: inherit;
+}
+.textarea:focus {
+  outline: none;
+  border-color: var(--focus-ring);
+}

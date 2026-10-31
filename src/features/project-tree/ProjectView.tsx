@@ -645,6 +645,7 @@ export function ProjectView() {
         </div>
       )}
       <Tree<ProjectNode>
+        horizontalScroll
         aria-label="Project"
         handleRef={setTreeHandle}
         roots={model.roots}

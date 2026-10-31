@@ -411,6 +411,16 @@ pub fn open_project_window(
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
+/// Opens `file` in a forced new window: `project` (None: LightEdit) plus the
+/// single file, always creating a window even when the project is already open
+/// in another one (unlike [`open_project_window`], which focuses it). Used to
+/// detach an editor tab out of its window.
+pub fn open_file_in_new_window(app: &AppHandle, project: Option<PathBuf>, file: PathBuf) -> IdeResult<OpenOutcome> {
+    tracing::info!("open_file_in_new_window {} project={:?}", file.display(), project);
+    let window = create_window_with(app, project, vec![file])?;
+    Ok(OpenOutcome::Opened { label: window.label().to_owned() })
+}
+
 /// Loose local `files` asked for by window `caller` (File | Open File, a drop on the Welcome
 /// screen), routed like [`open_paths`]; returns the files `caller` opens itself.
 pub fn open_files_window(app: &AppHandle, caller: &str, files: Vec<PathBuf>) -> Vec<ide_core::IpcPath> {

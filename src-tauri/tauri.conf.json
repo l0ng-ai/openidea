@@ -30,7 +30,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src ipc: http://ipc.localhost; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; frame-src http://127.0.0.1:*"
+      "csp": "default-src 'self'; img-src 'self' asset: data: blob: https://avatars.githubusercontent.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src ipc: http://ipc.localhost; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; frame-src http://127.0.0.1:*"
     }
   },
   "bundle": {

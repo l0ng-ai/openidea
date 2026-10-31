@@ -640,7 +640,7 @@ function FindInFilesDialog() {
                     ...NAMED_SCOPES,
                     ...(customScopes.length
                       ? [
-                          { value: "custom:" as NamedScope, label: "Custom Scopes", disabled: true },
+                          { value: "custom:" as NamedScope, label: "Custom Scopes", section: true },
                           ...customScopes.map((c) => ({
                             value: customScopeValue(c.name),
                             label: c.name,

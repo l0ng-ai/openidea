@@ -535,6 +535,19 @@ pub async fn vcs_diff_revisions(
     ide_host::ops::vcs::vcs_diff_revisions(&state.host, window.label(), repo, from, to).await
 }
 
+/// The best common ancestor of `a` and `b` (`git merge-base`), if any.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_merge_base(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    a: String,
+    b: String,
+) -> IdeResult<Option<String>> {
+    ide_host::ops::vcs::vcs_merge_base(&state.host, window.label(), repo, a, b).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_create_patch(

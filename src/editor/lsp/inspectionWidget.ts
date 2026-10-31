@@ -6,6 +6,7 @@
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
 import { shortcutLabel } from "@/platform/keymap";
+import { editorCorner } from "@/editor/api";
 import { toolWindowService } from "@/workbench/contributions";
 import { gotoDiagnostic } from "./diagnostics";
 import { iconNode } from "./iconMarkup";
@@ -50,7 +51,7 @@ class InspectionWidget {
     this.dom.className = "cm-openidea-inspection";
     this.dom.setAttribute("role", "toolbar");
     this.dom.setAttribute("aria-label", "Inspections");
-    view.dom.appendChild(this.dom);
+    editorCorner(view).appendChild(this.dom);
     this.render();
   }
 
@@ -123,10 +124,6 @@ const inspectionPlugin = ViewPlugin.fromClass(InspectionWidget);
 
 const inspectionTheme = EditorView.theme({
   ".cm-openidea-inspection": {
-    position: "absolute",
-    top: "4px",
-    right: "16px",
-    zIndex: "5",
     display: "flex",
     alignItems: "center",
     gap: "1px",
