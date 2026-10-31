@@ -6,7 +6,7 @@
 use crate::tool::{Call, Output, Param, ParamType, Tool};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use ide_core::mcp::McpToolKind;
-use ide_core::{CancellationToken, IdeError, IdeResult, Location, Range, RequestId};
+use ide_core::{CancellationToken, IdeError, IdeResult, Location, Range};
 use ide_host::ops::search::SearchEvent;
 use ide_search::{FileMask, FileMatches, SearchQuery, SearchScope, SearchSummary};
 use ide_vfs::EntryKind;
@@ -15,7 +15,6 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 const DEFAULT_LIMIT: usize = 100;
@@ -196,12 +195,6 @@ fn query(call: &Call) -> IdeResult<String> {
     Ok(q)
 }
 
-/// A request id the UI never allocates (its ids stay below `0x8000_0000`).
-fn next_request() -> RequestId {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    RequestId(0x8000_0000 | (NEXT.fetch_add(1, Ordering::Relaxed) & 0x7fff_ffff))
-}
-
 // --- text / regex --------------------------------------------------------------
 
 #[derive(Serialize, Debug)]
@@ -319,7 +312,7 @@ fn byte_at(line: &str, col: u32) -> Option<usize> {
 /// Runs Find in Files, cancelling it when the call is cancelled.
 async fn run_search(call: &Call, query: SearchQuery) -> IdeResult<(Vec<FileMatches>, SearchSummary)> {
     let host = call.host();
-    let request = next_request();
+    let request = crate::tool::request_id();
     let files = Arc::new(Mutex::new(Vec::new()));
     let done = Arc::new(Mutex::new(None));
     let emit: ide_host::ops::Emit<SearchEvent> = {
@@ -517,7 +510,7 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
 /// The language servers' workspace symbols; empty when none runs or they fail.
 async fn workspace_symbols(call: &Call, q: &str) -> Vec<(String, ide_core::SymbolKind, Option<String>, Location)> {
     let host = call.host();
-    let request = next_request();
+    let request = crate::tool::request_id();
     let symbols = ide_host::ops::lsp::lsp_workspace_symbols(&host, call.window(), request, q.to_owned());
     tokio::pin!(symbols);
     let result = tokio::select! {

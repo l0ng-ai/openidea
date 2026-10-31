@@ -3,7 +3,7 @@
 use crate::tool::{Call, Output, Param, ParamType, Tool};
 use ide_build::compile::{BuildEvent, BuildKind, BuildResult};
 use ide_core::mcp::McpToolKind;
-use ide_core::{IdeError, IdeResult, RequestId, RunId};
+use ide_core::{IdeError, IdeResult, RunId};
 use ide_run::{OutputChunk, RunConfig};
 use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
@@ -11,7 +11,6 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 
@@ -775,12 +774,6 @@ MIDDLE keeps both ends, NONE keeps everything; when cut, `fullOutputPath` names 
 
 // ---------------------------------------------------------------- build
 
-/// Request ids of the UI count up from 1; MCP builds use the upper half to stay apart.
-fn next_request() -> RequestId {
-    static NEXT: AtomicU32 = AtomicU32::new(0x8000_0000);
-    RequestId(NEXT.fetch_add(1, Ordering::Relaxed))
-}
-
 fn problem(call: &Call, m: &ide_build::compile::BuildMessage) -> Value {
     let mut v = json!({
         "severity": serde_json::to_value(m.severity).unwrap_or(Value::Null),
@@ -835,7 +828,7 @@ On `timeout` the build is stopped (`timedOut: true`).",
             let mut results: Vec<BuildResult> = Vec::new();
             let mut timed_out = false;
             for target in targets {
-                let request = next_request();
+                let request = crate::tool::request_id();
                 let sink = console.clone();
                 let channel = ide_host::ops::Channel::new(move |e: BuildEvent| match e {
                     BuildEvent::Output { text, .. } => sink.lock().push_str(&text),

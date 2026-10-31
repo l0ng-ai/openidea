@@ -594,7 +594,7 @@ fn get_symbol_info() -> Tool {
 and where the symbol is declared, with a short snippet of the declaration. Without a language server for the file, \
 declarations come from the project's symbol index. Line and column are 1-based.",
         |call| async move {
-            let path = call.resolve(&call.str("filePath")?)?;
+            let path = call.resolve_readable(&call.str("filePath")?).await?;
             let (line, column) = (call.one_based("line")?, call.one_based("column")?);
             let deadline = deadline(&call, 15_000)?;
             let file = read_file(&call, &path).await?;

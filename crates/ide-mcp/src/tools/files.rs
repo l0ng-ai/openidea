@@ -26,10 +26,20 @@ fn read_file() -> Tool {
 editors. Returns numbered lines (1-based), `<line number>\\t<text>`. Reads up to 2000 lines from `offset` by \
 default; `limit` accepts up to 5000. Lines longer than 2000 characters are cut.",
         |call| async move {
-            let path = call.resolve(&call.str("file_path")?)?;
+            let path = call.resolve_readable(&call.str("file_path")?).await?;
             let offset = call.count("offset", 1, usize::MAX)?;
             let limit = call.count("limit", READ_DEFAULT_LINES, READ_MAX_LINES)?;
             let host = call.host();
+            if path.is_file() {
+                let probe = ide_vfs::probe(&path)?;
+                if probe.binary && call.project().documents.by_path(&path).is_none() {
+                    return Err(IdeError::invalid(format!(
+                        "{} is a binary file ({} bytes); read_file reads text",
+                        call.display(&path),
+                        probe.size
+                    )));
+                }
+            }
             let text = ide_host::ops::fs::read_text(&host, call.window(), path.clone()).await.map_err(|e| {
                 if path.is_dir() {
                     IdeError::invalid(format!("{} is a directory; use list_directory_tree", call.display(&path)))
@@ -88,7 +98,7 @@ fn list_directory_tree() -> Tool {
         "Shows a directory of the project as a tree, like the `tree` utility, without ignored and excluded files. \
 Use it to explore the project instead of `ls` / `find`.",
         |call| async move {
-            let dir = call.resolve(call.opt_str("directoryPath")?.as_deref().unwrap_or("."))?;
+            let dir = call.resolve_readable(call.opt_str("directoryPath")?.as_deref().unwrap_or(".")).await?;
             let depth = call.count("maxDepth", TREE_DEFAULT_DEPTH, 50)?;
             if !dir.is_dir() {
                 return Err(IdeError::not_found(format!("{} is not a directory", call.display(&dir))));

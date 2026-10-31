@@ -12,6 +12,13 @@ use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// A host request id for a tool's cancellable work. The UI's ids count up from 1, so
+/// every tool takes its ids from this one counter in the upper half.
+pub fn request_id() -> ide_core::RequestId {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    ide_core::RequestId(0x8000_0000 | (NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0x7fff_ffff))
+}
+
 pub type Handler = Arc<dyn Fn(Call) -> BoxFuture<'static, IdeResult<Output>> + Send + Sync>;
 
 /// The type of one parameter, for the input schema.
@@ -274,6 +281,23 @@ impl Call {
     pub fn resolve_inside(&self, path: &str) -> IdeResult<PathBuf> {
         let resolved = self.resolve(path)?;
         crate::project::ensure_inside(self.root(), &resolved)?;
+        Ok(resolved)
+    }
+
+    /// Resolves a path to read. Outside the project (and its content roots) the user is
+    /// asked first unless brave mode is on: a client could otherwise read `~/.ssh` or
+    /// credentials of other tools.
+    pub async fn resolve_readable(&self, path: &str) -> IdeResult<PathBuf> {
+        let resolved = self.resolve(path)?;
+        let canon = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let real = canon(&resolved);
+        let inside = std::iter::once(self.root().to_path_buf())
+            .chain(self.project().content_roots())
+            .any(|root| real.starts_with(canon(&root)));
+        if !inside {
+            self.confirm(&format!("Read {}", resolved.display()), Some("This path is outside the project.".into()))
+                .await?;
+        }
         Ok(resolved)
     }
 

@@ -10,14 +10,13 @@ mod patch;
 
 use crate::tool::{Call, Output, Param, ParamType, Tool};
 use ide_core::mcp::{McpOpenEditors, McpToolKind, McpUiRequest};
-use ide_core::{DocId, FileEdit, IdeError, IdeResult, Pos, RequestId, WorkspaceEdit};
+use ide_core::{DocId, FileEdit, IdeError, IdeResult, Pos, WorkspaceEdit};
 use ide_host::Project;
 use patch::{FileOp, Fuzz};
 use serde_json::json;
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 
 pub fn tools() -> Vec<Tool> {
     vec![
@@ -57,12 +56,6 @@ fn open_document(project: &Project, path: &Path) -> IdeResult<(DocId, bool)> {
         Some(doc) => Ok((doc, false)),
         None => Ok((project.documents.open(path)?.id, true)),
     }
-}
-
-/// Ids for language server requests, kept apart from the UI's ids (which count up from 1).
-fn request_id() -> RequestId {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    RequestId(0xC000_0000 | NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 fn normalize_newlines(text: &str) -> String {
@@ -581,7 +574,7 @@ file's language; without one, change the occurrences with apply_patch.",
     let pos = target.ok_or_else(|| {
         IdeError::invalid(format!("the language server cannot rename `{name}` in {shown} (not a renameable symbol)"))
     })?;
-    let request = request_id();
+    let request = crate::tool::request_id();
     let renamed = tokio::select! {
         r = ide_host::ops::lsp::lsp_rename(&host, window, request, doc, pos, new_name.to_owned()) => r?,
         _ = call.cancel.cancelled() => {
@@ -747,6 +740,6 @@ mod tests {
 
     #[test]
     fn request_ids_stay_out_of_the_ui_range() {
-        assert!(request_id().0 >= 0xC000_0000);
+        assert!(crate::tool::request_id().0 >= 0x8000_0000);
     }
 }

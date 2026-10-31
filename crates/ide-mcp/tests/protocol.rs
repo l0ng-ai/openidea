@@ -159,3 +159,29 @@ async fn starts_and_stops_listening() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn asks_before_reading_outside_the_project() {
+    let h = Harness::new(&[("a.txt", "x\n")]).await;
+    let outside = h.dir.path().join("secret.txt");
+    std::fs::write(&outside, "token\n").unwrap();
+    let path = outside.to_string_lossy().into_owned();
+    *h.ui.answer.lock() = Value::Bool(false);
+    let msg = h.call_err("read_file", json!({ "file_path": path })).await;
+    assert!(msg.contains("declined"), "{msg}");
+    assert!(matches!(h.ui.asked.lock().last(), Some(ide_core::mcp::McpUiRequest::Confirm { .. })));
+    *h.ui.answer.lock() = Value::Bool(true);
+    assert_eq!(h.call("read_file", json!({ "file_path": path })).await, "1\ttoken\n");
+    // Inside the project nobody is asked.
+    let asked = h.ui.asked.lock().len();
+    h.call("read_file", json!({ "file_path": "a.txt" })).await;
+    assert_eq!(h.ui.asked.lock().len(), asked);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_to_read_binary_files_as_text() {
+    let h = Harness::new(&[]).await;
+    std::fs::write(h.path("img.bin"), [0u8, 159, 146, 150, 0, 0, 1, 2]).unwrap();
+    let msg = h.call_err("read_file", json!({ "file_path": "img.bin" })).await;
+    assert!(msg.contains("binary"), "{msg}");
+}
