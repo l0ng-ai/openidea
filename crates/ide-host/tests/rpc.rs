@@ -91,7 +91,12 @@ async fn serves_projects_files_documents_search_and_runs() {
     assert_eq!(icons[1]["presentation"]["kind"], "object");
     // Replacing a file invalidates its cached metadata, including same-size writes.
     std::fs::write(&java, "interface Foo {}     ").unwrap();
-    std::fs::File::open(&java).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&java)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap();
     let icons = invoke(&peer, "jvm_file_presentations", json!({ "paths": [java] })).await.unwrap();
     assert_eq!(icons[0]["presentation"]["kind"], "interface");
     let oversized = invoke(&peer, "jvm_file_presentations", json!({ "paths": vec![java.clone(); 65] })).await;

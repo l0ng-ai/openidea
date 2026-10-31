@@ -1985,6 +1985,23 @@ export type CreatePullRequest = {
 	push: boolean,
 };
 
+/**  Imported editor colour scheme on top of a built-in base. */
+export type CustomColorScheme = CustomColorScheme_Serialize | CustomColorScheme_Deserialize;
+
+/**  Imported editor colour scheme on top of a built-in base. */
+export type CustomColorScheme_Deserialize = {
+	name: string,
+	parent: string,
+	attributes: { [key in string]: TextAttributesOverride_Deserialize },
+};
+
+/**  Imported editor colour scheme on top of a built-in base. */
+export type CustomColorScheme_Serialize = {
+	name: string,
+	parent: string,
+	attributes: { [key in string]: TextAttributesOverride_Serialize },
+};
+
 /**  A named profile made with Copy. */
 export type CustomInspectionProfile = {
 	name?: string,
@@ -2734,6 +2751,8 @@ export type EditorSettings_Deserialize = {
 	formatOnSave?: boolean,
 	/**  Editor colour scheme id; `theme-default` follows the IDE theme. */
 	colorScheme?: string,
+	/**  Imported editor schemes, stored in user settings. */
+	customSchemes?: { [key in string]: CustomColorScheme_Deserialize },
 	/**  Color Scheme edits: scheme id → attribute id → override. */
 	colorOverrides?: { [key in string]: { [key in string]: TextAttributesOverride_Deserialize } },
 	/**
@@ -2781,6 +2800,8 @@ export type EditorSettings_Serialize = {
 	formatOnSave: boolean,
 	/**  Editor colour scheme id; `theme-default` follows the IDE theme. */
 	colorScheme: string,
+	/**  Imported editor schemes, stored in user settings. */
+	customSchemes: { [key in string]: CustomColorScheme_Serialize },
 	/**  Color Scheme edits: scheme id → attribute id → override. */
 	colorOverrides: { [key in string]: { [key in string]: TextAttributesOverride_Serialize } },
 	/**

@@ -5237,5 +5237,16 @@
   "For clipboard images: {timestamp} becomes YYYYMMDD-HHmmss. Source file names are preserved.": "剪贴板图片中的 {timestamp} 替换为 YYYYMMDD-HHmmss。保留源文件名称。",
   "Image folder must be relative.": "图片文件夹必须使用相对路径。",
   "Image exceeds 16 MB.": "图片超过 16 MB。",
-  "Cannot insert image": "无法插入图片"
+  "Cannot insert image": "无法插入图片",
+  "Import Scheme": "导入配色方案",
+  "Export Scheme": "导出配色方案",
+  "Delete Scheme": "删除配色方案",
+  "Keep Both": "保留两个",
+  "Scheme exported.": "配色方案已导出。",
+  "Invalid .icls color scheme": "无效的 .icls 配色方案",
+  "IntelliJ Color Scheme": "IntelliJ 配色方案",
+  "A scheme named '{name}' already exists.": "名为“{name}”的配色方案已存在。",
+  "Applied {applied} values; skipped {skipped} unsupported or invalid values.": "已应用 {applied} 个值；跳过了 {skipped} 个不支持或无效的值。",
+  "Delete color scheme '{name}'?": "删除配色方案“{name}”？",
+  "Overwrite": "覆盖"
 }
