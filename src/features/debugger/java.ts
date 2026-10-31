@@ -107,7 +107,9 @@ export async function javaLaunchConfig(
   const resolved = resolveJavaCommand(rc, info);
   const kotlin = rc.debugAdapter === KOTLIN_ADAPTER || (await moduleHasKotlinSources(join(root, module)));
   preparation?.signal.throwIfAborted();
-  const classPaths = parsed.explicitClasspath ? parsed.explicitClasspath.split(/[:;]/) : info.classPaths;
+  const classPaths = parsed.explicitClasspath
+    ? parsed.explicitClasspath.split(info.pathListSeparator)
+    : info.classPaths;
   if (kotlin) {
     return {
       name: rc.name,

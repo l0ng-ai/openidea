@@ -1,3 +1,4 @@
+import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { actionToggled, executeAction, getAction } from "@/platform/actions";
@@ -16,7 +17,6 @@ import {
   SymbolBadge,
   Select,
   Toggle,
-  fileIconName,
   listNavigate,
   type MenuItem,
   T,
@@ -830,9 +830,10 @@ function FileRow({
   line: number | null;
 }) {
   const deco = useFileDecoration(path);
+  const { icon } = useFilePresentation(path);
   return (
     <>
-      <Icon name={fileIconName(name)} size={16} className={styles.icon} />
+      <Icon name={icon} size={16} className={styles.icon} />
       <span className={styles.main}>
         <span className={styles.name} style={deco.color ? { color: deco.color } : undefined}>
           <HighlightedText text={name} indices={indices} tone="strong" />

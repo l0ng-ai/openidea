@@ -155,6 +155,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_folding,
         doc::doc_highlights,
         doc::doc_selection_ranges,
+        syntax::jvm_file_presentations,
         syntax::syntax_support,
         syntax::syntax_node_at,
         syntax::syntax_expression_at,

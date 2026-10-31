@@ -157,6 +157,9 @@ impl Dispatcher {
             c.host.close_project(&c.window);
             Ok(())
         })
+        .add("jvm_file_presentations", |c| async move {
+            ops::jvm_icons::jvm_file_presentations(&c.host, &c.window, c.arg("paths")?).await
+        })
         .add("project_roots", |c| async move { ops::project::roots(&c.host, &c.window) })
         .add("settings_get", |c| async move { Ok(ops::project::settings(&c.host, &c.window)) })
         .add("settings_set", |c| async move {

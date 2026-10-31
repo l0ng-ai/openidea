@@ -194,6 +194,7 @@ describe("java compile errors", () => {
     projectRoot: "/p",
     classPaths: [],
     modulePaths: [],
+    pathListSeparator: ":",
     javaHome: null,
     javaExec: null,
     shortenCommandLine: null,
@@ -220,6 +221,7 @@ describe("java command lines", () => {
     projectRoot: "/p",
     classPaths: ["/p/target/classes", "/m2/a.jar"],
     modulePaths: [],
+    pathListSeparator: ":",
     javaHome: "/jdk21",
     javaExec: "/jdk21/bin/java",
     shortenCommandLine: "none",
@@ -245,10 +247,9 @@ describe("java command lines", () => {
     const r = resolveJavaCommand({ ...c, args: ["-Dx=1", ...c.args, "arg"] }, info);
     expect(r.command).toBe("/jdk21/bin/java");
     expect(r.args).toEqual(["-Dx=1", "-cp", "/p/target/classes:/m2/a.jar", "a.Main", "arg"]);
-    expect(resolveJavaCommand(c, { ...info, modulePaths: ["/m/x.jar"] }, ";").args.slice(0, 2)).toEqual([
-      "--module-path",
-      "/m/x.jar",
-    ]);
+    expect(
+      resolveJavaCommand(c, { ...info, modulePaths: ["/m/x.jar"], pathListSeparator: ";" }).args.slice(0, 2),
+    ).toEqual(["--module-path", "/m/x.jar"]);
   });
 
   it("joins arguments for java-debug and reads JDWP's port", () => {

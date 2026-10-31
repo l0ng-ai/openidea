@@ -41,6 +41,20 @@ const ICONS = {
   "folder-library": "nodes/libraryFolder",
   "folder-github": "nodes/folderGithub",
   module: "nodes/module",
+  "folder-generated-source": "nodes/generatedSource",
+  "folder-generated-test": "nodes/generatedTestRoot",
+  "folder-compiled": "nodes/compiledClassesFolder",
+  "folder-javadoc": "nodes/javaDocFolder",
+  "class-abstract": "nodes/classAbstract",
+  record: "nodes/record",
+  annotation: "nodes/annotation",
+  exception: "nodes/exception",
+  "jvm-test": "nodes/test",
+  "runnable-mark": "nodes/runnableMark",
+  "kotlin-object": "kotlin/objectKotlin",
+  "spring-config": "openidea/runConfigurations/springBoot",
+  "gradle-project": "gradle/gradle",
+  "gradle-module": "gradle/gradleSubproject",
   "spring-boot": "openidea/runConfigurations/springBoot",
   file: "fileTypes/text",
   "file-unknown": "fileTypes/unknown",
@@ -917,7 +931,12 @@ export type FolderKind =
   | "excluded"
   | "library"
   | "github"
-  | "module";
+  | "module"
+  | "package"
+  | "generatedSource"
+  | "generatedTest"
+  | "compiled"
+  | "javadoc";
 
 /** Folder icon by role (expui has no separate "open" folder glyph). */
 export function folderIconName(kind: FolderKind = "plain"): IconName {
@@ -938,6 +957,16 @@ export function folderIconName(kind: FolderKind = "plain"): IconName {
       return "folder-github";
     case "module":
       return "module";
+    case "package":
+      return "package";
+    case "generatedSource":
+      return "folder-generated-source";
+    case "generatedTest":
+      return "folder-generated-test";
+    case "compiled":
+      return "folder-compiled";
+    case "javadoc":
+      return "folder-javadoc";
     default:
       return "folder";
   }
