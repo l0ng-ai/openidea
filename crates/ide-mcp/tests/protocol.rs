@@ -185,3 +185,45 @@ async fn refuses_to_read_binary_files_as_text() {
     let msg = h.call_err("read_file", json!({ "file_path": "img.bin" })).await;
     assert!(msg.contains("binary"), "{msg}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rejects_strangers_before_reading_bodies_and_restarts_quickly() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let h = Harness::new(&[]).await;
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let on = ide_core::mcp::McpSettings { enabled: true, port, ..Default::default() };
+    assert!(h.server.apply(&on).await.running);
+
+    // No token and a body that never comes: answered at once, not after reading it.
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let head = format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 1000000\r\n\r\n");
+    sock.write_all(head.as_bytes()).await.unwrap();
+    let mut out = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(5), sock.read_to_string(&mut out)).await.unwrap().unwrap();
+    assert!(out.starts_with("HTTP/1.1 401"), "{out}");
+
+    // `Expect: 100-continue` gets its interim answer.
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+    let head = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {TOKEN}\r\nExpect: 100-continue\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    sock.write_all(head.as_bytes()).await.unwrap();
+    let mut buf = [0u8; 25];
+    sock.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"HTTP/1.1 100 Continue\r\n\r\n");
+    sock.write_all(body.as_bytes()).await.unwrap();
+    let mut out = String::new();
+    sock.read_to_string(&mut out).await.unwrap();
+    assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+
+    // Off and on again at once: the port is free by then.
+    let off = ide_core::mcp::McpSettings { enabled: false, ..on.clone() };
+    for _ in 0..3 {
+        assert!(!h.server.apply(&off).await.running);
+        let status = h.server.apply(&on).await;
+        assert!(status.running, "{status:?}");
+    }
+    h.server.apply(&off).await;
+}

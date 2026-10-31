@@ -97,7 +97,7 @@ async fn connection(sock: TcpStream, shared: &Arc<Shared>, port: u16) -> std::io
     let (read, mut write) = sock.into_split();
     let mut reader = BufReader::new(read);
     loop {
-        let request = match tokio::time::timeout(IDLE_TIMEOUT, read_request(&mut reader)).await {
+        let head = match tokio::time::timeout(IDLE_TIMEOUT, read_head(&mut reader)).await {
             Err(_) => return Ok(()),
             Ok(Err(RequestError::Io(e))) => return Err(e),
             Ok(Err(RequestError::Bad(status, why))) => {
@@ -106,6 +106,23 @@ async fn connection(sock: TcpStream, shared: &Arc<Shared>, port: u16) -> std::io
             }
             Ok(Ok(None)) => return Ok(()),
             Ok(Ok(Some(r))) => r,
+        };
+        // Who is asking is checked before a body is read (no buffering for strangers).
+        if let Some(rejected) = precheck(shared, port, &head) {
+            write_response(&mut write, rejected, false).await?;
+            return Ok(());
+        }
+        if head.header("expect").is_some_and(|e| e.eq_ignore_ascii_case("100-continue")) {
+            write.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
+        }
+        let request = match tokio::time::timeout(IDLE_TIMEOUT, read_body(&mut reader, head)).await {
+            Err(_) => return Ok(()),
+            Ok(Err(RequestError::Io(e))) => return Err(e),
+            Ok(Err(RequestError::Bad(status, why))) => {
+                write_response(&mut write, Response::text(status, why), false).await?;
+                return Ok(());
+            }
+            Ok(Ok(r)) => r,
         };
         let keep_alive = !request.header("connection").is_some_and(|c| c.eq_ignore_ascii_case("close"));
         let response = route(shared, port, request).await;
@@ -127,7 +144,8 @@ impl From<std::io::Error> for RequestError {
     }
 }
 
-async fn read_request<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<Request>, RequestError> {
+/// The request line and headers; the body is read by [`read_body`].
+async fn read_head<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<Request>, RequestError> {
     let mut head_len = 0usize;
     let mut line = String::new();
     // Tolerate blank lines between keep-alive requests.
@@ -160,6 +178,14 @@ async fn read_request<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Res
             headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
         }
     }
+    Ok(Some(Request { method, path, headers, body: Vec::new() }))
+}
+
+async fn read_body<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    mut head: Request,
+) -> Result<Request, RequestError> {
+    let headers = &head.headers;
     let chunked = headers.get("transfer-encoding").is_some_and(|t| t.to_ascii_lowercase().contains("chunked"));
     let body = if chunked {
         read_chunked(reader).await?
@@ -175,7 +201,16 @@ async fn read_request<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Res
         reader.read_exact(&mut body).await?;
         body
     };
-    Ok(Some(Request { method, path, headers, body }))
+    head.body = body;
+    Ok(head)
+}
+
+#[cfg(test)]
+async fn read_request<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<Request>, RequestError> {
+    match read_head(reader).await? {
+        Some(head) => Ok(Some(read_body(reader, head).await?)),
+        None => Ok(None),
+    }
 }
 
 async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
@@ -183,7 +218,9 @@ async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     line: &mut String,
     total: &mut usize,
 ) -> Result<usize, RequestError> {
-    let n = reader.read_line(line).await?;
+    // `take` bounds a line without a newline too.
+    let budget = (MAX_HEAD + 1).saturating_sub(*total) as u64;
+    let n = (&mut *reader).take(budget).read_line(line).await?;
     *total += n;
     if *total > MAX_HEAD {
         return Err(RequestError::Bad(431, "Request Header Fields Too Large"));
@@ -196,14 +233,14 @@ async fn read_chunked<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Res
     let mut line = String::new();
     loop {
         line.clear();
-        reader.read_line(&mut line).await?;
+        (&mut *reader).take(1024).read_line(&mut line).await?;
         let size = usize::from_str_radix(line.trim().split(';').next().unwrap_or(""), 16)
             .map_err(|_| RequestError::Bad(400, "Bad chunk"))?;
         if size == 0 {
             // Trailers until the empty line.
             loop {
                 line.clear();
-                if reader.read_line(&mut line).await? == 0 || line.trim().is_empty() {
+                if (&mut *reader).take(8192).read_line(&mut line).await? == 0 || line.trim().is_empty() {
                     return Ok(body);
                 }
             }
@@ -215,7 +252,7 @@ async fn read_chunked<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Res
         body.resize(start + size, 0);
         reader.read_exact(&mut body[start..]).await?;
         line.clear();
-        reader.read_line(&mut line).await?;
+        (&mut *reader).take(1024).read_line(&mut line).await?;
     }
 }
 
@@ -287,15 +324,16 @@ fn token_matches(header: Option<&str>, token: &str) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-pub(crate) async fn route(shared: &Arc<Shared>, port: u16, request: Request) -> Response {
+/// The checks that need only the head: Host, Origin, path and token.
+fn precheck(shared: &Arc<Shared>, port: u16, request: &Request) -> Option<Response> {
     if !host_allowed(request.header("host"), port) {
-        return Response::text(403, "Forbidden: unexpected Host");
+        return Some(Response::text(403, "Forbidden: unexpected Host"));
     }
     if !origin_allowed(request.header("origin")) {
-        return Response::text(403, "Forbidden: cross-origin requests are not allowed");
+        return Some(Response::text(403, "Forbidden: cross-origin requests are not allowed"));
     }
     if !matches!(request.path.as_str(), ENDPOINT | "/mcp/" | "/") {
-        return Response::text(404, "Not Found");
+        return Some(Response::text(404, "Not Found"));
     }
     let token = shared.config.read().token.clone();
     if !token_matches(request.header("authorization"), &token) {
@@ -308,7 +346,14 @@ pub(crate) async fn route(shared: &Arc<Shared>, port: u16, request: Request) -> 
             ),
         );
         r.headers.push(("WWW-Authenticate", "Bearer realm=\"OpenIDEA\"".into()));
-        return r;
+        return Some(r);
+    }
+    None
+}
+
+pub(crate) async fn route(shared: &Arc<Shared>, port: u16, request: Request) -> Response {
+    if let Some(rejected) = precheck(shared, port, &request) {
+        return rejected;
     }
     if let Some(version) = request.header("mcp-protocol-version")
         && !protocol::PROTOCOL_VERSIONS.contains(&version)

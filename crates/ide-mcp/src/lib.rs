@@ -64,6 +64,8 @@ pub(crate) struct Shared {
     pub running: Mutex<Option<u16>>,
     /// Why the last start failed.
     pub error: Mutex<Option<String>>,
+    /// When a call count was last reported.
+    pub status_sent: Mutex<Option<std::time::Instant>>,
 }
 
 impl Shared {
@@ -98,6 +100,19 @@ impl Shared {
         if let Some(c) = self.clients.lock().iter_mut().find(|c| c.name == client) {
             c.calls += 1;
         }
+        // The UI shows the counts; at most one update a second.
+        let now = std::time::Instant::now();
+        let due = {
+            let mut last = self.status_sent.lock();
+            let due = last.is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_secs(1));
+            if due {
+                *last = Some(now);
+            }
+            due
+        };
+        if due {
+            self.ui.status_changed(&self.status_snapshot());
+        }
     }
 
     fn status_snapshot(&self) -> McpStatus {
@@ -121,7 +136,8 @@ pub fn endpoint_url(port: u16) -> String {
 pub struct McpServer {
     shared: Arc<Shared>,
     /// Serializes `apply`.
-    lifecycle: tokio::sync::Mutex<()>,
+    /// Serializes `apply`; holds the accept loop's task while listening.
+    lifecycle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl McpServer {
@@ -141,14 +157,15 @@ impl McpServer {
                 stop: Mutex::new(CancellationToken::new()),
                 running: Mutex::default(),
                 error: Mutex::default(),
+                status_sent: Mutex::default(),
             }),
-            lifecycle: tokio::sync::Mutex::new(()),
+            lifecycle: tokio::sync::Mutex::new(None),
         }
     }
 
     /// Starts, stops or restarts the server for `settings`; returns the new status.
     pub async fn apply(&self, settings: &McpSettings) -> McpStatus {
-        let _guard = self.lifecycle.lock().await;
+        let mut task = self.lifecycle.lock().await;
         {
             let mut config = self.shared.config.write();
             config.brave_mode = settings.brave_mode;
@@ -157,12 +174,12 @@ impl McpServer {
         let running = *self.shared.running.lock();
         let before = self.status();
         match (settings.enabled, running) {
-            (false, Some(_)) => self.stop_listener(),
+            (false, Some(_)) => self.stop_listener(&mut task).await,
             (false, None) => *self.shared.error.lock() = None,
             (true, Some(port)) if port == settings.port => {}
             (true, _) => {
-                self.stop_listener();
-                self.start_listener(settings.port).await;
+                self.stop_listener(&mut task).await;
+                *task = self.start_listener(settings.port).await;
             }
         }
         let status = self.status();
@@ -172,7 +189,7 @@ impl McpServer {
         status
     }
 
-    async fn start_listener(&self, port: u16) {
+    async fn start_listener(&self, port: u16) -> Option<tokio::task::JoinHandle<()>> {
         match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
             Ok(listener) => {
                 let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
@@ -180,8 +197,8 @@ impl McpServer {
                 *self.shared.stop.lock() = stop.clone();
                 *self.shared.running.lock() = Some(port);
                 *self.shared.error.lock() = None;
-                tokio::spawn(http::serve(listener, self.shared.clone(), stop));
                 tracing::info!("MCP server on {}", endpoint_url(port));
+                Some(tokio::spawn(http::serve(listener, self.shared.clone(), stop)))
             }
             Err(e) => {
                 let message = if e.kind() == std::io::ErrorKind::AddrInUse {
@@ -191,11 +208,20 @@ impl McpServer {
                 };
                 tracing::warn!("MCP server: {message}");
                 *self.shared.error.lock() = Some(message);
+                None
             }
         }
     }
 
-    fn stop_listener(&self) {
+    /// Stops listening and waits until the port is free again (a restart rebinds it).
+    async fn stop_listener(&self, task: &mut Option<tokio::task::JoinHandle<()>>) {
+        self.cancel_listener();
+        if let Some(task) = task.take() {
+            let _ = task.await;
+        }
+    }
+
+    fn cancel_listener(&self) {
         self.shared.stop.lock().cancel();
         self.shared.sessions.lock().clear();
         *self.shared.running.lock() = None;
@@ -204,7 +230,7 @@ impl McpServer {
 
     /// Stops serving (application exit).
     pub fn shutdown(&self) {
-        self.stop_listener();
+        self.cancel_listener();
     }
 
     pub fn status(&self) -> McpStatus {
@@ -288,9 +314,11 @@ pub fn write_new_token(file: &Path) -> std::io::Result<String> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = file.with_extension("tmp");
+    // A leftover file would keep its permissions: start from a new one.
+    let _ = std::fs::remove_file(&tmp);
     {
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let mut f = options.open(&tmp)?;

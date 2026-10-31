@@ -209,20 +209,30 @@ pub fn configure(kind: McpClientKind, url: &str, token: &str, home: &Path) -> Id
     Ok(file)
 }
 
+/// Replaces `file` (the target of a symlinked dotfile) through a temporary file that is
+/// never readable by others: the text holds the token.
 fn write_atomically(file: &Path, text: &str) -> IdeResult<()> {
+    let file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = file.with_extension(format!("openidea-{}.tmp", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    // Keep the original's permissions (`~/.claude.json` holds credentials).
-    if let Ok(meta) = std::fs::metadata(file) {
-        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    let _ = std::fs::remove_file(&tmp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        // The original's mode without group / other access; 0600 for a new file.
+        let mode = std::fs::metadata(&file).map(|m| m.permissions().mode() & 0o700).unwrap_or(0o600);
+        options.mode(mode | 0o600);
     }
-    std::fs::rename(&tmp, file).map_err(|e| {
+    let written = options.open(&tmp).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
+    if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, &file)) {
         let _ = std::fs::remove_file(&tmp);
-        IdeError::from(e)
-    })
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -283,6 +293,25 @@ mod tests {
         let text = std::fs::read_to_string(&file).unwrap();
         assert_eq!(text.matches("[mcp_servers.openidea]").count(), 1, "{text}");
         assert!(text.contains("Bearer tok2"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn written_files_are_private_and_symlinks_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        configure(McpClientKind::Cursor, URL, "t", home.path()).unwrap();
+        let file = config_file(McpClientKind::Cursor, home.path());
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o077, 0);
+
+        let real = home.path().join("dotfiles-gemini.json");
+        std::fs::write(&real, "{}").unwrap();
+        let link = config_file(McpClientKind::Gemini, home.path());
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        configure(McpClientKind::Gemini, URL, "t", home.path()).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(std::fs::read_to_string(&real).unwrap().contains("openidea"));
     }
 
     #[test]
