@@ -20,6 +20,7 @@ import styles from "./common.module.css";
 import { DiffEditor } from "./DiffEditor";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
+import { displayPath } from "./compare";
 
 // ---------------------------------------------------------------------------
 // Operation in progress
@@ -604,7 +605,11 @@ export function ChangesBetweenDialog({
     ? tx`Changes between ${from.label} and ${to.label}`
     : tx`Changes between ${from.label} and Local Working Tree`;
   const count = files ? fileCount(files.length) : "";
-  const successful = result?.repositories.filter((r) => !r.error).length ?? 1;
+  const successful = result?.repositories.filter((r) => !r.error && !r.missingRevision).length ?? 1;
+  const allMissing = !!result?.repositories.length && result.repositories.every((r) => r.missingRevision);
+  const skipped = result?.skippedPaths.map((path) => displayPath(path)) ?? [];
+  const skippedNames = skipped.slice(0, 5).join(", ");
+  const skippedLabel = skipped.length > 5 ? tx`${skippedNames} and ${skipped.length - 5} more` : skippedNames;
   return (
     <Dialog
       open
@@ -632,19 +637,23 @@ export function ChangesBetweenDialog({
         </div>
       )}
       {result?.skippedPaths.length ? (
-        <div
-          className={styles.compareNotice}
-        >{tx`Skipped content outside Git repositories: ${result.skippedPaths.join(", ")}`}</div>
+        <div className={styles.compareNotice}>{tx`Skipped content outside Git repositories: ${skippedLabel}`}</div>
       ) : null}
-      {result?.repositories
-        .filter((r) => r.error)
-        .map((r) => (
-          <div
-            key={r.root}
-            className={styles.compareNotice}
-            role="alert"
-          >{tx`Cannot compare ${repoName(r.root)} against ${from.label}: ${r.error}`}</div>
-        ))}
+      {allMissing ? (
+        <div className={styles.empty} role="status">
+          {tx`No repository in the selection has revision ${from.label}`}
+        </div>
+      ) : (
+        result?.repositories
+          .filter((r) => r.error || r.missingRevision)
+          .map((r) => (
+            <div key={r.root} className={styles.compareNotice} role={r.missingRevision ? "status" : "alert"}>
+              {r.missingRevision
+                ? tx`${repoName(r.root)} has no revision ${from.label}`
+                : tx`Cannot compare ${repoName(r.root)} against ${from.label}: ${r.error}`}
+            </div>
+          ))
+      )}
       {!files && !error ? (
         <div className={styles.empty}>
           <Spinner size={14} />

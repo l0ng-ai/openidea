@@ -25,29 +25,35 @@ vi.mock("@/platform/ipc", async (original) => {
 vi.mock("../DiffEditor", () => ({
   DiffEditor: ({ input }: { input: unknown }) => <div data-testid="diff">{JSON.stringify(input)}</div>,
 }));
+import { useProject } from "@/platform/project";
 import { ChangesBetweenDialog, comparisonEmpty } from "../operations";
 import { revisionItems } from "../RevisionChooser";
 
 const branch = (name: string, remote = false) => ({ name, remote, current: false, lastCommitMs: 0 }) as Branch;
 const scope = { paths: ["/workspace"], repositories: null };
 const result: CompareResult = {
-  skippedPaths: ["/workspace/loose"],
+  skippedPaths: ["/workspace/loose/"],
   repositories: [
     {
       root: "/workspace/client",
       revision: "aaa",
       error: null,
+      missingRevision: false,
       files: [{ path: "src/app.ts", kind: "modified", oldPath: null, added: 3, removed: 1 }],
     },
-    { root: "/workspace/server", revision: null, error: "unknown revision", files: [] },
+    { root: "/workspace/server", revision: null, error: null, missingRevision: true, files: [] },
   ],
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useProject.setState({ project: { root: "/workspace", name: "workspace" } as never });
   mocks.cancel.mockResolvedValue(undefined);
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useProject.setState({ project: null });
+});
 
 describe("directory comparison", () => {
   it("offers shared branches plus each repository's local, remote and tag revisions", () => {
@@ -77,9 +83,59 @@ describe("directory comparison", () => {
     });
     render(<ChangesBetweenDialog from={{ rev: "main", label: "main" }} to={null} scope={scope} onClose={() => {}} />);
     expect(await screen.findByText("No changes against main in 1 repository")).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent("Cannot compare server against main: unknown revision");
-    expect(screen.getByText(/Skipped content/)).toHaveTextContent("/workspace/loose");
+    expect(screen.getByText("server has no revision main")).toBeInTheDocument();
+    expect(screen.getByText(/Skipped content/)).toHaveTextContent("Skipped content outside Git repositories: loose/");
     expect(comparisonEmpty("main", 2)).toBe("No changes against main in 2 repositories");
+  });
+
+  it("shows one calm state when every selected repository lacks the revision", async () => {
+    mocks.compare.mockResolvedValue({
+      status: "ok",
+      data: {
+        ...result,
+        repositories: result.repositories.map((r) => ({ ...r, files: [], revision: null, missingRevision: true })),
+      },
+    });
+    render(
+      <ChangesBetweenDialog
+        from={{ rev: "missing-revision", label: "missing-revision" }}
+        to={null}
+        scope={scope}
+        onClose={() => {}}
+      />,
+    );
+    expect(await screen.findByText("No repository in the selection has revision missing-revision")).toBeInTheDocument();
+    expect(screen.queryByText(/has no revision/)).toBeNull();
+    expect(screen.queryByText(/No changes against/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps other repository errors visible", async () => {
+    mocks.compare.mockResolvedValue({
+      status: "ok",
+      data: {
+        ...result,
+        repositories: [{ ...result.repositories[1], missingRevision: false, error: "fatal: bad config" }],
+      },
+    });
+    render(<ChangesBetweenDialog from={{ rev: "main", label: "main" }} to={null} scope={scope} onClose={() => {}} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot compare server against main: fatal: bad config");
+    expect(screen.queryByText(/No changes against/)).toBeNull();
+  });
+
+  it("caps the list of skipped project-relative children", async () => {
+    mocks.compare.mockResolvedValue({
+      status: "ok",
+      data: {
+        ...result,
+        skippedPaths: Array.from({ length: 7 }, (_, i) => `/workspace/loose${i}/`),
+      },
+    });
+    render(<ChangesBetweenDialog from={{ rev: "main", label: "main" }} to={null} scope={scope} onClose={() => {}} />);
+    expect(await screen.findByText(/Skipped content/)).toHaveTextContent(
+      "Skipped content outside Git repositories: loose0/, loose1/, loose2/, loose3/, loose4/ and 2 more",
+    );
+    expect(screen.getByText(/Skipped content/)).not.toHaveTextContent("/workspace");
   });
 
   it("groups the existing changes tree by repo, includes counts and loads a diff only on click", async () => {

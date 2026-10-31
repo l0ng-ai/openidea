@@ -4,6 +4,7 @@ import { tx } from "@/platform/i18n";
 import { chooseRepositoryRevision } from "./RevisionChooser";
 import { openDiff } from "./diffInput";
 import { showPathComparison } from "./operations";
+import { displayPath } from "./compare";
 
 export async function comparePathsWithRevision(paths: string[], revision?: string) {
   const scope = await call(commands.vcsCompareScope(paths));
@@ -12,7 +13,7 @@ export async function comparePathsWithRevision(paths: string[], revision?: strin
       group: "vcs",
       level: "info",
       title: "Selection is outside Git repositories",
-      body: paths.join("\n"),
+      body: scope.skippedPaths.map((path) => displayPath(path)).join("\n"),
     });
     return;
   }
@@ -45,7 +46,7 @@ export async function showDirectoryWorkingDiff(paths: string[]): Promise<boolean
       group: "vcs",
       level: "info",
       title: "Selection is outside Git repositories",
-      body: paths.join("\n"),
+      body: scope.skippedPaths.map((path) => displayPath(path)).join("\n"),
     });
   } else showPathComparison(paths, "HEAD", null);
   return true;

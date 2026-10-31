@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "camelCase")]
 pub struct CompareScope {
     pub repositories: Vec<IpcPath>,
-    /// Selections with content outside all registered repositories (including workspace parents).
+    /// Selected content outside registered repositories; workspace parents expand to their skipped children.
     pub skipped_paths: Vec<IpcPath>,
     pub single_file: bool,
 }
@@ -32,6 +32,9 @@ pub struct RepositoryComparison {
     pub revision: Option<String>,
     pub files: Vec<WorkingTreeChange>,
     pub error: Option<String>,
+    /// The requested revision does not resolve to a commit in this repository.
+    #[serde(default)]
+    pub missing_revision: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -43,6 +46,16 @@ pub struct CompareResult {
 
 fn normalized(path: &Path) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn comparison_children(path: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name() != ".git" && entry.file_name() != ".openidea")
+        .map(|entry| entry.path())
+        .collect()
 }
 
 impl Repos {
@@ -60,8 +73,39 @@ impl Repos {
             })
             .map(|r| IpcPath(r.root().to_path_buf()))
             .collect();
-        let skipped_paths = paths.iter().filter(|p| self.for_path(p).is_none()).cloned().map(IpcPath).collect();
+        let mut skipped = std::collections::BTreeSet::new();
+        for path in &paths {
+            if self.at_root(path).or_else(|| self.for_path(path)).is_some() {
+                continue;
+            }
+            if self.all().iter().any(|r| r.root().starts_with(path)) {
+                for child in comparison_children(path) {
+                    if self.has_outside_content(&child) {
+                        skipped.insert(child);
+                    }
+                }
+            } else {
+                skipped.insert(path.clone());
+            }
+        }
+        let skipped_paths = skipped
+            .into_iter()
+            .map(|mut path| {
+                if path.is_dir() {
+                    path.push("");
+                }
+                IpcPath(path)
+            })
+            .collect();
         CompareScope { repositories, skipped_paths, single_file: paths.len() == 1 && !paths[0].is_dir() }
+    }
+
+    fn has_outside_content(&self, path: &Path) -> bool {
+        if self.at_root(path).or_else(|| self.for_path(path)).is_some() {
+            return false;
+        }
+        !self.all().iter().any(|r| r.root().starts_with(path))
+            || comparison_children(path).iter().any(|child| self.has_outside_content(child))
     }
 
     pub fn compare_paths(
@@ -87,7 +131,8 @@ impl Repos {
             let repo = self.at_root(&root.0).expect("scope comes from registry");
             let _scope =
                 crate::ExecutionScope::enter(repo.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-            let compare = || -> IdeResult<(String, Vec<WorkingTreeChange>)> {
+            let mut missing_revision = false;
+            let mut compare = || -> IdeResult<(String, Vec<WorkingTreeChange>)> {
                 // Worktree comparisons must not run repository-defined clean/process filters
                 // in Restricted Mode. External diff and textconv are disabled below as well.
                 let mut overrides = Vec::new();
@@ -108,10 +153,15 @@ impl Repos {
                     full.extend_from_slice(args);
                     cli::run_cancellable(repo.root(), &full, cancel)
                 };
-                let resolved = run(&["rev-parse", "--verify", "--end-of-options", &format!("{revision}^{{commit}}")])?
-                    .stdout_str()
-                    .trim()
-                    .to_owned();
+                // --quiet documents exit 1 for an unresolved revision; other failures keep their diagnostics.
+                let resolve_args =
+                    ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{revision}^{{commit}}")];
+                let resolved = cli::run_cancellable_raw(repo.root(), &resolve_args, cancel)?;
+                if resolved.code != Some(0) {
+                    missing_revision = resolved.code == Some(1);
+                    return Err(cli::failure(&resolve_args, &resolved.stderr, &resolved.stdout, resolved.code));
+                }
+                let resolved = resolved.stdout_str().trim().to_owned();
                 // Disable textconv/external diff; these are also safe in untrusted projects.
                 let names =
                     run(&["diff", "--name-status", "-z", "-M", "--no-ext-diff", "--no-textconv", &resolved, "--"])?;
@@ -204,7 +254,7 @@ impl Repos {
                     let absolute = repo.root().join(path);
                     // Match the existing diff viewer's large/binary-file policy without loading large files for counts.
                     let added = if std::fs::metadata(&absolute).is_ok_and(|m| m.len() <= 10 * 1024 * 1024) {
-                        let bytes = std::fs::read(&absolute)?;
+                        let bytes = std::fs::read(&absolute).unwrap_or_default();
                         if bytes.contains(&0) {
                             0
                         } else {
@@ -227,9 +277,17 @@ impl Repos {
                 Ok((resolved, files))
             };
             let comparison = match compare() {
-                Ok((revision, files)) => RepositoryComparison { root, revision: Some(revision), files, error: None },
+                Ok((revision, files)) => {
+                    RepositoryComparison { root, revision: Some(revision), files, error: None, missing_revision: false }
+                }
                 Err(_) if cancel.is_cancelled() => return Err(IdeError::cancelled()),
-                Err(e) => RepositoryComparison { root, revision: None, files: Vec::new(), error: Some(e.to_string()) },
+                Err(e) => RepositoryComparison {
+                    root,
+                    revision: None,
+                    files: Vec::new(),
+                    error: (!missing_revision).then_some(e.message),
+                    missing_revision,
+                },
             };
             result.repositories.push(comparison);
         }
@@ -318,17 +376,18 @@ mod tests {
         let repos = Repos::discover(&root, &|_| false).unwrap();
         let scope = repos.compare_scope(std::slice::from_ref(&root));
         assert_eq!(scope.repositories.len(), 3);
-        assert_eq!(scope.skipped_paths, [IpcPath(root.clone())]);
+        assert_eq!(scope.skipped_paths, [IpcPath(root.join("loose"))]);
         assert!(!scope.single_file);
         assert!(repos.compare_scope(&[root.join("client/src/文件 name.txt")]).single_file);
         let cancel = CancellationToken::new();
         let result = repos.compare_paths(&[root.clone(), root.join("loose")], "main", None, &cancel).unwrap();
         assert_eq!(result.repositories.len(), 3);
-        assert_eq!(result.repositories.iter().filter(|r| r.error.is_some()).count(), 1);
-        assert!(result.repositories[0].error.is_some(), "admin lacks main");
+        assert_eq!(result.repositories.iter().filter(|r| r.missing_revision).count(), 1);
+        assert!(result.repositories[0].missing_revision, "admin lacks main");
+        assert!(result.repositories[0].error.is_none());
         assert_eq!(result.repositories[1].files.len(), 1);
         assert_eq!(result.repositories[2].files.len(), 1);
-        assert_eq!(result.skipped_paths.len(), 2);
+        assert_eq!(result.skipped_paths, [IpcPath(root.join("loose"))]);
         let filtered =
             repos.compare_paths(std::slice::from_ref(&root), "main", Some(&[root.join("server")]), &cancel).unwrap();
         assert_eq!(filtered.repositories.len(), 1);
@@ -359,5 +418,104 @@ mod tests {
         let nested = repos.compare_paths(&[root.join("nested")], "main", None, &CancellationToken::new()).unwrap();
         assert_eq!(nested.repositories.len(), 1);
         assert_eq!(nested.repositories.iter().map(|r| r.files.len()).sum::<usize>(), 1);
+    }
+    #[test]
+    fn skipped_children_only_report_content_outside_repositories() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = normalized(temp.path());
+        init(&root.join("services/server"), "main");
+        init(&root.join("client"), "main");
+        write(&root, ".openidea/state.json", "{}");
+        write(&root, ".git/config", "ignored metadata");
+        let repos = Repos::discover(&root, &|_| false).unwrap();
+        assert!(repos.compare_scope(std::slice::from_ref(&root)).skipped_paths.is_empty());
+        write(&root, "services/notes.txt", "loose nested content");
+        write(&root, "loose/readme.txt", "loose");
+        write(&root, "readme.txt", "loose file");
+        let scope = repos.compare_scope(&[root.clone(), root.join("loose")]);
+        assert_eq!(
+            scope.skipped_paths,
+            [IpcPath(root.join("loose")), IpcPath(root.join("readme.txt")), IpcPath(root.join("services")),]
+        );
+        assert!(scope.skipped_paths[0].0.to_string_lossy().ends_with(std::path::MAIN_SEPARATOR));
+    }
+
+    #[test]
+    fn missing_revision_is_typed_and_other_errors_keep_only_the_message() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = normalized(temp.path());
+        init(&root, "main");
+        let repos = Repos::discover(&root, &|_| false).unwrap();
+        let cancel = CancellationToken::new();
+        let result = repos.compare_paths(std::slice::from_ref(&root), "missing-revision", None, &cancel).unwrap();
+        assert!(result.repositories[0].missing_revision);
+        assert!(result.repositories[0].error.is_none());
+        std::fs::write(root.join(".git/config"), "[broken").unwrap();
+        let result = repos.compare_paths(&[root], "main", None, &cancel).unwrap();
+        assert!(!result.repositories[0].missing_revision);
+        let error = result.repositories[0].error.as_deref().unwrap();
+        assert!(error.contains("bad config"), "{error}");
+        assert!(!error.starts_with("Internal:"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_read_and_metadata_failures_leave_files_with_zero_counts() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = normalized(temp.path());
+        init(&root, "main");
+        // Reading a directory fails after successful metadata; a dangling link fails metadata.
+        symlink(root.join("src"), root.join("unreadable")).unwrap();
+        symlink(root.join("vanished"), root.join("missing")).unwrap();
+        write(&root, "new.txt", "still counted\n");
+        let repos = Repos::discover(&root, &|_| false).unwrap();
+        let result = repos.compare_paths(&[root], "main", None, &CancellationToken::new()).unwrap();
+        let repo = &result.repositories[0];
+        assert!(repo.error.is_none(), "{repo:?}");
+        assert_eq!(repo.files.len(), 3);
+        for name in ["unreadable", "missing"] {
+            let file = repo.files.iter().find(|f| f.path == name).unwrap();
+            assert_eq!((file.kind, file.added, file.removed), (ChangeKind::Untracked, 0, 0));
+        }
+        assert_eq!(repo.files.iter().find(|f| f.path == "new.txt").unwrap().added, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricted_comparison_does_not_execute_repository_commands() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = normalized(temp.path());
+        init(&root, "main");
+        let script = root.join(".git/marker.sh");
+        let marker = root.join(".git/executed");
+        std::fs::write(&script, "#!/bin/sh\ntouch .git/executed\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = script.to_str().unwrap();
+        for key in [
+            "core.fsmonitor",
+            "filter.marker.clean",
+            "filter.marker.process",
+            "diff.marker.command",
+            "diff.marker.textconv",
+        ] {
+            git(&root, &["config", key, script]);
+        }
+        git(&root, &["config", "filter.marker.required", "true"]);
+        write(&root, ".gitattributes", "*.txt filter=marker diff=marker\n");
+        write(&root, "src/文件 name.txt", "changed\n");
+        write(&root, "new.txt", "untracked\n");
+        let repos = Repos::discover(&root, &|_| false).unwrap();
+        for repo in repos.all() {
+            repo.set_execution_allowed(false);
+        }
+        let result = repos.compare_paths(std::slice::from_ref(&root), "main", None, &CancellationToken::new()).unwrap();
+        assert!(result.repositories[0].error.is_none(), "{result:?}");
+        assert_eq!(result.repositories[0].files.len(), 3);
+        assert!(!marker.exists(), "Restricted Mode executed a repository command");
+        // Prove the fixture's fsmonitor hook is active when the shared wrapper is bypassed.
+        git(&root, &["ls-files"]);
+        assert!(marker.exists(), "control invocation did not run fsmonitor");
     }
 }

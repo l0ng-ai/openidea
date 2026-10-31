@@ -350,6 +350,12 @@ fn run_raw_env_once(
 
 /// Captures binary/NUL-delimited read output while allowing cancellation to kill git.
 pub(crate) fn run_cancellable(root: &Path, args: &[&str], cancel: &CancellationToken) -> IdeResult<Output> {
+    let out = run_cancellable_raw(root, args, cancel)?;
+    if out.code == Some(0) { Ok(out) } else { Err(failure(args, &out.stderr, &out.stdout, out.code)) }
+}
+
+/// Cancellable capture preserving exit codes for commands with documented non-error states.
+pub(crate) fn run_cancellable_raw(root: &Path, args: &[&str], cancel: &CancellationToken) -> IdeResult<Output> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
@@ -388,7 +394,7 @@ pub(crate) fn run_cancellable(root: &Path, args: &[&str], cancel: &CancellationT
     };
     let out = Output { stdout: join(stdout)?, stderr: join(stderr)?, code: status.code() };
     session.finish(status.success(), &String::from_utf8_lossy(&out.stderr));
-    if status.success() { Ok(out) } else { Err(failure(args, &out.stderr, &out.stdout, out.code)) }
+    Ok(out)
 }
 
 /// Runs git and maps a non-zero exit status to an error carrying git's message.

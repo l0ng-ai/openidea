@@ -9,9 +9,13 @@ vi.mock("../RevisionChooser", () => ({ chooseRepositoryRevision: mocks.choose })
 vi.mock("../diffInput", () => ({ openDiff: mocks.open }));
 vi.mock("../operations", () => ({ showPathComparison: mocks.show }));
 vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify: mocks.notify }) }));
+import { useProject } from "@/platform/project";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "../comparePaths";
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  useProject.setState({ project: null });
+});
 
 describe("comparison flow", () => {
   it("keeps a single file's direct revision → worktree diff and uses its own repository's picker", async () => {
@@ -49,11 +53,12 @@ describe("comparison flow", () => {
   it("reports non-repository selections before opening a picker", async () => {
     mocks.scope.mockResolvedValue({
       status: "ok",
-      data: { repositories: [], singleFile: false, skippedPaths: ["/loose"] },
+      data: { repositories: [], singleFile: false, skippedPaths: ["/workspace/loose/"] },
     });
-    await comparePathsWithRevision(["/loose"]);
+    useProject.setState({ project: { root: "/workspace", name: "workspace" } as never });
+    await comparePathsWithRevision(["/workspace/loose"]);
     expect(mocks.notify).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Selection is outside Git repositories" }),
+      expect.objectContaining({ title: "Selection is outside Git repositories", body: "loose/" }),
     );
     expect(mocks.choose).not.toHaveBeenCalled();
   });

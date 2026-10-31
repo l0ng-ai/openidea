@@ -1897,7 +1897,7 @@ export type CompareResult = {
 
 export type CompareScope = {
 	repositories: IpcPath[],
-	/**  Selections with content outside all registered repositories (including workspace parents). */
+	/**  Selected content outside registered repositories; workspace parents expand to their skipped children. */
 	skippedPaths: IpcPath[],
 	singleFile: boolean,
 };
@@ -5145,6 +5145,8 @@ export type RepositoryComparison = {
 	revision: string | null,
 	files: WorkingTreeChange[],
 	error: string | null,
+	/**  The requested revision does not resolve to a commit in this repository. */
+	missingRevision?: boolean,
 };
 
 /**  A cancellable, streaming backend request issued by the UI. */

@@ -5355,6 +5355,8 @@
   "No changes against {revision} in {repositories} repositories": "在 {repositories} 个仓库中与 {revision} 相比没有更改",
   "Open or select a file or folder to compare": "打开或选择要比较的文件或文件夹",
   "Selection is outside Git repositories": "所选内容不在 Git 仓库中",
-  "Skipped content outside Git repositories: {join}": "已跳过 Git 仓库之外的内容：{join}",
-  "in {length} repositories": "在 {length} 个仓库中"
+  "Skipped content outside Git repositories: {skippedLabel}": "已跳过 Git 仓库之外的内容：{skippedLabel}",
+  "in {length} repositories": "在 {length} 个仓库中",
+  "No repository in the selection has revision {label}": "所选内容中的仓库均无版本 {label}",
+  "{repoName} has no revision {label}": "{repoName} 没有版本 {label}"
 }
