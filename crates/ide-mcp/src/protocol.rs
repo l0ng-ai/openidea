@@ -18,7 +18,8 @@ pub const INVALID_PARAMS: i64 = -32602;
 pub const INTERNAL_ERROR: i64 = -32603;
 
 const INSTRUCTIONS: &str = "Tools of the OpenIDEA IDE for the project open in it. Paths are relative to the project \
-root unless absolute; lines and columns are 1-based. Pass `projectPath` (your working directory) with every call. \
+root unless absolute; lines and columns are 1-based (columns count UTF-16 code units, i.e. characters except that emoji and \
+other astral characters count two). Pass `projectPath` (your working directory) with every call. \
 Prefer these tools over shell commands for reading, searching and navigating code: they see unsaved editor changes \
 and use the IDE's index and language servers.";
 

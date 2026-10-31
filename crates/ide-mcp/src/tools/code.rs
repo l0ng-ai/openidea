@@ -7,8 +7,8 @@
 //! never opened (that would start one, or offer to install it): they get
 //! tree-sitter syntax errors and symbol-index answers instead.
 //!
-//! Columns are 1-based and count characters (Unicode scalar values); the
-//! backend's are UTF-16 code units.
+//! Columns are 1-based UTF-16 code units, like the backend's (0-based) and the
+//! search tools'.
 
 use crate::tool::{Call, Output, Param, ParamType, Tool};
 use ide_core::mcp::McpToolKind;
@@ -179,33 +179,36 @@ fn inside_project(project: &Project, path: &Path) -> bool {
     std::iter::once(project.root.clone()).chain(project.content_roots()).any(|root| path.starts_with(canon(&root)))
 }
 
-/// 1-based line / character column → backend position.
+/// 1-based line / column → backend position.
 fn to_pos(file: &FileText, line: u32, column: u32) -> IdeResult<Pos> {
     let lines = file.text.split('\n').count() as u32;
     if line > lines {
         return Err(IdeError::invalid(format!("line {line} is past the end of the file ({lines} lines)")));
     }
-    let text = file.line(line - 1);
-    let chars = text.chars().count() as u32;
-    if column > chars + 1 {
-        return Err(IdeError::invalid(format!("column {column} is past the end of line {line} ({chars} characters)")));
+    let len = file.line(line - 1).encode_utf16().count() as u32;
+    if column > len + 1 {
+        return Err(IdeError::invalid(format!("column {column} is past the end of line {line} ({len} columns)")));
     }
-    let col = text.chars().take(column as usize - 1).map(char::len_utf16).sum::<usize>() as u32;
-    Ok(Pos::new(line - 1, col))
+    Ok(Pos::new(line - 1, column - 1))
 }
 
-/// Backend position → 1-based line and character column.
-fn from_pos(line_text: &str, pos: Pos) -> (u32, u32) {
+/// The 1-based character index of 1-based UTF-16 `column` in `line`.
+fn char_column(line: &str, column: u32) -> u32 {
     let mut units = 0u32;
     let mut chars = 0u32;
-    for c in line_text.chars() {
-        if units >= pos.col {
+    for c in line.chars() {
+        if units + 1 >= column {
             break;
         }
         units += c.len_utf16() as u32;
         chars += 1;
     }
-    (pos.line + 1, chars + 1)
+    chars + 1
+}
+
+/// Backend position → 1-based line and column.
+fn from_pos(_line_text: &str, pos: Pos) -> (u32, u32) {
+    (pos.line + 1, pos.col + 1)
 }
 
 fn is_word(c: char) -> bool {
@@ -417,7 +420,7 @@ fn get_file_problems() -> Tool {
         McpToolKind::Read,
         "Errors and warnings of one project file, as the editor shows them: the diagnostics of its language server \
 (opened and waited for when needed) or, when no server serves the file, tree-sitter syntax errors. Each problem has \
-severity, description, 1-based line/column (characters) and end, source and the line's text. Use it after editing \
+severity, description, 1-based line/column and end, source and the line's text. Use it after editing \
 a file to check it still compiles.",
         |call| async move {
             let path = call.resolve(&call.str("filePath")?)?;
@@ -589,14 +592,14 @@ fn get_symbol_info() -> Tool {
         McpToolKind::Read,
         "Quick Documentation for the symbol at a position: the language server's hover text (signature, type, docs) \
 and where the symbol is declared, with a short snippet of the declaration. Without a language server for the file, \
-declarations come from the project's symbol index. Line and column are 1-based; the column counts characters.",
+declarations come from the project's symbol index. Line and column are 1-based.",
         |call| async move {
             let path = call.resolve(&call.str("filePath")?)?;
             let (line, column) = (call.one_based("line")?, call.one_based("column")?);
             let deadline = deadline(&call, 15_000)?;
             let file = read_file(&call, &path).await?;
             let pos = to_pos(&file, line, column)?;
-            let word = word_at(file.line(pos.line), column);
+            let word = word_at(file.line(pos.line), char_column(file.line(pos.line), column));
             let project = call.project().clone();
             let mut out = json!({ "filePath": call.display(&path), "line": line, "column": column });
             if let Some(w) = &word {
@@ -676,7 +679,7 @@ with a larger timeout."
                 }
             }
             if word.is_none() && out.get("documentation").is_none() {
-                let at = file.line(pos.line).chars().nth(column as usize - 1);
+                let at = file.line(pos.line).chars().nth(char_column(file.line(pos.line), column) as usize - 1);
                 notes.push(match at {
                     Some(c) => format!("No symbol at {line}:{column} (the character there is {c:?})."),
                     None => format!("No symbol at {line}:{column} (end of line)."),
@@ -692,7 +695,7 @@ with a larger timeout."
     )
     .param(Param::required("filePath", ParamType::String, "Path of the file, project-relative or absolute"))
     .param(Param::required("line", ParamType::Integer, "1-based line"))
-    .param(Param::required("column", ParamType::Integer, "1-based column, in characters"))
+    .param(Param::required("column", ParamType::Integer, "1-based column"))
     .param(Param::optional(
         "timeout",
         ParamType::Integer,
@@ -1653,19 +1656,21 @@ mod tests {
     fn finds_words() {
         assert_eq!(word_at("let größe = 1;", 6).as_deref(), Some("größe"));
         assert_eq!(word_at("foo(bar)", 4).as_deref(), Some("foo"));
+        assert_eq!(char_column("a😀b", 4), 3);
+        assert_eq!(char_column("a😀b", 1), 1);
         assert_eq!(word_at("  ", 1), None);
     }
 
     #[test]
     fn converts_columns() {
-        // `😀` is two UTF-16 units but one character.
+        // `😀` is two UTF-16 units.
         let line = "a😀b";
-        assert_eq!(from_pos(line, Pos::new(0, 3)), (1, 3));
+        assert_eq!(from_pos(line, Pos::new(0, 3)), (1, 4));
         assert_eq!(from_pos(line, Pos::new(0, 0)), (1, 1));
         let file =
             FileText { language: LanguageId::plain_text(), text: "x\na😀b\n".into(), large: false, served: false };
-        assert_eq!(to_pos(&file, 2, 3).unwrap(), Pos::new(1, 3));
-        assert!(to_pos(&file, 2, 5).is_err());
+        assert_eq!(to_pos(&file, 2, 4).unwrap(), Pos::new(1, 3));
+        assert!(to_pos(&file, 2, 6).is_err());
         assert!(to_pos(&file, 9, 1).is_err());
     }
 
