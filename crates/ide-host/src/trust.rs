@@ -193,6 +193,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "project_current"
             | "project_roots"
             | "index_status"
+            | "jvm_file_presentations"
             | "find_files"
             | "find_symbols"
             | "mark_recent"
