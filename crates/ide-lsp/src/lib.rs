@@ -13,7 +13,6 @@ mod external_project;
 mod file_ops;
 mod handler;
 mod inspect;
-mod java_launch_cache;
 pub mod jdtls;
 mod launch;
 mod scope;
@@ -71,8 +70,6 @@ const START_WAIT: Duration = Duration::from_secs(10);
 const FILE_OP_START_WAIT: Duration = Duration::from_secs(20);
 /// Files of a moved folder looked at to find the languages involved.
 const FILE_OP_SAMPLE: usize = 200;
-
-pub type JavaModelInputsFn = dyn Fn(&Path, &[PathBuf]) -> Option<Vec<PathBuf>> + Send + Sync;
 
 pub type ApplyEditHook = Arc<dyn Fn(WorkspaceEdit) -> bool + Send + Sync>;
 /// Adjusts a server's configuration (env, initialization options) from user
@@ -181,10 +178,6 @@ pub struct LspManager {
     virtual_origins: Mutex<HashMap<String, ide_core::ServerId>>,
     /// Contents fetched for virtual URIs.
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
-    java_launch_cache: tokio::sync::Mutex<java_launch_cache::LaunchCache>,
-    java_launch_epoch: std::sync::atomic::AtomicU64,
-    java_document_epoch: std::sync::atomic::AtomicU64,
-    java_model_inputs_hook: RwLock<Option<Arc<JavaModelInputsFn>>>,
 }
 
 /// Fetched virtual documents kept before the cache is reset.
@@ -313,10 +306,6 @@ impl LspManager {
             shown_messages: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
-            java_launch_cache: tokio::sync::Mutex::new(Default::default()),
-            java_launch_epoch: std::sync::atomic::AtomicU64::new(0),
-            java_document_epoch: std::sync::atomic::AtomicU64::new(0),
-            java_model_inputs_hook: RwLock::new(None),
         })
     }
 
@@ -771,9 +760,6 @@ impl LspManager {
         let mut docs = self.docs.lock();
         let Some(d) = docs.get_mut(&doc) else { return };
         d.version = version as i32;
-        if d.servers.iter().any(|a| a.server.name == "jdtls") {
-            self.java_document_epoch.fetch_add(1, Ordering::SeqCst);
-        }
 
         // Servers that have this document open on their current instance.
         let targets: Vec<(Arc<Server>, Running, SyncKind, Encoding)> = d
@@ -862,9 +848,6 @@ impl LspManager {
 
     pub fn did_close(&self, doc: DocId) {
         let Some(d) = self.docs.lock().remove(&doc) else { return };
-        if d.servers.iter().any(|a| a.server.name == "jdtls") {
-            self.java_document_epoch.fetch_add(1, Ordering::SeqCst);
-        }
         for a in &d.servers {
             let Some(run) = a.server.running() else { continue };
             if a.opened_gen == Some(run.generation)
@@ -1998,12 +1981,8 @@ impl LspManager {
         Err(error.unwrap_or_else(|| IdeError::not_found(format!("no language server provides the contents of {uri}"))))
     }
 
-    /// Build-system model files outside workspace roots (queried on a blocking worker).
-    pub fn set_java_model_inputs_hook(&self, hook: Box<JavaModelInputsFn>) {
-        *self.java_model_inputs_hook.write() = Some(Arc::from(hook));
-    }
-
-    /// Adjust server configuration from the workspace settings before launch.
+    /// Called when a server sends `workspace/applyEdit`; installed by `src-tauri`
+    /// so edits flow through `ide-workspace::Documents`.
     pub fn set_config_hook(&self, hook: Box<ConfigFn>) {
         *self.config_hook.write() = Some(Arc::from(hook));
     }

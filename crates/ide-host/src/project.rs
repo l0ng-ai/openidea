@@ -117,25 +117,6 @@ impl Host {
         lsp.set_content_roots(extra_roots.clone());
         let settings = Arc::new(settings);
         {
-            let root = root.clone();
-            let settings = settings.clone();
-            let config_dir = self.config_dir.clone();
-            lsp.set_java_model_inputs_hook(Box::new(move |server_root, dependency_poms| {
-                let member = ide_workspace::workspace::Workspace::load(&root).ok().flatten().and_then(|w| {
-                    w.projects.into_iter().filter(|p| server_root.starts_with(p)).max_by_key(|p| p.components().count())
-                });
-                let effective = member
-                    .as_ref()
-                    .map(|p| SettingsStore::load(&config_dir, Some(p)).effective())
-                    .unwrap_or_else(|| settings.effective());
-                let root = member.as_deref().unwrap_or(&root);
-                let repo = ide_sdk::apply::maven_local_repository(root, &effective);
-                let mut inputs = ide_build::maven::launch_model_inputs(server_root, repo, dependency_poms)?;
-                inputs.extend(ide_sdk::apply::setting_path(root, &effective.languages.java.maven.user_settings));
-                Some(inputs)
-            }));
-        }
-        {
             let settings = settings.clone();
             let root = root.clone();
             let data_dir = self.data_dir.clone();

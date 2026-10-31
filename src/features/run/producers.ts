@@ -14,6 +14,8 @@ import { isTestPath } from "@/platform/languageSettings";
 import { currentRoots } from "@/platform/projectRoots";
 import { applicationConfig, jvmModuleDir } from "./application";
 import { formatArgs } from "./configs";
+import { goGenerateConfig } from "./goGenerate";
+import { goTestParts } from "./goArguments";
 import { contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
 import { isWindows } from "./jvmTypes";
 import { detectRunTargets, targetConfig, targetLanguage, type RunTarget } from "./targets";
@@ -136,11 +138,12 @@ export function goTestNamed(
   test?: string,
 ): RunConfig {
   if (config.kind !== "go" || config.args[0] !== "test") return config;
-  const pkgArg =
-    config.args.find((a, i) => i > 0 && !a.startsWith("-") && !/^-(run|skip|bench)$/.test(config.args[i - 1]!)) ?? ".";
+  const pkgArg = goTestParts(config.args).targets[0] ?? ".";
   const recursive = /(^|\/)\.\.\.$/.test(pkgArg);
   const dir = pkgArg.replace(/\/?\.\.\.$/, "").replace(/^\.(?:\/|$)/, "");
-  const module = input.root ? input.goModule?.(goModuleDir(input.root, config.cwd)) : undefined;
+  const module = input.root
+    ? input.goModule?.(goModuleDir(input.root, config.params?.module ?? config.cwd))
+    : undefined;
   const clause = /^\s*package\s+(\w+)/m.exec(input.content ?? "")?.[1];
   const base = module ? (dir ? `${module}/${dir}` : module) : (clause ?? (dir || "."));
   const pkg = recursive ? `${base}/...` : base;
@@ -769,7 +772,7 @@ export function innermostTarget(
   let best: RunTarget | null = null;
   for (const t of targets) {
     if (t.line > line) continue;
-    if (line > targetEnd(lines, t, python)) continue;
+    if (t.kind === "generate" ? line !== t.line : line > targetEnd(lines, t, python)) continue;
     if (!best || t.line >= best.line) best = t;
   }
   return best;
@@ -813,6 +816,10 @@ export function fileTargets(input: Pick<ContextInput, "path" | "root" | "configs
 function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget): Produced | null {
   const s = site(input);
   const rel = s.idPath;
+  if (target.kind === "generate") {
+    const config = goGenerateConfig(input.path, "file", input.content?.split("\n")[target.line]);
+    return config ? { name: config.name, scope: "element", config } : null;
+  }
   if (target.kind === "main") {
     // Java / Kotlin main classes in a Maven / Gradle project: an Application configuration.
     if (target.className && s.inProject && hasBuildTool(rel, input.configs, JVM_BUILDS)) {
@@ -867,7 +874,7 @@ export function produceContextChoices(input: ContextInput, env: ToolEnv): Produc
   if (produced.scope === "element") {
     const targets = fileTargets(input, (input.content ?? "").slice(0, 400_000));
     element = innermostTarget(input.content ?? "", targets, input.line ?? 0, /\.py$/.test(input.path));
-    if (!element || element.kind === "main") return [produced];
+    if (!element || element.kind === "main" || element.kind === "generate") return [produced];
   } else if (!produced.config.isTest) {
     return [produced];
   }

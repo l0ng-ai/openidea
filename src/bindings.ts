@@ -3234,11 +3234,30 @@ export type GitSettings = {
 	combineStashAndShelf?: boolean,
 };
 
+export type GoBuildTags = {
+	/**  Empty values inherit the selected toolchain's defaults. */
+	os?: string,
+	arch?: string,
+	version?: string,
+	compiler?: string,
+	/**  Empty = automatic, "1" = enabled, "0" = disabled. */
+	cgo?: string,
+	custom?: string,
+	experiments?: string,
+};
+
+export type GoModules = {
+	env?: { [key in string]: string },
+	autoVendor?: boolean,
+};
+
 export type GoSettings = {
 	/**  Empty = the `go` on `PATH`. */
 	goroot?: string,
 	/**  Empty = `go env GOPATH`. */
 	gopath?: string,
+	buildTags?: GoBuildTags,
+	modules?: GoModules,
 };
 
 export type GotoKind = "definition" | "declaration" | "typeDefinition" | "implementation";

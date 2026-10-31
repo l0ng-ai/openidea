@@ -677,6 +677,7 @@ export function ProjectView() {
         roots={model.roots}
         getKey={getKey}
         getLabel={getLabel}
+        getDirectory={(node) => (node.group || node.placeholder ? null : targetFolder(node))}
         getChildren={getChildren}
         isExpandable={isExpandable}
         loadChildren={loadChildren}

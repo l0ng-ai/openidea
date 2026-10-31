@@ -220,11 +220,6 @@ impl Handler for ClientHandler {
         let Some(mgr) = self.mgr.upgrade() else { return };
         match method {
             "$/progress" => self.progress(&mgr, params),
-            "language/eventNotification" if self.server.name == "jdtls"
-                && matches!(params["eventType"].as_u64(), Some(100 | 200 | 210)) => {
-                // jdtls can update its project/classpath model independently of a launch.
-                mgr.java_launch_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
             "textDocument/publishDiagnostics" => self.publish_diagnostics(&mgr, params),
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {
