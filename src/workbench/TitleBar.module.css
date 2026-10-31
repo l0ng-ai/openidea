@@ -12,7 +12,7 @@
 }
 /* Room for the native macOS traffic lights (Overlay title bar). */
 .overlay {
-  padding-left: 82px;
+  padding-left: max(82px, calc(82px / var(--titlebar-zoom, 1)));
 }
 /* Welcome window: plain title on the frame colour with a hairline, like IntelliJ's welcome frame. */
 .minimal {

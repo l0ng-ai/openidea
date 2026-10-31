@@ -6144,6 +6144,7 @@ name = "openidea"
 version = "0.1.29"
 dependencies = [
  "blake3",
+ "block2 0.6.2",
  "dirs 6.0.0",
  "dunce",
  "ide-agent",
@@ -6180,6 +6181,9 @@ dependencies = [
  "ide-vfs",
  "ide-web",
  "ide-workspace",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "parking_lot",
  "serde",
  "serde_json",
