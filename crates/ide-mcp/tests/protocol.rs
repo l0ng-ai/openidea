@@ -10,7 +10,8 @@ async fn initializes_and_lists_tools() {
     let h = Harness::new(&[("a.txt", "hello\n")]).await;
     let init = h.initialize("claude-code").await;
     assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(init["result"]["serverInfo"]["name"], "openidea");
+    assert_eq!(init["result"]["serverInfo"]["name"], "OpenIDEA MCP Server");
+    assert_eq!(init["result"]["capabilities"]["tools"]["listChanged"], true);
     assert!(init["result"]["capabilities"]["tools"].is_object());
     assert_eq!(h.server.status().clients[0].name, "claude-code");
 
@@ -72,7 +73,10 @@ async fn rejects_bad_token_host_origin_and_sessions() {
         .handle_for_test(PORT, "POST", &[("Host", &host), ("Authorization", &auth), ("Mcp-Session-Id", "gone")], body)
         .await;
     assert_eq!(s, 404);
+    // A notification stream needs a session.
     let (s, _, _) = h.server.handle_for_test(PORT, "GET", &[("Host", &host), ("Authorization", &auth)], "").await;
+    assert_eq!(s, 400);
+    let (s, _, _) = h.server.handle_for_test(PORT, "PUT", &[("Host", &host), ("Authorization", &auth)], "").await;
     assert_eq!(s, 405);
     let (s, _, _) = h.server.handle_for_test(PORT, "POST", &[("Host", &host), ("Authorization", &auth)], "{nope").await;
     assert_eq!(s, 400);
@@ -91,7 +95,8 @@ async fn calls_tools_and_reports_errors_as_tool_results() {
     assert!(!msg.is_empty());
     let msg =
         h.call_err("read_file", json!({ "file_path": "src/a.txt", "projectPath": "/definitely/elsewhere" })).await;
-    assert!(msg.contains("No open project"), "{msg}");
+    assert!(msg.contains("`projectPath`=`/definitely/elsewhere` doesn't correspond to any open project."), "{msg}");
+    assert!(msg.contains("Currently open projects: {\"projects\":[{\"path\":"), "{msg}");
     let msg = h.call_err("read_file", json!({})).await;
     assert!(msg.contains("file_path"), "{msg}");
 

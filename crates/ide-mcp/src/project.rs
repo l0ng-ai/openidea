@@ -1,10 +1,20 @@
-//! Which open project a call is for (`projectPath`, else the focused window, else
-//! the only project), and paths relative to it.
+// Ported from JetBrains intellij-community plugins/mcp-server (src/com/intellij/mcpserver/impl/McpSessionProjectResolverImpl.kt, util/fs.util.kt), Apache-2.0.
+//! Which open project a call is for, and paths relative to it.
+//!
+//! An explicit `projectPath` argument must name an open project. Without one the
+//! project comes from, in order: the call's `OPENIDEA_MCP_PROJECT_PATH` header (or
+//! `_meta` entry), the same header of the request that opened the session, the
+//! client's roots, then the focused window, then the only open project.
 
 use ide_core::{IdeError, IdeResult};
 use ide_host::{Host, Project};
+use serde_json::json;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+
+/// The header (and `_meta` key) that names the project of a call or, on the request
+/// that opens a session, of the whole session (JetBrains: `IJ_MCP_SERVER_PROJECT_PATH`).
+pub const PROJECT_PATH_HEADER: &str = "OPENIDEA_MCP_PROJECT_PATH";
 
 /// The project a call runs against and the window it is open in.
 #[derive(Clone)]
@@ -13,45 +23,113 @@ pub struct Target {
     pub project: Arc<Project>,
 }
 
-/// Picks the project for `project_path`: the open project whose root contains it
-/// (the innermost one); without it, the focused window's project, or the only one.
-pub fn target(host: &Host, project_path: Option<&str>, focused: Option<&str>) -> IdeResult<Target> {
-    let open: Vec<_> = host.project_windows().into_iter().filter(|(_, p)| !p.light).collect();
+/// Where a call's project can come from, strongest first.
+#[derive(Default)]
+pub struct Sources<'a> {
+    /// The `projectPath` argument.
+    pub argument: Option<&'a str>,
+    /// The project path header (or `_meta` entry) of this call.
+    pub call_header: Option<&'a str>,
+    /// The project path header of the request that opened the session.
+    pub session_header: Option<&'a str>,
+    /// The client's roots (`file://` URIs).
+    pub roots: &'a [String],
+}
+
+fn given(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// The project for `sources`, falling back to the focused window's project and then
+/// to the only open one.
+pub fn target(host: &Host, sources: &Sources, focused: Option<&str>) -> IdeResult<Target> {
+    let open = open_projects(host);
     if open.is_empty() {
         return Err(IdeError::not_found("No project is open in OpenIDEA. Ask the user to open one."));
     }
-    let list = || open.iter().map(|(_, p)| p.root.display().to_string()).collect::<Vec<_>>().join(", ");
-    if let Some(path) = project_path.map(str::trim).filter(|p| !p.is_empty()) {
-        let wanted = normalize(&file_url_path(path));
-        let wanted = dunce::canonicalize(&wanted).unwrap_or(wanted);
-        let found = open
-            .iter()
-            .filter(|(_, p)| {
-                let root = dunce::canonicalize(&p.root).unwrap_or_else(|_| p.root.clone());
-                wanted.starts_with(&root)
-            })
-            .max_by_key(|(_, p)| p.root.components().count());
-        return match found {
-            Some((window, project)) => Ok(Target { window: window.clone(), project: project.clone() }),
-            None => Err(IdeError::not_found(format!(
-                "No open project contains {path}. Open projects: {}. Pass one of them as `projectPath`.",
-                list()
-            ))),
-        };
+    if let Some(path) = given(sources.argument) {
+        return find(&open, path).ok_or_else(|| {
+            no_suitable_project(
+                &open,
+                &format!("`{}`=`{path}` doesn't correspond to any open project.", crate::tool::PROJECT_PATH),
+            )
+        });
+    }
+    if let Some(found) = known_upfront(&open, sources) {
+        return Ok(found);
     }
     if let Some(focused) = focused {
         let owner = host.owner_window(focused);
-        if let Some((window, project)) = open.iter().find(|(w, _)| w == owner) {
-            return Ok(Target { window: window.clone(), project: project.clone() });
+        if let Some(found) = open.iter().find(|t| t.window == owner) {
+            return Ok(found.clone());
         }
     }
     match open.as_slice() {
-        [(window, project)] => Ok(Target { window: window.clone(), project: project.clone() }),
-        _ => Err(IdeError::invalid(format!(
-            "Several projects are open: {}. Pass the one you mean as `projectPath`.",
-            list()
-        ))),
+        [only] => Ok(only.clone()),
+        _ => Err(no_suitable_project(&open, "No exact project is specified while multiple projects are opened.")),
     }
+}
+
+/// The project the headers or roots name, without the focus fallbacks: when the session
+/// knows it up front, `projectPath` is left out of the tool schemas.
+pub fn session_target(host: &Host, sources: &Sources) -> Option<Target> {
+    known_upfront(&open_projects(host), sources)
+}
+
+fn known_upfront(open: &[Target], sources: &Sources) -> Option<Target> {
+    given(sources.call_header)
+        .and_then(|p| find(open, p))
+        .or_else(|| given(sources.session_header).and_then(|p| find(open, p)))
+        .or_else(|| sources.roots.iter().find_map(|root| find(open, root)))
+}
+
+fn open_projects(host: &Host) -> Vec<Target> {
+    host.project_windows()
+        .into_iter()
+        .filter(|(_, p)| !p.light)
+        .map(|(window, project)| Target { window, project })
+        .collect()
+}
+
+/// The error that lists the open projects so that the model passes one as `projectPath`.
+fn no_suitable_project(open: &[Target], prefix: &str) -> IdeError {
+    let projects = json!({
+        "projects": open.iter().map(|t| json!({ "path": t.project.root.display().to_string() })).collect::<Vec<_>>()
+    });
+    let p = crate::tool::PROJECT_PATH;
+    IdeError::not_found(format!(
+        "{prefix}\nYou may specify the project path via `{p}` parameter when calling a tool. \nIf you're aware of the \
+current working directory you may pass it as `{p}`. \nIn the case when it's unobvious which project to use you have to \
+ASK the USER about a project providing him a numbered list of the projects.\nCurrently open projects: {projects}"
+    ))
+}
+
+/// The open project `path` (absolute, or a `file://` URL) is in: the one whose directory,
+/// or one of whose content roots, contains it most closely. A content root that two
+/// projects share tells neither apart, so it names none.
+fn find(open: &[Target], path: &str) -> Option<Target> {
+    let wanted = file_url_path(path);
+    if !wanted.is_absolute() {
+        return None;
+    }
+    let wanted = normalize(&wanted);
+    let wanted = dunce::canonicalize(&wanted).unwrap_or(wanted);
+    let canon = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    // (target, directory, is the project's own directory)
+    let mut matches: Vec<(&Target, PathBuf, bool)> = Vec::new();
+    for t in open {
+        let dirs = std::iter::once((t.project.root.clone(), true))
+            .chain(t.project.content_roots().into_iter().map(|r| (r, false)));
+        for (dir, own) in dirs {
+            let dir = canon(&dir);
+            if wanted.starts_with(&dir) {
+                matches.push((t, dir, own));
+            }
+        }
+    }
+    let (best, dir, own) = matches.iter().max_by_key(|(_, dir, own)| (dir.components().count(), *own))?;
+    let shared = !own && matches.iter().any(|(t, d, _)| t.window != best.window && d == dir);
+    (!shared).then(|| (*best).clone())
 }
 
 fn file_url_path(path: &str) -> PathBuf {
