@@ -1,5 +1,7 @@
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import type { RunConfigTypeContribution } from "@/workbench/contributions";
+import { updatePolicyDefaults, updatePolicyFields } from "./updatePolicies";
+import { runUpdateBuild } from "./buildUpdate";
 
 export const tomcatType: RunConfigTypeContribution = {
   id: "tomcat",
@@ -9,8 +11,15 @@ export const tomcatType: RunConfigTypeContribution = {
   description: "Run a WAR application in a local Tomcat server",
   debugAdapter: "java-debug",
   terminal: false,
-  defaults: { deployment: "artifact", httpPort: "8080", buildArtifact: "true", openBrowser: "true" },
+  defaults: {
+    deployment: "artifact",
+    httpPort: "8080",
+    buildArtifact: "true",
+    openBrowser: "true",
+    ...updatePolicyDefaults,
+  },
   fields: [
+    ...updatePolicyFields(true),
     { key: "tomcatHome", label: "Tomcat installation directory", required: true, mono: true },
     {
       key: "deployment",
@@ -82,15 +91,7 @@ export const tomcatType: RunConfigTypeContribution = {
 export async function buildTomcatArtifact(config: RunConfig): Promise<void> {
   const build = await call(commands.runTomcatBuild(config));
   if (!build) return;
-  const { startRun } = await import("./store");
-  let finish!: (ok: boolean) => void;
-  const exited = new Promise<boolean>((resolve) => {
-    finish = resolve;
-  });
-  const session = await startRun(build, undefined, undefined, {
-    onExit: (code, stopped) => finish(code === 0 && !stopped),
-  });
-  if (!session || session.status === "failed" || !(await exited)) throw new Error("WAR artifact build failed");
+  await runUpdateBuild(build);
 }
 
 export function tomcatBrowserUrl(config: RunConfig): string {
