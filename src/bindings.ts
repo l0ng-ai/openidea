@@ -1407,6 +1407,8 @@ export type AppearanceSettings = {
 	projectColorsInToolbar?: boolean,
 	dndWithAltOnly?: boolean,
 	menuIcons?: boolean,
+	/**  `hamburger` | `merged`: main menu presentation in the frameless title bar. */
+	mainMenuStyle?: string,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing?: string,
 	editorAntialiasing?: string,

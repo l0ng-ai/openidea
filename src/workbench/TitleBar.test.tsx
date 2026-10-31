@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./WindowControls", () => ({ WindowControls: () => null }));
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
+import { commands, type Settings } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { usePlatform } from "@/platform/platformInfo";
 import { useThemeOverride } from "./theme";
 import { customizeToolbarItems, gearMenuItems, TitleBar } from "./TitleBar";
@@ -102,4 +104,33 @@ describe("title bar in Distraction Free Mode (bare)", () => {
       usePlatform.setState(saved);
     }
   });
+});
+
+describe("merged title bar menu", () => {
+  it.each(["windows", "linux", "macos"])(
+    "%s keeps toolbar controls available and uses the menu only when frameless",
+    async (os) => {
+      const savedPlatform = usePlatform.getState();
+      const savedProject = useProject.getState();
+      const model = vi
+        .spyOn(commands, "menuModel")
+        .mockResolvedValue([{ kind: "submenu", id: "file", label: "File", children: [] }]);
+      usePlatform.setState({ os, framelessTitleBar: os !== "macos", overlayTitleBar: os === "macos" });
+      useProject.setState({ settings: { appearance: { mainMenuStyle: "merged" } } as Settings });
+      try {
+        render(<TitleBar />);
+        await act(async () => {});
+        expect(!!screen.queryByRole("menubar")).toBe(os !== "macos");
+        expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+        if (os !== "macos") fireEvent.click(screen.getByRole("menuitem", { name: "File" }));
+        expect(screen.getByRole("button", { name: "OpenIDEA" })).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "IDE and Project Settings" }));
+        expect(await screen.findByRole("menu", { name: "IDE and Project Settings" })).toBeInTheDocument();
+      } finally {
+        usePlatform.setState(savedPlatform);
+        useProject.setState(savedProject);
+        model.mockRestore();
+      }
+    },
+  );
 });
