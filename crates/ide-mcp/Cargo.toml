@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 ide-core.workspace = true
 ide-host.workspace = true
+ide-lsp.workspace = true
+ide-workspace.workspace = true
 ide-vfs.workspace = true
 ide-search.workspace = true
 ide-index.workspace = true
