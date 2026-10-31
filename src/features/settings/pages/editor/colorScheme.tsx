@@ -336,9 +336,10 @@ function ColorSchemePage() {
             filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls"] }],
           }));
         if (!path) return;
-        await call(
-          commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(exportIcls(id, customs, mine)))),
-        );
+        const bytes = Array.from(new TextEncoder().encode(exportIcls(id, customs, mine)));
+        // The save dialog already confirmed replacing an existing file.
+        await call(commands.fsDelete(path)).catch(() => {});
+        await call(commands.fsCreateFileBytes(path, bytes));
         setReport(tx("Scheme exported."));
       },
       delete: async () => {
