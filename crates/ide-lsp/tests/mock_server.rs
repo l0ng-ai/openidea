@@ -235,7 +235,8 @@ fn harness_configured(
     adjust: impl Fn(&mut LanguageServerConfig),
 ) -> Harness {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    // Edits and references report canonical paths.
+    let root = dunce::canonicalize(dir.path()).unwrap();
     let lang = LanguageConfig {
         id: LanguageId::new(lang_id),
         name: "Mock".into(),

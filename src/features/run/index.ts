@@ -35,9 +35,11 @@ import { debugWithAgent, jdwpLaunch } from "./javaDebug";
 import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
+import { registerGoActions } from "./goActions";
+import { invalidateGoModules } from "./goModules";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
-import { runServiceProvider } from "./services";
+import { recordRun, runServiceProvider } from "./services";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
@@ -104,6 +106,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   }
   if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain))) return;
+  recordRun(config.id);
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
   if (isDebugOnly(config) && getAction("debug.startConfig")) {
     await executeAction("debug.startConfig", config);
@@ -245,7 +248,7 @@ function useRunningCount(): number | null {
 }
 
 const CONFIG_FILES =
-  /(?:^|\/)(?:\.openidea\/run\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.mod|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile)$/;
+  /(?:^|\/)(?:\.openidea\/run\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.(?:mod|work)|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile|CMakeLists\.txt|CMakeCache\.txt|index-[^/]+\.json)$/;
 
 let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 function scheduleReload() {
@@ -269,6 +272,7 @@ export function activate(): () => void {
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
+    registerGoActions(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
@@ -527,7 +531,11 @@ export function activate(): () => void {
   disposers.push(
     onIdeEvent("fsChanged", (e) => {
       const paths = [...e.created, ...e.modified, ...e.removed];
+      if (paths.some((p) => /(?:^|\/)go\.(?:mod|work)$/.test(p))) invalidateGoModules();
       if (paths.some((p) => CONFIG_FILES.test(p))) scheduleReload();
+    }),
+    onIdeEvent("runExited", (e) => {
+      if (useRun.getState().sessions.some((s) => s.runId === e.run && s.config.kind === "cmake")) scheduleReload();
     }),
     // Detected configs carry the selected toolchains (interpreter, JDK, Maven home and options).
     onIdeEvent("settingsChanged", (e) => {

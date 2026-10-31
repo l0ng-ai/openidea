@@ -349,7 +349,7 @@ fn lossless_diff(r: &Repo, args: &[&str], env: &[(&str, &OsStr)]) -> IdeResult<S
 pub(crate) fn encode_text_patch(
     r: &Repo,
     patch: &str,
-    encoding: &dyn Fn(&std::path::Path) -> IdeResult<&'static encoding_rs::Encoding>,
+    encoding: &dyn Fn(&std::path::Path) -> IdeResult<crate::TextEncoding>,
 ) -> IdeResult<Vec<u8>> {
     let mut out = Vec::new();
     let mut header = String::new();
@@ -377,6 +377,52 @@ pub(crate) fn encode_text_patch(
         out.extend_from_slice(line.as_bytes());
     }
     Ok(out)
+}
+
+/// Apply displayed-text line selections in a temporary UTF-8 index, then
+/// serialize the result. Literal escape spelling in the real index must not
+/// prevent a selected patch from matching its decoded base.
+pub(crate) fn stage_converted_patch(
+    r: &Repo,
+    patch: &str,
+    encoding: &dyn Fn(&std::path::Path) -> IdeResult<crate::TextEncoding>,
+) -> IdeResult<()> {
+    use crate::text_encoding::{decode, encode, has_bom};
+    let tmp = TempIndex::new(r);
+    let env = tmp.env();
+    let index = r.git_dir.join("index");
+    if index.exists() {
+        std::fs::copy(index, &tmp.0)?;
+    } else {
+        run_env(r.root(), &["read-tree", "--empty"], None, &env)?;
+    }
+    let mut files = Vec::new();
+    for file in parse_patch(patch) {
+        let path = r.abs_path(&file.path);
+        let enc = encoding(&path)?;
+        let original = r.file_bytes_at(&path, Some(":0"))?;
+        let bom = original.as_ref().is_some_and(|bytes| has_bom(bytes, enc));
+        if let Some(original) = original {
+            crate::write::write_index_blob(r, &file.path, decode(&original, enc).as_bytes(), &env)?;
+        }
+        files.push((file.path, enc, bom));
+    }
+    run_env(
+        r.root(),
+        &["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", "--recount", "-"],
+        Some(patch.as_bytes()),
+        &env,
+    )?;
+    for (rel, enc, bom) in files {
+        let staged = cli::run_raw_env(r.root(), &["show", &format!(":0:{rel}")], None, &env)?;
+        if staged.code == Some(0) {
+            let text = std::str::from_utf8(&staged.stdout).map_err(|e| IdeError::invalid(e.to_string()))?;
+            crate::write::write_index_blob(r, &rel, &encode(text, enc, bom)?, &[])?;
+        } else {
+            run(r.root(), &["--literal-pathspecs", "update-index", "--force-remove", "--", &rel], None)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

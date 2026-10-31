@@ -199,6 +199,7 @@ export const commands = {
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
+	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
 	/**
 	 *  The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
@@ -968,6 +969,7 @@ export const commands = {
 	 *  (run in a terminal tab, so prompts and host-key questions are answered there).
 	 */
 	sshTerminalCommand: (id: string) => typedError<SshTerminalCommand, IdeError>(__TAURI_INVOKE("ssh_terminal_command", { id })),
+	deployCoverage: (paths: IpcPath[]) => typedError<DeploymentCoverage[], IdeError>(__TAURI_INVOKE("deploy_coverage", { paths })),
 	deployUpload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_upload", { paths, server, request })),
 	deployDownload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_download", { paths, server, request })),
 	deployDeleteRemote: (paths: IpcPath[], server: string | null) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_delete_remote", { paths, server })),
@@ -2396,6 +2398,16 @@ export type DeployedPath = {
 	webUrl: string | null,
 };
 
+/**
+ *  Mapping eligibility uses a common synthetic server root: mapping and exclusion
+ *  paths are both relative to that root, so checking never opens a connection.
+ */
+export type DeploymentCoverage = {
+	server: string,
+	paths: string[],
+	skipped: TransferError[],
+};
+
 export type DeploymentMapping = {
 	/**  Project-relative folder; empty = the project root. */
 	local?: string,
@@ -2873,6 +2885,8 @@ export type EncodingSettings = {
 	project?: string,
 	/**  Fallback for `.properties` files. */
 	properties?: string,
+	/**  Display properties Unicode escapes as characters and save non-ASCII as escapes. */
+	nativeToAscii?: boolean,
 	/**  Create UTF-8 files: `never` (no BOM) | `always` (with BOM) | `windows` (with BOM on Windows). */
 	utf8Bom?: string,
 };
@@ -3037,6 +3051,8 @@ export type FileRenameEdits = {
 export type FileSettings = {
 	/**  Save on focus loss / tab switch, like IDEA. */
 	autoSave?: boolean,
+	/**  Re-check open files against disk when the IDE window gains focus. */
+	syncOnFocus?: boolean,
 	exclude?: string[],
 	/**  Ignored Files and Folders: name patterns hidden everywhere; see [`crate::ignored`]. */
 	ignoredNames?: string[],
@@ -3234,11 +3250,30 @@ export type GitSettings = {
 	combineStashAndShelf?: boolean,
 };
 
+export type GoBuildTags = {
+	/**  Empty values inherit the selected toolchain's defaults. */
+	os?: string,
+	arch?: string,
+	version?: string,
+	compiler?: string,
+	/**  Empty = automatic, "1" = enabled, "0" = disabled. */
+	cgo?: string,
+	custom?: string,
+	experiments?: string,
+};
+
+export type GoModules = {
+	env?: { [key in string]: string },
+	autoVendor?: boolean,
+};
+
 export type GoSettings = {
 	/**  Empty = the `go` on `PATH`. */
 	goroot?: string,
 	/**  Empty = `go env GOPATH`. */
 	gopath?: string,
+	buildTags?: GoBuildTags,
+	modules?: GoModules,
 };
 
 export type GotoKind = "definition" | "declaration" | "typeDefinition" | "implementation";

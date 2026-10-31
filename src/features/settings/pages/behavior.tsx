@@ -588,6 +588,11 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             key: "files.autoSave",
             label: "Save files when switching to a different application or a built-in terminal",
           },
+          {
+            kind: "toggle",
+            key: "files.syncOnFocus",
+            label: "Synchronize external changes when switching to the IDE window",
+          },
         ],
       },
       {

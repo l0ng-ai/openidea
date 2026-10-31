@@ -661,7 +661,9 @@ pub fn workspace_edit(conv: &Conv, e: lsp::WorkspaceEdit) -> WorkspaceEdit {
             }
         }
     }
-    WorkspaceEdit { files }
+    let mut edit = WorkspaceEdit { files };
+    edit.deduplicate();
+    edit
 }
 
 /// Adds the changes of `extra`, another server's edit for the same request, to
@@ -710,6 +712,14 @@ pub fn goto_response(conv: &Conv, r: lsp::GotoDefinitionResponse) -> Vec<Locatio
 }
 
 pub fn dedup_locations(v: &mut Vec<Location>) {
+    let mut canonical = std::collections::HashMap::new();
+    for location in v.iter_mut().filter(|l| l.uri.is_none()) {
+        let path =
+            canonical.entry(location.path.clone()).or_insert_with(|| dunce::canonicalize(&location.path).ok()).clone();
+        if let Some(path) = path {
+            location.path = path.into();
+        }
+    }
     let mut seen = std::collections::HashSet::new();
     v.retain(|l| seen.insert(l.clone()));
 }
@@ -1403,5 +1413,26 @@ mod tests {
         let web = document_link(&conv, here, link(Some("https://example.com/#top"))).unwrap();
         assert_eq!((web.path, web.url.as_deref(), web.fragment), (None, Some("https://example.com/#top"), None));
         assert!(document_link(&conv, here, link(None)).is_none());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod alias_tests {
+    use super::*;
+
+    #[test]
+    fn references_to_a_file_and_its_symlink_are_one_location() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("main.cpp");
+        let alias = dir.path().join("alias.cpp");
+        std::fs::write(&real, "add()").unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let mut locations: Vec<Location> = [real.clone(), alias]
+            .into_iter()
+            .map(|p| Location { path: p.into(), range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), uri: None })
+            .collect();
+        dedup_locations(&mut locations);
+        assert_eq!(locations.len(), 1);
+        assert_eq!(locations[0].path.as_ref(), dunce::canonicalize(real).unwrap());
     }
 }

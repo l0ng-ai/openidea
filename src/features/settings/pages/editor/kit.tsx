@@ -8,9 +8,10 @@
 import { createContext, useContext, useId, type ComponentType, type ReactNode } from "react";
 import clsx from "clsx";
 import { Checkbox, Input, type SelectOption } from "@/ui";
+import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { NumberInput, Row, SearchLabel, Section, Select } from "../../components/Form";
-import { useLabelMatch, useSetting } from "../../components/context";
+import { useLabelMatch, usePageContext, useSetting } from "../../components/context";
 import type { PageSpec } from "../spec";
 import styles from "./Editor.module.css";
 
@@ -22,6 +23,7 @@ export type Item =
   | {
       t: "check";
       key: string;
+      action?: string;
       label: string;
       hint?: ReactNode;
       /** Checked when the stored boolean is false (e.g. "Disable …"). */
@@ -60,6 +62,7 @@ const Disabled = createContext(false);
 
 function CheckItem({ item }: { item: Extract<Item, { t: "check" }> }) {
   const parentDisabled = useContext(Disabled);
+  const context = usePageContext();
   const [raw, set] = useSetting<boolean>(item.key);
   const checked = item.invert ? !raw : !!raw;
   const matched = useLabelMatch(item.label);
@@ -70,7 +73,11 @@ function CheckItem({ item }: { item: Extract<Item, { t: "check" }> }) {
         <Checkbox
           checked={checked}
           disabled={parentDisabled}
-          onChange={(v) => set(item.invert ? !v : v)}
+          onChange={(v) => {
+            const value = item.invert ? !v : v;
+            if (item.action) void executeAction(item.action, { ...context, value });
+            else set(value);
+          }}
           label={<SearchLabel text={item.label} />}
         />
         {item.inline && <InlineControl inline={item.inline} label={item.label} disabled={off} />}

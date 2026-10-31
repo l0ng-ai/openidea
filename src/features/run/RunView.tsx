@@ -43,7 +43,15 @@ function sessionIcon(s: RunSession): string {
   return s.config.isTest ? "check" : "run";
 }
 
-export function SessionPanel({ session }: { session: RunSession }) {
+export function SessionPanel({
+  session,
+  onRerun,
+  onStop,
+}: {
+  session: RunSession;
+  onRerun?: (() => void) | null;
+  onStop?: () => void;
+}) {
   const version = useRun((s) => s.versions[session.id] ?? 0);
   const rt = runtime(session.id);
   const [follow, setFollow] = useState(true);
@@ -123,7 +131,8 @@ export function SessionPanel({ session }: { session: RunSession }) {
           iconSize={14}
           title="Rerun"
           shortcut={shortcutLabel("run.rerun")}
-          onClick={() => rerunSession(session.id)}
+          disabled={onRerun === null}
+          onClick={onRerun ?? (() => rerunSession(session.id))}
         />
         {rt.tests && (
           <IconButton
@@ -140,9 +149,9 @@ export function SessionPanel({ session }: { session: RunSession }) {
           icon="stop"
           iconSize={13}
           title="Stop"
-          tone={running ? "danger" : "default"}
-          disabled={!running}
-          onClick={() => void stopSession(session.id)}
+          tone={running || onStop ? "danger" : "default"}
+          disabled={!running && !onStop}
+          onClick={onStop ?? (() => void stopSession(session.id))}
         />
         {session.config.kind === "tomcat" && (
           <IconButton

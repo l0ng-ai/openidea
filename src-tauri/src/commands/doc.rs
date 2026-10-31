@@ -52,6 +52,12 @@ pub async fn doc_save_all(window: Window, state: State<'_, AppState>) -> IdeResu
 
 #[tauri::command]
 #[specta::specta]
+pub async fn doc_sync_from_disk(window: Window, state: State<'_, AppState>) -> IdeResult<()> {
+    ide_host::ops::doc::sync_from_disk(&state.host, window.label()).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn doc_snapshot(window: Window, state: State<'_, AppState>, doc: DocId) -> IdeResult<DocumentInfo> {
     ide_host::ops::doc::snapshot(&state.host, window.label(), doc).await
 }
@@ -74,14 +80,14 @@ pub async fn doc_ui_mode(window: Window, state: State<'_, AppState>, path: PathB
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
 #[tauri::command]
 #[specta::specta]
-pub fn doc_set_encoding(
+pub async fn doc_set_encoding(
     window: Window,
     state: State<'_, AppState>,
     doc: DocId,
     encoding: String,
     reload: bool,
 ) -> IdeResult<String> {
-    ide_host::ops::doc::doc_set_encoding(&state.host, window.label(), doc, encoding, reload)
+    ide_host::ops::doc::doc_set_encoding(&state.host, window.label(), doc, encoding, reload).await
 }
 
 #[tauri::command]

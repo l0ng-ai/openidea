@@ -3,6 +3,7 @@ import type { RunConfig } from "@/platform/ipc";
 import { DEFAULT_TYPES, readRan, readTypes, runServiceItems, sessionDetail, sessionStatus } from "./services";
 import { startedPort } from "./serverPort";
 import type { RunSession } from "./store";
+import type { DebugServiceSession } from "@/workbench/contributions";
 
 const config = (id: string, kind: string): RunConfig => ({
   id,
@@ -40,6 +41,56 @@ describe("run configurations in Services", () => {
   const test = config("test", "cargo");
   const dev = config("dev", "npm");
   const scratch = config("context:file", "python");
+
+  it.each(["spring-boot", "node", "python", "go", "cargo"])(
+    "shows configured %s debug roots without a Run session",
+    (kind) => {
+      const c = config("debug-app", kind);
+      const d: DebugServiceSession = {
+        id: 1,
+        config: c,
+        status: "running",
+        processId: null,
+        startedAt: 2,
+        stop: async () => {},
+        rerun: null,
+        show: () => {},
+      };
+      const build = (status: DebugServiceSession["status"]) => runServiceItems([c], [], [], [], {}, [{ ...d, status }]);
+      expect(build("running")[0]?.children?.[0]).toMatchObject({
+        key: "run:config:debug-app",
+        detail: "Debugging",
+        icon: "debug",
+        dim: false,
+      });
+      expect(build("paused")[0]?.children?.[0]?.detail).toBe("Suspended");
+      expect(build("terminated")[0]?.children?.[0]).toMatchObject({ detail: "Finished", dim: true });
+    },
+  );
+
+  it("does not reuse an old Run port for a new direct debug launch or double-count an attachment", () => {
+    const c = config("app", "spring-boot");
+    const r = session("run", c, "finished", 1, { runId: 7, httpPort: 8080 });
+    const d: DebugServiceSession = {
+      id: 1,
+      config: c,
+      status: "running",
+      processId: null,
+      startedAt: 2,
+      stop: async () => {},
+      rerun: null,
+      show: () => {},
+    };
+    const direct = runServiceItems([c], [r], DEFAULT_TYPES, [], {}, [d]);
+    expect(direct[0]?.detail).toBe("1 running");
+    expect(direct[0]?.children?.[0]?.detail).toBe("Debugging");
+    const attached = runServiceItems([c], [{ ...r, status: "running" }], DEFAULT_TYPES, [], {}, [
+      { ...d, processId: 7 },
+    ]);
+    expect(attached[0]?.detail).toBe("1 running");
+    expect(attached[0]?.children).toHaveLength(1);
+    expect(attached[0]?.children?.[0]?.detail).toBe(":8080");
+  });
 
   it("applies display order to detected and saved configurations of every language", () => {
     const configs = [

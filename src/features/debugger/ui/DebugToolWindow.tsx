@@ -1,8 +1,6 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
-import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { executeAction, getAction } from "@/platform/actions";
 import { evaluateWhen, useContextKeys } from "@/platform/context";
 import { basename, useProject } from "@/platform/project";
@@ -28,24 +26,19 @@ import { frameLabel, groupFrames } from "../frames";
 import { blurDebugView, focusDebugView } from "./focusedView";
 import {
   addWatch,
-  clearConsole,
   evaluate,
-  isLive,
   selectFrame,
   selectSession,
   selectThread,
-  appendConsole,
   revealFrame,
   sessionSupports,
   useDebug,
   type DebugSession,
 } from "../state";
+import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
-import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { spanStyle } from "@/ui/ansi";
-import ansi from "@/ui/ansi.module.css";
 import styles from "./DebugToolWindow.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -144,7 +137,18 @@ export function DebugTabs() {
 export function DebugToolWindow() {
   const active = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const muted = useBreakpoints((s) => s.muted);
-  const [tab, setTab] = useState<Tab>("variables");
+  const [view, setView] = useState<{
+    session: number | undefined;
+    status: DebugSession["status"] | undefined;
+    tab: Tab;
+  }>({ session: undefined, status: undefined, tab: "variables" });
+  if (active && (view.session !== active.startedAt || view.status !== active.status))
+    setView({
+      session: active.startedAt,
+      status: active.status,
+      tab: active.status === "starting" ? "console" : active.status === "paused" ? "variables" : view.tab,
+    });
+  const tab = view.tab;
 
   if (!active) {
     return (
@@ -175,7 +179,7 @@ export function DebugToolWindow() {
               aria-selected={tab === id}
               aria-controls={`debug-panel-${id}`}
               className={clsx(styles.tab, tab === id && styles.tabActive)}
-              onClick={() => setTab(id)}
+              onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
             >
               {label}
             </button>
@@ -211,7 +215,11 @@ export function DebugToolWindow() {
         <MoreActions />
       </div>
       <div role="tabpanel" id={`debug-panel-${tab}`} aria-labelledby={`debug-tab-${tab}`} className={styles.panel}>
-        {tab === "variables" ? <ThreadsAndVariables session={active} /> : <ConsoleView session={active} />}
+        {tab === "variables" ? (
+          <ThreadsAndVariables session={active} />
+        ) : (
+          <DebugConsole key={active.id} session={active} />
+        )}
       </div>
     </div>
   );
@@ -541,154 +549,6 @@ function VariablesPane({ session }: { session: DebugSession }) {
           aria-label="Variables"
         />
       )}
-    </div>
-  );
-}
-
-// --- console -------------------------------------------------------------------
-
-function ConsoleView({ session }: { session: DebugSession }) {
-  const lines = useDebug((s) => s.console[session.id]);
-  const scroller = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
-  const programmatic = useRef(false);
-  const [input, setInput] = useState("");
-  const history = useRef<string[]>(readHistory("console"));
-  const historyPos = useRef(-1);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const virtualizer = useVirtualizer({
-    count: lines?.length ?? 0,
-    getScrollElement: () => scroller.current,
-    estimateSize: () => 18,
-    overscan: 30,
-    getItemKey: (i) => lines?.[i]?.id ?? i,
-  });
-
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    if (!el || !stick.current || !lines?.length) return;
-    programmatic.current = true;
-    virtualizer.scrollToIndex(lines.length - 1, { align: "end" });
-    el.scrollTop = el.scrollHeight;
-    requestAnimationFrame(() => (programmatic.current = false));
-  }, [lines, virtualizer]);
-
-  const submit = async () => {
-    const e = input.trim();
-    if (!e) return;
-    pushHistory("console", e);
-    history.current = readHistory("console");
-    historyPos.current = -1;
-    setInput("");
-    appendConsole(session.id, "input", `> ${e}\n`);
-    try {
-      const v = await evaluate(e, "repl", session);
-      appendConsole(session.id, "result", `${v.value}\n`);
-    } catch (err) {
-      appendConsole(session.id, "stderr", `${err instanceof Error ? err.message : String(err)}\n`);
-    }
-  };
-
-  /** IDEA's Browse History popup: the expressions typed before, most recent first. */
-  const browseHistory = () => {
-    const el = inputRef.current;
-    const r = el?.getBoundingClientRect();
-    const items: MenuItem[] = history.current.length
-      ? history.current.slice(0, 30).map((h, i) => ({
-          id: String(i),
-          label: h.length > 120 ? `${h.slice(0, 120)}…` : h,
-          run: () => {
-            setInput(h);
-            historyPos.current = i;
-            el?.focus();
-          },
-        }))
-      : [{ id: "none", label: "No history", disabled: true }];
-    showContextMenu({ x: r?.left ?? 120, y: (r?.top ?? 200) - 4 }, items);
-  };
-
-  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      void submit();
-    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-      const h = history.current;
-      if (!h.length) return;
-      e.preventDefault();
-      const pos = Math.max(-1, Math.min(h.length - 1, historyPos.current + (e.key === "ArrowUp" ? 1 : -1)));
-      historyPos.current = pos;
-      setInput(pos < 0 ? "" : h[pos]!);
-    }
-  };
-
-  return (
-    <div className={styles.console}>
-      <div
-        ref={scroller}
-        className={clsx(styles.consoleOutput, ansi.palette)}
-        onScroll={(e) => {
-          if (programmatic.current) return;
-          const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-        }}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          showContextMenu(e, [{ label: "Clear All", icon: "trash", run: () => clearConsole(session.id) }]);
-        }}
-        role="log"
-        onKeyDown={copySelectionOnKeyDown}
-        aria-label={tx("Debug console")}
-        tabIndex={0}
-      >
-        <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map((item) => {
-            const l = lines?.[item.index];
-            if (!l) return null;
-            return (
-              <span
-                key={item.key}
-                data-index={item.index}
-                ref={virtualizer.measureElement}
-                className={clsx(styles.out, styles[`cat-${l.category}`])}
-                style={{ transform: `translateY(${item.start}px)` }}
-              >
-                {l.spans.map((sp, i) => (
-                  <span key={i} style={spanStyle(sp)}>
-                    {sp.text}
-                  </span>
-                ))}
-              </span>
-            );
-          })}
-        </div>
-      </div>
-      <label className={styles.repl}>
-        <span className={styles.prompt} aria-hidden>
-          ›
-        </span>
-        <input
-          ref={inputRef}
-          className={styles.evalInput}
-          onFocus={() => setConsoleHistoryBrowser(browseHistory)}
-          onBlur={() => setConsoleHistoryBrowser(null)}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={isLive(session) ? "Evaluate in the debug console" : "Session finished"}
-          disabled={!isLive(session)}
-          aria-label={tx("Debug console input")}
-          spellCheck={false}
-          autoComplete="off"
-        />
-        <IconButton
-          icon="trash"
-          title="Clear Console"
-          size="small"
-          iconSize={12}
-          onClick={() => clearConsole(session.id)}
-        />
-      </label>
     </div>
   );
 }

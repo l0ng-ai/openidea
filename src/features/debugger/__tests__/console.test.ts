@@ -96,3 +96,14 @@ describe("multiline output", () => {
     expect(output.every((line) => line.text.length === 4001)).toBe(true);
   });
 });
+
+it("flushes output while an unfocused webview suspends animation frames", () => {
+  vi.useFakeTimers();
+  vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+  adoptSession(13);
+  appendConsoleQueued(13, "stdout", "Spring Boot starting…\n");
+  expect(lines(13)).toEqual([]);
+  vi.advanceTimersByTime(100);
+  expect(lines(13).map((l) => l.text)).toEqual(["Spring Boot starting…\n"]);
+  expect(useDebug.getState().sessions[13]?.status).toBe("running");
+});

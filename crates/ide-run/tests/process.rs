@@ -473,3 +473,113 @@ fn python_scripts_import_sibling_packages_and_preserve_env_file_paths() {
         assert_eq!(text(&chunks, stdout), "import OK vendor OK\n");
     }
 }
+
+#[test]
+#[ignore = "requires CMake, CTest and a C++ compiler"]
+fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
+    let h = harness();
+    std::fs::write(h.root.path().join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)\nproject(smoke LANGUAGES CXX)\nadd_executable(smoke main.cpp math.cpp)\nenable_testing()\nadd_test(NAME smoke COMMAND smoke)\n").unwrap();
+    std::fs::write(h.root.path().join("main.cpp"), "int add(int,int); int main() { return add(2,3)==5 ? 0 : 1; }\n")
+        .unwrap();
+    std::fs::write(h.root.path().join("math.cpp"), "int add(int a,int b) { return a+b; }\n").unwrap();
+    let initial = ide_run::detect(h.root.path());
+    assert!(!h.root.path().join("build").exists(), "detection must not modify the project");
+    let configure = initial.iter().find(|c| c.id.ends_with(":configure")).unwrap();
+    let (id, output) = start(&h, configure);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    assert!(h.root.path().join("build/.cmake/api/v1/query/client-openidea/codemodel-v2").exists());
+    let root = h.root.path().canonicalize().unwrap();
+    let configs = ide_run::detect(&root);
+    let target = configs.iter().find(|c| c.kind == "native").expect("File API executable");
+    assert_eq!(target.debug_adapter.as_deref(), Some("lldb-dap"));
+    let sources = &target.extras.params["cmakeSources"];
+    assert!(sources.lines().any(|s| s.ends_with("/main.cpp")));
+    assert!(sources.lines().any(|s| s.ends_with("/math.cpp")));
+    assert!(sources.lines().any(|s| s == root.join("main.cpp").to_string_lossy()));
+    assert_eq!(target.extras.params["cmakeCanonicalSourceRoot"], root.to_string_lossy());
+    let build = configs.iter().find(|c| c.id == target.extras.before_launch[0].target).unwrap();
+    let (id, output) = start(&h, build);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    let (id, _) = start(&h, target);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(10)), Some(0));
+    let ctest = configs.iter().find(|c| c.command == "ctest").unwrap();
+    let (id, output) = start(&h, ctest);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(10)), Some(0), "{}", text(&output, stdout));
+}
+
+#[test]
+fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
+    let h = harness();
+    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+        eprintln!("skipped: no Go toolchain");
+        return;
+    };
+    let module = h.root.path().join("module");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("go.mod"), "module example.com/demo\ngo 1.22\n").unwrap();
+    std::fs::write(module.join("main.go"), "//go:build demo\n\npackage main\nimport (\"fmt\"; \"os\")\nfunc main(){cwd,_:=os.Getwd();fmt.Printf(\"%q %s %s\\n\",os.Args[1:],os.Getenv(\"GO_RUN_VALUE\"),cwd)}\n").unwrap();
+    let mut c = cfg("go-config", &go.to_string_lossy(), &["build", "-tags", "demo", "."]);
+    c.kind = "go".into();
+    c.env.insert("GO_RUN_VALUE".into(), "configured".into());
+    c.extras.params = BTreeMap::from([
+        ("goKind".into(), "build".into()),
+        ("scope".into(), "package".into()),
+        ("target".into(), ".".into()),
+        ("module".into(), "module".into()),
+        ("outputDir".into(), "bin with spaces".into()),
+        ("runAfterBuild".into(), "true".into()),
+        ("programArgv".into(), r#"["-tags","two words"]"#.into()),
+    ]);
+    let (id, out) = start(&h, &c);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&out, stderr));
+    let output = text(&out, stdout);
+    assert!(output.contains(r#"["-tags" "two words"] configured"#), "{output}");
+    assert!(output.contains(&h.root.path().display().to_string()), "{output}");
+    assert!(std::fs::read_dir(h.root.path().join("bin with spaces")).unwrap().next().is_some());
+
+    c.extras.params.insert("runAfterBuild".into(), "false".into());
+    let (id, out) = start(&h, &c);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0));
+    assert!(text(&out, stdout).is_empty());
+
+    c.extras.params.insert("runAfterBuild".into(), "true".into());
+    c.args = vec!["build".into(), "missing.go".into()];
+    let (id, out) = start(&h, &c);
+    assert_ne!(wait_exit(&h, id, Duration::from_secs(60)), Some(0));
+    assert!(text(&out, stdout).is_empty(), "a failed build must never run an older binary");
+}
+
+#[test]
+fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
+    let h = harness();
+    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+        eprintln!("skipped: no Go toolchain");
+        return;
+    };
+    std::fs::write(h.root.path().join("go.mod"), "module example.com/filetests\ngo 1.22\n").unwrap();
+    std::fs::write(h.root.path().join("main.go"), "package filetests\nfunc value() int { return 2 }\n").unwrap();
+    std::fs::write(h.root.path().join("generate.go"), "//go:build ignore\n\npackage main\nfunc main() {}\n").unwrap();
+    std::fs::write(
+        h.root.path().join("demo_test.go"),
+        "package filetests\nimport \"testing\"\nfunc TestChosen(t *testing.T) { if value()!=2 { t.Fatal(\"bad\") } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        h.root.path().join("other_test.go"),
+        "package filetests\nimport \"testing\"\nfunc TestOther(t *testing.T) { t.Fatal(\"must not run\") }\n",
+    )
+    .unwrap();
+    let mut c = cfg("go-file", &go.to_string_lossy(), &["test", "-json", "demo_test.go"]);
+    c.kind = "go".into();
+    c.extras.params = BTreeMap::from([
+        ("goKind".into(), "test".into()),
+        ("scope".into(), "file".into()),
+        ("target".into(), "demo_test.go".into()),
+    ]);
+    ide_run::go::prepare_test_file(h.root.path(), &mut c).unwrap();
+    assert!(!c.args.iter().any(|a| a.ends_with("generate.go") || a.ends_with("other_test.go")));
+    let (id, out) = start(&h, &c);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&out, stderr));
+    assert!(text(&out, stdout).contains("TestChosen"));
+    assert!(!text(&out, stdout).contains("TestOther"));
+}

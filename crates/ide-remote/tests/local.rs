@@ -209,3 +209,56 @@ async fn missing_non_directory_and_unwritable_targets_are_clear() {
     assert!(result.unwrap_err().message.contains("not writable"));
     assert_eq!(report.errors.len(), 1, "{report:?}");
 }
+
+#[tokio::test]
+async fn coverage_matches_transfers_without_connecting() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    let target = tmp.path().join("target");
+    for dir in ["src", "src-other", "assets", "src/private", "src/node_modules"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    let names = ["src/a.txt", "assets/b.txt", "src-other/c.txt", "src/private/key", "src/node_modules/pkg"];
+    let paths: Vec<_> = names.iter().map(|name| root.join(name)).collect();
+    for path in &paths {
+        std::fs::write(path, "content").unwrap();
+    }
+    let mut settings = settings(&target);
+    settings.deployment.exclude = vec!["node_modules".into()];
+    settings.deployment.servers[0].mappings[0].local = "src".into();
+    settings.deployment.servers[0].excluded_paths = vec!["app/private".into()];
+    let mut assets = settings.deployment.servers[0].clone();
+    assets.id = "assets".into();
+    assets.mappings[0].local = "assets".into();
+    let mut offline = assets.clone();
+    offline.id = "offline".into();
+    offline.kind = DeploymentType::Sftp;
+    offline.ssh_config = "does-not-exist".into();
+    settings.deployment.servers.extend([assets, offline]);
+    let coverage = ide_remote::coverage(&settings, &root, &paths);
+    assert_eq!(coverage[0].paths, vec![ide_core::ipc_path::to_ipc(&paths[0])]);
+    assert_eq!(coverage[1].paths, vec![ide_core::ipc_path::to_ipc(&paths[1])]);
+    assert_eq!(coverage[2].paths, coverage[1].paths);
+    assert_eq!(coverage[0].skipped.len(), 4);
+    assert!(coverage[0].skipped[0].message.contains("mappings"));
+    assert!(coverage[0].skipped[2].message.contains("Excluded"));
+    let service = service(tmp.path());
+    let report = service
+        .upload(&settings, &root, Some("local"), &paths, CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!((report.files, report.skipped), (1, 4));
+    let entries =
+        service.compare(&settings, &root, Some("local"), &root.join("src"), CancellationToken::new()).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    let report = service
+        .download(&settings, &root, Some("local"), &paths, CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!((report.files, report.skipped), (1, 4));
+    let report = service.delete_remote(&settings, &root, Some("local"), &paths).await.unwrap();
+    assert_eq!((report.files, report.skipped), (1, 4));
+    settings.deployment.servers[0].mappings.clear();
+    assert_eq!(ide_remote::coverage(&settings, &root, &[root.join("assets/b.txt")])[0].paths.len(), 1);
+    assert!(ide_remote::coverage(&settings, &root, &[root.join("../outside")])[0].paths.is_empty());
+}

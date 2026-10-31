@@ -112,6 +112,14 @@ async fn serves_projects_files_documents_search_and_runs() {
     invoke(&peer, "doc_save", json!({ "doc": id })).await.unwrap();
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "print('needle')\nprint('more')\n");
 
+    let outside = tmp.path().join("outside.txt");
+    std::fs::write(&outside, "original\n").unwrap();
+    let external = invoke(&peer, "doc_open", json!({ "path": outside })).await.unwrap();
+    std::fs::write(&outside, "external change\n").unwrap();
+    invoke(&peer, "doc_sync_from_disk", json!({})).await.unwrap();
+    let snapshot = invoke(&peer, "doc_snapshot", json!({ "doc": external["id"] })).await.unwrap();
+    assert_eq!(snapshot["text"], "external change\n");
+
     // Commands shared with the desktop shell (camelCase argument names, as Tauri takes them).
     invoke(&peer, "doc_set_line_ending", json!({ "doc": id, "lineEnding": "crLf" })).await.unwrap();
     invoke(&peer, "doc_save", json!({ "doc": id })).await.unwrap();
@@ -216,6 +224,7 @@ async fn local_deployment_runs_on_the_project_host() {
     }));
     let dispatcher = Dispatcher::standard();
     for cmd in [
+        "deploy_coverage",
         "deploy_upload",
         "deploy_download",
         "deploy_delete_remote",
@@ -243,6 +252,9 @@ async fn local_deployment_runs_on_the_project_host() {
     invoke(&peer, "settings_set", json!({"scope":"project", "key":"deployment", "value":deployment.to_string()}))
         .await
         .unwrap();
+    let coverage = invoke(&peer, "deploy_coverage", json!({"paths":[file]})).await.unwrap();
+    assert_eq!(coverage[0]["server"], "local");
+    assert_eq!(coverage[0]["paths"], json!([ide_core::IpcPath::from(&file)]));
     invoke(&peer, "deploy_test_connection", json!({"connection":{"kind":"local"}, "path":target})).await.unwrap();
     let report = invoke(&peer, "deploy_upload", json!({"paths":[file], "request":1001})).await.unwrap();
     assert_eq!(report["files"], 1, "{report}");
@@ -256,4 +268,63 @@ async fn local_deployment_runs_on_the_project_host() {
     invoke(&peer, "deploy_delete_remote", json!({"paths":[file]})).await.unwrap();
     assert!(!target.join("local.txt").exists());
     invoke(&peer, "close_project", json!({})).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn properties_conversion_through_remote_dispatch_without_a_remote_host() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("properties-project");
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("messages.properties");
+    std::fs::write(&path, r"value=\u4F60\u597D\uD83D\uDE00!").unwrap();
+    let peer_slot = Arc::new(OnceLock::new());
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: tmp.path().join("config"),
+        data_dir: tmp.path().join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (sr, sw) = tokio::io::split(server_io);
+    tokio::spawn(rpc::serve(host, Dispatcher::standard(), peer_slot, sr, sw));
+    let (cr, cw) = tokio::io::split(client_io);
+    let peer = Peer::connect(cr, cw, Arc::new(Client::default()));
+    invoke(&peer, "open_project", json!({"path":root})).await.unwrap();
+    let settings = invoke(&peer, "settings_get", json!({})).await.unwrap();
+    assert_eq!(settings["editor"]["encodings"]["nativeToAscii"], false);
+    let opened = invoke(&peer, "doc_open", json!({"path":path})).await.unwrap();
+    let doc = opened["id"].clone();
+    invoke(&peer, "settings_set", json!({"scope":"project", "key":"editor.encodings.nativeToAscii", "value":"true"}))
+        .await
+        .unwrap();
+    let mut snap = Value::Null;
+    for _ in 0..500 {
+        snap = invoke(&peer, "doc_snapshot", json!({"doc":doc})).await.unwrap();
+        if snap["text"] == "value=你好😀!" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(snap["text"], "value=你好😀!");
+    assert_eq!(snap["dirty"], false);
+    invoke(
+        &peer,
+        "doc_edit",
+        json!({"doc":doc, "baseVersion":snap["version"],
+        "changes":{"changes":[{"from":10,"to":11,"insert":"界"}]}}),
+    )
+    .await
+    .unwrap();
+    invoke(&peer, "doc_save", json!({"doc":doc})).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), r"value=\u4F60\u597D\uD83D\uDE00\u754C");
+    invoke(&peer, "doc_set_encoding", json!({"doc":doc,"encoding":"utf-8","reload":true})).await.unwrap();
+    let reloaded = invoke(&peer, "doc_snapshot", json!({"doc":doc})).await.unwrap();
+    assert_eq!(reloaded["text"], "value=你好😀界");
+    assert_eq!(reloaded["dirty"], false);
+    invoke(&peer, "close_project", json!({})).await.unwrap();
+    peer.kill();
 }

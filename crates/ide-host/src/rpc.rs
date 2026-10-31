@@ -189,6 +189,7 @@ impl Dispatcher {
         })
         .add("doc_save", |c| async move { ops::doc::save(&c.host, &c.window, c.arg("doc")?).await })
         .add("doc_save_all", |c| async move { ops::doc::save_all(&c.host, &c.window).await })
+        .add("doc_sync_from_disk", |c| async move { ops::doc::sync_from_disk(&c.host, &c.window).await })
         .add("doc_snapshot", |c| async move { ops::doc::snapshot(&c.host, &c.window, c.arg("doc")?).await })
         .add("search_start", |c| async move {
             let on_event = c.channel("onEvent")?;
