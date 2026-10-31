@@ -5,6 +5,7 @@
  * which applies them to every session (adapter defaults for filters without a choice).
  */
 import { create } from "zustand";
+import { useProject } from "@/platform/project";
 import { call, commands, isTauri, type ExceptionFilter } from "@/platform/ipc";
 
 interface ExceptionState {
@@ -128,7 +129,8 @@ export function mergeKnown(
 }
 
 async function push() {
-  if (!isTauri()) return;
+  if (!isTauri() || !useExceptionBreakpoints.getState().root || useProject.getState().project?.trusted === false)
+    return;
   try {
     await call(commands.debugSetExceptionBreakpoints(useExceptionBreakpoints.getState().choices));
   } catch (e) {

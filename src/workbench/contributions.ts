@@ -264,7 +264,13 @@ export interface EditorInput {
   data?: unknown;
 }
 
+export interface WorkbenchBannerContribution {
+  id: string;
+  component: ComponentType;
+}
+
 interface Contributions {
+  workbenchBanners: Map<string, WorkbenchBannerContribution>;
   toolWindows: Map<string, ToolWindowContribution>;
   statusItems: Map<string, StatusItemContribution>;
   overlays: Map<string, OverlayContribution>;
@@ -274,6 +280,7 @@ interface Contributions {
 }
 
 export const useContributions = create<Contributions>(() => ({
+  workbenchBanners: new Map(),
   toolWindows: new Map(),
   statusItems: new Map(),
   overlays: new Map(),
@@ -301,6 +308,7 @@ function register<K extends keyof Contributions>(
     });
 }
 
+export const registerWorkbenchBanner = (c: WorkbenchBannerContribution) => register("workbenchBanners", c.id, c);
 export const registerToolWindow = (c: ToolWindowContribution) => register("toolWindows", c.id, c);
 export const registerStatusItem = (c: StatusItemContribution) => register("statusItems", c.id, c);
 export const registerOverlay = (c: OverlayContribution) => register("overlays", c.id, c);

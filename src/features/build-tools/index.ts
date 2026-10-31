@@ -154,7 +154,7 @@ export function activate(): () => void {
       if (s.model !== prev.model || s.root !== prev.root) apply(s.root ? s.model : null, registered);
     }),
     useProject.subscribe((s, prev) => {
-      if (s.project?.root === prev.project?.root) return;
+      if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
       resetBuild();
       if (s.project) void loadModel();
     }),

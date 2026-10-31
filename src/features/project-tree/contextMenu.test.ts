@@ -53,7 +53,7 @@ let disposers: Array<() => void> = [];
 beforeEach(() => {
   useProjectTree.setState({ root: ROOT });
   useProject.setState({
-    project: { name: "p", root: ROOT, isGit: true, settings: {} } as never,
+    project: { name: "p", root: ROOT, trusted: true, isGit: true, settings: {} } as never,
     settings: {} as never,
   });
   disposers = [
@@ -179,7 +179,7 @@ describe("project view context menu", () => {
 
   it("offers Compare With… in a non-git project too", () => {
     useProject.setState({
-      project: { name: "p", root: ROOT, isGit: false, settings: {} } as never,
+      project: { name: "p", root: ROOT, trusted: true, isGit: false, settings: {} } as never,
       settings: {} as never,
     });
     const l = labels(contextMenuItems([node(`${ROOT}/a.py`)]));
@@ -192,7 +192,7 @@ describe("project view context menu", () => {
     disposers.forEach((d) => d());
     disposers = [];
     useProject.setState({
-      project: { name: "p", root: ROOT, isGit: true, settings: {} } as never,
+      project: { name: "p", root: ROOT, trusted: true, isGit: true, settings: {} } as never,
       settings: {} as never,
     });
     const l = labels(contextMenuItems([node(`${ROOT}/a.py`)]));
@@ -208,6 +208,7 @@ it("offers workspace removal for every member root", () => {
       root: "/workspace",
       name: "A",
       settings: {},
+      trusted: true,
       isGit: false,
       workspace: { version: 1, name: "A", projects: ["/a", "/b"] },
     },

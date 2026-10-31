@@ -12,6 +12,7 @@ mod proxy;
 mod requests;
 pub mod rpc;
 pub mod shell_env;
+pub mod trust;
 
 pub use project::{Project, apply_git_executable, apply_workspace_edit, history_retention};
 
@@ -44,6 +45,7 @@ pub struct HostConfig {
 }
 
 pub struct Host {
+    pub trust: trust::TrustStore,
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
     pub languages: Arc<LanguageRegistry>,
@@ -67,6 +69,7 @@ pub struct Host {
     /// One project per window, keyed by window label.
     projects: RwLock<HashMap<String, Arc<Project>>>,
     requests: requests::Requests,
+    project_requests: RwLock<HashMap<String, Vec<RequestId>>>,
 }
 
 impl Host {
@@ -77,6 +80,7 @@ impl Host {
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
+            trust: trust::TrustStore::load(&config_dir, &data_dir),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
@@ -95,6 +99,7 @@ impl Host {
             runtime,
             projects: RwLock::default(),
             requests: Default::default(),
+            project_requests: RwLock::default(),
         };
         host.apply_proxy();
         host
@@ -117,6 +122,10 @@ impl Host {
             .get((self.owner)(window))
             .cloned()
             .ok_or_else(|| IdeError::not_found("no project is open in this window"))
+    }
+
+    pub fn require_trust(&self, window: &str) -> IdeResult<()> {
+        self.project(window)?.require_trust()
     }
 
     /// The window that owns what `window` starts.
@@ -212,7 +221,19 @@ impl Host {
         self.requests.begin(id)
     }
 
+    pub fn begin_project_request(&self, window: &str, id: RequestId) -> CancellationToken {
+        let token = self.begin_request(id);
+        self.project_requests.write().entry(self.owner_window(window).to_owned()).or_default().push(id);
+        if self.project(window).is_ok_and(|p| !p.is_trusted()) {
+            token.cancel();
+        }
+        token
+    }
+
     pub fn end_request(&self, id: RequestId) {
+        for ids in self.project_requests.write().values_mut() {
+            ids.retain(|entry| *entry != id);
+        }
         self.requests.end(id);
     }
 

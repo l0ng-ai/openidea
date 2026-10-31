@@ -1,0 +1,24 @@
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-elev);
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.path {
+  overflow-wrap: anywhere;
+}

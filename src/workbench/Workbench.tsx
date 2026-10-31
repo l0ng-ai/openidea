@@ -17,6 +17,7 @@ import { useApplyTheme } from "./theme";
 import { ToolWindowLayout } from "./toolwindows/ToolWindows";
 import { Welcome } from "./Welcome";
 import { WindowResizeHandles } from "./WindowResizeHandles";
+import { useContributions } from "./contributions";
 import styles from "./Workbench.module.css";
 
 /** LightEdit: editor tabs only; no tool windows, toolbar widgets or project status items. */
@@ -38,6 +39,7 @@ function LightEditFrame() {
 
 export function Workbench() {
   useApplyTheme();
+  const banners = useContributions((s) => s.workbenchBanners);
   const project = useProject((s) => s.project);
   const lightEdit = useProject((s) => s.lightEdit);
   const root = project?.root ?? null;
@@ -54,6 +56,9 @@ export function Workbench() {
           {/* Distraction Free Mode keeps the bar for the traffic lights and window dragging only. */}
           <TitleBar bare={distractionFree} />
           {!distractionFree && <WindowGroupTabs />}
+          {[...banners.values()].map(({ id, component: Banner }) => (
+            <Banner key={id} />
+          ))}
           <ToolWindowLayout key={root} editor={<EditorArea />} />
           {!distractionFree && <StatusBar />}
         </>

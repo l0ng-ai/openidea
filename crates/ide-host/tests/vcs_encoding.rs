@@ -35,6 +35,7 @@ async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
         runtime: tokio::runtime::Handle::current(),
         project_environment: false,
     });
+    host.trust.decide(&root, true, false).unwrap();
     let project = host.open_project("main", &root).unwrap();
     for _ in 0..500 {
         if !project.repos().is_empty() {

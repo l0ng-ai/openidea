@@ -1,3 +1,4 @@
+import { confirmProjectTrust } from "./projectTrust";
 /**
  * Remote development: in a window whose project lives on another machine, the
  * commands that machine's `openidea-server` answers are routed to it (through
@@ -138,6 +139,19 @@ export async function connectRemote(sshConfig: string, path: string) {
   try {
     const r = await call(commands.remoteConnect(sshConfig, path, onProgress));
     enableRemote({ sshConfig: r.sshConfig, root: r.root, host: r.host, commands: r.commands });
+    if (takeLegacyRemoteTrust(r.sshConfig, path, r.host)) {
+      const status = await call(commands.projectTrustStatus(r.root));
+      if (!status.decided) await call(commands.projectTrustSet(r.root, true, false));
+    }
+    try {
+      await confirmProjectTrust(r.root);
+    } catch (error) {
+      await commands.closeProject();
+      disableRemote();
+      throw error;
+    }
+    const current = await commands.projectCurrent();
+    if (current) r.project = current;
     r.project.settings = await clientSettings(r.project.settings);
     useProject.setState({ project: r.project, settings: r.project.settings });
     rememberRemote({
@@ -197,6 +211,32 @@ export interface RecentRemote {
 
 const RECENT_KEY = "openidea.remote.recent";
 const RECENT_MAX = 20;
+const TRUST_MIGRATION_KEY = "openidea.remote.trustMigration";
+
+/** Snapshot existing user-owned recents before any new connection is remembered. */
+export function initializeRemoteTrustMigration() {
+  try {
+    if (localStorage.getItem(TRUST_MIGRATION_KEY) === null) {
+      localStorage.setItem(TRUST_MIGRATION_KEY, JSON.stringify(recentRemotes()));
+    }
+  } catch {
+    /* Unavailable storage never grants trust. */
+  }
+}
+
+export function takeLegacyRemoteTrust(sshConfig: string, path: string, host: string): boolean {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(TRUST_MIGRATION_KEY) ?? "[]");
+    if (!Array.isArray(value)) return false;
+    const matches = (entry: RecentRemote) =>
+      entry?.sshConfig === sshConfig && entry.path === path && entry.host === host;
+    const found = value.some(matches);
+    localStorage.setItem(TRUST_MIGRATION_KEY, JSON.stringify(value.filter((entry) => !matches(entry))));
+    return found;
+  } catch {
+    return false;
+  }
+}
 
 export function recentRemotes(): RecentRemote[] {
   try {

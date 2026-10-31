@@ -173,7 +173,7 @@ describe("EditorController", () => {
   it("carries the plain project's editor tabs into its automatic workspace", async () => {
     const settings = {};
     useProject.setState({
-      project: { root: "/attach-a", name: "A", isGit: false, settings },
+      project: { root: "/attach-a", name: "A", trusted: true, isGit: false, settings },
       settings,
       lightEdit: false,
     });
@@ -185,6 +185,7 @@ describe("EditorController", () => {
       project: {
         root: "/attach-workspace",
         name: "A",
+        trusted: true,
         isGit: false,
         settings,
         workspace: { version: 1, name: "A", projects: ["/attach-a", "/attach-b"] },
@@ -230,7 +231,7 @@ describe("EditorController", () => {
 
   it("builds IDEA's editor tab menu", async () => {
     useProject.setState({
-      project: { name: "p", root: "/p", isGit: true, settings: {} } as never,
+      project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
       settings: {} as never,
     });
     const ids = [

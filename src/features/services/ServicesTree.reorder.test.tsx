@@ -23,7 +23,7 @@ const config = (id: string, kind: string): RunConfig => ({
   debugAdapter: null,
 });
 function project(root: string) {
-  useProject.setState({ project: { root, name: "app", isGit: false, settings: validateSettings({}) } });
+  useProject.setState({ project: { root, name: "app", trusted: true, isGit: false, settings: validateSettings({}) } });
 }
 let dispose: Array<() => void>;
 const dockerRoots = [{ key: "docker:one", label: "Docker", icon: "file-docker" }];

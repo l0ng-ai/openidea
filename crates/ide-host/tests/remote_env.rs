@@ -100,6 +100,7 @@ fn server_environment_from_login_shell_and_devcontainer() {
             "postStartCommand": ["/bin/sh", "-c", "echo \"$FROM_PROJECT\" >> started.txt; echo post-start-output"],
         }"#,
     );
+    host.trust.decide(&project, true, false).unwrap();
     runtime.block_on(ide_host::ops::project::open(&host, "main", &project)).unwrap();
     assert_eq!(child_var("FROM_PROJECT"), "two-demo");
     assert!(child_var("PATH").starts_with("/project/bin:"), "{}", child_var("PATH"));
@@ -158,6 +159,7 @@ fn server_environment_from_login_shell_and_devcontainer() {
     // Reopening the project doesn't run postStartCommand again (once per server start).
     host.close_project("main");
     assert_eq!(child_var("FROM_PROJECT"), "", "remoteEnv leaves with the project");
+    host.trust.decide(&project, true, false).unwrap();
     runtime.block_on(ide_host::ops::project::open(&host, "main", &project)).unwrap();
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(std::fs::read_to_string(&started).unwrap(), "two-demo\n");
@@ -165,6 +167,7 @@ fn server_environment_from_login_shell_and_devcontainer() {
     // A failing postStartCommand is a notification; the project opens regardless.
     let failing = tmp.join("failing");
     write(&failing.join(".devcontainer.json"), r#"{ "postStartCommand": "echo oops >&2; exit 7" }"#);
+    host.trust.decide(&failing, true, false).unwrap();
     runtime.block_on(ide_host::ops::project::open(&host, "main", &failing)).unwrap();
     wait_for("the failure notification", || {
         events.0.lock().iter().any(|e| {
@@ -176,6 +179,7 @@ fn server_environment_from_login_shell_and_devcontainer() {
     // A broken file is a warning, not an error.
     let broken = tmp.join("broken");
     write(&broken.join(".devcontainer.json"), "{ \"remoteEnv\": ");
+    host.trust.decide(&broken, true, false).unwrap();
     runtime.block_on(ide_host::ops::project::open(&host, "main", &broken)).unwrap();
     assert!(events.0.lock().iter().any(|e| matches!(e,
         IdeEvent::Notify { level: NotifyLevel::Warning, title, .. } if title == "devcontainer.json was not applied")));

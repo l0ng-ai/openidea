@@ -24,7 +24,7 @@ function deps(files: string[], roots = ROOTS) {
 
 beforeEach(() => {
   useProject.setState({
-    project: { name: "p", root: "/p", isGit: false, settings: {} } as never,
+    project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never,
     settings: {} as never,
   });
 });
