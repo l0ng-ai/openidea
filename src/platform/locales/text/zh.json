@@ -5319,5 +5319,7 @@
   "Compiler": "编译器",
   "go1.22": "go1.22",
   "integration debug": "integration debug",
-  "loopvar,rangefunc": "loopvar,rangefunc"
+  "loopvar,rangefunc": "loopvar,rangefunc",
+  "No CMake executable target for this file": "此文件没有对应的 CMake 可执行目标",
+  "Run CMake Configure from the Run selector, then choose the executable target. Files in a CMake project are built with their target.": "请从运行选择器执行 CMake Configure，然后选择可执行目标。CMake 项目中的文件由所属目标构建，不会单独编译。"
 }
