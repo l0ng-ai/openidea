@@ -27,6 +27,7 @@ pub mod history;
 pub mod http;
 pub mod java;
 pub mod lsp;
+pub mod mcp;
 pub mod nav;
 pub mod notebook;
 pub mod perf;
@@ -442,6 +443,12 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         db::db_set_ssh_secret,
         db::db_trust_ssh_host,
         ssh::ssh_test,
+        mcp::mcp_status,
+        mcp::mcp_tools,
+        mcp::mcp_clients,
+        mcp::mcp_configure_client,
+        mcp::mcp_regenerate_token,
+        mcp::mcp_respond,
         ssh::ssh_set_secret,
         ssh::ssh_needs_secret,
         ssh::ssh_trust_host,

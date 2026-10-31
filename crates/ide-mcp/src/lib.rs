@@ -272,9 +272,14 @@ pub fn load_or_create_token(file: &Path) -> std::io::Result<String> {
     write_new_token(file)
 }
 
+/// A random 64-hex-digit token.
+pub fn random_token() -> String {
+    format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
+}
+
 /// Writes a fresh random token to `file` and returns it.
 pub fn write_new_token(file: &Path) -> std::io::Result<String> {
-    let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let token = random_token();
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }

@@ -130,3 +130,17 @@ pub struct McpClientConfig {
     /// Auto-Configure can write the file.
     pub can_write: bool,
 }
+
+/// A window's answer to an [`McpUiRequest`] (`mcp_respond`).
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum McpAnswer {
+    /// To `Confirm`.
+    Confirm { allow: bool },
+    /// To `OpenFile`.
+    Done,
+    /// To `OpenEditors`.
+    OpenEditors { editors: McpOpenEditors },
+    /// The UI could not do it.
+    Failed { message: String },
+}
