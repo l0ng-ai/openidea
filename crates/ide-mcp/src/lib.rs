@@ -11,6 +11,8 @@ pub mod clients;
 pub mod http;
 pub mod project;
 pub mod protocol;
+pub mod skills;
+pub mod stdio;
 pub mod tool;
 pub mod tools;
 

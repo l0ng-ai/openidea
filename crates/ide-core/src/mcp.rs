@@ -112,6 +112,73 @@ pub enum McpClientKind {
     VsCode,
     Windsurf,
     Gemini,
+    /// The Claude desktop app: it starts servers as commands (`openidea mcp-stdio`).
+    ClaudeDesktop,
+    Junie,
+    /// JetBrains Air.
+    Air,
+    GitHubCopilotCli,
+    /// The GitHub Copilot plugin for JetBrains IDEs.
+    GitHubCopilotIdePlugin,
+}
+
+/// How a configured server entry talks to its server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpTransport {
+    /// The client starts a command and talks over its stdin / stdout.
+    Stdio,
+    Sse,
+    /// Streamable HTTP.
+    Http,
+}
+
+/// An MCP client found on this machine (`mcp_detect_clients`), and whether its
+/// configuration reaches this server.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDetectedClient {
+    pub client: McpClientKind,
+    /// The project whose configuration this is; `None` for the user-level one.
+    pub project: Option<IpcPath>,
+    pub file: IpcPath,
+    /// Some entry points at OpenIDEA (any port); `None` when the file lists no servers.
+    pub configured: Option<bool>,
+    /// The entries that look like OpenIDEA's use this server's port (`false`: a stale port).
+    pub port_correct: bool,
+    /// The `openidea` entry has this server's URL and token.
+    pub current: bool,
+    /// The transports of all the file's server entries.
+    pub transports: Vec<McpTransport>,
+}
+
+/// An agent a bundled skill can be installed for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpSkillTarget {
+    /// Claude Code (`~/.claude/skills`).
+    Claude,
+    /// Codex (`~/.codex/skills`).
+    Codex,
+    /// Junie (`~/.junie/skills`).
+    Junie,
+    /// Agents reading the shared `~/.agents/skills`.
+    Other,
+}
+
+/// A skill OpenIDEA bundles for agents that use its MCP tools.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSkillInfo {
+    pub id: String,
+    pub description: String,
+    pub targets: Vec<McpSkillTarget>,
+    /// The MCP tools the skill uses.
+    pub tools: Vec<String>,
+    /// Settings disable none of the tools the skill needs.
+    pub available: bool,
+    /// Where it is installed now.
+    pub installed: Vec<McpSkillTarget>,
 }
 
 /// A client's configuration for this server.

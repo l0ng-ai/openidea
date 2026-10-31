@@ -63,6 +63,11 @@ export const MCP_CLIENT_NAMES: Record<McpClientKind, string> = {
   vsCode: "VS Code",
   windsurf: "Windsurf",
   gemini: "Gemini CLI",
+  claudeDesktop: "Claude Desktop",
+  junie: "Junie",
+  air: "Air",
+  gitHubCopilotCli: "GitHub Copilot CLI",
+  gitHubCopilotIdePlugin: "GitHub Copilot (IDE Plugin)",
 };
 
 // ---------------------------------------------------------------------------
