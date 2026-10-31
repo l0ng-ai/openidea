@@ -164,6 +164,7 @@ describe("project clipboard ownership", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     useRemote.setState({ session: null });
     setProjectFsForTests(null);
     setOsClipboardForTests(null);
@@ -225,36 +226,93 @@ describe("project clipboard ownership", () => {
     expect(pendingFileRefactorDialog()?.kind).toBe(cut ? "move" : "copy");
   });
 
-  it.each([false, true].flatMap((cut) => ["same", "other", "empty", "error"].map((osList) => ({ cut, osList }))))(
-    "keeps remote paths internal (cut=$cut OS=$osList)",
-    async ({ cut, osList }) => {
+  const remoteCases = [false, true].flatMap((handedOff) =>
+    ["same", "other", "empty", "error"].flatMap((osList) =>
+      [false, true].flatMap((cut) => ["focus", "paste"].map((entry) => ({ handedOff, osList, cut, entry }))),
+    ),
+  );
+
+  it.each(remoteCases)(
+    "remote hand-off=$handedOff OS=$osList cut=$cut on $entry",
+    async ({ handedOff, osList, cut, entry }) => {
       useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
-      const setFiles = vi.fn(async () => true);
-      setOsClipboardForTests({
-        files: async () => {
-          if (osList === "error") throw new Error("busy");
-          return osList === "same" ? ["/p/source.txt"] : osList === "other" ? ["/other.txt"] : [];
-        },
-        hasFiles: async () => false,
-        setFiles,
+      const writeText = vi.fn(async () => {
+        if (!handedOff) throw new Error("unavailable");
       });
+      vi.stubGlobal("navigator", { clipboard: { writeText } });
+      const setFiles = vi.fn(async () => true);
+      const files = vi.fn(async () => {
+        if (osList === "error") throw new Error("busy");
+        return osList === "same" ? ["/p/source.txt"] : osList === "other" ? ["/other.txt"] : [];
+      });
+      setOsClipboardForTests({ files, hasFiles: async () => false, setFiles });
       copySelection(cut);
-      await refreshOsClipboard();
-      await paste("/p/target");
+      const clipboard = useProjectTree.getState().clipboard;
+      const stale = handedOff && (osList === "same" || osList === "other");
+      const copied = vi.spyOn(fs, "copy");
+      const imported = vi.spyOn(fs, "importLocal").mockResolvedValue([]);
+      if (entry === "focus") await refreshOsClipboard();
+      else await paste("/p/target");
+      expect(writeText).toHaveBeenCalledWith("/p/source.txt");
       expect(setFiles).not.toHaveBeenCalled();
-      expect(useProjectTree.getState().clipboard?.paths).toEqual(["/p/source.txt"]);
-      expect(pendingFileRefactorDialog()?.kind).toBe(cut ? "move" : "copy");
-      if (!cut) {
-        const copied = vi.spyOn(fs, "copy");
-        const imported = vi.spyOn(fs, "importLocal");
-        const dialog = pendingFileRefactorDialog()!;
-        if (dialog.kind !== "copy") throw new Error("expected Copy dialog");
-        await dialog.copy("/p/target", null, false);
-        expect(copied).toHaveBeenCalledWith("/p/source.txt", "/p/target/source.txt");
-        expect(imported).not.toHaveBeenCalled();
+      expect(files).toHaveBeenCalledTimes(1);
+      expect(useProjectTree.getState().clipboard).toBe(stale ? null : clipboard);
+      expect(canPaste()).toBe(true);
+      if (entry === "paste") {
+        if (stale) {
+          expect(imported).toHaveBeenCalledWith(
+            osList === "same" ? "/p/source.txt" : "/other.txt",
+            osList === "same" ? "/p/target/source.txt" : "/p/target/other.txt",
+            expect.anything(),
+          );
+          expect(pendingFileRefactorDialog()).toBeNull();
+          expect(copied).not.toHaveBeenCalled();
+        } else {
+          const dialog = pendingFileRefactorDialog()!;
+          expect(dialog).toEqual(expect.objectContaining({ kind: cut ? "move" : "copy", paths: ["/p/source.txt"] }));
+          if (dialog.kind === "copy") {
+            await dialog.copy("/p/target", null, false);
+            expect(copied).toHaveBeenCalledWith("/p/source.txt", "/p/target/source.txt");
+          }
+          expect(imported).not.toHaveBeenCalled();
+        }
       }
     },
   );
+
+  it("writes multiple remote paths as newline-joined text", async () => {
+    useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+    await fs.createFile("/p/second.txt");
+    await loadDir("/p", true);
+    setSelection(new Set(["/p/source.txt", "/p/second.txt"]), "/p/source.txt");
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    copySelection(false);
+    expect(await useProjectTree.getState().clipboard?.osWrite).toBe(true);
+    expect(writeText).toHaveBeenCalledWith("/p/source.txt\n/p/second.txt");
+  });
+
+  it("waits for a pending remote text write before reading file URLs", async () => {
+    useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+    let finish!: () => void;
+    vi.stubGlobal("navigator", {
+      clipboard: {
+        writeText: () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      },
+    });
+    const files = vi.fn(async () => []);
+    setOsClipboardForTests({ files, hasFiles: async () => false, setFiles: async () => true });
+    copySelection(false);
+    const refreshing = refreshOsClipboard();
+    await Promise.resolve();
+    expect(files).not.toHaveBeenCalled();
+    finish();
+    await refreshing;
+    expect(useProjectTree.getState().clipboard?.remote).toBe(true);
+  });
 
   it("waits for the hand-off before reading the OS clipboard", async () => {
     let finish!: (written: boolean) => void;

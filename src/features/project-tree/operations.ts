@@ -478,13 +478,13 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
 export function copySelection(cut: boolean) {
   const paths = topLevelPaths(selectedNodes().filter((n) => (cut ? mutable(n) : !n.root && !n.group)));
   if (!paths.length) return;
-  // Remote paths belong to the server, not the client's OS clipboard.
+  // Remote paths are useful as text, but do not name files on the client.
   const remote = isRemoteWindow();
-  const osWrite = remote
-    ? undefined
-    : osClipboard()
-        .setFiles(paths)
-        .catch(() => false);
+  const osWrite = (async () => {
+    if (!remote) return osClipboard().setFiles(paths);
+    await navigator.clipboard.writeText(paths.join("\n"));
+    return true;
+  })().catch(() => false);
   setClipboard({ paths, cut, remote, osWrite });
 }
 
@@ -507,7 +507,10 @@ async function readOsClipboard(): Promise<string[] | null> {
   // A newer Copy/Cut owns the state if this read (or its hand-off) was delayed.
   if (get().clipboard !== clipboard) return null;
   osHasFiles = external.length > 0;
-  if (handedOff && !sameFiles(external, clipboard?.paths)) setClipboard(null);
+  // Our remote text write removes file URLs, so any files were copied later.
+  // A failed write leaves ownership uncertain; retain the remote copy then.
+  if (handedOff && (clipboard?.remote ? external.length > 0 : !sameFiles(external, clipboard?.paths)))
+    setClipboard(null);
   return external;
 }
 
