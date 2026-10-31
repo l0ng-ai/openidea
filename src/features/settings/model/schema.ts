@@ -216,6 +216,9 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       theme: oneOf(a.theme, THEMES, d.appearance.theme),
       accent: typeof a.accent === "string" && HEX_COLOR.test(a.accent) ? a.accent.toLowerCase() : d.appearance.accent,
       uiFontSize: num(a.uiFontSize, d.appearance.uiFontSize, LIMITS.uiFontSize, true),
+      // On the first launch the backend adopts the OS language (zh on Simplified
+      // Chinese systems) and persists it; `"en"` here is only the fallback for
+      // unknown values.
       locale: oneOf(a.locale, LOCALES, d.appearance.locale),
     },
     editor: {

@@ -52,3 +52,4 @@ uuid.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }
 tempfile.workspace = true
+sys-locale.workspace = true

@@ -78,6 +78,9 @@ dunce = "1"
 dirs = "6"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
+# platform & locale
+sys-locale = "0.3"
+
 # search, index, language
 grep-searcher = "0.1"
 grep-regex = "0.1"
