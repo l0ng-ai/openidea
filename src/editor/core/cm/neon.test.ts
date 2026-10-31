@@ -99,6 +99,114 @@ services:
     ]);
   });
 
+  // The cases below come from intellij-neon's NeonHighlightingLexerTest.
+  const value = async (text: string) => (await tokens(`[${text}]`))[0];
+
+  it("takes a value after `=` for a key, and keeps an entity's name a plain string", async () => {
+    expect((await tokens("key= val"))[0]).toEqual(["key", "key"]);
+    expect(await tokens("Foo(key: val)")).toEqual([
+      ["Foo", "string"],
+      ["key", "key"],
+      ["val", "string"],
+    ]);
+  });
+
+  it.each("true True TRUE yes Yes YES on On ON false False FALSE no No NO off Off OFF null Null NULL".split(" "))(
+    "colours %s as a constant",
+    async (text) => {
+      expect(await value(text)).toEqual([text, "constant"]);
+    },
+  );
+
+  it("does not take mixed case or a quoted keyword for a constant", async () => {
+    expect(await value("TruE")).toEqual(["TruE", "string"]);
+    expect(await value('"true"')).toEqual(['"true"', "string"]);
+  });
+
+  it.each(["42", "-1", "3.14", "0", "-0.5", "1.5e3", "1.5E-3", "0xff", "0xFF", "0o777", "0b1010"])(
+    "colours %s as a number",
+    async (text) => {
+      expect(await value(text)).toEqual([text, "number"]);
+    },
+  );
+
+  it.each(["42px", "-1e", "1e+-1", "--1"])("does not take %s for a number", async (text) => {
+    expect(await value(text)).toEqual([text, "string"]);
+  });
+
+  it.each([
+    "2025-10-20",
+    "2025-1-5",
+    "2025-10-20T11:44:55",
+    "2025-10-20 11:44:55",
+    "2025-10-20 11:44:55.1234",
+    "2025-10-20 11:44:55+0200",
+    "2025-10-20 11:44:55Z",
+  ])("colours the date %s as a number", async (text) => {
+    expect(await value(text)).toEqual([text, "number"]);
+  });
+
+  it.each(["2025-10", "10-20-2025", "hello", "mariadb-11.8.2", "Europe/Prague", "date.timezone", "app/Model"])(
+    "leaves %s a plain string",
+    async (text) => {
+      expect(await value(text)).toEqual([text, "string"]);
+    },
+  );
+
+  it.each(["@routerFactory", "@App\\Model\\Handler", "@factory::create"])("marks %s as a service", async (text) => {
+    expect(await value(text)).toEqual([text, "service"]);
+  });
+
+  it.each(["App\\Model\\Foo", "app/Model/Foo.php", "src/test.neon", "services.neon", "Foo.php"])(
+    "marks %s as a class or file",
+    async (text) => {
+      expect(await value(text)).toEqual([text, "class"]);
+    },
+  );
+
+  // From intellij-neon's parser fixtures.
+  it("reads the edge cases of strings and colons", async () => {
+    expect(
+      await tokens(`a: 'fo''o'
+b: "\\"x"
+c: the"string#literal
+d: the"string #literal
+e: :abc
+f: a:bc
+g: !hello
+`),
+    ).toEqual([
+      ["a", "key"],
+      ["'fo''o'", "string"],
+      ["b", "key"],
+      ['"\\"x"', "string"],
+      ["c", "key"],
+      ['the"string#literal', "string"],
+      ["d", "key"],
+      ['the"string', "string"],
+      ["#literal", "comment"],
+      ["e", "key"],
+      [":abc", "string"],
+      ["f", "key"],
+      ["a:bc", "string"],
+      ["g", "key"],
+      ["!hello", "string"],
+    ]);
+  });
+
+  it("marks a parameter next to escaped percents in one string", async () => {
+    expect(await tokens(`a: '%%escaped%% and %realVar%'\n`)).toEqual([
+      ["a", "key"],
+      ["'%%escaped%% and ", "string"],
+      ["%realVar%", "variable"],
+      ["'", "string"],
+    ]);
+  });
+
+  it("does not open a multiline string when text follows the quotes", async () => {
+    expect(await tokens(`a: """b"""\nc: 1\n`)).toContainEqual(["c", "key"]);
+  });
+
   it("flags a character NEON has no token for", async () => {
     expect(await tokens("a: `b\n")).toContainEqual(["`", "invalid"]);
   });
