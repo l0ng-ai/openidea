@@ -65,7 +65,8 @@ pub struct Documents {
     /// Workspace transactions hold this across preflight/commit/rollback; ordinary
     /// operations re-enter it while accessing the individual document locks.
     operations: ReentrantMutex<()>,
-    workspace_edits: Mutex<workspace_edit::History>,
+    workspace_edits: Arc<Mutex<workspace_edit::History>>,
+    workspace_edit_active: std::sync::atomic::AtomicBool,
     registry: Mutex<Registry>,
     observers: RwLock<Vec<Arc<dyn DocumentObserver>>>,
     sink: SharedSink,
@@ -171,7 +172,8 @@ impl Documents {
     pub fn new(sink: SharedSink, detect_language: Box<DetectLanguage>) -> Self {
         Self {
             operations: ReentrantMutex::new(()),
-            workspace_edits: Mutex::default(),
+            workspace_edits: Arc::default(),
+            workspace_edit_active: std::sync::atomic::AtomicBool::new(false),
             registry: Mutex::default(),
             observers: RwLock::default(),
             sink,
@@ -571,7 +573,13 @@ impl Documents {
         edits: &[ByteEdit],
     ) {
         self.notify_changed(doc, st, applied, edits);
-        self.sink.emit(IdeEvent::DocPatched { doc, base_version, version: st.doc.version(), changes: set.changes });
+        self.sink.emit(IdeEvent::DocPatched {
+            doc,
+            base_version,
+            version: st.doc.version(),
+            changes: set.changes,
+            workspace_edit: self.workspace_edit_active.load(std::sync::atomic::Ordering::Relaxed),
+        });
     }
 
     /// Minimal-diff replacement; no event when the text is unchanged.

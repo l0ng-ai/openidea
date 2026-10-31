@@ -8,12 +8,81 @@ use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Once};
+use std::time::{Duration, SystemTime};
 
-#[derive(Default)]
+const MAX_HISTORY_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_HISTORY_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+const SNAPSHOT_PREFIX: &str = "openidea-workspace-edit-";
+
+struct ActiveEdit<'a>(&'a AtomicBool);
+impl<'a> ActiveEdit<'a> {
+    fn new(active: &'a AtomicBool) -> Self {
+        active.store(true, Ordering::Relaxed);
+        Self(active)
+    }
+}
+impl Drop for ActiveEdit<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
 pub(super) struct History {
     next: u32,
+    reaper: bool,
     records: VecDeque<(u32, Record)>,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        static CLEANUP: Once = Once::new();
+        CLEANUP.call_once(|| cleanup_abandoned(&std::env::temp_dir()));
+        Self { next: 0, reaper: false, records: VecDeque::new() }
+    }
+}
+
+impl History {
+    fn prune(&mut self, now: SystemTime, max_bytes: u64, max_age: Duration) {
+        self.records.retain(|(_, record)| now.duration_since(record.created).unwrap_or_default() < max_age);
+        let mut bytes: u64 = self.records.iter().map(|(_, record)| record.bytes).sum();
+        while self.records.len() > 20 || bytes > max_bytes {
+            let Some((_, record)) = self.records.pop_front() else { break };
+            bytes = bytes.saturating_sub(record.bytes);
+        }
+    }
+}
+
+/// A locked owner file distinguishes live snapshots from abandoned undo/staging
+/// data. Unknown legacy directories may contain recovery data, so leave them alone.
+fn cleanup_abandoned(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !entry.file_name().to_string_lossy().starts_with(SNAPSHOT_PREFIX)
+            || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+            || path.join("recovery").exists()
+        {
+            continue;
+        }
+        let Ok(owner) = fs::OpenOptions::new().read(true).write(true).open(path.join("owner.lock")) else { continue };
+        if owner.try_lock().is_ok() && !path.join("recovery").exists() {
+            // Windows cannot remove an open file. Once unlocked the abandoned
+            // directory cannot be acquired by a new transaction (names are unique).
+            drop(owner);
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn snapshot_bytes(path: &Path) -> IdeResult<u64> {
+    let meta = fs::symlink_metadata(path)?;
+    if meta.is_dir() {
+        fs::read_dir(path)?.try_fold(0u64, |bytes, entry| Ok(bytes.saturating_add(snapshot_bytes(&entry?.path())?)))
+    } else {
+        Ok(meta.len())
+    }
 }
 
 struct SavedPath {
@@ -22,7 +91,12 @@ struct SavedPath {
 }
 
 struct Record {
+    // Drop the lock before TempDir removes the directory on Windows.
+    _owner: fs::File,
     directory: tempfile::TempDir,
+    created: SystemTime,
+    bytes: u64,
+    undone: bool,
     paths: Vec<SavedPath>,
     documents: Vec<(DocId, DocState)>,
     after: Vec<WorkspaceEditPrecondition>,
@@ -172,6 +246,24 @@ fn hash_disk(hash: &mut blake3::Hasher, path: &Path) -> IdeResult<()> {
     Ok(())
 }
 
+/// A reverted edit may leave the dirty flag set even when all saved bytes match.
+fn has_unsaved_changes(state: &DocState) -> IdeResult<bool> {
+    if !state.dirty {
+        return Ok(false);
+    }
+    let text = state.doc.text_for_save();
+    let bytes = if state.native_to_ascii {
+        ide_vfs::encode_properties_ascii(&text).into_bytes()
+    } else {
+        ide_vfs::encode(&text, &state.encoding, state.has_bom)?
+    };
+    match fs::read(&state.path) {
+        Ok(disk) => Ok(disk != bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error.into()),
+    }
+}
+
 impl Documents {
     /// Capture disk and unsaved-buffer contents before returning an edit for preview.
     /// Existing preconditions must survive preview filtering and code-action resolution.
@@ -193,7 +285,7 @@ impl Documents {
                 for id in self.open_documents() {
                     self.with_doc(id, |state| {
                         let file = text_path(&state.path)?;
-                        if state.dirty && file.starts_with(path) {
+                        if file.starts_with(path) && has_unsaved_changes(state)? {
                             dirty.push((
                                 file,
                                 state.doc.text(),
@@ -259,6 +351,7 @@ impl Documents {
                 }
             }
         }
+        edit.deduplicate();
         let roots = paths(&edit)?;
         // The watcher may not have delivered an external write yet. Never save
         // an edit over disk contents that differ from a supposedly clean buffer.
@@ -275,10 +368,15 @@ impl Documents {
                 Ok(())
             })?;
         }
+        self.workspace_edits.lock().prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
         let mut record = self.backup(&roots)?;
         self.preflight(&record, &edit)?;
         fs::remove_dir_all(record.directory.path().join("stage"))?;
         self.validate_preconditions(&edit.preconditions)?;
+        // A crash during commit can still need these files. Only a completed
+        // commit turns this into an expendable undo snapshot.
+        fs::write(record.directory.path().join("recovery"), b"commit in progress")?;
+        let _active = ActiveEdit::new(&self.workspace_edit_active);
         if let Err(error) = self.apply_sequence(&edit, before_operation) {
             return Err(self.recover(record, error));
         }
@@ -286,21 +384,56 @@ impl Documents {
             Ok(after) => after,
             Err(error) => return Err(self.recover(record, error)),
         };
+        if let Err(error) = fs::remove_file(record.directory.path().join("recovery")) {
+            return Err(self.recover(record, error.into()));
+        }
         if remember {
             let mut history = self.workspace_edits.lock();
             history.next += 1;
             let id = history.next;
+            let mut affected: Vec<ide_core::IpcPath> = roots.into_iter().map(Into::into).collect();
+            affected.extend(record.documents.iter().map(|(_, state)| state.path.clone().into()));
+            affected.sort();
+            affected.dedup();
             history.records.push_back((id, record));
-            while history.records.len() > 20 {
-                history.records.pop_front();
+            if !history.reaper {
+                history.reaper = true;
+                let weak = Arc::downgrade(&self.workspace_edits);
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(Duration::from_secs(60));
+                        let Some(history) = weak.upgrade() else { break };
+                        let mut history = history.lock();
+                        history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
+                        if history.records.is_empty() {
+                            history.reaper = false;
+                            break;
+                        }
+                    }
+                });
             }
-            self.sink.emit(IdeEvent::WorkspaceEditApplied { id });
+            history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
+            self.sink.emit(IdeEvent::WorkspaceEditApplied { id, paths: affected });
         }
         Ok(())
     }
 
     fn backup(&self, roots: &[PathBuf]) -> IdeResult<Record> {
-        let directory = tempfile::Builder::new().prefix("openidea-workspace-edit-").tempdir()?;
+        let bytes = roots.iter().try_fold(0u64, |bytes, path| {
+            let size = if fs::symlink_metadata(path).is_ok() { snapshot_bytes(path)? } else { 0 };
+            Ok::<_, IdeError>(bytes.saturating_add(size))
+        })?;
+        if bytes > MAX_HISTORY_BYTES {
+            return Err(IdeError::invalid("workspace edit exceeds the 256 MiB recovery snapshot limit"));
+        }
+        let directory = tempfile::Builder::new().prefix(SNAPSHOT_PREFIX).tempdir()?;
+        // Publish the owner path only after acquiring its lock, so another
+        // starting process cannot mistake a new snapshot for an abandoned one.
+        let owner = tempfile::NamedTempFile::new_in(directory.path())?;
+        owner.as_file().lock()?;
+        let owner = owner
+            .persist_noclobber(directory.path().join("owner.lock"))
+            .map_err(|error| IdeError::from(error.error))?;
         let mut paths = Vec::new();
         for (index, path) in roots.iter().enumerate() {
             let backup = match fs::symlink_metadata(path) {
@@ -336,7 +469,21 @@ impl Documents {
             directory.path().join("paths.json"),
             serde_json::to_vec(&manifest).map_err(|error| IdeError::internal(error.to_string()))?,
         )?;
-        Ok(Record { directory, paths, documents, after: Vec::new() })
+        let bytes = snapshot_bytes(directory.path())?
+            .saturating_add(documents.iter().map(|(_, state)| u64::from(state.doc.len_utf16()) * 2).sum::<u64>());
+        if bytes > MAX_HISTORY_BYTES {
+            return Err(IdeError::invalid("workspace edit exceeds the 256 MiB recovery snapshot limit"));
+        }
+        Ok(Record {
+            _owner: owner,
+            directory,
+            created: SystemTime::now(),
+            bytes,
+            undone: false,
+            paths,
+            documents,
+            after: Vec::new(),
+        })
     }
 
     fn preflight(&self, record: &Record, edit: &WorkspaceEdit) -> IdeResult<()> {
@@ -432,9 +579,13 @@ impl Documents {
                     }
                     let info = self.open(path)?;
                     let result: IdeResult<()> = (|| {
+                        // In-place rename restores its temporary typing before the
+                        // server request. A dirty flag alone can therefore describe
+                        // a buffer whose encoded bytes already match the saved file.
+                        let unsaved = self.with_doc(info.id, |state| has_unsaved_changes(state))?;
                         self.apply_edits(info.id, edits)?;
                         // Do not save unrelated unsaved work as a side effect of a refactoring.
-                        if !info.dirty {
+                        if !unsaved {
                             self.save(info.id)?;
                         } else {
                             self.with_doc(info.id, |state| {
@@ -590,22 +741,54 @@ impl Documents {
         }
     }
 
+    /// Explicitly release disposable snapshots before an exit that bypasses Drop.
+    /// Failed-rollback recovery directories are detached and remain untouched.
+    pub fn clear_workspace_edit_history(&self) {
+        let _operation = self.operations.lock();
+        self.workspace_edits.lock().records.clear();
+    }
+
     /// Refuse to overwrite work made after the refactoring; keep the undo record on failure.
     pub fn undo_workspace_edit(&self, id: u32) -> IdeResult<()> {
+        self.workspace_edit_history(id, false)
+    }
+
+    pub fn redo_workspace_edit(&self, id: u32) -> IdeResult<()> {
+        self.workspace_edit_history(id, true)
+    }
+
+    fn workspace_edit_history(&self, id: u32, redo: bool) -> IdeResult<()> {
         let _operation = self.operations.lock();
         let mut history = self.workspace_edits.lock();
+        history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
         let index = history
             .records
             .iter()
             .position(|(key, _)| *key == id)
             .ok_or_else(|| IdeError::not_found("the refactoring can no longer be undone"))?;
         let record = &history.records[index].1;
+        if record.undone != redo {
+            return Err(IdeError::invalid("the refactoring is already in the requested history state"));
+        }
         self.validate_preconditions(&record.after)?;
-        let current = self.backup(&record.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>())?;
+        let roots = record.paths.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
+        let mut current = self.backup(&roots)?;
+        fs::write(current.directory.path().join("recovery"), b"history restore in progress")?;
+        let _active = ActiveEdit::new(&self.workspace_edit_active);
         if let Err(error) = self.restore(record) {
             return Err(self.recover(current, error));
         }
-        history.records.remove(index);
+        current.after = match self.fingerprints(&roots) {
+            Ok(after) => after,
+            Err(error) => return Err(self.recover(current, error)),
+        };
+        current.undone = !redo;
+        current.created = record.created;
+        if let Err(error) = fs::remove_file(current.directory.path().join("recovery")) {
+            return Err(self.recover(current, error.into()));
+        }
+        history.records[index].1 = current;
+        history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
         Ok(())
     }
 }
@@ -662,6 +845,156 @@ fn copy_snapshot(from: &Path, to: &Path) -> IdeResult<()> {
 mod tests {
     use super::*;
     use ide_core::{ChangeSet, Pos, Range, TextChange, TextEdit};
+
+    #[test]
+    fn snapshot_size_age_and_exit_cleanup_release_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("file.txt");
+        fs::write(&path, "old").unwrap();
+        let docs = Documents::new(Arc::new(NullSink), Box::new(|_, _| ide_core::LanguageId::plain_text()));
+        let mut first = docs.backup(std::slice::from_ref(&path)).unwrap();
+        let old_dir = first.directory.path().to_owned();
+        let second = docs.backup(std::slice::from_ref(&path)).unwrap();
+        let new_dir = second.directory.path().to_owned();
+        let max_bytes = second.bytes;
+        first.created = SystemTime::now() - MAX_HISTORY_AGE;
+        let mut history = docs.workspace_edits.lock();
+        history.records.push_back((1, first));
+        history.records.push_back((2, second));
+        history.prune(SystemTime::now(), MAX_HISTORY_BYTES, MAX_HISTORY_AGE);
+        assert!(!old_dir.exists(), "expired snapshots are deleted, not just unindexed");
+        assert!(new_dir.exists());
+        let third = docs.backup(std::slice::from_ref(&path)).unwrap();
+        let last_dir = third.directory.path().to_owned();
+        history.records.push_back((3, third));
+        history.prune(SystemTime::now(), max_bytes, MAX_HISTORY_AGE);
+        assert!(!new_dir.exists(), "the byte budget evicts the oldest record");
+        assert!(last_dir.exists());
+        drop(history);
+        docs.clear_workspace_edit_history();
+        assert!(!last_dir.exists(), "normal exit explicitly releases snapshots");
+    }
+
+    #[test]
+    fn oversized_snapshot_is_refused_before_mutating_any_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("huge.bin");
+        fs::File::create(&path).unwrap().set_len(MAX_HISTORY_BYTES + 1).unwrap();
+        let docs = Documents::new(Arc::new(NullSink), Box::new(|_, _| ide_core::LanguageId::plain_text()));
+        let error = docs
+            .apply_workspace_edit(&WorkspaceEdit {
+                files: vec![FileEdit::Delete { path: path.clone().into(), recursive: false }],
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(error.message.contains("256 MiB"));
+        assert_eq!(fs::metadata(path).unwrap().len(), MAX_HISTORY_BYTES + 1);
+    }
+
+    #[test]
+    fn snapshot_crash_child() {
+        let Some(root) = std::env::var_os("OPENIDEA_SNAPSHOT_CRASH_FIXTURE") else { return };
+        let root = PathBuf::from(root);
+        for (name, recovery) in [("undo", false), ("recovery", true)] {
+            let directory = tempfile::Builder::new().prefix(SNAPSHOT_PREFIX).tempdir_in(&root).unwrap();
+            let owner = fs::OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(directory.path().join("owner.lock"))
+                .unwrap();
+            owner.lock().unwrap();
+            fs::write(directory.path().join("paths.json"), b"[]").unwrap();
+            if recovery {
+                fs::write(directory.path().join("recovery"), b"rollback required").unwrap();
+            }
+            fs::write(root.join(name), directory.path().to_string_lossy().as_bytes()).unwrap();
+            // Simulate process death: neither TempDir nor the owner lock is dropped.
+            std::mem::forget(owner);
+            std::mem::forget(directory);
+        }
+        std::process::exit(0);
+    }
+
+    #[test]
+    fn startup_cleanup_after_crash_keeps_live_and_recovery_snapshots() {
+        let root = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "documents::workspace_edit::tests::snapshot_crash_child"])
+            .env("OPENIDEA_SNAPSHOT_CRASH_FIXTURE", root.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let undo = PathBuf::from(fs::read_to_string(root.path().join("undo")).unwrap());
+        let recovery = PathBuf::from(fs::read_to_string(root.path().join("recovery")).unwrap());
+        assert!(undo.exists());
+        let live = tempfile::Builder::new().prefix(SNAPSHOT_PREFIX).tempdir_in(root.path()).unwrap();
+        let owner = fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(live.path().join("owner.lock"))
+            .unwrap();
+        owner.lock().unwrap();
+        let unknown = root.path().join(format!("{SNAPSHOT_PREFIX}legacy-recovery"));
+        fs::create_dir(&unknown).unwrap();
+        cleanup_abandoned(root.path());
+        assert!(!undo.exists());
+        assert!(recovery.exists(), "crash recovery files are never expired or size-evicted");
+        assert!(live.path().exists(), "another live app's owner lock protects its snapshots");
+        assert!(unknown.exists(), "legacy recovery files have no safe deletion marker");
+        drop(owner);
+        cleanup_abandoned(root.path());
+        assert!(!live.path().exists());
+    }
+
+    #[test]
+    fn java_mid_apply_failure_rolls_back_declaration_and_closed_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let declaration = tmp.path().join("Main.java");
+        let usage = tmp.path().join("Use.java");
+        fs::write(&declaration, "class Original {}\n").unwrap();
+        fs::write(&usage, "class Use { Original value; }\n").unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let docs =
+            Documents::new(Arc::new(move |e| sink.lock().push(e)), Box::new(|_, _| ide_core::LanguageId::new("java")));
+        let info = docs.open(&declaration).unwrap();
+        let edit = WorkspaceEdit {
+            files: vec![(declaration.clone(), 6, Some(info.version as i32)), (usage.clone(), 12, None)]
+                .into_iter()
+                .map(|(path, col, version)| FileEdit::Edit {
+                    path: path.into(),
+                    version,
+                    edits: vec![TextEdit {
+                        range: Range::new(Pos::new(0, col), Pos::new(0, col + 8)),
+                        new_text: "Renamed".into(),
+                    }],
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let error = docs
+            .apply_workspace_edit_inner(&edit, true, &mut |index| {
+                if index == 1 { Err(IdeError::internal("injected Java usage write failure")) } else { Ok(()) }
+            })
+            .unwrap_err();
+        assert!(error.message.contains("injected Java"));
+        assert_eq!(fs::read_to_string(&declaration).unwrap(), "class Original {}\n");
+        assert_eq!(fs::read_to_string(&usage).unwrap(), "class Use { Original value; }\n");
+        assert_eq!(docs.snapshot(info.id).unwrap().text, "class Original {}\n");
+        assert!(!docs.snapshot(info.id).unwrap().dirty);
+        assert!(
+            events
+                .lock()
+                .iter()
+                .filter_map(|e| match e {
+                    IdeEvent::DocPatched { workspace_edit, .. } => Some(workspace_edit),
+                    _ => None,
+                })
+                .all(|grouped| *grouped)
+        );
+    }
 
     #[test]
     fn failed_second_write_rolls_back_disk_and_dirty_buffers() {

@@ -170,6 +170,7 @@ pub fn run() {
         let _ = &early_opens;
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
+                state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }
             // Cleanup must finish before update/restart replaces this process.
