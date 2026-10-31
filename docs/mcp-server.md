@@ -54,9 +54,9 @@ The names and parameters follow the JetBrains MCP server (2026.2), so prompts an
 | `execute_terminal_command`                        | execute | Runs a shell command in the project root                                       |
 | `build_project`                                   | execute | Build Project (Maven, Gradle, Cargo, Go, TypeScript) and its problems          |
 
-Edits go through the editor's documents, so open editors update and the change can be undone, and are saved to disk. Changes outside the project are refused. The tool list on the settings page turns single tools off.
+Edits go through the editor's documents, so open editors update and the change can be undone, and are saved to disk. Changes outside the project and to version control metadata (`.git`, `.hg`, `.svn`, …) are refused: hooks and configuration there would run code on the next VCS command. The tool list on the settings page turns single tools off.
 
-**Execute** tools ask first: the project window shows which client wants to run what, with **Allow** and **Deny**. Check **Run shell commands and run configurations without confirmation (brave mode)** to skip the question; only do that for clients you trust.
+**Execute** tools ask first: the project window shows which client wants to run what (for a run configuration, with the environment variables the client sets), with **Allow** and **Deny**. Reading a file outside the project and its content roots asks the same way. Check **Run shell commands and run configurations without confirmation (brave mode)** to skip the questions; only do that for clients you trust.
 
 ## Limitations
 
