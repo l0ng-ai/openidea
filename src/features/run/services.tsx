@@ -25,8 +25,10 @@ import {
   type ServiceProviderContribution,
   type ServiceTreeItem,
 } from "@/workbench/contributions";
-import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
+import { CATEGORY_ORDER, categoryOf, commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
+import { openUrl } from "./navigate";
 import { SessionPanel } from "./RunView";
+import { pickServices } from "./serviceImport";
 import { startRun, useRun, type RunSession } from "./store";
 import {
   currentServiceSession,
@@ -54,7 +56,7 @@ const CONFIG_PREFIX = "run:config:";
 const STORAGE_KEY = "openidea.services.runTypes:";
 const RAN_KEY = "openidea.services.ran:";
 /** Types shown in Services until the user changes the list. */
-export const DEFAULT_TYPES: readonly string[] = ["spring-boot"];
+export const DEFAULT_TYPES: readonly string[] = ["spring-boot", "vue"];
 
 // ---------------------------------------------------------------------------
 // Types added to Services, per project
@@ -136,6 +138,70 @@ export function recordRun(configId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Configurations hidden from Services, per project (removed one by one; "Add Service" restores)
+
+const HIDDEN_KEY = "openidea.services.runHidden:";
+
+const useHiddenConfigs = create<{ location: string | null; hidden: Record<string, string[]> }>(() => ({
+  location: null,
+  hidden: {},
+}));
+
+/** Hidden configuration ids per kind, persisted per project. */
+export function readHidden(location: string | null): Record<string, string[]> {
+  if (!location) return {};
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(HIDDEN_KEY + location) ?? "{}");
+    const hidden: Record<string, string[]> = {};
+    if (raw && typeof raw === "object")
+      for (const [kind, ids] of Object.entries(raw))
+        if (Array.isArray(ids)) hidden[kind] = ids.filter((id): id is string => typeof id === "string");
+    return hidden;
+  } catch {
+    return {};
+  }
+}
+
+function currentHidden(): Record<string, string[]> {
+  const s = useHiddenConfigs.getState();
+  const location = projectLocation(useProject.getState().project?.root);
+  return s.location === location ? s.hidden : readHidden(location);
+}
+
+function saveHidden(hidden: Record<string, string[]>) {
+  const location = projectLocation(useProject.getState().project?.root);
+  useHiddenConfigs.setState({ location, hidden });
+  if (!location) return;
+  try {
+    localStorage.setItem(HIDDEN_KEY + location, JSON.stringify(hidden));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** Removes one configuration from Services; it reappears while it runs (its console stays reachable). */
+function hideConfig(kind: string, id: string) {
+  const hidden = currentHidden();
+  if ((hidden[kind] ?? []).includes(id)) return;
+  saveHidden({ ...hidden, [kind]: [...(hidden[kind] ?? []), id] });
+}
+
+/** "Add Service" on a type group: pick which of the kind's configurations show. */
+async function pickForKind(kind: string) {
+  const configs = useRun.getState().configs.filter((c) => c.kind === kind);
+  if (configs.length <= 1) {
+    addType(kind);
+    return;
+  }
+  const hidden = new Set(currentHidden()[kind] ?? []);
+  const picked = await pickServices(kind, configs, new Set(configs.filter((c) => !hidden.has(c.id)).map((c) => c.id)));
+  if (!picked) return;
+  addType(kind);
+  const remaining = configs.filter((c) => !picked.has(c.id)).map((c) => c.id);
+  saveHidden({ ...currentHidden(), [kind]: remaining });
+}
+
+// ---------------------------------------------------------------------------
 // Tree
 
 const busy = (s: RunSession) => s.status === "running" || s.status === "starting";
@@ -166,6 +232,22 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
   return s.run ? sessionDetail(s.run) : "Finished";
 }
 
+/** The configurations of `kind` the tree shows: all, for added types; the ran ones, otherwise. */
+function kindConfigs(
+  kind: string,
+  configs: readonly RunConfig[],
+  added: readonly string[],
+  ran: readonly string[],
+  latest: ReadonlyMap<string, ServiceSession>,
+): RunConfig[] {
+  const entries: RunConfig[] = added.includes(kind)
+    ? configs.filter((c) => c.kind === kind)
+    : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
+  for (const s of latest.values())
+    if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
+  return entries;
+}
+
 /**
  * Groups by configuration type: added types list all their configurations, other
  * types only those that ran. A default type (Spring Boot) without configurations is hidden.
@@ -177,6 +259,7 @@ export function runServiceItems(
   ran: readonly string[] = [],
   order: ServiceOrder = {},
   debug: readonly DebugServiceSession[] = [],
+  hidden: Record<string, readonly string[]> = {},
 ): ServiceTreeItem[] {
   const executions = serviceSessions(sessions, debug);
   const latest = currentServiceSessions(executions);
@@ -187,12 +270,16 @@ export function runServiceItems(
     if (kind && !kinds.includes(kind)) kinds.push(kind);
   }
   return kinds.flatMap((kind) => {
-    const entries: RunConfig[] = added.includes(kind)
-      ? configs.filter((c) => c.kind === kind)
-      : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
-    for (const s of latest.values())
-      if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
-    if (!entries.length && DEFAULT_TYPES.includes(kind)) return [];
+    const hiddenIds = new Set(hidden[kind] ?? []);
+    let entries = kindConfigs(kind, configs, added, ran, latest);
+    // Removed configurations reappear only while they run (their console stays reachable).
+    entries = entries.filter((c) => {
+      const s = latest.get(c.id);
+      return !hiddenIds.has(c.id) || (s && liveServiceSession(s));
+    });
+    // A default type with everything removed keeps its empty group, so "Add Service" can restore it.
+    if (!entries.length && DEFAULT_TYPES.includes(kind) && hiddenIds.size === 0) return [];
+    // Configurations are listed flat under their type, as in IDEA's Run Dashboard.
     const children = orderServices(entries, order[kind]).map((c): ServiceTreeItem => {
       const s = latest.get(c.id);
       return {
@@ -223,7 +310,8 @@ export function runServiceItems(
 function useRoots(): ServiceTreeItem[] {
   const root = useProject((s) => s.project?.root ?? null);
   useRemote((s) => s.session);
-  const order = useServiceOrder(projectLocation(root));
+  const location = projectLocation(root);
+  const order = useServiceOrder(location);
   const configs = useRun((s) => s.configs);
   const sessions = useRun((s) => s.sessions);
   const debug = useDebugRunSessions((s) => s.serviceSessions);
@@ -231,14 +319,25 @@ function useRoots(): ServiceTreeItem[] {
   const typesRoot = useAddedTypes((s) => s.root);
   const ran = useRanConfigs((s) => s.ids);
   const ranRoot = useRanConfigs((s) => s.root);
+  const hidden = useHiddenConfigs((s) => s.hidden);
+  const hiddenLocation = useHiddenConfigs((s) => s.location);
   useEffect(() => {
     if (typesRoot !== root) useAddedTypes.setState({ root, types: root ? readTypes(root) : [] });
     if (ranRoot !== root) useRanConfigs.setState({ root, ids: root ? readRan(root) : [] });
-  }, [root, typesRoot, ranRoot]);
+    if (hiddenLocation !== location) useHiddenConfigs.setState({ location, hidden: readHidden(location) });
+  }, [root, typesRoot, ranRoot, hiddenLocation, location]);
   return useMemo(
     () =>
-      runServiceItems(configs, sessions, typesRoot === root ? types : [], ranRoot === root ? ran : [], order, debug),
-    [configs, sessions, types, typesRoot, ran, ranRoot, root, order, debug],
+      runServiceItems(
+        configs,
+        sessions,
+        typesRoot === root ? types : [],
+        ranRoot === root ? ran : [],
+        order,
+        debug,
+        hiddenLocation === location ? hidden : {},
+      ),
+    [configs, sessions, types, typesRoot, ran, ranRoot, root, order, debug, hidden, hiddenLocation, location],
   );
 }
 
@@ -253,14 +352,26 @@ interface Resolved {
 function resolve(item: ServiceTreeItem): Resolved {
   const { configs, sessions } = useRun.getState();
   const executions = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions);
+  // A configuration type's group node (`run:type:spring-boot`).
   if (item.key.startsWith(TYPE_PREFIX)) {
     const kind = item.key.slice(TYPE_PREFIX.length);
-    return { kind, config: null, session: undefined, sessions: executions.filter((s) => s.config.kind === kind) };
+    return {
+      kind,
+      config: null,
+      session: undefined,
+      sessions: executions.filter((s) => s.config.kind === kind),
+    };
   }
+  // A configuration (`run:config:<id>`).
   const id = item.key.slice(CONFIG_PREFIX.length);
   const session = currentServiceSession(id, executions);
   const config = configs.find((c) => c.id === id) ?? session?.config ?? null;
-  return { kind: config?.kind ?? null, config, session, sessions: session ? [session] : [] };
+  return {
+    kind: config?.kind ?? null,
+    config,
+    session,
+    sessions: session ? [session] : [],
+  };
 }
 
 function showOutput(s: RunSession) {
@@ -284,8 +395,61 @@ function debug(r: Resolved) {
   else if (r.config) void executeAction("run.debugConfig", r.config);
 }
 
+/** Run All / Restart All: starts the configurations of `kind` that can run, in display order. */
+async function startAll(kind: string, restart: boolean): Promise<void> {
+  const root = useProject.getState().project?.root ?? null;
+  const { configs, sessions } = useRun.getState();
+  const executions = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions);
+  const latest = currentServiceSessions(executions);
+  const running = executions.filter((s) => s.config.kind === kind && liveServiceSession(s));
+  if (restart) await stopServiceSessions(running);
+  const location = projectLocation(root);
+  const order = location ? currentServiceOrder(location) : {};
+  const entries = orderServices(kindConfigs(kind, configs, currentTypes(), ranIds(root), latest), order[kind]);
+  for (const c of entries) {
+    if (isDebugOnly(c)) continue;
+    // Run All skips running configurations; Restart All stopped them above (the snapshot is stale then).
+    if (!restart) {
+      const s = latest.get(c.id);
+      if (s && liveServiceSession(s)) continue;
+    }
+    await startRun(c, undefined, undefined, { show: false });
+  }
+}
+
 function actions(item: ServiceTreeItem): ServiceItemAction[] {
   const r = resolve(item);
+  // A type group: batch actions over its configurations.
+  if (!r.config && r.kind) {
+    const kind = r.kind;
+    const root = useProject.getState().project?.root ?? null;
+    const { configs, sessions } = useRun.getState();
+    const executions = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions);
+    const latest = currentServiceSessions(executions);
+    const entries = kindConfigs(kind, configs, currentTypes(), ranIds(root), latest);
+    const running = executions.filter((s) => s.config.kind === kind && liveServiceSession(s));
+    const runnable = entries.some((c) => {
+      const s = latest.get(c.id);
+      return !(s && liveServiceSession(s)) && !isDebugOnly(c);
+    });
+    return [
+      { id: "run-all", title: "Run All", icon: "run", disabled: !runnable, run: () => startAll(kind, false) },
+      {
+        id: "restart-all",
+        title: "Restart All",
+        icon: "rerun",
+        disabled: !entries.length,
+        run: () => startAll(kind, true),
+      },
+      {
+        id: "stop-all",
+        title: "Stop All",
+        icon: "stop",
+        disabled: !running.length,
+        run: () => void stopServiceSessions(running),
+      },
+    ];
+  }
   const running = r.sessions.filter(liveServiceSession);
   const stop = {
     id: "stop",
@@ -297,6 +461,18 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
   if (!r.config) return [stop];
   const live = !!r.session && liveServiceSession(r.session);
   const debugging = serviceDebugger(r.session);
+  // A running web application's HTTP port becomes a browser link (IDEA's port URL).
+  const browser: ServiceItemAction[] =
+    live && r.session?.run?.httpPort
+      ? [
+          {
+            id: "open-browser",
+            title: "Open in Browser",
+            icon: "web",
+            run: () => void openUrl(`http://localhost:${r.session!.run!.httpPort}`),
+          },
+        ]
+      : [];
   return [
     {
       id: "run",
@@ -306,6 +482,7 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
       run: () => run(r),
     },
     { id: "debug", title: "Debug", icon: "debug", disabled: !!debugging && !debugging.rerun, run: () => debug(r) },
+    ...browser,
     stop,
   ];
 }
@@ -319,9 +496,19 @@ function menu(item: ServiceTreeItem): MenuItem[] {
     run: a.run,
   }));
   const r = resolve(item);
-  if (!r.config && r.kind && currentTypes().includes(r.kind)) {
+  if (!r.config && r.kind) {
     const kind = r.kind;
-    items.push({ kind: "separator" }, { label: "Remove from Services", icon: "close", run: () => removeType(kind) });
+    items.push(
+      { kind: "separator" },
+      {
+        label: "Add Service",
+        icon: "plus",
+        disabled: !useRun.getState().configs.some((c) => c.kind === kind),
+        run: () => void pickForKind(kind),
+      },
+    );
+    if (currentTypes().includes(kind))
+      items.push({ label: "Remove from Services", icon: "close", run: () => removeType(kind) });
   }
   if (r.config) {
     const config = r.config;
@@ -342,6 +529,7 @@ function menu(item: ServiceTreeItem): MenuItem[] {
         run: () => debuggerSession?.show(),
       },
       { label: "Edit Configuration…", icon: "edit", run: () => void executeAction("run.editConfigs", config.id) },
+      { label: "Remove from Services", icon: "close", run: () => hideConfig(config.kind, config.id) },
     );
   }
   return items;
@@ -398,6 +586,14 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
         <dd>
           <T>{kindLabel(r.config.kind)}</T>
         </dd>
+        {r.config.module && (
+          <>
+            <dt>
+              <T>Module</T>
+            </dt>
+            <dd>{r.config.module}</dd>
+          </>
+        )}
         <dt>
           <T>Command</T>
         </dt>
@@ -421,24 +617,59 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
   );
 }
 
+/** The leaf label of a kind: the registered type's own label, else its kind label. */
+const labelOf = (kind: string) => useRunConfigTypes.getState().types.get(kind)?.label ?? kindLabel(kind);
+
+/**
+ * The kinds grouped by menu category, in display order: `CATEGORY_ORDER` first,
+ * then unlisted (plugin) categories alphabetically, then "Others" last; each
+ * bucket's kinds sorted by leaf label. One submenu is rendered per bucket, even
+ * for a single member, so adding groups and members later keeps the structure.
+ */
+export function categorizedTypes(kinds: readonly string[]): Array<{ category: string; kinds: string[] }> {
+  const byCategory = new Map<string, string[]>();
+  for (const kind of kinds) {
+    const category = categoryOf(kind);
+    byCategory.set(category, [...(byCategory.get(category) ?? []), kind]);
+  }
+  const rank = (category: string) => {
+    const i = CATEGORY_ORDER.indexOf(category);
+    // Unlisted (plugin) categories sort after the fixed order, before "Others".
+    return i === -1 ? CATEGORY_ORDER.length : i;
+  };
+  const categories = [...byCategory.keys()].sort(
+    (a, b) => rank(a) - rank(b) || (a === "Others" ? 1 : b === "Others" ? -1 : 0) || a.localeCompare(b),
+  );
+  return categories.map((category) => ({
+    category,
+    kinds: [...byCategory.get(category)!].sort((a, b) => labelOf(a).localeCompare(labelOf(b))),
+  }));
+}
+
 /** "Add Service › Run Configuration Type": the project's types first, then the rest. */
 function addMenu(): MenuItem[] {
   const added = currentTypes();
   const used = [...new Set(useRun.getState().configs.map((c) => c.kind))];
   const known = [...KIND_OPTIONS.map((o) => o.value), ...useRunConfigTypes.getState().types.keys()];
   const kinds = [...new Set([...used, ...known])].filter((k) => k !== "compound" && !added.includes(k));
+  /** A leaf item: the type's own label; grouped types live in their group's submenu. */
   const item = (kind: string): MenuItem => ({
-    label: kindLabel(kind),
+    label: useRunConfigTypes.getState().types.get(kind)?.label ?? kindLabel(kind),
     icon: configIcon({ kind, isTest: false }),
-    run: () => addType(kind),
+    run: () => void pickForKind(kind),
   });
+  const grouped = (list: readonly string[]) =>
+    categorizedTypes(list).map(({ category, kinds: members }) => ({
+      label: category,
+      icon: configIcon({ kind: members[0]!, isTest: false }),
+      submenu: members.map(item),
+    }));
   const submenu: MenuItem[] = [
-    ...kinds.filter((k) => used.includes(k)).map(item),
-    ...(used.some((k) => kinds.includes(k)) ? [{ kind: "separator" } as MenuItem] : []),
-    ...kinds
-      .filter((k) => !used.includes(k))
-      .sort((a, b) => kindLabel(a).localeCompare(kindLabel(b)))
-      .map(item),
+    ...grouped(kinds.filter((k) => used.includes(k))),
+    ...(used.some((k) => kinds.includes(k)) && kinds.some((k) => !used.includes(k))
+      ? [{ kind: "separator" } as MenuItem]
+      : []),
+    ...grouped(kinds.filter((k) => !used.includes(k))),
   ];
   return [{ label: "Run Configuration Type", icon: "toolwindow-run", disabled: !submenu.length, submenu }];
 }
@@ -483,7 +714,10 @@ export const runServiceProvider: ServiceProviderContribution = {
         to = target.key.slice(CONFIG_PREFIX.length);
       if (!ids.includes(from) || !ids.includes(to)) return;
       if (
-        !saveServiceOrder(location, { ...order, [kind]: moveServiceOrder(order[kind] ?? [], ids, from, to, position) })
+        !saveServiceOrder(location, {
+          ...order,
+          [kind]: moveServiceOrder(order[kind] ?? [], ids, from, to, position),
+        })
       ) {
         notifications().notify({
           group: "run",

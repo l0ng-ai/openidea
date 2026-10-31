@@ -3,8 +3,8 @@ import type { RunConfigTypeContribution } from "@/workbench/contributions";
 
 export const tomcatType: RunConfigTypeContribution = {
   id: "tomcat",
-  group: "Tomcat Server",
-  label: "Local",
+  group: "Servers",
+  label: "Tomcat Server",
   icon: "server",
   description: "Run a WAR application in a local Tomcat server",
   debugAdapter: "java-debug",

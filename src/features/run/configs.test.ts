@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import {
+  categoryOf,
   commandLine,
   duplicateConfig,
   formatArgs,
@@ -14,6 +15,8 @@ import {
   validateConfig,
 } from "./configs";
 import { contextConfig, fileRole } from "./context";
+import { tomcatType } from "./tomcat";
+import { registerRunConfigType } from "@/workbench/contributions";
 import { envFromRows } from "./EnvDialog";
 import { defaultSelection } from "./store";
 
@@ -246,5 +249,31 @@ describe("context configuration", () => {
     expect(contextConfig("tools/gen.py", venv)).toMatchObject({ command: ".venv/bin/python", args: ["tools/gen.py"] });
     const uv = [cfg({ id: "pytest", kind: "pytest", command: "uv", args: ["run", "pytest"], isTest: true })];
     expect(contextConfig("tools/gen.py", uv)).toMatchObject({ command: "uv", args: ["run", "python", "tools/gen.py"] });
+  });
+});
+
+describe("categoryOf", () => {
+  it("maps kinds to their language categories and unlisted ones to Others", () => {
+    expect(categoryOf("spring-boot")).toBe("Java");
+    expect(categoryOf("maven")).toBe("Build Tools");
+    expect(categoryOf("npm")).toBe("JavaScript");
+    expect(categoryOf("cargo")).toBe("Rust");
+    expect(categoryOf("godot")).toBe("Others");
+  });
+
+  it("prefers a registered type's group (Servers, Docker) over the category map", () => {
+    const disposeTomcat = registerRunConfigType(tomcatType);
+    expect(categoryOf("tomcat")).toBe("Servers");
+    disposeTomcat();
+    const dispose = registerRunConfigType({
+      id: "fake-server",
+      label: "Fake",
+      icon: "server",
+      group: "Servers",
+      fields: [],
+      commandLine: () => null,
+    });
+    expect(categoryOf("fake-server")).toBe("Servers");
+    dispose();
   });
 });
