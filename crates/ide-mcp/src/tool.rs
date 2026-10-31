@@ -328,7 +328,7 @@ impl Call {
         } else {
             Err(IdeError::new(
                 ide_core::error::ErrorKind::PermissionDenied,
-                "The user declined to run this. Do not retry it; ask the user what to do instead.",
+                "The user declined this in OpenIDEA. Do not retry it; ask the user what to do instead.",
             ))
         }
     }
