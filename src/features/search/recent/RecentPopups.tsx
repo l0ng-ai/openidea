@@ -1,3 +1,4 @@
+import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import clsx from "clsx";
 import { editorsFor, getNavigationHistory } from "@/editor/api";
@@ -353,9 +354,10 @@ function ToolRow({ tw, indices }: { tw: ToolWindowContribution; indices: number[
 
 function RecentFileRow({ item, current }: { item: RecentFileItem; current: boolean }) {
   const deco = useFileDecoration(item.editor ? "" : item.path);
+  const { icon } = useFilePresentation(item.editor ? "" : item.path);
   return (
     <>
-      <Icon name={item.editor?.icon ?? fileIconName(item.name)} size={16} className={styles.icon} />
+      <Icon name={item.editor?.icon ?? icon} size={16} className={styles.icon} />
       <span
         className={clsx(styles.name, current && styles.current)}
         style={deco.color ? { color: deco.color } : undefined}

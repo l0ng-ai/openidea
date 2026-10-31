@@ -125,3 +125,16 @@
   padding: 8px 12px;
   color: var(--fg-subtle);
 }
+
+.iconStack {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.runnable {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}

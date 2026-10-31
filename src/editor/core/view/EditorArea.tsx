@@ -1,3 +1,4 @@
+import { useFilePresentationIcons } from "@/platform/filePresentation";
 /**
  * The editor area: split layout of panes, each with IDEA-style tabs (preview
  * tab in italics, pinned tabs, modified dot, file icons coloured by file
@@ -145,6 +146,9 @@ function PaneView({ paneId }: { paneId: string }) {
   const { showExtension, markModified, showCloseButton, showFileIcon, showDirectoryForNonUnique, showFullPathOnHover } =
     tabPrefs;
 
+  const fileIcons = useFilePresentationIcons(
+    showFileIcon ? tabs.flatMap((t) => (t.input.kind === "file" && t.input.path ? [t.input.path] : [])) : [],
+  );
   const items: TabItem[] = useMemo(() => {
     const names = tabs.map((t) => tabTitle(t.input, kinds));
     return tabs.map((t, i) => {
@@ -167,7 +171,11 @@ function PaneView({ paneId }: { paneId: string }) {
           </>
         ),
         text: dupe ? `${name} — ${dupe}` : name,
-        icon: showFileIcon ? tabIcon(t.input, kinds) : undefined,
+        icon: showFileIcon
+          ? t.input.kind === "file" && t.input.path
+            ? fileIcons.get(t.input.path)
+            : tabIcon(t.input, kinds)
+          : undefined,
         italic: t.preview,
         modified: dirty[i],
         closable: showCloseButton,
@@ -178,6 +186,7 @@ function PaneView({ paneId }: { paneId: string }) {
       };
     });
   }, [
+    fileIcons,
     tabs,
     kinds,
     dirty,

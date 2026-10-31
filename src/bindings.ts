@@ -226,6 +226,7 @@ export const commands = {
 	 *  Large documents fall back to word / line / document ranges.
 	 */
 	docSelectionRanges: (doc: DocId, offset: number) => typedError<Range[], IdeError>(__TAURI_INVOKE("doc_selection_ranges", { doc, offset })),
+	jvmFilePresentations: (paths: string[]) => typedError<JvmFilePresentation[], IdeError>(__TAURI_INVOKE("jvm_file_presentations", { paths })),
 	/**
 	 *  What the structure service supports for a language (`tree`: every query,
 	 *  `locals`: scope analysis).
@@ -3736,6 +3737,19 @@ export type JdkVendor = {
 	id: string,
 	name: string,
 };
+
+export type JvmFilePresentation = {
+	path: string,
+	presentation: JvmPresentation,
+};
+
+export type JvmPresentation = {
+	kind: JvmTypeKind | null,
+	springBoot: boolean,
+	runnable: boolean,
+};
+
+export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle = LanguageCodeStyle_Serialize | LanguageCodeStyle_Deserialize;

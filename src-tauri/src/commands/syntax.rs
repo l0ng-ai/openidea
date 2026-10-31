@@ -112,3 +112,13 @@ pub async fn syntax_structural_ranges(
 ) -> IdeResult<StructuralRanges> {
     ide_host::ops::syntax::syntax_structural_ranges(&state.host, window.label(), doc, pos, request).await
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn jvm_file_presentations(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<PathBuf>,
+) -> IdeResult<Vec<ide_host::ops::jvm_icons::JvmFilePresentation>> {
+    ide_host::ops::jvm_icons::jvm_file_presentations(&state.host, window.label(), paths).await
+}
