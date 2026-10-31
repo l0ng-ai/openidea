@@ -146,6 +146,14 @@ pub fn set_settings(
         }
     }
     let affected = || if project_scope { current.iter().cloned().collect() } else { host.projects() };
+    if key == "editor" || key == "editor.encodings" || key == "editor.encodings.nativeToAscii" {
+        let affected = affected();
+        host.runtime.spawn_blocking(move || {
+            for project in affected {
+                project.documents.reload_properties();
+            }
+        });
+    }
     // File type associations re-detect open documents (off the command thread).
     if key == "files" || key.starts_with("files.fileType") {
         let affected = affected();

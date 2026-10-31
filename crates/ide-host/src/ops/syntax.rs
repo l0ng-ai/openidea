@@ -124,7 +124,7 @@ pub async fn syntax_identifiers_in_files(
                 let snap = project.documents.text_snapshot(doc).ok()?;
                 return (!snap.large).then_some((snap.language, Some((doc, snap.version)), snap.text));
             }
-            let text = ide_vfs::load_text(path).ok()?.text;
+            let text = project.text_of(path).ok()?;
             let first_line = text.lines().next();
             Some((languages.detect(path, first_line), None, text))
         };

@@ -39,12 +39,13 @@ fn load(project: &Project, languages: &LanguageRegistry, path: &Path) -> Option<
         let snap = project.documents.text_snapshot(doc).ok()?;
         return (!snap.large).then_some((snap.language, snap.text));
     }
-    let loaded = ide_vfs::load_text(path).ok()?;
+    let loaded = project.documents.load_file(path).ok()?;
     if loaded.binary || loaded.large || loaded.too_large {
         return None;
     }
-    let language = languages.detect(path, loaded.text.lines().next());
-    Some((language, loaded.text))
+    let text = ide_text::normalize_line_endings(&loaded.text).into_owned();
+    let language = languages.detect(path, text.lines().next());
+    Some((language, text))
 }
 
 // ---- Inspect Code ----

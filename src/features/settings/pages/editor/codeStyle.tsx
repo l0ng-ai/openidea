@@ -7,6 +7,7 @@
  * Scheme (Default / Project) is the scope these pages share; the Formatter tab
  * feeds `platform/formatGuard`.
  */
+import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
 import { useId, useState } from "react";
 import { Button, Checkbox, Input, type SelectOption, T } from "@/ui";
 import { commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
@@ -272,7 +273,7 @@ const ENCODINGS_PAGE = editorPage({
   title: "File Encodings",
   order: 27,
   projectScope: true,
-  keywords: ["encoding", "charset", "utf-8", "bom"],
+  keywords: ["encoding", "charset", "utf-8", "bom", "native-to-ascii", "properties"],
   sections: [
     {
       items: [
@@ -300,6 +301,12 @@ const ENCODINGS_PAGE = editorPage({
           key: "editor.encodings.properties",
           label: "Default encoding for properties files",
           options: ENCODINGS,
+        },
+        {
+          t: "check",
+          key: "editor.encodings.nativeToAscii",
+          action: NATIVE_TO_ASCII_ACTION,
+          label: "Transparent native-to-ascii conversion",
         },
       ],
     },

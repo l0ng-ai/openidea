@@ -565,6 +565,7 @@
   "Default Tab name": "默认标签页名称",
   "Default directory": "默认目录",
   "Default encoding": "默认编码",
+  "Transparent native-to-ascii conversion": "透明的 native-to-ascii 转换",
   "Default encoding for properties files": "属性文件的默认编码",
   "Default value": "默认值",
   "Definition": "定义",

@@ -2873,6 +2873,8 @@ export type EncodingSettings = {
 	project?: string,
 	/**  Fallback for `.properties` files. */
 	properties?: string,
+	/**  Display properties Unicode escapes as characters and save non-ASCII as escapes. */
+	nativeToAscii?: boolean,
 	/**  Create UTF-8 files: `never` (no BOM) | `always` (with BOM) | `windows` (with BOM on Windows). */
 	utf8Bom?: string,
 };
