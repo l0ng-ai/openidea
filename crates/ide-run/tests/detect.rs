@@ -589,3 +589,13 @@ fn go_work_paths_decode_go_string_escapes() {
     }
     assert!(work_modules(r#"use "./\qinvalid""#).is_empty());
 }
+
+#[test]
+fn go_default_build_output_is_ignored_by_version_control() {
+    let dir = project(&[("go.mod", "module x\ngo 1.22\n"), ("main.go", "package main\nfunc main() {}")]);
+    let mut config = detect(dir.path()).into_iter().find(|c| c.kind == "go" && !c.is_test).unwrap();
+    config.extras.params.insert("goKind".into(), "package".into());
+    assert!(ide_run::go::plan(dir.path(), &config).unwrap().is_some());
+    let ignore = fs::read_to_string(dir.path().join(".openidea/.gitignore")).unwrap();
+    assert!(ignore.lines().any(|l| l == "/bin/"), "{ignore}");
+}

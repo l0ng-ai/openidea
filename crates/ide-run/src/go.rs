@@ -31,7 +31,12 @@ pub fn plan(root: &Path, config: &RunConfig) -> IdeResult<Option<Plan>> {
     if test {
         return Ok(Some(Plan { build, run: None }));
     }
-    let output = if get("outputDir").is_empty() { root.join(".openidea/bin") } else { root.join(get("outputDir")) };
+    let output = if get("outputDir").is_empty() {
+        crate::config::ignore_private(root, "/bin/")?;
+        ide_core::project_dir::path(root, "bin")
+    } else {
+        root.join(get("outputDir"))
+    };
     std::fs::create_dir_all(&output)?;
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     config.id.hash(&mut hash);
