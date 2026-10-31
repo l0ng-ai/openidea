@@ -5,7 +5,11 @@
  */
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { create } from "zustand";
-import type { ApplyOutcome, FileStatus, ShelvedChangeList } from "@/bindings";
+import type { ApplyOutcome, FileStatus, ShelvedChangeList, ShelfDiffFile } from "@/bindings";
+import { setContext } from "@/platform/context";
+import { shortcutLabel } from "@/platform/keymap";
+import { openDiff, withChain, type DiffData } from "./diffInput";
+import { showCreatePatchForShelf } from "./patches";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -26,13 +30,24 @@ import { tx } from "@/platform/i18n";
 interface ShelfState {
   shelves: ShelvedChangeList[];
   loaded: boolean;
+  diffs: Record<string, ShelfDiffFile[]>;
 }
 
-export const useShelf = create<ShelfState>(() => ({ shelves: [], loaded: false }));
+export const useShelf = create<ShelfState>(() => ({ shelves: [], loaded: false, diffs: {} }));
 
 export async function loadShelves(): Promise<ShelvedChangeList[]> {
+  const root = useVcs.getState().root;
   const shelves = await call(commands.vcsShelves());
-  useShelf.setState({ shelves, loaded: true });
+  if (useVcs.getState().root !== root) return shelves;
+  useShelf.setState({ shelves, loaded: true, diffs: {} });
+  for (const entry of shelves) {
+    void call(commands.vcsShelfDiff(entry.id))
+      .then((files) => {
+        if (useShelf.getState().shelves !== shelves) return;
+        useShelf.setState((state) => ({ diffs: { ...state.diffs, [entry.id]: files } }));
+      })
+      .catch(() => undefined);
+  }
   return shelves;
 }
 
@@ -189,11 +204,11 @@ export async function reportApply(outcome: ApplyOutcome, what: string) {
   notifications().notify({ group: "vcs", level: "info", title: `${what}: ${n} file${n === 1 ? "" : "s"} changed` });
 }
 
-export function unshelve(entry: ShelvedChangeList) {
-  openDialog((close) => <UnshelveDialog entry={entry} onClose={close} />);
+export function unshelve(entry: ShelvedChangeList, path?: string) {
+  openDialog((close) => <UnshelveDialog entry={entry} path={path} onClose={close} />);
 }
 
-function UnshelveDialog({ entry, onClose }: { entry: ShelvedChangeList; onClose: () => void }) {
+function UnshelveDialog({ entry, path, onClose }: { entry: ShelvedChangeList; path?: string; onClose: () => void }) {
   const lists = useChangelists((s) => s.state);
   const [target, setTarget] = useState(lists.active);
   const [remove, setRemove] = useState(() => workflowSettings().vcs.shelf.removeApplied);
@@ -201,9 +216,13 @@ function UnshelveDialog({ entry, onClose }: { entry: ShelvedChangeList; onClose:
   const run = async () => {
     onClose();
     await saveAll();
-    const outcome = await runOp(`Unshelve “${entry.name}”`, () => call(commands.vcsUnshelve(entry.id, remove)), {
-      refresh: false,
-    });
+    const outcome = await runOp(
+      `Unshelve “${entry.name}”`,
+      () => call(commands.vcsUnshelve(entry.id, remove, path ?? null)),
+      {
+        refresh: false,
+      },
+    );
     if (!outcome) return;
     await refreshNow();
     const rels = [...outcome.applied, ...outcome.conflicts].map((p) => relOf(`${root}/${p}`));
@@ -223,7 +242,7 @@ function UnshelveDialog({ entry, onClose }: { entry: ShelvedChangeList; onClose:
       ]}
     >
       <div className={styles.section}>
-        {entry.name} · {fileCount(entry.files.length)}
+        {path ?? entry.name} · {fileCount(path ? 1 : entry.files.length)}
       </div>
       <div className={styles.form}>
         <label className={styles.fieldLabel}>
@@ -244,15 +263,15 @@ function UnshelveDialog({ entry, onClose }: { entry: ShelvedChangeList; onClose:
   );
 }
 
-export async function deleteShelf(entry: ShelvedChangeList) {
+export async function deleteShelf(entry: ShelvedChangeList, path?: string) {
   const ok = await confirmDialog({
     title: "Delete Shelved Changes",
-    message: tx`Delete “${entry.name}” from the shelf? This cannot be undone.`,
+    message: tx`Delete “${path ?? entry.name}” from the shelf? This cannot be undone.`,
     okLabel: "Delete",
     danger: true,
   });
   if (!ok) return;
-  await runOp(`Delete shelved changes “${entry.name}”`, () => call(commands.vcsShelfDelete(entry.id)), {
+  await runOp(`Delete shelved changes “${entry.name}”`, () => call(commands.vcsShelfDelete(entry.id, path ?? null)), {
     refresh: false,
   });
   void loadShelves().catch(() => undefined);
@@ -270,9 +289,9 @@ export async function renameShelf(entry: ShelvedChangeList) {
   void loadShelves().catch(() => undefined);
 }
 
-export async function copyShelfPatch(entry: ShelvedChangeList) {
+export async function copyShelfPatch(entry: ShelvedChangeList, path?: string) {
   try {
-    await navigator.clipboard.writeText(await call(commands.vcsShelfPatch(entry.id)));
+    await navigator.clipboard.writeText(await call(commands.vcsShelfPatch(entry.id, path ?? null)));
     notifications().notify({ group: "vcs", level: "info", title: "Patch copied to the clipboard" });
   } catch (e) {
     logConsole("err", errorMessage(e));
@@ -288,24 +307,131 @@ interface ShelfNode {
   children?: ShelfNode[];
 }
 
-function shelfMenu(entry: ShelvedChangeList) {
+export interface ShelfTarget {
+  id: string;
+  path?: string;
+}
+
+export function shelfTarget(arg?: unknown): { entry: ShelvedChangeList; path?: string } | null {
+  const key = typeof arg === "string" ? arg : useCommit.getState().selectedShelf;
+  const target =
+    arg && typeof arg === "object" && "id" in arg
+      ? (arg as ShelfTarget)
+      : key
+        ? { id: key.split("\u0000")[0]!, path: key.split("\u0000")[1] }
+        : null;
+  const entry = useShelf.getState().shelves.find((s) => s.id === target?.id);
+  if (!entry || (target?.path && !entry.files.some((f) => f.path === target.path))) return null;
+  return { entry, path: target?.path };
+}
+
+export function shelfDiffs(target: ShelfTarget, local = false): DiffData[] {
+  const root = useVcs.getState().root;
+  if (!root) return [];
+  return (useShelf.getState().diffs[target.id] ?? [])
+    .filter((f) => (!target.path || f.path === target.path) && f.before !== null && f.after !== null)
+    .map((f) => ({
+      path: `${root}/${f.path}`,
+      left: {
+        type: "text",
+        text: (local ? f.after : f.before)!,
+        label: tx(local ? "Shelved version" : "Shelved base"),
+      },
+      right: local
+        ? { type: "worktree", label: tx("Local version") }
+        : { type: "text", text: f.after!, label: tx("Shelved version") },
+      context: { kind: "vcs.shelf", id: target.id, path: f.path },
+    }));
+}
+
+export async function showShelfDiff(arg?: unknown, local = false, newTab = false) {
+  const target = shelfTarget(arg);
+  if (!target) return;
+  if (!useShelf.getState().diffs[target.entry.id]) {
+    const root = useVcs.getState().root;
+    const files = await call(commands.vcsShelfDiff(target.entry.id));
+    if (useVcs.getState().root !== root) return;
+    useShelf.setState((s) => ({ diffs: { ...s.diffs, [target.entry.id]: files } }));
+  }
+  let items = shelfDiffs({ id: target.entry.id, path: target.path }, local);
+  if (local) {
+    const supported = await Promise.all(
+      items.map(async (d) => {
+        try {
+          const probe = await call(commands.fsProbe(d.path));
+          return !probe.binary;
+        } catch {
+          return false;
+        }
+      }),
+    );
+    items = items.filter((_, i) => supported[i]);
+  }
+  if (items.length) await openDiff(withChain(items, 0), { preview: !newTab });
+}
+
+export async function importShelfPatches(paths?: string[]) {
+  const picked =
+    paths ??
+    (await import("@tauri-apps/plugin-dialog").then(({ open }) =>
+      open({ multiple: true, directory: false, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] }),
+    ));
+  if (!picked) return;
+  for (const path of typeof picked === "string" ? [picked] : picked) {
+    await runOp(
+      "Import patches",
+      async () => call(commands.vcsShelfImport(baseName(path), await call(commands.fsReadText(path)))),
+      { refresh: false },
+    );
+  }
+  await loadShelves();
+}
+
+function shelfMenu(node: ShelfNode, canCompare: boolean) {
+  const target: ShelfTarget = { id: node.entry.id, path: node.file?.path };
+  const available =
+    node.entry.files.length > 0 && (!node.file || node.entry.files.some((f) => f.path === node.file?.path));
+  const canDiff = shelfDiffs(target).length > 0;
+  const action = (id: string) => () => void executeAction(id, target);
   return [
-    { label: "Unshelve…", icon: "unshelve", run: () => unshelve(entry) },
-    { label: "Copy Patch to Clipboard", icon: "copy", run: () => void copyShelfPatch(entry) },
+    { label: "Unshelve…", icon: "unshelve", disabled: !available, run: action("vcs.unshelve") },
     { kind: "separator" as const },
-    { label: "Rename…", run: () => void renameShelf(entry) },
-    { label: "Delete", icon: "trash", danger: true, run: () => void deleteShelf(entry) },
+    {
+      label: "Show Diff",
+      icon: "diff",
+      shortcut: shortcutLabel("vcs.showDiff"),
+      disabled: !canDiff,
+      run: action("vcs.shelf.showDiff"),
+    },
+    { label: "Show Diff in a New Tab", disabled: !canDiff, run: action("vcs.shelf.showDiffNewTab") },
+    { label: "Compare with Local", disabled: !canCompare, run: action("vcs.shelf.compareLocal") },
+    { kind: "separator" as const },
+    { label: "Create Patch…", icon: "file-patch", disabled: !available, run: action("vcs.shelf.createPatch") },
+    { label: "Copy as Patch to Clipboard", icon: "copy", disabled: !available, run: action("vcs.shelf.copyPatch") },
+    { label: "Import Patches…", run: action("vcs.shelf.importPatches") },
+    { kind: "separator" as const },
+    { label: "Rename…", disabled: !!node.file, run: action("vcs.shelf.rename") },
+    { label: "Delete…", icon: "trash", danger: true, disabled: !available, run: action("vcs.shelf.delete") },
   ];
+}
+
+export function createShelfPatch(arg?: unknown) {
+  const target = shelfTarget(arg);
+  if (target) showCreatePatchForShelf(target.entry, target.path);
 }
 
 /** The Shelf tab of the Commit tool window. */
 export function ShelfPanel() {
   const shelves = useShelf((s) => s.shelves);
   const loaded = useShelf((s) => s.loaded);
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const root = useVcs((s) => s.root);
+  useShelf((s) => s.diffs);
+  const selectedShelf = useCommit((s) => s.selectedShelf);
+  const selected = useMemo(() => new Set(selectedShelf ? [selectedShelf] : []), [selectedShelf]);
   useEffect(() => {
     void loadShelves().catch(() => undefined);
-  }, []);
+    return () => setContext("shelfFocus", false);
+  }, [root]);
   const roots = useMemo<ShelfNode[]>(
     () =>
       shelves.map((entry) => ({
@@ -315,11 +441,18 @@ export function ShelfPanel() {
       })),
     [shelves],
   );
-  const current = roots.find((r) => selected.has(r.key) || r.children?.some((c) => selected.has(c.key)))?.entry;
+  const current = shelfTarget([...selected][0]);
   return (
-    <div className={viewStyles.changes}>
+    <div
+      className={viewStyles.changes}
+      data-shelf-panel
+      onFocusCapture={() => setContext("shelfFocus", true)}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("shelfFocus", false);
+      }}
+    >
       <div className={viewStyles.toolbar} role="toolbar" aria-label={tx("Shelf")}>
-        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void loadShelves()} />
+        <IconButton icon="refresh" action="vcs.shelf.refresh" size="small" />
         <IconButton icon="shelve" action="vcs.shelve" size="small" />
         <span className={viewStyles.sep} />
         <IconButton
@@ -327,14 +460,16 @@ export function ShelfPanel() {
           title="Unshelve…"
           size="small"
           disabled={!current}
-          onClick={() => current && unshelve(current)}
+          onClick={() => current && void executeAction("vcs.unshelve", { id: current.entry.id, path: current.path })}
         />
         <IconButton
           icon="trash"
           title="Delete"
           size="small"
           disabled={!current}
-          onClick={() => current && void deleteShelf(current)}
+          onClick={() =>
+            current && void executeAction("vcs.shelf.delete", { id: current.entry.id, path: current.path })
+          }
         />
       </div>
       <div className={viewStyles.treeWrap}>
@@ -346,15 +481,28 @@ export function ShelfPanel() {
           isExpandable={(n) => !n.file}
           selected={selected}
           onSelectionChange={(sel) => {
-            setSelected(sel);
             const key = [...sel][0];
-            useCommit.setState({ selectedShelf: key ? key.split("\u0000")[0]! : null });
+            useCommit.setState({ selectedShelf: key ?? null });
           }}
           multiSelect={false}
           onActivate={(n) => {
-            if (!n.file) unshelve(n.entry);
+            void executeAction(n.file ? "vcs.shelf.showDiff" : "vcs.unshelve", { id: n.entry.id, path: n.file?.path });
           }}
-          onContextMenu={(node, _sel, e: MouseEvent) => node && showContextMenu(e, shelfMenu(node.entry))}
+          onContextMenu={(node, _sel, e: MouseEvent) => {
+            if (!node) return;
+            e.preventDefault();
+            const point = { x: e.clientX, y: e.clientY };
+            const target = { id: node.entry.id, path: node.file?.path };
+            void Promise.all(
+              shelfDiffs(target, true).map(async (d) => {
+                try {
+                  return !(await call(commands.fsProbe(d.path))).binary;
+                } catch {
+                  return false;
+                }
+              }),
+            ).then((supported) => showContextMenu(point, shelfMenu(node, supported.some(Boolean))));
+          }}
           aria-label="Shelved changes"
           empty={<span className={viewStyles.empty}>{loaded ? tx("No shelved changes") : tx("Loading…")}</span>}
           renderNode={(n) =>

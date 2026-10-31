@@ -45,7 +45,19 @@ import {
   undoCommit,
 } from "./rebase";
 import { showApplyPatch, showCreatePatchForChanges, showCreatePatchForCommits } from "./patches";
-import { deleteShelf, renameShelf, shelveChanges, showShelf, unshelve, useShelf } from "./shelf";
+import {
+  copyShelfPatch,
+  createShelfPatch,
+  deleteShelf,
+  importShelfPatches,
+  loadShelves,
+  renameShelf,
+  shelveChanges,
+  shelfTarget,
+  showShelf,
+  showShelfDiff,
+  unshelve,
+} from "./shelf";
 import { currentRepo, focusRepo, useVcs } from "./store";
 
 const VCS = "vcsAvailable";
@@ -121,12 +133,6 @@ function changePaths(arg: unknown): string[] | undefined {
 function listArg(arg: unknown): string | null {
   if (typeof arg === "string") return arg;
   return useCommit.getState().selectedList ?? null;
-}
-
-function shelfArg(arg: unknown) {
-  const shelves = useShelf.getState().shelves;
-  const id = typeof arg === "string" ? arg : useCommit.getState().selectedShelf;
-  return shelves.find((s) => s.id === id) ?? null;
 }
 
 async function checkoutCommit(c: Commit) {
@@ -496,8 +502,8 @@ export function registerHistoryActions(): () => void {
       icon: "unshelve",
       when: VCS,
       run: ({ arg }) => {
-        const entry = shelfArg(arg);
-        if (entry) unshelve(entry);
+        const target = shelfTarget(arg);
+        if (target) unshelve(target.entry, target.path);
         else showShelf();
       },
     },
@@ -508,8 +514,8 @@ export function registerHistoryActions(): () => void {
       when: VCS,
       hidden: true,
       run: ({ arg }) => {
-        const entry = shelfArg(arg);
-        if (entry) void deleteShelf(entry);
+        const target = shelfTarget(arg);
+        if (target) void deleteShelf(target.entry, target.path);
       },
     },
     {
@@ -519,9 +525,64 @@ export function registerHistoryActions(): () => void {
       when: VCS,
       hidden: true,
       run: ({ arg }) => {
-        const entry = shelfArg(arg);
-        if (entry) void renameShelf(entry);
+        const target = shelfTarget(arg);
+        if (target && !target.path) void renameShelf(target.entry);
       },
+    },
+
+    {
+      id: "vcs.shelf.refresh",
+      title: "Refresh Shelf",
+      category: "Git",
+      when: VCS,
+      run: async () => {
+        await loadShelves();
+      },
+    },
+    {
+      id: "vcs.shelf.showDiff",
+      title: "Show Shelved Diff",
+      category: "Git",
+      when: VCS,
+      run: ({ arg }) => showShelfDiff(arg),
+    },
+    {
+      id: "vcs.shelf.showDiffNewTab",
+      title: "Show Diff in a New Tab",
+      category: "Git",
+      when: VCS,
+      run: ({ arg }) => showShelfDiff(arg, false, true),
+    },
+    {
+      id: "vcs.shelf.compareLocal",
+      title: "Compare Shelved Changes with Local",
+      category: "Git",
+      when: VCS,
+      run: ({ arg }) => showShelfDiff(arg, true),
+    },
+    {
+      id: "vcs.shelf.createPatch",
+      title: "Create Patch from Shelved Changes…",
+      category: "Git",
+      when: VCS,
+      run: ({ arg }) => createShelfPatch(arg),
+    },
+    {
+      id: "vcs.shelf.copyPatch",
+      title: "Copy as Patch to Clipboard",
+      category: "Git",
+      when: VCS,
+      run: async ({ arg }) => {
+        const t = shelfTarget(arg);
+        if (t) await copyShelfPatch(t.entry, t.path);
+      },
+    },
+    {
+      id: "vcs.shelf.importPatches",
+      title: "Import Patches…",
+      category: "Git",
+      when: VCS,
+      run: ({ arg }) => importShelfPatches(Array.isArray(arg) ? arg : undefined),
     },
 
     // --- patches ---

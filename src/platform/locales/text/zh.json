@@ -5228,5 +5228,16 @@
   "For clipboard images: {timestamp} becomes YYYYMMDD-HHmmss. Source file names are preserved.": "剪贴板图片中的 {timestamp} 替换为 YYYYMMDD-HHmmss。保留源文件名称。",
   "Image folder must be relative.": "图片文件夹必须使用相对路径。",
   "Image exceeds 16 MB.": "图片超过 16 MB。",
-  "Cannot insert image": "无法插入图片"
+  "Cannot insert image": "无法插入图片",
+  "Shelved base": "搁置时的基础版本",
+  "Shelved version": "搁置版本",
+  "Local version": "本地版本",
+  "Show Diff in a New Tab": "在新标签页中显示差异",
+  "Copy as Patch to Clipboard": "以补丁形式复制到剪贴板",
+  "Import Patches…": "导入补丁…",
+  "Import patches": "导入补丁",
+  "Refresh Shelf": "刷新搁置",
+  "Show Shelved Diff": "显示搁置差异",
+  "Compare Shelved Changes with Local": "比较搁置更改与本地版本",
+  "Create Patch from Shelved Changes…": "从搁置更改创建补丁…"
 }

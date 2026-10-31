@@ -277,6 +277,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_shelf_delete,
         vcs::vcs_shelf_rename,
         vcs::vcs_shelf_patch,
+        vcs::vcs_shelf_diff,
+        vcs::vcs_shelf_import,
         vcs::vcs_changelists_load,
         vcs::vcs_changelists_save,
         vcs::vcs_write_patch,

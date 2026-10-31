@@ -517,10 +517,12 @@ export const commands = {
 	 *  Unshelve: applies the shelved patch (3-way merging; conflicts are left for the
 	 *  merge UI); with `remove`, deletes it from the shelf.
 	 */
-	vcsUnshelve: (id: string, remove: boolean) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_unshelve", { id, remove })),
-	vcsShelfDelete: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_delete", { id })),
+	vcsUnshelve: (id: string, remove: boolean, path: string | null) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_unshelve", { id, remove, path })),
+	vcsShelfDelete: (id: string, path: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_delete", { id, path })),
 	vcsShelfRename: (id: string, name: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_rename", { id, name })),
-	vcsShelfPatch: (id: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id })),
+	vcsShelfPatch: (id: string, path: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id, path })),
+	vcsShelfDiff: (id: string) => typedError<ShelfDiffFile[], IdeError>(__TAURI_INVOKE("vcs_shelf_diff", { id })),
+	vcsShelfImport: (name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { name, patch })),
 	vcsChangelistsLoad: () => typedError<ChangelistState, IdeError>(__TAURI_INVOKE("vcs_changelists_load")),
 	vcsChangelistsSave: (changelists: ChangelistState) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_changelists_save", { changelists })),
 	/**  Create Patch › Save to file. */
@@ -5510,6 +5512,13 @@ export type Settings_Serialize = {
 };
 
 export type Severity = "error" | "warning" | "info" | "hint";
+
+export type ShelfDiffFile = {
+	path: string,
+	patch: string,
+	before: string | null,
+	after: string | null,
+};
 
 /**  Version Control › Shelf. */
 export type ShelfSettings = {
