@@ -5348,5 +5348,13 @@
   "No debug output available": "暂无可用的调试输出",
   "The attached process may not provide standard output to the debugger.": "附加的进程可能不会向调试器提供标准输出。",
   "Show in Debug Tool Window": "在调试工具窗口中显示",
-  "Suspended": "已暂停"
+  "Suspended": "已暂停",
+  "Cannot compare {root} against {label}: {error}": "无法将 {root} 与 {label} 比较：{error}",
+  "Compare with Branch or Revision": "与分支或修订比较",
+  "No changes against {revision} in 1 repository": "在 1 个仓库中与 {revision} 相比没有更改",
+  "No changes against {revision} in {repositories} repositories": "在 {repositories} 个仓库中与 {revision} 相比没有更改",
+  "Open or select a file or folder to compare": "打开或选择要比较的文件或文件夹",
+  "Selection is outside Git repositories": "所选内容不在 Git 仓库中",
+  "Skipped content outside Git repositories: {join}": "已跳过 Git 仓库之外的内容：{join}",
+  "in {length} repositories": "在 {length} 个仓库中"
 }

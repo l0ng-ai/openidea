@@ -282,3 +282,49 @@
 .manageRowSelected:hover {
   background: var(--bg-list-selected);
 }
+
+.comparison {
+  display: flex;
+  height: min(520px, 65vh);
+  min-height: 180px;
+  padding: 0 12px 12px;
+  gap: 10px;
+}
+.comparisonTree {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+}
+.comparisonWithDiff .comparisonTree {
+  flex: 0 0 30%;
+}
+.comparisonDiff {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.compareNotice {
+  padding: 6px 14px;
+  color: var(--fg-subtle);
+  overflow-wrap: anywhere;
+}
+.compareAdded {
+  color: var(--vcs-added);
+  font-variant-numeric: tabular-nums;
+}
+.compareRemoved {
+  color: var(--vcs-deleted);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 760px) {
+  .comparisonWithDiff {
+    flex-direction: column;
+    height: 65vh;
+  }
+  .comparisonWithDiff .comparisonTree {
+    flex: 0 0 30%;
+    min-height: 90px;
+  }
+}

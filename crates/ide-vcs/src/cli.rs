@@ -348,6 +348,49 @@ fn run_raw_env_once(
     Ok(Output { stdout: out.stdout, stderr: out.stderr, code: out.status.code() })
 }
 
+/// Captures binary/NUL-delimited read output while allowing cancellation to kill git.
+pub(crate) fn run_cancellable(root: &Path, args: &[&str], cancel: &CancellationToken) -> IdeResult<Output> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let mut cmd = command(root)?;
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut session = CommandSession::start(&mut cmd);
+    let mut child = cmd.spawn().map_err(spawn_error)?;
+    let capture = |mut pipe: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).map(|_| bytes)
+        })
+    };
+    let stdout = capture(Box::new(child.stdout.take().expect("piped stdout")));
+    let stderr = capture(Box::new(child.stderr.take().expect("piped stderr")));
+    let status = loop {
+        if cancel.is_cancelled() {
+            kill(&mut child);
+            let _ = child.wait();
+            let _ = stdout.join();
+            let _ = stderr.join();
+            return Err(IdeError::cancelled());
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let join = |thread: std::thread::JoinHandle<std::io::Result<Vec<u8>>>| {
+        thread.join().map_err(|_| IdeError::internal("git output reader panicked"))?.map_err(IdeError::from)
+    };
+    let out = Output { stdout: join(stdout)?, stderr: join(stderr)?, code: status.code() };
+    session.finish(status.success(), &String::from_utf8_lossy(&out.stderr));
+    if status.success() { Ok(out) } else { Err(failure(args, &out.stderr, &out.stdout, out.code)) }
+}
+
 /// Runs git and maps a non-zero exit status to an error carrying git's message.
 pub(crate) fn run(root: &Path, args: &[&str], stdin: Option<&[u8]>) -> IdeResult<Output> {
     let out = run_raw(root, args, stdin)?;

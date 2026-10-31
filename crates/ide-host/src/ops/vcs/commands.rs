@@ -746,6 +746,33 @@ pub async fn vcs_remove_worktree(
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.remove_worktree(&path, force))).await
 }
 
+pub async fn vcs_compare_scope(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<CompareScope> {
+    let project = host.project(window)?;
+    blocking(move || Ok(project.repos().compare_scope(&paths))).await
+}
+
+pub async fn vcs_compare_paths(
+    host: &Host,
+    window: &str,
+    paths: Vec<PathBuf>,
+    revision: String,
+    repositories: Option<Vec<PathBuf>>,
+    request: RequestId,
+) -> IdeResult<CompareResult> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = blocking(move || {
+        let settings = project.settings.effective();
+        if project.is_trusted() {
+            apply_git_executable(&settings);
+        }
+        project.repos().compare_paths(&paths, &revision, repositories.as_deref(), &cancel)
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
 /// Compare with Local: tracked files that differ between `rev` and the working tree.
 pub async fn vcs_diff_with_worktree(
     host: &Host,
@@ -1039,6 +1066,18 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("vcs_remove_worktree", |c| async move {
         vcs_remove_worktree(&c.host, &c.window, c.arg("repo")?, c.arg("path")?, c.arg("force")?).await
+    });
+    d.add("vcs_compare_scope", |c| async move { vcs_compare_scope(&c.host, &c.window, c.arg("paths")?).await });
+    d.add("vcs_compare_paths", |c| async move {
+        vcs_compare_paths(
+            &c.host,
+            &c.window,
+            c.arg("paths")?,
+            c.arg("revision")?,
+            c.arg("repositories")?,
+            c.arg("request")?,
+        )
+        .await
     });
     d.add("vcs_diff_with_worktree", |c| async move {
         vcs_diff_with_worktree(&c.host, &c.window, c.arg("repo")?, c.arg("rev")?).await
