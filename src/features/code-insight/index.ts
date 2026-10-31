@@ -5,7 +5,12 @@
  */
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
+import {
+  registerEditorBanner,
+  registerOverlay,
+  registerStatusItem,
+  registerToolWindow,
+} from "@/workbench/contributions";
 import { clearProblems, installProblemsEvents, useProblems } from "./problemsStore";
 import { installProblemDecorations } from "./decorations";
 import { ProblemsHeaderActions, ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
@@ -15,6 +20,7 @@ import { findUsages, rerunActiveUsages, resetUsages, showUsageResults, showUsage
 import { HierarchyTabs, HierarchyView } from "./HierarchyView";
 import { resetHierarchy, showHierarchy } from "./hierarchy";
 import { installServerEvents } from "./servers";
+import { goConstraintExcluded } from "./goConstraints";
 import { ServerStatus } from "./ServerStatus";
 
 const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
@@ -41,6 +47,16 @@ export function activate(): () => void {
   });
   const disposers = [
     unsubProject,
+    registerEditorBanner({
+      id: "go.buildConstraints",
+      useBanner: (path) => {
+        const excluded = useProblems(
+          (s) =>
+            path.endsWith(".go") && (s.map.get(path)?.get("gopls") ?? []).some((d) => goConstraintExcluded(d.message)),
+        );
+        return excluded ? { text: "This Go file is excluded by the current build constraints." } : null;
+      },
+    }),
     installProblemsEvents(),
     installProblemDecorations(),
     installServerEvents(),

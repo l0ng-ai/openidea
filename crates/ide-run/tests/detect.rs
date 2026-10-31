@@ -550,3 +550,90 @@ fn root_package_disables_nested_scan() {
     assert!(ids(&c).contains(&"go:test"));
     assert!(!ids(&c).contains(&"go:test:svc"));
 }
+
+#[test]
+fn cmake_detection_is_read_only_and_preserves_existing_build_directories() {
+    let dir = project(&[
+        ("CMakeLists.txt", "project(demo)"),
+        ("cmake-build-debug/CMakeCache.txt", "CMAKE_CONFIGURATION_TYPES:STRING=Release;RelWithDebInfo\n"),
+    ]);
+    let configs = detect(dir.path());
+    let configure = find(&configs, "cmake:cmake-build-debug:configure");
+    assert_eq!(configure.args, ["-S", ".", "-B", "cmake-build-debug", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]);
+    assert!(!dir.path().join("build").exists());
+    assert!(!dir.path().join("cmake-build-debug/.cmake").exists());
+    let build = find(&configs, "cmake:cmake-build-debug:build");
+    assert!(build.extras.before_launch.is_empty(), "a configured build regenerates by itself");
+    assert!(build.args.windows(2).any(|a| a == ["--config", "Release"]));
+    let test = find(&configs, "cmake:cmake-build-debug:test");
+    assert_eq!(test.extras.before_launch[0].target, build.id);
+}
+
+#[test]
+fn cmake_configures_before_the_first_build() {
+    let dir = project(&[("CMakeLists.txt", "project(demo)")]);
+    let configs = detect(dir.path());
+    let build = find(&configs, "cmake:build:build");
+    assert_eq!(build.extras.before_launch[0].target, "cmake:build:configure");
+}
+
+#[test]
+fn cmake_ignores_malformed_file_api_replies() {
+    let dir = project(&[
+        ("CMakeLists.txt", "project(demo)"),
+        ("build/CMakeCache.txt", ""),
+        ("build/.cmake/api/v1/reply/index-1.json", "not JSON"),
+    ]);
+    let configs = detect(dir.path());
+    assert_eq!(configs.iter().filter(|c| c.kind == "cmake").count(), 3);
+    assert!(!configs.iter().any(|c| c.kind == "native"));
+}
+
+#[test]
+fn go_work_members_define_configs_including_deep_and_quoted_directories() {
+    let dir = project(&[
+        (
+            "go.work",
+            "go 1.22\n// use ./ignored\nuse (\n ./apps/deep/server // member\n \"./module with spaces\"\n)\nuse ./apps/deep/server\n",
+        ),
+        ("apps/deep/server/go.mod", "module example.com/server\ngo 1.22\n"),
+        ("apps/deep/server/main.go", "package main\nfunc main() {}"),
+        ("module with spaces/go.mod", "module example.com/lib\ngo 1.22\n"),
+        ("ignored/go.mod", "module example.com/ignored\ngo 1.22\n"),
+    ]);
+    let configs = detect(dir.path());
+    assert_eq!(configs.iter().filter(|c| c.kind == "go" && c.is_test).count(), 2);
+    assert_eq!(find(&configs, "go:run:apps/deep/server").cwd.as_deref(), Some(Path::new("apps/deep/server")));
+    assert!(configs.iter().all(|c| !c.id.contains("ignored")));
+    assert!(configs.iter().any(|c| c.id == "go:test:module with spaces"));
+}
+
+#[test]
+fn go_work_parser_ignores_other_directives_comments_and_malformed_groups() {
+    use ide_run::go::work_modules;
+    assert_eq!(
+        work_modules("replace use => ./not-a-member\n// use ./also-not\nuse ./real\n"),
+        vec![std::path::PathBuf::from("./real")]
+    );
+    assert!(work_modules("use (\n./missing-close\n").is_empty());
+    assert!(work_modules("use \"unterminated").is_empty());
+}
+
+#[test]
+fn go_work_paths_decode_go_string_escapes() {
+    use ide_run::go::work_modules;
+    for path in [r#""./\u0061pp""#, r#""./\x61pp""#, r#""./\141pp""#, "`./app`"] {
+        assert_eq!(work_modules(&format!("use {path}\n")), vec![std::path::PathBuf::from("./app")]);
+    }
+    assert!(work_modules(r#"use "./\qinvalid""#).is_empty());
+}
+
+#[test]
+fn go_default_build_output_is_ignored_by_version_control() {
+    let dir = project(&[("go.mod", "module x\ngo 1.22\n"), ("main.go", "package main\nfunc main() {}")]);
+    let mut config = detect(dir.path()).into_iter().find(|c| c.kind == "go" && !c.is_test).unwrap();
+    config.extras.params.insert("goKind".into(), "package".into());
+    assert!(ide_run::go::plan(dir.path(), &config).unwrap().is_some());
+    let ignore = fs::read_to_string(dir.path().join(".openidea/.gitignore")).unwrap();
+    assert!(ignore.lines().any(|l| l == "/bin/"), "{ignore}");
+}

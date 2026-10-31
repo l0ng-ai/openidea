@@ -22,6 +22,21 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         Ok(project) => project.settings.effective(),
         Err(_) => host.global_settings.effective(),
     };
+    if config.adapter == "delve" && config.request == "launch" {
+        let root = host.project(window).map(|p| p.root.clone()).unwrap_or_default();
+        let settings = settings.clone();
+        config = host
+            .blocking(move || {
+                ide_sdk::go::debug_environment(&root, &settings, &mut config.env);
+                ide_sdk::go::apply_to_debug(
+                    &mut config.env,
+                    &mut config.extra_json,
+                    &settings.languages.go.build_tags,
+                )?;
+                Ok(config)
+            })
+            .await?;
+    }
     if config.adapter == ide_dap::kotlin::ADAPTER {
         let data_dir = host.data_dir.clone();
         let runtime_root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();

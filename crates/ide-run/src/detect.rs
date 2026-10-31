@@ -3,6 +3,8 @@
 //!
 //! Detection never fails: unreadable or malformed files simply contribute nothing.
 
+pub(crate) mod cmake;
+
 use crate::RunConfig;
 use serde_json::Value as Json;
 use std::collections::{BTreeMap, HashSet};
@@ -22,6 +24,7 @@ pub(crate) fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<Ru
     detect_maven(root, excluded_poms, &mut out);
     detect_go(root, &mut out);
     detect_python(root, &mut out);
+    cmake::detect(root, &mut out);
     detect_make(root, &mut out);
     detect_just(root, &mut out);
     detect_godot(root, &mut out);
@@ -680,6 +683,19 @@ fn is_go_main_package(dir: &Path) -> bool {
 }
 
 fn detect_go(root: &Path, out: &mut Vec<RunConfig>) {
+    if let Some(work) = read(&root.join("go.work")) {
+        let mut seen = HashSet::new();
+        for member in crate::go::work_modules(&work) {
+            let dir = root.join(member);
+            let dir = dir.canonicalize().unwrap_or(dir);
+            if dir.join("go.mod").is_file() && seen.insert(dir.clone()) {
+                let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+                let rel = dir.strip_prefix(&canonical_root).unwrap_or(&dir).to_path_buf();
+                detect_go_module(&dir, (!rel.as_os_str().is_empty()).then_some(rel), out);
+            }
+        }
+        return;
+    }
     if root.join("go.mod").is_file() {
         detect_go_module(root, None, out);
         return;

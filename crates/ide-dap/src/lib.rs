@@ -697,6 +697,14 @@ impl DebugManager {
         };
         let session =
             Arc::new(Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child));
+        if let Some(mut output) = io.program_output {
+            let session = session.clone();
+            tokio::spawn(async move {
+                while let Some((category, output)) = output.recv().await {
+                    session.emit(ide_core::event::DebugEvent::Output { category: category.into(), output });
+                }
+            });
+        }
         self.sessions.lock().insert(id, session.clone());
         self.order.lock().push(id);
         // Announced before the event loop runs, so it precedes every adapter event.

@@ -438,6 +438,8 @@ pub struct EncodingSettings {
     pub project: String,
     /// Fallback for `.properties` files.
     pub properties: String,
+    /// Display properties Unicode escapes as characters and save non-ASCII as escapes.
+    pub native_to_ascii: bool,
     /// Create UTF-8 files: `never` (no BOM) | `always` (with BOM) | `windows` (with BOM on Windows).
     pub utf8_bom: String,
 }
@@ -448,6 +450,7 @@ impl Default for EncodingSettings {
             global: "utf-8".into(),
             project: "utf-8".into(),
             properties: "iso-8859-1".into(),
+            native_to_ascii: false,
             utf8_bom: "never".into(),
         }
     }
