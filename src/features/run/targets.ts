@@ -13,7 +13,7 @@ import { contextConfig, testConfigFor } from "./context";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
 
-export type TargetKind = "main" | "test" | "suite";
+export type TargetKind = "main" | "test" | "suite" | "generate";
 
 export interface RunTarget {
   /** 0-based line of the declaration. */
@@ -175,6 +175,15 @@ function goTargets(lines: string[]): RunTarget[] {
   const isMain = lines.some((l) => /^package\s+main\b/.test(l));
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
+    if (/^\/\/go:generate[ \t]+\S/.test(line)) {
+      out.push({
+        line: i,
+        kind: "generate",
+        name: line.replace(/^\/\/go:generate[ \t]+/, "").trim(),
+        path: [String(i)],
+      });
+      continue;
+    }
     const t = /^func\s+(Test\w*|Benchmark\w*|Example\w*|Fuzz\w*)\s*\(\s*(?:\w+\s+\*testing\.[TFB])?\s*\)?/.exec(line);
     if (t && (/^Example/.test(t[1]!) || /\*testing\.[TFB]/.test(line))) {
       out.push({ line: i, kind: "test", name: t[1]!, path: [t[1]!] });
@@ -303,7 +312,7 @@ export function detectRunTargets(text: string, relPath: string): RunTarget[] {
         (t) => t.kind === "main" || /(^|\/)(test_[^/]*|[^/]*_test)\.py$|(^|\/)tests?\//.test(relPath),
       );
     case "go":
-      return goTargets(lines).filter((t) => t.kind === "main" || /_test\.go$/.test(relPath));
+      return goTargets(lines).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
     case "jvm":
       return /\.(java|kts?)$/.test(relPath) ? javaKotlinTargets(text, relPath) : jvmTargets(lines, relPath);
     default:

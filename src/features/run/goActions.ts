@@ -3,6 +3,7 @@ import { useProject } from "@/platform/project";
 import type { RunConfig } from "@/platform/ipc";
 import { registerMenuGroup, maybeEditorService, type MenuGroupContext } from "@/workbench/contributions";
 import { promptInput } from "@/workbench/inputDialogs";
+import { goGenerateConfig, goGenerateMenu } from "./goGenerate";
 import { invalidateGoModules } from "./goModules";
 import { loadConfigs, startRun } from "./store";
 
@@ -44,8 +45,8 @@ export function goModuleMenu(ctx: MenuGroupContext) {
 }
 
 export function registerGoActions(): () => void {
-  const actions = registerActions(
-    Object.entries(ACTIONS).map(([operation, spec]) => ({
+  const actions = registerActions([
+    ...Object.entries(ACTIONS).map(([operation, spec]) => ({
       ...spec,
       category: "Go",
       when: "projectOpen",
@@ -81,11 +82,27 @@ export function registerGoActions(): () => void {
         });
       },
     })),
-  );
+    ...(["file", "package"] as const).map((scope) => ({
+      id: `go.generate.${scope}`,
+      title: scope === "file" ? "Go Generate File" : "Go Generate Package",
+      category: "Go",
+      when: "projectOpen",
+      run: async ({ arg }: { arg?: unknown }) => {
+        const path =
+          typeof arg === "string"
+            ? arg
+            : arg && typeof arg === "object" && "path" in arg && typeof arg.path === "string"
+              ? arg.path
+              : (maybeEditorService()?.activePath() ?? "");
+        const config = goGenerateConfig(path, scope);
+        if (config) await startRun(config);
+      },
+    })),
+  ]);
   const menu = registerMenuGroup({
     id: "go.modules",
     menus: ["projectView", "editorTab", "editor"],
-    items: (_menu, ctx) => goModuleMenu(ctx),
+    items: (_menu, ctx) => [...goModuleMenu(ctx), ...goGenerateMenu(ctx)],
   });
   return () => {
     menu();

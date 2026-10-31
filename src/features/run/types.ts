@@ -422,7 +422,8 @@ export const isDebugOnly = (c: Pick<RunConfig, "kind">, type = typeFor(c.kind)) 
  */
 export function formParams(config: RunConfig, type = typeFor(config.kind)): Record<string, string> | null {
   if (!type) return null;
-  if (config.params && Object.keys(config.params).length) return { ...config.params };
+  if (config.params && Object.keys(config.params).length && (type.id !== "go" || config.params.goKind))
+    return { ...config.params };
   if (type.id === COMPOUND) return {};
   const derived = type.paramsFrom?.(config);
   if (!derived) return null;

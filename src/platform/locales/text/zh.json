@@ -5273,5 +5273,8 @@
   "GOSUMDB": "GOSUMDB",
   "GOMODCACHE": "GOMODCACHE",
   "GOTOOLCHAIN": "GOTOOLCHAIN",
-  "GOWORK": "GOWORK"
+  "GOWORK": "GOWORK",
+  "Run Go Generate": "运行 Go Generate",
+  "Go Generate File": "为文件运行 Go Generate",
+  "Go Generate Package": "为包运行 Go Generate"
 }
