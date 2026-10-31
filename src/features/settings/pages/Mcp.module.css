@@ -153,3 +153,15 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Skills */
+.targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding-top: 2px;
+}
+.description {
+  color: var(--fg-subtle);
+  line-height: 1.4;
+}

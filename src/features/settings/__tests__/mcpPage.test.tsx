@@ -3,8 +3,9 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import {
   emitLocalIdeEvent,
   type McpClientConfig,
+  type McpDetectedClient,
+  type McpSkillInfo,
   type McpStatus,
-  type McpToolInfo,
   type Settings,
 } from "@/platform/ipc";
 
@@ -31,34 +32,35 @@ const client = (patch: Partial<McpClientConfig>): McpClientConfig => ({
   ...patch,
 });
 
-const tool = (
-  name: string,
-  description: string,
-  kind: McpToolInfo["kind"],
-  group: string,
-  groupName: string,
-): McpToolInfo => ({
-  name,
-  description,
-  kind,
-  enabled: true,
-  group,
-  groupName,
-  fullyQualifiedName: `${group}.${name}`,
-  experimental: false,
-  routerOnly: true,
+const detected = (patch: Partial<McpDetectedClient>): McpDetectedClient => ({
+  client: "cursor",
+  project: null,
+  file: "/home/me/.cursor/mcp.json",
+  configured: true,
+  portCorrect: true,
+  current: true,
+  transports: ["http"],
+  ...patch,
 });
 
-const TOOLS: McpToolInfo[] = [
-  tool("read_file", "Reads a file of the project", "read", "general.ReadToolset", "File Reading"),
-  tool("execute_terminal_command", "Runs a shell command", "execute", "terminal.TerminalToolset", "Terminal"),
-];
+const SKILL: McpSkillInfo = {
+  id: "openidea-navigation",
+  description: "Navigate the project with the IDE's index",
+  targets: ["claude", "codex"],
+  tools: ["search_symbol"],
+  available: true,
+  installed: ["claude"],
+};
 
 const mcpStatus = vi.fn(async (): Promise<McpStatus> => STOPPED);
 const mcpClients = vi.fn();
 const mcpConfigureClient = vi.fn();
 const mcpRegenerateToken = vi.fn(async () => ok(null));
-const mcpTools = vi.fn(async () => TOOLS);
+const mcpDetectClients = vi.fn();
+const mcpConfigureProjectClient = vi.fn();
+const mcpSkills = vi.fn();
+const mcpInstallSkill = vi.fn();
+const mcpRemoveSkill = vi.fn();
 const settingsSet = vi.fn();
 const settingsGet = vi.fn();
 
@@ -73,7 +75,11 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       mcpClients: () => mcpClients(),
       mcpConfigureClient: (k: string) => mcpConfigureClient(k),
       mcpRegenerateToken: () => mcpRegenerateToken(),
-      mcpTools: () => mcpTools(),
+      mcpDetectClients: (p: string | null) => mcpDetectClients(p),
+      mcpConfigureProjectClient: (k: string, p: string) => mcpConfigureProjectClient(k, p),
+      mcpSkills: (p: string | null) => mcpSkills(p),
+      mcpInstallSkill: (id: string, target: string, p: string | null) => mcpInstallSkill(id, target, p),
+      mcpRemoveSkill: (id: string, target: string, p: string | null) => mcpRemoveSkill(id, target, p),
       settingsSet: (...a: unknown[]) => settingsSet(...a),
       settingsGet: () => settingsGet(),
     },
@@ -87,7 +93,7 @@ const { PageContext } = await import("../components/context");
 const { DEFAULT_SETTINGS, setAt } = await import("../model/schema");
 const { applySettings, openSettings, resetPage, stage, useSettingsDialog } = await import("../model/staging");
 const { OptionsPage } = await import("../pages/OptionsPage");
-const { MCP_PAGE, MCP_PAGES, withToolEnabled } = await import("../pages/mcp");
+const { MCP_PAGE, MCP_PAGES, detectionStatus, sortClients } = await import("../pages/mcp");
 
 const staged = (key: string) => useSettingsDialog.getState().staged[`global|${key}`]?.value;
 const writeText = vi.fn(async (_text: string) => {});
@@ -117,6 +123,11 @@ beforeEach(() => {
     ]),
   );
   mcpConfigureClient.mockReset();
+  mcpDetectClients.mockReset().mockImplementation(async () => ok([]));
+  mcpConfigureProjectClient.mockReset();
+  mcpSkills.mockReset().mockImplementation(async () => ok([SKILL]));
+  mcpInstallSkill.mockReset();
+  mcpRemoveSkill.mockReset();
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
   openSettings(MCP_PAGE);
 });
@@ -247,32 +258,21 @@ describe("Settings › Tools › MCP Server", () => {
     await waitFor(() => expect(mcpClients).toHaveBeenCalledTimes(2));
   });
 
-  it("turns tools on and off through disabledTools", async () => {
-    renderPage();
-    const tools = await screen.findByRole("list", { name: "MCP tools" });
-    expect(within(tools).getByText("Execute")).toBeInTheDocument();
-    expect(within(tools).getByText("Runs a shell command")).toHaveAttribute("data-tooltip", "Runs a shell command");
-
-    fireEvent.click(within(tools).getByRole("checkbox", { name: "execute_terminal_command" }));
-    expect(staged("mcp.disabledTools")).toEqual(["execute_terminal_command"]);
-    expect(within(tools).getByRole("checkbox", { name: "execute_terminal_command" })).not.toBeChecked();
-    fireEvent.click(within(tools).getByRole("checkbox", { name: "execute_terminal_command" }));
-    expect(staged("mcp.disabledTools")).toBeUndefined();
-  });
-
   it("writes the edits to the global settings on Apply", async () => {
     renderPage();
-    const tools = await screen.findByRole("list", { name: "MCP tools" });
+    await screen.findByRole("list", { name: "MCP clients" });
     fireEvent.click(screen.getByRole("checkbox", { name: "Enable MCP Server" }));
     const port = screen.getByLabelText("Port");
     fireEvent.change(port, { target: { value: "6400" } });
     fireEvent.keyDown(port, { key: "Enter" });
-    fireEvent.click(within(tools).getByRole("checkbox", { name: "execute_terminal_command" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Let MCP clients ask for confirmations themselves (elicitation)" }),
+    );
     expect(settingsSet).not.toHaveBeenCalled();
 
     await act(async () => expect(await applySettings()).toBe(true));
     expect(settingsSet.mock.calls).toEqual([
-      ["global", "mcp.disabledTools", '["execute_terminal_command"]'],
+      ["global", "mcp.clientConfirmations", "true"],
       ["global", "mcp.enabled", "true"],
       ["global", "mcp.port", "6400"],
     ]);
@@ -344,9 +344,78 @@ describe("Settings › Tools › MCP Server", () => {
     expect(screen.queryByRole("note")).toBeNull();
   });
 
-  it("keeps disabledTools sorted and free of duplicates", () => {
-    expect(withToolEnabled(["b"], "a", false)).toEqual(["a", "b"]);
-    expect(withToolEnabled(["a", "b"], "a", false)).toEqual(["a", "b"]);
-    expect(withToolEnabled(["a", "b"], "a", true)).toEqual(["b"]);
+  it("shows what the detection found: installed, transports, a stale port to fix", async () => {
+    mcpDetectClients.mockImplementation(async () =>
+      ok([
+        detected({ client: "vsCode", file: "/home/me/Code/User/mcp.json", portCorrect: false, current: false }),
+        detected({ client: "cursor", transports: ["http", "stdio"] }),
+      ]),
+    );
+    renderPage();
+    const list = await screen.findByRole("list", { name: "MCP clients" });
+    await waitFor(() => expect(within(list).getAllByText("Installed")).toHaveLength(2));
+    // Installed clients first.
+    expect(
+      within(list)
+        .getAllByRole("listitem")
+        .map((li) => li.getAttribute("aria-label")),
+    ).toEqual(["Cursor", "VS Code", "Claude Code"]);
+    const cursor = within(list).getByRole("listitem", { name: "Cursor" });
+    expect(within(cursor).getByText("Configured (HTTP Stream, Stdio)")).toBeInTheDocument();
+    const vscode = within(list).getByRole("listitem", { name: "VS Code" });
+    expect(within(vscode).getByText("Port mismatch detected – please reconfigure")).toBeInTheDocument();
+    expect(within(vscode).getByRole("button", { name: "Fix Configuration" })).toBeInTheDocument();
+    expect(mcpDetectClients).toHaveBeenCalledWith(null);
+  });
+
+  it("configures a client for the open project", async () => {
+    useProject.setState({ project: { root: "/work/app" } as never });
+    mcpDetectClients.mockImplementation(async () =>
+      ok([detected({ client: "claudeCode", project: "/work/app", file: "/work/app/.mcp.json", configured: false })]),
+    );
+    mcpConfigureProjectClient.mockResolvedValueOnce(ok("/work/app/.cursor/mcp.json"));
+    renderPage();
+    const list = await screen.findByRole("list", { name: "Project MCP clients" });
+    expect(screen.getByText("Uses the stdio bridge; the file holds paths of this computer.")).toBeInTheDocument();
+    await waitFor(() => expect(within(list).getByText("/work/app/.mcp.json")).toBeInTheDocument());
+    expect(mcpDetectClients).toHaveBeenCalledWith("/work/app");
+    // No project-level configuration: Claude Desktop, Windsurf, the Copilot IDE plugin.
+    expect(within(list).queryByRole("listitem", { name: "Claude Desktop" })).toBeNull();
+    const cursor = within(list).getByRole("listitem", { name: "Cursor" });
+    fireEvent.click(within(cursor).getByRole("button", { name: "Auto-Configure" }));
+    expect(mcpConfigureProjectClient).toHaveBeenCalledWith("cursor", "/work/app");
+    await waitFor(() => expect(within(cursor).getByText("/work/app/.cursor/mcp.json")).toBeInTheDocument());
+    expect(within(cursor).getByText(/restart the client/)).toBeInTheDocument();
+  });
+
+  it("installs and removes skills per agent", async () => {
+    mcpInstallSkill.mockResolvedValueOnce(ok([{ ...SKILL, installed: ["claude", "codex"] }]));
+    mcpRemoveSkill.mockResolvedValueOnce(ok([{ ...SKILL, installed: ["codex"] }]));
+    renderPage();
+    const skills = await screen.findByRole("list", { name: "Agent skills" });
+    const claude = within(skills).getByRole("checkbox", { name: "Claude Code: openidea-navigation" });
+    const codex = within(skills).getByRole("checkbox", { name: "Codex: openidea-navigation" });
+    expect(claude).toBeChecked();
+    expect(codex).not.toBeChecked();
+    fireEvent.click(codex);
+    expect(mcpInstallSkill).toHaveBeenCalledWith("openidea-navigation", "codex", null);
+    await waitFor(() => expect(codex).toBeChecked());
+    fireEvent.click(claude);
+    expect(mcpRemoveSkill).toHaveBeenCalledWith("openidea-navigation", "claude", null);
+    await waitFor(() => expect(claude).not.toBeChecked());
+  });
+
+  it("sorts installed clients first and reads the detection", () => {
+    expect(detectionStatus(undefined)).toBeNull();
+    expect(detectionStatus(detected({ portCorrect: false }))).toBe("mismatch");
+    expect(detectionStatus(detected({ configured: null }))).toBe("notConfigured");
+    expect(detectionStatus(detected({}))).toBe("configured");
+    const configs = [client({ client: "claudeCode" }), client({ client: "codex" })];
+    expect(sortClients(configs, [detected({ client: "codex" })]).map((c) => c.client)).toEqual(["codex", "claudeCode"]);
+    // A project's configuration is not an installed client.
+    expect(sortClients(configs, [detected({ client: "codex", project: "/p" })]).map((c) => c.client)).toEqual([
+      "claudeCode",
+      "codex",
+    ]);
   });
 });
