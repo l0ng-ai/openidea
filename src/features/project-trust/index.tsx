@@ -28,7 +28,7 @@ function TrustDialog() {
         { label: "Don't Open", role: "cancel", onClick: () => void executeAction("project.dontOpen") },
       ]}
     >
-      <div className={styles.content}>
+      <div className={`${styles.content} ${styles.dialogContent}`}>
         <p>
           <T>Only trust projects from sources you know. Project commands and tools can run code on your computer.</T>
         </p>
