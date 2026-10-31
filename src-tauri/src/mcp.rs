@@ -126,3 +126,21 @@ pub fn apply_settings(app: &AppHandle) {
         server.apply(&settings).await;
     });
 }
+
+/// Gives the IDE's own agents the server (Settings › Tools › MCP Server › agents), while it runs.
+pub fn offer_to_agents(app: &AppHandle) {
+    let app = app.clone();
+    ide_agent::set_mcp_servers(Some(Arc::new(move || {
+        let Some(state) = app.try_state::<AppState>() else { return Vec::new() };
+        if !state.global_settings.effective().mcp.agents {
+            return Vec::new();
+        }
+        let Some((url, token)) = state.mcp.endpoint() else { return Vec::new() };
+        vec![serde_json::json!({
+            "type": "http",
+            "name": ide_mcp::clients::SERVER_NAME,
+            "url": url,
+            "headers": [{ "name": "Authorization", "value": format!("Bearer {token}") }],
+        })]
+    })));
+}

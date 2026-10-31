@@ -1015,3 +1015,21 @@ fn tool_calls_plans_and_subagents() {
     assert_eq!(finished[1].update["content"][0]["text"], "It is x");
     assert_eq!(finished[1].update["senderSessionId"], "ag");
 }
+
+#[test]
+fn mcp_servers_become_an_mcp_config() {
+    assert_eq!(mcp_config(&json!({ "mcpServers": [] })), None);
+    assert_eq!(mcp_config(&json!({})), None);
+    let config = mcp_config(&json!({ "mcpServers": [
+        { "type": "http", "name": "openidea", "url": "http://127.0.0.1:1/mcp",
+          "headers": [{ "name": "Authorization", "value": "Bearer t" }] },
+        { "name": "local", "command": "srv", "args": ["-x"], "env": [{ "name": "K", "value": "V" }] },
+    ] }))
+    .unwrap();
+    let v: Value = serde_json::from_str(&config).unwrap();
+    assert_eq!(
+        v["mcpServers"]["openidea"],
+        json!({ "type": "http", "url": "http://127.0.0.1:1/mcp", "headers": { "Authorization": "Bearer t" } })
+    );
+    assert_eq!(v["mcpServers"]["local"], json!({ "command": "srv", "args": ["-x"], "env": { "K": "V" } }));
+}

@@ -942,3 +942,16 @@ async fn task_project_root_controls_local_and_worktree_repositories() {
     }
     assert_eq!(git(&["worktree", "list", "--porcelain"]).matches("worktree ").count(), 1);
 }
+
+#[test]
+fn agents_get_only_the_mcp_transports_they_support() {
+    let servers = vec![
+        json!({ "type": "http", "name": "openidea", "url": "http://127.0.0.1:1/mcp", "headers": [] }),
+        json!({ "name": "stdio", "command": "x", "args": [], "env": [] }),
+    ];
+    let http = json!({ "mcpCapabilities": { "http": true } });
+    assert_eq!(supported_mcp_servers(servers.clone(), &http).len(), 2);
+    let none = json!({ "mcpCapabilities": { "http": false } });
+    assert_eq!(supported_mcp_servers(servers.clone(), &none), vec![servers[1].clone()]);
+    assert_eq!(supported_mcp_servers(servers.clone(), &json!({})), vec![servers[1].clone()]);
+}

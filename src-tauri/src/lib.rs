@@ -101,6 +101,7 @@ pub fn run() {
             app.manage(windows);
             app.manage(menu_state);
             mcp::apply_settings(app.handle());
+            mcp::offer_to_agents(app.handle());
             if let Some(paths) = setup_opens.lock().take() {
                 windows::open_paths_at_launch(app.handle(), paths);
             }
