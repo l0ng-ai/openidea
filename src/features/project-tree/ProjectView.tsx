@@ -330,10 +330,20 @@ const Row = memo(function Row({
 // Member rows ("Show Members")
 
 /** A declaration of the file above: navigates to the symbol, no file operations. */
-const MemberRow = memo(function MemberRow({ node, matches }: { node: ProjectNode; matches: number[] | null }) {
+const MemberRow = memo(function MemberRow({
+  node,
+  matches,
+  onClick,
+  onPointerDown,
+}: Pick<RowProps, "node" | "matches" | "onClick" | "onPointerDown">) {
   const item = node.member!;
   return (
-    <span className={styles.content} data-project-key={node.key}>
+    <span
+      className={styles.content}
+      data-project-key={node.key}
+      onClick={(e) => onClick(node, e)}
+      onPointerDown={(e) => onPointerDown(node, e)}
+    >
       <SymbolBadge kind={badgeKind(item.kind)} className={styles.icon} />
       <HighlightedText className={styles.label} text={item.name} indices={matches} tone="accent" />
       {item.detail && <span className={styles.detail}>{item.detail}</span>}
@@ -410,6 +420,16 @@ export function ProjectView() {
     for (const p of info.pending) void loadDir(p);
   }, [info.pending]);
 
+  // Restored file expansion and enabling Show Members also need outlines.
+  useEffect(() => {
+    if (!showMembers) return;
+    for (const key of expanded) {
+      const node = model.byKey.get(key);
+      if (node && !node.dir && !node.placeholder && !node.group && !outlines.has(node.path))
+        void loadOutline(node.path);
+    }
+  }, [showMembers, expanded, model, outlines]);
+
   const setTreeHandle = useCallback((h: TreeHandle | null) => {
     handle.current = h;
     treeHandle.current = h;
@@ -448,7 +468,10 @@ export function ProjectView() {
     [showMembers, outlines],
   );
 
-  const loadChildren = useCallback((n: ProjectNode) => (n.member ? Promise.resolve() : loadOutline(n.path)), []);
+  const loadChildren = useCallback(
+    (n: ProjectNode) => (n.member ? Promise.resolve() : n.dir ? loadDir(n.path) : loadOutline(n.path)),
+    [],
+  );
 
   const getChildren = useCallback(
     (n: ProjectNode) =>
@@ -514,8 +537,10 @@ export function ProjectView() {
       if (o.singleClickExpand) toggleExpanded(node);
       return;
     }
-    if (o.singleClickOpen) void openFile(node.path, { focus: false });
-    else if (o.previewTab) void openFile(node.path, { preview: true, focus: false });
+    if (!o.singleClickOpen && !o.previewTab) return;
+    const opts = { preview: o.singleClickOpen ? undefined : true, focus: false };
+    if (node.member) void revealRange(node.path, { start: node.member.selection_range.start }, opts);
+    else void openFile(node.path, opts);
   }, []);
 
   // Pointer-driven drag & drop (HTML5 DnD is unreliable inside the Tauri webview).
@@ -526,7 +551,15 @@ export function ProjectView() {
 
   const onRowPointerDown = useCallback((node: ProjectNode, e: ReactPointerEvent) => {
     if (e.button === 0) dragged.current = false;
-    if (e.button !== 0 || node.root || node.placeholder || node.readOnly || useProjectTree.getState().editing) return;
+    if (
+      e.button !== 0 ||
+      node.member ||
+      node.root ||
+      node.placeholder ||
+      node.readOnly ||
+      useProjectTree.getState().editing
+    )
+      return;
     const before = useProjectTree.getState().selected;
     const lead = useProjectTree.getState().lead;
     const startX = e.clientX,
@@ -684,7 +717,7 @@ export function ProjectView() {
   const renderNode = useCallback(
     (node: ProjectNode, state: TreeRowState) =>
       node.member ? (
-        <MemberRow node={node} matches={state.matches} />
+        <MemberRow node={node} matches={state.matches} onClick={onRowClick} onPointerDown={onRowPointerDown} />
       ) : (
         <Row
           node={node}

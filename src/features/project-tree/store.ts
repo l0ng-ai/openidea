@@ -263,6 +263,7 @@ let persistTimer: ReturnType<typeof setTimeout> | undefined;
 export function initProjectTree(root: string | null, name = "", members: readonly string[] | null = null) {
   generation++;
   inflight.clear();
+  outlineInflight.clear();
   clearTimeout(persistTimer);
   modeExpanded.clear();
   autoExpanded.clear();
@@ -488,7 +489,7 @@ export async function reloadAll() {
 // ---------------------------------------------------------------------------
 // Members ("Show Members")
 
-const outlineInflight = new Map<string, Promise<void>>();
+const outlineInflight = new Map<string, { promise: Promise<void> }>();
 
 /**
  * Loads a file's outline for its member rows; unsupported files (no language
@@ -498,34 +499,39 @@ export function loadOutline(path: string, force = false): Promise<void> {
   const { outlines } = get();
   if (!force && outlines.has(path)) return Promise.resolve();
   const running = outlineInflight.get(path);
-  if (running) return running;
+  if (running) return running.promise;
   const gen = generation;
-  const p = (async () => {
+  const request = { promise: Promise.resolve() };
+  outlineInflight.set(path, request);
+  request.promise = (async () => {
     try {
       const items = await withDocument(path, (doc) => call(commands.docOutline(doc)));
-      if (gen !== generation) return;
+      if (gen !== generation || outlineInflight.get(path) !== request) return;
       set({ outlines: new Map(get().outlines).set(path, items) });
     } catch (e) {
-      if (gen !== generation) return;
+      if (gen !== generation || outlineInflight.get(path) !== request) return;
       console.warn(`project view: cannot read members of ${path}`, e);
       set({ outlines: new Map(get().outlines).set(path, []) });
     } finally {
-      if (gen === generation) outlineInflight.delete(path);
+      if (outlineInflight.get(path) === request) outlineInflight.delete(path);
     }
   })();
-  outlineInflight.set(path, p);
-  return p;
+  return request.promise;
 }
 
 /** Drops the cached outlines of `paths`; expanded files are re-read at once. */
-function dropOutlines(paths: readonly string[]) {
+export function dropOutlines(paths: readonly string[]) {
   const s = get();
-  const touched = paths.filter((p) => s.outlines.has(p));
+  const touched = [...new Set(paths)].filter((p) => s.outlines.has(p) || outlineInflight.has(p));
   if (!touched.length) return;
   const outlines = new Map(s.outlines);
-  for (const p of touched) outlines.delete(p);
+  for (const p of touched) {
+    outlines.delete(p);
+    outlineInflight.delete(p);
+  }
   set({ outlines });
-  for (const p of touched) if (s.expanded.has(p)) void loadOutline(p, true);
+  for (const p of touched)
+    if (s.options.showMembers && [...s.expanded].some((k) => pathOfKey(k) === p)) void loadOutline(p);
 }
 
 // ---------------------------------------------------------------------------
