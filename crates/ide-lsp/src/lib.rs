@@ -172,6 +172,7 @@ pub struct LspManager {
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
     excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
     shutting_down: AtomicBool,
+    execution_allowed: AtomicBool,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
@@ -303,6 +304,7 @@ impl LspManager {
             candidates_hook: RwLock::new(None),
             excludes_hook: RwLock::new(None),
             shutting_down: AtomicBool::new(false),
+            execution_allowed: AtomicBool::new(true),
             shown_messages: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
@@ -370,6 +372,9 @@ impl LspManager {
 
     /// The definitions of the servers `language` uses.
     fn language_servers(&self, language: &LanguageId) -> Vec<LanguageServerConfig> {
+        if !self.execution_allowed.load(Ordering::Acquire) {
+            return Vec::new();
+        }
         let Some(cfg) = self.languages.get(language) else { return Vec::new() };
         match self.servers_hook.read().clone() {
             Some(hook) => hook(language, &cfg.language_servers),
@@ -416,7 +421,7 @@ impl LspManager {
     }
 
     fn ensure_started(&self, server: &Arc<Server>) {
-        if self.shutting_down.load(Ordering::Acquire) {
+        if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
             return;
         }
         let Some(generation) = server.begin_start() else { return };
@@ -434,7 +439,13 @@ impl LspManager {
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
+            if !me.execution_allowed.load(Ordering::Acquire) {
+                return Err(LaunchError::Config("Project is in Restricted Mode".into()));
+            }
             let mut cfg = me.configured(&tail);
+            if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
+                return Err(LaunchError::Config("Project is in Restricted Mode".into()));
+            }
             tail.set_effective_config(cfg.clone());
             let prepare = me.prepare_hook.read().clone();
             if !cancel.is_cancelled()
@@ -450,6 +461,9 @@ impl LspManager {
                 // A missing binary still asks to be installed first.
                 let missing = !me.launcher.available(&cfg, &root);
                 return Err(if missing { LaunchError::Missing } else { LaunchError::Config(message.clone()) });
+            }
+            if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
+                return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
             me.launcher.launch_cancellable(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)), &cancel)
         })
@@ -1999,6 +2013,10 @@ impl LspManager {
     /// The server's base configuration with the settings hook applied.
     fn configured(&self, server: &Server) -> LanguageServerConfig {
         let mut cfg = server.config.clone();
+        if !self.execution_allowed.load(Ordering::Acquire) {
+            cfg.launch_error = Some("Project is in Restricted Mode".into());
+            return cfg;
+        }
         if let Some(hook) = self.config_hook.read().clone() {
             hook(&mut cfg, &server.root);
         }
@@ -2009,7 +2027,27 @@ impl LspManager {
     /// (e.g. a new project interpreter); stopped ones pick it up on their next start.
     /// A change of `settings` alone reaches a running server without a restart.
     /// Servers no longer enabled stop; newly enabled ones attach to open documents.
+    pub fn set_execution_allowed(&self, allowed: bool) {
+        let previous = self.execution_allowed.swap(allowed, Ordering::AcqRel);
+        if !allowed {
+            for server in self.servers.lock().iter() {
+                server.start_token().cancel();
+            }
+        }
+        if allowed && !previous {
+            for server in self.servers.lock().iter() {
+                server.reset_for_restart();
+                self.ensure_started(server);
+            }
+        }
+    }
+
     pub async fn reconfigure(&self) {
+        if !self.execution_allowed.load(Ordering::Acquire) {
+            let servers = self.servers.lock().clone();
+            join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;
+            return;
+        }
         self.stop_unlisted().await;
         let Some(me) = self.me.upgrade() else { return };
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();

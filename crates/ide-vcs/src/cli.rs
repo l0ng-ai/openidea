@@ -202,7 +202,25 @@ pub(crate) fn run_paths(root: &Path, args: &[&str], paths: &[String]) -> IdeResu
 
 /// Builds a `git` command with the environment every invocation needs.
 pub(crate) fn command(root: &Path) -> IdeResult<Command> {
-    let mut cmd = Command::new(git_binary()?);
+    let restricted = !crate::execution_allowed();
+    let binary = if restricted {
+        detected_git().ok_or_else(|| IdeError::unavailable("git executable not found"))?.to_path_buf()
+    } else {
+        git_binary()?
+    };
+    let mut cmd = Command::new(binary);
+    if restricted {
+        for setting in [
+            "core.fsmonitor=false",
+            "core.hooksPath=",
+            "diff.external=",
+            "core.attributesFile=",
+            "submodule.recurse=false",
+        ] {
+            cmd.arg("-c").arg(setting);
+        }
+        cmd.env_remove("GIT_EXTERNAL_DIFF").env("GIT_NO_LAZY_FETCH", "1");
+    }
     cmd.current_dir(root)
         .arg("-c")
         .arg("core.quotepath=off")

@@ -44,7 +44,7 @@ export function activate(): () => void {
   const disposers = [
     activateSettingsPages(),
     useProject.subscribe((s, prev) => {
-      if (s.project?.root !== prev.project?.root) sync(s.project?.root);
+      if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) sync(s.project?.root);
     }),
     registerToolWindow({
       id: TOOL_WINDOW,

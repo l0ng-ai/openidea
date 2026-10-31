@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
+    host.require_trust(window)?;
     let mut config = match_java_debug_encoding(config, cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
@@ -61,6 +62,7 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         let path = ide_sdk::apply::tool_command(&root, &settings, command)?;
         Some(path.to_string_lossy().into_owned())
     };
+    host.require_trust(window)?;
     let result = host.debugger.start_with(config, owner, custom).await;
     flush_output();
     result
@@ -292,11 +294,12 @@ pub async fn debug_attachable_processes(_host: &Host, _window: &str) -> IdeResul
 /// JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
 pub async fn debug_listen_for_jvm(
     host: &Host,
-    _window: &str,
+    window: &str,
     request: ide_core::RequestId,
     jvm_host: String,
     port: u16,
 ) -> IdeResult<u16> {
+    host.require_trust(window)?;
     let token = host.begin_request(request);
     let result = jdwp::listen_for_jvm(&jvm_host, port, token).await;
     host.end_request(request);

@@ -70,11 +70,24 @@ async fn serves_projects_files_documents_search_and_runs() {
     let client = Arc::new(Client::default());
     let peer = Peer::connect(cr, cw, client.clone());
 
-    let info: ServerInfo = peer.request("initialize", json!({ "version": 1 }), None).await.unwrap();
+    let info: ServerInfo = peer.request("initialize", json!({ "version": rpc::PROTOCOL_VERSION }), None).await.unwrap();
     assert_eq!(info.protocol, rpc::PROTOCOL_VERSION);
 
     let opened = invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
     assert_eq!(opened["name"], "demo");
+    assert_eq!(opened["trusted"], false);
+    invoke(&peer, "index_status", json!({})).await.unwrap();
+    assert_eq!(invoke(&peer, "lsp_servers", json!({})).await.unwrap(), json!([]));
+    invoke(&peer, "lsp_resend_diagnostics", json!({})).await.unwrap();
+    let files = invoke(&peer, "find_files", json!({"query": "main", "limit": 10})).await.unwrap();
+    assert!(files.is_array());
+    for command in ["build_sync", "run_start", "sdk_locate_tools", "notebook_execute", "debug_start"] {
+        let error = invoke(&peer, command, json!({})).await.unwrap_err();
+        assert!(error.message.contains("Restricted Mode"), "{command}: {error:?}");
+    }
+    let call = Invoke { window: "unknown".into(), cmd: "coverage_collect".into(), args: json!({}) };
+    assert!(peer.request::<_, Value>("invoke", call, None).await.is_err());
+    invoke(&peer, "project_trust_set", json!({"path": project, "trusted": true, "folder": false})).await.unwrap();
     let current = invoke(&peer, "project_current", json!({})).await.unwrap();
     assert_eq!(current["name"], "demo");
 

@@ -169,6 +169,7 @@ function writeSelected(root: string, id: string | null) {
 }
 
 export async function loadConfigs(): Promise<void> {
+  if (useProject.getState().project?.trusted === false) return;
   const root = useProject.getState().project?.root;
   if (!root) {
     useRun.setState({ configs: [], loaded: false, selectedId: null });

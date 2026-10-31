@@ -15,6 +15,9 @@ html {
   --fw-code-bold: 700;
 }
 :root {
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
   /* surfaces */
   --bg-app: #191a1c;
   --bg-elev: #212326;

@@ -17,6 +17,7 @@ pub fn subscribe(host: &Host, window: &str, on_event: Emit<AgentEvent>) -> IdeRe
 }
 
 pub fn providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
+    host.require_trust(window)?;
     let mut providers = host.project(window)?.agents.providers();
     ide_agent::registry::mark_updates(&registry_paths(host), &mut providers);
     Ok(providers)
@@ -88,6 +89,7 @@ pub fn entries(host: &Host, window: &str, task: String, subagent: Option<String>
 }
 
 pub async fn create(host: &Host, window: &str, mut request: NewAgentTask) -> IdeResult<AgentTask> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let root = project.root.clone();
     let requested = request.project_root.take();
@@ -99,6 +101,7 @@ pub async fn create(host: &Host, window: &str, mut request: NewAgentTask) -> Ide
 
 /// Sends a message; while the agent works it is queued, or with `now` it interrupts the turn.
 pub async fn prompt(host: &Host, window: &str, task: String, prompt: AgentPrompt, now: bool) -> IdeResult<()> {
+    host.require_trust(window)?;
     host.project(window)?.agents.prompt(&task, prompt, now).await
 }
 
@@ -109,26 +112,31 @@ pub fn unqueue(host: &Host, window: &str, task: String, queued: String) -> IdeRe
 
 /// Sends a queued message now, interrupting the current turn.
 pub fn send_queued_now(host: &Host, window: &str, task: String, queued: String) -> IdeResult<()> {
+    host.require_trust(window)?;
     host.project(window)?.agents.send_queued_now(&task, &queued)
 }
 
 /// Changes a session setting (model, mode, thinking effort…).
 pub async fn set_config(host: &Host, window: &str, task: String, option: String, value: String) -> IdeResult<()> {
+    host.require_trust(window)?;
     host.project(window)?.agents.set_config(&task, &option, value).await
 }
 
 /// Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`).
 pub async fn fork(host: &Host, window: &str, task: String, turns: Option<u32>) -> IdeResult<AgentTask> {
+    host.require_trust(window)?;
     host.project(window)?.agents.fork(&task, turns).await
 }
 
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.
 pub async fn rollback(host: &Host, window: &str, task: String, turns: u32) -> IdeResult<Option<AgentPrompt>> {
+    host.require_trust(window)?;
     host.project(window)?.agents.rollback(&task, turns).await
 }
 
 /// What the agent reports about itself when it starts, without opening a session.
 pub async fn probe(host: &Host, window: &str, provider: String, refresh: bool) -> IdeResult<AgentProbe> {
+    host.require_trust(window)?;
     host.project(window)?.agents.probe(&provider, refresh).await
 }
 
@@ -139,6 +147,7 @@ pub fn cancel(host: &Host, window: &str, task: String, subagent: Option<String>)
 
 /// Answers a permission request; `option: None` cancels it.
 pub fn respond(host: &Host, window: &str, task: String, permission: u32, option: Option<String>) -> IdeResult<()> {
+    host.require_trust(window)?;
     host.project(window)?.agents.respond(&task, permission, option)
 }
 
@@ -151,15 +160,18 @@ pub fn unarchive(host: &Host, window: &str, task: String) -> IdeResult<()> {
 }
 
 pub async fn delete(host: &Host, window: &str, task: String, remove_worktree: bool) -> IdeResult<()> {
+    host.require_trust(window)?;
     host.project(window)?.agents.delete(&task, remove_worktree).await
 }
 
 pub async fn changes(host: &Host, window: &str, task: String) -> IdeResult<Vec<AgentChange>> {
+    host.require_trust(window)?;
     host.project(window)?.agents.changes(&task).await
 }
 
 /// Content of `path` when the task started (left side of its diff).
 pub async fn base_text(host: &Host, window: &str, task: String, path: IpcPath) -> IdeResult<Option<String>> {
+    host.require_trust(window)?;
     host.project(window)?.agents.base_text(&task, path.into_path_buf()).await
 }
 

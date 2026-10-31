@@ -42,6 +42,28 @@ type Channels = Arc<Mutex<HashMap<u64, (Channel<ChannelFrame>, u64)>>>;
 #[derive(Default)]
 pub struct Connections(Mutex<HashMap<String, Arc<Connection>>>);
 
+impl Connection {
+    pub async fn authorize_command(&self, window: &str, command: &str) -> IdeResult<()> {
+        if ide_host::trust::restricted_command_allowed(command) {
+            return Ok(());
+        }
+        let project: Option<ide_host::ops::project::ProjectInfo> = self
+            .peer
+            .request(
+                "invoke",
+                Invoke { window: window.to_owned(), cmd: "project_current".into(), args: serde_json::json!({}) },
+                None,
+            )
+            .await
+            .map_err(ide_host::rpc::error_from_reply)?;
+        if project.is_some_and(|p| p.trusted) {
+            Ok(())
+        } else {
+            Err(IdeError::unavailable("Project is in Restricted Mode"))
+        }
+    }
+}
+
 impl Connections {
     pub fn get(&self, window: &str) -> Option<Arc<Connection>> {
         self.0.lock().get(window).cloned()

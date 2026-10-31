@@ -54,6 +54,7 @@ pub async fn reload(host: &Host, window: &str, id: String) -> IdeResult<Notebook
 }
 
 pub async fn restart(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot> {
+    host.require_trust(window)?;
     let notebooks = host.project(window)?.notebooks.clone();
     tokio::spawn(async move { notebooks.reload(&id, true).await })
         .await
@@ -84,8 +85,9 @@ pub async fn execute(
     request: RequestId,
     on_output: Channel<NotebookOutputEvent>,
 ) -> IdeResult<NotebookSnapshot> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
-    let cancel = host.begin_request(request);
+    let cancel = host.begin_project_request(window, request);
     let _request = RequestGuard { host, request, cancel: cancel.clone() };
     // Reserve the WHOLE batch and capture source before asynchronous discovery.
     let admission = project.notebooks.admit(&id, cells, cancel.clone())?;

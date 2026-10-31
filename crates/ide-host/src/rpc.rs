@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,6 +138,15 @@ impl Dispatcher {
     /// terminals, runs and VCS status.
     pub fn standard() -> Self {
         let mut d = Self::default();
+        d.add("project_trust_status", |c| async move { c.host.trust.status(&c.arg::<PathBuf>("path")?) })
+            .add("project_trust_list", |c| async move { c.host.trust.decisions() })
+            .add("project_trust_set", |c| async move {
+                c.host.set_project_trust(&c.arg::<PathBuf>("path")?, c.arg("trusted")?, c.arg("folder")?).await
+            })
+            .add("project_trust_remove_location", |c| async move {
+                c.host.trust.remove_location(&c.arg::<PathBuf>("path")?)?;
+                c.host.refresh_project_trust().await
+            });
         d.add("open_project", |c| async move {
             let path: PathBuf = c.arg("path")?;
             let project = ops::project::open(&c.host, &c.window, &path).await?;
@@ -290,6 +299,7 @@ impl Handler for ServerHandler {
                 let Some(handler) = self.dispatcher.handlers.get(call.cmd.as_str()).cloned() else {
                     return Err((codes::METHOD_NOT_FOUND, format!("command {} is not available remotely", call.cmd)));
                 };
+                self.host.authorize_command(&call.window, &call.cmd).map_err(error_reply)?;
                 let c = Call { host: self.host.clone(), window: call.window, args: call.args, peer: self.peer.clone() };
                 // Requests run on blocking-capable threads: wait for the command here.
                 self.host.runtime.block_on(handler(c)).map_err(error_reply)

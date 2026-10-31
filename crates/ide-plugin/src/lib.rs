@@ -92,7 +92,10 @@ impl LoadedPlugin {
     }
 }
 
+type ProjectPolicy = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+
 pub struct PluginHost {
+    project_policy: RwLock<ProjectPolicy>,
     engine: PluginEngine,
     plugins_dir: PathBuf,
     sink: Arc<dyn PluginEventSink>,
@@ -116,6 +119,7 @@ impl PluginHost {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         Ok(Self {
+            project_policy: RwLock::new(Arc::new(|_| false)),
             engine: PluginEngine::new().map_err(IdeError::internal)?,
             plugins_dir,
             sink,
@@ -159,7 +163,30 @@ impl PluginHost {
     }
 
     /// Loads new dev plugins from `<root>/.openidea/plugins/` and unloads vanished ones.
+    pub fn set_project_policy(&self, policy: ProjectPolicy) {
+        *self.project_policy.write() = policy;
+    }
+
+    pub fn restrict_project(&self, root: &Path) {
+        let _guard = self.lifecycle.lock();
+        let ids: Vec<_> = self
+            .plugins
+            .read()
+            .iter()
+            .filter(|(_, p)| p.dev_root.as_deref() == Some(root))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            self.unload(&id);
+        }
+        self.emit(None, PluginEvent::CommandsChanged);
+    }
+
     pub fn sync_project(&self, root: &Path) {
+        if !(self.project_policy.read())(root) {
+            self.restrict_project(root);
+            return;
+        }
         let _guard = self.lifecycle.lock();
         let dirs = package_dirs(&ide_core::project_dir::path(root, "plugins"));
         let stale: Vec<String> = self
@@ -448,7 +475,12 @@ impl PluginHost {
     // ---- internals ----
 
     fn get(&self, id: &str) -> IdeResult<Arc<LoadedPlugin>> {
-        self.plugins.read().get(id).cloned().ok_or_else(|| IdeError::not_found(format!("no plugin {id:?}")))
+        let plugin =
+            self.plugins.read().get(id).cloned().ok_or_else(|| IdeError::not_found(format!("no plugin {id:?}")))?;
+        if plugin.dev_root.as_deref().is_some_and(|root| !(self.project_policy.read())(root)) {
+            return Err(IdeError::unavailable("Project is in Restricted Mode"));
+        }
+        Ok(plugin)
     }
 
     fn is_loaded_from(&self, dir: &Path) -> bool {

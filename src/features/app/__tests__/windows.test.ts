@@ -10,7 +10,7 @@ const windowTakeLaunch = vi.fn();
 const lightEditOpen = vi.fn(async (_path: string) => ({ status: "ok", data: useProject.getState().settings ?? {} }));
 const fsReadDir = vi.fn(async (_path: string) => ({ status: "ok", data: [] }));
 const openProject = vi.fn(async (path: string) => {
-  const project = { root: path, name: path, isGit: false, settings: {} };
+  const project = { root: path, name: path, trusted: true, isGit: false, settings: {} };
   useProject.setState({ project, lightEdit: false } as never);
   return project;
 });
@@ -61,7 +61,7 @@ provideEditorService({
 });
 
 const ok = (data: unknown) => ({ status: "ok", data });
-const projectState = (root: string) => ({ project: { root, name: root, isGit: false, settings: {} } });
+const projectState = (root: string) => ({ project: { root, name: root, trusted: true, isGit: false, settings: {} } });
 
 beforeEach(() => {
   for (const f of [windowOpenProject, windowOpenFiles, windowTakeLaunch]) f.mockReset();
@@ -246,6 +246,7 @@ describe("Attach", () => {
     const before = {
       root: "/workspace",
       name: "A",
+      trusted: true,
       isGit: false,
       settings: {},
       workspace: { version: 1, name: "A", projects: ["/p/a"] },
@@ -269,6 +270,7 @@ it("removes the first workspace member while retaining the workspace state root"
   const project = {
     root: "/workspace",
     name: "A",
+    trusted: true,
     isGit: false,
     settings: {},
     workspace: { version: 1, name: "A", projects: ["/a", "/b"] },

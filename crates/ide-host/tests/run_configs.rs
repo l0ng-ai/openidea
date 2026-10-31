@@ -21,6 +21,7 @@ async fn removed_detections_stay_removed_and_overrides_restore() {
     let root = dunce::canonicalize(tmp.path()).unwrap();
     std::fs::write(root.join("package.json"), r#"{"scripts":{"dev":"node app.js","test":"node test.js"}}"#).unwrap();
     let host = host(&root.join("app"));
+    host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
     let detected = ops::run::configs(&host, "main").unwrap();
     assert!(detected.len() >= 2);
@@ -58,6 +59,7 @@ async fn gradle_defaults_are_not_saved_as_explicit_run_choices() {
     let root = dunce::canonicalize(tmp.path()).unwrap();
     std::fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
     let host = host(&root.join("app"));
+    host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
     ops::project::set_settings(
         &host,

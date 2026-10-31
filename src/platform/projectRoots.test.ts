@@ -86,7 +86,7 @@ describe("effective roots", () => {
 describe("project roots store", () => {
   beforeEach(() => {
     useProject.setState({
-      project: { name: "p", root: "/p", isGit: false, settings: {} } as never,
+      project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never,
       settings: { projectStructure: { excluded: ["out"] } } as never,
     });
     useProjectRoots.setState({ root: "/p", detected: DETECTED });
@@ -122,6 +122,7 @@ it("lists workspace members as scopes and admits their files without admitting w
       root: "/workspace",
       name: "Workspace",
       settings: {},
+      trusted: true,
       isGit: false,
       workspace: { version: 1, name: "Workspace", projects: ["/z", "/a"] },
     },

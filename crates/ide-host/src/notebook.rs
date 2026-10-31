@@ -407,6 +407,24 @@ impl NotebookService {
         }
     }
 
+    pub async fn restrict(&self) {
+        let documents: Vec<_> = self.registry.lock().documents.values().cloned().collect();
+        for document in &documents {
+            let mut state = document.state.lock();
+            state.generation += 1;
+            if let Some(batch) = &state.active {
+                batch.cancel.cancel();
+            }
+        }
+        for document in documents {
+            let _ = self.kernels.shutdown_kernel(&document.path).await;
+            let batch = document.state.lock().active.clone();
+            if let Err(error) = self.drain(&document, batch).await {
+                tracing::warn!("notebook restriction: {error}");
+            }
+        }
+    }
+
     pub async fn shutdown(&self) {
         self.stop_admission();
         self.kernels.shutdown().await;

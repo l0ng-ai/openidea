@@ -10,6 +10,7 @@ use std::sync::Arc;
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectInfo {
+    pub trusted: bool,
     pub root: ide_core::IpcPath,
     pub name: String,
     pub is_git: bool,
@@ -22,6 +23,7 @@ pub fn info(project: &Project) -> ProjectInfo {
     let settings = project.settings.effective();
     let custom = settings.general.project_name.trim();
     ProjectInfo {
+        trusted: project.is_trusted(),
         name: if custom.is_empty() {
             project.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
         } else {
