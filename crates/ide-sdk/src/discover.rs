@@ -1,6 +1,6 @@
 //! Finding installed interpreters and toolchains.
 
-use crate::exec::{query, search_path, which};
+use crate::exec::{executables_in, query, search_path, which};
 use crate::{Sdk, SdkKind, bin_dir, exe, home_dir, pinned, venv_of};
 use ide_core::version_managers::{self, Tool};
 use std::collections::HashSet;
@@ -236,11 +236,32 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 
 // ------------------------------------------------------------------ node
 
+/// Node's own version managers, by where they keep installs below the home directory.
+const NODE_MANAGERS: &[(&str, &str)] =
+    &[(".nvm/versions/node", "nvm"), (".volta/tools/image/node", "volta"), (".local/share/fnm/node-versions", "fnm")];
+
+/// Where a Node on the search path comes from: its version manager, "system" for one
+/// of the system's own bin directories, "path" for anything else the user put on `PATH`.
+pub(crate) fn node_source(path: &Path, home: Option<&Path>) -> &'static str {
+    let managed = home.and_then(|home| {
+        NODE_MANAGERS.iter().find(|(dir, _)| path.starts_with(home.join(dir))).map(|(_, manager)| *manager)
+    });
+    managed.or_else(|| version_managers::manager_of(path)).unwrap_or_else(|| {
+        if path.parent().is_some_and(ide_core::tool_path::is_system_dir) { "system" } else { "path" }
+    })
+}
+
 fn node() -> Vec<Sdk> {
     let mut found: Vec<(PathBuf, &'static str)> = Vec::new();
-    // A mise / asdf shim picks the version by directory: its installs are listed instead.
-    if let Some(p) = which("node").filter(|p| !version_managers::is_shim(p)) {
-        let source = version_managers::manager_of(&p).unwrap_or("path");
+    // Every Node on the search path, not only the first one `which` finds: an SSH
+    // session's minimal PATH puts /usr/bin ahead of the user's own ~/.local/bin, so
+    // /usr/bin/node would be the only install listed (#440).
+    for p in executables_in("node", std::env::split_paths(&search_path())) {
+        // A mise / asdf shim picks the version by directory: its installs are listed instead.
+        if version_managers::is_shim(&p) {
+            continue;
+        }
+        let source = node_source(&p, home_dir().as_deref());
         found.push((p, source));
     }
     if let Some(home) = home_dir() {
@@ -256,9 +277,6 @@ fn node() -> Vec<Sdk> {
     }
     for (v, manager) in version_managers::installs(Tool::Node).into_iter().rev() {
         found.push((v.join("bin").join(exe("node")), manager));
-    }
-    for p in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
-        found.push((PathBuf::from(p), "system"));
     }
     let found = dedupe_by_real_path(found);
     par_map(&found, |(path, source)| {

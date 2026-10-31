@@ -107,7 +107,7 @@ pub fn availability(root: &Path) -> GhAvailability {
     }
     let (repo, login) = std::thread::scope(|s| {
         let repo = s.spawn(|| {
-            let cmd = command(root, &["repo", "view", "--json", "nameWithOwner,url,defaultBranchRef"])?;
+            let cmd = command(root, &["repo", "view", "--json", REPO_FIELDS])?;
             process::run(cmd, QUICK, None)
         });
         let login = s.spawn(|| run(root, &["api", "user", "--jq", ".login"]));
@@ -276,6 +276,53 @@ pub fn add_comment(root: &Path, number: u32, body: &str) -> IdeResult<()> {
     }
     let n = number.to_string();
     run(root, &["pr", "comment", &n, "--body", body]).map(drop)
+}
+
+/// A GitHub API call through `gh api`: GraphQL (`endpoint` `graphql`, `body`
+/// `{"query", "variables"}`) or REST (`repos/{owner}/{repo}/…`, gh fills in the
+/// placeholders from the project's remote).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GhApiRequest {
+    /// `GET`, `POST`, `PATCH`, `PUT`, `DELETE`.
+    pub method: String,
+    pub endpoint: String,
+    /// JSON request body, sent on stdin.
+    pub body: Option<String>,
+    /// Follow REST `Link` pages; the result is the array of all pages (`--slurp`).
+    pub paginate: bool,
+}
+
+const METHODS: &[&str] = &["GET", "POST", "PATCH", "PUT", "DELETE"];
+
+/// `gh api` arguments for `req`.
+pub fn api_args(req: &GhApiRequest) -> IdeResult<Vec<String>> {
+    let method = req.method.to_ascii_uppercase();
+    if !METHODS.contains(&method.as_str()) {
+        return Err(IdeError::invalid(format!("unsupported HTTP method {}", req.method)));
+    }
+    let endpoint = req.endpoint.trim();
+    if endpoint.is_empty() || endpoint.starts_with('-') || endpoint.contains("://") {
+        return Err(IdeError::invalid(format!("not a GitHub API endpoint: {endpoint}")));
+    }
+    let mut args: Vec<String> = vec!["api".into(), "--method".into(), method, endpoint.into()];
+    if req.body.is_some() {
+        args.push("--input".into());
+        args.push("-".into());
+    }
+    if req.paginate {
+        args.push("--paginate".into());
+        args.push("--slurp".into());
+    }
+    Ok(args)
+}
+
+/// Runs `req`; returns the response body (JSON text, empty for `204 No Content`).
+pub fn api(root: &Path, req: &GhApiRequest) -> IdeResult<String> {
+    let args = api_args(req)?;
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = process::run_with_input(command(root, &refs)?, req.body.as_deref(), QUICK, None)?;
+    if out.success { Ok(out.stdout) } else { Err(failure(&out.stderr, &out.stdout)) }
 }
 
 /// Revisions to diff a pull request's files with, present in the local repository.

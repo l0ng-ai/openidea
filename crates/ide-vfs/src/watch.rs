@@ -87,6 +87,9 @@ impl Watcher {
                     removed: batch.removed.iter().map(Into::into).collect(),
                 });
             }
+            if !batch.excluded_dirs.is_empty() {
+                sink.emit(IdeEvent::ExcludedDirsChanged { dirs: batch.excluded_dirs.iter().map(Into::into).collect() });
+            }
             on_change(batch);
         };
         let inner = match mode {
@@ -520,6 +523,7 @@ impl EventFilter {
         }
 
         let mut batch = FsBatch::default();
+        let mut excluded_dirs = BTreeSet::new();
         for (path, change) in changes {
             if change == Change::Vcs {
                 batch.vcs.push(path);
@@ -551,10 +555,12 @@ impl EventFilter {
                 // itself — reporting one extra file removal is harmless.
                 let self_excluded = (is_dir || change == Change::Removed)
                     && (self.excludes.read().is_match(rel) || self.gitignore.is_ignored_self(&path, true));
-                if !self_excluded && self.excludes.read().is_excluded(rel) {
-                    continue;
-                }
-                if !self_excluded && self.gitignore.is_ignored(&path, is_dir) {
+                if !self_excluded && (self.excludes.read().is_excluded(rel) || self.gitignore.is_ignored(&path, is_dir))
+                {
+                    // Only a file appearing or going changes what the folder lists.
+                    if change != Change::Modified {
+                        excluded_dirs.extend(path.parent().map(Path::to_path_buf));
+                    }
                     continue;
                 }
             }
@@ -564,6 +570,7 @@ impl EventFilter {
                 _ => batch.modified.push(path),
             }
         }
+        batch.excluded_dirs = excluded_dirs.into_iter().collect();
         (batch, rule_dirs.into_iter().collect())
     }
 }
@@ -661,7 +668,8 @@ mod tests {
             ev(create_file, vec![root.join("dist/app.js")]),
             ev(create_file, vec![root.join("debug.log")]),
         ]);
-        assert!(batch.is_empty(), "{batch:?}");
+        assert!(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty(), "{batch:?}");
+        assert_eq!(batch.excluded_dirs, vec![root.clone(), root.join("dist"), root.join("target/debug")]);
 
         // Sibling files in unignored directories still come through.
         let batch = filter.batch(&[ev(create_file, vec![root.join("src/main.rs")])]);

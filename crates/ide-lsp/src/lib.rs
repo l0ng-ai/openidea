@@ -9,6 +9,7 @@
 mod angular;
 mod caps;
 mod convert;
+mod external_project;
 mod file_ops;
 mod handler;
 mod inspect;
@@ -169,6 +170,7 @@ pub struct LspManager {
     prepare_hook: RwLock<Option<Arc<PrepareFn>>>,
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
+    excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
     shutting_down: AtomicBool,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
@@ -299,6 +301,7 @@ impl LspManager {
             prepare_hook: RwLock::new(None),
             servers_hook: RwLock::new(None),
             candidates_hook: RwLock::new(None),
+            excludes_hook: RwLock::new(None),
             shutting_down: AtomicBool::new(false),
             shown_messages: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
@@ -459,24 +462,37 @@ impl LspManager {
                 let cfg = server.effective_config();
                 let message =
                     cfg.install_hint.clone().unwrap_or_else(|| format!("`{}` was not found on PATH", cfg.command));
-                if server.finish_start(generation, Conn::Missing) {
-                    server.set_status(&self.sink, ide_core::event::ServerStatus::Missing, Some(message));
+                if server.fail_start(
+                    generation,
+                    Conn::Missing,
+                    &self.sink,
+                    ide_core::event::ServerStatus::Missing,
+                    Some(message),
+                ) {
                     self.attach_fallbacks();
                 }
                 return;
             }
             Err(LaunchError::Config(message)) => {
                 tracing::warn!("{}: {message}", server.name);
-                if server.finish_start(generation, Conn::Failed) {
-                    server.set_status(&self.sink, ide_core::event::ServerStatus::Misconfigured, Some(message));
-                }
+                server.fail_start(
+                    generation,
+                    Conn::Failed,
+                    &self.sink,
+                    ide_core::event::ServerStatus::Misconfigured,
+                    Some(message),
+                );
                 return;
             }
             Err(LaunchError::Failed(message)) => {
                 tracing::warn!("{}: {message}", server.name);
-                if server.finish_start(generation, Conn::Failed) {
-                    server.set_status(&self.sink, ide_core::event::ServerStatus::Crashed, Some(message));
-                }
+                server.fail_start(
+                    generation,
+                    Conn::Failed,
+                    &self.sink,
+                    ide_core::event::ServerStatus::Crashed,
+                    Some(message),
+                );
                 return;
             }
         };
@@ -516,6 +532,8 @@ impl LspManager {
             tracing::debug!("{}: didChangeConfiguration: {e}", server.name);
         }
         let run = Running { generation, peer: peer.clone(), caps: Arc::new(RwLock::new(caps)) };
+
+        self.refresh_external_project(&server, &run).await;
 
         // Publish readiness and (re)open attached documents atomically w.r.t. did_change.
         {
@@ -559,6 +577,7 @@ impl LspManager {
         };
         self.clear_server_state(&server);
         if intentional {
+            server.announce_down();
             return;
         }
         let tail = server.stderr_tail(5);
@@ -575,6 +594,9 @@ impl LspManager {
         match server.record_crash() {
             Some(delay) => {
                 server.set_status(&self.sink, ServerStatus::Crashed, Some(format!("{message}\nRestarting…")));
+                // Woken after the crash is reported: a request that finds no instance
+                // reads this status to say why. The restart sets `Starting` again.
+                server.announce_down();
                 tokio::time::sleep(delay).await;
                 if server.is_idle_gen(generation) {
                     self.ensure_started(&server);
@@ -587,6 +609,8 @@ impl LspManager {
                     ServerStatus::Crashed,
                     Some(format!("{message}\nCrashed repeatedly; restart it manually.")),
                 );
+                // Requests still waiting for a start read this status for their error.
+                server.announce_down();
             }
         }
     }
@@ -2212,6 +2236,7 @@ impl LspManager {
             return;
         }
         let graceful = async {
+            self.close_external_project(server, &run).await;
             peer.request::<_, Value>("shutdown", (), None).await.ok();
             peer.notify("exit", ()).ok();
             peer.closed().await;

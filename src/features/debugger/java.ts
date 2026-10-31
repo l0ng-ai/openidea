@@ -20,6 +20,7 @@ import {
   joinJavaArgs,
   parseJavaArgs,
   resolveJavaCommand,
+  resolveJavaModule,
 } from "@/platform/javaLaunch";
 import { notifications } from "@/workbench/contributions";
 
@@ -85,10 +86,11 @@ export async function javaLaunchConfig(
   root: string,
   preparation?: { request: RequestId; signal: AbortSignal },
 ): Promise<LaunchConfig> {
-  const module = rc.cwd ?? "";
   const cwd = rc.cwd ? join(root, rc.cwd) : root;
   const parsed = parseJavaArgs(rc.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${rc.name}'`);
+  preparation?.signal.throwIfAborted();
+  const module = await resolveJavaModule(rc);
   preparation?.signal.throwIfAborted();
   const info = await call(
     commands.javaResolveLaunch(module, parsed.classpath === "test", true, preparation?.request ?? nextRequestId()),
@@ -103,7 +105,7 @@ export async function javaLaunchConfig(
       body: formatCompileErrors(info).trimEnd(),
     });
   const resolved = resolveJavaCommand(rc, info);
-  const kotlin = rc.debugAdapter === KOTLIN_ADAPTER || (await moduleHasKotlinSources(cwd));
+  const kotlin = rc.debugAdapter === KOTLIN_ADAPTER || (await moduleHasKotlinSources(join(root, module)));
   preparation?.signal.throwIfAborted();
   const classPaths = parsed.explicitClasspath ? parsed.explicitClasspath.split(/[:;]/) : info.classPaths;
   if (kotlin) {
@@ -116,7 +118,7 @@ export async function javaLaunchConfig(
       cwd,
       env: { ...rc.env },
       extraJson: JSON.stringify({
-        projectRoot: cwd,
+        projectRoot: join(root, module),
         mainClass: parsed.mainClass,
         classPaths,
         modulePaths: info.modulePaths,

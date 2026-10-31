@@ -736,6 +736,19 @@ pub async fn vcs_diff_revisions(
     blocking(move || project.with_repo_at(repo.as_deref(), |r| r.diff_revisions(&from, &to))).await
 }
 
+/// The best common ancestor of `a` and `b` (`git merge-base`), if any: the New Pull
+/// Request tab's three-dot diff.
+pub async fn vcs_merge_base(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    a: String,
+    b: String,
+) -> IdeResult<Option<String>> {
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.merge_base(&a, &b))).await
+}
+
 pub async fn vcs_create_patch(
     host: &Host,
     window: &str,
@@ -975,6 +988,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("vcs_diff_revisions", |c| async move {
         vcs_diff_revisions(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?).await
+    });
+    d.add("vcs_merge_base", |c| async move {
+        vcs_merge_base(&c.host, &c.window, c.arg("repo")?, c.arg("a")?, c.arg("b")?).await
     });
     d.add("vcs_create_patch", |c| async move {
         vcs_create_patch(&c.host, &c.window, c.arg("repo")?, c.arg("source")?).await

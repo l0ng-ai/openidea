@@ -53,6 +53,18 @@
   color: var(--fg-strong);
   white-space: nowrap;
 }
+/* At least the visible width so the selection covers it; wider rows overflow the sizer. */
+.wideRow {
+  width: max-content;
+  min-width: 100%;
+}
+.contentWidth {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 1px;
+  pointer-events: none;
+}
 .row:hover {
   background: var(--bg-tree-hover, color-mix(in srgb, var(--fg-strong) 4%, transparent));
 }
@@ -70,6 +82,23 @@
 }
 .loading {
   color: var(--fg-faint);
+}
+.before::before,
+.after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--focus-ring);
+  pointer-events: none;
+  z-index: 1;
+}
+.before::before {
+  top: 0;
+}
+.after::after {
+  bottom: 0;
 }
 .chevron {
   flex: none;

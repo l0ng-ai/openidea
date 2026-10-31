@@ -503,6 +503,8 @@ export const commands = {
 	vcsDiffWithWorktree: (repo: string | null, rev: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_with_worktree", { repo, rev })),
 	/**  Files that differ between two revisions (the "N files updated" of Update Project). */
 	vcsDiffRevisions: (repo: string | null, from: string, to: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_revisions", { repo, from, to })),
+	/**  The best common ancestor of `a` and `b` (`git merge-base`), if any. */
+	vcsMergeBase: (repo: string | null, a: string, b: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_merge_base", { repo, a, b })),
 	vcsCreatePatch: (repo: string | null, source: PatchSource) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_create_patch", { repo, source })),
 	vcsPatchPreview: (repo: string | null, patch: string) => typedError<PatchFile[], IdeError>(__TAURI_INVOKE("vcs_patch_preview", { repo, patch })),
 	vcsApplyPatch: (repo: string | null, patch: string) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_patch", { repo, patch })),
@@ -686,6 +688,12 @@ export const commands = {
 	 *  itself, in LightEdit.
 	 */
 	windowOpenFiles: (files: string[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("window_open_files", { files })),
+	/**
+	 *  Detaches an editor tab: opens `file` in a forced new window (`project`, None
+	 *  for LightEdit, decided by the caller), bypassing the focus-an-existing-window
+	 *  routing of [`window_open_project`] / [`window_open_files`].
+	 */
+	windowOpenFileInNewWindow: (project: string | null, file: string) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_file_in_new_window", { project, file })),
 	/**
 	 *  [`window_open_project`] for folder `path` on the host of SSH configuration
 	 *  `ssh_config` (Remote Development); a new window connects itself.
@@ -891,6 +899,8 @@ export const commands = {
 	 */
 	dockerRunEnv: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_run_env", { endpoint })),
 	ghAvailability: () => typedError<GhAvailability, IdeError>(__TAURI_INVOKE("gh_availability")),
+	/**  A GitHub GraphQL / REST call through `gh api`; returns the response body. */
+	ghApi: (request: GhApiRequest) => typedError<string, IdeError>(__TAURI_INVOKE("gh_api", { request })),
 	ghPrList: (query: PrListQuery) => typedError<PullRequestSummary[], IdeError>(__TAURI_INVOKE("gh_pr_list", { query })),
 	ghPrView: (number: number) => typedError<PullRequestDetails, IdeError>(__TAURI_INVOKE("gh_pr_view", { number })),
 	ghPrReviewComments: (number: number) => typedError<PrReviewComment[], IdeError>(__TAURI_INVOKE("gh_pr_review_comments", { number })),
@@ -3115,6 +3125,21 @@ export type GeneralSettings = {
 	projectName?: string,
 };
 
+/**
+ *  A GitHub API call through `gh api`: GraphQL (`endpoint` `graphql`, `body`
+ *  `{"query", "variables"}`) or REST (`repos/{owner}/{repo}/…`, gh fills in the
+ *  placeholders from the project's remote).
+ */
+export type GhApiRequest = {
+	/**  `GET`, `POST`, `PATCH`, `PUT`, `DELETE`. */
+	method: string,
+	endpoint: string,
+	/**  JSON request body, sent on stdin. */
+	body: string | null,
+	/**  Follow REST `Link` pages; the result is the array of all pages (`--slurp`). */
+	paginate: boolean,
+};
+
 /**  Whether pull requests can be shown for the project, and why not. */
 export type GhAvailability = { kind: "ready"; repo: GhRepo; 
 /**  The signed-in user. */
@@ -3131,6 +3156,12 @@ export type GhRepo = {
 	nameWithOwner: string,
 	url: string,
 	defaultBranch: string | null,
+	/**  Merge methods the repository allows (all of them when gh does not say). */
+	mergeCommitAllowed: boolean,
+	squashMergeAllowed: boolean,
+	rebaseMergeAllowed: boolean,
+	/**  The signed-in user's permission: `ADMIN`, `MAINTAIN`, `WRITE`, `TRIAGE`, `READ`; empty when unknown. */
+	viewerPermission: string,
 };
 
 export type GitExecutableInfo = {
@@ -3373,6 +3404,8 @@ export type IdeEvent =
 { type: "windowGroupsChanged" } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[] } | 
+/**  Excluded or ignored folders whose contents changed; they stay out of `FsChanged`. */
+{ type: "excludedDirsChanged"; dirs: IpcPath[] } | 
 /**
  *  The backend changed a document (reload from disk, formatting, refactoring).
  *  The UI applies `changes` on top of `base_version`, yielding `version`.
@@ -4737,6 +4770,8 @@ export type PullRequestDetails = {
 	baseOid: string,
 	/**  `MERGEABLE`, `CONFLICTING`, `UNKNOWN`. */
 	mergeable: string,
+	/**  GitHub's merge box state: `CLEAN`, `UNSTABLE`, `HAS_HOOKS`, `BLOCKED`, `BEHIND`, `DIRTY`, `DRAFT`, `UNKNOWN`. */
+	mergeStateStatus: string,
 	isCrossRepository: boolean,
 	mergedAt: string | null,
 	closedAt: string | null,
@@ -5070,6 +5105,8 @@ export type RunConfig_Serialize = {
 export type RunExtras = RunExtras_Serialize | RunExtras_Deserialize;
 
 export type RunExtras_Deserialize = {
+	/**  Module supplying a JVM application's classpath; empty means the project root. */
+	module?: string | null,
 	/**  Values of the configuration type's own form fields (the command line derives from them). */
 	params?: { [key in string]: string },
 	/**  Folder in the Run/Debug Configurations tree. */
@@ -5107,6 +5144,8 @@ export type RunExtras_Deserialize = {
 };
 
 export type RunExtras_Serialize = {
+	/**  Module supplying a JVM application's classpath; empty means the project root. */
+	module?: string | null,
 	/**  Values of the configuration type's own form fields (the command line derives from them). */
 	params?: { [key in string]: string },
 	/**  Folder in the Run/Debug Configurations tree. */

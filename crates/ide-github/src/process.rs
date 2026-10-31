@@ -60,9 +60,30 @@ fn read_all(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Str
 
 /// Runs `cmd` to completion. Fails when it outlives `timeout` or `cancel` fires;
 /// a non-zero exit is reported in [`Output::success`], not as an error.
-pub(crate) fn run(mut cmd: Command, timeout: Duration, cancel: Option<&CancellationToken>) -> IdeResult<Output> {
+pub(crate) fn run(cmd: Command, timeout: Duration, cancel: Option<&CancellationToken>) -> IdeResult<Output> {
+    run_with_input(cmd, None, timeout, cancel)
+}
+
+/// [`run`] with `input` written to the child's stdin (then closed).
+pub(crate) fn run_with_input(
+    mut cmd: Command,
+    input: Option<&str>,
+    timeout: Duration,
+    cancel: Option<&CancellationToken>,
+) -> IdeResult<Output> {
     prepare(&mut cmd);
+    if input.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
     let mut child = spawn(&mut cmd)?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        let input = input.to_owned();
+        // A writer thread: a large body must not block on a full pipe while gh is not reading yet.
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(input.as_bytes());
+        });
+    }
     let out = child.stdout.take().map(read_all);
     let err = child.stderr.take().map(read_all);
     let deadline = Instant::now() + timeout;

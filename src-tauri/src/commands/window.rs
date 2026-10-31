@@ -39,6 +39,19 @@ pub async fn window_open_files(
     Ok(windows::open_files_window(&app, window.label(), files))
 }
 
+/// Detaches an editor tab: opens `file` in a forced new window (`project`, None
+/// for LightEdit, decided by the caller), bypassing the focus-an-existing-window
+/// routing of [`window_open_project`] / [`window_open_files`].
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_file_in_new_window(
+    app: AppHandle,
+    project: Option<PathBuf>,
+    file: PathBuf,
+) -> IdeResult<OpenOutcome> {
+    windows::open_file_in_new_window(&app, project, file)
+}
+
 /// [`window_open_project`] for folder `path` on the host of SSH configuration
 /// `ssh_config` (Remote Development); a new window connects itself.
 #[tauri::command]

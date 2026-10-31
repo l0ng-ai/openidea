@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { create } from "zustand";
 import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
@@ -10,8 +10,28 @@ import { Icon } from "@/ui/icons";
 import { effectivePython, type Sdk } from "./api";
 import { tildify } from "./components";
 
-const usePopup = create<{ open: boolean; shown: boolean }>(() => ({ open: false, shown: false }));
+/** What the widget last resolved for a project, so the popup action can read it without a render. */
+interface Status {
+  root: string;
+  configured: string;
+  visible: boolean;
+  python: string | null;
+  sdks: Sdk[];
+}
+
+const usePopup = create<{ open: boolean; status: Status | null }>(() => ({ open: false, status: null }));
 const close = () => usePopup.setState({ open: false });
+const reset = () => usePopup.setState({ open: false, status: null });
+
+/** Whether the widget is on screen, read straight from the stores (the action runs outside a render). */
+function popupShown(): boolean {
+  const project = useProject.getState();
+  const root = project.project?.root;
+  const configured = project.settings?.languages?.python?.interpreter ?? "";
+  const status = usePopup.getState().status;
+  if (!root || !status || status.root !== root || status.configured !== configured) return false;
+  return status.visible || !!configured;
+}
 const markers = [
   "pyproject.toml",
   "setup.py",
@@ -48,17 +68,11 @@ async function hasPythonFiles(): Promise<boolean> {
 function PythonStatus() {
   const root = useProject((s) => s.project?.root);
   const configured = useProject((s) => s.settings?.languages?.python?.interpreter ?? "");
+  const status = usePopup((s) => s.status);
   const open = usePopup((s) => s.open);
   const anchor = useRef<HTMLButtonElement>(null);
-  const [state, setState] = useState<{
-    root: string;
-    configured: string;
-    visible: boolean;
-    python: string | null;
-    sdks: Sdk[];
-  } | null>(null);
   useEffect(() => {
-    close();
+    reset();
     if (!root || !isTauri()) return;
     let live = true;
     let sequence = 0;
@@ -73,7 +87,7 @@ function PythonStatus() {
           visible || configured
             ? await Promise.all([effectivePython(), (detected ??= call(commands.sdkDetect("python")))])
             : [null, [] as Sdk[]];
-        if (live && sequence === request) setState({ root, configured, visible, python, sdks });
+        if (live && sequence === request) usePopup.setState({ status: { root, configured, visible, python, sdks } });
       } catch (e) {
         console.warn("Cannot refresh Python interpreter status", e);
       }
@@ -105,16 +119,13 @@ function PythonStatus() {
       live = false;
       clearTimeout(timer);
       off.forEach((dispose) => dispose());
-      close();
+      reset();
     };
   }, [root, configured]);
-  const current = state && state.root === root && state.configured === configured ? state : null;
-  const shown = !!root && !!current && (current.visible || !!configured);
-  useEffect(() => {
-    usePopup.setState({ shown });
-    return () => usePopup.setState({ shown: false, open: false });
-  }, [shown]);
-  if (!shown || !current) return null;
+  // The widget only renders once its project's status is in the store, so the popup action
+  // sees the same state as the button without waiting for an effect to publish a flag.
+  if (!popupShown() || !status) return null;
+  const current = status;
   const choices = interpreterChoices(current.sdks, current.python);
   const label = choices.find((sdk) => sdk.path === current.python)?.name ?? tx("No interpreter");
   const names = new Map<string, number>();
@@ -174,7 +185,7 @@ export function activatePythonStatus(): () => void {
         category: "Settings",
         when: "projectOpen",
         run: () =>
-          usePopup.getState().shown
+          popupShown()
             ? usePopup.setState((s) => ({ open: !s.open }))
             : void executeAction("file.settings", "python.interpreter"),
       },
@@ -213,7 +224,7 @@ export function activatePythonStatus(): () => void {
     ]),
   ];
   return () => {
-    close();
+    reset();
     dispose.reverse().forEach((d) => d());
   };
 }

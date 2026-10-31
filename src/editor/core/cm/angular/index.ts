@@ -2,17 +2,20 @@
  * Angular template language: HTML whose text and binding attributes are
  * Angular syntax (`angular.grammar`), expressions parsed as JavaScript. From
  * @codemirror/lang-angular 0.1.4 (MIT, see LICENSE); changed by OpenIDEA:
- * control-flow blocks, `@let`, key and animation binding names, and runs of
- * text that entities split (`a && b`) parsed as one.
+ * control-flow blocks, `@let`, key and animation binding names, structural
+ * directives' microsyntax, runs of text that entities split (`a && b`)
+ * parsed as one, and folding blocks.
  */
-import { LRLanguage, LanguageSupport } from "@codemirror/language";
+import { LRLanguage, LanguageSupport, foldService, matchBrackets, syntaxTree } from "@codemirror/language";
 import { html } from "@codemirror/lang-html";
 import { javascriptLanguage } from "@codemirror/lang-javascript";
 import { styleTags, tags as t } from "@lezer/highlight";
 import { IterMode, parseMixed, type Input, type NestedParse, type SyntaxNode, type SyntaxNodeRef } from "@lezer/common";
 import { parser } from "./parser";
 
-const exprParser = javascriptLanguage.parser.configure({ top: "SingleExpression" });
+// @lezer/javascript styles `.` as a deref operator, but not `?.`.
+const jsParser = javascriptLanguage.parser.configure({ props: [styleTags({ "?.": t.derefOperator })] });
+const exprParser = jsParser.configure({ top: "SingleExpression" });
 
 const baseParser = parser.configure({
   props: [
@@ -23,16 +26,17 @@ const baseParser = parser.configure({
       "AttributeValue ExpressionAttributeValue StatementAttributeValue": t.attributeValue,
       Entity: t.character,
       InvalidEntity: t.invalid,
-      "BoundAttributeName/Identifier BoundAttributeName/@": t.attributeName,
-      "EventName/Identifier EventName/@": t.special(t.attributeName),
+      // A name's own style covers the `.`s between its parts.
+      "BoundAttributeName BoundAttributeName/Identifier BoundAttributeName/@": t.attributeName,
+      "EventName EventName/Identifier EventName/@": t.special(t.attributeName),
       "ReferenceName/Identifier": t.variableName,
-      "DirectiveName/Identifier": t.keyword,
+      'DirectiveName DirectiveName/Identifier DirectiveName/"*"': t.keyword,
       "{{ }}": t.special(t.brace),
       "( )": t.paren,
       "[ ]": t.bracket,
-      "# '*'": t.punctuation,
+      "# :": t.punctuation,
       "@if @else @for @empty @switch @case @default if": t.controlKeyword,
-      "@defer @placeholder @loading @error of as track on when prefetch hydrate never minimum after TriggerName":
+      "@defer @placeholder @loading @error of as track on when prefetch hydrate never minimum after TriggerName BindingKey":
         t.keyword,
       "@let let": t.definitionKeyword,
       Brace: t.brace,
@@ -45,11 +49,15 @@ const baseParser = parser.configure({
 });
 
 const exprMixed = { parser: exprParser },
-  statementMixed = { parser: javascriptLanguage.parser };
+  statementMixed = { parser: jsParser };
+
+const EXPRESSIONS = new Set(["InterpolationContent", "Expression", "BindingExpression"]);
 
 const textParser = baseParser.configure({
-  wrap: parseMixed((node) => (node.name == "InterpolationContent" || node.name == "Expression" ? exprMixed : null)),
+  wrap: parseMixed((node) => (EXPRESSIONS.has(node.name) ? exprMixed : null)),
 });
+
+const microsyntaxMixed = { parser: textParser.configure({ top: "Microsyntax" }) };
 
 // To reuse old inner trees, parseMixed takes those that the node at a mount's
 // start and its ancestors had with the same parser. So each kind of mount has
@@ -58,15 +66,20 @@ const textParser = baseParser.configure({
 const runsParser = textParser.configure({}),
   documentRunsParser = textParser.configure({});
 
+/** The parser of an attribute's interpolation or bound value (`node`). */
+function attrValueMixed(node: SyntaxNode) {
+  const value = node.parent;
+  if (value?.name != "StatementAttributeValue") return exprMixed;
+  return value.parent?.firstChild?.name == "DirectiveName" ? microsyntaxMixed : statementMixed;
+}
+
 const attrParser = baseParser.configure({
   wrap: parseMixed((node) =>
     node.name == "InterpolationContent"
       ? exprMixed
-      : node.name != "AttributeInterpolation"
-        ? null
-        : node.node.parent?.name == "StatementAttributeValue"
-          ? statementMixed
-          : exprMixed,
+      : node.name == "AttributeInterpolation"
+        ? attrValueMixed(node.node)
+        : null,
   ),
   top: "Attribute",
 });
@@ -124,9 +137,27 @@ function mixAngular(node: SyntaxNodeRef, input: Input): NestedParse | null {
 
 export const angularLanguage = (baseHTML.language as LRLanguage).configure({ wrap: parseMixed(mixAngular) }, "angular");
 
+/**
+ * The body of the first block opened on a line and closed on a later one, up
+ * to its `}`, which stays visible: `@if (a) {…}`, `} @else {…}`. Its braces
+ * pair like plain text, across elements.
+ */
+const blockFolding = foldService.of((state, lineStart, lineEnd) => {
+  const text = state.sliceDoc(lineStart, lineEnd);
+  const tree = syntaxTree(state);
+  for (let i = text.indexOf("{"); i >= 0; i = text.indexOf("{", i + 1)) {
+    const open = tree.resolveInner(lineStart + i, 1);
+    if (open.name != "Brace" || open.parent?.name != "Block") continue;
+    const match = matchBrackets(state, open.from, 1, { brackets: "{}", maxScanDistance: state.doc.length });
+    if (match?.matched && match.end && match.end.from > lineEnd) return { from: open.to, to: match.end.from };
+  }
+  return null;
+});
+
 export function angular(): LanguageSupport {
   return new LanguageSupport(angularLanguage, [
     baseHTML.support,
+    blockFolding,
     baseHTML.language.data.of({
       closeBrackets: { brackets: ["[", "{", '"'] },
       indentOnInput: /^\s*[}\]]$/,

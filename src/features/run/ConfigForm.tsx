@@ -3,6 +3,7 @@
  * common ones, the options added through "Modify options" (⌥M) and the
  * Before launch list.
  */
+import { parseJavaArgs } from "@/platform/javaLaunch";
 import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
 import type { BeforeLaunchTask, RunConfig } from "@/platform/ipc";
@@ -428,7 +429,10 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
               placeholder="Space separated; quote with ' or &quot;"
               onChange={(e) => {
                 setArgsText(e.target.value);
-                update({ args: parseArgs(e.target.value), params: {} });
+                const args = parseArgs(e.target.value);
+                const module =
+                  parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass ? config.module : undefined;
+                update({ args, params: {}, module });
               }}
             />
           </Field>

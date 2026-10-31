@@ -451,6 +451,12 @@ export async function applyFsChange(event: { created: string[]; modified: string
   await Promise.all(plan.reload.map((p) => loadDir(p, true)));
 }
 
+/** Re-reads the folders among `dirs` the tree has loaded; the rest stay unread. */
+export async function reloadLoadedDirs(dirs: readonly string[]) {
+  const { listings } = get();
+  await Promise.all(dirs.filter((p) => listings.has(p)).map((p) => loadDir(p, true)));
+}
+
 /** Re-reads every loaded folder (View › Reload from Disk). */
 export async function reloadAll() {
   const { listings } = get();

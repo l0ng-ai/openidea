@@ -26,6 +26,17 @@ pub(crate) fn which(name: &str) -> Option<PathBuf> {
     ide_core::process::find_executable(name, &path)
 }
 
+/// Every install of `name` on `dirs`, one per directory holding it, in `dirs` order (the
+/// first is what `which` returns). Tool detection lists them all: a login shell's `PATH`
+/// and an SSH exec channel's minimal one disagree on which comes first (#440).
+pub(crate) fn executables_in(name: &str, dirs: impl Iterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let pathext = ide_core::process::host_var_os("PATHEXT");
+    let names = ide_core::process::executable_names(name, cfg!(windows), pathext.as_deref().and_then(|p| p.to_str()));
+    dirs.filter(|d| !d.as_os_str().is_empty())
+        .filter_map(|dir| names.iter().map(|n| dir.join(n)).find(|p| p.is_file()))
+        .collect()
+}
+
 /// Runs `program args` and returns trimmed stdout (stderr when stdout is empty)
 /// on success; `None` on failure or after `timeout`.
 pub(crate) fn query(program: &Path, args: &[&str], timeout: Duration) -> Option<String> {
