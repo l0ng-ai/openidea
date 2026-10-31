@@ -39,7 +39,7 @@ async fn route_err(h: &Harness, command: &str) -> String {
 
 fn file_paths(text: &str) -> Vec<String> {
     let v: Value = serde_json::from_str(text).unwrap();
-    v["entries"].as_array().unwrap().iter().map(|e| e["filePath"].as_str().unwrap().to_owned()).collect()
+    v["items"].as_array().unwrap().iter().map(|e| e["filePath"].as_str().unwrap().to_owned()).collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -57,7 +57,7 @@ async fn converts_integers_and_arrays() {
     let h = routed().await;
     let text = route(&h, "search_file --q **/*.java --limit 1").await;
     let v: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(v["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(v["items"].as_array().unwrap().len(), 1);
     assert_eq!(v["more"], true);
     let text = route(&h, r#"search_file --q **/*.java --paths '["src/Test.java"]'"#).await;
     assert_eq!(file_paths(&text), ["src/Test.java"]);
@@ -75,9 +75,12 @@ async fn creates_files_with_boolean_parameters() {
 #[tokio::test(flavor = "multi_thread")]
 async fn reads_a_window_given_a_last_line() {
     let h = routed().await;
+    // `--end_line 3` becomes `limit` 2; like JetBrains' read_file, a limit shorter than the rest
+    // of the file keeps its first and last halves (the trailing line break starts an empty L6).
     let text = route(&h, "read_file --file_path notes.txt --offset 2 --end_line 3").await;
-    assert!(text.contains("two") && text.contains("three"), "{text}");
-    assert!(!text.contains("four") && !text.contains("one"), "{text}");
+    assert_eq!(text, "L2: two\n\u{2026}3 lines truncated\u{2026}\nL6: ");
+    let text = route(&h, "read_file --file_path notes.txt --offset 2 --end_line 6").await;
+    assert_eq!(text, "L2: two\nL3: three\nL4: four\nL5: five\nL6: ");
 }
 
 #[tokio::test(flavor = "multi_thread")]
