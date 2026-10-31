@@ -564,7 +564,7 @@ export interface NotificationService {
     key?: string;
     /**
      * Notification group (Settings › Notifications): `system` (default), `lsp`,
-     * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`.
+     * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`, `mcp`.
      */
     group?: string;
   }): void;

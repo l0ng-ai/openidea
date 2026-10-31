@@ -5,7 +5,13 @@
  */
 import { useEffect } from "react";
 import { create } from "zustand";
-import { commands, isTauri, onIdeEvent, type McpClientKind, type McpStatus } from "./ipc";
+import { commands, isTauri, onIdeEvent, type McpClientKind, type McpInvocationMode, type McpStatus } from "./ipc";
+
+/** One tool's entry in `toolStates` (`ide-core::mcp::McpToolState`). */
+export interface McpToolStateValid {
+  enabled: boolean;
+  routerOnly: boolean;
+}
 
 export interface McpSettingsValid {
   enabled: boolean;
@@ -13,7 +19,18 @@ export interface McpSettingsValid {
   braveMode: boolean;
   disabledTools: string[];
   agents: boolean;
+  /** Comma-separated masks over fully qualified tool names; empty = no filter. */
+  toolsFilter: string;
+  /** Per-tool state by fully qualified (or plain) name; absent = `DEFAULT_MCP_TOOL_STATE`. */
+  toolStates: Record<string, McpToolStateValid>;
+  invocationMode: McpInvocationMode;
+  experimentalTools: boolean;
+  /** Ask confirmations through the MCP client (elicitation) when it supports it. */
+  clientConfirmations: boolean;
 }
+
+/** `McpToolState::default()`: offered, and behind the router in router mode. */
+export const DEFAULT_MCP_TOOL_STATE: McpToolStateValid = { enabled: true, routerOnly: true };
 
 /** `ide-core::mcp::DEFAULT_MCP_PORT`. */
 export const MCP_DEFAULT_PORT = 64352;
@@ -26,6 +43,11 @@ export const DEFAULT_MCP: McpSettingsValid = {
   braveMode: false,
   disabledTools: [],
   agents: true,
+  toolsFilter: "",
+  toolStates: {},
+  invocationMode: "direct",
+  experimentalTools: false,
+  clientConfirmations: false,
 };
 
 type Obj = Record<string, unknown>;
@@ -45,7 +67,23 @@ export function validateMcp(raw: unknown): McpSettingsValid {
       ? m.disabledTools.filter((t): t is string => typeof t === "string" && !!t.trim())
       : [],
     agents: m.agents !== false,
+    toolsFilter: typeof m.toolsFilter === "string" ? m.toolsFilter : "",
+    toolStates: validateToolStates(m.toolStates),
+    invocationMode: m.invocationMode === "viaRouter" ? "viaRouter" : "direct",
+    experimentalTools: m.experimentalTools === true,
+    clientConfirmations: m.clientConfirmations === true,
   };
+}
+
+function validateToolStates(raw: unknown): Record<string, McpToolStateValid> {
+  const out: Record<string, McpToolStateValid> = {};
+  for (const [name, value] of Object.entries(obj(raw))) {
+    if (!name.trim()) continue;
+    const v = obj(value);
+    // serde(default): a missing field takes its default.
+    out[name] = { enabled: v.enabled !== false, routerOnly: v.routerOnly !== false };
+  }
+  return out;
 }
 
 /** The port typed into the settings page, or null when it is not one the server may use. */
