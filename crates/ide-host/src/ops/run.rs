@@ -97,6 +97,10 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     } else {
         ide_sdk::apply::resolve_run_command(&mut config, root, &settings);
     }
+    if config.kind == "go" {
+        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+        ide_sdk::go::apply_to_run(&mut config, &settings.languages.go.build_tags);
+    }
     if config.command == ide_sdk::godot::COMMAND {
         return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
     }
@@ -112,12 +116,32 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??;
     }
+    if config.kind == "go" && config.extras.params.get("scope").is_some_and(|s| s == "file") {
+        let root = project.root.clone();
+        config = host
+            .blocking(move || {
+                ide_run::go::prepare_test_file(&root, &mut config)?;
+                Ok(config)
+            })
+            .await?;
+    }
     let encoding = settings.console.encoding;
     let options = StartOptions {
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
         python_paths: if member.is_some() { vec![root.clone()] } else { super::python::paths(&project) },
     };
-    host.processes.start(&project.root, &config, &options, project.sink.clone(), Box::new(move |c| on_output(c)))
+    let mut sink = project.sink.clone();
+    if config.kind == "go" && matches!(config.args.first().map(String::as_str), Some("mod" | "work")) {
+        let previous = sink;
+        let root = project.root.clone();
+        sink = std::sync::Arc::new(move |event: ide_core::IdeEvent| {
+            if matches!(&event, ide_core::IdeEvent::RunExited { .. }) {
+                ide_sdk::libraries::invalidate_go(&root);
+            }
+            previous.emit(event);
+        });
+    }
+    host.processes.start(&project.root, &config, &options, sink, Box::new(move |c| on_output(c)))
 }
 
 /// Stops a run (interrupt, then kill after Settings › Run's termination timeout).
