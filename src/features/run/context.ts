@@ -4,6 +4,7 @@
  * direct interpreter invocation for main files. Best effort, IDEA-style.
  */
 import type { RunConfig } from "@/platform/ipc";
+import { goTestParts } from "./goArguments";
 import { isWindows } from "./jvmTypes";
 
 export type FileRole = "test" | "main" | "script" | null;
@@ -44,7 +45,9 @@ function testKinds(relPath: string): string[] {
 /** Configs whose working directory most specifically contains `relPath` (ties in their original order). */
 function allClosest(configs: RunConfig[], relPath: string): RunConfig[] {
   const score = (c: RunConfig) => {
-    const cwd = (c.cwd ?? "").replace(/^\.\/?/, "").replace(/\/+$/, "");
+    const cwd = (c.kind === "go" ? (c.params?.module ?? c.cwd ?? "") : (c.cwd ?? ""))
+      .replace(/^\.\/?/, "")
+      .replace(/\/+$/, "");
     if (!cwd) return 0;
     return relPath === cwd || relPath.startsWith(cwd + "/") ? cwd.length : -1;
   };
@@ -59,7 +62,9 @@ function closest(configs: RunConfig[], relPath: string): RunConfig | undefined {
 }
 
 function relToCwd(relPath: string, config: RunConfig): string {
-  const cwd = (config.cwd ?? "").replace(/^\.\/?/, "").replace(/\/+$/, "");
+  const cwd = (config.kind === "go" ? (config.params?.module ?? config.cwd ?? "") : (config.cwd ?? ""))
+    .replace(/^\.\/?/, "")
+    .replace(/\/+$/, "");
   return cwd && relPath.startsWith(cwd + "/") ? relPath.slice(cwd.length + 1) : relPath;
 }
 
@@ -123,7 +128,8 @@ function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null
  */
 export function testBasesFor(relPath: string, configs: RunConfig[]): RunConfig[] {
   const kinds = testKinds(relPath);
-  const candidates = configs.filter((c) => c.isTest && kinds.includes(c.kind));
+  // Configurations produced from a test or file are results of narrowing, never bases for it.
+  const candidates = configs.filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"));
   const best = allClosest(candidates, relPath);
   if (best.length) return best;
   const fallback = candidates[0] ?? implicitPytest(relPath, configs);
@@ -152,8 +158,14 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
       return derived(base, relPath, { args: [...base.args, file] });
     case "go": {
       const dir = dirOf(file);
-      const args = base.args.map((a) => (a === "./..." ? (dir ? `./${dir}` : ".") : a));
-      return derived(base, relPath, { args, name: `go test ${dir ? `./${dir}` : "."}` });
+      const target = dir ? `./${dir}` : ".";
+      const parts = goTestParts(base.args);
+      const args = ["test", ...parts.flags, target, ...parts.program];
+      return derived(base, relPath, {
+        args,
+        name: `go test ${target}`,
+        ...(base.params?.goKind ? { params: { ...base.params, scope: "directory", target } } : {}),
+      });
     }
     case "cargo": {
       const m = /(?:^|\/)tests\/([^/]+)\.rs$/.exec(relPath);

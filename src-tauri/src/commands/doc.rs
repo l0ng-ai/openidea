@@ -74,14 +74,14 @@ pub async fn doc_ui_mode(window: Window, state: State<'_, AppState>, path: PathB
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
 #[tauri::command]
 #[specta::specta]
-pub fn doc_set_encoding(
+pub async fn doc_set_encoding(
     window: Window,
     state: State<'_, AppState>,
     doc: DocId,
     encoding: String,
     reload: bool,
 ) -> IdeResult<String> {
-    ide_host::ops::doc::doc_set_encoding(&state.host, window.label(), doc, encoding, reload)
+    ide_host::ops::doc::doc_set_encoding(&state.host, window.label(), doc, encoding, reload).await
 }
 
 #[tauri::command]
