@@ -617,7 +617,7 @@ fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
         let info = env.tools().info("rust-analyzer", &langs()).unwrap();
         assert_eq!(info.status, ToolStatus::Installed);
         assert_eq!(info.path.as_deref(), Some(bin.join("rust-analyzer").as_path()));
-        assert_eq!(info.install_method.as_deref(), Some(if with_rustup { "rustup" } else { "Open VSX" }));
+        assert_eq!(info.install_method.as_deref(), Some("Open VSX"), "Reinstall refreshes the copy in use");
         assert!(info.can_uninstall);
     }
     env.tools().uninstall("rust-analyzer", &langs()).unwrap();

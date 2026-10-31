@@ -520,8 +520,14 @@ impl Tools {
         parse_version(&out)
     }
 
+    /// The installer that owns this tool: a managed copy is refreshed and removed by the
+    /// fallback that made it, even if the primary installer has appeared since.
     fn install_method(&self, spec: &ToolSpec) -> Method {
-        if self.method_missing(spec.method).is_some() { spec.fallback.unwrap_or(spec.method) } else { spec.method }
+        let Some(fallback) = spec.fallback else { return spec.method };
+        let managed = managed_bin_dir(&self.root, spec, self.platform)
+            .and_then(|dir| self.exe_in(&dir, spec.commands[0]))
+            .is_some();
+        if managed || self.method_missing(spec.method).is_some() { fallback } else { spec.method }
     }
 
     /// Requirement check for installing `spec` right now.
@@ -1179,11 +1185,7 @@ impl Tools {
         let _guard = InstallGuard::acquire(&format!("uninstall-{name}"))?;
         let cancel = CancellationToken::new();
         let quiet = |_: InstallEvent| {};
-        let managed = managed_bin_dir(&self.root, spec, self.platform)
-            .and_then(|dir| self.exe_in(&dir, spec.commands[0]))
-            .is_some();
-        let method = if managed { spec.fallback.unwrap_or(spec.method) } else { self.install_method(spec) };
-        match method {
+        match self.install_method(spec) {
             Method::Rustup { component } => {
                 let rustup = self.which("rustup").ok_or_else(|| IdeError::unavailable("rustup not found"))?;
                 let mut c = self.command(rustup);
