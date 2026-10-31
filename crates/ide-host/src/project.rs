@@ -776,6 +776,8 @@ impl Project {
 /// Applies a multi-file edit through the document layer so open editors update live.
 pub fn apply_workspace_edit(documents: &Documents, edit: &ide_core::WorkspaceEdit) -> IdeResult<()> {
     use ide_core::FileEdit;
+    let mut edit = edit.clone();
+    edit.deduplicate();
     for file in &edit.files {
         match file {
             FileEdit::Edit { path, edits } => {
@@ -1117,5 +1119,30 @@ mod index_event_tests {
         assert!(vcs_path_changed(&index));
         std::fs::remove_file(&index).unwrap();
         assert!(vcs_path_changed(&index));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod workspace_edit_tests {
+    use super::*;
+    use ide_core::{FileEdit, LanguageId, Pos, Range, TextEdit, WorkspaceEdit};
+
+    #[test]
+    fn rename_via_symlink_updates_the_open_document_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("main.cpp");
+        let alias = dir.path().join("alias.cpp");
+        std::fs::write(&real, "add();\n").unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let documents = Documents::new(Arc::new(|_: IdeEvent| {}), Box::new(|_, _| LanguageId::new("cpp")));
+        let doc = documents.open(&alias).unwrap();
+        let changes = |path: PathBuf| FileEdit::Edit {
+            path: path.into(),
+            edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "sum_values".into() }],
+        };
+        apply_workspace_edit(&documents, &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)] })
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(real).unwrap(), "sum_values();\n");
+        assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
     }
 }

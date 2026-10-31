@@ -685,6 +685,15 @@ impl LspManager {
         if let Some(t) = self.docs.lock().values().find(|d| d.path == path).map(|d| d.text.clone()) {
             return Some(t);
         }
+        if let Ok(key) = dunce::canonicalize(path)
+            && let Some(text) = self
+                .docs
+                .lock()
+                .values()
+                .find_map(|d| (dunce::canonicalize(&d.path).ok().as_ref() == Some(&key)).then(|| d.text.clone()))
+        {
+            return Some(text);
+        }
         let key = path.to_str().filter(|s| is_virtual_uri(s))?;
         self.virtual_docs.lock().get(key).map(|d| Arc::new(DocText::new(&d.text)))
     }

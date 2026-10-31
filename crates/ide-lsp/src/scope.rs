@@ -167,13 +167,14 @@ impl LspManager {
     /// readable as text are left out and flagged on the guard.
     async fn open_transient(&self, t: &Target, files: Vec<PathBuf>, cancel: &CancellationToken) -> TransientFiles<'_> {
         // The server already sees the user's files, however large.
-        let open: HashSet<PathBuf> = self.docs.lock().values().map(|d| d.path.clone()).collect();
+        let key = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let open: HashSet<PathBuf> = self.docs.lock().values().map(|d| key(&d.path)).collect();
         let (read, skipped) = {
             let cancel = cancel.clone();
             tokio::task::spawn_blocking(move || {
                 let mut read = Vec::new();
                 let mut skipped = false;
-                for f in files.into_iter().filter(|f| !open.contains(f)) {
+                for f in files.into_iter().filter(|f| !open.contains(&key(f))) {
                     if cancel.is_cancelled() {
                         break;
                     }
@@ -199,7 +200,7 @@ impl LspManager {
         }
         let docs = self.docs.lock();
         for (path, text) in read {
-            if docs.values().any(|d| d.path == path) {
+            if docs.values().any(|d| key(&d.path) == key(&path)) {
                 continue;
             }
             let uri = crate::uri::path_to_uri(&path);

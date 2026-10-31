@@ -468,3 +468,36 @@ fn python_scripts_import_sibling_packages_and_preserve_env_file_paths() {
         assert_eq!(text(&chunks, stdout), "import OK vendor OK\n");
     }
 }
+
+#[test]
+#[ignore = "requires CMake, CTest and a C++ compiler"]
+fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
+    let h = harness();
+    std::fs::write(h.root.path().join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)\nproject(smoke LANGUAGES CXX)\nadd_executable(smoke main.cpp math.cpp)\nenable_testing()\nadd_test(NAME smoke COMMAND smoke)\n").unwrap();
+    std::fs::write(h.root.path().join("main.cpp"), "int add(int,int); int main() { return add(2,3)==5 ? 0 : 1; }\n")
+        .unwrap();
+    std::fs::write(h.root.path().join("math.cpp"), "int add(int a,int b) { return a+b; }\n").unwrap();
+    let initial = ide_run::detect(h.root.path());
+    assert!(!h.root.path().join("build").exists(), "detection must not modify the project");
+    let configure = initial.iter().find(|c| c.id.ends_with(":configure")).unwrap();
+    let (id, output) = start(&h, configure);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    assert!(h.root.path().join("build/.cmake/api/v1/query/client-openidea/codemodel-v2").exists());
+    let root = h.root.path().canonicalize().unwrap();
+    let configs = ide_run::detect(&root);
+    let target = configs.iter().find(|c| c.kind == "native").expect("File API executable");
+    assert_eq!(target.debug_adapter.as_deref(), Some("lldb-dap"));
+    let sources = &target.extras.params["cmakeSources"];
+    assert!(sources.lines().any(|s| s.ends_with("/main.cpp")));
+    assert!(sources.lines().any(|s| s.ends_with("/math.cpp")));
+    assert!(sources.lines().any(|s| s == root.join("main.cpp").to_string_lossy()));
+    assert_eq!(target.extras.params["cmakeCanonicalSourceRoot"], root.to_string_lossy());
+    let build = configs.iter().find(|c| c.id == target.extras.before_launch[0].target).unwrap();
+    let (id, output) = start(&h, build);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    let (id, _) = start(&h, target);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(10)), Some(0));
+    let ctest = configs.iter().find(|c| c.command == "ctest").unwrap();
+    let (id, output) = start(&h, ctest);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(10)), Some(0), "{}", text(&output, stdout));
+}
