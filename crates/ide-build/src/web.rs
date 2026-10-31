@@ -67,12 +67,10 @@ impl WebBuild {
         }
         let cwd = root.join(&self.cwd).canonicalize()?;
         let mut env = env.clone();
-        if !env.iter().any(|(k, v)| {
-            (k == "MAVEN_BASEDIR" || (cfg!(windows) && k.eq_ignore_ascii_case("MAVEN_BASEDIR"))) && !v.is_empty()
-        }) {
+        if !env.iter().any(|(k, v)| k.eq_ignore_ascii_case("MAVEN_BASEDIR") && !v.is_empty()) {
             // -f changes Maven's .mvn search origin; keep the reactor's launcher settings.
             let base = cwd.ancestors().find(|p| p.join(".mvn").is_dir()).unwrap_or(&cwd);
-            env.retain(|k, _| !(cfg!(windows) && k.eq_ignore_ascii_case("MAVEN_BASEDIR")));
+            env.retain(|k, _| !k.eq_ignore_ascii_case("MAVEN_BASEDIR"));
             env.insert("MAVEN_BASEDIR".into(), base.to_string_lossy().into_owned());
         }
         let result = crate::process::run_with_env(&self.command, args, &cwd, &env, true, cancel, |_, _| {})?;
