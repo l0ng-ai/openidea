@@ -1,6 +1,7 @@
 //! The tools, by area. Names and parameters follow the MCP server of the
 //! JetBrains IDEs (2026.2), so prompts and client setups written for it work here.
 
+pub mod changelists;
 pub mod code;
 pub mod edit;
 pub mod files;
@@ -19,5 +20,6 @@ pub fn all() -> Vec<Tool> {
     tools.extend(edit::tools());
     tools.extend(run::tools());
     tools.extend(vcs::tools());
+    tools.extend(changelists::tools());
     tools
 }
