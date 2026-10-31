@@ -26,6 +26,7 @@ export interface SecretPrompt {
 
 /** Remote Host tool window, per server: resolved root, loaded folders, expanded folders. */
 export interface RemoteTreeState {
+  source: string | null;
   root: string | null;
   error: string | null;
   listings: Record<string, RemoteEntry[]>;
@@ -52,6 +53,7 @@ export const useDeployment = create<DeploymentState>(() => ({
 }));
 
 export const EMPTY_TREE: RemoteTreeState = {
+  source: null,
   root: null,
   error: null,
   listings: {},

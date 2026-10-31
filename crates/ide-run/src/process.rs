@@ -740,6 +740,18 @@ fn launch_env(root: &Path, config: &RunConfig) -> IdeResult<LaunchEnv> {
     Ok(LaunchEnv { clear: !extras.include_system_env, vars })
 }
 
+pub(crate) fn resolved_env(root: &Path, config: &RunConfig) -> IdeResult<BTreeMap<String, String>> {
+    let env = launch_env(root, config)?;
+    let mut vars = if env.clear { BTreeMap::new() } else { crate::system_env() };
+    if !env.clear {
+        vars.extend(
+            ide_core::process::shell_env().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))),
+        );
+    }
+    vars.extend(env.vars);
+    Ok(vars)
+}
+
 fn apply_env(cmd: &mut Command, env: &LaunchEnv) {
     if env.clear {
         cmd.env_clear();

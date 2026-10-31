@@ -4461,6 +4461,7 @@ name = "ide-run"
 version = "0.1.29"
 dependencies = [
  "encoding_rs",
+ "ide-build",
  "ide-core",
  "libc",
  "parking_lot",

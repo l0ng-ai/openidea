@@ -517,10 +517,12 @@ export const commands = {
 	 *  Unshelve: applies the shelved patch (3-way merging; conflicts are left for the
 	 *  merge UI); with `remove`, deletes it from the shelf.
 	 */
-	vcsUnshelve: (id: string, remove: boolean) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_unshelve", { id, remove })),
-	vcsShelfDelete: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_delete", { id })),
+	vcsUnshelve: (id: string, remove: boolean, path: string | null) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_unshelve", { id, remove, path })),
+	vcsShelfDelete: (id: string, path: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_delete", { id, path })),
 	vcsShelfRename: (id: string, name: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_rename", { id, name })),
-	vcsShelfPatch: (id: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id })),
+	vcsShelfPatch: (id: string, path: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id, path })),
+	vcsShelfDiff: (id: string) => typedError<ShelfDiffFile[], IdeError>(__TAURI_INVOKE("vcs_shelf_diff", { id })),
+	vcsShelfImport: (name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { name, patch })),
 	vcsChangelistsLoad: () => typedError<ChangelistState, IdeError>(__TAURI_INVOKE("vcs_changelists_load")),
 	vcsChangelistsSave: (changelists: ChangelistState) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_changelists_save", { changelists })),
 	/**  Create Patch › Save to file. */
@@ -966,33 +968,26 @@ export const commands = {
 	 *  (run in a terminal tab, so prompts and host-key questions are answered there).
 	 */
 	sshTerminalCommand: (id: string) => typedError<SshTerminalCommand, IdeError>(__TAURI_INVOKE("ssh_terminal_command", { id })),
-	/**  Tools › Deployment › Upload to…: files and folders to `server` (default server when `None`). */
 	deployUpload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_upload", { paths, server, request })),
-	/**  Download from…: the remote counterparts of files and folders. */
 	deployDownload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_download", { paths, server, request })),
-	/**  Deletes the remote counterparts of files and folders. */
 	deployDeleteRemote: (paths: IpcPath[], server: string | null) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_delete_remote", { paths, server })),
-	/**  Sync with Deployed: local and remote files under `path`, side by side. */
 	deployCompare: (path: IpcPath, server: string | null, request: RequestId) => typedError<SyncEntry[], IdeError>(__TAURI_INVOKE("deploy_compare", { path, server, request })),
-	/**  Applies the Sync with Deployed choices. */
 	deploySync: (steps: SyncStep[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_sync", { steps, server, request })),
-	/**  Where `path` is deployed (remote path, web URL); `None` when not mapped. */
 	deployInfo: (path: IpcPath, server: string | null) => typedError<{
 	server: string,
 	remotePath: string,
 	webUrl: string | null,
 } | null, IdeError>(__TAURI_INVOKE("deploy_info", { path, server })),
-	/**  Remote Host tool window: the server root of `server`, resolved on the host. */
 	deployServerRoot: (server: string) => typedError<string, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
-	/**  Entries of a remote folder of SSH configuration `ssh` (`~`: the login directory). */
-	remoteList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_list", { ssh, path })),
-	/**  Opens a remote file for editing: a local copy, uploaded back on save. */
-	remoteOpen: (ssh: string, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { ssh, path })),
-	/**  The remote file a local copy stands for: (SSH configuration id, remote path). */
-	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[string, string] | null>("remote_of", { path }),
-	remoteDelete: (ssh: string, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { ssh, path })),
-	remoteMkdir: (ssh: string, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_mkdir", { ssh, path })),
-	remoteRename: (ssh: string, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { ssh, from, to })),
+	remoteList: (connection: FsConnection, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_list", { connection, path })),
+	deployTestConnection: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path })),
+	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
+	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
+	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
+	remoteMkdir: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_mkdir", { connection, path })),
+	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
+	/**  Browse before connecting, using the desktop's SSH configuration even in a remote window. */
+	remoteBootstrapList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_bootstrap_list", { ssh, path })),
 	/**
 	 *  File › Remote Development: opens `path` on the host of SSH configuration
 	 *  `ssh_config` in this window (installs / starts the server as needed).
@@ -1992,6 +1987,23 @@ export type CreatePullRequest = {
 	push: boolean,
 };
 
+/**  Imported editor colour scheme on top of a built-in base. */
+export type CustomColorScheme = CustomColorScheme_Serialize | CustomColorScheme_Deserialize;
+
+/**  Imported editor colour scheme on top of a built-in base. */
+export type CustomColorScheme_Deserialize = {
+	name: string,
+	parent: string,
+	attributes: { [key in string]: TextAttributesOverride_Deserialize },
+};
+
+/**  Imported editor colour scheme on top of a built-in base. */
+export type CustomColorScheme_Serialize = {
+	name: string,
+	parent: string,
+	attributes: { [key in string]: TextAttributesOverride_Serialize },
+};
+
 /**  A named profile made with Copy. */
 export type CustomInspectionProfile = {
 	name?: string,
@@ -2393,8 +2405,9 @@ export type DeploymentMapping = {
 	web?: string,
 };
 
-/**  An SFTP server and how project folders map onto it. */
+/**  A deployment filesystem and how project folders map onto it. */
 export type DeploymentServer = {
+	kind?: DeploymentType,
 	id?: string,
 	name?: string,
 	/**  [`SshConfiguration::id`]. */
@@ -2421,6 +2434,8 @@ export type DeploymentSettings = {
 	/**  File names never uploaded or downloaded (`*` and `?` wildcards; `;`-separated in the UI). */
 	exclude?: string[],
 };
+
+export type DeploymentType = "sftp" | "local";
 
 export type Diagnostic = {
 	range: Range,
@@ -2738,6 +2753,8 @@ export type EditorSettings_Deserialize = {
 	formatOnSave?: boolean,
 	/**  Editor colour scheme id; `theme-default` follows the IDE theme. */
 	colorScheme?: string,
+	/**  Imported editor schemes, stored in user settings. */
+	customSchemes?: { [key in string]: CustomColorScheme_Deserialize },
 	/**  Color Scheme edits: scheme id → attribute id → override. */
 	colorOverrides?: { [key in string]: { [key in string]: TextAttributesOverride_Deserialize } },
 	/**
@@ -2785,6 +2802,8 @@ export type EditorSettings_Serialize = {
 	formatOnSave: boolean,
 	/**  Editor colour scheme id; `theme-default` follows the IDE theme. */
 	colorScheme: string,
+	/**  Imported editor schemes, stored in user settings. */
+	customSchemes: { [key in string]: CustomColorScheme_Serialize },
 	/**  Color Scheme edits: scheme id → attribute id → override. */
 	colorOverrides: { [key in string]: { [key in string]: TextAttributesOverride_Serialize } },
 	/**
@@ -3096,6 +3115,8 @@ export type Fragment = {
 	/**  The fragment's source, from the start of its first line (capped). */
 	text: string,
 };
+
+export type FsConnection = { kind: "sftp"; ssh: string } | { kind: "local" };
 
 /**
  *  A method breakpoint (DAP function breakpoint). `name` uses the adapter's syntax:
@@ -5529,6 +5550,13 @@ export type Settings_Serialize = {
 };
 
 export type Severity = "error" | "warning" | "info" | "hint";
+
+export type ShelfDiffFile = {
+	path: string,
+	patch: string,
+	before: string | null,
+	after: string | null,
+};
 
 /**  Version Control › Shelf. */
 export type ShelfSettings = {

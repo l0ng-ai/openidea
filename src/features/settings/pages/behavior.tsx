@@ -10,7 +10,7 @@ import { useId, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
 import { isTauri } from "@/platform/ipc";
-import { SCHEMES as EDITOR_SCHEMES } from "@/platform/colorScheme";
+import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
 import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
@@ -117,7 +117,8 @@ const SCHEMES: SelectOption[] = [
 
 function ColorSchemeRow() {
   const [scheme, setScheme] = useSetting<string>("editor.colorScheme");
-  const options = SCHEMES.some((s) => s.value === scheme) ? SCHEMES : [...SCHEMES, { value: scheme, label: scheme }];
+  const [customs] = useSetting<unknown>("editor.customSchemes", "global");
+  const options = [SCHEMES[0]!, ...listSchemes(customSchemes(customs)).map((s) => ({ value: s.id, label: s.name }))];
   return (
     <Indented>
       <Row label="Editor color scheme">

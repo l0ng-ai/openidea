@@ -32,6 +32,7 @@ import styles from "./Tree.module.css";
 import { T } from "./T";
 import { tx } from "@/platform/i18n";
 import { useTreeReorder, type TreeReorder } from "./treeReorder";
+import { useTreeDirectoryContext } from "./treeDirectoryContext";
 export type { TreeReorder } from "./treeReorder";
 
 export interface TreeRowState {
@@ -85,6 +86,8 @@ export interface TreeProps<T> {
   getDetail?: (node: T) => string | undefined;
   /** Label colour, e.g. VCS status. */
   getColor?: (node: T) => string | undefined;
+  /** Filesystem directory for actions on the focused selection; groups return null. */
+  getDirectory?: (node: T) => string | null | undefined;
 
   expanded?: ReadonlySet<string>;
   defaultExpanded?: Iterable<string>;
@@ -540,6 +543,11 @@ export function Tree<T>(props: TreeProps<T>) {
   };
 
   const leadRow = leadIndex >= 0 ? rows[leadIndex] : undefined;
+  useTreeDirectoryContext(
+    scrollRef,
+    leadRow && !leadRow.loading && selected.has(leadRow.key) ? props.getDirectory?.(leadRow.node) : undefined,
+    !!props.getDirectory && !emptyState,
+  );
   const noMatch = !!query && matchMap.size === 0;
 
   if (emptyState) return <div className={clsx(styles.tree, styles.emptyWrap, className)}>{empty}</div>;
