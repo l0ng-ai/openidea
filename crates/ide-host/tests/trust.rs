@@ -1,7 +1,10 @@
 use ide_core::NullSink;
-use ide_host::{Host, HostConfig, ops, trust::TrustStore};
+#[cfg(unix)]
+use ide_host::ops;
+use ide_host::{Host, HostConfig, trust::TrustStore};
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 fn host(base: &Path, environment: bool) -> Arc<Host> {
