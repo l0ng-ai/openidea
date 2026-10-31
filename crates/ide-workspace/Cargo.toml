@@ -13,6 +13,7 @@ ide-vfs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
+sys-locale.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 parking_lot.workspace = true

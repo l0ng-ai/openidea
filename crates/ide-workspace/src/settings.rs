@@ -12,6 +12,11 @@ use toml_edit::{DocumentMut, Item, Table, TableLike};
 /// TOML keys use the camelCase names of the serde [`Settings`] struct, e.g.
 /// `[editor]` / `fontSize = 14`. A layer that fails to parse or holds values of
 /// the wrong type is logged and ignored as a whole.
+///
+/// One default is dynamic: on the first launch (no layer sets `appearance.locale`),
+/// [`SettingsStore::adopt_system_locale`] adopts the operating system's language —
+/// `zh` on Simplified Chinese systems, `en` elsewhere — and persists it, so later
+/// launches keep it until the user picks a language in Settings.
 const PROJECT_FILE: &str = "settings.toml";
 
 pub struct SettingsStore {
@@ -75,6 +80,30 @@ fn read_layer(file: &Path) -> Option<Json> {
             None
         }
     }
+}
+
+/// The UI locale implied by a system locale tag: Simplified Chinese (`zh-CN`,
+/// `zh-Hans-CN`, `zh_CN.UTF-8`…) → `zh`, everything else → `en`. Accepts BCP 47
+/// and POSIX forms.
+pub fn locale_for_system(tag: Option<&str>) -> &'static str {
+    // No locale reported (unsupported platform): fall back to English.
+    let Some(tag) = tag else { return "en" };
+    // Strip a POSIX codeset / modifier (`zh_CN.UTF-8@cjk`) before splitting.
+    let base = tag.split(['.', '@']).next().unwrap_or(tag);
+    let mut parts = base.split(['-', '_']);
+    // Only Chinese has a bundled translation; every other language stays English.
+    if !parts.next().is_some_and(|l| l.eq_ignore_ascii_case("zh")) {
+        return "en";
+    }
+    // Of the Chinese variants, only Simplified gets the Chinese catalog;
+    // Traditional (`zh-TW`, `zh-HK`, `zh-Hant`…) stays English.
+    let traditional = parts.any(|p| matches!(p.to_ascii_lowercase().as_str(), "hant" | "tw" | "hk" | "mo"));
+    if traditional { "en" } else { "zh" }
+}
+
+/// The UI locale for a fresh install, taken from the operating system.
+fn default_locale() -> String {
+    locale_for_system(sys_locale::get_locale().as_deref()).to_owned()
 }
 
 /// Merges `layer` onto `merged` if the result still deserializes.
@@ -282,6 +311,30 @@ impl SettingsStore {
         settings
     }
 
+    /// First launch only: when the global layer doesn't set `appearance.locale`
+    /// yet, adopt the operating system's language as the default — `zh` on
+    /// Simplified Chinese systems, `en` elsewhere — and persist it. An existing
+    /// choice (the user's or an earlier adoption) is left untouched, so later
+    /// launches never override it with the OS language.
+    ///
+    /// Only the global layer is consulted: it is the one the user's Settings
+    /// writes go to, and adoption runs at startup before any project is open
+    /// (a project-scoped language still wins for its own project).
+    pub fn adopt_system_locale(&self) -> IdeResult<Settings> {
+        // `read_layer` is `None` for a missing file as well as a broken one, so
+        // a fresh install falls through to the adoption branch below (a broken
+        // file then fails in `set` and is reported by the caller).
+        let set = read_layer(&self.global_file)
+            .is_some_and(|layer| layer.get("appearance").and_then(|a| a.get("locale")).is_some());
+        if set {
+            // A stored language always wins over the OS; never re-detect.
+            return Ok(self.effective());
+        }
+        // Persist the detected language, making later launches treat it like
+        // an explicit setting (the user can still change it in Settings).
+        self.set(SettingsScope::Global, "appearance.locale", Json::String(default_locale()))
+    }
+
     /// File › Manage IDE Settings › Export Settings…: the global layer plus
     /// frontend-held IDE state (`storage`: keymaps' companions such as live
     /// templates, macros) as one JSON file.
@@ -396,6 +449,71 @@ mod tests {
             global_only.set(SettingsScope::Project, "editor.fontSize", json!(1)).unwrap_err().kind,
             ide_core::error::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn system_locale_maps_to_a_ui_locale() {
+        for (tag, locale) in [
+            (None, "en"),
+            (Some(""), "en"),
+            (Some("en-US"), "en"),
+            (Some("en_GB.UTF-8"), "en"),
+            (Some("ja-JP"), "en"),
+            (Some("fr-FR"), "en"),
+            (Some("zh"), "zh"),
+            (Some("zh-CN"), "zh"),
+            (Some("zh-Hans"), "zh"),
+            (Some("zh-Hans-CN"), "zh"),
+            (Some("zh_CN.UTF-8"), "zh"),
+            (Some("zh_CN.UTF-8@cjk"), "zh"),
+            (Some("zh-SG"), "zh"),
+            (Some("zh-TW"), "en"),
+            (Some("zh-Hant"), "en"),
+            (Some("zh-Hant-TW"), "en"),
+            (Some("zh_HK.UTF-8"), "en"),
+        ] {
+            assert_eq!(locale_for_system(tag), locale, "system tag {tag:?}");
+        }
+    }
+
+    #[test]
+    fn first_launch_adopts_the_system_language_and_an_explicit_choice_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Fresh install: before adoption the static default applies, after it the
+        // OS language is detected and persisted.
+        let cfg = tmp.path().join("cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let store = SettingsStore::load(&cfg, None);
+        assert_eq!(store.effective().appearance.locale, "en");
+        assert_eq!(store.adopt_system_locale().unwrap().appearance.locale, default_locale());
+        assert_eq!(SettingsStore::load(&cfg, None).effective().appearance.locale, default_locale());
+        assert!(std::fs::read_to_string(cfg.join("settings.toml")).unwrap().contains("locale"));
+
+        // Existing settings without a language (older versions) are adopted too.
+        let cfg2 = tmp.path().join("cfg2");
+        std::fs::create_dir_all(&cfg2).unwrap();
+        std::fs::write(cfg2.join("settings.toml"), "[editor]\nfontSize = 16\n").unwrap();
+        let upgraded = SettingsStore::load(&cfg2, None);
+        assert_eq!(upgraded.effective().editor.font_size, 16.0);
+        assert_eq!(upgraded.adopt_system_locale().unwrap().appearance.locale, default_locale());
+        assert_eq!(upgraded.effective().editor.font_size, 16.0);
+
+        // The user's explicit choice survives adoption (i.e. later launches),
+        // whatever the OS language is.
+        for choice in ["en", "zh"] {
+            let store = SettingsStore::load(&cfg, None);
+            let s = store.set(SettingsScope::Global, "appearance.locale", json!(choice)).unwrap();
+            assert_eq!(s.appearance.locale, choice);
+            assert_eq!(store.adopt_system_locale().unwrap().appearance.locale, choice);
+            assert_eq!(SettingsStore::load(&cfg, None).effective().appearance.locale, choice);
+        }
+
+        // Removing the choice falls back to the static default until the next
+        // launch adopts the OS language again.
+        let s = store.set(SettingsScope::Global, "appearance.locale", Json::Null).unwrap();
+        assert_eq!(s.appearance.locale, "en");
+        assert_eq!(store.adopt_system_locale().unwrap().appearance.locale, default_locale());
     }
 
     #[test]
