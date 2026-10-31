@@ -468,6 +468,32 @@ fn push_with_tags() {
 }
 
 #[test]
+fn push_goes_to_an_upstream_with_another_name() {
+    let fx = Fixture::new();
+    let bare = fx._tmp.path().join("origin.git");
+    git_in(fx._tmp.path(), &["init", "-q", "--bare", bare.to_str().unwrap()]);
+    fx.write("a.txt", "1\n");
+    fx.commit_all("one");
+    fx.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+    fx.git(&["push", "-q", "origin", "main:release/one"]);
+    fx.git(&["fetch", "-q", "origin"]);
+    fx.git(&["checkout", "-q", "-b", "local-name", "--track", "origin/release/one"]);
+    fx.write("a.txt", "2\n");
+    let c2 = fx.commit_all("two");
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+
+    repo.push(false, false, &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "release/one"]), c2);
+    assert_eq!(git_in(&bare, &["branch", "--list", "local-name"]), "");
+
+    fx.write("a.txt", "3\n");
+    let c3 = fx.commit_all("three");
+    repo.push_with_tags(false, false, Some(ide_vcs::PushTags::CurrentBranch), &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "release/one"]), c3);
+}
+
+#[test]
 fn push_branch_and_up_to_revision() {
     let fx = Fixture::new();
     let bare = fx._tmp.path().join("origin.git");

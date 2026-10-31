@@ -723,6 +723,8 @@ pub(crate) fn push(
             })
             .ok_or_else(|| IdeError::invalid("no remote configured"))?;
         args.extend(["--set-upstream".into(), remote, short]);
+    } else if let Some((remote, target)) = renamed_upstream(r)? {
+        args.extend([remote, format!("HEAD:{target}")]);
     }
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     cli::run_streaming(r.root(), &argv, cancel, on_output)?;
@@ -814,6 +816,23 @@ pub(crate) fn update_branch(
 }
 
 /// The remote the current branch pushes to (`origin`, or the only remote, by default).
+/// The remote and ref HEAD's branch tracks when the ref has another name: a plain
+/// `git push` refuses that under the default `push.default=simple`.
+fn renamed_upstream(r: &Repo) -> IdeResult<Option<(String, String)>> {
+    let repo = r.gix()?;
+    let Some(head) = repo.head_name().map_err(gx)? else { return Ok(None) };
+    let direction = gix::remote::Direction::Fetch;
+    let Some(Ok(merge)) = repo.branch_remote_ref_name(head.as_ref(), direction) else { return Ok(None) };
+    if merge.as_ref() == head.as_ref() {
+        return Ok(None);
+    }
+    let target = merge.as_bstr().to_str_lossy().into_owned();
+    let short = head.as_ref().shorten().to_str_lossy().into_owned();
+    Ok(repo
+        .branch_remote_name(short.as_str(), direction)
+        .map(|remote| (remote.as_bstr().to_str_lossy().into_owned(), target)))
+}
+
 fn push_remote(r: &Repo) -> IdeResult<String> {
     let repo = r.gix()?;
     let from_branch = repo.head_name().map_err(gx)?.and_then(|head| {
