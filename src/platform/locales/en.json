@@ -56,6 +56,8 @@
   "app.unsaved.saveFailed": "Could not save all files",
   "app.unsaved.title": "Unsaved Changes",
   "app.update.available": "OpenIDEA {version} is available",
+  "app.update.cancel": "Cancel",
+  "app.update.cancelled": "Update cancelled",
   "app.update.checking": "Checking for updates…",
   "app.update.disabled": "Automatic updates are not configured",
   "app.update.disabledBody": "Set an update endpoint (OPENIDEA_UPDATE_ENDPOINT or plugins.updater.endpoints) to enable update checks.",

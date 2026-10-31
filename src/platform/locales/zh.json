@@ -56,6 +56,8 @@
   "app.unsaved.saveFailed": "无法保存所有文件",
   "app.unsaved.title": "未保存的更改",
   "app.update.available": "OpenIDEA {version} 可用",
+  "app.update.cancel": "取消",
+  "app.update.cancelled": "已取消更新",
   "app.update.checking": "正在检查更新…",
   "app.update.disabled": "未配置自动更新",
   "app.update.disabledBody": "设置更新地址（OPENIDEA_UPDATE_ENDPOINT 或 plugins.updater.endpoints）以启用更新检查。",

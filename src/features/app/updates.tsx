@@ -1,6 +1,7 @@
 /**
  * Update check and install. Both run as background tasks in the status bar: the
- * check while the request is out, the install with download progress and Cancel.
+ * check while the request is out, the install with download progress and Cancel,
+ * which its balloon shows too (the welcome screen has no status bar).
  * Every entry point (Help menu, toolbar gear, welcome screen, Search Everywhere,
  * the "is available" notification and its log entry) goes through these, so a
  * repeated click joins the running check or install instead of starting another.
@@ -18,6 +19,7 @@ import {
 } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { upsertTask } from "@/workbench/tasks";
+import { UpdateBalloonBody } from "./UpdateBalloonBody";
 
 export const UPDATE_KEY = "app.update";
 export const CHECK_TASK_ID = "app.update.check";
@@ -117,8 +119,22 @@ async function runInstall(version: string) {
   const request = nextRequestId();
   const cancel = () => void commands.cancelRequest(request).catch(() => {});
   const channel = new Channel<UpdateProgress>();
+  const balloon = (actions?: Array<{ label: string; run: () => void }>) =>
+    notifications().notify({
+      level: "info",
+      title,
+      body: <UpdateBalloonBody task={INSTALL_TASK_ID} />,
+      sticky: true,
+      key: UPDATE_KEY,
+      actions,
+    });
+  let installingShown = false;
   channel.onmessage = (p) => {
     const { message, fraction } = progressText(p);
+    if (p.type === "installing" && !installingShown) {
+      installingShown = true;
+      balloon();
+    }
     upsertTask({
       id: INSTALL_TASK_ID,
       title,
@@ -130,13 +146,15 @@ async function runInstall(version: string) {
       uncancellable: p.type === "installing" ? t("app.update.installUncancellable") : undefined,
     });
   };
-  // The notification's action is spent: progress lives in the status bar from here.
-  notifications().expire?.(UPDATE_KEY);
   upsertTask({ id: INSTALL_TASK_ID, title, message: null, fraction: null, done: false, cancel });
+  // Replaces the notification whose action is now spent.
+  balloon([{ label: t("app.update.cancel"), run: cancel }]);
   try {
     await call(commands.appInstallUpdate(request, channel));
   } catch (e) {
-    if (!isCancelled(e)) {
+    if (isCancelled(e)) {
+      notifications().notify({ level: "info", title: t("app.update.cancelled"), key: UPDATE_KEY });
+    } else {
       notifications().notify({
         level: "error",
         title: t("app.update.installFailed"),
