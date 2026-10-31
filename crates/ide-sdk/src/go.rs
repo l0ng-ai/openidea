@@ -233,11 +233,97 @@ pub fn debug_environment(
     settings: &ide_core::settings::Settings,
     env: &mut std::collections::BTreeMap<String, String>,
 ) {
+    for (key, value) in module_environment(root, &settings.languages.go.modules) {
+        env.entry(key).or_insert(value);
+    }
     if let Some(goroot) = crate::apply::goroot(root, settings) {
         env.entry("GOROOT".into()).or_insert_with(|| goroot.to_string_lossy().into_owned());
         env.entry("PATH".into()).or_insert_with(|| crate::exec::path_with(&[&goroot.join("bin")]));
     }
     if let Some(gopath) = crate::apply::setting_path(root, &settings.languages.go.gopath) {
         env.entry("GOPATH".into()).or_insert_with(|| gopath.to_string_lossy().into_owned());
+    }
+}
+
+pub fn module_environment(
+    root: &std::path::Path,
+    modules: &ide_core::settings::GoModules,
+) -> std::collections::BTreeMap<String, String> {
+    let mut env: std::collections::BTreeMap<String, String> = modules
+        .env
+        .iter()
+        .filter(|(key, value)| {
+            !key.is_empty()
+                && !key.contains(['=', '\0'])
+                && !key.contains(char::is_whitespace)
+                && !value.trim().is_empty()
+                && !value.contains('\0')
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    for key in ["GOWORK", "GOMODCACHE"] {
+        if let Some(value) = env.get_mut(key)
+            && value != "off"
+            && value != "auto"
+        {
+            *value = root.join(value.as_str()).to_string_lossy().into_owned();
+        }
+    }
+    if !modules.auto_vendor {
+        let flags = env
+            .get("GOFLAGS")
+            .cloned()
+            .or_else(|| ide_core::process::host_var_os("GOFLAGS").map(|v| v.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        if !flags.split_whitespace().any(|flag| flag.starts_with("-mod=")) {
+            let workspace = match env.get("GOWORK").map(String::as_str) {
+                Some("off") => false,
+                Some(path) if path != "auto" => !path.is_empty(),
+                _ => root.ancestors().any(|dir| dir.join("go.work").is_file()),
+            };
+            env.insert(
+                "GOFLAGS".into(),
+                format!("{} -mod={}", flags.trim(), if workspace { "readonly" } else { "mod" }).trim().into(),
+            );
+        }
+    }
+    env
+}
+
+#[cfg(test)]
+mod module_tests {
+    use super::*;
+    use ide_core::settings::GoModules;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn defaults_and_invalid_entries_leave_the_environment_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(module_environment(dir.path(), &GoModules::default()).is_empty());
+        let modules = GoModules {
+            env: BTreeMap::from([
+                ("BAD KEY".into(), "x".into()),
+                ("GOPROXY".into(), "".into()),
+                ("GOPRIVATE".into(), "example.com/private".into()),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            module_environment(dir.path(), &modules),
+            BTreeMap::from([("GOPRIVATE".into(), "example.com/private".into())])
+        );
+    }
+
+    #[test]
+    fn disabling_automatic_vendor_uses_workspace_legal_flags_and_keeps_explicit_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut modules = GoModules { auto_vendor: false, env: BTreeMap::from([("GOFLAGS".into(), "-race".into())]) };
+        assert_eq!(module_environment(dir.path(), &modules)["GOFLAGS"], "-race -mod=mod");
+        std::fs::write(dir.path().join("go.work"), "go 1.22\n").unwrap();
+        assert_eq!(module_environment(dir.path(), &modules)["GOFLAGS"], "-race -mod=readonly");
+        modules.env.insert("GOWORK".into(), "off".into());
+        assert_eq!(module_environment(dir.path(), &modules)["GOFLAGS"], "-race -mod=mod");
+        modules.env.insert("GOFLAGS".into(), "-mod=vendor".into());
+        assert_eq!(module_environment(dir.path(), &modules)["GOFLAGS"], "-mod=vendor");
     }
 }

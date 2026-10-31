@@ -550,3 +550,42 @@ fn root_package_disables_nested_scan() {
     assert!(ids(&c).contains(&"go:test"));
     assert!(!ids(&c).contains(&"go:test:svc"));
 }
+
+#[test]
+fn go_work_members_define_configs_including_deep_and_quoted_directories() {
+    let dir = project(&[
+        (
+            "go.work",
+            "go 1.22\n// use ./ignored\nuse (\n ./apps/deep/server // member\n \"./module with spaces\"\n)\nuse ./apps/deep/server\n",
+        ),
+        ("apps/deep/server/go.mod", "module example.com/server\ngo 1.22\n"),
+        ("apps/deep/server/main.go", "package main\nfunc main() {}"),
+        ("module with spaces/go.mod", "module example.com/lib\ngo 1.22\n"),
+        ("ignored/go.mod", "module example.com/ignored\ngo 1.22\n"),
+    ]);
+    let configs = detect(dir.path());
+    assert_eq!(configs.iter().filter(|c| c.kind == "go" && c.is_test).count(), 2);
+    assert_eq!(find(&configs, "go:run:apps/deep/server").cwd.as_deref(), Some(Path::new("apps/deep/server")));
+    assert!(configs.iter().all(|c| !c.id.contains("ignored")));
+    assert!(configs.iter().any(|c| c.id == "go:test:module with spaces"));
+}
+
+#[test]
+fn go_work_parser_ignores_other_directives_comments_and_malformed_groups() {
+    use ide_run::go::work_modules;
+    assert_eq!(
+        work_modules("replace use => ./not-a-member\n// use ./also-not\nuse ./real\n"),
+        vec![std::path::PathBuf::from("./real")]
+    );
+    assert!(work_modules("use (\n./missing-close\n").is_empty());
+    assert!(work_modules("use \"unterminated").is_empty());
+}
+
+#[test]
+fn go_work_paths_decode_go_string_escapes() {
+    use ide_run::go::work_modules;
+    for path in [r#""./\u0061pp""#, r#""./\x61pp""#, r#""./\141pp""#, "`./app`"] {
+        assert_eq!(work_modules(&format!("use {path}\n")), vec![std::path::PathBuf::from("./app")]);
+    }
+    assert!(work_modules(r#"use "./\qinvalid""#).is_empty());
+}

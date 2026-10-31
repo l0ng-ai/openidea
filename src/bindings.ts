@@ -3225,12 +3225,18 @@ export type GoBuildTags = {
 	experiments?: string,
 };
 
+export type GoModules = {
+	env?: { [key in string]: string },
+	autoVendor?: boolean,
+};
+
 export type GoSettings = {
 	/**  Empty = the `go` on `PATH`. */
 	goroot?: string,
 	/**  Empty = `go env GOPATH`. */
 	gopath?: string,
 	buildTags?: GoBuildTags,
+	modules?: GoModules,
 };
 
 export type GotoKind = "definition" | "declaration" | "typeDefinition" | "implementation";

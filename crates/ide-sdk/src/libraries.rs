@@ -92,6 +92,10 @@ struct Cached {
 
 static CACHE: LazyLock<Mutex<HashMap<(PathBuf, &'static str), Cached>>> = LazyLock::new(Default::default);
 
+pub fn invalidate_go(root: &Path) {
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(&(root.to_path_buf(), "go"));
+}
+
 fn stamp(files: &[PathBuf]) -> Stamp {
     files
         .iter()
@@ -410,18 +414,27 @@ pub(crate) fn parse_cargo_metadata(json: &str) -> Vec<(String, PathBuf)> {
 // ------------------------------------------------------------------ go
 
 fn go_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
-    let Some(files) = manifests(root, GO_MANIFESTS) else { return Vec::new() };
+    let Some(mut files) = manifests(root, GO_MANIFESTS) else { return Vec::new() };
     if !root.join("go.mod").is_file() && !root.join("go.work").is_file() {
         return Vec::new();
     }
+    if let Ok(work) = std::fs::read_to_string(root.join("go.work")) {
+        for module in ide_run::go::work_modules(&work) {
+            files.extend([root.join(&module).join("go.mod"), root.join(&module).join("go.sum")]);
+        }
+    }
+    files.extend([root.join("go.work.sum"), root.join("vendor/modules.txt")]);
     let g = &s.languages.go;
-    cached(root, "go", format!("{}\n{}", g.goroot, g.gopath), &files, || {
+    cached(root, "go", serde_json::to_string(g).unwrap_or_default(), &files, || {
         let goroot = crate::apply::goroot(root, s);
         let Some(go) = tool(goroot.as_ref().map(|r| r.join("bin")), "go") else { return Vec::new() };
         let goroot_s = goroot.as_ref().map(|p| p.to_string_lossy().into_owned());
         let gopath = crate::apply::setting_path(root, &g.gopath).map(|p| p.to_string_lossy().into_owned());
         // Never download modules or toolchains just to list libraries.
-        let mut env = vec![("GOPROXY", "off"), ("GOTOOLCHAIN", "local")];
+        let module_env = crate::go::module_environment(root, &g.modules);
+        let mut env: Vec<(&str, &str)> = module_env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        // Listing libraries must stay offline even when module commands use a proxy.
+        env.extend([("GOPROXY", "off"), ("GOTOOLCHAIN", "local")]);
         env.extend(goroot_s.as_deref().map(|v| ("GOROOT", v)));
         env.extend(gopath.as_deref().map(|v| ("GOPATH", v)));
         let mut out = Vec::new();
@@ -436,11 +449,36 @@ fn go_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
                 out.extend(group(name, "go", library_roots(vec![Path::new(dir).join("src")])));
             }
         }
-        if let Some(text) = query_in(&go, &["list", "-m", "-e", "-json", "all"], Some(root), &env, GRAPH_TIMEOUT) {
+        let flags = module_env.get("GOFLAGS").map(String::as_str).unwrap_or("");
+        let vendor = root.join("vendor");
+        let use_vendor = vendor.is_dir()
+            && (flags.split_whitespace().any(|f| f == "-mod=vendor")
+                || (g.modules.auto_vendor && !flags.split_whitespace().any(|f| f.starts_with("-mod="))));
+        if use_vendor {
+            if let Ok(text) = std::fs::read_to_string(vendor.join("modules.txt")) {
+                let modules = vendor_roots(&vendor, &text);
+                out.extend(group("Go Modules", "goModules", named_roots(modules)));
+            }
+        } else if let Some(text) = query_in(&go, &["list", "-m", "-e", "-json", "all"], Some(root), &env, GRAPH_TIMEOUT)
+        {
             out.extend(group("Go Modules", "goModules", named_roots(parse_go_modules(&text))));
         }
         out
     })
+}
+
+fn vendor_roots(vendor: &Path, text: &str) -> Vec<(String, PathBuf)> {
+    let mut seen = std::collections::HashSet::new();
+    text.lines()
+        .filter_map(|line| {
+            let module = line.strip_prefix("# ")?.split_whitespace().next()?;
+            if module == "=>" || !seen.insert(module) {
+                return None;
+            }
+            let path = vendor.join(module);
+            path.is_dir().then(|| (module.to_string(), path))
+        })
+        .collect()
 }
 
 /// `(path@version, dir)` of the downloaded non-main modules in `go list -m -json` output.
@@ -466,4 +504,35 @@ pub(crate) fn parse_go_modules(text: &str) -> Vec<(String, PathBuf)> {
             Some((name, m.dir?))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod go_cache_tests {
+    use super::*;
+    #[test]
+    fn vendor_roots_include_local_replacements_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("example.com/local")).unwrap();
+        let text = "# example.com/local v0.0.0 => ../local\n## explicit; go 1.22\nexample.com/local\n# example.com/local => ../local\n";
+        assert_eq!(
+            vendor_roots(dir.path(), text),
+            vec![("example.com/local".into(), dir.path().join("example.com/local"))]
+        );
+    }
+
+    #[test]
+    fn go_commands_invalidate_the_graph_even_when_manifests_are_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let count = std::cell::Cell::new(0);
+        let detect = || {
+            count.set(count.get() + 1);
+            Vec::new()
+        };
+        cached(dir.path(), "go", "same".into(), &[], detect);
+        cached(dir.path(), "go", "same".into(), &[], detect);
+        assert_eq!(count.get(), 1);
+        invalidate_go(dir.path());
+        cached(dir.path(), "go", "same".into(), &[], detect);
+        assert_eq!(count.get(), 2);
+    }
 }

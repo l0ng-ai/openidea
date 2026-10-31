@@ -547,6 +547,20 @@ pub struct GoSettings {
     /// Empty = `go env GOPATH`.
     pub gopath: String,
     pub build_tags: GoBuildTags,
+    pub modules: GoModules,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GoModules {
+    pub env: BTreeMap<String, String>,
+    pub auto_vendor: bool,
+}
+
+impl Default for GoModules {
+    fn default() -> Self {
+        Self { env: BTreeMap::new(), auto_vendor: true }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -767,5 +781,21 @@ mod gradle_settings_tests {
             let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);
         }
+    }
+}
+
+#[cfg(test)]
+mod go_module_tests {
+    use super::*;
+    #[test]
+    fn old_go_settings_inherit_module_defaults() {
+        let old: GoSettings = serde_json::from_str(r#"{"goroot":"/go"}"#).unwrap();
+        assert!(old.modules.auto_vendor);
+        assert!(old.modules.env.is_empty());
+        let configured: GoSettings =
+            serde_json::from_str(r#"{"modules":{"autoVendor":false,"env":{"GOPRIVATE":"example.com/private"}}}"#)
+                .unwrap();
+        assert!(!configured.modules.auto_vendor);
+        assert_eq!(configured.modules.env["GOPRIVATE"], "example.com/private");
     }
 }

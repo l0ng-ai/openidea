@@ -1007,3 +1007,30 @@ fn go_empty_constraints_preserve_explicit_server_defaults() {
     configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
     assert_eq!(cfg.settings, Some(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})));
 }
+
+#[test]
+fn go_modules_configure_gopls_in_place_and_commands_with_explicit_run_overrides() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.languages.go.modules.env = BTreeMap::from([
+        ("GOPROXY".into(), "https://proxy.example".into()),
+        ("GOPRIVATE".into(), "example.com/private".into()),
+        ("GOFLAGS".into(), "-race".into()),
+    ]);
+    settings.languages.go.modules.auto_vendor = false;
+    let mut cfg = server("gopls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &settings);
+    let protocol = cfg.settings.take().unwrap();
+    assert_eq!(protocol["env"]["GOFLAGS"], "-race -mod=mod");
+    assert_eq!(protocol["env"]["GOPRIVATE"], "example.com/private");
+    assert!(cfg.env.is_empty(), "module environment changes must not restart gopls");
+    let mut run = run("go", "go", &["mod", "tidy"]);
+    run.env.insert("GOPROXY".into(), "off".into());
+    apply_to_run_configs(std::slice::from_mut(&mut run), tmp.path(), &settings);
+    assert_eq!(run.env["GOPROXY"], "off");
+    assert_eq!(run.env["GOPRIVATE"], "example.com/private");
+    let mut cleared = server("gopls");
+    configure_server(&mut cleared, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(cleared.settings.unwrap()["env"], json!({}));
+}

@@ -130,7 +130,18 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
         python_paths: if member.is_some() { vec![root.clone()] } else { super::python::paths(&project) },
     };
-    host.processes.start(&project.root, &config, &options, project.sink.clone(), Box::new(move |c| on_output(c)))
+    let mut sink = project.sink.clone();
+    if config.kind == "go" && matches!(config.args.first().map(String::as_str), Some("mod" | "work")) {
+        let previous = sink;
+        let root = project.root.clone();
+        sink = std::sync::Arc::new(move |event: ide_core::IdeEvent| {
+            if matches!(&event, ide_core::IdeEvent::RunExited { .. }) {
+                ide_sdk::libraries::invalidate_go(&root);
+            }
+            previous.emit(event);
+        });
+    }
+    host.processes.start(&project.root, &config, &options, sink, Box::new(move |c| on_output(c)))
 }
 
 /// Stops a run (interrupt, then kill after Settings › Run's termination timeout).

@@ -35,7 +35,12 @@ export interface LanguagesValid {
     checkCommand: "check" | "clippy";
     rustfmtArgs: string;
   };
-  go: { goroot: string; gopath: string; buildTags: GoBuildTags };
+  go: {
+    goroot: string;
+    gopath: string;
+    buildTags: GoBuildTags;
+    modules: { env: Record<string, string>; autoVendor: boolean };
+  };
   typescript: { version: string };
   java: {
     jdk: string;
@@ -73,7 +78,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
   node: { interpreter: "", packageManager: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
-  go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS },
+  go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
   java: {
     jdk: "",
@@ -135,6 +140,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const rust = obj(l.rust);
   const go = obj(l.go);
   const tags = obj(go.buildTags);
+  const modules = obj(go.modules);
   const ts = obj(l.typescript);
   const java = obj(l.java);
   const maven = obj(java.maven);
@@ -161,6 +167,14 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       buildTags: Object.fromEntries(
         Object.entries(DEFAULT_GO_BUILD_TAGS).map(([key, value]) => [key, text(tags[key], value)]),
       ) as unknown as GoBuildTags,
+      modules: {
+        autoVendor: bool(modules.autoVendor, true),
+        env: Object.fromEntries(
+          Object.entries(obj(modules.env)).filter(
+            ([key, value]) => !!key && !/[=\s\0]/.test(key) && typeof value === "string" && !value.includes("\0"),
+          ),
+        ) as Record<string, string>,
+      },
     },
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
     java: {

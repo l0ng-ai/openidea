@@ -8,6 +8,10 @@ import { goModuleDir } from "./producers";
 
 const known = new Map<string, string | null>();
 
+export function invalidateGoModules() {
+  known.clear();
+}
+
 export function parseGoModule(gomod: string): string | null {
   const m = /^\s*module\s+("?)([^\s"]+)\1/m.exec(gomod);
   return m?.[2] ?? null;

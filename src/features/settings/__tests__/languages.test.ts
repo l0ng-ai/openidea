@@ -77,3 +77,32 @@ describe("language pages", () => {
     expect(tildify("C:/Program Files/Java/jdk-21")).toBe("C:/Program Files/Java/jdk-21");
   });
 });
+
+describe("Go module settings", () => {
+  it("keeps automatic vendoring by default and normalizes malformed environment entries", () => {
+    expect(validateLanguages({ go: {} }).go.modules).toEqual({ env: {}, autoVendor: true });
+    const modules = validateLanguages({
+      go: {
+        modules: {
+          autoVendor: false,
+          env: {
+            GOPROXY: "https://proxy.example",
+            GOPRIVATE: "example.com/private",
+            GOFLAGS: "-race",
+            INVALID: 3,
+            "BAD KEY": "value",
+            NULL: "x\0y",
+          },
+        },
+      },
+    }).go.modules;
+    expect(modules).toEqual({
+      autoVendor: false,
+      env: { GOPROXY: "https://proxy.example", GOPRIVATE: "example.com/private", GOFLAGS: "-race" },
+    });
+    expect(validateLanguages({ go: { modules: { autoVendor: "no", env: [] } } }).go.modules).toEqual({
+      env: {},
+      autoVendor: true,
+    });
+  });
+});
