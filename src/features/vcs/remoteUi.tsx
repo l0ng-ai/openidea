@@ -598,3 +598,56 @@ export async function pushWithAutoUpdate(
   });
   return false;
 }
+
+/** Git Log toolbar › Pull: updates the selected branch with the configured merge / rebase method. */
+export async function pullCurrentBranch(repo: string | null = currentRepo()): Promise<boolean> {
+  await saveAll();
+  const branch = useVcs.getState().branch;
+  return runRemote(
+    { op: "pull", rebase: workflowSettings().vcs.git.updateMethod === "rebase" },
+    branch?.upstream ? `${branch.head} ← ${branch.upstream}` : undefined,
+    [repo],
+  );
+}
+
+/**
+ * Git Log toolbar › Push. A rejected push asks every time whether to merge or
+ * rebase the remote commits first: pushing and pulling are sensitive, so the
+ * choice is never remembered or taken silently.
+ */
+export async function pushCurrentBranch(repo: string | null = currentRepo()): Promise<boolean> {
+  const branch = useVcs.getState().branch;
+  const upstream = branch?.upstream ?? null;
+  const detail = branch?.head ? `${branch.head} → ${upstream ?? "new remote branch"}` : "";
+  const updateDetail = branch?.head && upstream ? `${branch.head} ← ${upstream}` : detail;
+  const push: Extract<RemoteOp, { op: "push" }> = {
+    op: "push",
+    force_with_lease: false,
+    set_upstream: false,
+    tags: null,
+  };
+  await saveAll();
+  // The rejection is explained by the question below, so it does not also raise a balloon.
+  if (await runRemote(push, detail, [repo], true)) return true;
+  const error = lastRemoteFailure();
+  if (!error || !isPushRejected(error)) {
+    if (error)
+      notifications().notify({ group: "vcs", level: "error", key: "vcs.remote", title: "Push failed", body: error });
+    return false;
+  }
+  const rebase = workflowSettings().vcs.git.updateMethod === "rebase";
+  const { button } = await ask({
+    title: "Push rejected",
+    icon: "warning",
+    body: "The remote has commits that are not in your branch. Merge or rebase them first; the branch is pushed once the update succeeds.",
+    buttons: [
+      { id: "rebase", label: "Rebase and Push", primary: rebase },
+      { id: "merge", label: "Merge and Push", primary: !rebase },
+    ],
+  });
+  if (button !== "rebase" && button !== "merge") return false;
+  await saveAll();
+  // Conflicts stop here (the IDE offers to resolve them); the branch is not pushed.
+  if (!(await runRemote({ op: "pull", rebase: button === "rebase" }, updateDetail, [repo]))) return false;
+  return runRemote(push, detail, [repo]);
+}

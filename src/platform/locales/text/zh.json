@@ -5308,5 +5308,11 @@
   "Architecture": "架构",
   "Compiler": "编译器",
   "No CMake executable target for this file": "此文件没有对应的 CMake 可执行目标",
-  "Run CMake Configure from the Run selector, then choose the executable target. Files in a CMake project are built with their target.": "请从运行选择器执行 CMake Configure，然后选择可执行目标。CMake 项目中的文件由所属目标构建，不会单独编译。"
+  "Run CMake Configure from the Run selector, then choose the executable target. Files in a CMake project are built with their target.": "请从运行选择器执行 CMake Configure，然后选择可执行目标。CMake 项目中的文件由所属目标构建，不会单独编译。",
+  "Pull from {branch}": "从 {branch} 拉取",
+  "Push to {branch}": "推送到 {branch}",
+  "No upstream branch": "没有上游分支",
+  "Finish the Git operation in progress first": "请先完成当前的 Git 操作",
+  "The remote has commits that are not in your branch. Merge or rebase them first; the branch is pushed once the update succeeds.": "远程包含您的分支中没有的提交。请先合并或变基，更新成功后再推送。",
+  "Push failed": "推送失败"
 }

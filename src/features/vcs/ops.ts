@@ -144,12 +144,15 @@ export function allRepos(): Array<string | null> {
 
 /**
  * Runs fetch / pull / push with progress in the status bar and output in the console,
- * in each of `repos` (default: the selected repository) in turn.
+ * in each of `repos` (default: the selected repository) in turn. `quiet` keeps the
+ * failure out of the notification area for callers that explain it themselves
+ * (the Log toolbar asks which update to run after a rejected push).
  */
 export async function runRemote(
   op: RemoteOp,
   detail?: string,
   repos: ReadonlyArray<string | null> = [currentRepo()],
+  quiet = false,
 ): Promise<boolean> {
   if (useVcs.getState().remoteBusy) {
     notifications().notify({ group: "vcs", level: "warning", title: "Another remote operation is in progress" });
@@ -227,7 +230,7 @@ export async function runRemote(
     logConsole(cancelled ? "info" : "err", cancelled ? `${doneTitle} cancelled` : errorMessage(e));
     // The user asked for it: the progress balloon just goes away.
     if (cancelled) notifications().expire?.("vcs.remote");
-    else
+    else if (!quiet)
       notifications().notify({
         group: "vcs",
         level: "error",

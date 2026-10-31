@@ -24,6 +24,38 @@
   flex: 1;
 }
 
+/* pull / push: icon plus the distance to the upstream */
+.syncButton {
+  flex: none;
+  height: 24px;
+  min-width: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.syncButton:not(.syncDisabled):hover {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
+}
+.syncDisabled {
+  color: var(--fg-faint);
+  cursor: default;
+}
+.syncCount {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
 /* branches */
 .branches {
   height: 100%;

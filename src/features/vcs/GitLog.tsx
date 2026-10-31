@@ -32,6 +32,7 @@ import {
   Tree,
   fileIconName,
   showContextMenu,
+  tooltipAttrs,
   type MenuItem,
   type TreeHandle,
   T,
@@ -64,7 +65,8 @@ import {
 import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
 import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
-import { currentRepo, loadBranches, repoName, useVcs } from "./store";
+import { currentRepo, loadBranches, refreshNow, repoName, useVcs } from "./store";
+import { pullCurrentBranch, pushCurrentBranch } from "./remoteUi";
 import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
 import { branchMenu, inRepo, tagMenu } from "./branchMenu";
 import {
@@ -550,6 +552,74 @@ function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { h
   );
 }
 
+/** Toolbar pull / push: the distance to the upstream, disabled when there is nothing to do. */
+export function SyncButtons() {
+  const branch = useVcs((s) => s.branch);
+  const remoteBusy = useVcs((s) => s.remoteBusy);
+  const busy = remoteBusy
+    ? tx("Another remote operation is in progress")
+    : branch?.operation
+      ? tx("Finish the Git operation in progress first")
+      : null;
+  const upstream = branch?.upstream ?? null;
+  const tip = (verb: "Pull" | "Push") =>
+    busy ??
+    (upstream ? (verb === "Pull" ? tx`Pull from ${upstream}` : tx`Push to ${upstream}`) : tx("No upstream branch"));
+  return (
+    <>
+      <SyncButton
+        icon="vcs-incoming"
+        count={branch?.behind ?? 0}
+        label={tip("Pull")}
+        disabled={!!busy || !upstream || !branch?.behind}
+        onClick={() => void pullCurrentBranch()}
+      />
+      <SyncButton
+        icon="vcs-outgoing"
+        count={branch?.ahead ?? 0}
+        label={tip("Push")}
+        disabled={!!busy || !upstream || !branch?.ahead}
+        onClick={() => void pushCurrentBranch()}
+      />
+    </>
+  );
+}
+
+/**
+ * Muted when disabled, but still hoverable: a `disabled` button gets no pointer
+ * events, which would hide the tooltip explaining why it cannot be used.
+ */
+function SyncButton({
+  icon,
+  count,
+  label,
+  disabled,
+  onClick,
+}: {
+  icon: string;
+  count: number;
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={clsx(styles.syncButton, disabled && styles.syncDisabled)}
+      aria-label={label}
+      aria-disabled={disabled || undefined}
+      {...tooltipAttrs(label)}
+      onClick={() => {
+        if (!disabled) onClick();
+      }}
+    >
+      <Icon name={icon} size={14} />
+      {/* Only a real distance to the upstream is worth a number. */}
+      {count > 0 && <span className={styles.syncCount}>{count}</span>}
+    </button>
+  );
+}
+
 function FilterBar() {
   const filters = useGitLog((s) => s.filters);
   const commits = useGitLog((s) => s.commits);
@@ -791,7 +861,17 @@ function FilterBar() {
         />
       )}
       <span className={styles.grow} />
-      <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reloadLog({ preserve: true })} />
+      <SyncButtons />
+      <IconButton
+        icon="refresh"
+        title="Refresh"
+        size="small"
+        onClick={() => {
+          void reloadLog({ preserve: true });
+          // The branch distance in the sync buttons is part of this refresh too.
+          void refreshNow();
+        }}
+      />
       <IconButton
         icon="sort"
         title="Graph Options"
