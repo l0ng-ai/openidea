@@ -327,9 +327,9 @@ export function activate(): void | (() => void) {
         icon: "search",
         keywords: ["grep", "search in path"],
         when: "projectOpen",
-        run: ({ arg }) => {
+        run: ({ arg, ctx }) => {
           closeAllPopups("find");
-          showFindPopup(false, { ...parseFindArg(arg), selection: editorSelectionText() });
+          showFindPopup(false, { ...parseFindArg(arg, ctx), selection: editorSelectionText() });
         },
       },
       {
@@ -355,9 +355,9 @@ export function activate(): void | (() => void) {
         category: "Find",
         icon: "replace",
         when: "projectOpen",
-        run: ({ arg }) => {
+        run: ({ arg, ctx }) => {
           closeAllPopups("find");
-          showFindPopup(true, { ...parseFindArg(arg), selection: editorSelectionText() });
+          showFindPopup(true, { ...parseFindArg(arg, ctx), selection: editorSelectionText() });
         },
       },
       // Keys of the Find in Files popup that are global shortcuts elsewhere (bound after them).

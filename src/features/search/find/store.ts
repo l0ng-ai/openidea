@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { ContextKeys } from "@/platform/context";
 import type { ProjectFileSet, SearchContext, SearchQuery, SearchScope } from "@/platform/ipc";
 import { SEARCH_CONTEXTS, customScopes, findCustomScope, rememberSearch, searchHistory } from "@/platform/search";
 import { loadJson, saveJson } from "../common/open";
@@ -103,11 +104,17 @@ export interface FindArg {
   query?: string;
 }
 
-export function parseFindArg(arg: unknown): FindArg {
-  if (!arg || typeof arg !== "object") return {};
-  const a = arg as Record<string, unknown>;
+export function parseFindArg(arg: unknown, ctx: ContextKeys = {}): FindArg {
+  const a = (arg && typeof arg === "object" ? arg : {}) as Record<string, unknown>;
   return {
-    directory: typeof a.directory === "string" ? a.directory : typeof a.path === "string" ? a.path : undefined,
+    directory:
+      typeof a.directory === "string"
+        ? a.directory
+        : typeof a.path === "string"
+          ? a.path
+          : typeof ctx.focusedDirectory === "string"
+            ? ctx.focusedDirectory
+            : undefined,
     query: typeof a.query === "string" ? a.query : undefined,
   };
 }
