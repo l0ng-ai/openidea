@@ -368,6 +368,60 @@ pub fn detect(text: &str, rel: &str) -> Vec<Target> {
     }
 }
 
+/// The last line (0-based) of the block declared at `start`: by indentation in Python, else
+/// where the braces opened on (or, for a Rust signature, after) the declaration close again.
+fn block_end(lines: &[&str], start: usize, rel: &str) -> usize {
+    if rel.ends_with(".py") {
+        let indent = indent_of(lines[start]);
+        let mut end = start;
+        for (i, line) in lines.iter().enumerate().skip(start + 1) {
+            if line.trim().is_empty() || PY_COMMENT.is_match(line) {
+                continue;
+            }
+            if indent_of(line) <= indent {
+                break;
+            }
+            end = i;
+        }
+        return end;
+    }
+    let rust = rel.ends_with(".rs");
+    let mut depth: i64 = 0;
+    let mut opened = false;
+    for (i, raw) in lines.iter().enumerate().skip(start) {
+        let line = code_only(raw);
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth -= 1,
+                // A Rust declaration without a body (`fn f();`).
+                ';' if rust && !opened => return i,
+                _ => {}
+            }
+            if opened && depth <= 0 {
+                return i;
+            }
+        }
+        // Only a Rust signature continues on the next lines; a call without a block ends here.
+        if !opened && !rust {
+            return i;
+        }
+    }
+    lines.len().saturating_sub(1)
+}
+
+/// The run targets whose declaration or body contains `line` (0-based), innermost first.
+pub fn enclosing(text: &str, rel: &str, line: usize) -> Vec<Target> {
+    let lines: Vec<&str> = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    let mut out: Vec<Target> =
+        detect(text, rel).into_iter().filter(|t| t.line <= line && line <= block_end(&lines, t.line, rel)).collect();
+    out.sort_by_key(|t| std::cmp::Reverse(t.line));
+    out
+}
+
 // ---------------------------------------------------------------- configurations
 
 /// A configuration's working directory relative to the project root, with `/` (Go: its module).
@@ -594,7 +648,13 @@ fn test_config_for(root: &Path, rel: &str, configs: &[RunConfig]) -> Option<RunC
             static TESTS: LazyLock<Regex> =
                 LazyLock::new(|| Regex::new(r"(?:^|/)tests/([^/]+)\.rs$").expect("valid regex"));
             match TESTS.captures(rel) {
-                Some(m) => derived(&base, rel, with(&["--test".into(), m[1].to_owned()])),
+                Some(m) => {
+                    // Cargo's own options go before the test binary's `--`.
+                    let at = base.args.iter().position(|a| a == "--").unwrap_or(base.args.len());
+                    let mut args = base.args.clone();
+                    args.splice(at..at, ["--test".to_owned(), m[1].to_owned()]);
+                    derived(&base, rel, args)
+                }
                 None => base,
             }
         }
@@ -743,10 +803,13 @@ pub fn target_config(
         }
         "cargo" => {
             let path = target.path.join("::");
+            // Test-binary arguments follow the one `--` (`cargo test -- --nocapture` has it already).
+            let separator: Vec<String> =
+                if file.args.iter().any(|a| a == "--") { Vec::new() } else { vec!["--".into()] };
             Some(named(if target.kind == Kind::Suite {
-                with(vec!["--".into(), format!("{path}::")])
+                with([separator, vec![format!("{path}::")]].concat())
             } else {
-                with(vec!["--".into(), path, "--exact".into()])
+                with([separator, vec![path, "--exact".into()]].concat())
             }))
         }
         _ => None,
@@ -857,5 +920,56 @@ mod tests {
         assert_eq!(c.args, ["test", "--", "math::tests::adds", "--exact"]);
         let c = target_config(root, &ts[0], "src/math.rs", &configs, src).unwrap();
         assert_eq!(c.args, ["test", "--", "math::tests::"]);
+    }
+
+    #[test]
+    fn cargo_test_args_get_one_separator() {
+        let root = Path::new("/p");
+        let mut test =
+            blank("cargo:test".into(), "test", "cargo", "cargo".into(), vec!["test".into(), "--".into(), "-q".into()]);
+        test.is_test = true;
+        let configs = vec![test];
+        let src = "#[test]\nfn adds() {}\n";
+        let ts = detect(src, "tests/math.rs");
+        let c = target_config(root, &ts[0], "tests/math.rs", &configs, src).unwrap();
+        assert_eq!(c.args, ["test", "--test", "math", "--", "-q", "adds", "--exact"]);
+    }
+
+    #[test]
+    fn a_line_in_a_body_picks_the_enclosing_target() {
+        let names = |src: &str, rel: &str, line: usize| -> Vec<String> {
+            enclosing(src, rel, line).iter().map(|t| t.path.join("/")).collect()
+        };
+        let rust = [
+            "#[cfg(test)]",
+            "mod tests {",
+            "    #[test]",
+            "    fn adds(",
+            "        x: u8,",
+            "    ) {",
+            "        let s = \"}\";",
+            "        assert!(true);",
+            "    }",
+            "",
+            "    fn helper() {}",
+            "}",
+        ]
+        .join("\n");
+        assert_eq!(names(&rust, "src/math.rs", 7), ["math/tests/adds", "math/tests"]);
+        assert_eq!(names(&rust, "src/math.rs", 4), ["math/tests/adds", "math/tests"]);
+        assert_eq!(names(&rust, "src/math.rs", 10), ["math/tests"]);
+
+        let js = "describe('math', () => {\n  it('adds', () => {\n    expect(1).toBe(1);\n  });\n  it('one', fn);\n  const x = 1;\n});\n";
+        assert_eq!(names(js, "src/math.test.ts", 2), ["math/adds", "math"]);
+        assert_eq!(names(js, "src/math.test.ts", 5), ["math"]);
+
+        let py = "class TestCalc:\n    def test_add(self):\n        x = 1\n\n        assert x\n    def helper(self):\n        pass\n";
+        assert_eq!(names(py, "tests/test_calc.py", 4), ["TestCalc/test_add", "TestCalc"]);
+        assert_eq!(names(py, "tests/test_calc.py", 6), ["TestCalc"]);
+
+        let go = "package calc\n\nfunc TestAdd(t *testing.T) {\n\tt.Run(\"zero\", func(t *testing.T) {\n\t\tx := 0\n\t})\n\ty := 1\n}\n";
+        assert_eq!(names(go, "calc_test.go", 4), ["TestAdd/zero", "TestAdd"]);
+        assert_eq!(names(go, "calc_test.go", 6), ["TestAdd"]);
+        assert!(names(go, "calc_test.go", 0).is_empty());
     }
 }

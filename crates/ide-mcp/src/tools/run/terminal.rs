@@ -3,13 +3,14 @@
 //! `execute_terminal_command`.
 
 use super::output::{MAX_TEXT_LENGTH, TRUNCATED_MARKER, TruncateMode, temp_output_file, truncate_text};
-use super::process::{run_process, split_words};
+use super::process::{quote, run_process, split_words};
 use crate::tool::{Param, ParamType, Tool};
 use crate::tools::run::timeout;
 use ide_core::IdeError;
 use ide_core::mcp::McpToolKind;
 use serde_json::{Map, Value};
 use std::io::Write as _;
+use std::path::Path;
 
 const DEFAULT_TIMEOUT_MS: usize = 60_000;
 /// No limit in JetBrains, whose command keeps running in a visible terminal tab; ours runs
@@ -21,6 +22,21 @@ const DEFAULT_MAX_LINES: usize = 1000;
 fn shell(configured: &str) -> ide_core::IdeResult<Vec<String>> {
     let words = split_words(configured)?;
     Ok(if words.is_empty() { vec![ide_terminal::default_shell_path()] } else { words })
+}
+
+/// What the user approves besides the command: the directory, the shell of Settings ›
+/// Tools › Terminal (`shell`, with `args` ending in `-c <command>`) and its variables.
+fn confirmation_detail(root: &Path, shell: Option<&str>, args: &[String], env: &[(String, String)]) -> String {
+    let mut detail = format!("in {}", root.display());
+    if let Some(shell) = shell {
+        let options = &args[..args.len().saturating_sub(2)];
+        let line: Vec<String> = std::iter::once(shell).chain(options.iter().map(String::as_str)).map(quote).collect();
+        detail.push_str(&format!("\nshell: {}", line.join(" ")));
+    }
+    for (k, v) in env {
+        detail.push_str(&format!("\n{k}={v}"));
+    }
+    detail
 }
 
 pub fn execute_terminal_command() -> Tool {
@@ -41,7 +57,8 @@ Returns possible responses:
 - Error messages for various failure cases
 In OpenIDEA the command runs in the project root without a visible terminal tab, with the environment variables of \
 Settings › Tools › Terminal (`$PROJECT_DIR$` expands to the project root); stdin is empty. On timeout the command and \
-its child processes are killed. When the output was cut, `fullOutputPath` names a private temporary file with all of \
+its child processes are killed; the timeout is at most 10 minutes (600000 ms), and 0 times out at once without \
+running the command. When the output was cut, `fullOutputPath` names a private temporary file with all of \
 it (deleted after a day).",
         |call| async move {
             let command = call.str("command")?;
@@ -86,7 +103,13 @@ it (deleted after a day).",
                 let program = words.remove(0);
                 (program, words, false)
             };
-            call.confirm(command.trim(), Some(format!("in {}", root.display()))).await?;
+            if limit.is_zero() {
+                // JetBrains' zero timeout returns before any output; here nothing is started.
+                return crate::tool::Output::json(serde_json::json!({ "is_timed_out": true, "command_output": "" }));
+            }
+            let configured_shell = in_shell && !cfg!(windows) && !settings.terminal.shell_path.trim().is_empty();
+            let detail = confirmation_detail(&root, configured_shell.then_some(program.as_str()), &args, &env);
+            call.confirm(command.trim(), Some(detail)).await?;
             let out = run_process(&program, &args, raw, &root, &env, limit, &call.cancel).await?;
 
             let output = truncate_text(&out.text, max_lines, MAX_TEXT_LENGTH, mode, TRUNCATED_MARKER);
@@ -97,7 +120,9 @@ it (deleted after a day).",
             if let Some(code) = out.code {
                 result.insert("command_exit_code".into(), code.into());
             }
-            if output != out.text {
+            if let Some(path) = &out.full_output {
+                result.insert("fullOutputPath".into(), path.to_string_lossy().into_owned().into());
+            } else if output != out.text {
                 let (path, mut file) = temp_output_file("terminal")?;
                 file.write_all(out.text.as_bytes())?;
                 result.insert("fullOutputPath".into(), path.to_string_lossy().into_owned().into());

@@ -282,3 +282,31 @@ async fn tools_declare_the_shared_result_schema() {
     let symbol = tools.iter().find(|t| t["name"] == "search_symbol").unwrap();
     assert!(symbol["description"].as_str().unwrap().contains("include_external=true"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn matches_far_into_a_long_line_keep_their_columns() {
+    // Find in Files reports a 500-column window of a long line; the rest is matched again.
+    let line = format!("needle{}needle{}needle\nnext needle\n", "x".repeat(1000), "é".repeat(1000));
+    let h = Harness::new(&[("long.txt", line.as_str())]).await;
+    let r = h.call_json("search_text", json!({ "q": "needle" })).await;
+    let found: Vec<(u64, u64, u64)> = items(&r)
+        .iter()
+        .map(|e| {
+            (e["startLine"].as_u64().unwrap(), e["startColumn"].as_u64().unwrap(), e["endColumn"].as_u64().unwrap())
+        })
+        .collect();
+    assert_eq!(found, [(1, 1, 7), (1, 1007, 1013), (1, 2013, 2019), (2, 6, 12)], "{r}");
+    let r = h.call_json("search_regex", json!({ "q": "needle\\nnext" })).await;
+    assert_eq!(
+        items(&r)[0],
+        json!({ "filePath": "long.txt", "startLine": 1, "startColumn": 2013, "endLine": 2, "endColumn": 5 })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unmasked_paths_bound_the_engine_and_report_more() {
+    let many = "needle\n".repeat(12_000);
+    let h = Harness::new(&[("a/many.txt", many.as_str()), ("src/x.ts", "needle\n")]).await;
+    let r = h.call_json("search_text", json!({ "q": "needle", "paths": ["**/*.ts", "**/no,mask"], "limit": 1 })).await;
+    assert!(more(&r), "{r}");
+}

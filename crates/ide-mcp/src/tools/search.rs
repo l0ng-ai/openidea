@@ -29,6 +29,12 @@ pub const SEARCH_TIMEOUT_PARTIAL_RESULT_REASON: &str =
 /// Symbols requested from the index per result when `paths` filters them afterwards.
 const SYMBOL_POOL_FACTOR: usize = 20;
 const MAX_SYMBOL_POOL: usize = 20_000;
+/// Matches Find in Files may report, per result asked for, when `paths` are filtered afterwards.
+const UNMASKED_MATCH_FACTOR: usize = 20;
+const MIN_UNMASKED_MATCHES: usize = 10_000;
+/// UTF-16 units of a line Find in Files reports (`ide_search`'s line window); matches
+/// outside the window of a longer line are left out.
+const LINE_WINDOW: usize = 500;
 
 const PATHS_DESCRIPTION: &str = "Optional list of project-relative glob patterns to filter results. Supports '!' \
 excludes. Trailing '/' expands to '**'. Patterns without '/' are treated as '**/pattern'. Empty strings are ignored.";
@@ -423,7 +429,11 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
     let (masks, max_matches) = match scope.masks.clone() {
         // One more than asked tells whether there are more.
         Some(masks) => (masks, (limit + 1) as u32),
-        None => (Default::default(), u32::MAX),
+        // Bounded all the same (as the symbol pool): past it the result reports `more`.
+        None => {
+            let budget = ((limit + 1) * UNMASKED_MATCH_FACTOR).max(MIN_UNMASKED_MATCHES);
+            (Default::default(), u32::try_from(budget).unwrap_or(u32::MAX))
+        }
     };
     let (include, exclude) = masks;
     let query = SearchQuery {
@@ -449,8 +459,29 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
     let may_span = is_regex || pattern.contains('\n');
     let mut hits = Vec::new();
     let mut spanning = Vec::new();
+    let host = call.host();
     for (path, file) in &files {
+        if hits.len() > limit {
+            break;
+        }
+        // Find in Files keeps a window of very long lines and drops the matches outside it:
+        // such lines are matched again in the file's whole text.
+        let long = |m: &ide_search::LineMatch| m.text_offset > 0 || m.text.encode_utf16().count() + 1 >= LINE_WINDOW;
+        let whole = if file.matches.iter().any(long) {
+            ide_host::ops::fs::read_text(&host, call.window(), file.path.0.clone())
+                .await
+                .ok()
+                .and_then(|text| Some((ide_search::match_ranges(&text, &query).ok()?, text)))
+        } else {
+            None
+        };
         for m in &file.matches {
+            if let Some((ranges, text)) = &whole
+                && long(m)
+            {
+                hits.extend(line_hits(path, text, ranges, m.line));
+                continue;
+            }
             let line_end = m.text_offset + m.text.encode_utf16().count() as u32;
             for &(a, b) in &m.ranges {
                 let (a, b) = (m.text_offset + a, m.text_offset + b);
@@ -483,6 +514,27 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         .collect();
     let partial_result_reason = timed_out.then_some(SEARCH_TIMEOUT_PARTIAL_RESULT_REASON);
     Output::json(SearchResult { items, more, partial_result_reason })
+}
+
+/// The matches of `ranges` (byte ranges in `text`) that start on 0-based `line`, with their
+/// real end (on a later line for a match spanning lines).
+fn line_hits(path: &str, text: &str, ranges: &[(usize, usize)], line: u32) -> Vec<TextHit> {
+    let starts: Vec<usize> = std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1)).collect();
+    let Some(&line_start) = starts.get(line as usize) else { return Vec::new() };
+    let line_end = starts.get(line as usize + 1).map_or(text.len(), |s| s - 1);
+    let column = |at: usize| -> (u32, u32) {
+        let l = starts.partition_point(|&s| s <= at) - 1;
+        (l as u32 + 1, text[starts[l]..at].encode_utf16().count() as u32 + 1)
+    };
+    let first = ranges.partition_point(|r| r.0 < line_start);
+    ranges[first..]
+        .iter()
+        .take_while(|r| r.0 <= line_end)
+        .map(|&(a, b)| {
+            let (end_line, end_column) = column(b);
+            TextHit { file_path: path.to_owned(), line: line + 1, column: column(a).1, end_line, end_column }
+        })
+        .collect()
 }
 
 /// A file's path, text, line start offsets and match byte ranges.
