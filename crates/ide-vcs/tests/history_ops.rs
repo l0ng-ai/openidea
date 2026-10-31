@@ -568,14 +568,17 @@ fn update_branch_fast_forwards_a_branch_not_checked_out() {
     assert!(repo.update_branch("work", &cancel, &out).is_err());
 }
 
+/// `"` and tabs are illegal in Windows file names, and only they make Git quote a path.
+const QUOTED: &str = if cfg!(windows) { "quote '.txt" } else { "quote\"\t.txt" };
+
 #[test]
 fn shelf_diff_and_scoped_operations_preserve_siblings() {
     let fx = Fixture::new();
-    for path in ["a.txt", "b.txt", "quote\"\t.txt", "gone.txt"] {
+    for path in ["a.txt", "b.txt", QUOTED, "gone.txt"] {
         fx.write(path, "base\n");
     }
     fx.commit_all("base");
-    for path in ["a.txt", "b.txt", "quote\"\t.txt"] {
+    for path in ["a.txt", "b.txt", QUOTED] {
         fx.write(path, "shelved\n");
     }
     std::fs::remove_file(fx.path("gone.txt")).unwrap();
@@ -583,7 +586,7 @@ fn shelf_diff_and_scoped_operations_preserve_siblings() {
     std::fs::write(fx.path("binary.dat"), [0, 1, 255]).unwrap();
     let repo = fx.repo();
     let shelf = fx._tmp.path().join("shelf");
-    let paths = ["a.txt", "b.txt", "quote\"\t.txt", "gone.txt", "new.txt", "binary.dat"].map(|p| fx.path(p));
+    let paths = ["a.txt", "b.txt", QUOTED, "gone.txt", "new.txt", "binary.dat"].map(|p| fx.path(p));
     let entry = repo.shelve(&shelf, "work", &paths).unwrap();
     fx.write("a.txt", "new head\n");
     fx.commit_all("advance head");
@@ -591,7 +594,7 @@ fn shelf_diff_and_scoped_operations_preserve_siblings() {
     let status = fx.git(&["status", "--porcelain"]);
     let index = fx.git(&["ls-files", "--stage"]);
     let diffs = shelf::diff_files(&repo, &shelf, &entry.id).unwrap();
-    for path in ["a.txt", "b.txt", "quote\"\t.txt"] {
+    for path in ["a.txt", "b.txt", QUOTED] {
         let f = diffs.iter().find(|f| f.path == path).unwrap();
         assert_eq!(f.before.as_deref(), Some("base\n"), "{path}");
         assert_eq!(f.after.as_deref(), Some("shelved\n"), "{path}");
@@ -609,7 +612,7 @@ fn shelf_diff_and_scoped_operations_preserve_siblings() {
     shelf::unshelve_path(&repo, &shelf, &entry.id, true, Some("b.txt")).unwrap();
     assert_eq!(fx.read("b.txt"), "shelved\n");
     assert!(!shelf::list(&shelf).unwrap()[0].files.iter().any(|f| f.path == "b.txt"));
-    shelf::delete_path(&shelf, &entry.id, Some("quote\"\t.txt")).unwrap();
+    shelf::delete_path(&shelf, &entry.id, Some(QUOTED)).unwrap();
     assert!(shelf::selected_patch(&shelf, &entry.id, Some("a.txt")).is_ok());
     shelf::import_patch(&shelf, "imported", &patch).unwrap();
     assert_eq!(shelf::list(&shelf).unwrap().len(), 2);
