@@ -11,6 +11,10 @@ ide-host.workspace = true
 ide-vfs.workspace = true
 ide-search.workspace = true
 ide-index.workspace = true
+ide-run.workspace = true
+ide-build.workspace = true
+ide-vcs.workspace = true
+ide-terminal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
@@ -22,6 +26,9 @@ uuid.workspace = true
 dunce.workspace = true
 globset.workspace = true
 toml_edit.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true

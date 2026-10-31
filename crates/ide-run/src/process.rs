@@ -56,6 +56,8 @@ struct Entry {
     stop: Option<StopCommand>,
     output: OutputFn,
     exited: AtomicBool,
+    /// The exit code, set before `exited` (`None` when a signal ended the process).
+    code: Mutex<Option<i32>>,
     stopping: AtomicBool,
 }
 
@@ -393,6 +395,7 @@ impl ProcessManager {
             stop,
             output: on_output.clone(),
             exited: AtomicBool::new(false),
+            code: Mutex::new(None),
             stopping: AtomicBool::new(false),
         });
         self.register(entry.clone());
@@ -502,6 +505,7 @@ impl ProcessManager {
             stop,
             output: on_output.clone(),
             exited: AtomicBool::new(false),
+            code: Mutex::new(None),
             stopping: AtomicBool::new(false),
         });
         self.register(entry.clone());
@@ -633,6 +637,17 @@ impl ProcessManager {
             })
             .map_err(|e| IdeError::internal(format!("failed to start stop thread: {e}")))?;
         Ok(())
+    }
+
+    /// How run `id` ended: `None` while it runs, else its exit code (`None` when a signal
+    /// ended it). For callers that wait on a run without the starter's event sink.
+    /// Errors when the run is unknown (finished runs are forgotten after newer ones).
+    pub fn exit_code(&self, id: RunId) -> IdeResult<Option<Option<i32>>> {
+        let entry = self.entry(id)?;
+        if !entry.exited.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        Ok(Some(*entry.code.lock()))
     }
 
     pub fn list(&self) -> Vec<RunInfo> {
@@ -1001,6 +1016,7 @@ fn spawn_pump(
         if let Some(pty) = &entry.pty {
             pty.lock().take();
         }
+        *entry.code.lock() = code;
         entry.exited.store(true, Ordering::Release);
         tracing::debug!(id = %entry.id, ?code, "run exited");
         sink.emit(IdeEvent::RunExited { run: entry.id, code });
