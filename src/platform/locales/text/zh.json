@@ -5235,5 +5235,22 @@
   "Custom Tags": "自定义标签",
   "Experiments": "实验功能",
   "Open a project to configure Go build tags.": "打开项目以配置 Go 构建标签。",
-  "This Go file is excluded by the current build constraints.": "当前构建约束排除了此 Go 文件。"
+  "This Go file is excluded by the current build constraints.": "当前构建约束排除了此 Go 文件。",
+  "Select one Go test file": "请选择一个 Go 测试文件",
+  "Go configuration": "Go 配置",
+  "Go Build": "Go 构建",
+  "Go Test": "Go 测试",
+  "Run kind": "运行类型",
+  "Output directory": "输出目录",
+  "Run after build": "构建后运行",
+  "Go tool arguments": "Go 工具参数",
+  "Use all custom build tags": "使用所有自定义构建标签",
+  "Build and run a Go application": "构建并运行 Go 应用程序",
+  "Run Go tests": "运行 Go 测试",
+  "Go test file has no directory": "Go 测试文件没有所属目录",
+  "Go package discovery timed out": "Go 包发现超时",
+  "Go package discovery failed: {value}": "Go 包发现失败：{value}",
+  "Go test file target is missing": "缺少 Go 测试目标文件",
+  "Go build and run requires the output console": "Go 构建并运行需要使用输出控制台",
+  "run stopped after build": "构建后运行已停止"
 }

@@ -21,7 +21,7 @@ export function goModulePath(dir: string): string | null | undefined {
 /** Reads the `go.mod` of every Go configuration's module not read yet. */
 export async function loadGoModules(root: string | null, configs: readonly RunConfig[]): Promise<void> {
   if (!root || !isTauri()) return;
-  const dirs = new Set(configs.filter((c) => c.kind === "go").map((c) => goModuleDir(root, c.cwd)));
+  const dirs = new Set(configs.filter((c) => c.kind === "go").map((c) => goModuleDir(root, c.params?.module ?? c.cwd)));
   await Promise.all(
     [...dirs]
       .filter((d) => !known.has(d))

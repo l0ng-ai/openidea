@@ -20,6 +20,7 @@ import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
 import { tomcatType } from "./tomcat";
+import { goBuildType, goTestType } from "./goTypes";
 
 export const COMPOUND = "compound";
 
@@ -395,6 +396,8 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   maven,
   godot,
   pytest,
+  goBuildType,
+  goTestType,
   applicationType,
   springBootType,
   tomcatType,
@@ -426,6 +429,7 @@ export function formParams(config: RunConfig, type = typeFor(config.kind)): Reco
   // Only when the form reproduces exactly what runs today.
   const line = type.commandLine(derived);
   if (!line) return null;
+  if (type.id === "go") return derived;
   const sameCwd = !type.ownsWorkingDirectory || (line.cwd ?? null) === (config.cwd ?? null);
   return line.command === config.command && formatArgs(line.args) === formatArgs(config.args) && sameCwd
     ? derived
@@ -439,7 +443,9 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
   if (!line) return { ...rest, params, command: "", args: [] };
   return {
     ...rest,
-    params,
+    params: params.goKind ? { ...params, programArgv: JSON.stringify(parseArgs(params.programArgs ?? "")) } : params,
+    ...(config.kind === "go-test" && !config.id.startsWith("template:") ? { kind: "go" } : {}),
+    ...(params.goKind ? { isTest: params.goKind === "test" } : {}),
     command: line.command,
     args: line.args,
     ...(isJvmApplication(config) && parseJavaArgs(config.args).mainClass !== parseJavaArgs(line.args).mainClass

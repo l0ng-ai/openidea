@@ -97,6 +97,10 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     } else {
         ide_sdk::apply::resolve_run_command(&mut config, root, &settings);
     }
+    if config.kind == "go" {
+        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+        ide_sdk::go::apply_to_run(&mut config, &settings.languages.go.build_tags);
+    }
     if config.command == ide_sdk::godot::COMMAND {
         return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
     }
@@ -111,6 +115,15 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??;
+    }
+    if config.kind == "go" && config.extras.params.get("scope").is_some_and(|s| s == "file") {
+        let root = project.root.clone();
+        config = host
+            .blocking(move || {
+                ide_run::go::prepare_test_file(&root, &mut config)?;
+                Ok(config)
+            })
+            .await?;
     }
     let encoding = settings.console.encoding;
     let options = StartOptions {

@@ -140,7 +140,9 @@ export function goTestNamed(
     config.args.find((a, i) => i > 0 && !a.startsWith("-") && !/^-(run|skip|bench)$/.test(config.args[i - 1]!)) ?? ".";
   const recursive = /(^|\/)\.\.\.$/.test(pkgArg);
   const dir = pkgArg.replace(/\/?\.\.\.$/, "").replace(/^\.(?:\/|$)/, "");
-  const module = input.root ? input.goModule?.(goModuleDir(input.root, config.cwd)) : undefined;
+  const module = input.root
+    ? input.goModule?.(goModuleDir(input.root, config.params?.module ?? config.cwd))
+    : undefined;
   const clause = /^\s*package\s+(\w+)/m.exec(input.content ?? "")?.[1];
   const base = module ? (dir ? `${module}/${dir}` : module) : (clause ?? (dir || "."));
   const pkg = recursive ? `${base}/...` : base;

@@ -3,6 +3,7 @@
 mod config;
 mod detect;
 pub mod envfile;
+pub mod go;
 pub mod gradle_jvm;
 pub mod java_cmdline;
 pub mod junit;
