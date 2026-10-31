@@ -2,7 +2,8 @@
 
 use crate::state::AppState;
 use ide_core::mcp::{
-    McpAnswer, McpClientConfig, McpClientKind, McpDetectedClient, McpSkillInfo, McpSkillTarget, McpStatus, McpToolInfo,
+    McpAnswer, McpCallRecord, McpClientConfig, McpClientKind, McpDetectedClient, McpSkillInfo, McpSkillTarget,
+    McpStatus, McpToolInfo,
 };
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath};
 use ide_mcp::clients::{Paths, Server};
@@ -47,6 +48,20 @@ pub fn mcp_status(state: State<'_, AppState>) -> McpStatus {
 #[specta::specta]
 pub fn mcp_tools(state: State<'_, AppState>) -> Vec<McpToolInfo> {
     state.mcp.tools(&state.global_settings.effective().mcp)
+}
+
+/// The recent tool calls, most recent first.
+#[tauri::command]
+#[specta::specta]
+pub fn mcp_call_history(state: State<'_, AppState>) -> Vec<McpCallRecord> {
+    state.mcp.call_history()
+}
+
+/// The tools offered under the current settings as Markdown (Exposed Tools › Export).
+#[tauri::command]
+#[specta::specta]
+pub fn mcp_export_tools_markdown(state: State<'_, AppState>) -> String {
+    state.mcp.tools_markdown(&state.global_settings.effective().mcp)
 }
 
 /// What each supported client needs, and whether its configuration is current.

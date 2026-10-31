@@ -951,6 +951,10 @@ export const commands = {
 	mcpStatus: () => __TAURI_INVOKE<McpStatus>("mcp_status"),
 	/**  Every tool, with whether Settings disabled it. */
 	mcpTools: () => __TAURI_INVOKE<McpToolInfo[]>("mcp_tools"),
+	/**  The recent tool calls, most recent first. */
+	mcpCallHistory: () => __TAURI_INVOKE<McpCallRecord[]>("mcp_call_history"),
+	/**  The tools offered under the current settings as Markdown (Exposed Tools › Export). */
+	mcpExportToolsMarkdown: () => __TAURI_INVOKE<string>("mcp_export_tools_markdown"),
 	/**  What each supported client needs, and whether its configuration is current. */
 	mcpClients: () => typedError<McpClientConfig[], IdeError>(__TAURI_INVOKE("mcp_clients")),
 	/**  Auto-Configure: writes the `openidea` entry into `client`'s user configuration. */
@@ -4304,6 +4308,30 @@ export type McpAnswer =
 /**  The UI could not do it. */
 { type: "failed"; message: string };
 
+/**  How a recorded tool call ended. */
+export type McpCallOutcome = "inProgress" | "success" | 
+/**  The tool returned an error (or failed unexpectedly). */
+"error" | "cancelled";
+
+/**  One tool call, for the server's call history (`mcp_call_history`, `get_ide_diagnostics`). */
+export type McpCallRecord = {
+	/**  Counts up from 1 since the application started. */
+	id: number,
+	client: string,
+	tool: string,
+	/**  The arguments, shortened and with secret-looking values replaced by `***`. */
+	arguments: string,
+	/**  Milliseconds since the Unix epoch. */
+	startedAtMs: number | null,
+	/**  Set when the call ended. */
+	durationMs: number | null,
+	outcome: McpCallOutcome,
+	/**  The error message of a failed call. */
+	error: string | null,
+	/**  Called through `execute_tool`. */
+	viaRouter: boolean,
+};
+
 export type McpClient = {
 	name: string,
 	version: string,
@@ -4354,6 +4382,13 @@ export type McpDetectedClient = {
 	transports: McpTransport[],
 };
 
+/**  How a session's client reaches the tools. */
+export type McpInvocationMode = 
+/**  Every tool is listed and called directly. */
+"direct" | 
+/**  Only `execute_tool` (and tools whose state is not router-only) is listed; it calls the others by name. */
+"viaRouter";
+
 /**  The answer to [`McpUiRequest::OpenEditors`]. */
 export type McpOpenEditors = {
 	active: IpcPath | null,
@@ -4367,10 +4402,22 @@ export type McpSettings = {
 	port?: number,
 	/**  Run shell commands and run configurations without asking first. */
 	braveMode?: boolean,
-	/**  Tool names that are not offered to clients. */
+	/**  Tool names that are not offered to clients (the first disallow list; `tool_states` supersedes it). */
 	disabledTools?: string[],
 	/**  Give the IDE's own agents (Agents tool window) these tools too. */
 	agents?: boolean,
+	/**
+	 *  Comma-separated masks over fully qualified tool names (`-*,+general.SearchToolset.*,-*.read_file`):
+	 *  `+` (or nothing) allows, `-` hides, `*` / `?` are wildcards, the last matching mask wins.
+	 *  Empty means no filter.
+	 */
+	toolsFilter?: string,
+	/**  Per-tool state by fully qualified name (or plain name), as Exposed Tools stores it. */
+	toolStates?: { [key in string]: McpToolState },
+	/**  How clients reach the tools: each directly, or through the `execute_tool` router. */
+	invocationMode?: McpInvocationMode,
+	/**  Offer experimental tools (`get_ide_diagnostics`, ...) too. */
+	experimentalTools?: boolean,
 };
 
 /**  A skill OpenIDEA bundles for agents that use its MCP tools. */
@@ -4415,7 +4462,18 @@ export type McpToolInfo = {
 	description: string,
 	/**  `read`, `edit` or `execute` (asks first unless brave mode is on). */
 	kind: McpToolKind,
+	/**  Offered to clients under the current settings (filter, tool states, experimental tools). */
 	enabled: boolean,
+	/**  The toolset (`general.SearchToolset`), as the JetBrains IDEs group their tools. */
+	group: string,
+	/**  The toolset's display name (`Search`). */
+	groupName: string,
+	/**  `<group>.<name>`: what `toolsFilter` masks and `toolStates` keys match. */
+	fullyQualifiedName: string,
+	/**  Hidden unless experimental tools are on. */
+	experimental: boolean,
+	/**  In router mode, reachable only through `execute_tool`. */
+	routerOnly: boolean,
 };
 
 export type McpToolKind = 
@@ -4425,6 +4483,14 @@ export type McpToolKind =
 "edit" | 
 /**  Runs processes (terminal commands, run configurations, builds). */
 "execute";
+
+/**  One tool's entry in [`McpSettings::tool_states`]. */
+export type McpToolState = {
+	/**  Offered at all. */
+	enabled?: boolean,
+	/**  In router mode, reachable only through `execute_tool` instead of listed directly. */
+	routerOnly?: boolean,
+};
 
 /**  How a configured server entry talks to its server. */
 export type McpTransport = 

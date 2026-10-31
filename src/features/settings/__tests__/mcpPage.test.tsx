@@ -31,9 +31,27 @@ const client = (patch: Partial<McpClientConfig>): McpClientConfig => ({
   ...patch,
 });
 
+const tool = (
+  name: string,
+  description: string,
+  kind: McpToolInfo["kind"],
+  group: string,
+  groupName: string,
+): McpToolInfo => ({
+  name,
+  description,
+  kind,
+  enabled: true,
+  group,
+  groupName,
+  fullyQualifiedName: `${group}.${name}`,
+  experimental: false,
+  routerOnly: true,
+});
+
 const TOOLS: McpToolInfo[] = [
-  { name: "read_file", description: "Reads a file of the project", kind: "read", enabled: true },
-  { name: "execute_terminal_command", description: "Runs a shell command", kind: "execute", enabled: true },
+  tool("read_file", "Reads a file of the project", "read", "general.ReadToolset", "File Reading"),
+  tool("execute_terminal_command", "Runs a shell command", "execute", "terminal.TerminalToolset", "Terminal"),
 ];
 
 const mcpStatus = vi.fn(async (): Promise<McpStatus> => STOPPED);

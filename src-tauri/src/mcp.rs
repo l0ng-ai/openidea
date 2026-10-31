@@ -110,6 +110,10 @@ impl ide_mcp::McpHost for TauriMcpHost {
     fn status_changed(&self, status: &McpStatus) {
         TauriSink { app: self.app.clone(), window: None }.emit(IdeEvent::McpStatusChanged { status: status.clone() });
     }
+
+    fn log_file(&self) -> Option<std::path::PathBuf> {
+        crate::logging::latest_log(crate::logging::log_dir()?)
+    }
 }
 
 /// Ends request `id` when dropped: forgets it and tells the window to close its dialog.

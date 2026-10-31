@@ -445,6 +445,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         ssh::ssh_test,
         mcp::mcp_status,
         mcp::mcp_tools,
+        mcp::mcp_call_history,
+        mcp::mcp_export_tools_markdown,
         mcp::mcp_clients,
         mcp::mcp_configure_client,
         mcp::mcp_configure_project_client,

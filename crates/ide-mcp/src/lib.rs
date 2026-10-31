@@ -8,7 +8,10 @@
 //! (confirmations, open editors) goes through [`McpHost::ask`].
 
 pub mod clients;
+pub mod filter;
+pub mod history;
 pub mod http;
+pub mod markdown;
 pub mod project;
 pub mod protocol;
 pub mod skills;
@@ -17,13 +20,13 @@ pub mod tool;
 pub mod tools;
 
 use futures::future::BoxFuture;
-use ide_core::mcp::{McpClient, McpSettings, McpStatus, McpToolInfo, McpUiRequest};
+use ide_core::mcp::{McpCallRecord, McpClient, McpSettings, McpStatus, McpToolInfo, McpUiRequest};
 use ide_core::{CancellationToken, IdeResult};
 use ide_host::Host;
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tool::Tool;
 
@@ -36,12 +39,17 @@ pub trait McpHost: Send + Sync + 'static {
     fn ask(&self, window: &str, request: McpUiRequest) -> BoxFuture<'static, IdeResult<Value>>;
     /// The server started or stopped, or a client connected.
     fn status_changed(&self, status: &McpStatus);
+    /// The application's current log file, for `get_ide_diagnostics`.
+    fn log_file(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 pub(crate) struct Config {
     pub token: String,
     pub brave_mode: bool,
-    pub disabled: HashSet<String>,
+    /// Which tools are offered, and how ([`filter`]).
+    pub filter: filter::FilterSettings,
 }
 
 pub(crate) struct Session {
@@ -68,12 +76,19 @@ pub(crate) struct Shared {
     pub error: Mutex<Option<String>>,
     /// When a call count was last reported.
     pub status_sent: Mutex<Option<std::time::Instant>>,
+    /// The recent tool calls.
+    pub history: history::CallHistory,
 }
 
 impl Shared {
+    /// The tools `tools/list` offers and `tools/call` accepts.
     pub fn enabled_tools(&self) -> Vec<Tool> {
-        let config = self.config.read();
-        self.tools.iter().filter(|t| !config.disabled.contains(t.name)).cloned().collect()
+        self.config.read().filter.listed_tools(&self.tools)
+    }
+
+    /// The tools `execute_tool` can call.
+    pub fn routable_tools(&self) -> Vec<Tool> {
+        self.config.read().filter.routable_tools(&self.tools)
     }
 
     pub fn client_seen(&self, client: McpClient) {
@@ -152,7 +167,7 @@ impl McpServer {
             shared: Arc::new(Shared {
                 ui,
                 tools,
-                config: RwLock::new(Config { token, brave_mode: false, disabled: HashSet::new() }),
+                config: RwLock::new(Config { token, brave_mode: false, filter: Default::default() }),
                 sessions: Mutex::default(),
                 clients: Mutex::default(),
                 inflight: Mutex::default(),
@@ -160,6 +175,7 @@ impl McpServer {
                 running: Mutex::default(),
                 error: Mutex::default(),
                 status_sent: Mutex::default(),
+                history: Default::default(),
             }),
             lifecycle: tokio::sync::Mutex::new(None),
         }
@@ -171,7 +187,7 @@ impl McpServer {
         {
             let mut config = self.shared.config.write();
             config.brave_mode = settings.brave_mode;
-            config.disabled = settings.disabled_tools.iter().cloned().collect();
+            config.filter = settings.into();
         }
         let running = *self.shared.running.lock();
         let before = self.status();
@@ -257,16 +273,41 @@ impl McpServer {
 
     /// Every tool, for the settings page.
     pub fn tools(&self, settings: &McpSettings) -> Vec<McpToolInfo> {
+        let filter = filter::FilterSettings::from(settings);
+        let context = filter.context(&self.shared.tools);
+        let listed = filter.listed_tools(&self.shared.tools);
         self.shared
             .tools
             .iter()
-            .map(|t| McpToolInfo {
-                name: t.name.into(),
-                description: t.description.trim().into(),
-                kind: t.kind,
-                enabled: !settings.disabled_tools.iter().any(|d| d == t.name),
+            .map(|t| {
+                let state = context.state(t.name).unwrap_or_default();
+                McpToolInfo {
+                    name: t.name.into(),
+                    description: t.description.trim().into(),
+                    kind: t.kind,
+                    enabled: state.enabled || listed.iter().any(|l| l.name == t.name),
+                    group: t.group.into(),
+                    group_name: filter::group_display_name(t.group),
+                    fully_qualified_name: t.fully_qualified_name(),
+                    experimental: t.experimental,
+                    router_only: state.router_only && t.name != filter::ROUTER_TOOL_NAME,
+                }
             })
             .collect()
+    }
+
+    /// The tools offered under `settings` (listed or behind the router) as Markdown.
+    pub fn tools_markdown(&self, settings: &McpSettings) -> String {
+        let filter = filter::FilterSettings::from(settings);
+        let mut tools = filter.routable_tools(&self.shared.tools);
+        tools
+            .extend(filter.listed_tools(&self.shared.tools).into_iter().filter(|t| t.name == filter::ROUTER_TOOL_NAME));
+        markdown::generate_markdown(&tools)
+    }
+
+    /// The recent tool calls, most recent first.
+    pub fn call_history(&self) -> Vec<McpCallRecord> {
+        self.shared.history.snapshot()
     }
 
     /// Handles one HTTP request (tests drive the server without a socket).

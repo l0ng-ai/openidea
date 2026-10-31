@@ -4,6 +4,7 @@
 use crate::IpcPath;
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 
 /// The port the server listens on unless Tools › MCP Server picks another.
 pub const DEFAULT_MCP_PORT: u16 = 64352;
@@ -17,16 +18,63 @@ pub struct McpSettings {
     pub port: u16,
     /// Run shell commands and run configurations without asking first.
     pub brave_mode: bool,
-    /// Tool names that are not offered to clients.
+    /// Tool names that are not offered to clients (the first disallow list; `tool_states` supersedes it).
     pub disabled_tools: Vec<String>,
     /// Give the IDE's own agents (Agents tool window) these tools too.
     pub agents: bool,
+    /// Comma-separated masks over fully qualified tool names (`-*,+general.SearchToolset.*,-*.read_file`):
+    /// `+` (or nothing) allows, `-` hides, `*` / `?` are wildcards, the last matching mask wins.
+    /// Empty means no filter.
+    pub tools_filter: String,
+    /// Per-tool state by fully qualified name (or plain name), as Exposed Tools stores it.
+    pub tool_states: BTreeMap<String, McpToolState>,
+    /// How clients reach the tools: each directly, or through the `execute_tool` router.
+    pub invocation_mode: McpInvocationMode,
+    /// Offer experimental tools (`get_ide_diagnostics`, ...) too.
+    pub experimental_tools: bool,
 }
 
 impl Default for McpSettings {
     fn default() -> Self {
-        Self { enabled: false, port: DEFAULT_MCP_PORT, brave_mode: false, disabled_tools: Vec::new(), agents: true }
+        Self {
+            enabled: false,
+            port: DEFAULT_MCP_PORT,
+            brave_mode: false,
+            disabled_tools: Vec::new(),
+            agents: true,
+            tools_filter: String::new(),
+            tool_states: BTreeMap::new(),
+            invocation_mode: McpInvocationMode::Direct,
+            experimental_tools: false,
+        }
     }
+}
+
+/// One tool's entry in [`McpSettings::tool_states`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct McpToolState {
+    /// Offered at all.
+    pub enabled: bool,
+    /// In router mode, reachable only through `execute_tool` instead of listed directly.
+    pub router_only: bool,
+}
+
+impl Default for McpToolState {
+    fn default() -> Self {
+        Self { enabled: true, router_only: true }
+    }
+}
+
+/// How a session's client reaches the tools.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpInvocationMode {
+    /// Every tool is listed and called directly.
+    #[default]
+    Direct,
+    /// Only `execute_tool` (and tools whose state is not router-only) is listed; it calls the others by name.
+    ViaRouter,
 }
 
 /// Whether the server runs, and where.
@@ -60,7 +108,50 @@ pub struct McpToolInfo {
     pub description: String,
     /// `read`, `edit` or `execute` (asks first unless brave mode is on).
     pub kind: McpToolKind,
+    /// Offered to clients under the current settings (filter, tool states, experimental tools).
     pub enabled: bool,
+    /// The toolset (`general.SearchToolset`), as the JetBrains IDEs group their tools.
+    pub group: String,
+    /// The toolset's display name (`Search`).
+    pub group_name: String,
+    /// `<group>.<name>`: what `toolsFilter` masks and `toolStates` keys match.
+    pub fully_qualified_name: String,
+    /// Hidden unless experimental tools are on.
+    pub experimental: bool,
+    /// In router mode, reachable only through `execute_tool`.
+    pub router_only: bool,
+}
+
+/// How a recorded tool call ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpCallOutcome {
+    InProgress,
+    Success,
+    /// The tool returned an error (or failed unexpectedly).
+    Error,
+    Cancelled,
+}
+
+/// One tool call, for the server's call history (`mcp_call_history`, `get_ide_diagnostics`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCallRecord {
+    /// Counts up from 1 since the application started.
+    pub id: u32,
+    pub client: String,
+    pub tool: String,
+    /// The arguments, shortened and with secret-looking values replaced by `***`.
+    pub arguments: String,
+    /// Milliseconds since the Unix epoch.
+    pub started_at_ms: f64,
+    /// Set when the call ended.
+    pub duration_ms: Option<u32>,
+    pub outcome: McpCallOutcome,
+    /// The error message of a failed call.
+    pub error: Option<String>,
+    /// Called through `execute_tool`.
+    pub via_router: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]

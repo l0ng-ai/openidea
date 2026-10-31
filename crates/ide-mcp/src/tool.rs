@@ -65,6 +65,11 @@ pub struct Tool {
     pub params: Vec<Param>,
     /// JSON schema of `structuredContent` (MCP `outputSchema`), when the tool declares one.
     pub output_schema: Option<Value>,
+    /// The toolset it belongs to, named like the JetBrains toolset class (`general.SearchToolset`);
+    /// filters and the settings page group by it.
+    pub group: &'static str,
+    /// Hidden unless experimental tools are on.
+    pub experimental: bool,
     pub handler: Handler,
 }
 
@@ -80,6 +85,8 @@ impl Tool {
             kind,
             params: Vec::new(),
             output_schema: None,
+            group: crate::filter::DEFAULT_GROUP,
+            experimental: false,
             handler: Arc::new(move |call| Box::pin(handler(call))),
         }
     }
@@ -93,6 +100,23 @@ impl Tool {
     pub fn output(mut self, schema: Value) -> Self {
         self.output_schema = Some(schema);
         self
+    }
+
+    /// Puts the tool into a toolset (see [`Tool::group`]).
+    pub fn group(mut self, group: &'static str) -> Self {
+        self.group = group;
+        self
+    }
+
+    /// Marks the tool experimental: hidden unless the settings turn experimental tools on.
+    pub fn experimental(mut self) -> Self {
+        self.experimental = true;
+        self
+    }
+
+    /// `<group>.<name>`, what masks and tool states match.
+    pub fn fully_qualified_name(&self) -> String {
+        format!("{}.{}", self.group, self.name)
     }
 
     /// The JSON schema of the arguments (`projectPath` included).
