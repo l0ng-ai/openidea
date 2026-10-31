@@ -134,8 +134,10 @@ impl Host {
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {
-                    let bundles: Vec<PathBuf> =
-                        ide_tools::managed_bundle(&data_dir, "java-debug").into_iter().collect();
+                    let bundles: Vec<PathBuf> = ide_tools::managed_bundle(&data_dir, "java-debug")
+                        .into_iter()
+                        .chain(ide_sdk::java::usages_bundle(&data_dir))
+                        .collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
                     let jdks = ide_sdk::java::jdtls_jdks(min_java, &data_dir);
                     let lombok = ide_sdk::lombok::lombok_agent(

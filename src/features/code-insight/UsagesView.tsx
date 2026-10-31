@@ -41,6 +41,8 @@ import {
 } from "./usages";
 import styles from "./UsagesView.module.css";
 
+import { UsageAccessFilter, filterUsageAccess, useUsageAccessOptions } from "./UsageAccessFilter";
+
 type Node =
   | { kind: "summary"; key: string }
   | { kind: "file"; key: string; group: UsageGroup }
@@ -101,7 +103,8 @@ export function UsagesTabs() {
 
 const SUMMARY_KEY = "\u0000summary";
 
-const usageKey = (u: Usage) => `${u.path}:${u.line}:${u.col}`;
+const usageKey = (u: Usage) =>
+  `${u.path}:${u.line}:${u.col}:${u.sourceLocation?.range.end.line ?? u.line}:${u.sourceLocation?.range.end.col ?? u.endCol}`;
 
 /** Excluded (⌫) usages per search. */
 const useExcluded = create<{ byTab: Record<number, ReadonlySet<string>> }>(() => ({ byTab: {} }));
@@ -135,9 +138,15 @@ export function UsagesView() {
     id: null,
     keys: new Set(),
   });
+  const accessOptions = useUsageAccessOptions();
+  const allUsages = useMemo(() => search?.groups.flatMap((g) => g.usages) ?? [], [search?.groups]);
   const files = useMemo<Node[]>(
-    () => (search?.groups ?? []).map((g) => ({ kind: "file", key: g.path, group: g })),
-    [search?.groups],
+    () =>
+      (search?.groups ?? [])
+        .map((g) => ({ ...g, usages: filterUsageAccess(g.usages, accessOptions) }))
+        .filter((g) => g.usages.length > 0)
+        .map((g) => ({ kind: "file", key: g.path, group: g })),
+    [search?.groups, accessOptions],
   );
   const roots = useMemo<Node[]>(() => (files.length ? [{ kind: "summary", key: SUMMARY_KEY }] : []), [files.length]);
   const searchId = search?.id ?? null;
@@ -173,12 +182,22 @@ export function UsagesView() {
       </EmptyState>
     );
   const total = usageCount(search.groups);
+  const visibleLead =
+    lead?.kind === "usage"
+      ? files.some((f) => f.kind === "file" && f.group.usages.some((u) => usageKey(u) === lead.key))
+        ? lead
+        : null
+      : lead?.kind === "file"
+        ? (files.find((f) => f.key === lead.key) ?? null)
+        : roots.length
+          ? lead
+          : null;
   const setAll = (collapse: boolean) =>
     setCollapsed({ id: search.id, keys: collapse ? new Set(files.map((f) => f.key)) : new Set() });
 
   const exclude = () => {
-    if (!lead) return;
-    const next = toggleExcludedUsages(excluded, nodeUsages(lead, files));
+    if (!visibleLead) return;
+    const next = toggleExcludedUsages(excluded, nodeUsages(visibleLead, files));
     useExcluded.setState((s) => ({ byTab: { ...s.byTab, [search.id]: next } }));
     // Excluding moves on to the next usage, as in IDEA.
     if (next.size > excluded.size) tree.current?.selectOccurrence(1, { skipSubtree: true });
@@ -199,7 +218,10 @@ export function UsagesView() {
             <T>Found usages</T>
           </span>
           <span className={styles.count}>
-            {total} {tx(total === 1 ? "result" : "results")}
+            {accessOptions.read && accessOptions.write
+              ? total
+              : `${files.reduce((n, f) => n + (f.kind === "file" ? f.group.usages.length : 0), 0)} / ${total}`}{" "}
+            {tx(total === 1 ? "result" : "results")}
           </span>
           {search.note && <span className={styles.note}>{search.note}</span>}
         </span>
@@ -245,6 +267,7 @@ export function UsagesView() {
         <IconButton icon="collapse-all" title="Collapse All" size="small" iconSize={16} onClick={() => setAll(true)} />
       </div>
       <div className={styles.body} onKeyDown={onKeyDown}>
+        <UsageAccessFilter items={allUsages} />
         {(search.loading || search.error) && (
           <div className={styles.summary} role="status" aria-live="polite">
             {search.loading ? (
@@ -260,9 +283,9 @@ export function UsagesView() {
             )}
           </div>
         )}
-        <UsagesSplit preview={<UsagesPreview node={lead} />}>
+        <UsagesSplit preview={<UsagesPreview node={visibleLead} />}>
           <Tree<Node>
-            key={search.id}
+            key={`${search.id}:${accessOptions.read}:${accessOptions.write}`}
             aria-label="Usages"
             handleRef={tree}
             roots={roots}
@@ -308,9 +331,7 @@ export function UsagesView() {
             }}
             empty={
               !search.loading && !search.error ? (
-                <EmptyState>
-                  <T>No usages found</T>
-                </EmptyState>
+                <EmptyState>{total ? tx("No usages match the access filters") : <T>No usages found</T>}</EmptyState>
               ) : undefined
             }
           />

@@ -4936,7 +4936,11 @@ export type RecentProject = {
 	branch: string | null,
 };
 
+export type ReferenceKind = "getter" | "setter" | "field" | "unknown";
+export type ReferenceAccess = "read" | "write" | "readWrite" | "unknown";
+export type ClassifiedReference = { location: Location; kind: ReferenceKind; access?: ReferenceAccess | null };
 export type References = {
+	classified?: ClassifiedReference[];
 	locations: Location[],
 	incomplete: ReferencesIncomplete | null,
 };

@@ -1960,6 +1960,61 @@ async fn references_report_a_capped_candidate_search() {
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
 }
 
+/// The Java command must participate in the same widening contract as standard LSP.
+#[tokio::test(flavor = "multi_thread")]
+async fn classified_java_references_widen_without_losing_metadata() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    *s.responder.lock() = Some(Arc::new(|s, method, _| {
+        (method == "workspace/executeCommand").then(|| {
+            let docs = s.docs.lock();
+            let access = if docs.len() == 1 { "read" } else { "readWrite" };
+            Value::Array(
+                docs.iter()
+                    .flat_map(|(uri, text)| {
+                        occurrences(uri, text)
+                            .into_iter()
+                            .map(|location| json!({"location": location, "kind": "field", "access": access}))
+                    })
+                    .collect(),
+            )
+        })
+    }));
+    let b = h.root.join("b.java");
+    std::fs::write(&b, "target++;").unwrap();
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let seen = grep_candidates(&h);
+    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    assert_eq!(scoped.locations.len(), 1);
+    assert!(seen.lock().is_empty());
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 2);
+    assert_eq!(refs.classified.len(), 2);
+    assert!(refs.classified.iter().all(|r| matches!(r.access, Some(ReferenceAccess::ReadWrite))));
+    assert!(refs.classified.iter().all(|r| matches!(r.kind, ReferenceKind::Field)));
+    assert_eq!(refs.incomplete, None);
+    assert_eq!(s.requested("workspace/executeCommand").len(), 3);
+    assert!(s.requested("textDocument/references").is_empty());
+    eventually(|| uris(&s.notified("textDocument/didClose")) == vec![uri_of(&b)]).await;
+    for limit_hit in [true, false] {
+        let skipped = h.root.join("large.java");
+        std::fs::write(&skipped, " ".repeat((1 << 20) + 1)).unwrap();
+        h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+            files: vec![skipped.clone()],
+            limit_hit,
+        }));
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        assert_eq!(
+            refs.incomplete,
+            Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
+        );
+    }
+}
+
 /// What each search widened with candidate files reports for the symbol at the start of `doc`.
 async fn incomplete_reports(h: &Harness, doc: DocId) -> Vec<(&'static str, Option<ReferencesIncomplete>)> {
     let at = Pos::new(0, 5);

@@ -52,6 +52,9 @@
   flex: 1;
   min-height: 0;
 }
+.body > [role="toolbar"] {
+  flex: 0 0 auto;
+}
 .row {
   display: flex;
   align-items: center;

@@ -5322,5 +5322,9 @@
   "No debug output available": "暂无可用的调试输出",
   "The attached process may not provide standard output to the debugger.": "附加的进程可能不会向调试器提供标准输出。",
   "Show in Debug Tool Window": "在调试工具窗口中显示",
-  "Suspended": "已暂停"
+  "Suspended": "已暂停",
+  "Usage access filters": "引用读写筛选",
+  "Show read accesses": "显示读取引用",
+  "Show write accesses": "显示写入引用",
+  "No usages match the access filters": "没有符合读写筛选条件的引用"
 }

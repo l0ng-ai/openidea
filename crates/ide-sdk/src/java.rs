@@ -904,3 +904,44 @@ mod tests {
         assert_eq!(project_java_version(dir), Some(8));
     }
 }
+
+/// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
+pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
+    let extension = data_dir.join("java-usages-1.1.1.jar");
+    let bytes = include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar");
+    if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
+        return Some(extension);
+    }
+    // Write then rename: another window must never read a partially written jar.
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    let temporary = data_dir.join(format!("java-usages-{}-{nonce}.tmp", std::process::id()));
+    let result = std::fs::create_dir_all(data_dir)
+        .and_then(|_| std::fs::write(&temporary, bytes))
+        .and_then(|_| std::fs::rename(&temporary, &extension));
+    match result {
+        Ok(()) => Some(extension),
+        Err(e) => {
+            let _ = std::fs::remove_file(&temporary);
+            if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
+                return Some(extension);
+            }
+            tracing::warn!("Java usages extension unavailable; using standard references: {e}");
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod usages_bundle_tests {
+    #[test]
+    fn installs_the_exact_bundle_and_reuses_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let jar = super::usages_bundle(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read(&jar).unwrap(),
+            include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar")
+        );
+        assert_eq!(super::usages_bundle(dir.path()), Some(jar));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+}
