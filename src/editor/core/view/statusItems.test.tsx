@@ -82,6 +82,7 @@ it("shows the member and its directories in workspace breadcrumbs", async () => 
       root: "/workspace",
       name: "Workspace",
       settings: {},
+      trusted: true,
       isGit: false,
       workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
     },

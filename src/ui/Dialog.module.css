@@ -231,6 +231,11 @@
 .messageIcon {
   flex: none;
 }
+.messageAppIcon {
+  flex: none;
+  width: 64px;
+  height: 64px;
+}
 .messageShape {
   fill: var(--message-icon-color);
 }

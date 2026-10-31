@@ -90,6 +90,7 @@ const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
   const l = s.settings?.languages;
   return JSON.stringify([
     s.project?.root ?? null,
+    s.project?.trusted,
     l?.python?.interpreter,
     l?.java?.jdk,
     l?.node?.interpreter,
@@ -116,7 +117,8 @@ export function activate(): () => void {
   };
   const refresh = () => {
     const id = ++seq;
-    if (!useProject.getState().project || !isTauri()) return clear();
+    if (!useProject.getState().project || useProject.getState().project?.trusted === false || !isTauri())
+      return clear();
     call(commands.sdkProjectLibraries())
       .then((groups) => {
         if (id !== seq) return;

@@ -76,6 +76,7 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
 
 /// Maven and Gradle projects of the window's project, from the build files plus the last sync.
 pub async fn build_model(host: &Host, window: &str) -> IdeResult<BuildModel> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
     tokio::task::spawn_blocking(move || load(&root, &cache, &settings)).await.map_err(join_err)
@@ -93,9 +94,10 @@ pub async fn build_sync(
     profiles: Vec<String>,
     on_progress: Channel<SyncProgress>,
 ) -> IdeResult<BuildModel> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
-    let token = host.begin_request(request);
+    let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         let current = load(&root, &cache, &settings);
         let env = match tool {
@@ -223,11 +225,12 @@ pub async fn build_run(
     clear: Vec<std::path::PathBuf>,
     on_event: Channel<BuildEvent>,
 ) -> IdeResult<BuildResult> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, sink) = (project.root.clone(), project.build_cache_dir(), project.sink.clone());
     let settings = project.settings.effective();
     let config_dir = host.config_dir.clone();
-    let token = host.begin_request(request);
+    let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         for path in clear {
             sink.emit(IdeEvent::Diagnostics {

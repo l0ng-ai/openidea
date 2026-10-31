@@ -85,80 +85,104 @@ pub fn run() {
     // Paths macOS asked to open (Finder's Open With, the Dock) before setup ran: the first window takes them.
     let early_opens: Arc<Mutex<Option<Vec<PathBuf>>>> = Arc::default();
     let setup_opens = early_opens.clone();
-    app.invoke_handler(builder.invoke_handler())
-        .setup(move |app| {
-            builder.mount_events(app);
-            let state = AppState::new(app.handle().clone())?;
-            let windows = WindowsState::default();
-            if let Ok(cwd) = std::env::current_dir()
-                && let Some(path) = windows::cli_path(&std::env::args().collect::<Vec<_>>(), &cwd)
-            {
-                windows.set_launch("main", windows::path_launch(path));
+    let invoke = Arc::new(builder.invoke_handler());
+    app.invoke_handler(move |request| {
+        let webview = request.message.webview_ref();
+        if let Some(state) = webview.try_state::<AppState>() {
+            let label = AppState::owner_window(webview.label());
+            if let Some(connection) = state.remote_dev.get(label) {
+                let label = label.to_owned();
+                let command = request.message.command().to_owned();
+                let invoke = invoke.clone();
+                tauri::async_runtime::spawn(async move {
+                    match connection.authorize_command(&label, &command).await {
+                        Ok(()) => {
+                            invoke(request);
+                        }
+                        Err(error) => request.resolver.reject(error),
+                    }
+                });
+                return true;
             }
-            let menu_state = menu::MenuState::default();
-            menu::install(app.handle(), &menu_state, &state.recent.list());
-            app.manage(state);
-            app.manage(windows);
-            app.manage(menu_state);
-            mcp::apply_settings(app.handle());
-            mcp::offer_to_agents(app.handle());
-            if let Some(paths) = setup_opens.lock().take() {
-                windows::open_paths_at_launch(app.handle(), paths);
+            if let Err(error) = state.host.authorize_command(webview.label(), request.message.command()) {
+                request.resolver.reject(error);
+                return true;
             }
-            app.on_menu_event(on_menu_event);
-            windows::create_main_window(app.handle())?;
-            Ok(())
-        })
-        .on_window_event(|window, event| match event {
-            tauri::WindowEvent::Focused(true) => {
-                if let Some(w) = window.try_state::<WindowsState>() {
-                    w.focused(window.label());
-                }
+        }
+        invoke(request)
+    })
+    .setup(move |app| {
+        builder.mount_events(app);
+        let state = AppState::new(app.handle().clone())?;
+        let windows = WindowsState::default();
+        if let Ok(cwd) = std::env::current_dir()
+            && let Some(path) = windows::cli_path(&std::env::args().collect::<Vec<_>>(), &cwd)
+        {
+            windows.set_launch("main", windows::path_launch(path));
+        }
+        let menu_state = menu::MenuState::default();
+        menu::install(app.handle(), &menu_state, &state.recent.list());
+        app.manage(state);
+        app.manage(windows);
+        app.manage(menu_state);
+        mcp::apply_settings(app.handle());
+        mcp::offer_to_agents(app.handle());
+        if let Some(paths) = setup_opens.lock().take() {
+            windows::open_paths_at_launch(app.handle(), paths);
+        }
+        app.on_menu_event(on_menu_event);
+        windows::create_main_window(app.handle())?;
+        Ok(())
+    })
+    .on_window_event(|window, event| match event {
+        tauri::WindowEvent::Focused(true) => {
+            if let Some(w) = window.try_state::<WindowsState>() {
+                w.focused(window.label());
             }
-            tauri::WindowEvent::Destroyed => {
-                window_groups::destroyed(window.app_handle(), window.label());
-                if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label()))
-                {
-                    let _ = settings.destroy();
-                }
-                if let Some(state) = window.try_state::<AppState>() {
-                    state.mcp_pending.window_closed(window.label());
-                    state.close_project(window.label());
-                }
-                if let Some(w) = window.try_state::<WindowsState>() {
-                    w.forget(window.label());
-                }
-                if !windows::is_settings_window(window.label()) {
-                    windows::continue_quit(window.app_handle(), Some(window.label()));
-                }
+        }
+        tauri::WindowEvent::Destroyed => {
+            window_groups::destroyed(window.app_handle(), window.label());
+            if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {
+                let _ = settings.destroy();
             }
-            _ => {}
-        })
-        .build(context)
-        .expect("error while running OpenIDEA")
-        .run(move |app, event| {
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = &event {
-                let paths = windows::opened_paths(urls);
-                if app.try_state::<WindowsState>().is_some() {
-                    windows::open_paths(app, paths);
-                } else {
-                    early_opens.lock().get_or_insert_default().extend(paths);
-                }
+            if let Some(state) = window.try_state::<AppState>() {
+                state.mcp_pending.window_closed(window.label());
+                state.close_project(window.label());
             }
-            #[cfg(not(target_os = "macos"))]
-            let _ = &early_opens;
-            if let tauri::RunEvent::Exit = event {
-                if let Some(state) = app.try_state::<AppState>() {
-                    state.mcp.shutdown();
-                    state.host.shutdown_notebooks_on_exit();
-                }
-                // Cleanup must finish before update/restart replaces this process.
-                if app.try_state::<WindowsState>().is_some_and(|w| w.restart_requested()) {
-                    tauri::process::restart(&app.env());
-                }
+            if let Some(w) = window.try_state::<WindowsState>() {
+                w.forget(window.label());
             }
-        });
+            if !windows::is_settings_window(window.label()) {
+                windows::continue_quit(window.app_handle(), Some(window.label()));
+            }
+        }
+        _ => {}
+    })
+    .build(context)
+    .expect("error while running OpenIDEA")
+    .run(move |app, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = &event {
+            let paths = windows::opened_paths(urls);
+            if app.try_state::<WindowsState>().is_some() {
+                windows::open_paths(app, paths);
+            } else {
+                early_opens.lock().get_or_insert_default().extend(paths);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = &early_opens;
+        if let tauri::RunEvent::Exit = event {
+            if let Some(state) = app.try_state::<AppState>() {
+                state.mcp.shutdown();
+                state.host.shutdown_notebooks_on_exit();
+            }
+            // Cleanup must finish before update/restart replaces this process.
+            if app.try_state::<WindowsState>().is_some_and(|w| w.restart_requested()) {
+                tauri::process::restart(&app.env());
+            }
+        }
+    });
 }
 
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {

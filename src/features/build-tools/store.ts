@@ -158,7 +158,7 @@ export async function loadModel(): Promise<void> {
       current: {},
     });
   }
-  if (!root || !isTauri()) return;
+  if (!root || useProject.getState().project?.trusted === false || !isTauri()) return;
   useBuild.setState({ loading: true });
   try {
     const [model, configs] = await Promise.all([

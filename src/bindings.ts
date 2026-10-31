@@ -11,6 +11,10 @@ export const commands = {
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
+	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
+	projectTrustList: () => typedError<TrustDecisions, IdeError>(__TAURI_INVOKE("project_trust_list")),
+	projectTrustSet: (path: string, trusted: boolean, folder: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_set", { path, trusted, folder })),
+	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_remove_location", { path })),
 	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
 	workspaceAttach: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_attach", { path })),
 	workspaceUpdate: (name: string, projects: string[]) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("workspace_update", { name, projects })),
@@ -28,6 +32,7 @@ export const commands = {
 	lightEditOpen: (path: string) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("light_edit_open", { path })),
 	/**  The project open in this window (a settings window: its parent's), if any. */
 	projectCurrent: () => __TAURI_INVOKE<{
+	trusted: boolean,
 	root: IpcPath,
 	name: string,
 	isGit: boolean,
@@ -199,6 +204,7 @@ export const commands = {
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
+	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
 	/**
 	 *  The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
@@ -1441,6 +1447,8 @@ export type AppearanceSettings = {
 	projectColorsInToolbar?: boolean,
 	dndWithAltOnly?: boolean,
 	menuIcons?: boolean,
+	/**  `hamburger` | `merged`: main menu presentation in the frameless title bar. */
+	mainMenuStyle?: string,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing?: string,
 	editorAntialiasing?: string,
@@ -3084,6 +3092,8 @@ export type FileRenameEdits = {
 export type FileSettings = {
 	/**  Save on focus loss / tab switch, like IDEA. */
 	autoSave?: boolean,
+	/**  Re-check open files against disk when the IDE window gains focus. */
+	syncOnFocus?: boolean,
 	exclude?: string[],
 	/**  Ignored Files and Folders: name patterns hidden everywhere; see [`crate::ignored`]. */
 	ignoredNames?: string[],
@@ -3492,7 +3502,7 @@ export type IdeError = {
 
 export type IdeEvent = 
 /**  Project window membership or selection changed. */
-{ type: "windowGroupsChanged" } | 
+{ type: "windowGroupsChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[] } | 
 /**  Excluded or ignored folders whose contents changed; they stay out of `FsChanged`. */
@@ -5041,6 +5051,7 @@ export type ProjectFileSet =
 export type ProjectInfo = ProjectInfo_Serialize | ProjectInfo_Deserialize;
 
 export type ProjectInfo_Deserialize = {
+	trusted: boolean,
 	root: IpcPath,
 	name: string,
 	isGit: boolean,
@@ -5049,6 +5060,7 @@ export type ProjectInfo_Deserialize = {
 };
 
 export type ProjectInfo_Serialize = {
+	trusted: boolean,
 	root: IpcPath,
 	name: string,
 	isGit: boolean,
@@ -6384,6 +6396,18 @@ export type TransferReport = {
 	/**  Files left alone: excluded, or outside every mapping. */
 	skipped: number,
 	errors: TransferError[],
+};
+
+export type TrustDecisions = {
+	projects: string[],
+	locations: string[],
+	restricted: string[],
+};
+
+export type TrustStatus = {
+	root: IpcPath,
+	trusted: boolean,
+	decided: boolean,
 };
 
 export type TypeScriptSettings = {

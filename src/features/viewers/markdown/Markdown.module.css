@@ -18,23 +18,13 @@
   border-right: 1px solid var(--border-editor-tabs, var(--border));
 }
 
-.modeBar {
-  position: absolute;
-  top: 6px;
-  right: 20px;
-  z-index: 5;
+.layoutActions {
   display: flex;
-  gap: 1px;
-  padding: 2px;
-  border: 1px solid var(--border-popup);
-  border-radius: var(--radius-toolbar-button);
-  background: var(--bg-popup);
-  box-shadow: var(--shadow-popup);
-  opacity: 0.85;
+  align-items: center;
 }
-.modeBar:hover,
-.modeBar:focus-within {
-  opacity: 1;
+.layoutActions > button {
+  width: var(--h-floating-toolbar-button);
+  height: var(--h-floating-toolbar-button);
 }
 
 .preview {

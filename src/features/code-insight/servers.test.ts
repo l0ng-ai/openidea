@@ -27,7 +27,7 @@ describe("server status", () => {
   afterEach(() => dispose());
 
   it("keeps a status that arrived after the snapshot was requested", async () => {
-    useProject.setState({ project: { name: "p", root: "/p", isGit: false, settings: {} } as never });
+    useProject.setState({ project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never });
     dispose = installServerEvents();
     const id = 1 as ServerId;
     const info: ServerInfo = { id, name: "jdtls", languages: [], root: "/p", status: "starting", pid: null };
@@ -47,7 +47,7 @@ describe("server status", () => {
   });
 
   it("drops a server the backend removed, even if an older snapshot still lists it", async () => {
-    useProject.setState({ project: { name: "p", root: "/p", isGit: false, settings: {} } as never });
+    useProject.setState({ project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never });
     dispose = installServerEvents();
     const info = (id: number, name: string): ServerInfo => ({
       id: id as ServerId,

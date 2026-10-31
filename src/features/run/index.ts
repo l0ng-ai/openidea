@@ -516,7 +516,7 @@ export function activate(): () => void {
       );
     }),
     useProject.subscribe((s, prev) => {
-      if (s.project?.root === prev.project?.root) return;
+      if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
       resetRuns();
       useStackTraces.setState({ tabs: [], dialog: null });
       if (s.project) void loadConfigs();

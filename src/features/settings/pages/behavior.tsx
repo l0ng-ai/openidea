@@ -9,6 +9,7 @@ import { FontPicker } from "../components/FontPicker";
 import { useId, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
+import { usePlatform } from "@/platform/platformInfo";
 import { isTauri } from "@/platform/ipc";
 import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
@@ -220,6 +221,25 @@ function Grid({ left, right }: { left: ReactNode; right: ReactNode }) {
       <div className={styles.column}>{left}</div>
       <div className={styles.column}>{right}</div>
     </div>
+  );
+}
+
+function MainMenuStyleRow() {
+  const frameless = usePlatform((s) => s.framelessTitleBar);
+  const [mainMenuStyle, setMainMenuStyle] = useSetting<"hamburger" | "merged">("appearance.mainMenuStyle");
+  if (!frameless) return null;
+  return (
+    <Row label="Main menu">
+      <Select
+        value={mainMenuStyle ?? "hamburger"}
+        options={[
+          { value: "hamburger", label: "Hamburger button" },
+          { value: "merged", label: "Merged with main toolbar" },
+        ]}
+        onChange={setMainMenuStyle}
+        aria-label="Main menu"
+      />
+    </Row>
   );
 }
 
@@ -523,6 +543,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         options: [
           {
             kind: "custom",
+            label: "Main menu",
+            keywords: ["Hamburger button", "Merged with main toolbar"],
+            component: MainMenuStyleRow,
+          },
+          {
+            kind: "custom",
             label: "Compact mode",
             keywords: [
               "Always show full path in window header",
@@ -587,6 +613,11 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "files.autoSave",
             label: "Save files when switching to a different application or a built-in terminal",
+          },
+          {
+            kind: "toggle",
+            key: "files.syncOnFocus",
+            label: "Synchronize external changes when switching to the IDE window",
           },
         ],
       },

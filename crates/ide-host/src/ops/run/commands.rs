@@ -50,6 +50,7 @@ pub async fn run_test_reports(
 }
 
 pub async fn run_tomcat_home(host: &Host, window: &str, home: String) -> IdeResult<ide_run::tomcat::TomcatHome> {
+    host.require_trust(window)?;
     let root = host.project(window)?.root.clone();
     tokio::task::spawn_blocking(move || ide_run::tomcat::validate_home(&root.join(home)))
         .await
@@ -57,6 +58,7 @@ pub async fn run_tomcat_home(host: &Host, window: &str, home: String) -> IdeResu
 }
 
 pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<ide_build::web::WebArtifact>> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     tokio::task::spawn_blocking(move || {
         let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &project.settings.effective());
@@ -67,6 +69,7 @@ pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<id
 }
 
 pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> IdeResult<Option<RunConfig>> {
+    host.require_trust(window)?;
     if config.extras.params.get("deployment").is_some_and(|v| v != "artifact") {
         return Ok(None);
     }
@@ -119,6 +122,7 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
 }
 
 pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mode: String) -> IdeResult<()> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     if !host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
         return Err(IdeError::invalid("Start this Tomcat configuration before updating it"));

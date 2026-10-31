@@ -67,13 +67,14 @@ async function hasPythonFiles(): Promise<boolean> {
 
 function PythonStatus() {
   const root = useProject((s) => s.project?.root);
+  const trusted = useProject((s) => s.project?.trusted !== false);
   const configured = useProject((s) => s.settings?.languages?.python?.interpreter ?? "");
   const status = usePopup((s) => s.status);
   const open = usePopup((s) => s.open);
   const anchor = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     reset();
-    if (!root || !isTauri()) return;
+    if (!root || !trusted || !isTauri()) return;
     let live = true;
     let sequence = 0;
     let detected: Promise<Sdk[]> | undefined;
@@ -121,7 +122,7 @@ function PythonStatus() {
       off.forEach((dispose) => dispose());
       reset();
     };
-  }, [root, configured]);
+  }, [root, configured, trusted]);
   // The widget only renders once its project's status is in the store, so the popup action
   // sees the same state as the button without waiting for an effect to publish a flag.
   if (!popupShown() || !status) return null;

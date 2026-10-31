@@ -1,5 +1,6 @@
 export * from "./icons";
 export * from "./Button";
+export * from "./FloatingToolbar";
 export * from "./Kbd";
 export * from "./Tooltip";
 export * from "./Input";

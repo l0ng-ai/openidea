@@ -6,6 +6,7 @@ use std::time::Duration;
 
 /// Detected configs followed by user-defined ones (user ids win on conflict).
 pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let root = project.root.clone();
     let user = ide_run::load_user_configs(&root)?;
@@ -70,6 +71,7 @@ pub fn save_configs(
 }
 
 pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit<OutputChunk>) -> IdeResult<RunInfo> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
@@ -135,6 +137,7 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
         python_paths: if member.is_some() { vec![root.clone()] } else { super::python::paths(&project) },
     };
+    project.require_trust()?;
     let mut sink = project.sink.clone();
     if config.kind == "go" && matches!(config.args.first().map(String::as_str), Some("mod" | "work")) {
         let previous = sink;

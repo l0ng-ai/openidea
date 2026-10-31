@@ -16,6 +16,7 @@ const UNCOMMITTED_AUTHOR: &str = "Not Committed Yet";
 
 impl Repo {
     pub(crate) fn rel_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<String>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         paths
             .iter()
             .map(|p| {
@@ -26,6 +27,7 @@ impl Repo {
     }
 
     pub(crate) fn has_head(&self) -> IdeResult<bool> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let repo = self.gix()?;
         Ok(!repo.head().map_err(gx)?.is_unborn())
     }
@@ -86,16 +88,30 @@ pub(crate) fn blame(
     if !tracked_in_head {
         return Ok(uncommitted_lines(line_count));
     }
-    let out = run(
-        r.root(),
-        &["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", revision, "--", &rel],
-        Some(&contents),
-    )?;
+    // Restricted blame reads committed blobs only. Feeding working-tree bytes to
+    // Git's --contents path would run configured clean filters.
+    let out = if crate::execution_allowed() {
+        run(
+            r.root(),
+            &["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", revision, "--", &rel],
+            Some(&contents),
+        )?
+    } else {
+        run(r.root(), &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", revision, "--", &rel], None)?
+    };
     let mut lines = crate::blame::parse_porcelain(&out.stdout_str());
     for line in &mut lines {
         if line.commit.bytes().all(|b| b == b'0') {
             line.author = UNCOMMITTED_AUTHOR.to_string();
             line.summary = String::new();
+        }
+    }
+    if !crate::execution_allowed() {
+        let base = r.file_at(path, Some(revision), encoding)?.unwrap_or_default();
+        for hunk in crate::diff::line_hunks(&base, &text).into_iter().rev() {
+            let start = (hunk.old_start as usize).min(lines.len());
+            let end = (start + hunk.old_lines as usize).min(lines.len());
+            lines.splice(start..end, uncommitted_lines(hunk.lines as usize));
         }
     }
     // Defensive: always exactly one entry per line.
@@ -161,6 +177,16 @@ fn uncommitted_lines(n: usize) -> Vec<BlameLine> {
 
 pub(crate) fn diff_text(r: &Repo, path: &Path, staged: bool, encoding: TextEncoding) -> IdeResult<String> {
     let rel = r.rel_path(path)?;
+    if !crate::execution_allowed() {
+        let old = r.file_at(path, Some(if staged { "HEAD" } else { ":0" }), encoding)?.unwrap_or_default();
+        let new = if staged {
+            r.file_at(path, Some(":0"), encoding)?.unwrap_or_default()
+        } else {
+            std::fs::read(r.abs_path(&rel)).map(|b| decode(&b, encoding).into_owned()).unwrap_or_default()
+        };
+        let selected: Vec<_> = (0..crate::diff::line_hunks(&old, &new).len()).collect();
+        return Ok(crate::diff::build_partial_patch(&rel, &old, &new, &selected));
+    }
     let base =
         ["-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.external=", "--literal-pathspecs"];
     let in_index = {
@@ -221,7 +247,11 @@ pub(crate) fn stage_patch(r: &Repo, patch: &str, encoding: &dyn Fn(&Path) -> Ide
 
 /// Paths with unresolved conflicts (index stages 1–3).
 pub(crate) fn unmerged_paths(r: &Repo) -> IdeResult<Vec<String>> {
-    let out = run(r.root(), &["diff", "--name-only", "--diff-filter=U", "-z"], None)?;
+    let out = run(
+        r.root(),
+        &["diff", "--cached", "--no-ext-diff", "--no-textconv", "--name-only", "--diff-filter=U", "-z"],
+        None,
+    )?;
     Ok(out.stdout_str().split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
 }
 

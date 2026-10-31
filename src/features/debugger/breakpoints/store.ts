@@ -4,6 +4,7 @@
  * The backend keeps them across sessions and returns verification states.
  */
 import { create } from "zustand";
+import { useProject } from "@/platform/project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import {
   makeBreakpoint,
@@ -132,7 +133,7 @@ export function syncFile(path: string): Promise<void> {
 }
 
 async function sendFile(path: string) {
-  if (!isTauri()) return;
+  if (!isTauri() || useProject.getState().project?.trusted === false) return;
   const { byFile, muted } = useBreakpoints.getState();
   const list = byFile[path] ?? [];
   sent.set(

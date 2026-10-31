@@ -125,6 +125,7 @@ describe("workspace task project", () => {
   const project = {
     root: "/workspace",
     name: "Workspace",
+    trusted: true,
     isGit: false,
     workspace: { version: 1, name: "Workspace", projects: ["/project-a", "/project-b"] },
   } as ProjectInfo;

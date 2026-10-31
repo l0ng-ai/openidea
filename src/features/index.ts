@@ -4,6 +4,7 @@
  * a disposer. The editor provides the editor service; app must install its launch
  * barrier before welcome can restore a remembered project.
  */
+import { activate as projectTrust } from "./project-trust";
 import { activate as editor } from "@/editor/core";
 import { activate as editorLsp } from "@/editor/lsp";
 import { activate as welcome } from "./welcome";
@@ -47,6 +48,7 @@ import { activate as remoteDev } from "./remote-dev";
 type Activate = () => void | (() => void);
 
 const features: Array<[string, Activate]> = [
+  ["project-trust", projectTrust],
   ["editor", editor],
   ["editor-lsp", editorLsp],
   ["app", app],
@@ -109,6 +111,7 @@ export { SettingsWindow, settingsWindowParent } from "./settings";
  */
 export function activateSettingsWindowFeatures(parent: string): () => void {
   const pages: Array<[string, Activate]> = [
+    ["project-trust", projectTrust],
     ["locale", appLocale],
     ["settings", () => activateSettingsWindow(parent)],
     ["templates", templatesPages],

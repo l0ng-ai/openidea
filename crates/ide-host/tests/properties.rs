@@ -73,6 +73,7 @@ async fn properties_search_git_and_document_coordinates_agree() {
     let original = "hello=\\u4f60\\u597d\\uD83D\\uDE00target\nsecond=unchanged\nescaped=line\\u000Alogical\n";
     std::fs::write(&path, original).unwrap();
     let host = host(&base);
+    host.trust.decide(&root, true, false).unwrap();
     let project = host.open_project("main", &root).unwrap();
     for _ in 0..500 {
         if !project.repos().is_empty() {

@@ -9,7 +9,7 @@
  */
 import { executeAction, type Action } from "@/platform/actions";
 import { t } from "@/platform/i18n";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands, isCancelled, isTauri } from "@/platform/ipc";
 import {
   basename,
   confirmLeaveProject,
@@ -39,6 +39,7 @@ function desktopOnly(): boolean {
 }
 
 function openFailed(path: string, e: unknown) {
+  if (isCancelled(e)) return;
   notifications().notify({
     level: "error",
     title: t("app.window.openFailed", { name: basename(path) }),

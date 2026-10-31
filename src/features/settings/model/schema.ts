@@ -63,6 +63,7 @@ export interface ValidSettings extends WorkflowSettings {
   keymap: string;
   files: {
     autoSave: boolean;
+    syncOnFocus: boolean;
     exclude: string[];
     ignoredNames: string[];
     trimTrailingWhitespace: boolean;
@@ -137,6 +138,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   keymap: "intellij-macos",
   files: {
     autoSave: true,
+    syncOnFocus: true,
     exclude: ["**/.git", "**/node_modules", "**/target"],
     ignoredNames: [...DEFAULT_IGNORED_NAMES],
     trimTrailingWhitespace: true,
@@ -237,6 +239,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     keymap: str(root.keymap, d.keymap),
     files: {
       autoSave: bool(f.autoSave, d.files.autoSave),
+      syncOnFocus: bool(f.syncOnFocus, d.files.syncOnFocus),
       exclude: Array.isArray(f.exclude)
         ? f.exclude.filter((x): x is string => typeof x === "string" && !!x.trim())
         : [...d.files.exclude],

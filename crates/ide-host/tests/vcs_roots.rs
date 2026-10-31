@@ -38,6 +38,7 @@ async fn patches_read_and_write_the_requested_repository() {
         runtime: tokio::runtime::Handle::current(),
         project_environment: false,
     });
+    host.trust.decide(&project_root, true, false).unwrap();
     let project = host.open_project("main", &project_root).unwrap();
     for _ in 0..500 {
         if project.repos().all().len() == 2 {

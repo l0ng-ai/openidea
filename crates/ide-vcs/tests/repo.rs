@@ -1534,3 +1534,54 @@ fn gbk_text_patch_keeps_utf8_paths_and_encoded_payload() {
     assert!(repo.stage_patch(&patch, &|_| Ok(encoding_rs::GBK)).is_err());
     assert_eq!(repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(), encoding_rs::GBK.encode(new).0.as_ref());
 }
+
+#[cfg(unix)]
+#[test]
+fn restricted_reads_ignore_executable_repository_configuration() {
+    let f = Fixture::new();
+    f.write("a.txt", "one\ntwo\n");
+    f.commit_all("initial");
+    f.write(".gitattributes", "*.txt filter=evil diff=evil\n");
+    f.write("a.txt", "one\nchanged\n");
+    for key in ["filter.evil.clean", "diff.evil.textconv", "diff.external", "core.fsmonitor"] {
+        f.git(&["config", key, "touch execution.marker; cat"]);
+    }
+    let repo = f.repo();
+    repo.set_execution_allowed(false);
+    assert!(!repo.status().unwrap().is_empty());
+    assert!(repo.diff_text(&f.path("a.txt"), false, encoding_rs::UTF_8).unwrap().contains("changed"));
+    assert_eq!(repo.blame(&f.path("a.txt"), None, None, encoding_rs::UTF_8).unwrap().len(), 2);
+    assert!(!repo.diff_with_worktree("HEAD").unwrap().is_empty());
+    assert!(!repo.log(&LogQuery::default()).unwrap().is_empty());
+    repo.merge_versions(&f.path("a.txt"), encoding_rs::UTF_8).unwrap();
+    assert!(!f.path("execution.marker").exists());
+    // Positive control: the same filter really executes without restriction.
+    f.git(&["-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"]);
+    assert!(f.path("execution.marker").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn restricted_conflict_preview_uses_host_owned_temporary_files() {
+    let f = Fixture::new();
+    f.write("a.txt", "base\n");
+    f.commit_all("base");
+    f.git(&["checkout", "-b", "other"]);
+    f.write("a.txt", "other\n");
+    f.commit_all("other");
+    f.git(&["checkout", "main"]);
+    f.write("a.txt", "mine\n");
+    f.commit_all("mine");
+    let output = Command::new("git").current_dir(&f.dir).args(["merge", "other"]).output().unwrap();
+    assert!(!output.status.success());
+    let trap = f.path(&format!(".git/openidea-merge-{}", std::process::id()));
+    std::fs::create_dir_all(&trap).unwrap();
+    let marker = f._tmp.path().join("user-data");
+    std::fs::write(&marker, "untouched").unwrap();
+    std::os::unix::fs::symlink(&marker, trap.join("ours")).unwrap();
+    let repo = f.repo();
+    repo.set_execution_allowed(false);
+    let versions = repo.merge_versions(&f.path("a.txt"), encoding_rs::UTF_8).unwrap();
+    assert!(versions.merged.unwrap().contains("<<<<<<<"));
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "untouched");
+}

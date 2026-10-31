@@ -107,7 +107,7 @@ impl AppState {
             recent: RecentProjects::load(&config_dir),
             askpass: start_askpass(&app),
             sink: global_sink,
-            plugins: crate::commands::plugin::create_host(&app, &data_dir)?,
+            plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
             web: ide_web::WebServer::new(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,

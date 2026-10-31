@@ -328,7 +328,11 @@ describe("workbench shell", () => {
     useProject.setState({ project: null });
     const { unmount } = render(<Workbench />);
     expect(screen.getByRole("button", { name: /Open/ })).toBeInTheDocument();
-    act(() => useProject.setState({ project: { root: "/shell", name: "shell-demo", isGit: false, settings: {} } }));
+    act(() =>
+      useProject.setState({
+        project: { root: "/shell", name: "shell-demo", trusted: true, isGit: false, settings: {} },
+      }),
+    );
     loadToolWindowLayout("/shell");
     expect(await screen.findByText("shell-demo")).toBeInTheDocument();
     expect(screen.getByText("project view")).toBeInTheDocument();
