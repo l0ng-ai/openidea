@@ -44,7 +44,11 @@ pub(crate) struct Config {
 
 pub(crate) struct Session {
     pub client: String,
+    pub created: std::time::Instant,
 }
+
+/// Sessions kept at most; clients rarely end theirs, so the oldest go first.
+pub(crate) const MAX_SESSIONS: usize = 256;
 
 pub(crate) struct Shared {
     pub ui: Arc<dyn McpHost>,

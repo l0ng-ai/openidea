@@ -131,7 +131,14 @@ fn initialize(shared: &Arc<Shared>, id: Value, params: &Map<String, Value>) -> (
     let name = info.and_then(|i| i.get("name")).and_then(Value::as_str).unwrap_or("unknown client").to_owned();
     let client_version = info.and_then(|i| i.get("version")).and_then(Value::as_str).unwrap_or("").to_owned();
     let session_id = uuid::Uuid::new_v4().simple().to_string();
-    shared.sessions.lock().insert(session_id.clone(), Session { client: name.clone() });
+    {
+        let mut sessions = shared.sessions.lock();
+        while sessions.len() >= crate::MAX_SESSIONS {
+            let Some(oldest) = sessions.iter().min_by_key(|(_, s)| s.created).map(|(k, _)| k.clone()) else { break };
+            sessions.remove(&oldest);
+        }
+        sessions.insert(session_id.clone(), Session { client: name.clone(), created: std::time::Instant::now() });
+    }
     shared.client_seen(McpClient { name, version: client_version, calls: 0 });
     let reply = result(
         id,
