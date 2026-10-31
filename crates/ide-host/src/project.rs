@@ -689,7 +689,7 @@ impl Project {
             limit: q.limit,
         };
         let filter = |rel: &str| q.languages.contains(&self.languages.detect(&root.join(rel), None));
-        match ide_search::files_with_word(&root, &query, Some(&filter), &|p| self.documents.text_of(p), cancel) {
+        match ide_search::files_with_word(&root, &query, Some(&filter), &|p| self.documents.search_text_of(p), cancel) {
             Ok(found) => ide_lsp::CandidateFiles { files: found.files, limit_hit: found.limit_hit },
             Err(e) => {
                 tracing::debug!("reference candidates: {}", e.message);
@@ -747,7 +747,17 @@ impl Project {
     }
 
     /// Use the open document's selected encoding, or the same detection/settings as opening it.
-    pub fn vcs_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<&'static encoding_rs::Encoding> {
+    pub fn vcs_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<ide_vcs::TextEncoding> {
+        let charset = self.file_encoding(path, rev)?;
+        let encoding = ide_vcs::TextEncoding::from(charset);
+        Ok(if self.documents.native_to_ascii_for(path) {
+            encoding.with_ascii_conversion(ide_vfs::decode_properties_escapes, ide_vfs::encode_properties_ascii)
+        } else {
+            encoding
+        })
+    }
+
+    fn file_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<&'static encoding_rs::Encoding> {
         if let Some(id) = self.documents.by_path(path) {
             let info = self.documents.snapshot(id)?;
             return encoding_rs::Encoding::for_label(info.encoding.as_bytes())
@@ -768,7 +778,7 @@ impl Project {
     pub fn text_of(&self, path: &Path) -> IdeResult<String> {
         match self.documents.text_of(path) {
             Some(text) => Ok(text),
-            None => Ok(ide_vfs::load_text_with_fallback(path, self.documents.file_defaults().fallback_for(path))?.text),
+            None => Ok(ide_text::normalize_line_endings(&self.documents.load_file(path)?.text).into_owned()),
         }
     }
 }

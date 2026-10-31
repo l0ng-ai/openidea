@@ -53,7 +53,7 @@ async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
     let mut defaults = project.documents.file_defaults();
     defaults.project_fallback = "windows-1252".into();
     project.documents.set_file_defaults(defaults);
-    assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).unwrap().is_empty());
+    assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).await.unwrap().is_empty());
     let from = old.find("value = 1").unwrap() + "value = ".len();
     let offset = old[..from].encode_utf16().count() as u32;
     project
@@ -64,12 +64,12 @@ async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
             ChangeSet { changes: vec![TextChange { from: offset, to: offset + 1, insert: "2".into() }] },
         )
         .unwrap();
-    let hunks = vcs::vcs_line_hunks(&host, "main", path.clone()).unwrap();
+    let hunks = vcs::vcs_line_hunks(&host, "main", path.clone()).await.unwrap();
     assert_eq!(hunks.len(), 1);
     assert_eq!((hunks[0].start, hunks[0].lines), (3, 1));
     assert_eq!(hunks[0].old_text, "    int value = 1;\n");
     project.documents.save(doc.id).unwrap();
-    vcs::vcs_stage_hunks(&host, "main", path.clone(), vec![0]).unwrap();
+    vcs::vcs_stage_hunks(&host, "main", path.clone(), vec![0]).await.unwrap();
     let repo = ide_vcs::Repo::discover(&root).unwrap().unwrap();
     assert_eq!(
         repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(),
@@ -95,7 +95,7 @@ async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
         .unwrap();
     project.documents.save(doc.id).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), original);
-    assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).unwrap().is_empty());
+    assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).await.unwrap().is_empty());
     assert!(vcs::vcs_blame(&host, "main", path.clone(), None, None).await.unwrap().iter().all(|l| l.author == "Test"));
     // Missing working files still use configured encoding for historical content.
     project.documents.close(doc.id);
