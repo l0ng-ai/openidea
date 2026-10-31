@@ -3,9 +3,11 @@
 use crate::tool::{Output, Param, ParamType, Tool};
 use ide_core::IdeError;
 use ide_core::mcp::McpToolKind;
+use ide_search::FileMask;
 use ide_vfs::EntryKind;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const READ_DEFAULT_LINES: usize = 2000;
 const READ_MAX_LINES: usize = 5000;
@@ -95,8 +97,9 @@ fn list_directory_tree() -> Tool {
     Tool::new(
         "list_directory_tree",
         McpToolKind::Read,
-        "Shows a directory of the project as a tree, like the `tree` utility, without ignored and excluded files. \
-Use it to explore the project instead of `ls` / `find`.",
+        "Shows a directory of the project as a tree, like the `tree` utility, without ignored and excluded files \
+(what search_file leaves out). Directories below `maxDepth` that have contents are shown as `name/ …`. Use it to \
+explore the project instead of `ls` / `find`.",
         |call| async move {
             let dir = call.resolve_readable(call.opt_str("directoryPath")?.as_deref().unwrap_or(".")).await?;
             let depth = call.count("maxDepth", TREE_DEFAULT_DEPTH, 50)?;
@@ -104,10 +107,16 @@ Use it to explore the project instead of `ls` / `find`.",
                 return Err(IdeError::not_found(format!("{} is not a directory", call.display(&dir))));
             }
             let host = call.host();
-            let window = call.window().to_owned();
             let label = call.display(&dir);
-            let tree = host.clone().blocking(move || Ok(tree(&host, &window, &dir, &label, depth))).await?;
-            Ok(Output::text(tree))
+            let tree = Tree {
+                host: host.clone(),
+                window: call.window().to_owned(),
+                root: call.root().to_path_buf(),
+                // Ignored names and "Exclude files" patterns, which `read_dir` does not flag.
+                excludes: FileMask::new(&[], &call.project().search_excludes())?,
+            };
+            let text = host.blocking(move || Ok(tree.render(&dir, &label, depth))).await?;
+            Ok(Output::text(text))
         },
     )
     .param(Param::optional(
@@ -118,51 +127,71 @@ Use it to explore the project instead of `ls` / `find`.",
     .param(Param::optional("maxDepth", ParamType::Integer, "How many levels to descend (default 5)"))
 }
 
-fn tree(host: &ide_host::Host, window: &str, dir: &Path, label: &str, depth: usize) -> String {
-    let mut out = format!("{label}/\n");
-    let mut count = 0usize;
-    walk(host, window, dir, "", depth, &mut out, &mut count);
-    if count >= TREE_MAX_ENTRIES {
-        let _ = writeln!(out, "… (stopped after {TREE_MAX_ENTRIES} entries; list a subdirectory or lower maxDepth)");
-    }
-    out
+struct Tree {
+    host: Arc<ide_host::Host>,
+    window: String,
+    root: PathBuf,
+    excludes: FileMask,
 }
 
-fn walk(
-    host: &ide_host::Host,
-    window: &str,
-    dir: &Path,
-    prefix: &str,
-    depth: usize,
-    out: &mut String,
-    count: &mut usize,
-) {
-    if depth == 0 || *count >= TREE_MAX_ENTRIES {
-        return;
+impl Tree {
+    fn render(&self, dir: &Path, label: &str, depth: usize) -> String {
+        let mut out = format!("{label}/\n");
+        let mut count = 0usize;
+        self.walk(dir, "", depth, &mut out, &mut count);
+        if count >= TREE_MAX_ENTRIES {
+            let _ =
+                writeln!(out, "… (stopped after {TREE_MAX_ENTRIES} entries; list a subdirectory or lower maxDepth)");
+        }
+        out
     }
-    let Ok(mut entries) = ide_host::ops::fs::read_dir(host, window, dir.to_path_buf()) else { return };
-    entries.retain(|e| !e.ignored && !e.excluded && e.name != ".git");
-    entries.sort_by(|a, b| {
-        (a.kind != EntryKind::Dir, a.name.to_lowercase()).cmp(&(b.kind != EntryKind::Dir, b.name.to_lowercase()))
-    });
-    let n = entries.len();
-    for (i, entry) in entries.into_iter().enumerate() {
-        if *count >= TREE_MAX_ENTRIES {
+
+    /// The entries of `dir` that are shown, directories first, by name.
+    fn entries(&self, dir: &Path) -> Vec<ide_vfs::FileEntry> {
+        let Ok(mut entries) = ide_host::ops::fs::read_dir(&self.host, &self.window, dir.to_path_buf()) else {
+            return Vec::new();
+        };
+        entries.retain(|e| {
+            if e.ignored || e.excluded || e.name == ".git" {
+                return false;
+            }
+            // Outside the project only the names count.
+            let rel = match e.path.strip_prefix(&self.root) {
+                Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+                Err(_) => e.name.clone(),
+            };
+            self.excludes.matches(&rel)
+        });
+        entries.sort_by(|a, b| {
+            (a.kind != EntryKind::Dir, a.name.to_lowercase()).cmp(&(b.kind != EntryKind::Dir, b.name.to_lowercase()))
+        });
+        entries
+    }
+
+    fn walk(&self, dir: &Path, prefix: &str, depth: usize, out: &mut String, count: &mut usize) {
+        if depth == 0 || *count >= TREE_MAX_ENTRIES {
             return;
         }
-        *count += 1;
-        let last = i + 1 == n;
-        let is_dir = entry.kind == EntryKind::Dir;
-        let _ = writeln!(
-            out,
-            "{prefix}{}{}{}",
-            if last { "└── " } else { "├── " },
-            entry.name,
-            if is_dir { "/" } else { "" }
-        );
-        if is_dir {
-            let child_prefix = format!("{prefix}{}", if last { "    " } else { "│   " });
-            walk(host, window, &entry.path, &child_prefix, depth - 1, out, count);
+        let entries = self.entries(dir);
+        let n = entries.len();
+        for (i, entry) in entries.into_iter().enumerate() {
+            if *count >= TREE_MAX_ENTRIES {
+                return;
+            }
+            *count += 1;
+            let last = i + 1 == n;
+            let is_dir = entry.kind == EntryKind::Dir;
+            // A directory below the depth limit is marked when it has something to show.
+            let suffix = match is_dir {
+                false => "",
+                true if depth == 1 && !self.entries(&entry.path).is_empty() => "/ …",
+                true => "/",
+            };
+            let _ = writeln!(out, "{prefix}{}{}{suffix}", if last { "└── " } else { "├── " }, entry.name);
+            if is_dir {
+                let child_prefix = format!("{prefix}{}", if last { "    " } else { "│   " });
+                self.walk(&entry.path, &child_prefix, depth - 1, out, count);
+            }
         }
     }
 }

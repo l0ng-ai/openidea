@@ -109,6 +109,25 @@ async fn lists_directory_trees() {
     assert!(tree.contains("main.rs") && tree.contains("mod.rs") && tree.contains("README.md"), "{tree}");
     let shallow = h.call("list_directory_tree", json!({ "maxDepth": 1 })).await;
     assert!(!shallow.contains("main.rs"), "{shallow}");
+    // Directories cut off by the depth limit are marked unless they are empty.
+    assert!(shallow.contains("src/ …"), "{shallow}");
+    let two = h.call("list_directory_tree", json!({ "maxDepth": 2 })).await;
+    assert!(two.contains("lib/ …") && !two.contains("src/ …"), "{two}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn directory_trees_leave_out_what_search_leaves_out() {
+    let h = Harness::new(&[("src/a.rs", ""), ("src/a.pyc", ""), ("only/x.pyc", ""), ("empty/.keep", "")]).await;
+    std::fs::remove_file(h.path("empty/.keep")).unwrap();
+    // `*.pyc` is an ignored name by default.
+    let tree = h.call("list_directory_tree", json!({})).await;
+    assert!(tree.contains("a.rs") && !tree.contains(".pyc"), "{tree}");
+    let found = h.call_json("search_file", json!({ "q": "*.pyc" })).await;
+    assert_eq!(found["entries"], json!([]));
+    // A directory whose only files are left out is not marked as having contents.
+    let shallow = h.call("list_directory_tree", json!({ "maxDepth": 1 })).await;
+    assert!(shallow.contains("── only/\n") && shallow.contains("── empty/\n"), "{shallow}");
+    assert!(shallow.contains("── src/ …"), "{shallow}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

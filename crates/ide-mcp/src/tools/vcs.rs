@@ -58,7 +58,8 @@ fn code(kind: Option<ChangeKind>) -> char {
     }
 }
 
-/// The porcelain two-letter code of a file (`M `, ` M`, `??`, `UU`...).
+/// The porcelain two-letter code of a file (`M `, ` M`, `??`, `UU`...). Conflicts are
+/// always `UU`: the status backend does not say which side added or deleted.
 fn porcelain(f: &FileStatus) -> String {
     match f.unstaged {
         Some(ChangeKind::Untracked) => "??".into(),
@@ -86,9 +87,10 @@ fn git_status() -> Tool {
         McpToolKind::Read,
         "Shows the working tree status of the project's git repositories, like `git status --porcelain`: per \
 repository, its files with the two-letter code `status` (index column, then working tree column: `M ` staged \
-modification, ` M` unstaged, `A ` added, `D`, `R ` renamed (with `origPath`), `??` untracked, `!!` ignored, `UU` \
-conflicted), and `summary` counters (staged, unstaged, untracked, conflicted, ignored). Paths are project-relative. \
-`limit` caps the files listed per repository (default 1000); the counters always cover every file.",
+modification, ` M` unstaged, `A ` added, `D`, `R ` renamed (with `origPath`), `??` untracked, `!!` ignored; every \
+conflicted file is `UU`, whatever the kind of conflict (`AA`, `DU`, ... are not told apart)), and `summary` \
+counters (staged, unstaged, untracked, conflicted, ignored). Paths are project-relative. `limit` caps \
+the files listed per repository (default 1000); the counters always cover every file.",
         |call| async move {
             let include_untracked = call.flag("includeUntracked", true)?;
             let include_ignored = call.flag("includeIgnored", false)?;

@@ -113,8 +113,8 @@ struct PathScope {
     include: GlobSet,
     exclude: GlobSet,
     has_include: bool,
-    /// The globs as `FileMask` masks for Find in Files, `None` when they cannot be
-    /// expressed (`FileMask` splits on commas, which `{a,b}` contains).
+    /// The globs as `FileMask` masks for Find in Files (`{a,b}` expanded, as masks
+    /// split on commas), `None` when they cannot be expressed.
     masks: Option<(Vec<String>, Vec<String>)>,
 }
 
@@ -134,13 +134,17 @@ impl PathScope {
                 continue;
             }
             let glob = normalize_glob(pattern);
-            maskable &= !glob.contains(',');
+            let alternatives = expand_braces(&glob);
+            maskable &= alternatives.is_some();
             // A glob naming a directory covers the files below it.
             let (set, masks) =
                 if negated { (&mut exclude, &mut exclude_masks) } else { (&mut include, &mut include_masks) };
             for g in [glob.clone(), format!("{glob}/**")] {
                 set.add(build_glob(&g, pattern)?);
-                masks.push(g);
+            }
+            for alt in alternatives.into_iter().flatten() {
+                masks.push(format!("{alt}/**"));
+                masks.insert(masks.len() - 1, alt);
             }
             has_include |= !negated;
         }
@@ -172,6 +176,49 @@ fn normalize_glob(pattern: &str) -> String {
         None => p.to_owned(),
     };
     if p.contains('/') { p } else { format!("**/{p}") }
+}
+
+/// At most this many masks per glob from expanding its `{a,b}` groups.
+const MAX_BRACE_ALTERNATIVES: usize = 64;
+
+/// `glob` with its `{a,b}` groups expanded into separate globs without commas, for
+/// `FileMask` (which splits on them). `None` for nested groups, braces or commas in a
+/// character class, a comma outside a group, an unbalanced brace, or too many results.
+fn expand_braces(glob: &str) -> Option<Vec<String>> {
+    let mut out = vec![String::new()];
+    let mut chars = glob.chars();
+    let mut in_class = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '{' | '}' | ',' if in_class => return None,
+            '[' => {
+                in_class = true;
+                out.iter_mut().for_each(|o| o.push(c));
+            }
+            ']' => {
+                in_class = false;
+                out.iter_mut().for_each(|o| o.push(c));
+            }
+            '{' => {
+                let mut group = String::new();
+                loop {
+                    match chars.next()? {
+                        '}' => break,
+                        '{' | '[' | ']' => return None,
+                        g => group.push(g),
+                    }
+                }
+                let options: Vec<&str> = group.split(',').collect();
+                if out.len() * options.len() > MAX_BRACE_ALTERNATIVES {
+                    return None;
+                }
+                out = out.iter().flat_map(|o| options.iter().map(move |a| format!("{o}{a}"))).collect();
+            }
+            '}' | ',' => return None,
+            _ => out.iter_mut().for_each(|o| o.push(c)),
+        }
+    }
+    (!in_class).then_some(out)
 }
 
 fn build_glob(glob: &str, original: &str) -> IdeResult<globset::Glob> {
@@ -220,7 +267,14 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
     let pattern = query(&call)?;
     let limit = limit(&call)?;
     let scope = PathScope::new(&call.str_list("paths")?)?;
-    let (include, exclude) = scope.masks.clone().unwrap_or_default();
+    // Globs Find in Files cannot take are applied afterwards, so the engine must not
+    // stop at `limit` matches the filter may drop.
+    let (masks, max_matches) = match scope.masks.clone() {
+        // One more than asked tells whether there are more.
+        Some(masks) => (masks, (limit + 1) as u32),
+        None => (Default::default(), u32::MAX),
+    };
+    let (include, exclude) = masks;
     let query = SearchQuery {
         pattern: pattern.clone(),
         is_regex,
@@ -229,8 +283,7 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         include,
         exclude,
         scope: SearchScope::Project,
-        // One more than asked tells whether there are more.
-        max_matches: (limit + 1) as u32,
+        max_matches,
         context: Default::default(),
     };
     let (mut files, summary) = run_search(&call, query.clone()).await?;
@@ -547,6 +600,22 @@ mod tests {
     }
 
     #[test]
+    fn expands_brace_groups() {
+        let e = |g: &str| expand_braces(g);
+        assert_eq!(e("src/**/*.rs"), Some(vec!["src/**/*.rs".to_owned()]));
+        assert_eq!(e("src/**/*.{ts,tsx}"), Some(vec!["src/**/*.ts".to_owned(), "src/**/*.tsx".to_owned()]));
+        assert_eq!(e("{a,b}/*.{x,y}"), Some(["a/*.x", "a/*.y", "b/*.x", "b/*.y"].map(String::from).to_vec()));
+        assert_eq!(e("a{,.bak}"), Some(vec!["a".to_owned(), "a.bak".to_owned()]));
+        assert_eq!(e("[{]x"), None);
+        assert_eq!(e("{a,{b,c}}"), None);
+        assert_eq!(e("a,b"), None);
+        assert_eq!(e("{a,b"), None);
+        assert_eq!(e("a}"), None);
+        assert_eq!(e(&"{a,b}".repeat(7)), None);
+        assert_eq!(e(&"{a,b}".repeat(6)).map(|v| v.len()), Some(64));
+    }
+
+    #[test]
     fn utf16_columns_to_bytes() {
         assert_eq!(byte_at("a😀b", 0), Some(0));
         assert_eq!(byte_at("a😀b", 3), Some(5));
@@ -571,7 +640,8 @@ mod tests {
         assert!(!s.matches("src/main/gen/a.rs"));
         let s = scope(&["!*.md"]);
         assert!(s.matches("a.rs") && !s.matches("docs/a.md"));
-        assert!(scope(&["*.{rs,ts}"]).masks.is_none());
+        assert!(scope(&["*.{rs,ts}"]).masks.is_some());
+        assert!(scope(&["*.{rs,{ts,js}}"]).masks.is_none());
         assert!(scope(&["*.rs"]).masks.is_some());
         assert!(PathScope::new(&["a[".into()]).is_err());
     }

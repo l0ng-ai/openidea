@@ -85,6 +85,28 @@ async fn paths_filter_with_globs_and_excludes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn brace_globs_are_not_cut_by_matches_outside_paths() {
+    // Many matches outside `paths` must not use up the engine's budget.
+    let many = "needle\n".repeat(50);
+    let mut files: Vec<(String, String)> = (0..30).map(|i| (format!("a/f{i:02}.txt"), many.clone())).collect();
+    files.push(("src/x.ts".into(), "needle\n".into()));
+    files.push(("src/y/z.tsx".into(), "needle\nneedle\n".into()));
+    files.push(("src/w.js".into(), "needle\n".into()));
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let h = Harness::new(&files).await;
+    let r = h.call_json("search_text", json!({ "q": "needle", "paths": ["src/**/*.{ts,tsx}"], "limit": 5 })).await;
+    assert_eq!(paths(&r), ["src/x.ts", "src/y/z.tsx", "src/y/z.tsx"]);
+    assert_eq!(r["more"], false);
+    let r = h.call_json("search_text", json!({ "q": "needle", "paths": ["src/**/*.{ts,tsx}"], "limit": 2 })).await;
+    assert_eq!(paths(&r), ["src/x.ts", "src/y/z.tsx"]);
+    assert_eq!(r["more"], true);
+    // A glob that cannot become masks (a comma in a class) is filtered afterwards, without a budget.
+    let r = h.call_json("search_regex", json!({ "q": "needle", "paths": ["src/**/*.[t,]s"], "limit": 5 })).await;
+    assert_eq!(paths(&r), ["src/x.ts"]);
+    assert_eq!(r["more"], false);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn limit_cuts_results_and_reports_more() {
     let h = Harness::new(&[("a.txt", "x x x\nx\nx\n")]).await;
     let r = h.call_json("search_text", json!({ "q": "x", "limit": 3 })).await;

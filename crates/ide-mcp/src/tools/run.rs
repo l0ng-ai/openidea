@@ -102,8 +102,12 @@ pub(crate) fn truncate(text: &str, max: usize, mode: Truncate) -> (String, usize
     (text, omitted)
 }
 
+/// Output logs older than this are removed when a new one is created.
+const OUTPUT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 fn temp_output_file(prefix: &str) -> IdeResult<(PathBuf, std::fs::File)> {
     let dir = output_dir()?;
+    remove_old_logs(&dir, OUTPUT_MAX_AGE);
     let safe: String =
         prefix.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).take(40).collect();
     let path = dir.join(format!("{safe}-{}.log", uuid::Uuid::new_v4().simple()));
@@ -113,6 +117,28 @@ fn temp_output_file(prefix: &str) -> IdeResult<(PathBuf, std::fs::File)> {
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let file = options.open(&path)?;
     Ok((path, file))
+}
+
+/// Best effort: removes `*.log` files in `dir` last modified more than `max_age` ago.
+fn remove_old_logs(dir: &Path, max_age: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "log") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .ok()
+            .filter(std::fs::Metadata::is_file)
+            .and_then(|m| m.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > max_age);
+        if old {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// A directory only this user can read: output may hold secrets, and `/tmp` is shared on Linux.
@@ -422,12 +448,14 @@ fn execute_run_configuration() -> Tool {
         McpToolKind::Execute,
         "Runs a run configuration of the project (see get_run_configurations) and, by default, waits for it to \
 exit. Asks the user first unless brave mode is on. One-off overrides for this launch only: `programArguments` \
-(replaces the configuration's arguments), `workingDirectory`, `envs` (merged into the configuration's variables). An \
-empty or missing override keeps the configuration's value; a whitespace-only one clears it (an `envs` value of \
-whitespace removes that variable). Returns `exitCode` (absent while running or when a signal ended it), the last 300 \
-lines of the console `output`, and `fullOutputPath`, a file with the whole output that keeps growing while the \
-process runs. When `timeout` expires the process keeps running (`timedOut: true`); stop it from the IDE or with \
-execute_terminal_command. Before-launch tasks of the configuration are not run, and the run does not appear in the \
+(replaces the configuration's arguments; for a configuration whose command is one shell line without separate \
+arguments, such as `npm run dev`, they are appended to that line instead), `workingDirectory`, `envs` (merged into \
+the configuration's variables). An empty or missing override keeps the configuration's value; a whitespace-only one \
+clears it (an `envs` value of whitespace removes that variable; for a one-shell-line command, whitespace-only \
+`programArguments` change nothing). Returns `exitCode` (absent while running or when a signal ended it), the last \
+300 lines of the console `output`, and `fullOutputPath`, a temporary file with the whole output that keeps growing \
+while the process runs (such files are deleted after a day). When `timeout` expires the process keeps running \
+(`timedOut: true`); stop it from the IDE or with execute_terminal_command. Before-launch tasks of the configuration are not run, and the run does not appear in the \
 IDE's Run tool window.",
         |call| async move {
             let name = call.opt_str("configurationName")?.filter(|n| !n.trim().is_empty());
@@ -548,7 +576,8 @@ IDE's Run tool window.",
     .param(Param::optional(
         "programArguments",
         ParamType::String,
-        "Arguments for this launch, as one shell-quoted string; replaces the configuration's",
+        "Arguments for this launch, as one shell-quoted string; replaces the configuration's (appended when its \
+command is one shell line without separate arguments)",
     ))
     .param(Param::optional(
         "workingDirectory",
@@ -687,7 +716,8 @@ user first unless brave mode is on. By default the command line goes to the user
 program directly. stdout and stderr are combined. Not interactive: stdin is empty, so commands that prompt fail or \
 wait. On `timeout` the whole process tree is killed and `timedOut: true` is returned. Long output keeps \
 `maxLinesCount` lines: `truncateMode` START (default) cuts the beginning and keeps the end, END keeps the beginning, \
-MIDDLE keeps both ends, NONE keeps everything; when cut, `fullOutputPath` names a file with all of it. Returns \
+MIDDLE keeps both ends, NONE keeps everything; when cut, `fullOutputPath` names a temporary file with all of it \
+(deleted after a day). Returns \
 `exitCode`, `output` and, when cut, `omittedLines`. The command does not run in a visible terminal tab.",
         |call| async move {
             let command = call.str("command")?;
@@ -916,6 +946,22 @@ mod tests {
         assert_eq!(truncate(text, 3, Truncate::Middle), ("1\n… 2 lines omitted …\n4\n5".into(), 2));
         assert_eq!(truncate(text, 1, Truncate::None).1, 0);
         assert_eq!(truncate("", 5, Truncate::Start), (String::new(), 0));
+    }
+
+    #[test]
+    fn removes_day_old_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(25 * 60 * 60);
+        for name in ["old.log", "new.log", "old.txt"] {
+            let file = std::fs::File::create(dir.path().join(name)).unwrap();
+            if name.starts_with("old") {
+                file.set_modified(old).unwrap();
+            }
+        }
+        remove_old_logs(dir.path(), OUTPUT_MAX_AGE);
+        assert!(!dir.path().join("old.log").exists());
+        assert!(dir.path().join("new.log").exists());
+        assert!(dir.path().join("old.txt").exists(), "only logs are removed");
     }
 
     #[test]

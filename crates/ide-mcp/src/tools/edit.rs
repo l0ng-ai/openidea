@@ -184,11 +184,23 @@ async fn plan_patch(call: &Call, ops: Vec<FileOp>) -> IdeResult<Vec<Step>> {
                 }
                 resolved.push((FileOp::Delete { path: raw }, path, None));
             }
-            FileOp::Update { path: raw, move_to, hunks } => {
-                let path = call.resolve_inside(&raw)?;
+            FileOp::Update { path: first, move_to, hunks, or } => {
+                // A plain diff's other names count when its `+++` path does not exist.
+                let mut raw = first.clone();
+                let mut path = call.resolve_inside(&raw)?;
+                for other in &or {
+                    if path.is_file() {
+                        break;
+                    }
+                    let candidate = call.resolve_inside(other)?;
+                    if candidate.is_file() {
+                        (raw, path) = (other.clone(), candidate);
+                    }
+                }
                 claim(&path, &raw)?;
                 if !path.is_file() {
-                    return Err(IdeError::not_found(format!("cannot update {raw}: no such file")));
+                    let tried = if or.is_empty() { String::new() } else { format!(" (nor {})", or.join(", ")) };
+                    return Err(IdeError::not_found(format!("cannot update {first}{tried}: no such file")));
                 }
                 let to = match &move_to {
                     Some(m) => {
@@ -203,7 +215,7 @@ async fn plan_patch(call: &Call, ops: Vec<FileOp>) -> IdeResult<Vec<Step>> {
                     }
                     None => None,
                 };
-                resolved.push((FileOp::Update { path: raw, move_to, hunks }, path, to));
+                resolved.push((FileOp::Update { path: raw, move_to, hunks, or: Vec::new() }, path, to));
             }
         }
     }
@@ -244,7 +256,8 @@ the editor's text.)",
 enum Done {
     Created(PathBuf),
     Rewrote(PathBuf, String),
-    Moved(PathBuf, PathBuf),
+    /// The IDE's file move, undone through it (references updated by it are reverted too).
+    Moved(u32),
     Deleted(PathBuf, Vec<u8>),
 }
 
@@ -310,7 +323,7 @@ the file was saved"
                         Some(to) => {
                             let moves =
                                 vec![ide_workspace::FileMove { from: path.clone().into(), to: to.clone().into() }];
-                            ide_host::ops::refactor::refactor_move_files(
+                            let id = ide_host::ops::refactor::refactor_move_files(
                                 &host,
                                 &window,
                                 moves,
@@ -318,7 +331,7 @@ the file was saved"
                                 "Apply patch".into(),
                             )
                             .await?;
-                            done.push(Done::Moved(path, to.clone()));
+                            done.push(Done::Moved(id));
                             let _ = writeln!(summary, "R {shown} -> {}", call.display(&to));
                         }
                         None => {
@@ -331,8 +344,7 @@ the file was saved"
         }
         .await;
         if let Err(e) = result {
-            let p = project.clone();
-            let rolled = host.blocking(move || Ok(roll_back(&p, done))).await.unwrap_or(false);
+            let rolled = roll_back(&host, &window, &project, done).await;
             let state = if rolled {
                 "the files changed before it were restored"
             } else {
@@ -352,14 +364,21 @@ the file was saved"
 }
 
 /// Undoes completed steps, newest first; `false` if something could not be restored.
-fn roll_back(project: &Project, done: Vec<Done>) -> bool {
+async fn roll_back(host: &ide_host::Host, window: &str, project: &std::sync::Arc<Project>, done: Vec<Done>) -> bool {
     let mut ok = true;
     for d in done.into_iter().rev() {
         let r = match d {
-            Done::Created(path) => ide_vfs::delete_permanently(&path),
-            Done::Rewrote(path, text) => write_document(project, &path, &text),
-            Done::Moved(from, to) => ide_vfs::rename(&to, &from),
-            Done::Deleted(path, bytes) => std::fs::write(&path, bytes).map_err(IdeError::from),
+            Done::Moved(id) => ide_host::ops::refactor::refactor_undo_file_move(host, window, id).await.map(|_| ()),
+            d => {
+                let p = project.clone();
+                host.blocking(move || match d {
+                    Done::Created(path) => ide_vfs::delete_permanently(&path),
+                    Done::Rewrote(path, text) => write_document(&p, &path, &text),
+                    Done::Deleted(path, bytes) => std::fs::write(&path, bytes).map_err(IdeError::from),
+                    Done::Moved(_) => Ok(()),
+                })
+                .await
+            }
         };
         if let Err(e) = r {
             tracing::warn!("apply_patch rollback: {e}");

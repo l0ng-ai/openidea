@@ -144,6 +144,29 @@ rename to renamed.txt
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn plain_diffs_with_different_names_patch_the_existing_file() {
+    let h = Harness::new(&[("a.txt", "a\nb\n"), ("src/b.txt", "x\n")]).await;
+    // `diff -u a.txt.orig a.txt`: the `+++` file exists, nothing moves.
+    let diff = "--- a.txt.orig\t2024-01-01 10:00:00\n+++ a.txt\t2024-01-02 10:00:00\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n";
+    let out = h.call("apply_patch", json!({ "input": diff })).await;
+    assert_eq!(out, "Applied the patch:\nM a.txt");
+    assert_eq!(read(&h, "a.txt"), "A\nb\n");
+    assert!(!h.path("a.txt.orig").exists());
+    // `diff -u a.txt a.txt.new`: only the `---` file exists.
+    let diff = "--- a.txt\n+++ a.txt.new\n@@ -1 +1 @@\n-A\n+AA\n";
+    let out = h.call("apply_patch", json!({ "input": diff })).await;
+    assert_eq!(out, "Applied the patch:\nM a.txt");
+    assert!(!h.path("a.txt.new").exists());
+    // `diff -ru old/ new/` run outside the project: the names below the first directory.
+    let diff = "diff -ru old/src/b.txt new/src/b.txt\n--- old/src/b.txt\n+++ new/src/b.txt\n@@ -1 +1 @@\n-x\n+y\n";
+    let out = h.call("apply_patch", json!({ "input": diff })).await;
+    assert_eq!(out, "Applied the patch:\nM src/b.txt");
+    assert_eq!(read(&h, "src/b.txt"), "y\n");
+    let e = h.call_err("apply_patch", json!({ "input": "--- p.txt\n+++ q.txt\n@@ -1 +1 @@\n-x\n+y\n" })).await;
+    assert!(e.contains("cannot update q.txt (nor p.txt): no such file"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn keeps_crlf_line_endings() {
     let h = Harness::new(&[("win.txt", "alpha\r\nbeta\r\ngamma\r\n")]).await;
     let patch =
@@ -287,7 +310,7 @@ async fn opens_files_and_lists_open_editors() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rolls_back_when_a_step_fails_while_applying() {
-    let h = Harness::new(&[("a.txt", "a\n"), ("locked.txt", "l\n")]).await;
+    let h = Harness::new(&[("a.txt", "a\n"), ("m.txt", "m\n"), ("locked.txt", "l\n")]).await;
     ide_vfs::set_writable(&h.path("locked.txt"), false).unwrap();
     let patch = "*** Begin Patch
 *** Add File: added.txt
@@ -295,6 +318,10 @@ async fn rolls_back_when_a_step_fails_while_applying() {
 *** Update File: a.txt
 -a
 +A
+*** Update File: m.txt
+*** Move to: moved/m.txt
+-m
++M
 *** Update File: locked.txt
 -l
 +L
@@ -303,6 +330,9 @@ async fn rolls_back_when_a_step_fails_while_applying() {
     assert!(e.contains("applying the patch failed") && e.contains("were restored"), "{e}");
     assert!(!h.path("added.txt").exists());
     assert_eq!(read(&h, "a.txt"), "a\n");
+    // The move is undone through the IDE's move layer, then the text restored.
+    assert_eq!(read(&h, "m.txt"), "m\n");
+    assert!(!h.path("moved/m.txt").exists());
     assert_eq!(read(&h, "locked.txt"), "l\n");
     ide_vfs::set_writable(&h.path("locked.txt"), true).unwrap();
     assert_no_documents(&h);

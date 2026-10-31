@@ -7,9 +7,22 @@ use std::fmt::Write as _;
 /// One file of a patch, paths as written in it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileOp {
-    Add { path: String, text: String },
-    Delete { path: String },
-    Update { path: String, move_to: Option<String>, hunks: Vec<Hunk> },
+    Add {
+        path: String,
+        text: String,
+    },
+    Delete {
+        path: String,
+    },
+    /// `or` lists other paths the file may have, tried in order when `path` does
+    /// not exist (a plain diff's `---` name, or its names without their first
+    /// directory, as `patch -p1` reads `diff -ru old/ new/`).
+    Update {
+        path: String,
+        move_to: Option<String>,
+        hunks: Vec<Hunk>,
+        or: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -156,7 +169,7 @@ fn parse_codex(lines: &[&str], start: usize) -> Result<Vec<FileOp>, String> {
             if hunks.is_empty() && move_to.is_none() {
                 return Err(format!("line {n}: `{UPDATE}{path}` has no changes"));
             }
-            ops.push(FileOp::Update { path, move_to, hunks });
+            ops.push(FileOp::Update { path, move_to, hunks, or: Vec::new() });
         } else if line.trim().is_empty() {
             i += 1;
         } else {
@@ -475,12 +488,30 @@ fn finish_section(s: Section) -> Result<FileOp, String> {
         let path = old.ok_or_else(|| format!("line {n}: a deleted file without a path"))?;
         return Ok(FileOp::Delete { path });
     }
-    let path = old.or(new.clone()).ok_or_else(|| format!("line {n}: a file without a path"))?;
-    let move_to = new.filter(|p| *p != path);
-    if s.hunks.is_empty() && move_to.is_none() {
+    // Only git's rename headers say a file moves: plain diffs often name the sides
+    // differently (`--- a.txt.orig` / `+++ a.txt`, `diff -ru old/ new/`).
+    if s.rename_from.is_some() || s.rename_to.is_some() {
+        let path = old.or(new.clone()).ok_or_else(|| format!("line {n}: a file without a path"))?;
+        let move_to = new.filter(|p| *p != path);
+        if s.hunks.is_empty() && move_to.is_none() {
+            return Err(format!("line {n}: `{path}` has no changes"));
+        }
+        return Ok(FileOp::Update { path, move_to, hunks: s.hunks, or: Vec::new() });
+    }
+    let path = new.clone().or(old.clone()).ok_or_else(|| format!("line {n}: a file without a path"))?;
+    if s.hunks.is_empty() {
         return Err(format!("line {n}: `{path}` has no changes"));
     }
-    Ok(FileOp::Update { path, move_to, hunks: s.hunks })
+    let below_first_dir = |p: &Option<String>| p.as_ref().and_then(|p| p.split_once('/')).map(|(_, r)| r.to_owned());
+    let mut or: Vec<String> = Vec::new();
+    let others =
+        if old == new { [None, None, None] } else { [old.clone(), below_first_dir(&new), below_first_dir(&old)] };
+    for p in others.into_iter().flatten() {
+        if !p.is_empty() && p != path && !or.contains(&p) {
+            or.push(p);
+        }
+    }
+    Ok(FileOp::Update { path, move_to: None, hunks: s.hunks, or })
 }
 
 // --- applying -------------------------------------------------------------------
@@ -743,6 +774,7 @@ mod tests {
                         lines: vec![Line::Context("ctx".into()), Line::Remove("old".into()), Line::Add("new".into())],
                         ..Hunk::default()
                     }],
+                    or: vec![],
                 },
             ]
         );
@@ -762,7 +794,7 @@ mod tests {
     fn codex_empty_add_and_move_only() {
         let ops = parse("*** Begin Patch\n*** Add File: e\n*** Update File: a\n*** Move to: b\n*** End Patch").unwrap();
         assert_eq!(ops[0], FileOp::Add { path: "e".into(), text: String::new() });
-        assert_eq!(ops[1], FileOp::Update { path: "a".into(), move_to: Some("b".into()), hunks: vec![] });
+        assert_eq!(ops[1], FileOp::Update { path: "a".into(), move_to: Some("b".into()), hunks: vec![], or: vec![] });
     }
 
     #[test]
@@ -934,8 +966,9 @@ rename to new name.txt
         let ops = parse(GIT).unwrap();
         assert_eq!(ops.len(), 4);
         match &ops[0] {
-            FileOp::Update { path, move_to: None, hunks } => {
+            FileOp::Update { path, move_to: None, hunks, or } => {
                 assert_eq!(path, "src/lib.rs");
+                assert!(or.is_empty(), "{or:?}");
                 assert_eq!(hunks.len(), 2);
                 assert_eq!(hunks[0].old_start, Some(1));
                 assert_eq!(hunks[1].lines.len(), 3);
@@ -954,11 +987,21 @@ rename to new name.txt
             parse("--- a.txt\t2024-01-01 10:00:00\n+++ a.txt\t2024-01-02 10:00:00\n@@ -1,2 +1,2 @@\n-a\n+b\n c\n")
                 .unwrap();
         assert!(
-            matches!(&ops[0], FileOp::Update { path, move_to: None, hunks } if path == "a.txt" && hunks.len() == 1)
+            matches!(&ops[0], FileOp::Update { path, move_to: None, hunks, .. } if path == "a.txt" && hunks.len() == 1)
         );
+        // Differently named sides are not a move: the `+++` path, else the others.
+        let ops = parse("--- a.txt.orig\n+++ a.txt\n@@ -1 +1 @@\n-a\n+b\n").unwrap();
+        assert!(matches!(&ops[0], FileOp::Update { path, move_to: None, or, .. }
+            if path == "a.txt" && or == &["a.txt.orig"]));
+        let ops = parse("diff -ru old/src/a.txt new/src/a.txt\n--- old/src/a.txt\t2024-01-01\n+++ new/src/a.txt\t2024-01-02\n@@ -1 +1 @@\n-a\n+b\n").unwrap();
+        assert!(matches!(&ops[0], FileOp::Update { path, move_to: None, or, .. }
+            if path == "new/src/a.txt" && or == &["old/src/a.txt", "src/a.txt"]));
         let ops =
             parse("diff --git a/x.rs b/y/x.rs\nsimilarity index 100%\nrename from x.rs\nrename to y/x.rs\n").unwrap();
-        assert_eq!(ops[0], FileOp::Update { path: "x.rs".into(), move_to: Some("y/x.rs".into()), hunks: vec![] });
+        assert_eq!(
+            ops[0],
+            FileOp::Update { path: "x.rs".into(), move_to: Some("y/x.rs".into()), hunks: vec![], or: vec![] }
+        );
         let ops = parse("diff --git a/e b/e\nnew file mode 100644\nindex 0000000..e69de29\n").unwrap();
         assert_eq!(ops[0], FileOp::Add { path: "e".into(), text: String::new() });
         let ops = parse("diff --git \"a/sp ace\" \"b/sp ace\"\ndeleted file mode 100644\n").unwrap();

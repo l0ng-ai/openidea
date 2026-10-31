@@ -1264,18 +1264,31 @@ struct Module {
     source_folders: Vec<SourceFolderOut>,
 }
 
-/// Build files below the project (ignored and excluded folders skipped), shallow first.
-fn scan_manifests(call: &Call) -> Vec<PathBuf> {
+/// Build files below the project (ignored and excluded folders skipped), shallow first,
+/// with their text; unreadable ones are left out. Runs off the async runtime.
+async fn read_manifests(call: &Call) -> IdeResult<Vec<(PathBuf, String)>> {
     let host = call.host();
+    let (window, root) = (call.window().to_owned(), call.root().to_path_buf());
+    host.clone()
+        .blocking(move || {
+            Ok(scan_manifests(&host, &window, root)
+                .into_iter()
+                .filter_map(|m| std::fs::read_to_string(&m).ok().map(|text| (m, text)))
+                .collect())
+        })
+        .await
+}
+
+fn scan_manifests(host: &ide_host::Host, window: &str, root: PathBuf) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let mut dirs = std::collections::VecDeque::from([(call.root().to_path_buf(), 0usize)]);
+    let mut dirs = std::collections::VecDeque::from([(root, 0usize)]);
     let mut visited = 0;
     while let Some((dir, depth)) = dirs.pop_front() {
         visited += 1;
         if visited > SCAN_MAX_DIRS {
             break;
         }
-        let Ok(entries) = ide_host::ops::fs::read_dir(&host, call.window(), dir) else { continue };
+        let Ok(entries) = ide_host::ops::fs::read_dir(host, window, dir) else { continue };
         for e in entries {
             if e.ignored || e.excluded {
                 continue;
@@ -1377,12 +1390,7 @@ resource / excluded folders inside it. Folders attached from outside the project
                     });
                 }
             }
-            let manifests = {
-                let call = &call;
-                scan_manifests(call)
-            };
-            for m in manifests {
-                let Ok(text) = std::fs::read_to_string(&m) else { continue };
+            for (m, text) in read_manifests(&call).await? {
                 let Some((name, kind)) = manifest_module(&m, &text) else { continue };
                 let path = rel_dir(&call, &m);
                 if !modules.iter().any(|x| x.path == path && x.kind == kind) {
@@ -1598,8 +1606,7 @@ External Libraries (SDKs, node_modules, Cargo / Go / Maven / Gradle packages).",
             let host = call.host();
             let model = ide_host::ops::build::build_model(&host, call.window()).await?;
             let mut deps: Vec<Dependency> = Vec::new();
-            for m in scan_manifests(&call) {
-                let Ok(text) = std::fs::read_to_string(&m) else { continue };
+            for (m, text) in read_manifests(&call).await? {
                 deps.extend(manifest_dependencies(&m, &text, &call.display(&m)));
             }
             if let Some(m) = &model.maven {
