@@ -1,2 +1,8 @@
 allowBuilds:
   simple-git-hooks: true
+  "@codemirror/view": true
+
+# Temporary upstream pin for Safari tooltip positioning (codemirror/dev#1783).
+# Return to an npm release containing 9869833, then remove this override and build allowance.
+overrides:
+  "@codemirror/view": $@codemirror/view
