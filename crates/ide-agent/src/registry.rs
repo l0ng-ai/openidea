@@ -211,12 +211,6 @@ fn choose<'a>(entry: &'a Entry, platform: Platform, on_path: &dyn Fn(&str) -> bo
     if let Some(b) = d.binary.get(&platform_key(platform)) {
         return Some(Choice::Binary(b));
     }
-    if platform.os == Os::Windows
-        && platform.arch == Arch::Arm64
-        && let Some(b) = d.binary.get("windows-x86_64")
-    {
-        return Some(Choice::Binary(b));
-    }
     if let Some(p) = &d.npx
         && on_path("npm")
         && on_path("node")
@@ -227,6 +221,13 @@ fn choose<'a>(entry: &'a Entry, platform: Platform, on_path: &dyn Fn(&str) -> bo
         && on_path("uv")
     {
         return Some(Choice::Uvx(p));
+    }
+    // Last resort: npx and uvx run natively, this one under OS emulation.
+    if platform.os == Os::Windows
+        && platform.arch == Arch::Arm64
+        && let Some(b) = d.binary.get("windows-x86_64")
+    {
+        return Some(Choice::Binary(b));
     }
     None
 }
@@ -701,6 +702,8 @@ mod tests {
         let arm = Platform { os: Os::Windows, arch: Arch::Arm64 };
         assert!(matches!(choose(&entry, arm, &|_| false), Some(Choice::Binary(_))));
         assert!(choose(&entry, Platform { os: Os::Linux, arch: Arch::Arm64 }, &|_| false).is_none());
+        entry.distribution.npx = Some(serde_json::from_str(r#"{"package":"amp-acp"}"#).unwrap());
+        assert!(matches!(choose(&entry, arm, &|_| true), Some(Choice::Npx(_))));
         let mut native = entry.distribution.binary["windows-x86_64"].clone();
         native.cmd = "native.exe".into();
         entry.distribution.binary.insert("windows-aarch64".into(), native);
