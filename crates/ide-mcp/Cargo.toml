@@ -30,6 +30,7 @@ dunce.workspace = true
 globset.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
+regex-lite = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

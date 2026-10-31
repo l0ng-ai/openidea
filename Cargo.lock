@@ -4408,6 +4408,7 @@ dependencies = [
  "ide-workspace",
  "libc",
  "parking_lot",
+ "regex-lite",
  "serde",
  "serde_json",
  "specta",

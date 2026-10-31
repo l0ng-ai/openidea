@@ -1,4 +1,5 @@
-//! Run configurations, terminal commands and builds through the MCP tools.
+//! Run configurations, terminal commands and builds through the MCP tools (after JetBrains'
+//! `ExecutionToolsetTest`, `TerminalToolsetTest` and `ExecutionUtilTest`).
 
 mod common;
 
@@ -14,6 +15,28 @@ kind = "shell"
 command = "sh"
 args = ["-c", "echo hello $GREETING; echo oops >&2; exit 3"]
 env = { GREETING = "world" }
+
+[[configurations]]
+id = "user:long"
+name = "Long"
+kind = "shell"
+command = "sh"
+args = ["-c", "head -c 10050 /dev/zero | tr '\\0' a; printf '\\nfinished\\n'"]
+
+[[configurations]]
+id = "user:guarded"
+name = "Guarded"
+kind = "shell"
+command = "sh"
+args = ["-c", "echo ran"]
+beforeLaunch = [{ kind = "command", target = "echo cannot resolve example:library:1.0; exit 1" }]
+
+[[configurations]]
+id = "user:both"
+name = "Both"
+kind = "compound"
+command = ""
+compound = ["user:greet", "user:long"]
 "#;
 
 fn fixture() -> Vec<(&'static str, &'static str)> {
@@ -21,6 +44,8 @@ fn fixture() -> Vec<(&'static str, &'static str)> {
         (".openidea/run.toml", RUN_TOML),
         ("package.json", r#"{ "name": "demo", "scripts": { "dev": "vite" } }"#),
         ("sub/marker.txt", "x\n"),
+        ("script.sh", "echo from script\n"),
+        ("tests/test_calc.py", "class TestCalc:\n    def test_add(self):\n        pass\n\ndef helper():\n    pass\n"),
     ]
 }
 
@@ -29,42 +54,56 @@ fn config<'a>(list: &'a Value, name: &str) -> &'a Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn lists_saved_and_detected_configurations() {
+async fn lists_configurations_and_run_points() {
     let h = Harness::new(&fixture()).await;
     let list = h.call_json("get_run_configurations", json!({})).await;
     let greet = config(&list, "Greet");
-    assert_eq!(greet["type"], "shell");
-    assert_eq!(greet["command"], "sh");
-    assert_eq!(greet["envs"]["GREETING"], "world");
-    assert_eq!(greet["workingDirectory"], ".");
+    assert_eq!(greet["description"], "shell");
     assert_eq!(greet["supportsDynamicLaunchOverrides"], true);
-    assert!(list["configurations"].as_array().unwrap().iter().any(|c| c["type"] == "npm"), "{list}");
+    assert!(greet["commandLine"].as_str().unwrap().starts_with("sh -c "), "{greet}");
+    assert_eq!(greet["environment"]["GREETING"], "world");
+    let both = config(&list, "Both");
+    assert_eq!(both["supportsDynamicLaunchOverrides"], false);
+    assert!(both.get("commandLine").is_none() && both.get("environment").is_none());
+    assert!(list["configurations"].as_array().unwrap().iter().any(|c| c["description"] == "npm"), "{list}");
+
+    let points = h.call_json("get_run_configurations", json!({ "filePath": "tests/test_calc.py" })).await;
+    assert_eq!(points["filePath"], "tests/test_calc.py");
+    let lines: Vec<_> = points["runPoints"].as_array().unwrap().iter().map(|p| p["line"].as_u64().unwrap()).collect();
+    assert_eq!(lines, [1, 2], "{points}");
+    assert_eq!(points["runPoints"][1]["elementText"], "TestCalc.test_add");
+    assert_eq!(points["runPoints"][1]["description"], "Run 'TestCalc.test_add'");
 
     let points = h.call_json("get_run_configurations", json!({ "filePath": "package.json" })).await;
-    assert_eq!(points["filePath"], "package.json");
     assert_eq!(points["runPoints"], json!([]));
+    let e = h.call_err("get_run_configurations", json!({ "filePath": "missing.py" })).await;
+    assert_eq!(e, "File not found: missing.py");
+    let e = h.call_err("get_run_configurations", json!({ "filePath": "sub" })).await;
+    assert_eq!(e, "Not a file: sub");
 }
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn runs_a_configuration_with_overrides() {
     let h = Harness::new(&fixture()).await;
-    let r = h.call_json("execute_run_configuration", json!({ "configurationName": "Greet" })).await;
+    let r = h.call_json("execute_run_configuration", json!({ "configurationName": "Greet", "timeout": 5000 })).await;
     assert_eq!(r["exitCode"], 3, "{r}");
     let output = r["output"].as_str().unwrap();
     assert!(output.contains("hello world") && output.contains("oops"), "{r}");
-    let full = std::fs::read_to_string(r["fullOutputPath"].as_str().unwrap()).unwrap();
-    assert!(full.contains("hello world"));
+    assert!(!output.contains("Process finished"), "system lines are left out: {r}");
+    assert!(r.get("fullOutputPath").is_none(), "the whole output is inline: {r}");
+    assert!(r.get("timedOut").is_none() && r.get("sessionId").is_none());
     assert!(matches!(&h.ui.asked.lock()[0], McpUiRequest::Confirm { subject, .. } if subject == "Greet"));
 
     let r = h
         .call_json(
             "execute_run_configuration",
             json!({
-                "configurationName": "greet",
+                "configurationName": "Greet",
                 "programArguments": "-c 'echo $GREETING $EXTRA in $(basename \"$PWD\")'",
                 "workingDirectory": "sub",
                 "envs": { "GREETING": "hi", "EXTRA": "there" },
+                "timeout": 5000,
             }),
         )
         .await;
@@ -72,14 +111,47 @@ async fn runs_a_configuration_with_overrides() {
     assert!(r["output"].as_str().unwrap().contains("hi there in sub"), "{r}");
 
     let e = h.call_err("execute_run_configuration", json!({ "configurationName": "Nope" })).await;
-    assert!(e.contains("Greet"), "{e}");
-    let e = h.call_err("execute_run_configuration", json!({ "filePath": "a.rs", "line": 1 })).await;
-    assert!(e.contains("not available"), "{e}");
+    assert_eq!(e, "Run configuration with name 'Nope' not found.");
+    let e =
+        h.call_err("execute_run_configuration", json!({ "configurationName": "Both", "programArguments": "x" })).await;
+    assert_eq!(
+        e,
+        "Run configuration 'Both' of type 'Compound' doesn't support dynamic launch overrides (programArguments, \
+workingDirectory, envs)."
+    );
+    let e = h
+        .call_err(
+            "execute_run_configuration",
+            json!({ "configurationName": "Greet", "filePath": "script.sh", "line": 1 }),
+        )
+        .await;
+    assert_eq!(e, "Pass either configurationName or filePath + line, but not both.");
+    let e = h.call_err("execute_run_configuration", json!({ "filePath": "script.sh" })).await;
+    assert_eq!(e, "Pass both filePath and line together, or use configurationName.");
 }
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn run_timeout_leaves_the_process_running() {
+async fn runs_a_code_location() {
+    let h = Harness::new(&fixture()).await;
+    let r =
+        h.call_json("execute_run_configuration", json!({ "filePath": "script.sh", "line": 1, "timeout": 5000 })).await;
+    assert_eq!(r["exitCode"], 0, "{r}");
+    assert!(r["output"].as_str().unwrap().contains("from script"), "{r}");
+
+    let e = h.call_err("execute_run_configuration", json!({ "filePath": "script.sh", "line": 9 })).await;
+    assert_eq!(e, "Line 9 is out of range (file has 2 lines)");
+    let e = h.call_err("execute_run_configuration", json!({ "filePath": "sub/marker.txt", "line": 1 })).await;
+    assert_eq!(
+        e,
+        "No run configuration could be created from sub/marker.txt:1. Use get_run_configurations with filePath to \
+find valid run locations."
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn keeps_the_output_file_when_running_or_truncated() {
     let h = Harness::new(&fixture()).await;
     let r = h
         .call_json(
@@ -87,67 +159,98 @@ async fn run_timeout_leaves_the_process_running() {
             json!({ "configurationName": "Greet", "programArguments": "-c 'echo started; sleep 30'", "timeout": 300 }),
         )
         .await;
-    assert_eq!(r["timedOut"], true, "{r}");
-    assert_eq!(r["running"], true);
-    assert!(r.get("exitCode").is_none());
+    assert!(r.get("exitCode").is_none(), "{r}");
+    assert!(r.get("timedOut").is_none());
+    let path = r["fullOutputPath"].as_str().unwrap();
+    assert!(std::fs::read_to_string(path).unwrap().contains("started"));
     let running: Vec<_> = ide_host::ops::run::list(h.host()).into_iter().filter(|r| r.running).collect();
     assert_eq!(running.len(), 1);
     ide_host::ops::run::stop(h.host(), "main", running[0].id).unwrap();
+
+    let r = h.call_json("execute_run_configuration", json!({ "configurationName": "Long", "timeout": 5000 })).await;
+    assert_eq!(r["exitCode"], 0, "{r}");
+    assert_eq!(r["output"], format!("{}<truncated>", "a".repeat(10_000)));
+    let full = std::fs::read_to_string(r["fullOutputPath"].as_str().unwrap()).unwrap();
+    assert_eq!(full, format!("{}\nfinished\n", "a".repeat(10_050)));
+
+    let r =
+        h.call_json("execute_run_configuration", json!({ "configurationName": "Greet", "waitForExit": false })).await;
+    assert!(r.get("exitCode").is_none(), "{r}");
+    assert!(r["fullOutputPath"].is_string());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn reports_before_launch_failures() {
+    let h = Harness::new(&fixture()).await;
+    let e = h.call_err("execute_run_configuration", json!({ "configurationName": "Guarded" })).await;
+    assert_eq!(
+        e,
+        "Execution failed: cannot resolve example:library:1.0\nBefore launch: Run 'echo cannot resolve \
+example:library:1.0; exit 1': 'echo cannot resolve example:library:1.0; exit 1' failed"
+    );
 }
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn terminal_commands_report_output_and_exit_codes() {
     let h = Harness::new(&[("a.txt", "x\n")]).await;
-    let r = h.call_json("execute_terminal_command", json!({ "command": "echo out; echo err >&2; ls; exit 7" })).await;
-    assert_eq!(r["exitCode"], 7, "{r}");
-    let output = r["output"].as_str().unwrap();
-    assert!(output.contains("out") && output.contains("err") && output.contains("a.txt"), "{r}");
+    let r = h.call_json("execute_terminal_command", json!({ "command": "cat missingfile" })).await;
+    assert_eq!(r, json!({ "command_exit_code": 1, "command_output": "cat: missingfile: No such file or directory\n" }));
     match &h.ui.asked.lock()[0] {
         McpUiRequest::Confirm { subject, detail, .. } => {
-            assert_eq!(subject, "echo out; echo err >&2; ls; exit 7");
+            assert_eq!(subject, "cat missingfile");
             assert!(detail.as_deref().unwrap().contains(h.root.to_str().unwrap()));
         }
         other => panic!("{other:?}"),
     }
 
-    // Directly, without a shell: `$HOME` stays literal.
     let r = h
-        .call_json("execute_terminal_command", json!({ "command": "echo '$HOME' \"a b\"", "executeInShell": false }))
+        .call_json(
+            "execute_terminal_command",
+            json!({ "command": "echo out; echo err >&2; ls; exit 7", "executeInShell": true }),
+        )
         .await;
-    assert_eq!(r["exitCode"], 0);
-    assert_eq!(r["output"], "$HOME a b");
+    assert_eq!(r["command_exit_code"], 7, "{r}");
+    let output = r["command_output"].as_str().unwrap();
+    assert!(output.contains("out") && output.contains("err") && output.contains("a.txt"), "{r}");
+
+    // Directly, without a shell: `$HOME` stays literal.
+    let r = h.call_json("execute_terminal_command", json!({ "command": "echo '$HOME' \"a b\"" })).await;
+    assert_eq!(r["command_output"], "$HOME a b\n");
 }
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn terminal_commands_truncate_and_time_out() {
     let h = Harness::new(&[]).await;
-    let args = |mode: &str| json!({ "command": "seq 1 10", "executeInShell": false, "maxLinesCount": 4, "truncateMode": mode });
+    let args = |mode: &str| json!({ "command": "seq 1 10", "maxLinesCount": 4, "truncateMode": mode });
+    let marker = "<<<...content truncated...>>>";
     let r = h.call_json("execute_terminal_command", args("START")).await;
-    assert_eq!(r["output"], "… 6 lines omitted …\n7\n8\n9\n10");
-    assert_eq!(r["omittedLines"], 6);
+    assert_eq!(r["command_output"], format!("1\n2\n3\n{marker}"));
     let full = std::fs::read_to_string(r["fullOutputPath"].as_str().unwrap()).unwrap();
     assert_eq!(full.lines().count(), 10);
     let r = h.call_json("execute_terminal_command", args("END")).await;
-    assert_eq!(r["output"], "1\n2\n3\n4\n… 6 lines omitted …");
+    assert_eq!(r["command_output"], format!("{marker}\n9\n10\n"));
     let r = h.call_json("execute_terminal_command", args("MIDDLE")).await;
-    assert_eq!(r["output"], "1\n2\n… 6 lines omitted …\n9\n10");
+    assert_eq!(r["command_output"], format!("1\n2\n{marker}\n"));
     let r = h.call_json("execute_terminal_command", args("NONE")).await;
-    assert_eq!(r["output"].as_str().unwrap().lines().count(), 10);
+    assert_eq!(r["command_output"].as_str().unwrap().lines().count(), 10);
     assert!(r.get("fullOutputPath").is_none());
+    let e = h.call_err("execute_terminal_command", json!({ "command": "true", "maxLinesCount": 2 })).await;
+    assert!(e.contains("greater than 2"), "{e}");
 
     let started = std::time::Instant::now();
     let r = h
         .call_json(
             "execute_terminal_command",
-            json!({ "command": "echo before; sleep 30 & sleep 30", "timeout": 3000 }),
+            json!({ "command": "echo before; sleep 30 & sleep 30", "executeInShell": true, "timeout": 3000 }),
         )
         .await;
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
-    assert_eq!(r["timedOut"], true, "{r}");
-    assert!(r.get("exitCode").is_none());
-    assert!(r["output"].as_str().unwrap().contains("before"), "{r}");
+    assert_eq!(r["is_timed_out"], true, "{r}");
+    assert!(r.get("command_exit_code").is_none());
+    assert!(r["command_output"].as_str().unwrap().contains("before"), "{r}");
 }
 
 #[cfg(unix)]
@@ -162,7 +265,7 @@ async fn declined_commands_do_not_run_and_brave_mode_skips_the_question() {
     h.server.apply(&McpSettings { brave_mode: true, ..Default::default() }).await;
     let asked = h.ui.asked.lock().len();
     let r = h.call_json("execute_terminal_command", json!({ "command": "touch created.txt" })).await;
-    assert_eq!(r["exitCode"], 0);
+    assert_eq!(r["command_exit_code"], 0);
     assert!(h.path("created.txt").exists());
     assert_eq!(h.ui.asked.lock().len(), asked);
 }
@@ -173,6 +276,9 @@ async fn build_without_a_build_system_says_so() {
     let e = h.call_err("build_project", json!({})).await;
     assert!(e.contains("no supported build system"), "{e}");
     assert!(matches!(&h.ui.asked.lock()[0], McpUiRequest::Confirm { subject, .. } if subject == "Build project"));
+
+    let e = h.call_err("build_project", json!({ "filesToRebuild": ["missing.rs"] })).await;
+    assert_eq!(e, "File not found: missing.rs");
 
     *h.ui.answer.lock() = Value::Bool(false);
     let e = h.call_err("build_project", json!({ "rebuild": true })).await;
