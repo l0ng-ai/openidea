@@ -1,0 +1,319 @@
+//! Tool definitions: a name, a description, typed parameters (which give the JSON
+//! schema), a [`McpToolKind`] and an async handler that gets a [`Call`].
+
+use crate::project::Target;
+use crate::{McpHost, Shared};
+use futures::future::BoxFuture;
+use ide_core::mcp::{McpToolKind, McpUiRequest};
+use ide_core::{CancellationToken, IdeError, IdeResult};
+use ide_host::{Host, Project};
+use serde::Serialize;
+use serde_json::{Map, Value, json};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+pub type Handler = Arc<dyn Fn(Call) -> BoxFuture<'static, IdeResult<Output>> + Send + Sync>;
+
+/// The type of one parameter, for the input schema.
+#[derive(Clone, Debug)]
+pub enum ParamType {
+    String,
+    Integer,
+    Boolean,
+    StringList,
+    /// String → string map (environment variables).
+    StringMap,
+    /// One of these strings.
+    Enum(&'static [&'static str]),
+}
+
+#[derive(Clone, Debug)]
+pub struct Param {
+    pub name: &'static str,
+    pub ty: ParamType,
+    pub description: &'static str,
+    pub required: bool,
+}
+
+impl Param {
+    pub fn required(name: &'static str, ty: ParamType, description: &'static str) -> Self {
+        Self { name, ty, description, required: true }
+    }
+    pub fn optional(name: &'static str, ty: ParamType, description: &'static str) -> Self {
+        Self { name, ty, description, required: false }
+    }
+}
+
+/// Described on every tool: which open project the call is for.
+pub const PROJECT_PATH: &str = "projectPath";
+const PROJECT_PATH_DESCRIPTION: &str = "Absolute path of the project (or of any directory inside it) the call is \
+for. Always pass it when you know it, for example your working directory; without it the call goes to the focused \
+OpenIDEA window, or to the only open project.";
+
+#[derive(Clone)]
+pub struct Tool {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub kind: McpToolKind,
+    pub params: Vec<Param>,
+    pub handler: Handler,
+}
+
+impl Tool {
+    pub fn new<F, Fut>(name: &'static str, kind: McpToolKind, description: &'static str, handler: F) -> Self
+    where
+        F: Fn(Call) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = IdeResult<Output>> + Send + 'static,
+    {
+        Self { name, description, kind, params: Vec::new(), handler: Arc::new(move |call| Box::pin(handler(call))) }
+    }
+
+    pub fn param(mut self, param: Param) -> Self {
+        self.params.push(param);
+        self
+    }
+
+    /// The JSON schema of the arguments (`projectPath` included).
+    pub fn input_schema(&self) -> Value {
+        let mut properties = Map::new();
+        let mut required = Vec::new();
+        for p in &self.params {
+            let mut schema = match &p.ty {
+                ParamType::String => json!({ "type": "string" }),
+                ParamType::Integer => json!({ "type": "integer" }),
+                ParamType::Boolean => json!({ "type": "boolean" }),
+                ParamType::StringList => json!({ "type": "array", "items": { "type": "string" } }),
+                ParamType::StringMap => json!({ "type": "object", "additionalProperties": { "type": "string" } }),
+                ParamType::Enum(values) => json!({ "type": "string", "enum": values }),
+            };
+            schema["description"] = p.description.into();
+            properties.insert(p.name.into(), schema);
+            if p.required {
+                required.push(Value::from(p.name));
+            }
+        }
+        properties.insert(PROJECT_PATH.into(), json!({ "type": "string", "description": PROJECT_PATH_DESCRIPTION }));
+        json!({ "type": "object", "properties": properties, "required": required })
+    }
+
+    /// The `tools/list` entry.
+    pub fn descriptor(&self) -> Value {
+        json!({
+            "name": self.name,
+            "description": self.description,
+            "inputSchema": self.input_schema(),
+            "annotations": {
+                "readOnlyHint": self.kind == McpToolKind::Read,
+                "destructiveHint": self.kind != McpToolKind::Read,
+                "openWorldHint": false,
+            },
+        })
+    }
+}
+
+/// What a tool returns: text for the model and, for JSON results, the same value
+/// as `structuredContent`.
+#[derive(Debug)]
+pub struct Output {
+    pub text: String,
+    pub structured: Option<Value>,
+}
+
+impl Output {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self { text: text.into(), structured: None }
+    }
+
+    /// A serializable result; objects also go out as `structuredContent`.
+    pub fn json(value: impl Serialize) -> IdeResult<Self> {
+        let value = serde_json::to_value(value).map_err(|e| IdeError::internal(e.to_string()))?;
+        let text = serde_json::to_string(&value).map_err(|e| IdeError::internal(e.to_string()))?;
+        Ok(Self { text, structured: value.is_object().then_some(value) })
+    }
+}
+
+/// One `tools/call`: its arguments, the project it resolved to, and access to the IDE.
+pub struct Call {
+    pub(crate) shared: Arc<Shared>,
+    pub target: Target,
+    pub args: Map<String, Value>,
+    /// The client's name from `initialize` (`claude-code`).
+    pub client: String,
+    pub tool: &'static str,
+    /// Cancelled when the client sends `notifications/cancelled` or the server stops.
+    pub cancel: CancellationToken,
+}
+
+impl Call {
+    pub fn host(&self) -> Arc<Host> {
+        self.shared.ui.host()
+    }
+
+    pub fn ui(&self) -> &Arc<dyn McpHost> {
+        &self.shared.ui
+    }
+
+    /// The window label the call runs in.
+    pub fn window(&self) -> &str {
+        &self.target.window
+    }
+
+    pub fn project(&self) -> &Arc<Project> {
+        &self.target.project
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.target.project.root
+    }
+
+    // --- arguments -------------------------------------------------------------
+
+    fn arg(&self, name: &str) -> Option<&Value> {
+        self.args.get(name).filter(|v| !v.is_null())
+    }
+
+    pub fn str(&self, name: &str) -> IdeResult<String> {
+        self.opt_str(name)?.ok_or_else(|| IdeError::invalid(format!("missing required argument `{name}`")))
+    }
+
+    pub fn opt_str(&self, name: &str) -> IdeResult<Option<String>> {
+        match self.arg(name) {
+            None => Ok(None),
+            Some(Value::String(s)) => Ok(Some(s.clone())),
+            Some(v) => Err(IdeError::invalid(format!("`{name}` must be a string, not {v}"))),
+        }
+    }
+
+    /// An integer argument; numbers sent as strings (`"20"`) are accepted too.
+    pub fn opt_i64(&self, name: &str) -> IdeResult<Option<i64>> {
+        match self.arg(name) {
+            None => Ok(None),
+            Some(Value::Number(n)) => n
+                .as_i64()
+                .or_else(|| n.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))
+                .map(Some)
+                .ok_or_else(|| IdeError::invalid(format!("`{name}` must be an integer"))),
+            Some(Value::String(s)) => {
+                s.trim().parse().map(Some).map_err(|_| IdeError::invalid(format!("`{name}` must be an integer")))
+            }
+            Some(v) => Err(IdeError::invalid(format!("`{name}` must be an integer, not {v}"))),
+        }
+    }
+
+    /// A positive integer, at most `max`; `default` when absent.
+    pub fn count(&self, name: &str, default: usize, max: usize) -> IdeResult<usize> {
+        match self.opt_i64(name)? {
+            None => Ok(default),
+            Some(n) if n < 1 => Err(IdeError::invalid(format!("`{name}` must be at least 1"))),
+            Some(n) => Ok((n as usize).min(max)),
+        }
+    }
+
+    /// A required 1-based position component (line / column).
+    pub fn one_based(&self, name: &str) -> IdeResult<u32> {
+        match self.opt_i64(name)? {
+            None => Err(IdeError::invalid(format!("missing required argument `{name}`"))),
+            Some(n) if n < 1 => Err(IdeError::invalid(format!("`{name}` is 1-based and must be at least 1"))),
+            Some(n) => Ok(n as u32),
+        }
+    }
+
+    pub fn opt_bool(&self, name: &str) -> IdeResult<Option<bool>> {
+        match self.arg(name) {
+            None => Ok(None),
+            Some(Value::Bool(b)) => Ok(Some(*b)),
+            Some(Value::String(s)) if s == "true" || s == "false" => Ok(Some(s == "true")),
+            Some(v) => Err(IdeError::invalid(format!("`{name}` must be a boolean, not {v}"))),
+        }
+    }
+
+    pub fn flag(&self, name: &str, default: bool) -> IdeResult<bool> {
+        Ok(self.opt_bool(name)?.unwrap_or(default))
+    }
+
+    /// A list of strings; a single string counts as a list of one.
+    pub fn str_list(&self, name: &str) -> IdeResult<Vec<String>> {
+        match self.arg(name) {
+            None => Ok(Vec::new()),
+            Some(Value::String(s)) => Ok(vec![s.clone()]),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| match v {
+                    Value::String(s) => Ok(s.clone()),
+                    v => Err(IdeError::invalid(format!("`{name}` must hold strings, not {v}"))),
+                })
+                .collect(),
+            Some(v) => Err(IdeError::invalid(format!("`{name}` must be a list of strings, not {v}"))),
+        }
+    }
+
+    pub fn str_map(&self, name: &str) -> IdeResult<Vec<(String, String)>> {
+        match self.arg(name) {
+            None => Ok(Vec::new()),
+            Some(Value::Object(map)) => map
+                .iter()
+                .map(|(k, v)| match v {
+                    Value::String(s) => Ok((k.clone(), s.clone())),
+                    Value::Number(_) | Value::Bool(_) => Ok((k.clone(), v.to_string())),
+                    v => Err(IdeError::invalid(format!("`{name}.{k}` must be a string, not {v}"))),
+                })
+                .collect(),
+            Some(v) => Err(IdeError::invalid(format!("`{name}` must be an object of strings, not {v}"))),
+        }
+    }
+
+    // --- paths -----------------------------------------------------------------
+
+    /// Resolves a project-relative or absolute path (`file://` URLs too) without
+    /// requiring it to be inside the project.
+    pub fn resolve(&self, path: &str) -> IdeResult<PathBuf> {
+        crate::project::resolve(self.root(), path)
+    }
+
+    /// Resolves `path` and requires it to be inside the project (for changes).
+    pub fn resolve_inside(&self, path: &str) -> IdeResult<PathBuf> {
+        let resolved = self.resolve(path)?;
+        crate::project::ensure_inside(self.root(), &resolved)?;
+        Ok(resolved)
+    }
+
+    /// How a path is shown to the client: project-relative inside the project, else absolute.
+    pub fn display(&self, path: &Path) -> String {
+        crate::project::display(self.root(), path)
+    }
+
+    // --- the UI ----------------------------------------------------------------
+
+    /// Asks the user before running `subject` unless brave mode is on; errors when declined.
+    pub async fn confirm(&self, subject: &str, detail: Option<String>) -> IdeResult<()> {
+        if self.shared.config.read().brave_mode {
+            return Ok(());
+        }
+        let request = McpUiRequest::Confirm {
+            client: self.client.clone(),
+            tool: self.tool.into(),
+            subject: subject.into(),
+            detail,
+        };
+        let answer = tokio::select! {
+            a = self.shared.ui.ask(self.window(), request) => a?,
+            _ = self.cancel.cancelled() => return Err(IdeError::cancelled()),
+        };
+        if answer.as_bool() == Some(true) {
+            Ok(())
+        } else {
+            Err(IdeError::new(
+                ide_core::error::ErrorKind::PermissionDenied,
+                "The user declined to run this. Do not retry it; ask the user what to do instead.",
+            ))
+        }
+    }
+
+    /// Sends a request to this window's UI and waits for its answer.
+    pub async fn ask(&self, request: McpUiRequest) -> IdeResult<Value> {
+        tokio::select! {
+            a = self.shared.ui.ask(self.window(), request) => a,
+            _ = self.cancel.cancelled() => Err(IdeError::cancelled()),
+        }
+    }
+}

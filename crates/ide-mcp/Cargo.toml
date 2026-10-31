@@ -1,0 +1,25 @@
+[package]
+name = "ide-mcp"
+description = "The built-in MCP server: exposes the IDE's files, search, code insight, VCS, runs and terminal to external AI agents over streamable HTTP on 127.0.0.1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+ide-host.workspace = true
+ide-vfs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tracing.workspace = true
+parking_lot.workspace = true
+futures.workspace = true
+uuid.workspace = true
+dunce.workspace = true
+globset.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }

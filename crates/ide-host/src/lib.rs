@@ -110,6 +110,11 @@ impl Host {
         self.projects.read().values().cloned().collect()
     }
 
+    /// Every open project with the label of its window.
+    pub fn project_windows(&self) -> Vec<(String, Arc<Project>)> {
+        self.projects.read().iter().map(|(w, p)| (w.clone(), p.clone())).collect()
+    }
+
     /// The project of `window` (or of the window owning it).
     pub fn project(&self, window: &str) -> IdeResult<Arc<Project>> {
         self.projects

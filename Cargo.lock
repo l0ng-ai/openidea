@@ -4387,6 +4387,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-mcp"
+version = "0.1.29"
+dependencies = [
+ "dunce",
+ "futures",
+ "globset",
+ "ide-core",
+ "ide-host",
+ "ide-vfs",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ide-notebook"
 version = "0.1.29"
 dependencies = [
