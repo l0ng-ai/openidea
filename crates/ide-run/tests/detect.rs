@@ -52,6 +52,52 @@ fn npm_scripts_with_lockfile_package_manager() {
 }
 
 #[test]
+fn vue_projects_get_vue_dev_servers() {
+    let dir = project(&[
+        (
+            "package.json",
+            r#"{"scripts":{"dev":"vite","serve":"vue-cli-service serve","build":"vite build","test":"vitest"},"devDependencies":{"vite":"^7","@vue/cli-service":"^5","vue":"^3"}}"#,
+        ),
+        ("pnpm-lock.yaml", ""),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["npm:build", "vue:dev", "vue:serve", "npm:test"]);
+    let dev = find(&c, "vue:dev");
+    assert_eq!(dev.kind, "vue");
+    assert_eq!(dev.name, "dev");
+    assert_eq!(cmdline(dev), "pnpm run dev");
+    assert!(!dev.is_test);
+    assert!(find(&c, "npm:test").is_test);
+}
+
+#[test]
+fn non_vue_projects_keep_npm_kind() {
+    let dir = project(&[(
+        "package.json",
+        r#"{"scripts":{"dev":"webpack-dev-server","build":"webpack"},"devDependencies":{"webpack":"^5"}}"#,
+    )]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["npm:build", "npm:dev"]);
+    assert_eq!(find(&c, "npm:dev").kind, "npm");
+}
+
+#[test]
+fn vue_workspace_member_prefixes_ids() {
+    let dir = project(&[
+        ("package.json", r#"{"workspaces":["apps/*"]}"#),
+        (
+            "apps/web/package.json",
+            r#"{"name":"@acme/web","scripts":{"dev":"vite","build":"vite build"},"dependencies":{"vue":"^3"}}"#,
+        ),
+    ]);
+    let c = detect(dir.path());
+    let dev = find(&c, "vue:@acme/web:dev");
+    assert_eq!(dev.name, "@acme/web: dev");
+    assert_eq!(cmdline(dev), "npm run dev");
+    assert_eq!(find(&c, "npm:@acme/web:build").kind, "npm");
+}
+
+#[test]
 fn package_manager_selection() {
     for (lock, pm) in [("yarn.lock", "yarn"), ("bun.lockb", "bun"), ("bun.lock", "bun"), ("package-lock.json", "npm")] {
         let dir = project(&[("package.json", r#"{"scripts":{"start":"node ."}}"#), (lock, "")]);
@@ -261,6 +307,32 @@ fn spring_boot_application_of_a_repository_nested_one_or_two_levels_down() {
         assert_eq!(app.cwd.as_deref(), Some(Path::new(&module)));
         assert!(ids(&c).contains(&format!("maven:spring-boot:run:{prefix}ruoyi-ai").as_str()), "{prefix}");
     }
+}
+
+#[test]
+fn a_large_common_module_does_not_starve_later_app_modules() {
+    // More source files than one scan budget in `a-common` (no app class): the app in `b-app` must still be found.
+    let mut files: Vec<(String, String)> = vec![
+        ("pom.xml".into(), "<project><modules><module>a-common</module><module>b-app</module></modules></project>".into()),
+        ("a-common/pom.xml".into(), BOOT_POM.into()),
+        ("b-app/pom.xml".into(), BOOT_POM.into()),
+        (
+            "b-app/src/main/java/demo/App.java".into(),
+            "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n".into(),
+        ),
+    ];
+    for i in 0..401 {
+        files.push((format!("a-common/src/main/java/demo/C{i}.java"), format!("package demo;\nclass C{i} {{}}\n")));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for (path, content) in &files {
+        let p = dir.path().join(path);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, content).unwrap();
+    }
+    let configs = detect(dir.path());
+    let app = find(&configs, "application:b-app:demo.App");
+    assert_eq!(app.kind, "spring-boot");
 }
 
 #[test]
