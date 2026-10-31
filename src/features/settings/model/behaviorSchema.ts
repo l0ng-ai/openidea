@@ -27,6 +27,7 @@ export interface AppearanceExtras {
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
   menuIcons: boolean;
+  mainMenuStyle: "hamburger" | "merged";
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
@@ -78,6 +79,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   projectColorsInToolbar: true,
   dndWithAltOnly: false,
   menuIcons: true,
+  mainMenuStyle: "hamburger",
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
@@ -127,6 +129,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
     menuIcons: b("menuIcons"),
+    mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged"], d.mainMenuStyle),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
