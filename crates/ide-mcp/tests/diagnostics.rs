@@ -5,7 +5,7 @@ mod common;
 
 use common::Harness;
 use ide_core::mcp::{McpCallOutcome, McpSettings};
-use ide_mcp::history::{CallHistory, MAX_CALLS, summarize_arguments};
+use ide_mcp::history::{CallHistory, Ended, MAX_CALLS, summarize_arguments};
 use ide_mcp::tools::diagnostics::recent_log_problems;
 use serde_json::{Map, Value, json};
 
@@ -51,6 +51,8 @@ async fn reports_the_server_calls_language_servers_and_index() {
     assert_eq!((calls[1]["tool"].as_str(), calls[1]["outcome"].as_str()), (Some("read_file"), Some("error")));
     assert!(calls[1]["error"].is_string(), "{}", calls[1]);
     assert_eq!(calls[1]["arguments"], r#"{"file_path":"missing.txt"}"#);
+    assert_eq!(calls[1]["project"], h.root.display().to_string());
+    assert_eq!(calls[1]["changedFiles"], json!([]));
 
     let none = h.call_json("get_ide_diagnostics", json!({ "maxToolCalls": -5 })).await;
     assert_eq!(none["toolCalls"], json!([]), "negative counts clamp to 0");
@@ -65,15 +67,17 @@ async fn reports_the_server_calls_language_servers_and_index() {
 fn keeps_the_last_calls_only() {
     let history = CallHistory::default();
     for _ in 0..MAX_CALLS + 5 {
-        let started = history.begin("c", "t", &Map::new(), false);
-        history.finish::<()>(started, &Ok(Ok(ide_mcp::tool::Output::text(""))));
+        let started = history.begin("c", "t", &Map::new(), false, None);
+        history.finish(started, Ended::success());
     }
     let calls = history.snapshot();
     assert_eq!(calls.len(), MAX_CALLS);
     assert_eq!(calls[0].id as usize, MAX_CALLS + 5, "most recent first");
-    let cancelled = history.begin("c", "t", &Map::new(), false);
-    history.finish::<()>(cancelled, &Ok(Err(ide_core::IdeError::cancelled())));
-    assert_eq!(history.snapshot()[0].outcome, McpCallOutcome::Cancelled);
+    let cancelled = history.begin("c", "t", &Map::new(), false, Some(std::path::Path::new("/p")));
+    history.finish(cancelled, Ended::error(&ide_core::IdeError::cancelled()));
+    let last = &history.snapshot()[0];
+    assert_eq!((last.outcome, last.project.as_deref()), (McpCallOutcome::Cancelled, Some("/p")));
+    assert!(last.error.is_some());
 }
 
 #[test]

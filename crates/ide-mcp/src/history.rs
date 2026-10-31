@@ -1,14 +1,14 @@
 // Ported from JetBrains intellij-community plugins/mcp-server (src/com/intellij/mcpserver/toolwindow/McpDiagnosticService.kt), Apache-2.0.
-//! The recent tool calls (client, tool, arguments without secrets, start, duration, outcome)
-//! for the settings page (`mcp_call_history`) and `get_ide_diagnostics`.
+//! The recent tool calls (client, tool, arguments without secrets, project, start, duration,
+//! outcome, changed files) for the settings page (`mcp_call_history`) and `get_ide_diagnostics`.
 
-use crate::tool::Output;
-use ide_core::IdeResult;
 use ide_core::error::ErrorKind;
 use ide_core::mcp::{McpCallOutcome, McpCallRecord};
+use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -31,8 +31,47 @@ pub struct Started {
     at: Instant,
 }
 
+/// How a call ended, for [`CallHistory::finish`].
+pub struct Ended {
+    pub outcome: McpCallOutcome,
+    /// Why it did not succeed.
+    pub error: Option<String>,
+    /// Files it created, changed, moved or deleted, as shown to the user.
+    pub changed_files: Vec<String>,
+}
+
+impl Ended {
+    pub fn success() -> Self {
+        Self { outcome: McpCallOutcome::Success, error: None, changed_files: Vec::new() }
+    }
+
+    /// The handler returned `e` (a cancellation or an error).
+    pub fn error(e: &IdeError) -> Self {
+        let outcome = if e.kind == ErrorKind::Cancelled { McpCallOutcome::Cancelled } else { McpCallOutcome::Error };
+        Self { outcome, error: Some(e.message.clone()), changed_files: Vec::new() }
+    }
+
+    /// From the result of the call's handler.
+    pub fn of<T>(result: &IdeResult<T>) -> Self {
+        result.as_ref().map_or_else(Self::error, |_| Self::success())
+    }
+
+    /// The handler panicked.
+    pub fn failed(message: String) -> Self {
+        Self { outcome: McpCallOutcome::Failed, error: Some(message), changed_files: Vec::new() }
+    }
+}
+
 impl CallHistory {
-    pub fn begin(&self, client: &str, tool: &str, args: &Map<String, Value>, via_router: bool) -> Started {
+    /// Records a call that starts now; `project` is its project's root once known.
+    pub fn begin(
+        &self,
+        client: &str,
+        tool: &str,
+        args: &Map<String, Value>,
+        via_router: bool,
+        project: Option<&Path>,
+    ) -> Started {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let started_at_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
         let mut calls = self.calls.lock();
@@ -49,22 +88,31 @@ impl CallHistory {
             outcome: McpCallOutcome::InProgress,
             error: None,
             via_router,
+            project: project.map(|p| p.display().to_string()),
+            changed_files: Vec::new(),
         });
         Started { id, at: Instant::now() }
     }
 
-    /// Records how the call ended: its result, or `Err` when its task panicked.
-    pub fn finish<E>(&self, started: Started, result: &Result<IdeResult<Output>, E>) {
-        let (outcome, error) = match result {
-            Ok(Ok(_)) => (McpCallOutcome::Success, None),
-            Ok(Err(e)) if e.kind == ErrorKind::Cancelled => (McpCallOutcome::Cancelled, None),
-            Ok(Err(e)) => (McpCallOutcome::Error, Some(e.message.clone())),
-            Err(_) => (McpCallOutcome::Error, Some("the tool failed unexpectedly".to_owned())),
-        };
-        if let Some(call) = self.calls.lock().iter_mut().rev().find(|c| c.id == started.id) {
-            call.duration_ms = Some(started.at.elapsed().as_millis().min(u32::MAX as u128) as u32);
-            call.outcome = outcome;
-            call.error = error;
+    /// The call's project became known.
+    pub fn set_project(&self, started: &Started, root: &Path) {
+        self.update(started.id, |call| call.project = Some(root.display().to_string()));
+    }
+
+    /// Records how the call ended.
+    pub fn finish(&self, started: Started, ended: Ended) {
+        let duration = started.at.elapsed().as_millis().min(u32::MAX as u128) as u32;
+        self.update(started.id, |call| {
+            call.duration_ms = Some(duration);
+            call.outcome = ended.outcome;
+            call.error = ended.error;
+            call.changed_files = ended.changed_files;
+        });
+    }
+
+    fn update(&self, id: u32, f: impl FnOnce(&mut McpCallRecord)) {
+        if let Some(call) = self.calls.lock().iter_mut().rev().find(|c| c.id == id) {
+            f(call);
         }
     }
 
@@ -80,6 +128,7 @@ fn is_secret(name: &str) -> bool {
     ["token", "secret", "password", "passwd", "apikey", "authorization", "credential", "privatekey", "cookie"]
         .iter()
         .any(|s| n.contains(s))
+        || n == "auth"
 }
 
 /// `args` as compact JSON with secret-looking values replaced by `***` and long strings cut.

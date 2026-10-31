@@ -28,7 +28,7 @@ pub fn tools() -> Vec<Tool> {
             McpToolKind::Read,
             "Captures cheap diagnostics from the running IDE process.
 Use this when the IDE or its MCP server feels slow, stuck or misbehaving and you need the server's state, its sessions and \
-clients, the recent MCP tool calls with their outcome and duration, the status of the language servers and of the project \
+clients, the recent MCP tool calls with their outcome, duration, project and changed files, the status of the language servers and of the project \
 index, and recent errors and warnings from the IDE log.
 The tool is experimental: it is offered only when Settings | Tools | MCP Server turns on experimental tools.",
             get_ide_diagnostics,

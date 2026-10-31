@@ -287,6 +287,12 @@ impl FilterSettings {
         listed.into_iter().cloned().collect()
     }
 
+    /// What `tools/list` shows under these settings: the invocation mode and the listed tools'
+    /// names. A change is announced with `notifications/tools/list_changed`.
+    pub fn offered(&self, tools: &[Tool]) -> (McpInvocationMode, Vec<&'static str>) {
+        (self.invocation_mode, self.listed_tools(tools).iter().map(|t| t.name).collect())
+    }
+
     /// The tools the router can call: every enabled tool but itself.
     pub fn routable_tools(&self, tools: &[Tool]) -> Vec<Tool> {
         let context = self.context(tools);

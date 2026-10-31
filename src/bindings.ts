@@ -4310,8 +4310,12 @@ export type McpAnswer =
 
 /**  How a recorded tool call ended. */
 export type McpCallOutcome = "inProgress" | "success" | 
-/**  The tool returned an error (or failed unexpectedly). */
-"error" | "cancelled";
+/**  The tool returned an error. */
+"error" | 
+/**  The client or the user cancelled it. */
+"cancelled" | 
+/**  The tool failed unexpectedly (it panicked). */
+"failed";
 
 /**  One tool call, for the server's call history (`mcp_call_history`, `get_ide_diagnostics`). */
 export type McpCallRecord = {
@@ -4326,10 +4330,14 @@ export type McpCallRecord = {
 	/**  Set when the call ended. */
 	durationMs: number | null,
 	outcome: McpCallOutcome,
-	/**  The error message of a failed call. */
+	/**  Why the call did not succeed (an error, a cancellation, a failure). */
 	error: string | null,
 	/**  Called through `execute_tool`. */
 	viaRouter: boolean,
+	/**  The root of the project the call ran against, once it was known. */
+	project: string | null,
+	/**  Files the call created, changed, moved or deleted (project-relative inside the project). */
+	changedFiles: string[],
 };
 
 export type McpClient = {

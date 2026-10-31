@@ -2,6 +2,7 @@
 //! schema), a [`McpToolKind`] and an async handler that gets a [`Call`].
 
 use crate::project::Target;
+use crate::session::{Outbound, RequestError, Session};
 use crate::{McpHost, Shared};
 use futures::future::BoxFuture;
 use ide_core::mcp::{McpToolKind, McpUiRequest};
@@ -194,6 +195,11 @@ pub struct Call {
     pub cancel: CancellationToken,
     /// Where `notifications/progress` go when the client asked for them (`_meta.progressToken`).
     pub progress: Option<ProgressSink>,
+    pub(crate) session: Option<Arc<Session>>,
+    /// The SSE stream of the POST this call came in, when it is answered with one.
+    pub(crate) outbound: Option<Outbound>,
+    /// What [`Call::record_change`] noted.
+    pub(crate) changes: Arc<parking_lot::Mutex<Vec<PathBuf>>>,
 }
 
 /// Receives `(progress, total, message)` for `notifications/progress`.
@@ -225,6 +231,14 @@ impl Call {
     pub fn report_progress(&self, progress: f64, total: Option<f64>, message: Option<&str>) {
         if let Some(sink) = &self.progress {
             sink(progress, total, message.map(str::to_owned));
+        }
+    }
+
+    /// Notes a file the call created, changed, moved or deleted: the UI lists them per call.
+    pub fn record_change(&self, path: &Path) {
+        let mut changes = self.changes.lock();
+        if !changes.iter().any(|p| p == path) {
+            changes.push(path.to_path_buf());
         }
     }
 
@@ -364,9 +378,21 @@ impl Call {
     // --- the UI ----------------------------------------------------------------
 
     /// Asks the user before running `subject` unless brave mode is on; errors when declined.
+    /// A client that supports elicitation asks its user; otherwise (or when it cannot be
+    /// reached) the IDE asks.
     pub async fn confirm(&self, subject: &str, detail: Option<String>) -> IdeResult<()> {
         if self.shared.config.read().brave_mode {
             return Ok(());
+        }
+        if let Some(allowed) = self.elicit_confirmation(subject, detail.as_deref()).await? {
+            return if allowed {
+                Ok(())
+            } else {
+                Err(IdeError::new(
+                    ide_core::error::ErrorKind::PermissionDenied,
+                    "The user declined this. Do not retry it; ask the user what to do instead.",
+                ))
+            };
         }
         let request = McpUiRequest::Confirm {
             client: self.client.clone(),
@@ -385,6 +411,34 @@ impl Call {
                 ide_core::error::ErrorKind::PermissionDenied,
                 "The user declined this in OpenIDEA. Do not retry it; ask the user what to do instead.",
             ))
+        }
+    }
+
+    /// The client's answer to a confirmation, or `None` when it has no elicitation
+    /// support or no stream reaches it.
+    async fn elicit_confirmation(&self, subject: &str, detail: Option<&str>) -> IdeResult<Option<bool>> {
+        let Some(session) = &self.session else { return Ok(None) };
+        let protocol = {
+            let client = session.client.read();
+            if !client.elicitation {
+                return Ok(None);
+            }
+            client.protocol.clone()
+        };
+        let message = crate::elicitation::confirm_message(&self.client, self.tool, subject, detail);
+        let params = crate::elicitation::confirm_params(&protocol, message);
+        let timeout = self.shared.timing.read().elicitation;
+        match session.request(self.outbound.as_ref(), "elicitation/create", params, timeout, &self.cancel).await {
+            Ok(result) => Ok(Some(crate::elicitation::allowed(&result))),
+            Err(RequestError::NoChannel) => Ok(None),
+            Err(RequestError::Rejected(e)) => {
+                tracing::debug!("MCP elicitation rejected by {}: {e}", self.client);
+                Ok(None)
+            }
+            Err(RequestError::Timeout) => {
+                Err(IdeError::unavailable("Nobody answered the confirmation in time. Do not retry it; ask the user."))
+            }
+            Err(RequestError::Cancelled | RequestError::Closed) => Err(IdeError::cancelled()),
         }
     }
 

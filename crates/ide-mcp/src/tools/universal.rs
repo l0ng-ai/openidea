@@ -4,6 +4,7 @@
 //! the only tool listed besides those whose state is not router-only.
 
 use crate::filter::ROUTER_TOOL_NAME;
+use crate::history::Ended;
 use crate::tool::{Call, Output, Param, ParamType, Tool};
 use ide_core::mcp::McpToolKind;
 use ide_core::{IdeError, IdeResult};
@@ -58,10 +59,15 @@ async fn execute_tool(call: Call) -> IdeResult<Output> {
 
     // A `--projectPath` of the routed tool overrides the router's.
     let target = match json_args.get(crate::tool::PROJECT_PATH).and_then(Value::as_str) {
-        Some(path) => crate::project::target(&call.host(), Some(path), call.ui().focused_window().as_deref())?,
+        Some(path) => {
+            let sources = crate::project::Sources { argument: Some(path), ..Default::default() };
+            crate::project::target(&call.host(), &sources, call.ui().focused_window().as_deref())?
+        }
         None => call.target.clone(),
     };
-    let started = call.shared.history.begin(&call.client, tool.name, &json_args, true);
+    let root = target.project.root.clone();
+    let started = call.shared.history.begin(&call.client, tool.name, &json_args, true, Some(&root));
+    // The routed call's changes are the router call's too.
     let routed = Call {
         shared: call.shared.clone(),
         target,
@@ -70,10 +76,18 @@ async fn execute_tool(call: Call) -> IdeResult<Output> {
         tool: tool.name,
         cancel: call.cancel.clone(),
         progress: call.progress.clone(),
+        session: call.session.clone(),
+        outbound: call.outbound.clone(),
+        changes: call.changes.clone(),
     };
     let handler = tool.handler.clone();
     let outcome = tokio::spawn(async move { handler(routed).await }).await;
-    call.shared.history.finish(started, &outcome);
+    let mut ended = match &outcome {
+        Ok(result) => Ended::of(result),
+        Err(_) => Ended::failed(format!("the tool `{}` failed unexpectedly", tool.name)),
+    };
+    ended.changed_files = call.changes.lock().iter().map(|p| crate::project::display(&root, p)).collect();
+    call.shared.history.finish(started, ended);
     match outcome {
         Ok(Ok(output)) => Ok(Output::text(output.text)),
         Ok(Err(e)) if e.kind == ide_core::error::ErrorKind::Cancelled => Err(e),

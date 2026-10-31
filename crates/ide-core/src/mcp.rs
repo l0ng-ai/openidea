@@ -128,9 +128,12 @@ pub struct McpToolInfo {
 pub enum McpCallOutcome {
     InProgress,
     Success,
-    /// The tool returned an error (or failed unexpectedly).
+    /// The tool returned an error.
     Error,
+    /// The client or the user cancelled it.
     Cancelled,
+    /// The tool failed unexpectedly (it panicked).
+    Failed,
 }
 
 /// One tool call, for the server's call history (`mcp_call_history`, `get_ide_diagnostics`).
@@ -148,10 +151,14 @@ pub struct McpCallRecord {
     /// Set when the call ended.
     pub duration_ms: Option<u32>,
     pub outcome: McpCallOutcome,
-    /// The error message of a failed call.
+    /// Why the call did not succeed (an error, a cancellation, a failure).
     pub error: Option<String>,
     /// Called through `execute_tool`.
     pub via_router: bool,
+    /// The root of the project the call ran against, once it was known.
+    pub project: Option<String>,
+    /// Files the call created, changed, moved or deleted (project-relative inside the project).
+    pub changed_files: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]

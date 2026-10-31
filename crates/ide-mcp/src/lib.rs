@@ -2,18 +2,22 @@
 //! (Claude Code, Codex, Cursor, ...) and the IDE's own agents use the IDE's files,
 //! search, code insight, VCS, run configurations and terminal through it.
 //!
-//! It serves the streamable HTTP transport ([`http`]) on `127.0.0.1` and needs a
-//! bearer token. Tools ([`tools`]) run on the [`ide_host::Host`] against the
-//! project a call names with `projectPath`; what only a window can answer
-//! (confirmations, open editors) goes through [`McpHost::ask`].
+//! It serves the streamable HTTP transport and the legacy SSE transport ([`http`]) on
+//! `127.0.0.1` and needs a bearer token. Tools ([`tools`]) run on the [`ide_host::Host`]
+//! against the project a call is for ([`project`]); what only a window can answer
+//! (confirmations, open editors) goes through [`McpHost::ask`], and confirmations go
+//! to the client as elicitations when it supports them.
 
 pub mod clients;
+mod elicitation;
 pub mod filter;
 pub mod history;
 pub mod http;
 pub mod markdown;
+mod progress;
 pub mod project;
 pub mod protocol;
+mod session;
 pub mod skills;
 pub mod stdio;
 pub mod tool;
@@ -25,9 +29,11 @@ use ide_core::{CancellationToken, IdeResult};
 use ide_host::Host;
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
+use session::Session;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tool::Tool;
 
 /// What the server needs from the application around it.
@@ -52,20 +58,36 @@ pub(crate) struct Config {
     pub filter: filter::FilterSettings,
 }
 
-pub(crate) struct Session {
-    pub client: String,
-    pub created: std::time::Instant,
-}
-
 /// Sessions kept at most; clients rarely end theirs, so the oldest go first.
 pub(crate) const MAX_SESSIONS: usize = 256;
+/// Intervals that tests shorten.
+#[derive(Clone, Copy)]
+pub(crate) struct Timing {
+    /// Progress notifications: at most one per interval, repeated as a keep-alive (JetBrains: 1 s).
+    pub progress: Duration,
+    /// Heartbeat comments on SSE streams (JetBrains: 5 s).
+    pub heartbeat: Duration,
+    /// How long the user gets to answer an elicitation (JetBrains: 300 s).
+    pub elicitation: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            progress: Duration::from_secs(1),
+            heartbeat: Duration::from_secs(5),
+            elicitation: Duration::from_secs(300),
+        }
+    }
+}
 
 pub(crate) struct Shared {
     pub ui: Arc<dyn McpHost>,
     pub tools: Vec<Tool>,
     pub config: RwLock<Config>,
-    pub sessions: Mutex<HashMap<String, Session>>,
+    pub sessions: Mutex<HashMap<String, Arc<Session>>>,
     pub clients: Mutex<Vec<McpClient>>,
+    pub timing: RwLock<Timing>,
     /// Running `tools/call`s by session and request id (`notifications/cancelled`).
     pub inflight: Mutex<HashMap<String, CancellationToken>>,
     /// Cancelled when the current listener stops; replaced on each start.
@@ -89,6 +111,35 @@ impl Shared {
     /// The tools `execute_tool` can call.
     pub fn routable_tools(&self) -> Vec<Tool> {
         self.config.read().filter.routable_tools(&self.tools)
+    }
+
+    pub fn session(&self, id: &str) -> Option<Arc<Session>> {
+        self.sessions.lock().get(id).cloned()
+    }
+
+    pub fn add_session(&self, session: Arc<Session>) {
+        session::insert(&mut self.sessions.lock(), session, MAX_SESSIONS);
+    }
+
+    pub fn remove_session(&self, id: &str) -> bool {
+        let removed = self.sessions.lock().remove(id);
+        removed.map(|s| s.close()).is_some()
+    }
+
+    /// Ends every session; their streams close.
+    pub fn close_sessions(&self) {
+        let sessions: Vec<_> = self.sessions.lock().drain().map(|(_, s)| s).collect();
+        for s in sessions {
+            s.close();
+        }
+    }
+
+    /// Tells every session that listed the tools that the list changed.
+    pub fn tools_changed(&self) {
+        let sessions: Vec<_> = self.sessions.lock().values().cloned().collect();
+        for s in sessions.iter().filter(|s| s.advertised_stripped.lock().is_some()) {
+            s.notify(None, "notifications/tools/list_changed", serde_json::json!({}));
+        }
     }
 
     pub fn client_seen(&self, client: McpClient) {
@@ -152,7 +203,6 @@ pub fn endpoint_url(port: u16) -> String {
 /// The server: started, stopped and reconfigured by [`McpServer::apply`].
 pub struct McpServer {
     shared: Arc<Shared>,
-    /// Serializes `apply`.
     /// Serializes `apply`; holds the accept loop's task while listening.
     lifecycle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -170,6 +220,7 @@ impl McpServer {
                 config: RwLock::new(Config { token, brave_mode: false, filter: Default::default() }),
                 sessions: Mutex::default(),
                 clients: Mutex::default(),
+                timing: RwLock::default(),
                 inflight: Mutex::default(),
                 stop: Mutex::new(CancellationToken::new()),
                 running: Mutex::default(),
@@ -184,10 +235,15 @@ impl McpServer {
     /// Starts, stops or restarts the server for `settings`; returns the new status.
     pub async fn apply(&self, settings: &McpSettings) -> McpStatus {
         let mut task = self.lifecycle.lock().await;
-        {
+        let tools_changed = {
             let mut config = self.shared.config.write();
             config.brave_mode = settings.brave_mode;
+            let before = config.filter.offered(&self.shared.tools);
             config.filter = settings.into();
+            config.filter.offered(&self.shared.tools) != before
+        };
+        if tools_changed {
+            self.shared.tools_changed();
         }
         let running = *self.shared.running.lock();
         let before = self.status();
@@ -241,7 +297,7 @@ impl McpServer {
 
     fn cancel_listener(&self) {
         self.shared.stop.lock().cancel();
-        self.shared.sessions.lock().clear();
+        self.shared.close_sessions();
         *self.shared.running.lock() = None;
         *self.shared.error.lock() = None;
     }
@@ -268,7 +324,7 @@ impl McpServer {
     /// Replaces the token; sessions of the old one end.
     pub fn set_token(&self, token: String) {
         self.shared.config.write().token = token;
-        self.shared.sessions.lock().clear();
+        self.shared.close_sessions();
     }
 
     /// Every tool, for the settings page.
@@ -310,7 +366,8 @@ impl McpServer {
         self.shared.history.snapshot()
     }
 
-    /// Handles one HTTP request (tests drive the server without a socket).
+    /// Handles one HTTP request to the endpoint (tests drive the server without a
+    /// socket); an SSE response is read to its end.
     #[doc(hidden)]
     pub async fn handle_for_test(
         &self,
@@ -319,18 +376,34 @@ impl McpServer {
         headers: &[(&str, &str)],
         body: &str,
     ) -> (u16, Vec<(String, String)>, String) {
-        let request = http::Request {
-            method: method.into(),
-            path: http::ENDPOINT.into(),
-            headers: headers.iter().map(|(k, v)| (k.to_ascii_lowercase(), (*v).to_owned())).collect(),
-            body: body.as_bytes().to_vec(),
-        };
-        let r = http::route(&self.shared, port, request).await;
-        (
-            r.status,
-            r.headers.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
-            String::from_utf8_lossy(&r.body).into_owned(),
-        )
+        let mut r = self.request_for_test(port, method, http::ENDPOINT, headers, body).await;
+        let mut text = r.body;
+        if let Some(events) = &mut r.events {
+            while let Some(event) = events.recv().await {
+                text.push_str(&event);
+            }
+        }
+        (r.status, r.headers, text)
+    }
+
+    /// Handles one HTTP request to `target` (a path, maybe with a query); the events
+    /// of an SSE response arrive on `events` as they are written.
+    #[doc(hidden)]
+    pub async fn request_for_test(
+        &self,
+        port: u16,
+        method: &str,
+        target: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> http::TestResponse {
+        http::request_for_test(&self.shared, port, method, target, headers, body).await
+    }
+
+    /// Shortens the progress and heartbeat intervals and the elicitation timeout.
+    #[doc(hidden)]
+    pub fn set_timing_for_test(&self, progress: Duration, heartbeat: Duration, elicitation: Duration) {
+        *self.shared.timing.write() = Timing { progress, heartbeat, elicitation };
     }
 }
 
