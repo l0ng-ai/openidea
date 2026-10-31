@@ -3,23 +3,15 @@ use ide_core::settings::ProjectStructureSettings;
 use std::path::{Component, Path};
 
 /// Source paths for jdtls's unmanaged project, relative to its workspace folder.
-/// Build tools and Eclipse own their source model; other layouts retain jdtls inference.
+/// Maven, Gradle and Eclipse own their source model; other layouts retain jdtls inference.
 pub fn unmanaged_java_source_paths(
     project: &Path,
     server_root: &Path,
     settings: &ProjectStructureSettings,
 ) -> Option<Vec<String>> {
-    if [
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "settings.gradle",
-        "settings.gradle.kts",
-        "build.xml",
-        ".project",
-    ]
-    .iter()
-    .any(|name| server_root.join(name).is_file())
+    if ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", ".project"]
+        .iter()
+        .any(|name| server_root.join(name).is_file())
     {
         return None;
     }
@@ -89,6 +81,18 @@ mod tests {
         );
         let settings = ProjectStructureSettings { source_roots: vec!["custom".into()], ..settings };
         assert_eq!(unmanaged_java_source_paths(root, root, &settings), Some(vec!["custom".into()]));
+    }
+
+    #[test]
+    fn ant_projects_use_unmanaged_source_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("build.xml"), "<project/>\n").unwrap();
+        std::fs::create_dir_all(root.join("src/com/acme")).unwrap();
+        let settings = ProjectStructureSettings::default();
+        assert_eq!(unmanaged_java_source_paths(root, root, &settings), Some(vec!["src".into()]));
+        let settings = ProjectStructureSettings { source_roots: vec!["src".into(), "generated".into()], ..settings };
+        assert_eq!(unmanaged_java_source_paths(root, root, &settings), Some(vec!["generated".into(), "src".into()]));
     }
 
     #[test]
