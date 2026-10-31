@@ -59,6 +59,53 @@ fn no_progress() -> impl FnMut(&str, usize, usize) + Send {
 }
 
 #[tokio::test]
+async fn client_imports_preserve_conflicts_and_report_failure_over_sftp_and_local() {
+    let env = env().await;
+    for sftp in [false, true] {
+        let fs = if sftp { RemoteFs::new(env.session.sftp().await.unwrap()) } else { RemoteFs::Local };
+        let base =
+            if sftp { "/imports".to_owned() } else { env.server_root.join("local").to_string_lossy().into_owned() };
+        fs.mkdir_all(&base).await.unwrap();
+        let to = ide_ssh::sftp::join(&base, "copy");
+        let cancel = CancellationToken::new();
+        std::fs::create_dir_all(env.project.join("empty")).unwrap();
+        ide_remote::import::import_local(&fs, &env.project, &to, &cancel).await.unwrap();
+        assert_eq!(fs.read(&format!("{to}/src/main.py")).await.unwrap(), b"print('hi')\n");
+        assert!(fs.stat(&format!("{to}/empty")).await.unwrap().unwrap().is_dir);
+        let err = ide_remote::import::import_local(&fs, &env.project, &to, &cancel).await.unwrap_err();
+        assert_eq!(err.kind, ide_core::error::ErrorKind::AlreadyExists);
+        let file = format!("{to}/README.md");
+        assert!(fs.upload_new(&env.project.join("src/main.py"), &file, &cancel).await.is_err());
+        assert_eq!(fs.read(&file).await.unwrap(), b"# demo\n");
+        let missing =
+            ide_remote::import::import_local(&fs, &env.project.join("missing"), &format!("{base}/missing"), &cancel)
+                .await
+                .unwrap_err();
+        assert_eq!(missing.kind, ide_core::error::ErrorKind::NotFound);
+        cancel.cancel();
+        let err = ide_remote::import::import_local(&fs, &env.project, &format!("{base}/cancelled"), &cancel)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+        assert!(fs.stat(&format!("{base}/cancelled")).await.unwrap().is_none());
+        #[cfg(unix)]
+        {
+            let source = env.project.join("bad-tree");
+            std::fs::create_dir_all(&source).unwrap();
+            std::os::unix::fs::symlink("missing", source.join("link")).unwrap();
+            assert!(
+                ide_remote::import::import_local(&fs, &source, &format!("{base}/partial"), &CancellationToken::new())
+                    .await
+                    .is_err()
+            );
+            assert!(fs.stat(&format!("{base}/partial")).await.unwrap().is_none());
+            std::fs::remove_dir_all(source).unwrap();
+        }
+        fs.close().await;
+    }
+}
+
+#[tokio::test]
 async fn uploads_compares_syncs_and_downloads() {
     let env = env().await;
     let fs = RemoteFs::new(env.session.sftp().await.unwrap());

@@ -4,7 +4,11 @@
  */
 import type { FileEntry } from "@/bindings";
 import { notifyFileOperation } from "@/platform/fileOps";
-import { call, commands, emitLocalIdeEvent, isTauri, IpcError } from "@/platform/ipc";
+import { call, commands, emitLocalIdeEvent, isTauri, IpcError, nextRequestId } from "@/platform/ipc";
+import { isRemoteWindow } from "@/platform/remote";
+import { invokeLocal } from "@/platform/tauriCore";
+import { tx } from "@/platform/i18n";
+import { upsertTask } from "@/workbench/tasks";
 import { isInside, joinPath, nameOf, parentOf } from "./paths";
 
 export interface ProjectFs {
@@ -15,6 +19,7 @@ export interface ProjectFs {
   /** Moves to the trash when possible. */
   delete(path: string): Promise<void>;
   copy(from: string, to: string): Promise<void>;
+  importLocal(from: string, to: string): Promise<void>;
 }
 
 export const tauriFs: ProjectFs = {
@@ -32,6 +37,24 @@ export const tauriFs: ProjectFs = {
   copy: async (from, to) => {
     await call(commands.fsCopy(from, to));
     notifyFileOperation({ kind: "created", paths: [to] });
+  },
+  importLocal: async (from, to) => {
+    if (!isRemoteWindow()) return tauriFs.copy(from, to);
+    const request = nextRequestId();
+    const task = {
+      id: `file-import-${request}`,
+      title: tx("Uploading files"),
+      message: nameOf(from),
+      fraction: null,
+      cancel: () => void invokeLocal("cancel_request", { id: request }).catch(() => {}),
+    };
+    upsertTask({ ...task, done: false });
+    try {
+      await call(commands.remoteImportLocal(from, to, request));
+      notifyFileOperation({ kind: "created", paths: [to] });
+    } finally {
+      upsertTask({ ...task, done: true });
+    }
   },
 };
 
@@ -137,6 +160,10 @@ export class MemoryFs implements ProjectFs {
       this.nodes.set(to + p.slice(from.length), { ...this.nodes.get(p)! });
     }
     this.emit({ created: [to] });
+  }
+
+  async importLocal(from: string, to: string) {
+    await this.copy(from, to);
   }
 }
 

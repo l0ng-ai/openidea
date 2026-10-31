@@ -1,6 +1,6 @@
 //! Filesystem operations shared by deployment and remote development bootstrap.
 use crate::sftp::{RemoteEntry, SftpFs};
-use ide_core::{IdeError, IdeResult};
+use ide_core::{CancellationToken, IdeError, IdeResult};
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -115,6 +115,33 @@ impl RemoteFs {
         }
     }
 
+    /// Exclusive creation keeps imports from overwriting a concurrent copy.
+    pub async fn upload_new(&self, local: &Path, remote: &str, cancel: &CancellationToken) -> IdeResult<()> {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        match self {
+            Self::Sftp(fs) => fs.upload_new(local, remote, cancel).await,
+            Self::Local => {
+                let mut input = tokio::fs::File::open(local).await?;
+                let mut output = tokio::fs::OpenOptions::new().write(true).create_new(true).open(remote).await?;
+                let result = copy_stream(&mut input, &mut output, cancel).await;
+                drop(output);
+                if result.is_err() {
+                    let _ = tokio::fs::remove_file(remote).await;
+                }
+                result
+            }
+        }
+    }
+
+    pub async fn create_dir(&self, path: &str) -> IdeResult<()> {
+        match self {
+            Self::Sftp(fs) => fs.create_dir(path).await,
+            Self::Local => Ok(tokio::fs::create_dir(path).await?),
+        }
+    }
+
     pub async fn download(&self, remote: &str, local: &Path) -> IdeResult<()> {
         match self {
             Self::Sftp(fs) => fs.download(remote, local).await,
@@ -196,6 +223,28 @@ impl RemoteFs {
         if let Self::Sftp(fs) = self {
             fs.close().await;
         }
+    }
+}
+
+pub(crate) async fn copy_stream(
+    input: &mut (impl tokio::io::AsyncRead + Unpin),
+    output: &mut (impl tokio::io::AsyncWrite + Unpin),
+    cancel: &CancellationToken,
+) -> IdeResult<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(IdeError::cancelled()),
+        result = async {
+            let mut buf = vec![0; 64 * 1024];
+            loop {
+                let len = input.read(&mut buf).await?;
+                if len == 0 { break; }
+                output.write_all(&buf[..len]).await?;
+            }
+            output.flush().await?;
+            Ok(())
+        } => result,
     }
 }
 

@@ -164,6 +164,7 @@ impl russh_sftp::server::Handler for Sftp {
             .read(pflags.contains(OpenFlags::READ))
             .write(pflags.contains(OpenFlags::WRITE))
             .create(pflags.contains(OpenFlags::CREATE))
+            .create_new(pflags.contains(OpenFlags::EXCLUDE))
             .truncate(pflags.contains(OpenFlags::TRUNCATE))
             .open(path)
             .map_err(code)?;

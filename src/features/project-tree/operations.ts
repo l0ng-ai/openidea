@@ -38,6 +38,7 @@ import {
   useProjectTree,
 } from "./store";
 import { tx } from "@/platform/i18n";
+import { isRemoteWindow } from "@/platform/remote";
 
 /** Nodes that may be renamed, moved or deleted (not roots, groups or library sources). */
 const mutable = (n: ProjectNode) => !n.root && !n.placeholder && !n.readOnly;
@@ -500,11 +501,20 @@ export function canPaste(): boolean {
 export async function paste(target = targetFolder()) {
   const { clipboard } = get();
   if (!target || isReadOnlyPath(target)) return;
-  const external = await osClipboard().files();
+  let external: string[];
+  try {
+    external = await osClipboard().files();
+  } catch (e) {
+    fail("Cannot access the clipboard", e);
+    return;
+  }
   // The last copy is the one the user expects to paste, so another app's files
   // win over ours — unless they are the copy we handed to the OS ourselves.
   if (external.length && !sameFiles(external, clipboard?.paths)) return pasteFromOsClipboard(external, target);
-  if (!clipboard?.paths.length) return;
+  if (!clipboard?.paths.length) {
+    notifications().notify({ level: "info", title: "No files on the clipboard" });
+    return;
+  }
   const isDir = (p: string) =>
     get().listings.has(p) || currentModel().byKey.get(currentModel().keyOfPath.get(p) ?? p)?.dir === true;
   const single = clipboard.paths.length === 1 && isDir(clipboard.paths[0]!);
@@ -519,7 +529,7 @@ export async function paste(target = targetFolder()) {
 /** Pasting from Explorer copies, whatever the source: never a move or a refactoring. */
 async function pasteFromOsClipboard(paths: string[], target: string) {
   osHasFiles = true;
-  await transfer(paths, target, "copy");
+  await transfer(paths, target, "copy", undefined, "local");
 }
 
 /** The same files, as the clipboard keeps them (`/`-separated, any order). */
@@ -559,6 +569,7 @@ export async function transfer(
   target: string,
   mode: "move" | "copy",
   name?: string,
+  source: "project" | "local" = "project",
 ): Promise<string | boolean> {
   if (mode === "move") return moveInto(paths, target);
   const { root } = get();
@@ -573,7 +584,12 @@ export async function transfer(
   const newName = name;
   for (const src of paths) {
     const name = nameOf(src);
-    if (isSameOrInside(target, src) && target !== parentOf(src) && src !== target) {
+    if (
+      !(source === "local" && isRemoteWindow()) &&
+      isSameOrInside(target, src) &&
+      target !== parentOf(src) &&
+      src !== target
+    ) {
       errors.push(`${name}: cannot copy a folder into itself`);
       continue;
     }
@@ -582,7 +598,8 @@ export async function transfer(
     const finalName = paths.length === 1 && newName ? newName : uniqueName(name, isTaken, srcIsDir);
     const to = joinPath(target, finalName);
     try {
-      await fs.copy(src, to);
+      if (source === "local") await fs.importLocal(src, to);
+      else await fs.copy(src, to);
       taken.add(caseInsensitive ? finalName.toLowerCase() : finalName);
       first ??= to;
     } catch (e) {
@@ -650,10 +667,11 @@ export async function dropPaths(paths: string[], target: string, copy: boolean) 
 export async function importExternal(paths: string[], target: string) {
   const { root } = get();
   if (!root || !paths.length || isReadOnlyPath(target)) return;
+  if (isRemoteWindow()) return void (await transfer(paths, target, "copy", undefined, "local"));
   const inside = paths.filter((p) => isSameOrInside(p, root));
   const outside = paths.filter((p) => !isSameOrInside(p, root));
   if (inside.length) await dropPaths(inside, target, false);
-  if (outside.length) await transfer(outside, target, "copy");
+  if (outside.length) await transfer(outside, target, "copy", undefined, "local");
 }
 
 // ---------------------------------------------------------------------------

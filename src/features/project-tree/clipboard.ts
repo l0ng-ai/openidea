@@ -18,12 +18,7 @@ export interface OsClipboard {
 const native: OsClipboard = {
   async files() {
     if (!isTauri()) return [];
-    try {
-      return await call(commands.clipboardFileList());
-    } catch {
-      // A clipboard another app holds for a moment is not an error worth showing.
-      return [];
-    }
+    return call(commands.clipboardFileList());
   },
 
   async hasFiles() {

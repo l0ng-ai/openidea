@@ -1,9 +1,9 @@
 //! Remote files over SFTP. Remote paths are POSIX strings.
 
-use ide_core::{IdeError, IdeResult, error::ErrorKind};
+use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use russh_sftp::client::SftpSession;
 use russh_sftp::client::error::Error as SftpError;
-use russh_sftp::protocol::{FileAttributes, StatusCode};
+use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::Path;
@@ -166,6 +166,28 @@ impl SftpFs {
         let data = tokio::fs::read(local).await?;
         let mtime = if preserve_time { mtime_of(local) } else { None };
         self.write(remote, &data, mtime).await
+    }
+
+    /// Imports a local file without replacing an existing remote entry.
+    pub async fn upload_new(&self, local: &Path, remote: &str, cancel: &CancellationToken) -> IdeResult<()> {
+        let mut input = tokio::fs::File::open(local).await?;
+        let mut output = self
+            .sftp
+            .open_with_flags(remote, OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE)
+            .await
+            .map_err(|e| err(remote, e))?;
+        let result = crate::filesystem::copy_stream(&mut input, &mut output, cancel).await;
+        let closed = output.shutdown().await.map_err(IdeError::from);
+        drop(output);
+        let result = result.and(closed);
+        if result.is_err() {
+            let _ = self.sftp.remove_file(remote).await;
+        }
+        result
+    }
+
+    pub async fn create_dir(&self, path: &str) -> IdeResult<()> {
+        self.sftp.create_dir(path).await.map_err(|e| err(path, e))
     }
 
     pub async fn download(&self, remote: &str, local: &Path) -> IdeResult<()> {
