@@ -2,10 +2,11 @@ import { useEffect } from "react";
 import { call, commands } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
+import { clampZoom } from "@/platform/zoom";
 
 export function useNativeTitlebar(bar: HTMLElement | null) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
-  const zoom = useProject((s) => s.settings?.appearance?.zoom ?? 100);
+  const zoom = useProject((s) => clampZoom(s.settings?.appearance?.zoom));
   useEffect(() => {
     if (!overlay || !bar) return;
     bar.style.setProperty("--titlebar-zoom", String(zoom / 100));

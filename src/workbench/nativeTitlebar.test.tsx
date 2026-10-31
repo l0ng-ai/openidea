@@ -56,6 +56,13 @@ describe("native title bar alignment", () => {
     expect(setHeight).toHaveBeenLastCalledWith((40 * percent) / 100);
   });
 
+  it("uses the zoom the webview applies when the setting is out of range", () => {
+    zoom(500);
+    const { bar } = titlebar(40);
+    renderHook(() => useNativeTitlebar(bar));
+    expect(setHeight).toHaveBeenLastCalledWith(120);
+  });
+
   it("updates when zoom or compact mode changes, and disconnects on unmount", () => {
     zoom(100);
     const { bar, rect } = titlebar(40);

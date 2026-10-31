@@ -5,6 +5,7 @@
  */
 
 import { BUILTIN_THEME_IDS, type BuiltinThemeId } from "@/platform/themes";
+import { ZOOM_LIMITS } from "@/platform/zoom";
 
 export type Antialiasing = "subpixel" | "greyscale" | "none";
 export type OpenProjectIn = "ask" | "new" | "same" | "attach";
@@ -61,7 +62,6 @@ export interface NotificationsValid {
   groups: Record<string, NotificationGroupValid>;
 }
 
-export const ZOOM_LIMITS = { min: 50, max: 300 } as const;
 export const IDLE_LIMITS = { min: 1, max: 3600 } as const;
 
 export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
