@@ -141,6 +141,9 @@ async fn process(call: &Call, path: &Path, job: Job) -> IdeResult<Outcome> {
                 Ok(p.documents.text_snapshot(doc)?.text)
             })
             .await?;
+        if after != before {
+            call.record_change(path);
+        }
         Ok(Outcome { before, after, notes })
     }
     .await;

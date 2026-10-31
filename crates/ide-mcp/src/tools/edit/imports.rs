@@ -311,6 +311,9 @@ imports.";
                 let p = project.clone();
                 host.blocking(move || p.documents.save(doc)).await?;
                 applied = after != text;
+                if applied {
+                    call.record_change(path);
+                }
             }
         }
     } else if opts.optimize {

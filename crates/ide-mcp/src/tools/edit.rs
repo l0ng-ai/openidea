@@ -189,10 +189,12 @@ Note: Creates any necessary parent directories automatically",
                     std::fs::create_dir_all(dir).map_err(|e| cannot(&e))?;
                 }
                 ide_host::ops::fs::create_file(&host, call.window(), path.clone()).map_err(|e| cannot(&e.message))?;
+                call.record_change(&path);
             }
             if let Some(text) = text {
-                let project = call.project().clone();
-                host.blocking(move || write_document(&project, &path, &text)).await?;
+                let (project, target) = (call.project().clone(), path.clone());
+                host.blocking(move || write_document(&project, &target, &text)).await?;
+                call.record_change(&path);
             }
             Ok(Output::text(SUCCESS))
         },
@@ -286,7 +288,9 @@ async fn apply_op(call: &Call, op: FileOp, notes: &mut Vec<String>) -> IdeResult
                 std::fs::create_dir_all(dir)?;
             }
             ide_host::ops::fs::create_file(&host, call.window(), path.clone())?;
-            host.blocking(move || write_document(&project, &path, &text)).await
+            call.record_change(&path);
+            let target = path.clone();
+            host.blocking(move || write_document(&project, &target, &text)).await
         }
         FileOp::Delete { path: raw } => {
             let path = call.resolve_inside(&raw)?;
@@ -304,6 +308,7 @@ async fn apply_op(call: &Call, op: FileOp, notes: &mut Vec<String>) -> IdeResult
                 ide_vfs::delete_permanently(&target)
             })
             .await?;
+            call.record_change(&path);
             if dirty {
                 notes.push(format!("{} had unsaved changes in the editor; they were discarded", call.display(&path)));
             }
@@ -366,6 +371,7 @@ the editor's text.)",
                 if applied.text != text || dirty {
                     let (p, target, after) = (project.clone(), path.clone(), applied.text);
                     host.blocking(move || write_document(&p, &target, &after)).await?;
+                    call.record_change(&path);
                     before = Some(text);
                 }
                 if dirty {
@@ -379,7 +385,7 @@ was saved"
                 }
             }
             let Some(to) = to else { return Ok(()) };
-            let moves = vec![ide_workspace::FileMove { from: path.clone().into(), to: to.into() }];
+            let moves = vec![ide_workspace::FileMove { from: path.clone().into(), to: to.clone().into() }];
             let moved = ide_host::ops::refactor::refactor_move_files(
                 &host,
                 call.window(),
@@ -394,6 +400,10 @@ was saved"
                 if let Err(e) = host.blocking(move || write_document(&project, &target, &text)).await {
                     tracing::warn!("apply_patch: restoring {shown} failed: {e}");
                 }
+            }
+            if moved.is_ok() {
+                call.record_change(&path);
+                call.record_change(&to);
             }
             moved.map(|_| ())
         }

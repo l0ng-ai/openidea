@@ -349,8 +349,23 @@ targetIndex, or narrow the call with a contextSnippet that shows the one you mea
         }
         _ => None,
     });
+    let touched: Vec<PathBuf> = edit
+        .files
+        .iter()
+        .flat_map(|f| match f {
+            FileEdit::Edit { path, .. } | FileEdit::Create { path, .. } | FileEdit::Delete { path, .. } => {
+                vec![path.to_path_buf()]
+            }
+            FileEdit::Rename { from, to } => vec![from.to_path_buf(), to.to_path_buf()],
+        })
+        .collect();
     let (h, w) = (host.clone(), window.to_owned());
-    if let Err(e) = host.blocking(move || ide_host::ops::lsp::apply_workspace_edit(&h, &w, edit)).await {
+    let written = host.blocking(move || ide_host::ops::lsp::apply_workspace_edit(&h, &w, edit)).await;
+    // A failed write may have changed some of the files already.
+    for path in &touched {
+        call.record_change(path);
+    }
+    if let Err(e) = written {
         let hint = format!("The rename stopped while it wrote. {} Read the files again before you retry.", e.message);
         return Ok(RenameResult::failed("write_failed", hint).with_symbol(symbol));
     }

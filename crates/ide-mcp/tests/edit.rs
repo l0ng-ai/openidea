@@ -506,3 +506,41 @@ async fn opens_files_and_lists_open_editors() {
     let v = h.call_json("get_all_open_file_paths", json!({})).await;
     assert_eq!(v, json!({ "activeFilePath": null, "openFiles": [] }));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_call_history_lists_the_files_a_call_changed() {
+    let h = Harness::new(&[("a.txt", "one\n"), ("b.txt", "two\n"), ("c.txt", "three\n")]).await;
+    h.call("create_new_file", json!({ "pathInProject": "src/new.txt", "text": "x" })).await;
+    assert_eq!(h.server.call_history()[0].changed_files, ["src/new.txt"]);
+
+    patch(
+        &h,
+        &[
+            "*** Begin Patch",
+            "*** Add File: added.txt",
+            "+hi",
+            "*** Update File: a.txt",
+            "@@",
+            "-one",
+            "+uno",
+            "*** Update File: b.txt",
+            "*** Move to: moved/b.txt",
+            "*** Delete File: c.txt",
+            "*** Update File: missing.txt",
+            "@@",
+            "-x",
+            "+y",
+            "*** End Patch",
+        ],
+    )
+    .await;
+    assert_eq!(
+        h.server.call_history()[0].changed_files,
+        ["added.txt", "a.txt", "b.txt", "moved/b.txt", "c.txt"],
+        "in order, without the failed operation"
+    );
+
+    // Nothing to write: nothing changed.
+    h.call("create_new_file", json!({ "pathInProject": "a.txt", "overwrite": true })).await;
+    assert!(h.server.call_history()[0].changed_files.is_empty());
+}
