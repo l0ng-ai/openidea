@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
+import { registerRunConfigType } from "@/workbench/contributions";
 import {
+  categoryOf,
   commandLine,
   duplicateConfig,
   formatArgs,
@@ -17,6 +19,9 @@ import {
 import { contextConfig, fileRole } from "./context";
 import { cacheRunTemplates } from "./runTemplates";
 import { registerBuiltinTypes } from "./types";
+// After "./types": tomcat → buildUpdate → store → types is a cycle; importing tomcat first
+// would freeze tomcatType at undefined inside BUILTIN_TYPES.
+import { tomcatType } from "./tomcat";
 import { envFromRows } from "./EnvDialog";
 import { configRemoved, defaultSelection, rerunConfig, useRun, type RunSession } from "./store";
 
@@ -408,6 +413,10 @@ describe("context configuration", () => {
     });
 
     it("seeds gutter pytest configs from the pytest template", () => {
+      // TEMP-DEBUG
+      import("./types").then(({ BUILTIN_TYPES }) =>
+        console.log("TEMP:", BUILTIN_TYPES.map((t, i) => `${i}:${t?.id ?? "UNDEF"}`).join(",")),
+      );
       const dispose = registerBuiltinTypes();
       try {
         cacheRunTemplates([
@@ -496,5 +505,31 @@ describe("rerunning a session after its configuration changed (#1497)", () => {
     useRun.setState({ configs: [base] });
     expect(rerunConfig(session(derived, base))).toBe(derived);
     useRun.setState({ configs: [] });
+  });
+});
+
+describe("categoryOf", () => {
+  it("maps kinds to their language categories and unlisted ones to Others", () => {
+    expect(categoryOf("spring-boot")).toBe("Java");
+    expect(categoryOf("maven")).toBe("Build Tools");
+    expect(categoryOf("npm")).toBe("JavaScript");
+    expect(categoryOf("cargo")).toBe("Rust");
+    expect(categoryOf("godot")).toBe("Others");
+  });
+
+  it("prefers a registered type's group (Servers, Docker) over the category map", () => {
+    const disposeTomcat = registerRunConfigType(tomcatType);
+    expect(categoryOf("tomcat")).toBe("Servers");
+    disposeTomcat();
+    const dispose = registerRunConfigType({
+      id: "fake-server",
+      label: "Fake",
+      icon: "server",
+      group: "Servers",
+      fields: [],
+      commandLine: () => null,
+    });
+    expect(categoryOf("fake-server")).toBe("Servers");
+    dispose();
   });
 });
