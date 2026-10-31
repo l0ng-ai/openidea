@@ -19,6 +19,7 @@ futures.workspace = true
 uuid.workspace = true
 dunce.workspace = true
 globset.workspace = true
+toml_edit.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

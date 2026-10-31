@@ -4403,6 +4403,7 @@ dependencies = [
  "specta",
  "tempfile",
  "tokio",
+ "toml_edit 0.25.17+spec-1.1.0",
  "tracing",
  "uuid",
 ]
