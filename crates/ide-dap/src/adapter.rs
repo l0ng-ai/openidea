@@ -348,7 +348,16 @@ pub struct AdapterIo {
     pub port: Option<u16>,
     /// Recent stderr lines of the adapter process, for error messages.
     pub stderr: Arc<parking_lot::Mutex<Vec<String>>>,
+    /// (category, line) printed by the debuggee when it shares the adapter's stdio.
+    pub program_output: Option<ProgramOutput>,
 }
+
+pub type ProgramOutput = tokio::sync::mpsc::UnboundedReceiver<(&'static str, String)>;
+type ProgramSink = tokio::sync::mpsc::UnboundedSender<(&'static str, String)>;
+
+/// Delve's debuggee inherits its stdio; no DAP output event carries what the program prints.
+const SHARES_STDIO: &str = "delve";
+const DELVE_BANNER: &str = "DAP server listening at:";
 
 pub type LaunchFuture = Pin<Box<dyn Future<Output = IdeResult<AdapterIo>> + Send>>;
 
@@ -385,6 +394,7 @@ impl AdapterLauncher for ProcessLauncher {
                     child: None,
                     port: Some(port),
                     stderr,
+                    program_output: None,
                 });
             }
             let embedded = match spec.connect.as_deref().filter(|_| spec.transport == Transport::Tcp) {
@@ -407,6 +417,7 @@ impl AdapterLauncher for ProcessLauncher {
                     child: None,
                     port: Some(*port),
                     stderr,
+                    program_output: None,
                 });
             }
             if spec.adapter == DEBUGPY_TOOL {
@@ -445,8 +456,14 @@ impl AdapterLauncher for ProcessLauncher {
                 .kill_on_drop(true);
             let mut child =
                 cmd.spawn().map_err(|e| IdeError::unavailable(format!("failed to start {}: {e}", binary.display())))?;
+            let (program_sink, program_output) = if spec.adapter == SHARES_STDIO {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                (Some(tx), Some(rx))
+            } else {
+                (None, None)
+            };
             if let Some(err) = child.stderr.take() {
-                pump_lines(err, spec.adapter.clone(), stderr.clone());
+                pump_lines(err, spec.adapter.clone(), stderr.clone(), program_sink.clone().map(|tx| (tx, "stderr")));
             }
             match port {
                 None => {
@@ -458,11 +475,12 @@ impl AdapterLauncher for ProcessLauncher {
                         child: Some(child),
                         port: None,
                         stderr,
+                        program_output,
                     })
                 }
                 Some(port) => {
                     if let Some(out) = child.stdout.take() {
-                        pump_lines(out, spec.adapter.clone(), stderr.clone());
+                        pump_lines(out, spec.adapter.clone(), stderr.clone(), program_sink.map(|tx| (tx, "stdout")));
                     }
                     let timeout = if embedded.is_some() { EMBEDDED_START_TIMEOUT } else { CONNECT_TIMEOUT };
                     let stream = match connect_with_retries(LOOPBACK, port, Some(&mut child), timeout).await {
@@ -484,6 +502,7 @@ impl AdapterLauncher for ProcessLauncher {
                         child: Some(child),
                         port: Some(port),
                         stderr,
+                        program_output,
                     })
                 }
             }
@@ -495,9 +514,15 @@ fn pump_lines<R: AsyncRead + Unpin + Send + 'static>(
     stream: R,
     name: String,
     sink: Arc<parking_lot::Mutex<Vec<String>>>,
+    program: Option<(ProgramSink, &'static str)>,
 ) {
     tokio::spawn(ide_jsonrpc::output::read_lines(stream, move |line| {
         tracing::debug!(target: "ide_dap::adapter", "[{name}] {line}");
+        if let Some((tx, category)) = &program
+            && !line.starts_with(DELVE_BANNER)
+        {
+            let _ = tx.send((category, format!("{line}\n")));
+        }
         push_line(&sink, line);
     }));
 }
@@ -551,6 +576,18 @@ mod tests {
 
     /// Managed tools win over `PATH`, and debugpy falls back to the private copy.
     #[cfg(unix)]
+    #[tokio::test]
+    async fn program_output_is_forwarded_without_the_adapter_banner() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = Arc::default();
+        let text: &[u8] = b"DAP server listening at: 127.0.0.1:1\n[hello two words]\nno newline";
+        pump_lines(text, "delve".into(), Arc::clone(&sink), Some((tx, "stdout")));
+        assert_eq!(rx.recv().await, Some(("stdout", "[hello two words]\n".into())));
+        assert_eq!(rx.recv().await, Some(("stdout", "no newline\n".into())));
+        assert_eq!(rx.recv().await, None);
+        assert_eq!(sink.lock().len(), 3);
+    }
+
     #[tokio::test]
     async fn managed_tools_and_private_debugpy() {
         use std::os::unix::fs::PermissionsExt;

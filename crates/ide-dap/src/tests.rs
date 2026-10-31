@@ -32,7 +32,14 @@ impl AdapterLauncher for FakeLauncher {
         tokio::spawn(fake_adapter(server, log, script));
         let (r, w) = tokio::io::split(client);
         Box::pin(async move {
-            Ok(AdapterIo { reader: Box::new(r), writer: Box::new(w), child: None, port: None, stderr: Arc::default() })
+            Ok(AdapterIo {
+                reader: Box::new(r),
+                writer: Box::new(w),
+                child: None,
+                port: None,
+                stderr: Arc::default(),
+                program_output: None,
+            })
         })
     }
 }
