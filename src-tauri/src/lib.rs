@@ -15,6 +15,7 @@ mod state;
 mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
+mod window_geometry;
 mod window_groups;
 mod windows;
 
@@ -49,6 +50,16 @@ pub fn run() {
     logging::init(&context.config().identifier);
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
+    // GTK Wayland drops the window-state plugin's restore resize, collapsing
+    // the window to its minimum size (#594): take the remembered geometry out
+    // of the plugin's file so it is applied when windows are built instead.
+    let remembered_geometry = if window_geometry::is_wayland() {
+        dirs::config_dir()
+            .map(|dir| window_geometry::RememberedGeometry::take(&dir.join(&context.config().identifier)))
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
     if let Some(data) = dirs::data_dir() {
         ide_tools::extend_process_path(&data.join(&context.config().identifier));
@@ -135,6 +146,7 @@ pub fn run() {
         app.manage(state);
         app.manage(windows);
         app.manage(menu_state);
+        app.manage(remembered_geometry);
         if let Some(paths) = setup_opens.lock().take() {
             windows::open_paths_at_launch(app.handle(), paths);
         }

@@ -12,6 +12,7 @@
 
 use crate::state::AppState;
 use crate::theme_frame::builtin_frame;
+use crate::window_geometry::{self, RememberedGeometry};
 use ide_core::settings::AppearanceSettings;
 use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
@@ -284,6 +285,13 @@ fn hex_color(hex: &str) -> Option<Color> {
 /// Builds a project window painted in the saved theme's frame colour, so it
 /// doesn't flash the light default before its page (and splash) loads.
 fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<WebviewWindow> {
+    // GTK Wayland drops resizes on a freshly mapped window, so the window-state
+    // plugin cannot restore there; apply the remembered geometry to the config
+    // before the window exists (empty, and thus a no-op, elsewhere).
+    if let Some(geometry) = app.try_state::<RememberedGeometry>().and_then(|g| g.get(&config.label)) {
+        let scale = app.primary_monitor().ok().flatten().map(|m| m.scale_factor()).unwrap_or(1.0);
+        window_geometry::apply(&mut config, geometry, scale);
+    }
     let state = app.try_state::<AppState>();
     let appearance = state.as_ref().map(|s| s.global_settings.effective().appearance);
     // A plugin theme replaces the built-in one in either OS mode; the UI records its resolved frame.
@@ -744,6 +752,10 @@ pub fn open_settings_window(
     // the title bar in the app theme instead of a system caption that follows the OS theme.
     (config.width, config.height) = SETTINGS_SIZE;
     (config.min_width, config.min_height) = (Some(SETTINGS_MIN_SIZE.0), Some(SETTINGS_MIN_SIZE.1));
+    // The size the settings window had last session (GTK Wayland; see `build_project_window`).
+    if let Some(geometry) = app.try_state::<RememberedGeometry>().and_then(|g| g.get(&label)) {
+        (config.width, config.height) = geometry.logical_size(parent.scale_factor().unwrap_or(1.0), SETTINGS_MIN_SIZE);
+    }
     config.center = false;
     config.visible = false;
     config.maximized = false;
