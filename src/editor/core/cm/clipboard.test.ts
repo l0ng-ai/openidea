@@ -2,8 +2,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { commands } from "@/platform/ipc";
+import { isRemoteWindow } from "@/platform/remote";
 import { clipboardDocumentPath, clipboardFilesExtension, pasteEditorClipboard } from "./clipboard";
 import { markdownImages } from "./markdownImages";
+
+vi.mock("@/platform/remote", () => ({ isRemoteWindow: vi.fn(() => false) }));
 
 const views: EditorView[] = [];
 beforeEach(() => {
@@ -17,7 +20,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-for (const route of ["event", "menu", "menu fallback"]) {
+for (const route of ["event", "menu", "menu unsupported", "menu rejected"]) {
   it.each([
     { name: "file", paths: ["/p/docs/file.txt"], expected: "[](file.txt)" },
     { name: "folder", paths: ["/p/docs/folder"], expected: "[](folder)" },
@@ -36,10 +39,25 @@ for (const route of ["event", "menu", "menu fallback"]) {
     },
     { name: "no document path", path: "", paths: ["/p/file.txt"], expected: "/p/file.txt" },
     { name: "non-Markdown", path: "/p/a.ts", paths: ["/p/file.txt"], expected: "/p/file.txt" },
-    { name: "remote filesystem path", path: "/home/dev/a.md", paths: ["/home/dev/src"], expected: "[](src)" },
+    {
+      name: "remote window with client file paths",
+      remote: true,
+      path: "/home/dev/a.md",
+      paths: ["/Users/me/file.txt", "/Users/me/中文 文件夹"],
+      expected: "/Users/me/file.txt\n/Users/me/中文 文件夹",
+    },
+    {
+      name: "remote window with matching text flavor",
+      remote: true,
+      path: "/home/dev/a.md",
+      text: "C:\\Users\\me\\file.txt",
+      paths: ["C:/Users/me/file.txt"],
+      expected: "C:\\Users\\me\\file.txt",
+    },
     { name: "alternate extension", path: "/p/docs/a.MDX", paths: ["/p/docs/file"], expected: "[](file)" },
     { name: "empty list", paths: [], expected: "" },
     { name: "text path", text: "/p/file.txt", paths: ["/stale"], expected: "/p/file.txt" },
+    { name: "plain text", text: "plain text 你好", paths: [], expected: "plain text 你好" },
     {
       name: "file list with matching text flavor",
       text: "C:\\p\\a.txt\r\nC:\\p\\folder",
@@ -47,7 +65,8 @@ for (const route of ["event", "menu", "menu fallback"]) {
       paths: ["C:/p/a.txt", "C:/p/folder"],
       expected: "[](../a.txt)\n[](../folder)",
     },
-  ])(`${route}: Markdown $name`, async ({ path = "/p/docs/a.md", paths, text = "", expected }) => {
+  ])(`${route}: Markdown $name`, async ({ path = "/p/docs/a.md", paths, text = "", expected, remote = false }) => {
+    vi.mocked(isRemoteWindow).mockReturnValue(remote);
     const list = vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: paths });
     const view = new EditorView({
       extensions: [clipboardDocumentPath.of(path), clipboardFilesExtension],
@@ -65,14 +84,18 @@ for (const route of ["event", "menu", "menu fallback"]) {
         vi.mocked(document.queryCommandSupported).mockReturnValue(true);
         vi.mocked(document.execCommand).mockImplementation(() => {
           view.contentDOM.dispatchEvent(event);
-          return false;
+          return true;
         });
       }
+      if (route === "menu rejected") vi.mocked(document.queryCommandSupported).mockReturnValue(true);
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => text } });
       await pasteEditorClipboard(view);
     }
     await vi.waitFor(() => expect(view.state.doc.toString()).toBe(expected));
-    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(remote && text ? 0 : 1);
+    if (route === "menu rejected" && /\.(md|mdx)$/i.test(path)) {
+      expect(document.execCommand).toHaveBeenCalledExactlyOnceWith("paste");
+    }
   });
 
   it.each([
@@ -93,6 +116,7 @@ for (const route of ["event", "menu", "menu fallback"]) {
       });
       view.contentDOM.dispatchEvent(event);
     } else {
+      if (route === "menu rejected") vi.mocked(document.queryCommandSupported).mockReturnValue(true);
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => text } });
       await pasteEditorClipboard(view);
     }
@@ -100,6 +124,29 @@ for (const route of ["event", "menu", "menu fallback"]) {
     expect(list).toHaveBeenCalledTimes(calls);
   });
 }
+
+it("does not fall back while a successful native paste is still pending", async () => {
+  const readText = vi.fn(async () => "fallback");
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText } });
+  vi.mocked(document.queryCommandSupported).mockReturnValue(true);
+  vi.mocked(document.execCommand).mockReturnValue(true);
+  const view = new EditorView({
+    extensions: [clipboardDocumentPath.of("/p/a.md"), clipboardFilesExtension],
+    parent: document.body,
+  });
+  views.push(view);
+
+  await pasteEditorClipboard(view);
+  expect(view.state.doc.toString()).toBe("");
+  expect(readText).not.toHaveBeenCalled();
+
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: { getData: () => "native text", files: [], types: ["text/plain"] },
+  });
+  view.contentDOM.dispatchEvent(event);
+  expect(view.state.doc.toString()).toBe("native text");
+});
 
 it.each([
   ["event", true],
