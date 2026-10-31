@@ -115,6 +115,18 @@ fn merge_flags(args: &mut Vec<String>, extra: &[String]) {
     *args = merged;
 }
 
+fn delve_build_flags(args: &[String], files: bool) -> Value {
+    if !files {
+        return json!(args);
+    }
+    json!(
+        args.iter()
+            .map(|arg| format!("'{}'", arg.replace('\\', "\\\\").replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+}
+
 pub fn apply_to_debug(
     env: &mut std::collections::BTreeMap<String, String>,
     extra_json: &mut Option<String>,
@@ -166,7 +178,9 @@ pub fn apply_to_debug(
                 args.extend(files.iter().skip(1).filter_map(Value::as_str).map(str::to_owned));
             }
         }
-        extra["buildFlags"] = json!(args);
+        // Delve appends its -o after array build flags; positional source files
+        // require the string form so all compiler flags precede the file list.
+        extra["buildFlags"] = delve_build_flags(&args, extra.get("__goFiles").is_some());
     }
     if let Some(output) = extra.get("output").and_then(Value::as_str).and_then(|p| std::path::Path::new(p).parent()) {
         std::fs::create_dir_all(output)?;
@@ -190,6 +204,13 @@ mod command_tests {
         let mut flags = vec!["-tags".into(), "explicit".into(), ".".into(), "-args".into(), "-tags=program".into()];
         merge_flags(&mut flags, &["-tags=project,debug".into()]);
         assert_eq!(flags, ["-tags=project,debug,explicit", ".", "-args", "-tags=program"]);
+    }
+
+    #[test]
+    fn file_debug_flags_keep_delves_output_flags_before_source_files() {
+        let flags = vec!["-tags=demo".into(), "C:\\a b\\main.go".into(), "quote'file.go".into()];
+        assert_eq!(delve_build_flags(&flags, false), json!(flags));
+        assert_eq!(delve_build_flags(&flags, true), json!("'-tags=demo' 'C:\\\\a b\\\\main.go' 'quote\\'file.go'"));
     }
 
     #[test]

@@ -14,6 +14,7 @@ import { isTestPath } from "@/platform/languageSettings";
 import { currentRoots } from "@/platform/projectRoots";
 import { applicationConfig, jvmModuleDir } from "./application";
 import { formatArgs } from "./configs";
+import { goTestParts } from "./goArguments";
 import { contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
 import { isWindows } from "./jvmTypes";
 import { detectRunTargets, targetConfig, targetLanguage, type RunTarget } from "./targets";
@@ -136,8 +137,7 @@ export function goTestNamed(
   test?: string,
 ): RunConfig {
   if (config.kind !== "go" || config.args[0] !== "test") return config;
-  const pkgArg =
-    config.args.find((a, i) => i > 0 && !a.startsWith("-") && !/^-(run|skip|bench)$/.test(config.args[i - 1]!)) ?? ".";
+  const pkgArg = goTestParts(config.args).targets[0] ?? ".";
   const recursive = /(^|\/)\.\.\.$/.test(pkgArg);
   const dir = pkgArg.replace(/\/?\.\.\.$/, "").replace(/^\.(?:\/|$)/, "");
   const module = input.root
