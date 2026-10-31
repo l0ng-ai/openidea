@@ -14,6 +14,7 @@ const KIND_LABELS: Record<string, string> = {
   python: "Python",
   pytest: "pytest",
   make: "Make",
+  cmake: "CMake",
   just: "Just",
   shell: "Shell Script",
   program: "Program",

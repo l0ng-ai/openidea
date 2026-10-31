@@ -287,8 +287,14 @@ function godotLaunch(rc: RunConfig, cwd: string): LaunchConfig {
 function nativeLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {
   const out: LaunchConfig = { ...base(rc, adapter, cwd), program: resolveCommand(rc.command, cwd), args: [...rc.args] };
   // lldb-dap takes the environment as `KEY=VALUE` strings.
-  if (adapter === "lldb-dap")
-    out.extraJson = JSON.stringify({ env: Object.entries(rc.env).map(([k, v]) => `${k}=${v}`) });
+  if (adapter === "lldb-dap") {
+    const from = rc.params?.cmakeSourceRoot;
+    const to = rc.params?.cmakeCanonicalSourceRoot;
+    out.extraJson = JSON.stringify({
+      env: Object.entries(rc.env).map(([k, v]) => `${k}=${v}`),
+      ...(from && to && from !== to ? { sourceMap: [[from, to]] } : {}),
+    });
+  }
   return out;
 }
 

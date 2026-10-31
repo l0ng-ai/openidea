@@ -309,6 +309,7 @@ impl ProcessManager {
         if !cwd.is_dir() {
             return Err(IdeError::not_found(format!("working directory does not exist: {}", cwd.display())));
         }
+        crate::detect::cmake::prepare(config, &cwd)?;
         let mut inv = invocation(config, &cwd);
         let extras = &config.extras;
         if extras.emulate_terminal && extras.stdin_file.is_some() {

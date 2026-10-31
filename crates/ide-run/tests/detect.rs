@@ -552,6 +552,44 @@ fn root_package_disables_nested_scan() {
 }
 
 #[test]
+fn cmake_detection_is_read_only_and_preserves_existing_build_directories() {
+    let dir = project(&[
+        ("CMakeLists.txt", "project(demo)"),
+        ("cmake-build-debug/CMakeCache.txt", "CMAKE_CONFIGURATION_TYPES:STRING=Release;RelWithDebInfo\n"),
+    ]);
+    let configs = detect(dir.path());
+    let configure = find(&configs, "cmake:cmake-build-debug:configure");
+    assert_eq!(configure.args, ["-S", ".", "-B", "cmake-build-debug", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]);
+    assert!(!dir.path().join("build").exists());
+    assert!(!dir.path().join("cmake-build-debug/.cmake").exists());
+    let build = find(&configs, "cmake:cmake-build-debug:build");
+    assert!(build.extras.before_launch.is_empty(), "a configured build regenerates by itself");
+    assert!(build.args.windows(2).any(|a| a == ["--config", "Release"]));
+    let test = find(&configs, "cmake:cmake-build-debug:test");
+    assert_eq!(test.extras.before_launch[0].target, build.id);
+}
+
+#[test]
+fn cmake_configures_before_the_first_build() {
+    let dir = project(&[("CMakeLists.txt", "project(demo)")]);
+    let configs = detect(dir.path());
+    let build = find(&configs, "cmake:build:build");
+    assert_eq!(build.extras.before_launch[0].target, "cmake:build:configure");
+}
+
+#[test]
+fn cmake_ignores_malformed_file_api_replies() {
+    let dir = project(&[
+        ("CMakeLists.txt", "project(demo)"),
+        ("build/CMakeCache.txt", ""),
+        ("build/.cmake/api/v1/reply/index-1.json", "not JSON"),
+    ]);
+    let configs = detect(dir.path());
+    assert_eq!(configs.iter().filter(|c| c.kind == "cmake").count(), 3);
+    assert!(!configs.iter().any(|c| c.kind == "native"));
+}
+
+#[test]
 fn go_work_members_define_configs_including_deep_and_quoted_directories() {
     let dir = project(&[
         (

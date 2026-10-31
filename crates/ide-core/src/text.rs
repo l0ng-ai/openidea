@@ -99,6 +99,44 @@ pub struct WorkspaceEdit {
     pub files: Vec<FileEdit>,
 }
 
+impl WorkspaceEdit {
+    /// Coalesces aliases of the same file before applying edits against its original text.
+    /// Resource operations separate batches because later edits may use the new contents.
+    pub fn deduplicate(&mut self) {
+        let mut files = Vec::new();
+        let mut batch = std::collections::HashMap::<std::path::PathBuf, usize>::new();
+        let mut resolve_aliases = true;
+        for file in std::mem::take(&mut self.files) {
+            match file {
+                FileEdit::Edit { path, edits } => {
+                    let path = if resolve_aliases {
+                        dunce::canonicalize(&path).unwrap_or_else(|_| path.to_path_buf())
+                    } else {
+                        path.to_path_buf()
+                    };
+                    let index = *batch.entry(path.clone()).or_insert_with(|| {
+                        files.push(FileEdit::Edit { path: path.into(), edits: Vec::new() });
+                        files.len() - 1
+                    });
+                    let FileEdit::Edit { edits: own, .. } = &mut files[index] else { unreachable!() };
+                    for edit in edits {
+                        if !own.contains(&edit) {
+                            own.push(edit);
+                        }
+                    }
+                }
+                op => {
+                    batch.clear();
+                    // Later paths refer to a filesystem state the resource operation has yet to create.
+                    resolve_aliases = false;
+                    files.push(op);
+                }
+            }
+        }
+        self.files = files;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FileEdit {
@@ -203,3 +241,34 @@ pub struct OutlineItem {
 
 /// Fuzzy-match highlight: indices (in chars of the displayed string) that matched.
 pub type MatchIndices = Vec<u32>;
+
+#[cfg(all(test, unix))]
+mod workspace_edit_tests {
+    use super::*;
+
+    #[test]
+    fn aliases_are_one_edit_but_resource_operations_preserve_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("main.cpp");
+        let alias = dir.path().join("alias.cpp");
+        std::fs::write(&real, "add()").unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let change = TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "sum_values".into() };
+        let edit = |path: PathBuf| FileEdit::Edit { path: path.into(), edits: vec![change.clone()] };
+        let mut workspace = WorkspaceEdit {
+            files: vec![
+                edit(real.clone()),
+                edit(alias),
+                FileEdit::Create { path: dir.path().join("other").into(), overwrite: false },
+                edit(real),
+            ],
+        };
+        workspace.deduplicate();
+        assert_eq!(workspace.files.len(), 3);
+        let FileEdit::Edit { edits, .. } = &workspace.files[0] else { panic!() };
+        assert_eq!(edits, &[change]);
+        let once = workspace.clone();
+        workspace.deduplicate();
+        assert_eq!(workspace, once);
+    }
+}

@@ -247,7 +247,7 @@ function useRunningCount(): number | null {
 }
 
 const CONFIG_FILES =
-  /(?:^|\/)(?:\.openidea\/run\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.(?:mod|work)|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile)$/;
+  /(?:^|\/)(?:\.openidea\/run\.toml|package\.json|deno\.jsonc?|Cargo\.toml|build\.gradle(?:\.kts)?|pom\.xml|go\.(?:mod|work)|pyproject\.toml|setup\.cfg|pytest\.ini|manage\.py|Makefile|justfile|CMakeLists\.txt|CMakeCache\.txt|index-[^/]+\.json)$/;
 
 let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 function scheduleReload() {
@@ -532,6 +532,9 @@ export function activate(): () => void {
       const paths = [...e.created, ...e.modified, ...e.removed];
       if (paths.some((p) => /(?:^|\/)go\.(?:mod|work)$/.test(p))) invalidateGoModules();
       if (paths.some((p) => CONFIG_FILES.test(p))) scheduleReload();
+    }),
+    onIdeEvent("runExited", (e) => {
+      if (useRun.getState().sessions.some((s) => s.runId === e.run && s.config.kind === "cmake")) scheduleReload();
     }),
     // Detected configs carry the selected toolchains (interpreter, JDK, Maven home and options).
     onIdeEvent("settingsChanged", (e) => {

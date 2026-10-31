@@ -35,8 +35,8 @@ pub async fn vcs_branch_info(
 /// Gutter change markers for a file, computed against its current (unsaved) text.
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_line_hunks(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
-    ide_host::ops::vcs::vcs_line_hunks(&state.host, window.label(), path)
+pub async fn vcs_line_hunks(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
+    ide_host::ops::vcs::vcs_line_hunks(&state.host, window.label(), path).await
 }
 
 #[tauri::command]
@@ -338,8 +338,13 @@ pub fn vcs_diff_hunks(state: State<'_, AppState>, old_text: String, new_text: St
 /// Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_stage_hunks(window: Window, state: State<'_, AppState>, path: PathBuf, hunks: Vec<u32>) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_stage_hunks(&state.host, window.label(), path, hunks)
+pub async fn vcs_stage_hunks(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    hunks: Vec<u32>,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_stage_hunks(&state.host, window.label(), path, hunks).await
 }
 
 /// Clones a repository (Get from VCS). Works without an open project.

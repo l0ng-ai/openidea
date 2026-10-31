@@ -60,8 +60,14 @@ export function uiModeForPath(path: string): string | null | undefined {
 
 const supports = new Map<string, Promise<LanguageSupport | null>>();
 
-/** Frontend modes with template syntax missing from the bundled parsers. */
+/** Frontend modes that extend or replace the bundled parsers. */
 const OWN_MODES = [
+  LanguageDescription.of({
+    name: "CMake",
+    extensions: ["cmake", "cmake.in"],
+    filename: /^(?:CMakeLists\.txt|.*\.cmake(?:\.in)?)$/,
+    load: async () => new LanguageSupport((await import("./cmake")).cmakeLanguage),
+  }),
   LanguageDescription.of({
     name: "Shell",
     load: async () => {
@@ -169,6 +175,8 @@ export function findLanguageDescription(uiMode: string | null, path: string): La
     if (loose) return OWN_MODES.find((l) => l.name === loose.name) ?? loose;
   }
   if (uiMode === null && infos) return null;
+  const own = LanguageDescription.matchFilename(OWN_MODES, path.slice(path.lastIndexOf("/") + 1));
+  if (own) return own;
   const matched = LanguageDescription.matchFilename(BUILTIN_MODES, path.slice(path.lastIndexOf("/") + 1));
   return OWN_MODES.find((l) => l.name === matched?.name) ?? matched;
 }

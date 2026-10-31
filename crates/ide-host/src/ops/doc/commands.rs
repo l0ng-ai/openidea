@@ -30,8 +30,15 @@ pub async fn doc_ui_mode(host: &Host, window: &str, path: PathBuf) -> IdeResult<
 }
 
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
-pub fn doc_set_encoding(host: &Host, window: &str, doc: DocId, encoding: String, reload: bool) -> IdeResult<String> {
-    host.project(window)?.documents.set_encoding(doc, &encoding, reload)
+pub async fn doc_set_encoding(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    encoding: String,
+    reload: bool,
+) -> IdeResult<String> {
+    let project = host.project(window)?;
+    host.blocking(move || project.documents.set_encoding(doc, &encoding, reload)).await
 }
 
 pub fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: LineEnding) -> IdeResult<()> {
@@ -117,7 +124,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("doc_open_virtual", |c| async move { doc_open_virtual(&c.host, &c.window, c.arg("uri")?).await });
     d.add("doc_ui_mode", |c| async move { doc_ui_mode(&c.host, &c.window, c.arg("path")?).await });
     d.add("doc_set_encoding", |c| async move {
-        doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?)
+        doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?).await
     });
     d.add("doc_set_line_ending", |c| async move {
         doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)

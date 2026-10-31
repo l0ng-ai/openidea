@@ -21,6 +21,11 @@ pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
             let key = crate::project::project_key(&member);
             let name = member.file_name().unwrap_or_default().to_string_lossy();
             for mut config in configs {
+                for task in &mut config.extras.before_launch {
+                    if task.kind == "run" {
+                        task.target = format!("workspace:{}:{}", key, task.target);
+                    }
+                }
                 config.id = format!("workspace:{}:{}", key, config.id);
                 config.name = format!("{name} / {}", config.name);
                 config.cwd = Some(config.cwd.map(|p| member.join(&*p)).unwrap_or_else(|| member.clone()).into());
