@@ -21,7 +21,7 @@ ide-syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "io-std"] }
 tracing.workspace = true
 parking_lot.workspace = true
 futures.workspace = true
