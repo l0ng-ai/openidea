@@ -132,7 +132,7 @@ describe("Dialog chrome", () => {
       </Dialog>,
     );
     const dialog = screen.getByRole("dialog");
-    const bar = document.querySelector("[data-dialog-titlebar]")!;
+    const bar = document.querySelector("[data-dialog-titlebar]") as HTMLElement;
     fireEvent.pointerDown(bar, { button: 0, clientX: 10, clientY: 10 });
     fireEvent.pointerMove(window, { clientX: 60, clientY: 40 });
     fireEvent.pointerUp(window);
