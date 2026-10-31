@@ -564,6 +564,7 @@ pub fn apply(text: &str, hunks: &[Hunk]) -> Result<Applied, String> {
     let mut ends_without_newline = None;
     for (index, hunk) in hunks.iter().enumerate() {
         let n = index + 1;
+        let mut anchor_line = None;
         for anchor in &hunk.anchors {
             let found = LEVELS
                 .iter()
@@ -571,6 +572,7 @@ pub fn apply(text: &str, hunks: &[Hunk]) -> Result<Applied, String> {
                 .ok_or_else(|| {
                 format!("{}: cannot find the line `{anchor}` its `@@` header names", hunk.label(n))
             })?;
+            anchor_line = Some(found);
             cursor = found + 1;
         }
         let mut old = hunk.old_lines();
@@ -588,12 +590,18 @@ pub fn apply(text: &str, hunks: &[Hunk]) -> Result<Applied, String> {
             cursor = at;
             continue;
         }
-        let mut found = find_block(&lines, &old, cursor, hint, hunk.at_eof);
+        // Models often repeat the `@@` line as the hunk's first context line: then the
+        // block starts at the anchor rather than after it.
+        let find = |old: &[&str]| {
+            find_block(&lines, old, cursor, hint, hunk.at_eof)
+                .or_else(|| anchor_line.and_then(|a| find_block(&lines, old, a, hint, hunk.at_eof)))
+        };
+        let mut found = find(&old);
         // A blank last line in the patch that the file does not have (Codex does the same).
         if found.is_none() && old.last() == Some(&"") {
             old.pop();
             if !old.is_empty() {
-                found = find_block(&lines, &old, cursor, hint, hunk.at_eof);
+                found = find(&old);
             }
         }
         let Some((at, level)) = found else {
@@ -856,6 +864,16 @@ mod tests {
         let text = "end\nmid\nend\n";
         let patch = "*** Begin Patch\n*** Update File: f\n@@\n-end\n+END\n*** End of File\n*** End Patch";
         assert_eq!(apply_patch(text, patch).unwrap(), "end\nmid\nEND\n");
+    }
+
+    #[test]
+    fn accepts_the_anchor_repeated_as_context() {
+        let text = "package greet\n\nfunc prefix() string {\n\treturn \"Merhaba, \"\n}\n";
+        let patch = "*** Begin Patch\n*** Update File: f\n@@ func prefix() string {\n func prefix() string {\n-\treturn \"Merhaba, \"\n+\treturn \"Selam, \"\n }\n*** End Patch";
+        assert_eq!(
+            apply_patch(text, patch).unwrap(),
+            "package greet\n\nfunc prefix() string {\n\treturn \"Selam, \"\n}\n"
+        );
     }
 
     #[test]
