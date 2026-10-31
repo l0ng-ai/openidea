@@ -813,7 +813,10 @@ fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> taur
     let available = area.size.to_logical::<f64>(scale);
     let pos = parent.outer_position()?.to_logical::<f64>(scale);
     let size = parent.outer_size()?.to_logical::<f64>(scale);
-    let own = window.outer_size()?.to_logical::<f64>(window.scale_factor()?);
+    let own_scale = window.scale_factor()?;
+    let own = window.outer_size()?.to_logical::<f64>(own_scale);
+    let inner = window.inner_size()?.to_logical::<f64>(own_scale);
+    let frame = (own.width - inner.width, own.height - inner.height);
     let bounds = fit_bounds(
         (pos.x, pos.y, size.width, size.height),
         (own.width, own.height),
@@ -824,11 +827,13 @@ fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> taur
         (bounds.1 * scale).round() as i32,
     ))?;
     if (bounds.2, bounds.3) != (own.width, own.height) {
+        // Sizes are set on the client area, and even an undecorated window has a resize frame.
+        let (width, height) = ((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0));
         window.set_min_size(Some(tauri::LogicalSize::new(
-            SETTINGS_MIN_SIZE.0.min(bounds.2),
-            SETTINGS_MIN_SIZE.1.min(bounds.3),
+            SETTINGS_MIN_SIZE.0.min(width),
+            SETTINGS_MIN_SIZE.1.min(height),
         )))?;
-        window.set_size(tauri::LogicalSize::new(bounds.2, bounds.3))?;
+        window.set_size(tauri::LogicalSize::new(width, height))?;
     }
     Ok(())
 }
