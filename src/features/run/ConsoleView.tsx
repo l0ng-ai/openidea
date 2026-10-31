@@ -19,17 +19,31 @@ import ansi from "@/ui/ansi.module.css";
 import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
 import { openTarget, openUrl } from "./navigate";
-import { segmentLine } from "./segments";
+import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
-import { hostBinding, formatBinding } from "@/platform/keymap";
+import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
+import { ConsoleFindBar } from "./FindBar";
+import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "./find";
 
 const ROW = 20;
 
+const MARK_COLOR = "var(--bg-search-match)";
+const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
+
 const Line = memo(
-  function Line({ line, cwd }: { line: ConsoleLine; length: number; cwd: string }) {
+  function Line({
+    line,
+    marks,
+    cwd,
+  }: {
+    line: ConsoleLine;
+    marks?: readonly SegmentMark[];
+    length: number;
+    cwd: string;
+  }) {
     // Not memoised: the open (last) line mutates in place; `memo` below re-renders on length changes only.
-    const segments = segmentLine(line.spans, line.kind === "system" ? [] : findOutputLinks(line.text));
+    const segments = segmentLine(line.spans, line.kind === "system" ? [] : findOutputLinks(line.text), marks);
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
@@ -39,29 +53,43 @@ const Line = memo(
     if (segments.length === 0) return <>{"​"}</>;
     return (
       <>
-        {segments.map((seg, i) =>
-          seg.link ? (
+        {segments.map((seg, i) => {
+          // A match keeps the span's colours but takes the search background (as IDEA does).
+          const style = seg.mark
+            ? {
+                ...spanStyle(seg.style),
+                backgroundColor: seg.current ? CURRENT_MARK_COLOR : MARK_COLOR,
+                color: "var(--fg-search-match)",
+              }
+            : spanStyle(seg.style);
+          const marked = seg.mark ? { "data-find-match": "", "data-find-current": seg.current ? "" : undefined } : {};
+          return seg.link ? (
             <a
               key={i}
               href={seg.link.kind === "url" ? seg.link.url : undefined}
               className={styles.link}
-              style={spanStyle(seg.style)}
+              style={style}
               onClick={(e) => activate(e, seg.link!)}
               role="link"
               tabIndex={-1}
+              {...marked}
             >
               {seg.text}
             </a>
+          ) : seg.mark ? (
+            <mark key={i} className={styles.match} style={style} {...marked}>
+              {seg.text}
+            </mark>
           ) : (
-            <span key={i} style={spanStyle(seg.style)}>
+            <span key={i} style={style}>
               {seg.text}
             </span>
-          ),
-        )}
+          );
+        })}
       </>
     );
   },
-  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd,
+  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd && a.marks === b.marks,
 );
 
 /** A run of folded lines (Settings › Console › Fold lines that contain). */
@@ -130,6 +158,9 @@ export interface ConsoleViewProps {
   onClear?: () => void;
   /** Set while the process accepts input. */
   input?: ConsoleInput;
+  /** Controlled find bar (the Run toolbar button); without it ⌘F opens it locally. */
+  findOpen?: boolean;
+  onFindOpenChange?: (open: boolean) => void;
   "aria-label"?: string;
 }
 
@@ -142,12 +173,27 @@ export function ConsoleView({
   cwd,
   onClear,
   input,
+  findOpen: controlledFindOpen,
+  onFindOpenChange,
   ...aria
 }: ConsoleViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const lines = model.lines;
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
+  const [internalFindOpen, setInternalFindOpen] = useState(false);
+  const findOpen = controlledFindOpen ?? internalFindOpen;
+  const setFindOpen = (open: boolean) => {
+    onFindOpenChange?.(open);
+    if (controlledFindOpen === undefined) setInternalFindOpen(open);
+  };
+  const [query, setQuery] = useState("");
+  const [findOptions, setFindOptions] = useState<FindOptions>(DEFAULT_FIND_OPTIONS);
+  const [active, setActive] = useState(0);
+  const findInput = useRef<HTMLInputElement>(null);
+  /** Line the next search starts from (the top of the viewport when the query changed). */
+  const findAnchor = useRef(0);
+  const scrolledMatch = useRef<string | null>(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
   const folded = useMemo(() => foldRows(lines, patterns, expanded), [lines, version, patterns, expanded]);
   // Pending input continues the open line (a prompt), or starts a row of its own.
@@ -198,6 +244,135 @@ export function ConsoleView({
     if (atBottom !== follow) onFollowChange(atBottom);
   };
 
+  // Find (⌘F): search the whole buffer, not just the rendered rows.
+  const found = useMemo(
+    () => (findOpen ? findInLines(lines, query, findOptions) : { matches: [], overflow: false, invalid: false }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
+    [findOpen, lines, version, query, findOptions],
+  );
+  const activeIndex = found.matches.length ? Math.min(Math.max(active, 0), found.matches.length - 1) : -1;
+  const activeMatch = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
+  const marksByLine = useMemo(() => {
+    const byLine = new Map<number, SegmentMark[]>();
+    found.matches.forEach((match, i) => {
+      const mark: SegmentMark = { start: match.start, end: match.end, current: i === activeIndex };
+      const marks = byLine.get(match.line);
+      if (marks) marks.push(mark);
+      else byLine.set(match.line, [mark]);
+    });
+    return byLine;
+  }, [found, activeIndex]);
+  const rowOfLine = useMemo(() => {
+    const rowsByLine = new Map<number, number>();
+    rows.forEach((row, i) => {
+      if (row.kind === "line") rowsByLine.set(row.index, i);
+    });
+    return rowsByLine;
+  }, [rows]);
+
+  /** The line at the top of the viewport: typing searches from there, as IDEA does. */
+  const topLine = () => {
+    const offset = scrollRef.current?.scrollTop ?? 0;
+    const items = virtualizer.getVirtualItems();
+    // The virtualizer also renders overscan rows above the viewport.
+    const first = items.find((item) => item.start + item.size > offset) ?? items[0];
+    const row = first ? rows[first.index] : undefined;
+    if (!row) return 0;
+    return row.kind === "line" ? row.index : row.fold.start;
+  };
+  const selectedText = () => {
+    const el = scrollRef.current;
+    const selection = window.getSelection();
+    if (!el || !selection || !selection.anchorNode || !el.contains(selection.anchorNode)) return "";
+    const text = selection.toString();
+    return text && !text.includes("\n") ? text.trim() : "";
+  };
+  const openFind = () => {
+    findAnchor.current = topLine();
+    // Opening with selected output searches for it (a single line, like the terminal).
+    if (!findOpen) {
+      const selection = selectedText();
+      if (selection) setQuery(selection);
+    }
+    scrolledMatch.current = null;
+    setFindOpen(true);
+    onFollowChange(false);
+    findInput.current?.focus();
+    findInput.current?.select();
+  };
+  const closeFind = () => {
+    scrolledMatch.current = null;
+    setFindOpen(false);
+    scrollRef.current?.focus();
+  };
+  const changeQuery = (value: string) => {
+    findAnchor.current = topLine();
+    setQuery(value);
+  };
+  const changeOptions = (next: FindOptions) => {
+    findAnchor.current = topLine();
+    setFindOptions(next);
+  };
+  const goToMatch = (direction: 1 | -1) => {
+    const total = found.matches.length;
+    if (!total) return;
+    setActive((current) => {
+      const from = current >= 0 && current < total ? current : activeIndex;
+      return (from + direction + total) % total;
+    });
+  };
+
+  const findWasOpen = useRef(false);
+  useEffect(() => {
+    if (findOpen) {
+      findWasOpen.current = true;
+      findInput.current?.focus();
+      findInput.current?.select();
+    } else if (findWasOpen.current) {
+      // Closed from the toolbar rather than the bar: put the caret back in the console.
+      findWasOpen.current = false;
+      scrollRef.current?.focus();
+    }
+  }, [findOpen]);
+
+  // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
+  useEffect(() => {
+    if (!findOpen) return;
+    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-run-find]"));
+  }, [findOpen]);
+
+  // A new query (or option) starts from the viewport, not from the top of the output.
+  useEffect(() => {
+    if (!findOpen) return;
+    const next = found.matches.findIndex((match) => match.line >= findAnchor.current);
+    setActive(next >= 0 ? next : 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- new output keeps the current match
+  }, [findOpen, query, findOptions]);
+
+  // Bring the current match into view; expand a collapsed fold that hides it.
+  useEffect(() => {
+    if (!findOpen || !activeMatch) return;
+    const key = `${activeMatch.lineId}:${activeMatch.start}`;
+    if (scrolledMatch.current === key) return;
+    const rowIndex = rowOfLine.get(activeMatch.line);
+    if (rowIndex === undefined) {
+      for (const row of rows) {
+        const fold = row.fold;
+        if (fold && activeMatch.line >= fold.start && activeMatch.line < fold.start + fold.count) {
+          setExpanded((s) => {
+            const next = new Set(s);
+            next.add(fold.id);
+            return next;
+          });
+          break;
+        }
+      }
+      return;
+    }
+    virtualizer.scrollToIndex(rowIndex, { align: "center" });
+    scrolledMatch.current = key;
+  }, [findOpen, activeMatch, rowOfLine, rows, virtualizer]);
+
   const onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
     const selection = window.getSelection()?.toString() ?? "";
@@ -210,6 +385,12 @@ export function ConsoleView({
         run: () => void navigator.clipboard?.writeText(selection).catch(() => undefined),
       },
       { label: "Copy All", run: () => void navigator.clipboard?.writeText(model.text()).catch(() => undefined) },
+      {
+        label: "Find…",
+        icon: "search",
+        shortcut: formatBinding(hostBinding("Meta+F")),
+        run: openFind,
+      },
       { kind: "separator" },
       { label: "Clear All", icon: "trash", disabled: !onClear, run: () => onClear?.() },
       ...(input
@@ -219,8 +400,14 @@ export function ConsoleView({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      openFind();
+      return;
+    }
     if (copySelectionOnKeyDown(e)) return;
-    if (!input || e.nativeEvent.isComposing) return;
+    if (!input) return;
     if (e.key === "d" && e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       input.onEof();
@@ -278,64 +465,82 @@ export function ConsoleView({
 
   const items = virtualizer.getVirtualItems();
   return (
-    <div
-      ref={scrollRef}
-      className={clsx(styles.console, ansi.palette, softWrap && styles.wrap)}
-      role="log"
-      aria-live="off"
-      aria-label={aria["aria-label"] ?? "Console"}
-      tabIndex={0}
-      onScroll={onScroll}
-      onContextMenu={onContextMenu}
-      onKeyDown={onKeyDown}
-      onPaste={onPaste}
-      data-autofocus=""
-    >
-      <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
-        {items.map((item) => {
-          const row = rows[item.index];
-          if (!row) {
+    <div className={styles.consoleWrap}>
+      {findOpen && (
+        <ConsoleFindBar
+          query={query}
+          onChange={changeQuery}
+          options={findOptions}
+          onOptionsChange={changeOptions}
+          count={found.matches.length}
+          active={activeIndex}
+          overflow={found.overflow}
+          invalid={found.invalid}
+          inputRef={findInput}
+          onNext={() => goToMatch(1)}
+          onPrevious={() => goToMatch(-1)}
+          onClose={closeFind}
+        />
+      )}
+      <div
+        ref={scrollRef}
+        className={clsx(styles.console, ansi.palette, softWrap && styles.wrap)}
+        role="log"
+        aria-live="off"
+        aria-label={aria["aria-label"] ?? "Console"}
+        tabIndex={0}
+        onScroll={onScroll}
+        onContextMenu={onContextMenu}
+        onKeyDown={onKeyDown}
+        onPaste={onPaste}
+        data-autofocus=""
+      >
+        <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+          {items.map((item) => {
+            const row = rows[item.index];
+            if (!row) {
+              return (
+                <div
+                  key={item.key}
+                  data-index={item.index}
+                  ref={softWrap ? virtualizer.measureElement : undefined}
+                  className={styles.line}
+                  style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : ROW }}
+                >
+                  {pendingInput}
+                </div>
+              );
+            }
+            if (row.kind === "fold") {
+              return (
+                <div
+                  key={item.key}
+                  data-index={item.index}
+                  ref={softWrap ? virtualizer.measureElement : undefined}
+                  className={styles.line}
+                  style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : ROW }}
+                >
+                  {foldButton(row.fold, false)}
+                </div>
+              );
+            }
+            const line = lines[row.index];
+            if (!line) return null;
             return (
               <div
                 key={item.key}
                 data-index={item.index}
                 ref={softWrap ? virtualizer.measureElement : undefined}
-                className={styles.line}
+                className={clsx(styles.line, styles[line.kind])}
                 style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : ROW }}
               >
-                {pendingInput}
+                <Line line={line} marks={marksByLine.get(row.index)} length={line.text.length} cwd={cwd} />
+                {row.fold && foldButton(row.fold, true)}
+                {inputInline && item.index === rows.length - 1 && pendingInput}
               </div>
             );
-          }
-          if (row.kind === "fold") {
-            return (
-              <div
-                key={item.key}
-                data-index={item.index}
-                ref={softWrap ? virtualizer.measureElement : undefined}
-                className={styles.line}
-                style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : ROW }}
-              >
-                {foldButton(row.fold, false)}
-              </div>
-            );
-          }
-          const line = lines[row.index];
-          if (!line) return null;
-          return (
-            <div
-              key={item.key}
-              data-index={item.index}
-              ref={softWrap ? virtualizer.measureElement : undefined}
-              className={clsx(styles.line, styles[line.kind])}
-              style={{ transform: `translateY(${item.start}px)`, height: softWrap ? undefined : ROW }}
-            >
-              <Line line={line} length={line.text.length} cwd={cwd} />
-              {row.fold && foldButton(row.fold, true)}
-              {inputInline && item.index === rows.length - 1 && pendingInput}
-            </div>
-          );
-        })}
+          })}
+        </div>
       </div>
     </div>
   );

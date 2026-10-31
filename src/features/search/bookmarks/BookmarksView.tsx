@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
+import { dirname } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { confirm } from "@/workbench/messages";
 import { tx, useT, useTx } from "@/platform/i18n";
@@ -237,6 +238,13 @@ export function BookmarksView() {
         aria-label="Bookmarks"
         roots={roots}
         getKey={(n) => n.key}
+        getDirectory={(n) =>
+          n.kind === "list"
+            ? null
+            : n.kind === "folder"
+              ? n.path
+              : dirname(n.kind === "mark" ? n.bookmark.path : n.path)
+        }
         getLabel={(n) => (n.kind === "mark" ? bookmarkLabel(n.bookmark) : n.kind === "list" ? n.list.name : n.name)}
         getChildren={(n) => (n.kind === "list" || n.kind === "file" ? n.children : undefined)}
         isExpandable={(n) => n.kind === "list" || (n.kind === "file" && n.children.length > 0)}
