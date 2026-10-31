@@ -168,6 +168,14 @@ fn groups_and_sorts_case_insensitively() {
     assert!(out.contains("### ping\nd\n\n#### Parameters\n| Name | Type | Description |\n"), "{out}");
 }
 
+#[test]
+fn indents_of_wide_whitespace_are_trimmed_by_character() {
+    // An ideographic space is three bytes: the common indent is one character, not one byte.
+    let input = schema(json!({}), &[]);
+    let out = tool_markdown("wide", "\u{3000}\u{3000}a\n b\n", &input, None);
+    assert!(out.starts_with("# wide\n\u{3000}a<br/>b\n"), "{out}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn exports_the_offered_tools() {
     let h = common::Harness::new(&[]).await;

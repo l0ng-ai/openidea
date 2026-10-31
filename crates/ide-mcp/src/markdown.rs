@@ -139,9 +139,18 @@ fn trim_indent(text: &str) -> String {
     if lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
-    let indent =
-        lines.iter().filter(|l| !l.trim().is_empty()).map(|l| l.len() - l.trim_start().len()).min().unwrap_or(0);
-    lines.iter().map(|l| if l.trim().is_empty() { "" } else { &l[indent..] }).collect::<Vec<_>>().join("\n")
+    // Counted in characters, as Kotlin does: indents may mix one-byte and wider whitespace.
+    let indent_chars = |l: &str| l.chars().take_while(|c| c.is_whitespace()).count();
+    let indent = lines.iter().filter(|l| !l.trim().is_empty()).map(|l| indent_chars(l)).min().unwrap_or(0);
+    lines
+        .iter()
+        .map(|l| match l.char_indices().nth(indent) {
+            _ if l.trim().is_empty() => "",
+            Some((at, _)) => &l[at..],
+            None => "",
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn escape_line_breaks(text: &str) -> String {
