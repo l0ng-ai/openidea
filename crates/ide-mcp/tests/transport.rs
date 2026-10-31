@@ -405,7 +405,7 @@ async fn resolves_in_the_jetbrains_order() {
         "{}",
         e.message
     );
-    assert!(e.message.contains(&format!("{{\"path\":\"{second}\"}}")), "{}", e.message);
+    assert!(e.message.contains(&format!("{{\"path\":{}}}", serde_json::to_string(&second).unwrap())), "{}", e.message);
 }
 
 #[tokio::test(flavor = "multi_thread")]

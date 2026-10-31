@@ -13,6 +13,11 @@ fn read(h: &Harness, rel: &str) -> String {
     std::fs::read_to_string(h.path(rel)).unwrap()
 }
 
+/// `text` as a new file holds it: new files get the platform's line separator.
+fn created(text: &str) -> String {
+    if cfg!(windows) { text.replace('\n', "\r\n") } else { text.to_owned() }
+}
+
 /// No document stays open after a tool that opened one transiently.
 fn assert_no_documents(h: &Harness) {
     let project = h.host().project("main").unwrap();
@@ -29,7 +34,7 @@ async fn creates_files_and_refuses_to_clobber() {
     let h = Harness::new(&[("old.txt", "keep\n")]).await;
     let out = h.call("create_new_file", json!({ "pathInProject": "src/deep/new.rs", "text": "fn main() {}\n" })).await;
     assert_eq!(out, "[success]");
-    assert_eq!(read(&h, "src/deep/new.rs"), "fn main() {}\n");
+    assert_eq!(read(&h, "src/deep/new.rs"), created("fn main() {}\n"));
 
     let e = h.call_err("create_new_file", json!({ "pathInProject": "old.txt", "text": "x" })).await;
     assert_eq!(e, "File already exists: old.txt. Specify 'overwrite=true' to overwrite it");
@@ -106,7 +111,7 @@ async fn applies_codex_patches() {
 *** End Patch";
     let out = h.call("apply_patch", json!({ "input": patch })).await;
     assert_eq!(out, "4 out of 4 operations applied.");
-    assert_eq!(read(&h, "docs/new.md"), "# Title\ntext\n");
+    assert_eq!(read(&h, "docs/new.md"), created("# Title\ntext\n"));
     assert!(!h.path("gone.txt").exists());
     assert_eq!(read(&h, "src/lib.rs"), "fn a() {\n    10\n}\n\nfn b() {\n    20\n}\n");
     assert!(!h.path("move/me.txt").exists());
@@ -245,7 +250,7 @@ rename to renamed.txt
     let out = h.call("apply_patch", json!({ "input": diff })).await;
     assert_eq!(out, "4 out of 4 operations applied.");
     assert_eq!(read(&h, "a.txt"), "1\ntwo\n3\n4\n5\n6\n7\n8\n8.5\n9\n");
-    assert_eq!(read(&h, "n/new.txt"), "fresh\n");
+    assert_eq!(read(&h, "n/new.txt"), created("fresh\n"));
     assert!(!h.path("del.txt").exists() && !h.path("ren.txt").exists());
     assert_eq!(read(&h, "renamed.txt"), "r\n");
 }
@@ -350,7 +355,7 @@ async fn a_locked_file_fails_alone() {
 *** End Patch";
     let out = h.call("apply_patch", json!({ "input": patch })).await;
     assert!(out.starts_with("3 out of 4 operations applied.") && out.contains("\nlocked.txt: "), "{out}");
-    assert_eq!(read(&h, "added.txt"), "new\n");
+    assert_eq!(read(&h, "added.txt"), created("new\n"));
     assert_eq!(read(&h, "a.txt"), "A\n");
     assert_eq!(read(&h, "moved/m.txt"), "M\n");
     assert!(!h.path("m.txt").exists());

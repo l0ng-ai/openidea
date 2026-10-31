@@ -207,7 +207,7 @@ async fn lists_a_tree_like_the_tree_utility() {
 
     // The root counts as the first level.
     let r = tree(&h, json!({ "directoryPath": "dir/src", "maxDepth": 2 })).await;
-    let src = h.path("dir/src");
+    let src = h.path("dir").join("src");
     assert_eq!(r["tree"], format!("{}/\n    ├── lib/\n    └── main.rs\n", src.display()));
     let r = tree(&h, json!({ "directoryPath": "dir/src", "maxDepth": 1 })).await;
     assert_eq!(r["tree"], format!("{}/\n", src.display()));
@@ -223,7 +223,7 @@ async fn tree_reports_timeouts_and_bad_directories() {
     let err = h.call_err("list_directory_tree", json!({ "directoryPath": "nope" })).await;
     assert_eq!(err, format!("No such directory: {}", h.path("nope").display()));
     let err = h.call_err("list_directory_tree", json!({ "directoryPath": "dir/a.txt" })).await;
-    assert_eq!(err, format!("Not a directory: {}", h.path("dir/a.txt").display()));
+    assert_eq!(err, format!("Not a directory: {}", h.path("dir").join("a.txt").display()));
     let err = h.call_err("list_directory_tree", json!({})).await;
     assert!(err.contains("directoryPath"), "{err}");
 }

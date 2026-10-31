@@ -274,7 +274,11 @@ mod tests {
 
     #[test]
     fn splits_words_like_a_shell() {
-        assert_eq!(split_words(r#"a  'b c' "d \"e\"" f\ g"#).unwrap(), ["a", "b c", "d \"e\"", "f g"]);
+        // Outside quotes a backslash escapes on Unix; on Windows it is a path separator.
+        let escaped: &[&str] = if cfg!(windows) { &["f\\", "g"] } else { &["f g"] };
+        let words = split_words(r#"a  'b c' "d \"e\"" f\ g"#).unwrap();
+        assert_eq!(words[..3], ["a", "b c", "d \"e\""]);
+        assert_eq!(words[3..], *escaped);
         assert_eq!(split_words("x ''").unwrap(), ["x", ""]);
         assert!(split_words("'open").is_err());
     }
