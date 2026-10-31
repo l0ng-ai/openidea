@@ -2,11 +2,13 @@ import { EditorSelection, EditorState, type Extension } from "@codemirror/state"
 import { isolateHistory } from "@codemirror/commands";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { call, commands, IpcError, isTauri } from "@/platform/ipc";
+import { invokeLocal } from "@/platform/tauriCore";
 import { ipcPath } from "@/platform/paths";
-import { isRemoteWindow } from "@/platform/remote";
 import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
+import { registerFileDropHandler } from "@/workbench/fileDrop";
 
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp|avif|bmp|svg|ico|tiff?)$/i;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 
 export function isMarkdown(path: string): boolean {
@@ -80,8 +82,9 @@ export async function saveImage(
   }
 }
 
-function imageBytes(blob: Blob): Promise<number[]> {
-  if (blob.size > MAX_IMAGE_BYTES) return Promise.reject(new Error(tx("Image exceeds 16 MB.")));
+function imageBytes(blob: Blob | string): Promise<number[]> {
+  if ((typeof blob === "string" ? blob.length * 0.75 : blob.size) > MAX_IMAGE_BYTES)
+    return Promise.reject(new Error(tx("Image exceeds 16 MB.")));
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./imageBytes.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = (event: MessageEvent<{ data: number[]; error?: string }>) => {
@@ -104,12 +107,35 @@ interface ImageOptions {
 }
 
 export function markdownImages(options: ImageOptions): Extension {
-  if (!isMarkdown(options.path) || isRemoteWindow()) return [];
+  if (!isMarkdown(options.path)) return [];
   return ViewPlugin.fromClass(
     class {
       alive = true;
       pending = new Set<{ from: number; to: number }>();
-      constructor(readonly view: EditorView) {}
+      unregister: () => void;
+      constructor(readonly view: EditorView) {
+        this.unregister = registerFileDropHandler((paths, x, y) => {
+          const rect = view.dom.getBoundingClientRect();
+          if (
+            x < rect.left ||
+            x > rect.right ||
+            y < rect.top ||
+            y > rect.bottom ||
+            !paths.every((p) => IMAGE_FILE.test(p)) ||
+            view.state.readOnly
+          )
+            return false;
+          this.insert(
+            paths.map((path) => async () => {
+              // OS paths belong to this client even in a remote project.
+              const url = await invokeLocal<string>("fs_read_image", { path });
+              return { blob: url, name: path.replace(/^.*[\\/]/, "") };
+            }),
+            view.posAtCoords({ x, y }) ?? view.state.selection.main.head,
+          );
+          return true;
+        });
+      }
       update(update: ViewUpdate) {
         for (const range of this.pending) {
           range.from = update.changes.mapPos(range.from, 1);
@@ -118,10 +144,11 @@ export function markdownImages(options: ImageOptions): Extension {
       }
       destroy() {
         this.alive = false;
+        this.unregister();
       }
-      insert(sources: Array<() => Promise<{ blob: Blob; name: string }>>) {
-        const { from, to } = this.view.state.selection.main;
-        const range = { from, to };
+      insert(sources: Array<() => Promise<{ blob: Blob | string; name: string }>>, position?: number) {
+        const selection = this.view.state.selection.main;
+        const range = { from: position ?? selection.from, to: position ?? selection.to };
         this.pending.add(range);
         void (async () => {
           const links: string[] = [];
@@ -132,7 +159,12 @@ export function markdownImages(options: ImageOptions): Extension {
               const bytes = await imageBytes(blob);
               if (!this.alive) return;
               links.push(
-                await saveImage(options.path, options.folder, imageName(name, blob.type, options.pattern), bytes),
+                await saveImage(
+                  options.path,
+                  options.folder,
+                  imageName(name, typeof blob === "string" ? "image/png" : blob.type, options.pattern),
+                  bytes,
+                ),
               );
             }
             if (this.alive && !this.view.state.readOnly) {
@@ -153,14 +185,15 @@ export function markdownImages(options: ImageOptions): Extension {
           }
         })();
       }
-      files(event: ClipboardEvent): boolean {
+      files(event: ClipboardEvent | DragEvent): boolean {
         if (this.view.state.facet(EditorState.readOnly)) return false;
-        const files = Array.from(event.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+        const transfer = "clipboardData" in event ? event.clipboardData : event.dataTransfer;
+        const files = Array.from(transfer?.files ?? []).filter((f) => f.type.startsWith("image/"));
         if (!files.length) return false;
         event.preventDefault();
         // WebKit names raw clipboard images "image.png", which can also be a real filename.
         const copiedPaths =
-          files.some((file) => file.name === "image.png") && isTauri()
+          event.type === "paste" && files.some((file) => file.name === "image.png") && isTauri()
             ? call(commands.clipboardFileList()).catch(() => [])
             : Promise.resolve([] as string[]);
         this.insert(
@@ -168,10 +201,14 @@ export function markdownImages(options: ImageOptions): Extension {
             blob: file,
             name:
               file.name === "image.png" &&
+              event.type === "paste" &&
               !(await copiedPaths).some((path) => path.replace(/^.*[\\/]/, "") === file.name)
                 ? ""
                 : file.name,
           })),
+          event.type === "drop"
+            ? (this.view.posAtCoords({ x: (event as DragEvent).clientX, y: (event as DragEvent).clientY }) ?? undefined)
+            : undefined,
         );
         return true;
       }
@@ -179,6 +216,9 @@ export function markdownImages(options: ImageOptions): Extension {
     {
       eventHandlers: {
         paste(event) {
+          return this.files(event);
+        },
+        drop(event) {
           return this.files(event);
         },
       },
