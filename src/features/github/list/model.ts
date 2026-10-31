@@ -39,8 +39,8 @@ export function quickFilters(login: string): QuickFilter[] {
   ];
 }
 
-/** The list's first-run filter and the one the history never keeps: "Assigned to you". */
-export const defaultFilter = (login: string): PrSearchValue => ({ state: "OPEN", assignee: login });
+/** The list's first-run filter and the one the history never keeps: every open pull request. */
+export const defaultFilter = (): PrSearchValue => ({ state: "OPEN" });
 
 /** A quick filter is checked only when the search is exactly it. */
 export const isQuickFilterSelected = (search: PrSearchValue, q: QuickFilter) => sameSearch(search, q.filter);

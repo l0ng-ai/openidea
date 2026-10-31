@@ -224,7 +224,7 @@ describe("ListPanel", () => {
     });
   };
 
-  it("starts with Assigned to you and renders the rows", async () => {
+  it("starts with every open pull request and renders the rows", async () => {
     pages = [
       [
         pr(7, {
@@ -244,7 +244,7 @@ describe("ListPanel", () => {
       ],
     ];
     await mount();
-    expect(queries[0]).toBe("type:pr repo:org/app is:open assignee:me");
+    expect(queries[0]).toBe("type:pr repo:org/app is:open");
     const rows = screen.getAllByRole("option");
     expect(rows).toHaveLength(2);
     const first = within(rows[0]!);
@@ -259,7 +259,7 @@ describe("ListPanel", () => {
     expect(within(rows[1]!).getByText("MERGED")).toBeTruthy();
     expect(within(rows[1]!).getByText(/^#8 · created /).textContent).not.toContain(", by");
     expect(rows[1]!.querySelector("[data-unread]")).toBeNull();
-    expect(loadLastSearch()).toEqual({ state: "OPEN", assignee: "me" });
+    expect(loadLastSearch()).toEqual({ state: "OPEN" });
   });
 
   it("opens the context menu with IntelliJ's items on the clicked row", async () => {
@@ -303,21 +303,26 @@ describe("ListPanel", () => {
     const field = screen.getByRole("textbox", { name: "Search pull requests" });
     fireEvent.change(field, { target: { value: "crash" } });
     await act(async () => fireEvent.keyDown(field, { key: "Enter" }));
-    expect(queries[1]).toBe("type:pr repo:org/app (crash) is:open assignee:me");
-    expect(loadSearchHistory()).toEqual([{ state: "OPEN", assignee: "me", searchQuery: "crash" }]);
+    expect(queries[1]).toBe("type:pr repo:org/app (crash) is:open");
+    expect(loadSearchHistory()).toEqual([{ state: "OPEN", searchQuery: "crash" }]);
   });
 
-  it("resets a chip with its ✕ and with Delete, and shows the quick filter badge", async () => {
-    pages = [[], [], []];
+  it("resets a chip with its ✕ and shows the quick filter badge", async () => {
+    pages = [[], []];
     await mount();
     expect(document.querySelector("[data-badge]")).toBeTruthy();
-    const assignee = screen.getByText("me").closest("button")!;
-    await act(async () => fireEvent.keyDown(assignee, { key: "Delete" }));
-    expect(queries[1]).toBe("type:pr repo:org/app is:open");
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Reset State" })));
-    expect(queries[2]).toBe("type:pr repo:org/app");
+    expect(queries[1]).toBe("type:pr repo:org/app");
     expect(document.querySelector("[data-badge]")).toBeNull();
     expect(screen.getByText("State")).toBeTruthy();
+  });
+
+  it("resets a chip with Delete", async () => {
+    pages = [[], []];
+    await mount();
+    const state = screen.getByText("Open").closest("button")!;
+    await act(async () => fireEvent.keyDown(state, { key: "Delete" }));
+    expect(queries[1]).toBe("type:pr repo:org/app");
   });
 
   it("chooses a chip value from its popup", async () => {
@@ -325,6 +330,6 @@ describe("ListPanel", () => {
     await mount();
     await act(async () => fireEvent.click(screen.getByText("Sort")));
     await act(async () => fireEvent.click(screen.getByText("Least recently updated")));
-    expect(queries[1]).toBe("type:pr repo:org/app is:open assignee:me sort:updated-asc");
+    expect(queries[1]).toBe("type:pr repo:org/app is:open sort:updated-asc");
   });
 });

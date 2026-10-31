@@ -45,15 +45,15 @@ function useApplySearch(login: string | undefined): (v: PrSearchValue) => void {
   const recorder = useRef<SearchHistoryRecorder | null>(null);
   useEffect(() => {
     if (!login) return;
-    const defaultSearch = defaultFilter(login);
+    const defaultSearch = defaultFilter();
     const r = createSearchHistoryRecorder({
       defaultSearch,
       saveLast: (v) => saveLastSearch(v),
       remember: (v) => rememberSearch(v, undefined, defaultSearch),
     });
     recorder.current = r;
-    r.onChange(initialSearch(login));
-    void setListSearch(initialSearch(login));
+    r.onChange(initialSearch());
+    void setListSearch(initialSearch());
     return () => {
       r.dispose();
       if (recorder.current === r) recorder.current = null;

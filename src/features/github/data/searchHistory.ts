@@ -1,7 +1,7 @@
 /**
  * IntelliJ's pull request search history (`GHPRListPersistentSearchHistory`), per project:
  * the last 10 searches (newest first) and the last search used, which the list restores.
- * On first run the list shows the Quick Filter "Assigned to you" (`initialSearch`).
+ * On first run the list shows the Quick Filter "Open" (`initialSearch`).
  */
 import { useProject } from "@/platform/project";
 import { DEFAULT_SEARCH, filterCount, normalizeSearch, sameSearch, type PrSearchValue } from "./model";
@@ -30,7 +30,7 @@ function save(key: string, value: unknown) {
 
 /**
  * `history` with `v` first (moved up when already there). Searches without filters and
- * `defaultSearch` are not kept (the list passes its first-run filter, "Assigned to you").
+ * `defaultSearch` are not kept (the list passes its first-run filter, "Open").
  */
 export function withSearch(
   history: readonly PrSearchValue[],
@@ -63,7 +63,7 @@ export function saveLastSearch(v: PrSearchValue, root = projectRoot()) {
   if (root) save(lastKey(root), v);
 }
 
-/** The list's search when the tool window opens: the last one, else "Assigned to you". */
-export function initialSearch(currentUserLogin: string, root = projectRoot()): PrSearchValue {
-  return loadLastSearch(root) ?? { state: "OPEN", assignee: currentUserLogin };
+/** The list's search when the tool window opens: the last one, else every open pull request. */
+export function initialSearch(root = projectRoot()): PrSearchValue {
+  return loadLastSearch(root) ?? { state: "OPEN" };
 }
