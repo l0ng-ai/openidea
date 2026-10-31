@@ -103,6 +103,47 @@ describe("Dialog chrome", () => {
     expect(document.querySelector("[data-dialog-titlebar]")).toBeNull();
   });
 
+  it("drags a popup by a [data-dialog-drag] handle, but not by its controls or body", () => {
+    render(
+      <Dialog open onClose={() => {}} position="top" aria-label="Search Everywhere">
+        <div data-dialog-drag="">
+          <span>header</span>
+          <button>tab</button>
+        </div>
+        <div>rows</div>
+      </Dialog>,
+    );
+    const dialog = screen.getByRole("dialog");
+    const handle = dialog.querySelector("[data-dialog-drag]")!;
+    const down = (el: Element, x: number) => fireEvent.pointerDown(el, { button: 0, clientX: x, clientY: 10 });
+    down(handle.querySelector("button")!, 10);
+    down(dialog.querySelector("div:last-child")!, 10);
+    expect(dialog.style.translate).toBe("");
+    down(handle, 10);
+    fireEvent.pointerMove(window, { clientX: 200, clientY: 40 });
+    fireEvent.pointerUp(window);
+    expect(dialog.style.translate).toBe("190px 30px");
+  });
+
+  it("still drags a window dialog by its title bar", () => {
+    render(
+      <Dialog open onClose={() => {}} title="Usages Detected" buttons={safeDelete()} platform="other">
+        <p>Usages found</p>
+      </Dialog>,
+    );
+    const dialog = screen.getByRole("dialog");
+    const bar = document.querySelector("[data-dialog-titlebar]")!;
+    fireEvent.pointerDown(bar, { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(window, { clientX: 60, clientY: 40 });
+    fireEvent.pointerUp(window);
+    expect(dialog.style.translate).toBe("80px 30px");
+    // The close button never starts a drag.
+    fireEvent.pointerDown(within(bar).getByRole("button", { name: "Close" }), { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(window, { clientX: 200, clientY: 40 });
+    fireEvent.pointerUp(window);
+    expect(dialog.style.translate).toBe("80px 30px");
+  });
+
   it("renders the help button and footer start on the left", () => {
     const onHelp = vi.fn();
     render(
