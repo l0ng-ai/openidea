@@ -17,6 +17,7 @@ ide-run.workspace = true
 ide-build.workspace = true
 ide-vcs.workspace = true
 ide-terminal.workspace = true
+ide-syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
@@ -27,6 +28,7 @@ futures.workspace = true
 uuid.workspace = true
 dunce.workspace = true
 globset.workspace = true
+toml.workspace = true
 toml_edit.workspace = true
 
 [target.'cfg(unix)'.dependencies]
