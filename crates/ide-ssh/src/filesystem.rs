@@ -94,11 +94,7 @@ impl RemoteFs {
                 }
                 tokio::fs::write(path, data).await?;
                 if let Some(t) = mtime {
-                    let file = tokio::fs::OpenOptions::new().write(true).open(path).await?.into_std().await;
-                    if let Err(e) = file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t.into()))
-                    {
-                        tracing::debug!("Cannot set the time of {path}: {e}");
-                    }
+                    set_mtime(path, t).await;
                 }
                 Ok(())
             }
@@ -110,8 +106,11 @@ impl RemoteFs {
             Self::Sftp(fs) => fs.upload(local, remote, preserve_time).await,
             Self::Local => {
                 reject_same_file(local, Path::new(remote)).await?;
-                let data = tokio::fs::read(local).await?;
-                self.write(remote, &data, preserve_time.then(|| crate::sftp::mtime_of(local)).flatten()).await
+                copy_file(local, Path::new(remote)).await?;
+                if let Some(t) = preserve_time.then(|| crate::sftp::mtime_of(local)).flatten() {
+                    set_mtime(remote, t).await;
+                }
+                Ok(())
             }
         }
     }
@@ -121,12 +120,7 @@ impl RemoteFs {
             Self::Sftp(fs) => fs.download(remote, local).await,
             Self::Local => {
                 reject_same_file(Path::new(remote), local).await?;
-                let data = tokio::fs::read(remote).await?;
-                if let Some(parent) = local.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
-                tokio::fs::write(local, data).await?;
-                Ok(())
+                copy_file(Path::new(remote), local).await
             }
         }
     }
@@ -202,6 +196,25 @@ impl RemoteFs {
         if let Self::Sftp(fs) = self {
             fs.close().await;
         }
+    }
+}
+
+/// Copies without holding the file in memory: deployments can include large archives.
+async fn copy_file(from: &Path, to: &Path) -> IdeResult<()> {
+    if let Some(parent) = to.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::copy(from, to).await?;
+    Ok(())
+}
+
+async fn set_mtime(path: &str, seconds: u32) {
+    let result = async {
+        let file = tokio::fs::OpenOptions::new().write(true).open(path).await?.into_std().await;
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(seconds)))
+    };
+    if let Err(e) = result.await {
+        tracing::debug!("Cannot set the time of {path}: {e}");
     }
 }
 
