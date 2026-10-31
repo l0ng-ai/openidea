@@ -16,7 +16,7 @@ import {
 import { Button, Checkbox, IconButton, Input, type SelectOption, T } from "@/ui";
 import { Row, Section, Select } from "../components/Form";
 import { useSetting } from "../components/context";
-import { useSettingsDialog } from "../model/staging";
+import { stageSshSecret, useSettingsDialog } from "../model/staging";
 import type { PageSpec } from "./spec";
 import { parseSshPort, sshTestRemedy, type SshTestRemedy } from "./sshConnection";
 import { TOOLS_GROUP } from "./tools";
@@ -132,16 +132,14 @@ function KeyFileRow({ value, onChange }: { value: string; onChange: (v: string) 
   );
 }
 
-/** Test Connection with the configuration as edited, offering host key trust and a password prompt. */
+/** Test with the staged credential, offering host key trust and authentication retries. */
 function TestConnection({
   config,
   secret,
-  storeSecret,
   focusSecret,
 }: {
   config: SshConfigValid;
   secret: string | undefined;
-  storeSecret: () => Promise<void>;
   focusSecret: () => void;
 }) {
   const tx = useTx();
@@ -150,7 +148,6 @@ function TestConnection({
   const run = async () => {
     setState({ status: "running" });
     try {
-      await storeSecret();
       const text = await call(commands.sshTest(config, config.auth === "openSsh" ? null : (secret ?? null)));
       setState({ status: "ok", text });
     } catch (e) {
@@ -214,17 +211,15 @@ function SshConfigForm({
   const tx = useTx();
   const secretId = useId();
   const secretInput = useRef<HTMLInputElement>(null);
-  // Credentials stay outside staged settings; this page has no Apply hook.
-  const [secret, setSecret] = useState<string>();
+  const secret = useSettingsDialog((s) => s.stagedSecrets[config.id]);
   const [stored, setStored] = useState(false);
-  const [storeError, setStoreError] = useState(false);
-  const writes = useRef(Promise.resolve());
   const storedPasswordConfig = useSettingsDialog((s) =>
     s.globalBase.ssh.configs.some((c) => c.id === config.id && c.auth === "password"),
   );
+  const hasSecret = secret !== undefined;
   useEffect(() => {
     let live = true;
-    if (config.auth === "password" && storedPasswordConfig && isTauri()) {
+    if (!hasSecret && config.auth === "password" && storedPasswordConfig && isTauri()) {
       void call(commands.sshNeedsSecret(config.id)).then(
         (needsSecret) => live && setStored(!needsSecret),
         () => {},
@@ -233,21 +228,8 @@ function SshConfigForm({
     return () => {
       live = false;
     };
-  }, [config.id, config.auth, storedPasswordConfig]);
+  }, [config.id, config.auth, storedPasswordConfig, hasSecret]);
 
-  const storeSecret = (save = config.saveSecret) => {
-    if (secret === undefined || config.auth === "openSsh") return Promise.resolve();
-    // Serialize blur, checkbox and test writes so the latest Save choice wins.
-    const write = writes.current.catch(() => {}).then(() => commands.sshSetSecret(config.id, secret, save));
-    writes.current = write;
-    return write;
-  };
-  const rememberSecret = (save = config.saveSecret) => {
-    void storeSecret(save).then(
-      () => setStoreError(false),
-      () => setStoreError(true),
-    );
-  };
   return (
     <Section title="Connection">
       <Field label="Name" value={config.name} onChange={(name) => update({ name })} />
@@ -280,8 +262,7 @@ function SshConfigForm({
             className={styles.wide}
             value={secret ?? ""}
             placeholder={stored && secret === undefined ? tx("Password already stored") : undefined}
-            onChange={(e) => setSecret(e.target.value)}
-            onBlur={() => rememberSecret()}
+            onChange={(e) => stageSshSecret(config.id, e.target.value)}
           />
         </Row>
       )}
@@ -294,24 +275,11 @@ function SshConfigForm({
       ) : (
         <Checkbox
           checked={config.saveSecret}
-          onChange={(saveSecret) => {
-            update({ saveSecret });
-            rememberSecret(saveSecret);
-          }}
+          onChange={(saveSecret) => update({ saveSecret })}
           label={config.auth === "password" ? "Save password" : "Save passphrase"}
         />
       )}
-      {storeError && (
-        <span role="alert" className={styles.error}>
-          <T>Could not store SSH secret.</T>
-        </span>
-      )}
-      <TestConnection
-        config={config}
-        secret={secret}
-        storeSecret={storeSecret}
-        focusSecret={() => secretInput.current?.focus()}
-      />
+      <TestConnection config={config} secret={secret} focusSecret={() => secretInput.current?.focus()} />
     </Section>
   );
 }
@@ -325,6 +293,7 @@ function SshConfigsEditor() {
 
   const update = (patch: Partial<SshConfigValid>) => {
     if (!current) return;
+    if (patch.auth && patch.auth !== current.auth) stageSshSecret(current.id, "");
     setConfigs(configs.map((c) => (c.id === current.id ? { ...c, ...patch } : c)));
   };
   const add = (base?: SshConfigValid) => {
@@ -336,6 +305,7 @@ function SshConfigsEditor() {
   };
   const remove = () => {
     if (!current) return;
+    stageSshSecret(current.id, "");
     const rest = configs.filter((c) => c.id !== current.id);
     setConfigs(rest);
     setSelected(rest[Math.min(index, rest.length - 1)]?.id ?? null);

@@ -1,11 +1,12 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SSH_CONFIG, type SshAuthValid } from "@/platform/remoteSettings";
 import { useProject } from "@/platform/project";
 import { PageContext } from "../components/context";
 import { validateSettings } from "../model/schema";
-import { applySettings, openSettings, useSettingsDialog } from "../model/staging";
+import { applySettings, closeSettings, openSettings, resetPage, useSettingsDialog } from "../model/staging";
+import { SettingsFooter } from "../dialog/SettingsDialog";
 import { SSH_PAGES } from "../pages/ssh";
 
 const mocks = vi.hoisted(() => ({ store: vi.fn(), test: vi.fn(), needsSecret: vi.fn(), trust: vi.fn() }));
@@ -101,61 +102,71 @@ describe("SSH configuration credentials", () => {
     expect(mocks.needsSecret).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("stores on blur with save=%s and keeps credentials out of settings", async (save) => {
+  it.each([false, true])("stages a secret-only edit until Apply with save=%s", async (save) => {
     mount("password", save);
+    render(<SettingsFooter />);
+    const apply = screen.getByRole("button", { name: "Apply" });
+    expect(apply).toBeDisabled();
     const input = enterSecret();
-    expect(mocks.store).not.toHaveBeenCalled();
     fireEvent.blur(input);
-    await waitFor(() => expect(mocks.store).toHaveBeenCalledTimes(1));
-    expectStored(save);
-    expect(JSON.stringify(useSettingsDialog.getState()).includes(typed)).toBe(false);
+    expect(mocks.store).not.toHaveBeenCalled();
+    expect(apply).toBeEnabled();
+    expect(useSettingsDialog.getState().staged).toEqual({});
     expect(JSON.stringify(useProject.getState().settings).includes(typed)).toBe(false);
-    // Secret-only edits persist on blur even though Apply has no staged JSON to write.
-    expect(await applySettings()).toBe(true);
+    await act(async () => fireEvent.click(apply));
+    expect(mocks.store).toHaveBeenCalledOnce();
     expectStored(save);
+    expect(apply).toBeDisabled();
+    expect(input).toHaveValue("");
   });
 
-  it("uses the latest Save choice after typing, including after a test", async () => {
+  it.each([false, true])("Cancel discards a typed credential without storing it (new=%s)", async (isNew) => {
+    mount();
+    if (isNew) fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    render(<SettingsFooter />);
+    fireEvent.blur(enterSecret());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mocks.store).not.toHaveBeenCalled();
+    expect(useSettingsDialog.getState()).toMatchObject({ open: false, stagedSecrets: {} });
+  });
+
+  it("uses the latest Save choice only when applying, including after a test", async () => {
     mount();
     enterSecret();
     fireEvent.click(screen.getByRole("checkbox", { name: "Save password" }));
-    await waitFor(() => expect(mocks.store).toHaveBeenCalledTimes(1));
-    expectStored(true);
     fireEvent.click(screen.getByRole("button", { name: "Test Connection" }));
     await screen.findByText("Connected");
-    expectStored(true);
     expect(mocks.test.mock.calls[0]?.[1] === typed).toBe(true);
     fireEvent.click(screen.getByRole("checkbox", { name: "Save password" }));
-    await waitFor(() => expect(mocks.store).toHaveBeenCalledTimes(3));
+    expect(mocks.store).not.toHaveBeenCalled();
+    await act(async () => expect(await applySettings()).toBe(true));
+    expect(mocks.store).toHaveBeenCalledOnce();
     expectStored(false);
   });
 
-  it("serializes blur and checkbox writes so a slow earlier write cannot override Save", async () => {
+  it("treats an emptied field as no new credential for Apply and Test Connection", async () => {
     mount();
-    let finish!: () => void;
-    mocks.store.mockReturnValueOnce(
-      new Promise<void>((resolve) => {
-        finish = resolve;
-      }),
-    );
-    fireEvent.blur(enterSecret());
-    await waitFor(() => expect(mocks.store).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Save password" }));
-    expect(mocks.store).toHaveBeenCalledTimes(1);
-    await act(async () => finish());
-    await waitFor(() => expect(mocks.store).toHaveBeenCalledTimes(2));
-    expectStored(true);
+    render(<SettingsFooter />);
+    const input = enterSecret();
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input);
+    expect(useSettingsDialog.getState().stagedSecrets).toEqual({});
+    expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Test Connection" }));
+    await screen.findByText("Connected");
+    expect(mocks.test.mock.calls[0]?.[1]).toBeNull();
+    await act(async () => expect(await applySettings()).toBe(true));
+    expect(mocks.store).not.toHaveBeenCalled();
   });
 
-  it("stores and tests the typed passphrase even when the connection fails, without another prompt", async () => {
+  it("tests the staged passphrase without storing it when the connection fails", async () => {
     const { container } = mount("keyPair", true);
     mocks.test.mockResolvedValue({ status: "error", error: { kind: "io", message: "Connection refused" } });
     enterSecret("Passphrase");
     fireEvent.click(screen.getByRole("button", { name: "Test Connection" }));
     await screen.findByText("Connection refused");
-    expectStored(true);
+    expect(mocks.store).not.toHaveBeenCalled();
     expect(mocks.test.mock.calls[0]?.[1] === typed).toBe(true);
-    expect(mocks.store.mock.invocationCallOrder[0]! < mocks.test.mock.invocationCallOrder[0]!).toBe(true);
     expect(container.querySelectorAll('input[type="password"]')).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
   });
@@ -174,12 +185,11 @@ describe("SSH configuration credentials", () => {
       expect(container.querySelectorAll('input[type="password"]')).toHaveLength(1);
       expect(screen.getByLabelText("Password")).toHaveFocus();
       if (!entered) expect(mocks.store).not.toHaveBeenCalled();
-      typed = crypto.randomUUID();
-      enterSecret();
+      if (!entered) enterSecret();
       fireEvent.click(retry);
       await screen.findByText("Connected");
       expect(mocks.test.mock.calls.at(-1)?.[1] === typed).toBe(true);
-      expectStored(false);
+      expect(mocks.store).not.toHaveBeenCalled();
     },
   );
 
@@ -195,6 +205,7 @@ describe("SSH configuration credentials", () => {
     await screen.findByText("Connected");
     expect(mocks.trust).toHaveBeenCalledWith("ssh-test");
     expect(mocks.test.mock.calls.every((args) => args[1] === typed)).toBe(true);
+    expect(mocks.store).not.toHaveBeenCalled();
   });
 
   it("shows an existing password placeholder and leaves it untouched when nothing is typed", async () => {
@@ -219,14 +230,56 @@ describe("SSH configuration credentials", () => {
     expect(mocks.needsSecret).not.toHaveBeenCalled();
   });
 
-  it("reports a storage failure and retries it without logging the secret", async () => {
+  it("reports an Apply failure and keeps the field for retry", async () => {
     mount();
+    render(<SettingsFooter />);
     mocks.store.mockRejectedValueOnce(new Error("Unavailable"));
     const input = enterSecret();
-    fireEvent.blur(input);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not store SSH secret.");
-    fireEvent.blur(input);
-    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply" })));
+    expect(screen.getByText(/Could not save: SSH secret: Unavailable/)).toBeInTheDocument();
+    expect((input as HTMLInputElement).value === typed).toBe(true);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply" })));
     expectStored(false);
+    expect(mocks.store).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/Could not save:/)).toBeNull();
+  });
+
+  it("retains typed values when switching configurations, and drops them on deletion or Reset", async () => {
+    mount();
+    enterSecret();
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    const second = screen.getByLabelText("Password");
+    expect(second).toHaveValue("");
+    fireEvent.change(second, { target: { value: crypto.randomUUID() } });
+    fireEvent.mouseDown(screen.getByText("Test host", { exact: true }));
+    expect((screen.getByLabelText("Password") as HTMLInputElement).value === typed).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(useSettingsDialog.getState().stagedSecrets["ssh-test"]).toBeUndefined();
+    await act(async () => resetPage("tools.sshConfigurations"));
+    expect(useSettingsDialog.getState().stagedSecrets).toEqual({});
+    act(() => closeSettings());
+    expect(mocks.store).not.toHaveBeenCalled();
+  });
+
+  it("clears the displayed secret on Reset", () => {
+    mount();
+    const input = enterSecret();
+    act(() => resetPage("tools.sshConfigurations"));
+    expect(input).toHaveValue("");
+    expect(mocks.store).not.toHaveBeenCalled();
+  });
+
+  it("discards a staged secret on authentication changes", async () => {
+    const user = userEvent.setup();
+    mount();
+    enterSecret();
+    await user.click(screen.getByRole("button", { name: "Authentication type" }));
+    await user.click(await screen.findByRole("option", { name: "Key pair (OpenSSH or PuTTY)" }));
+    expect(screen.getByLabelText("Passphrase")).toHaveValue("");
+    expect(useSettingsDialog.getState().stagedSecrets).toEqual({});
+    await user.click(screen.getByRole("button", { name: "Authentication type" }));
+    await user.click(await screen.findByRole("option", { name: "Password" }));
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+    expect(mocks.store).not.toHaveBeenCalled();
   });
 });

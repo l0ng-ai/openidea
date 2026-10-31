@@ -1424,7 +1424,6 @@
   "Password": "密码",
   "Password:": "密码：",
   "Password already stored": "已存储密码",
-  "Could not store SSH secret.": "无法存储 SSH 密码或密码短语。",
   "Paste": "粘贴",
   "Paste on middle mouse button click": "点击鼠标中键时粘贴",
   "Patch copied to the clipboard": "补丁已复制到剪贴板",
