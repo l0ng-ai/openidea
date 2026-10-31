@@ -40,6 +40,7 @@ import { invalidateGoModules } from "./goModules";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
 import { recordRun, runServiceProvider } from "./services";
+import { ServiceImportHost } from "./serviceImport";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
@@ -276,6 +277,7 @@ export function activate(): () => void {
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
+    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
     registerServiceProvider(runServiceProvider),
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),

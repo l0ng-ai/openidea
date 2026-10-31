@@ -163,16 +163,38 @@ fn is_test_script(name: &str) -> bool {
     matches!(name, "test" | "vitest" | "jest") || name.starts_with("test:")
 }
 
+/// Long-running development servers of Vue projects (vite, Vue CLI, Nuxt, Quasar).
+const DEV_SCRIPTS: &[&str] = &["serve", "dev", "start", "preview"];
+const VUE_DEPS: &[&str] = &["vue", "vite", "@vue/cli-service", "nuxt", "@quasar/app-vite", "@quasar/app-webpack"];
+
+/// Whether the package uses a Vue dev server (its dev scripts become `vue` configurations).
+fn is_vue(pkg: &Json) -> bool {
+    let has = |key: &str| {
+        pkg.get(key).and_then(Json::as_object).is_some_and(|deps| VUE_DEPS.iter().any(|d| deps.contains_key(*d)))
+    };
+    has("dependencies") || has("devDependencies")
+}
+
 fn push_scripts(pkg: &Json, pm: &str, prefix: Option<&str>, cwd: Option<PathBuf>, out: &mut Vec<RunConfig>) {
     let Some(scripts) = pkg.get("scripts").and_then(Json::as_object) else { return };
     let mut names: Vec<&String> = scripts.keys().collect();
     names.sort();
     for script in names {
-        let (id, name) = match prefix {
-            Some(p) => (format!("npm:{p}:{script}"), format!("{p}: {pm} run {script}")),
-            None => (format!("npm:{script}"), format!("{pm} run {script}")),
+        // A Vue dev server is a type of its own (the Services window's Vue group); the rest stays npm.
+        let (kind, id, name) = if is_vue(pkg) && DEV_SCRIPTS.contains(&script.as_str()) {
+            let (id, name) = match prefix {
+                Some(p) => (format!("vue:{p}:{script}"), format!("{p}: {script}")),
+                None => (format!("vue:{script}"), script.to_string()),
+            };
+            ("vue", id, name)
+        } else {
+            let (id, name) = match prefix {
+                Some(p) => (format!("npm:{p}:{script}"), format!("{p}: {pm} run {script}")),
+                None => (format!("npm:{script}"), format!("{pm} run {script}")),
+            };
+            ("npm", id, name)
         };
-        let mut c = config(id, name, "npm", pm, &["run", script]).in_dir(cwd.clone()).debug("js-debug");
+        let mut c = config(id, name, kind, pm, &["run", script]).in_dir(cwd.clone()).debug("js-debug");
         if is_test_script(script) {
             c = c.test();
         }
@@ -530,7 +552,6 @@ const SPRING_SCAN_FILES: usize = 400;
 /// modules of the build in `build` that apply the Spring Boot plugin:
 /// `java -cp ${classpath} <class>` in the module, the classpath resolved at launch.
 fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
-    let mut budget = SPRING_SCAN_FILES;
     let mut modules = vec![build.to_path_buf()];
     let mut level = vec![build.to_path_buf()];
     for _ in 0..NESTED_BUILD_DEPTH {
@@ -538,12 +559,11 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
         modules.extend(level.iter().cloned());
     }
     for module in modules {
-        if budget == 0 {
-            break;
-        }
         if !applies_spring_boot(&module) {
             continue;
         }
+        // A budget per module: a large common library must not starve later app modules.
+        let mut budget = SPRING_SCAN_FILES;
         let module_rel = (module != root).then(|| relative(root, &module).to_string_lossy().replace('\\', "/"));
         for class in spring_boot_classes(&module, &mut budget) {
             let simple = class.rsplit(['.', '$']).next().unwrap_or(&class).to_owned();

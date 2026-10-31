@@ -1,9 +1,32 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
-import { DEFAULT_TYPES, readRan, readTypes, runServiceItems, sessionDetail, sessionStatus } from "./services";
+import { useProject } from "@/platform/project";
+import {
+  DEFAULT_TYPES,
+  addType,
+  categorizedTypes,
+  readHidden,
+  readRan,
+  readTypes,
+  runServiceItems,
+  runServiceProvider,
+  sessionDetail,
+  sessionStatus,
+} from "./services";
+import { KIND_OPTIONS, categoryOf } from "./configs";
 import { startedPort } from "./serverPort";
-import type { RunSession } from "./store";
-import type { DebugServiceSession } from "@/workbench/contributions";
+import { useRun, type RunSession } from "./store";
+import { registerRunConfigType, type DebugServiceSession } from "@/workbench/contributions";
+
+const { startRun, stopServiceSessions } = vi.hoisted(() => ({
+  startRun: vi.fn(),
+  stopServiceSessions: vi.fn(),
+}));
+vi.mock("./store", async (importOriginal) => ({ ...(await importOriginal<typeof import("./store")>()), startRun }));
+vi.mock("./serviceSessions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./serviceSessions")>()),
+  stopServiceSessions,
+}));
 
 const config = (id: string, kind: string): RunConfig => ({
   id,
@@ -199,13 +222,13 @@ describe("run configurations in Services", () => {
 describe("types added to Services", () => {
   beforeEach(() => localStorage.clear());
 
-  it("defaults to Spring Boot and persists the user's list per project", () => {
-    expect(readTypes("/p")).toEqual(["spring-boot"]);
+  it("defaults to Spring Boot and Vue and persists the user's list per project", () => {
+    expect(readTypes("/p")).toEqual(["spring-boot", "vue"]);
     localStorage.setItem("openidea.services.runTypes:/p", JSON.stringify(["npm"]));
     expect(readTypes("/p")).toEqual(["npm"]);
     localStorage.setItem("openidea.services.runTypes:/p", "[]");
     expect(readTypes("/p")).toEqual([]);
-    expect(readTypes("/q")).toEqual(["spring-boot"]);
+    expect(readTypes("/q")).toEqual(["spring-boot", "vue"]);
   });
 });
 
@@ -252,5 +275,204 @@ describe("embedded web server port", () => {
     expect(startedPort("Tomcat initialized with port 8080 (http)")).toBeNull();
     expect(startedPort("Started DemoApplication in 1.2 seconds")).toBeNull();
     expect(startedPort("Tomcat started on port 99999")).toBeNull();
+  });
+
+  it("reads the port from Vite and Vue CLI dev server lines", () => {
+    expect(startedPort("  ➜  Local:   http://localhost:5173/")).toBe(5173);
+    expect(startedPort("- Local:   http://localhost:8080/")).toBe(8080);
+    expect(startedPort("  ➜  Local:   http://127.0.0.1:7001/")).toBe(7001);
+    expect(startedPort("  ➜  Local:   http://[::1]:4173/")).toBe(4173);
+    expect(startedPort("  ➜  Network: http://192.168.1.5:5173/")).toBeNull();
+    expect(startedPort("Compiled successfully in 123 ms")).toBeNull();
+  });
+});
+
+describe("open in browser", () => {
+  const item = () => ({ key: "run:config:a", label: "a", icon: "" });
+  const hasBrowser = () => runServiceProvider.actions!(item()).some((a) => a.id === "open-browser");
+
+  beforeEach(() => {
+    useProject.setState({ project: null });
+    useRun.setState({ configs: [], sessions: [] });
+  });
+
+  it("offers Open in Browser while a session runs with an HTTP port", () => {
+    useRun.setState({
+      configs: [config("a", "spring-boot")],
+      sessions: [session("s1", config("a", "spring-boot"), "running", 1, { httpPort: 8080 })],
+    });
+    expect(hasBrowser()).toBe(true);
+  });
+
+  it("hides Open in Browser without a port or a running session", () => {
+    useRun.setState({
+      configs: [config("a", "spring-boot")],
+      sessions: [session("s1", config("a", "spring-boot"), "running", 1)],
+    });
+    expect(hasBrowser()).toBe(false);
+    useRun.setState({ sessions: [session("s1", config("a", "spring-boot"), "finished", 1, { httpPort: 8080 })] });
+    expect(hasBrowser()).toBe(false);
+  });
+});
+
+describe("group batch actions", () => {
+  const group = () => ({ key: "run:type:spring-boot", label: "Spring Boot", icon: "" });
+  const action = (id: string) => runServiceProvider.actions!(group()).find((a) => a.id === id)!;
+
+  beforeEach(() => {
+    startRun.mockReset().mockResolvedValue(null);
+    stopServiceSessions.mockReset().mockResolvedValue(undefined);
+    useProject.setState({ project: null });
+    useRun.setState({ configs: [], sessions: [] });
+    addType("spring-boot");
+  });
+
+  it("enables Run All and Restart All with stopped configurations, Stop All only with running ones", () => {
+    useRun.setState({ configs: [config("a", "spring-boot"), config("b", "spring-boot")], sessions: [] });
+    expect(action("run-all").disabled).toBe(false);
+    expect(action("restart-all").disabled).toBe(false);
+    expect(action("stop-all").disabled).toBe(true);
+  });
+
+  it("enables Stop All when one runs and Run All while others are stopped", () => {
+    useRun.setState({
+      configs: [config("a", "spring-boot"), config("b", "spring-boot")],
+      sessions: [session("s1", config("a", "spring-boot"), "running", 1)],
+    });
+    expect(action("stop-all").disabled).toBe(false);
+    expect(action("run-all").disabled).toBe(false);
+  });
+
+  it("disables Run All when everything runs", () => {
+    useRun.setState({
+      configs: [config("a", "spring-boot")],
+      sessions: [session("s1", config("a", "spring-boot"), "running", 1)],
+    });
+    expect(action("run-all").disabled).toBe(true);
+  });
+
+  it("starts stopped configurations in display order, skipping running ones", async () => {
+    const a = config("a", "spring-boot");
+    const b = config("b", "spring-boot");
+    const c = config("c", "spring-boot");
+    useRun.setState({ configs: [a, b, c], sessions: [session("s1", a, "running", 1)] });
+    await action("run-all").run();
+    expect(startRun.mock.calls).toEqual([
+      [b, undefined, undefined, { show: false }],
+      [c, undefined, undefined, { show: false }],
+    ]);
+  });
+
+  it("restarts: stops the running ones, then starts every configuration in order", async () => {
+    const a = config("a", "spring-boot");
+    const b = config("b", "spring-boot");
+    useRun.setState({ configs: [a, b], sessions: [session("s1", a, "running", 1)] });
+    await action("restart-all").run();
+    expect(stopServiceSessions).toHaveBeenCalledOnce();
+    expect(stopServiceSessions.mock.calls[0]![0].map((s: { config: RunConfig }) => s.config.id)).toEqual(["a"]);
+    expect(startRun.mock.calls).toEqual([
+      [a, undefined, undefined, { show: false }],
+      [b, undefined, undefined, { show: false }],
+    ]);
+  });
+});
+
+describe("hidden configurations", () => {
+  const a = config("a", "spring-boot");
+  const b = config("b", "spring-boot");
+
+  it("hides a configuration unless it runs", () => {
+    const hidden = { "spring-boot": ["a"] };
+    const stopped = runServiceItems([a, b], [], DEFAULT_TYPES, [], {}, [], hidden);
+    expect(stopped[0]!.children!.map((c) => c.key)).toEqual(["run:config:b"]);
+    const running = runServiceItems([a, b], [session("s1", a, "running", 1)], DEFAULT_TYPES, [], {}, [], hidden);
+    expect(running[0]!.children!.map((c) => c.key)).toEqual(["run:config:a", "run:config:b"]);
+  });
+
+  it("keeps an empty default group whose configurations are all hidden", () => {
+    const items = runServiceItems([a], [], DEFAULT_TYPES, [], {}, [], { "spring-boot": ["a"] });
+    expect(items).toHaveLength(1);
+    expect(items[0]!.children).toEqual([]);
+  });
+
+  it("persists hidden ids per project", () => {
+    localStorage.clear();
+    expect(readHidden("/p")).toEqual({});
+    localStorage.setItem("openidea.services.runHidden:/p", JSON.stringify({ "spring-boot": ["a"] }));
+    expect(readHidden("/p")).toEqual({ "spring-boot": ["a"] });
+    expect(readHidden("/q")).toEqual({});
+    expect(readHidden(null)).toEqual({});
+  });
+});
+
+describe("add service categories", () => {
+  it("categorizes every built-in kind; update the table when adding kinds", () => {
+    const expected: Record<string, string> = {
+      npm: "JavaScript",
+      vue: "JavaScript",
+      node: "JavaScript",
+      bun: "JavaScript",
+      deno: "JavaScript",
+      cargo: "Rust",
+      rustc: "Rust",
+      gradle: "Build Tools",
+      maven: "Build Tools",
+      cmake: "Build Tools",
+      make: "Build Tools",
+      just: "Build Tools",
+      go: "Go",
+      python: "Python",
+      pytest: "Python",
+      cc: "C/C++",
+      shell: "Shell",
+      program: "Shell",
+      compound: "Others",
+      application: "Java",
+      "spring-boot": "Java",
+      native: "Java",
+      "java-file": "Java",
+      kotlin: "Java",
+      kotlinc: "Java",
+      "scala-cli": "Java",
+      ruby: "Others",
+      php: "Others",
+      perl: "Others",
+      lua: "Others",
+      r: "Others",
+      swift: "Others",
+      dart: "Others",
+      elixir: "Others",
+    };
+    for (const { value } of KIND_OPTIONS) expect(categoryOf(value), value).toBe(expected[value]);
+  });
+
+  it("orders buckets: fixed order first, unlisted plugin categories after, Others last", () => {
+    const dispose = registerRunConfigType({
+      id: "fake-cloud",
+      label: "Cloud Run",
+      icon: "cloud",
+      group: "Clouds",
+      fields: [],
+      commandLine: () => null,
+    });
+    const buckets = categorizedTypes(["ruby", "spring-boot", "npm", "fake-cloud", "gradle"]);
+    expect(buckets.map((b) => b.category)).toEqual(["Java", "Build Tools", "JavaScript", "Clouds", "Others"]);
+    dispose();
+  });
+
+  it("keeps a single-member category as its own bucket", () => {
+    expect(categorizedTypes(["go", "ruby"])).toEqual([
+      { category: "Go", kinds: ["go"] },
+      { category: "Others", kinds: ["ruby"] },
+    ]);
+  });
+
+  it("sorts each bucket's kinds by their label", () => {
+    const buckets = categorizedTypes(["spring-boot", "application", "java-file", "native"]);
+    expect(buckets[0]).toEqual({ category: "Java", kinds: ["application", "java-file", "native", "spring-boot"] });
+  });
+
+  it("groups nothing for an empty list", () => {
+    expect(categorizedTypes([])).toEqual([]);
   });
 });
