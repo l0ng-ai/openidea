@@ -67,7 +67,7 @@ fn undo_id(events: &Mutex<Vec<IdeEvent>>) -> u32 {
         .iter()
         .rev()
         .find_map(|event| match event {
-            IdeEvent::WorkspaceEditApplied { id } => Some(*id),
+            IdeEvent::WorkspaceEditApplied { id, .. } => Some(*id),
             _ => None,
         })
         .expect("successful transaction has one undo record")
@@ -301,4 +301,87 @@ fn preflight_never_writes_through_copied_or_moved_symlinks() {
         assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
         assert!(!moved.exists());
     }
+}
+
+#[test]
+fn rename_after_restoring_inplace_typing_saves_but_real_unsaved_work_stays_dirty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("main.ts");
+    std::fs::write(&path, "old").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&path).unwrap();
+    for (version, text) in [(0, "own"), (1, "old")] {
+        docs.edit(info.id, version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: text.into() }] })
+            .unwrap();
+    }
+    assert!(docs.snapshot(info.id).unwrap().dirty);
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
+    let id = undo_id(&events);
+    docs.undo_workspace_edit(id).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+    docs.redo_workspace_edit(id).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
+    docs.edit(
+        info.id,
+        docs.version(info.id).unwrap(),
+        ChangeSet { changes: vec![TextChange { from: 3, to: 3, insert: " own".into() }] },
+    )
+    .unwrap();
+    assert_eq!(docs.undo_workspace_edit(id).unwrap_err().kind, ErrorKind::OutOfSync);
+}
+
+#[test]
+fn duplicate_edits_keep_versions_and_apply_one_replacement() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("main.cpp");
+    std::fs::write(&path, "old").unwrap();
+    let docs = documents();
+    let info = docs.open(&path).unwrap();
+    let mut versioned = edit(&path, "new_long");
+    if let FileEdit::Edit { version, .. } = &mut versioned {
+        *version = Some(info.version as i32);
+    }
+    let mut workspace = WorkspaceEdit { files: vec![edit(&path, "new_long"), versioned], ..Default::default() };
+    workspace.deduplicate();
+    assert_eq!(workspace.files.len(), 1);
+    assert!(matches!(workspace.files[0], FileEdit::Edit { version: Some(0), .. }));
+    docs.apply_workspace_edit(&workspace).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new_long");
+
+    let mut conflicting = workspace.files[0].clone();
+    if let FileEdit::Edit { version, .. } = &mut conflicting {
+        *version = Some(99);
+    }
+    workspace.files.push(conflicting);
+    workspace.deduplicate();
+    assert_eq!(workspace.files.len(), 2, "deduplication must not discard incompatible versions");
+    assert_eq!(docs.apply_workspace_edit(&workspace).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "new_long");
+}
+
+#[test]
+fn undo_accepts_typing_that_was_reverted_to_the_saved_refactoring() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("main.ts");
+    std::fs::write(&path, "old").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&path).unwrap();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    let id = undo_id(&events);
+    for text in ["own", "new"] {
+        docs.edit(
+            info.id,
+            docs.version(info.id).unwrap(),
+            ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: text.into() }] },
+        )
+        .unwrap();
+    }
+    assert!(docs.snapshot(info.id).unwrap().dirty);
+    docs.undo_workspace_edit(id).unwrap();
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "old");
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
 }

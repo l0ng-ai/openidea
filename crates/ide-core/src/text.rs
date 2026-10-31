@@ -114,7 +114,7 @@ impl WorkspaceEdit {
     /// Resource operations separate batches because later edits may use the new contents.
     pub fn deduplicate(&mut self) {
         let mut files = Vec::new();
-        let mut batch = std::collections::HashMap::<(std::path::PathBuf, Option<i32>), usize>::new();
+        let mut batch = std::collections::HashMap::<std::path::PathBuf, usize>::new();
         let mut resolve_aliases = true;
         for file in std::mem::take(&mut self.files) {
             match file {
@@ -124,11 +124,20 @@ impl WorkspaceEdit {
                     } else {
                         path.to_path_buf()
                     };
-                    let index = *batch.entry((path.clone(), version)).or_insert_with(|| {
-                        files.push(FileEdit::Edit { path: path.into(), edits: Vec::new(), version });
+                    let index = *batch.entry(path.clone()).or_insert_with(|| {
+                        files.push(FileEdit::Edit { path: path.clone().into(), edits: Vec::new(), version });
                         files.len() - 1
                     });
-                    let FileEdit::Edit { edits: own, .. } = &mut files[index] else { unreachable!() };
+                    let FileEdit::Edit { edits: own, version: expected, .. } = &mut files[index] else {
+                        unreachable!()
+                    };
+                    if expected.is_some() && version.is_some() && *expected != version {
+                        // Keep incompatible constraints so application rejects them
+                        // before changing any file instead of silently losing one.
+                        files.push(FileEdit::Edit { path: path.into(), edits, version });
+                        continue;
+                    }
+                    *expected = expected.or(version);
                     for edit in edits {
                         if !own.contains(&edit) {
                             own.push(edit);

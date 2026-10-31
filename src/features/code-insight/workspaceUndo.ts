@@ -1,5 +1,5 @@
-import { whenAllSynced } from "@/editor/api";
-import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { whenAllSynced, workspaceEditHistory } from "@/editor/api";
+import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 
@@ -19,7 +19,7 @@ export function installWorkspaceEditUndo(): () => void {
               await whenAllSynced();
               if (project !== useProject.getState().project)
                 throw new Error("The project for this refactoring is no longer open");
-              await call(commands.undoWorkspaceEdit(id));
+              await workspaceEditHistory(id);
             } catch (error) {
               notifications().notify({
                 level: "error",

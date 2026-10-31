@@ -48,7 +48,7 @@ async fn preview_apply_and_grouped_undo_use_the_shared_host_commands() {
         .lock()
         .iter()
         .find_map(|event| match event {
-            IdeEvent::WorkspaceEditApplied { id } => Some(*id),
+            IdeEvent::WorkspaceEditApplied { id, .. } => Some(*id),
             _ => None,
         })
         .unwrap();
@@ -56,4 +56,9 @@ async fn preview_apply_and_grouped_undo_use_the_shared_host_commands() {
     assert_eq!(std::fs::read_to_string(&first).unwrap(), "old\n");
     assert_eq!(std::fs::read_to_string(&second).unwrap(), "own\n");
     assert_eq!(ops::doc::snapshot(&host, "main", info.id).await.unwrap().text, "old\n");
+    ops::lsp::redo_workspace_edit(&host, "main", id).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "new\n");
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), "new\n");
+    host.clear_workspace_edit_history_on_exit();
+    assert_eq!(ops::lsp::undo_workspace_edit(&host, "main", id).await.unwrap_err().kind, ErrorKind::NotFound);
 }
