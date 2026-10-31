@@ -79,3 +79,22 @@ async fn gradle_defaults_are_not_saved_as_explicit_run_choices() {
     assert_eq!(saved.env["JAVA_HOME"], "/explicit-jdk");
     assert_eq!(saved.command, gradle.command);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_cmake_before_launch_tasks_resolve_in_the_member() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    let member = root.join("native");
+    std::fs::create_dir(&member).unwrap();
+    std::fs::write(member.join("CMakeLists.txt"), "project(demo)").unwrap();
+    let workspace = root.join("workspace");
+    ide_workspace::workspace::Workspace::save(&workspace, "Native", vec![member.clone()], true).unwrap();
+    let host = host(&root.join("app"));
+    host.open_project("main", &workspace).unwrap();
+    let configs = ops::run::configs(&host, "main").unwrap();
+    let build = configs.iter().find(|c| c.kind == "cmake" && c.args.first().is_some_and(|a| a == "--build")).unwrap();
+    assert_eq!(build.cwd.as_deref(), Some(member.as_path()));
+    for task in &build.extras.before_launch {
+        assert!(configs.iter().any(|c| c.id == task.target && c.cwd == build.cwd));
+    }
+}

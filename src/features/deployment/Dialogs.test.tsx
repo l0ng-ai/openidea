@@ -18,7 +18,8 @@ function openSync(entries: SyncEntry[]) {
     sync: {
       server: "s1",
       serverName: "Staging",
-      path: "/work/app",
+      paths: ["/work/app"],
+      skipped: [],
       request: null,
       entries,
       error: null,

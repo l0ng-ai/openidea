@@ -54,6 +54,7 @@ describe("server list", () => {
     expect(nextServerName([a])).toBe("Server 2");
     expect(nextServerName([{ ...a, name: "Server 2" }])).toBe("Server 3");
     const fresh = newServer([a]);
+    expect(fresh.kind).toBe("sftp");
     expect(fresh.name).toBe("Server 2");
     expect(fresh.id).not.toBe("");
     expect(fresh.mappings).toEqual([{ local: "", deployment: "", web: "" }]);
@@ -61,6 +62,14 @@ describe("server list", () => {
     const copy = newServer([a], { ...a, rootPath: "/srv", excludedPaths: ["/srv/cache"] });
     expect(copy).toMatchObject({ name: "Server 1 (copy)", rootPath: "/srv", excludedPaths: ["/srv/cache"] });
     expect(copy.id).not.toBe("a");
+  });
+
+  it("copies a local server without changing its type or mappings", () => {
+    const local = { ...a, kind: "local" as const, rootPath: "/mounted/www" };
+    const copy = newServer([local], local);
+    expect(copy).toMatchObject({ kind: "local", rootPath: "/mounted/www", sshConfig: "" });
+    expect(copy.mappings).toEqual(local.mappings);
+    expect(copy.mappings).not.toBe(local.mappings);
   });
 
   it("keeps the default server valid", () => {

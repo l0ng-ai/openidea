@@ -17,6 +17,17 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, Window};
 
+/// Browse before connecting, using the desktop's SSH configuration even in a remote window.
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_bootstrap_list(
+    state: State<'_, AppState>,
+    ssh: String,
+    path: String,
+) -> IdeResult<Vec<ide_ssh::RemoteEntry>> {
+    state.remote.list(&ide_ssh::FsConnection::Sftp { ssh }, &path).await
+}
+
 /// Where the server is installed on the remote host (per version).
 fn install_dir(version: &str) -> String {
     format!("~/.openidea/server/{version}")

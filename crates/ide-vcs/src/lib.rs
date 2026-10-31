@@ -2,12 +2,12 @@
 //! writes (commit, checkout, push/pull, stash, merge) shell out to `git` so
 //! hooks, credentials and signing behave exactly as on the command line.
 
-use encoding_rs::Encoding;
 use ide_core::ignored::IgnoredNames;
 use ide_core::{CancellationToken, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
+pub use text_encoding::TextEncoding;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -555,7 +555,13 @@ impl Repo {
     }
     /// Content of `path` at `rev` (default HEAD); `None` if absent there.
     /// `rev` may be any revision git understands, or `":"` / `":0"` for the index.
-    pub fn file_at(&self, path: &Path, rev: Option<&str>, encoding: &'static Encoding) -> IdeResult<Option<String>> {
+    pub fn file_at(
+        &self,
+        path: &Path,
+        rev: Option<&str>,
+        encoding: impl Into<TextEncoding>,
+    ) -> IdeResult<Option<String>> {
+        let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let rel = self.rel_path(path)?;
         let repo = self.gix()?;
@@ -572,8 +578,9 @@ impl Repo {
         path: &Path,
         current: &str,
         selected: &[usize],
-        encoding: &'static Encoding,
+        encoding: impl Into<TextEncoding>,
     ) -> IdeResult<()> {
+        let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::stage_hunks(self, path, current, selected, encoding)
     }
@@ -588,8 +595,9 @@ impl Repo {
         path: &Path,
         current_text: &str,
         against_index: bool,
-        encoding: &'static Encoding,
+        encoding: impl Into<TextEncoding>,
     ) -> IdeResult<Vec<LineHunk>> {
+        let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let Ok(rel) = self.rel_path(path) else { return Ok(Vec::new()) };
         if rel.is_empty() || rel == ".git" || rel.starts_with(".git/") {
@@ -617,8 +625,9 @@ impl Repo {
         path: &Path,
         current_text: Option<&str>,
         revision: Option<&str>,
-        encoding: &'static Encoding,
+        encoding: impl Into<TextEncoding>,
     ) -> IdeResult<Vec<BlameLine>> {
+        let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::blame(self, path, current_text, revision, encoding)
     }
@@ -656,7 +665,8 @@ impl Repo {
     }
     /// Unified diff of a file: index↔worktree (`staged == false`, untracked files diff
     /// against /dev/null) or HEAD↔index (`staged == true`). Empty when unchanged.
-    pub fn diff_text(&self, path: &Path, staged: bool, encoding: &'static Encoding) -> IdeResult<String> {
+    pub fn diff_text(&self, path: &Path, staged: bool, encoding: impl Into<TextEncoding>) -> IdeResult<String> {
+        let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::diff_text(self, path, staged, encoding)
     }
@@ -679,9 +689,13 @@ impl Repo {
     }
     /// Applies a unified-diff patch to the index (partial staging of hunks/lines).
     /// Zero-context patches (see [`build_partial_patch`]) are accepted.
-    pub fn stage_patch(&self, patch: &str, encoding: &dyn Fn(&Path) -> IdeResult<&'static Encoding>) -> IdeResult<()> {
+    pub fn stage_patch<E: Into<TextEncoding>>(
+        &self,
+        patch: &str,
+        encoding: &dyn Fn(&Path) -> IdeResult<E>,
+    ) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::stage_patch(self, patch, encoding)
+        write::stage_patch(self, patch, &|path| encoding(path).map(Into::into))
     }
     /// Discards unstaged changes: tracked paths are restored from the index (staged
     /// changes are kept), untracked files and directories are deleted.
@@ -694,17 +708,17 @@ impl Repo {
     pub fn commit(&self, message: &str, amend: bool, sign_off: bool) -> IdeResult<String> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let options = CommitOptions { amend, sign_off, author: None, run_hooks: true, partial: Vec::new() };
-        write::commit(self, message, &options, &|_| Ok(encoding_rs::UTF_8))
+        write::commit(self, message, &options, &|_| Ok(encoding_rs::UTF_8.into()))
     }
     /// Commits with the Commit Options popup's choices.
-    pub fn commit_with(
+    pub fn commit_with<E: Into<TextEncoding>>(
         &self,
         message: &str,
         options: &CommitOptions,
-        encoding: &dyn Fn(&Path) -> IdeResult<&'static Encoding>,
+        encoding: &dyn Fn(&Path) -> IdeResult<E>,
     ) -> IdeResult<String> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::commit(self, message, options, encoding)
+        write::commit(self, message, options, &|path| encoding(path).map(Into::into))
     }
     /// Switches to `branch`. With `create`, creates it at HEAD. Without, a remote branch
     /// (`origin/x`) gets a local tracking branch and any other revision is checked out
@@ -965,7 +979,7 @@ impl Repo {
     pub fn create_patch(&self, paths: &[PathBuf], reverse: bool) -> IdeResult<String> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let rel = self.rel_paths(paths)?;
-        Ok(patch::working_patch(self, &rel, reverse)?.0)
+        Ok(patch::working_patch(self, &rel, reverse, true)?.0)
     }
     /// Patch of the changes made by `commits` (oldest first).
     pub fn create_commits_patch(&self, commits: &[String], reverse: bool) -> IdeResult<String> {
@@ -999,7 +1013,8 @@ impl Repo {
     }
     /// The versions of a conflicted file with the user's work as `ours`, as IDEA's merge
     /// dialog shows them (sides swapped during a rebase).
-    pub fn merge_versions(&self, path: &Path, encoding: &'static Encoding) -> IdeResult<MergeVersions> {
+    pub fn merge_versions(&self, path: &Path, encoding: impl Into<TextEncoding>) -> IdeResult<MergeVersions> {
+        let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let (base, ours, theirs) = self.conflict_versions(path, encoding)?;
         let sides = self.merge_sides()?;
@@ -1014,8 +1029,9 @@ impl Repo {
     pub fn conflict_versions(
         &self,
         path: &Path,
-        encoding: &'static Encoding,
+        encoding: impl Into<TextEncoding>,
     ) -> IdeResult<(Option<String>, Option<String>, Option<String>)> {
+        let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let rel = self.rel_path(path)?;
         let repo = self.gix()?;

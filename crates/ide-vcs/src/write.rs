@@ -1,5 +1,6 @@
 //! Operations delegated to the git CLI (all writes, plus blame and textual diffs).
 
+use crate::TextEncoding;
 use crate::cli::{self, run};
 use crate::repo::{gx, resolve};
 use crate::text_encoding::{decode, encode, has_bom, is_binary};
@@ -7,7 +8,6 @@ use crate::{
     BlameLine, CheckoutMode, CheckoutOptions, CheckoutOutcome, CommitOptions, DeletedBranch, DivergedLocal,
     PushBranchOptions, Repo,
 };
-use encoding_rs::Encoding;
 use gix::bstr::{BStr, ByteSlice};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::path::{Path, PathBuf};
@@ -48,7 +48,7 @@ pub(crate) fn blame(
     path: &Path,
     current_text: Option<&str>,
     revision: Option<&str>,
-    encoding: &'static Encoding,
+    encoding: TextEncoding,
 ) -> IdeResult<Vec<BlameLine>> {
     let rel = r.rel_path(path)?;
     let revision = match revision {
@@ -61,7 +61,11 @@ pub(crate) fn blame(
         Err(error) => return Err(error.into()),
     };
     let text = current_text.map(str::to_owned).unwrap_or_else(|| decode(&disk, encoding).into_owned());
+    if encoding.has_ascii_conversion() {
+        return converted_blame(r, path, &rel, &text, revision, encoding);
+    }
     let contents = match current_text {
+        Some(_) if crate::diff::normalize_eol(&text) == crate::diff::normalize_eol(&decode(&disk, encoding)) => disk,
         Some(_) => {
             let disk_text = decode(&disk, encoding);
             let eol = if disk_text.contains("\r\n") {
@@ -118,6 +122,46 @@ pub(crate) fn blame(
     Ok(lines)
 }
 
+fn converted_blame(
+    r: &Repo,
+    path: &Path,
+    rel: &str,
+    text: &str,
+    revision: &str,
+    encoding: TextEncoding,
+) -> IdeResult<Vec<BlameLine>> {
+    let current = crate::diff::normalize_eol(text);
+    let mut result = uncommitted_lines(current.split_inclusive('\n').count());
+    let Some(base) = r.file_bytes_at(path, Some(revision))? else { return Ok(result) };
+    let out = run(r.root(), &["--literal-pathspecs", "blame", "--porcelain", revision, "--", rel], None)?;
+    let physical = crate::blame::parse_porcelain(&out.stdout_str());
+    let raw = crate::text_encoding::decode_raw(&base, encoding);
+    let raw = crate::diff::normalize_eol(&raw);
+    let mut logical = Vec::new();
+    for (line, metadata) in raw.split_inclusive('\n').zip(physical) {
+        let displayed = encoding.display_text(line);
+        let displayed = crate::diff::normalize_eol(&displayed);
+        logical.extend(std::iter::repeat_n(metadata, displayed.split_inclusive('\n').count()));
+    }
+    let base = decode(&base, encoding);
+    let hunks = crate::diff::line_hunks(&base, &current);
+    let (mut old, mut new) = (0usize, 0usize);
+    for h in hunks {
+        let unchanged = h.start as usize - new;
+        for i in 0..unchanged {
+            if let Some(metadata) = logical.get(old + i) {
+                result[new + i] = metadata.clone();
+            }
+        }
+        old = (h.old_start + h.old_lines) as usize;
+        new = (h.start + h.lines) as usize;
+    }
+    for (line, metadata) in result[new..].iter_mut().zip(&logical[old.min(logical.len())..]) {
+        *line = metadata.clone();
+    }
+    Ok(result)
+}
+
 fn uncommitted_lines(n: usize) -> Vec<BlameLine> {
     let now =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
@@ -131,7 +175,7 @@ fn uncommitted_lines(n: usize) -> Vec<BlameLine> {
         .collect()
 }
 
-pub(crate) fn diff_text(r: &Repo, path: &Path, staged: bool, encoding: &'static Encoding) -> IdeResult<String> {
+pub(crate) fn diff_text(r: &Repo, path: &Path, staged: bool, encoding: TextEncoding) -> IdeResult<String> {
     let rel = r.rel_path(path)?;
     if !crate::execution_allowed() {
         let old = r.file_at(path, Some(if staged { "HEAD" } else { ":0" }), encoding)?.unwrap_or_default();
@@ -182,17 +226,19 @@ pub(crate) fn unstage(r: &Repo, paths: &[PathBuf]) -> IdeResult<()> {
     }
 }
 
-pub(crate) fn stage_patch(
-    r: &Repo,
-    patch: &str,
-    encoding: &dyn Fn(&Path) -> IdeResult<&'static Encoding>,
-) -> IdeResult<()> {
+pub(crate) fn stage_patch(r: &Repo, patch: &str, encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>) -> IdeResult<()> {
     if patch.trim().is_empty() {
         return Ok(());
     }
     let mut patch = patch.to_string();
     if !patch.ends_with('\n') {
         patch.push('\n');
+    }
+    if crate::patch::parse_patch(&patch)
+        .iter()
+        .any(|file| encoding(&r.abs_path(&file.path)).is_ok_and(TextEncoding::has_ascii_conversion))
+    {
+        return crate::patch::stage_converted_patch(r, &patch, encoding);
     }
     let bytes = crate::patch::encode_text_patch(r, &patch, encoding)?;
     run(r.root(), &["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", "--recount", "-"], Some(&bytes))
@@ -287,7 +333,7 @@ pub(crate) fn commit(
     r: &Repo,
     message: &str,
     options: &CommitOptions,
-    encoding: &dyn Fn(&Path) -> IdeResult<&'static Encoding>,
+    encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
 ) -> IdeResult<String> {
     let mut args = vec!["commit", "-q", "--cleanup=whitespace"];
     if options.amend {
@@ -341,7 +387,7 @@ fn commit_partial(
     commit_args: &[&str],
     stdin: Option<&[u8]>,
     partial: &[crate::PartialCommitFile],
-    encoding: &dyn Fn(&Path) -> IdeResult<&'static Encoding>,
+    encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
 ) -> IdeResult<()> {
     let tmp = TempIndex(r.git_dir.join("openidea-partial-index"));
     let index = r.git_dir.join("index");
@@ -882,7 +928,7 @@ fn push_remote(r: &Repo) -> IdeResult<String> {
         .ok_or_else(|| IdeError::invalid("no remote configured"))
 }
 
-fn write_index_blob(r: &Repo, rel: &str, bytes: &[u8], env: &[(&str, &std::ffi::OsStr)]) -> IdeResult<()> {
+pub(crate) fn write_index_blob(r: &Repo, rel: &str, bytes: &[u8], env: &[(&str, &std::ffi::OsStr)]) -> IdeResult<()> {
     let entry =
         cli::run_env(r.root(), &["--literal-pathspecs", "ls-files", "--stage", "--", rel], None, env)?.stdout_str();
     let mode = entry.split_whitespace().next().unwrap_or("100644");
@@ -896,7 +942,7 @@ pub(crate) fn stage_hunks(
     path: &Path,
     current: &str,
     selected: &[usize],
-    encoding: &'static Encoding,
+    encoding: TextEncoding,
 ) -> IdeResult<()> {
     if selected.is_empty() {
         return Ok(());
@@ -917,7 +963,7 @@ pub(crate) fn stage_hunks(
 }
 
 // Git headers contain UTF-8 paths; only source lines use the file's encoding.
-fn decode_diff(bytes: &[u8], encoding: &'static Encoding) -> String {
+fn decode_diff(bytes: &[u8], encoding: TextEncoding) -> String {
     let mut hunks = false;
     let mut text = String::new();
     for line in bytes.split_inclusive(|&b| b == b'\n') {
@@ -928,7 +974,7 @@ fn decode_diff(bytes: &[u8], encoding: &'static Encoding) -> String {
             hunks = true;
         }
         if hunks {
-            text.push_str(&decode(line, encoding));
+            text.push_str(&crate::text_encoding::decode_raw(line, encoding));
         } else {
             text.push_str(&String::from_utf8_lossy(line));
         }

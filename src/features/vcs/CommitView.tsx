@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, typ
 import { tx } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
+import { dirname } from "@/platform/project";
 import {
   Button,
   Checkbox,
@@ -481,6 +482,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           roots={roots}
           getKey={(n) => n.key}
           getLabel={nodeText}
+          getDirectory={(n) => (n.path && n.type !== "group" ? (n.type === "dir" ? n.path : dirname(n.path)) : null)}
           getChildren={(n) => n.children}
           isExpandable={(n) => n.type !== "file"}
           expanded={expanded}

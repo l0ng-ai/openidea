@@ -187,10 +187,13 @@ pub async fn vcs_branch_info(host: &Host, window: &str, repo: Option<PathBuf>) -
 }
 
 /// Gutter change markers for a file, computed against its current (unsaved) text.
-pub fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
+pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
     let project = host.project(window)?;
-    let text = project.text_of(&path)?;
-    project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
+    blocking(move || {
+        let text = project.text_of(&path)?;
+        project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
+    })
+    .await
 }
 
 pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<String>) -> IdeResult<Option<String>> {
@@ -210,8 +213,8 @@ pub async fn vcs_blame(
 ) -> IdeResult<Vec<BlameLine>> {
     let project = host.project(window)?;
     // An explicit text wins (merge view annotates its side panes, not the worktree).
-    let text = text.or_else(|| project.documents.text_of(&path));
     blocking(move || {
+        let text = text.or_else(|| project.documents.text_of(&path));
         project.with_repo_of(&path, |r| {
             r.blame(&path, text.as_deref(), revision.as_deref(), project.vcs_encoding(&path, revision.as_deref())?)
         })
@@ -528,15 +531,18 @@ pub fn vcs_diff_hunks(_host: &Host, _window: &str, old_text: String, new_text: S
 
 /// Stages only the selected hunks of a file's working-tree changes.
 /// Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
-pub fn vcs_stage_hunks(host: &Host, window: &str, path: PathBuf, hunks: Vec<u32>) -> IdeResult<()> {
+pub async fn vcs_stage_hunks(host: &Host, window: &str, path: PathBuf, hunks: Vec<u32>) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let encoding = project.vcs_encoding(&path, Some(":0"))?;
-    let current = ide_vfs::load_text_as(&path, encoding.name())?.text;
-    project.with_repo_of(&path, |r| {
-        let selected: Vec<usize> = hunks.iter().map(|&h| h as usize).collect();
-        r.stage_hunks(&path, &current, &selected, encoding)
+    blocking(move || {
+        let encoding = project.vcs_encoding(&path, Some(":0"))?;
+        let current = project.documents.load_file_as(&path, encoding.charset.name())?.text;
+        project.with_repo_of(&path, |r| {
+            let selected: Vec<usize> = hunks.iter().map(|&h| h as usize).collect();
+            r.stage_hunks(&path, &current, &selected, encoding)
+        })
     })
+    .await
 }
 
 /// Clones a repository (Get from VCS). Works without an open project.
@@ -835,18 +841,26 @@ pub fn vcs_shelves(host: &Host, window: &str) -> IdeResult<Vec<ShelvedChangeList
 
 /// Unshelve: applies the shelved patch (3-way merging; conflicts are left for the
 /// merge UI); with `remove`, deletes it from the shelf.
-pub async fn vcs_unshelve(host: &Host, window: &str, id: String, remove: bool) -> IdeResult<ApplyOutcome> {
+pub async fn vcs_unshelve(
+    host: &Host,
+    window: &str,
+    id: String,
+    remove: bool,
+    path: Option<String>,
+) -> IdeResult<ApplyOutcome> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo_recorded(None, Some("Unshelve"), |r| r.unshelve(&shelf_dir(&project.root), &id, remove))
+        project.with_repo_recorded(None, Some("Unshelve"), |r| {
+            ide_vcs::shelf::unshelve_path(r, &shelf_dir(&project.root), &id, remove, path.as_deref())
+        })
     })
     .await
 }
 
-pub fn vcs_shelf_delete(host: &Host, window: &str, id: String) -> IdeResult<()> {
+pub fn vcs_shelf_delete(host: &Host, window: &str, id: String, path: Option<String>) -> IdeResult<()> {
     let project = host.project(window)?;
-    ide_vcs::shelf::delete(&shelf_dir(&project.root), &id)
+    ide_vcs::shelf::delete_path(&shelf_dir(&project.root), &id, path.as_deref())
 }
 
 pub fn vcs_shelf_rename(host: &Host, window: &str, id: String, name: String) -> IdeResult<()> {
@@ -854,9 +868,19 @@ pub fn vcs_shelf_rename(host: &Host, window: &str, id: String, name: String) -> 
     ide_vcs::shelf::rename(&shelf_dir(&project.root), &id, &name)
 }
 
-pub fn vcs_shelf_patch(host: &Host, window: &str, id: String) -> IdeResult<String> {
+pub fn vcs_shelf_patch(host: &Host, window: &str, id: String, path: Option<String>) -> IdeResult<String> {
     let project = host.project(window)?;
-    ide_vcs::shelf::patch_of(&shelf_dir(&project.root), &id)
+    ide_vcs::shelf::selected_patch(&shelf_dir(&project.root), &id, path.as_deref())
+}
+
+pub async fn vcs_shelf_diff(host: &Host, window: &str, id: String) -> IdeResult<Vec<ide_vcs::shelf::ShelfDiffFile>> {
+    let project = host.project(window)?;
+    blocking(move || project.with_repo(|r| ide_vcs::shelf::diff_files(r, &shelf_dir(&project.root), &id))).await
+}
+
+pub async fn vcs_shelf_import(host: &Host, window: &str, name: String, patch: String) -> IdeResult<()> {
+    let project = host.project(window)?;
+    blocking(move || ide_vcs::shelf::import_patch(&shelf_dir(&project.root), &name, &patch)).await
 }
 
 pub fn vcs_changelists_load(host: &Host, window: &str) -> IdeResult<ChangelistState> {
@@ -886,7 +910,7 @@ pub async fn vcs_write_patch(_host: &Host, _window: &str, path: PathBuf, patch: 
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_roots", |c| async move { vcs_roots(&c.host, &c.window) });
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
-    d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?) });
+    d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
     d.add("vcs_blame", |c| async move {
         vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?, c.arg("revision")?).await
@@ -970,7 +994,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "vcs_diff_hunks",
         |c| async move { Ok(vcs_diff_hunks(&c.host, &c.window, c.arg("oldText")?, c.arg("newText")?)) },
     );
-    d.add("vcs_stage_hunks", |c| async move { vcs_stage_hunks(&c.host, &c.window, c.arg("path")?, c.arg("hunks")?) });
+    d.add(
+        "vcs_stage_hunks",
+        |c| async move { vcs_stage_hunks(&c.host, &c.window, c.arg("path")?, c.arg("hunks")?).await },
+    );
     d.add("vcs_clone", |c| async move {
         vcs_clone(&c.host, &c.window, c.arg("request")?, c.arg("url")?, c.arg("dest")?, c.sender("onOutput")?).await
     });
@@ -1034,10 +1061,16 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("vcs_shelve", |c| async move { vcs_shelve(&c.host, &c.window, c.arg("name")?, c.arg("paths")?).await });
     d.add("vcs_shelves", |c| async move { vcs_shelves(&c.host, &c.window) });
-    d.add("vcs_unshelve", |c| async move { vcs_unshelve(&c.host, &c.window, c.arg("id")?, c.arg("remove")?).await });
-    d.add("vcs_shelf_delete", |c| async move { vcs_shelf_delete(&c.host, &c.window, c.arg("id")?) });
+    d.add("vcs_unshelve", |c| async move {
+        vcs_unshelve(&c.host, &c.window, c.arg("id")?, c.arg("remove")?, c.arg("path")?).await
+    });
+    d.add("vcs_shelf_delete", |c| async move { vcs_shelf_delete(&c.host, &c.window, c.arg("id")?, c.arg("path")?) });
     d.add("vcs_shelf_rename", |c| async move { vcs_shelf_rename(&c.host, &c.window, c.arg("id")?, c.arg("name")?) });
-    d.add("vcs_shelf_patch", |c| async move { vcs_shelf_patch(&c.host, &c.window, c.arg("id")?) });
+    d.add("vcs_shelf_diff", |c| async move { vcs_shelf_diff(&c.host, &c.window, c.arg("id")?).await });
+    d.add("vcs_shelf_import", |c| async move {
+        vcs_shelf_import(&c.host, &c.window, c.arg("name")?, c.arg("patch")?).await
+    });
+    d.add("vcs_shelf_patch", |c| async move { vcs_shelf_patch(&c.host, &c.window, c.arg("id")?, c.arg("path")?) });
     d.add("vcs_changelists_load", |c| async move { vcs_changelists_load(&c.host, &c.window) });
     d.add("vcs_changelists_save", |c| async move { vcs_changelists_save(&c.host, &c.window, c.arg("changelists")?) });
     d.add(

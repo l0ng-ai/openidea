@@ -65,6 +65,24 @@ async function openDialog(page?: string) {
 }
 
 describe("Settings dialog", () => {
+  it("stages properties conversion through its action and applies the checkbox", async () => {
+    const dialog = await openDialog("editor.fileEncodings");
+    const checkbox = within(dialog).getByRole("checkbox", { name: "Transparent native-to-ascii conversion" });
+    expect(checkbox).not.toBeChecked();
+    await act(async () => fireEvent.click(checkbox));
+    expect(checkbox).toBeChecked();
+    expect(settingsSet).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "editor.encodings.nativeToAscii", "true");
+  });
+
+  it("toggles properties conversion through its stable action", async () => {
+    await executeAction("editor.encodings.toggleNativeToAscii");
+    expect(settingsSet).toHaveBeenCalledWith("global", "editor.encodings.nativeToAscii", "true");
+    await executeAction("editor.encodings.toggleNativeToAscii");
+    expect(settingsSet).toHaveBeenLastCalledWith("global", "editor.encodings.nativeToAscii", "false");
+  });
+
   it("finds Gradle JVM and applies project Gradle settings", async () => {
     useProject.setState({ project: { root: "/project" } as never });
     const dialog = await openDialog("build.gradle");

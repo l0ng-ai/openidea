@@ -231,6 +231,9 @@ impl Handler for ClientHandler {
                 }
             }
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
+            "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
+                mgr.java_import_ready(self.server.clone(), self.generation);
+            }
             // The Angular server's project loading, shown like `$/progress`; one
             // task while several projects load.
             "angular/projectLoadingStart" if !self.server.progress.lock().contains_key(ANGULAR_LOADING) => self

@@ -30,6 +30,7 @@ import {
   sessionSupports,
   showExecutionPoint,
   startSession,
+  startPreparedSession,
   stopSession,
   useDebug,
   type DebugSession,
@@ -218,46 +219,24 @@ async function startRemote(config: RunConfig, root: string) {
   if (launch) await startSession(launch, { runConfig: config });
 }
 
-/** Java preparation has no backend session id yet; expose Stop like remote JVM listening. */
+/** Preparation belongs to a session from the moment the action begins. */
 async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig) {
-  const request = nextRequestId();
-  const controller = new AbortController();
-  const key = `debug.prepare.${request}`;
-  let preparing = true;
-  notifications().notify({
-    group: "run",
-    level: "info",
-    key,
-    sticky: true,
-    title: tx`Starting debugger for ${config.name}…`,
-    actions: [
-      {
-        label: "Stop",
-        run: () => {
-          if (!preparing || controller.signal.aborted) return;
-          controller.abort();
-          notifications().expire?.(key);
-          void commands.cancelRequest(request).catch(() => undefined);
-        },
-      },
-    ],
+  await startPreparedSession(origin, async (signal, report) => {
+    const request = nextRequestId();
+    const cancel = () => {
+      void commands.cancelRequest(request).catch(() => undefined);
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      await maybeEditorService()
+        ?.saveAll()
+        .catch(() => undefined);
+      signal.throwIfAborted();
+      return await javaLaunchConfig(config, root, { request, signal, report });
+    } finally {
+      signal.removeEventListener("abort", cancel);
+    }
   });
-  let launch;
-  try {
-    await maybeEditorService()
-      ?.saveAll()
-      .catch(() => undefined);
-    controller.signal.throwIfAborted();
-    launch = await javaLaunchConfig(config, root, { request, signal: controller.signal });
-    controller.signal.throwIfAborted();
-  } catch (e) {
-    if (controller.signal.aborted || isCancelled(e)) return;
-    throw e;
-  } finally {
-    preparing = false;
-    notifications().expire?.(key);
-  }
-  await startSession(launch, { runConfig: origin });
 }
 
 async function startConfig(arg: unknown) {
@@ -417,10 +396,10 @@ export function registerDebugActions(): () => void {
       title: "Pause Program",
       category: "Debug",
       icon: "pause",
-      when: "debugSessionActive && !debugSessionPaused",
+      when: "debugSessionRunning",
       run: async () => {
         const s = activeSession();
-        if (!s || !isLive(s)) return;
+        if (!s || s.status !== "running") return;
         let thread = s.selectedThread ?? s.threads[0]?.id;
         if (thread == null) {
           const threads = await call(commands.debugThreads(s.id)).catch(() => []);

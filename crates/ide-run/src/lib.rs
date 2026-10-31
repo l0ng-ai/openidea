@@ -3,6 +3,7 @@
 mod config;
 mod detect;
 pub mod envfile;
+pub mod go;
 pub mod gradle_jvm;
 pub mod java_cmdline;
 pub mod junit;
@@ -238,6 +239,11 @@ pub fn save_templates(root: &Path, templates: &[RunConfig]) -> IdeResult<()> {
 /// The environment runs inherit (unless "Include system environment variables" is off).
 pub fn system_env() -> BTreeMap<String, String> {
     ide_core::process::host_vars().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect()
+}
+
+/// Complete environment for a preparatory tool belonging to this run configuration.
+pub fn resolved_env(root: &Path, config: &RunConfig) -> IdeResult<BTreeMap<String, String>> {
+    process::resolved_env(root, config)
 }
 
 /// Path of the user run configuration file for `root`.

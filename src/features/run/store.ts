@@ -17,14 +17,7 @@ import {
   type RunId,
   type TestCaseReport,
 } from "@/platform/ipc";
-import {
-  findJavaModule,
-  formatCompileErrors,
-  isJvmApplication,
-  parseJavaArgs,
-  resolveJavaCommand,
-  resolveJavaModule,
-} from "@/platform/javaLaunch";
+import { findJavaModule, isJvmApplication, parseJavaArgs, prepareJavaLaunch } from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -41,6 +34,7 @@ import {
   type TestEvent,
   type TestOutputParser,
 } from "./testing";
+import { GoTestOutput } from "./testing/go";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
 import { compoundChildren } from "./configs";
@@ -78,10 +72,11 @@ export interface RunSession {
 }
 
 interface SessionRuntime {
-  resolveRequest?: { id: RequestId; cancelled: boolean };
+  resolveRequest?: { id: RequestId; controller: AbortController };
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
+  goOutput: GoTestOutput | null;
   queue: OutputChunk[];
   /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
   flushHandle: { raf: number } | { timeout: number } | null;
@@ -362,7 +357,10 @@ function flush(sessionId: string) {
   cancelFlush(rt);
   if (rt.queue.length === 0) return;
   const chunks = rt.queue.splice(0);
-  for (const c of chunks) rt.console.append(c);
+  for (const c of chunks) {
+    const text = c.kind === "stdout" && rt.goOutput ? rt.goOutput.feed(c.text) : c.text;
+    if (text) rt.console.append({ ...c, text });
+  }
   bump(sessionId);
 }
 
@@ -427,13 +425,18 @@ export function applyConsoleSettings() {
 function newRuntime(config: RunConfig): SessionRuntime {
   const tests = config.isTest ? new TestResults() : null;
   const parser = config.isTest ? createTestParser(config) : null;
+  const goOutput =
+    tests && parser && frameworkFor(config) === "go"
+      ? new GoTestOutput((line) => tests.apply(parser.feed(line)))
+      : null;
   const runtime: SessionRuntime = {
+    goOutput,
     tests,
     parser,
     console: new ConsoleModel({
       maxChars: consoleCharLimit(),
       onLine: (text, kind) => {
-        if (parser && tests && kind !== "system") tests.apply(parser.feed(text));
+        if (parser && tests && kind !== "system" && !(kind === "stdout" && goOutput)) tests.apply(parser.feed(text));
         if (kind !== "system") for (const l of runtime.lineListeners) l(text);
       },
     }),
@@ -656,7 +659,9 @@ export async function startRun(
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
     const started = launch.isTest ? withTestReporting(launch) : launch;
+    const processStarted = performance.now();
     const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
+    console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     if (info.pty && rt.terminalSize) void commands.runResize(info.id, rt.terminalSize.cols, rt.terminalSize.rows);
     // The process may already have exited (fast commands) before we got its id.
@@ -707,20 +712,15 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     return null;
   }
   if (!parsed.classpath) return config;
-  say(`Building and resolving the classpath of ${parsed.mainClass}…\n`);
   const rt = runtime(sessionId)!;
-  const request = { id: nextRequestId(), cancelled: false };
+  const request = { id: nextRequestId(), controller: new AbortController() };
   rt.resolveRequest = request;
   try {
-    const module = await resolveJavaModule(config);
-    if (request.cancelled) return null;
-    const info = await call(commands.javaResolveLaunch(module, parsed.classpath === "test", true, request.id));
-    if (request.cancelled) return null;
-    if (info.build === "withErrors")
-      say("Build completed with errors; launching with the last compiled classes.\n", "stderr");
-    if (info.build === "failed") say("Build failed; launching with the last compiled classes.\n", "stderr");
-    const compileReport = formatCompileErrors(info);
-    if (compileReport) say(compileReport, "stderr");
+    const { info, resolved } = await prepareJavaLaunch(config, {
+      request: request.id,
+      signal: request.controller.signal,
+      report: say,
+    });
     // No installed JDK is new enough for the module: offer to download one.
     const jdkHint = info.hints.find((h) => downloadJdkActions(h).length);
     if (jdkHint)
@@ -732,14 +732,10 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
         body: jdkHint,
         actions: downloadJdkActions(jdkHint),
       });
-    if (!info.classPaths.length) {
-      say("The classpath is empty: is the module imported by the Java language server?\n", "stderr");
-      return null;
-    }
-    return resolveJavaCommand(config, info);
+    return resolved;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    if (request.cancelled || isCancelled(e)) {
+    if (request.controller.signal.aborted || isCancelled(e)) {
       if (runtimes.get(sessionId) === rt && rt.resolveRequest === request) patchSession(sessionId, { stopped: true });
       return null;
     }
@@ -771,6 +767,10 @@ function finishSession(sessionId: string, code: number | null) {
     void (async () => {
       if (runtimes.get(sessionId) !== rt) return;
       flush(sessionId);
+      if (rt.goOutput) {
+        const text = rt.goOutput.end();
+        if (text) rt.console.append({ kind: "stdout", text });
+      }
       rt.console.flush();
       if (rt.tests && rt.parser) {
         rt.tests.apply(rt.parser.end?.() ?? []);
@@ -868,8 +868,8 @@ export async function stopSession(sessionId: string): Promise<void> {
   if (!session) return;
   const request = runtimes.get(sessionId)?.resolveRequest;
   if (session.status === "starting" && request) {
-    request.cancelled = true;
-    patchSession(sessionId, { stopped: true });
+    request.controller.abort();
+    patchSession(sessionId, { stopped: true, status: "finished", endedAt: Date.now() });
     await commands.cancelRequest(request.id);
     return;
   }

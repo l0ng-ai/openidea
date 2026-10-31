@@ -23,6 +23,7 @@ export interface DeploymentMappingValid {
 }
 
 export interface DeploymentServerValid {
+  kind: "sftp" | "local";
   id: string;
   name: string;
   sshConfig: string;
@@ -70,6 +71,7 @@ export const DEFAULT_SSH_CONFIG: SshConfigValid = {
 };
 
 export const DEFAULT_DEPLOYMENT_SERVER: DeploymentServerValid = {
+  kind: "sftp",
   id: "",
   name: "",
   sshConfig: "",
@@ -157,6 +159,7 @@ export function validateDeployment(raw: unknown): DeploymentSettingsValid {
   const o = obj(raw);
   const d = DEFAULT_DEPLOYMENT;
   const servers = withIds(o.servers, "server", (s) => ({
+    kind: oneOf(s.kind, ["sftp", "local"] as const, "sftp"),
     id: text(s.id, ""),
     name: text(s.name, ""),
     sshConfig: text(s.sshConfig, ""),
@@ -208,3 +211,8 @@ export function sshLabel(c: Pick<SshConfigValid, "name" | "host" | "port" | "use
 let seq = 0;
 /** A fresh id for a new SSH configuration, server or target. */
 export const newRemoteId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${++seq}`;
+
+/** Backend connection descriptor for deployment and folder browsing. */
+export function deploymentConnection(server: DeploymentServerValid): { kind: "local" } | { kind: "sftp"; ssh: string } {
+  return server.kind === "local" ? { kind: "local" } : { kind: "sftp", ssh: server.sshConfig };
+}

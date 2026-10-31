@@ -719,7 +719,7 @@ impl Project {
             limit: q.limit,
         };
         let filter = |rel: &str| q.languages.contains(&self.languages.detect(&root.join(rel), None));
-        match ide_search::files_with_word(&root, &query, Some(&filter), &|p| self.documents.text_of(p), cancel) {
+        match ide_search::files_with_word(&root, &query, Some(&filter), &|p| self.documents.search_text_of(p), cancel) {
             Ok(found) => ide_lsp::CandidateFiles { files: found.files, limit_hit: found.limit_hit },
             Err(e) => {
                 tracing::debug!("reference candidates: {}", e.message);
@@ -777,7 +777,17 @@ impl Project {
     }
 
     /// Use the open document's selected encoding, or the same detection/settings as opening it.
-    pub fn vcs_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<&'static encoding_rs::Encoding> {
+    pub fn vcs_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<ide_vcs::TextEncoding> {
+        let charset = self.file_encoding(path, rev)?;
+        let encoding = ide_vcs::TextEncoding::from(charset);
+        Ok(if self.documents.native_to_ascii_for(path) {
+            encoding.with_ascii_conversion(ide_vfs::decode_properties_escapes, ide_vfs::encode_properties_ascii)
+        } else {
+            encoding
+        })
+    }
+
+    fn file_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<&'static encoding_rs::Encoding> {
         if let Some(id) = self.documents.by_path(path) {
             let info = self.documents.snapshot(id)?;
             return encoding_rs::Encoding::for_label(info.encoding.as_bytes())
@@ -798,7 +808,7 @@ impl Project {
     pub fn text_of(&self, path: &Path) -> IdeResult<String> {
         match self.documents.text_of(path) {
             Some(text) => Ok(text),
-            None => Ok(ide_vfs::load_text_with_fallback(path, self.documents.file_defaults().fallback_for(path))?.text),
+            None => Ok(ide_text::normalize_line_endings(&self.documents.load_file(path)?.text).into_owned()),
         }
     }
 }
@@ -806,6 +816,8 @@ impl Project {
 /// Applies a multi-file edit through the document layer so open editors update live.
 pub fn apply_workspace_edit(documents: &Documents, edit: &ide_core::WorkspaceEdit) -> IdeResult<()> {
     use ide_core::FileEdit;
+    let mut edit = edit.clone();
+    edit.deduplicate();
     for file in &edit.files {
         match file {
             FileEdit::Edit { path, edits } => {
@@ -1151,5 +1163,30 @@ mod index_event_tests {
         assert!(vcs_path_changed(&index));
         std::fs::remove_file(&index).unwrap();
         assert!(vcs_path_changed(&index));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod workspace_edit_tests {
+    use super::*;
+    use ide_core::{FileEdit, LanguageId, Pos, Range, TextEdit, WorkspaceEdit};
+
+    #[test]
+    fn rename_via_symlink_updates_the_open_document_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("main.cpp");
+        let alias = dir.path().join("alias.cpp");
+        std::fs::write(&real, "add();\n").unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let documents = Documents::new(Arc::new(|_: IdeEvent| {}), Box::new(|_, _| LanguageId::new("cpp")));
+        let doc = documents.open(&alias).unwrap();
+        let changes = |path: PathBuf| FileEdit::Edit {
+            path: path.into(),
+            edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "sum_values".into() }],
+        };
+        apply_workspace_edit(&documents, &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)] })
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(real).unwrap(), "sum_values();\n");
+        assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
     }
 }

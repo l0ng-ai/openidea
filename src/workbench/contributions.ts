@@ -17,7 +17,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { RunConfig } from "@/bindings";
+import type { FileMatches, SearchQuery, RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
 import type { TreeReorder } from "@/ui/Tree";
 import { create } from "zustand";
@@ -629,6 +629,26 @@ export const notifications = (): NotificationService =>
 export const maybeEditorService = (): EditorService | undefined => services.editor;
 /** Creates terminal widgets; provided by the terminal feature. */
 export const embeddedTerminal = (): EmbeddedTerminalFactory | undefined => services.embeddedTerminal;
+
+/** Editor-backed results, recomputed on rerun without reading files from disk. */
+export interface FindResultsSource {
+  title: string;
+  query: SearchQuery;
+  read(): FileMatches;
+}
+
+let findResultsOpener: ((source: FindResultsSource) => void) | undefined;
+
+export function provideFindResults(opener: (source: FindResultsSource) => void): () => void {
+  findResultsOpener = opener;
+  return () => {
+    if (findResultsOpener === opener) findResultsOpener = undefined;
+  };
+}
+
+export function showFindResults(source: FindResultsSource) {
+  findResultsOpener?.(source);
+}
 
 // ---------------------------------------------------------------------------
 // File decorations: colour / badge / tooltip for a path, shown by the project
@@ -1282,4 +1302,20 @@ export interface DebugRunSession {
   resume: () => void;
 }
 
-export const useDebugRunSessions = create<{ sessions: DebugRunSession[] }>(() => ({ sessions: [] }));
+/** Configured debugger roots retained by the debugger, including finished output. */
+export interface DebugServiceSession {
+  id: number;
+  config: RunConfig;
+  startedAt: number;
+  status: "starting" | "running" | "paused" | "terminated";
+  processId: number | null;
+  rerun: (() => void) | null;
+  stop: (options?: { stopProcess?: boolean }) => Promise<void>;
+  show: () => void;
+}
+
+export const useDebugRunSessions = create<{
+  sessions: DebugRunSession[];
+  serviceSessions: DebugServiceSession[];
+  Console: ComponentType<{ sessionId: number }> | null;
+}>(() => ({ sessions: [], serviceSessions: [], Console: null }));

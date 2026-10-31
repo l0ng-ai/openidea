@@ -75,7 +75,7 @@ pub async fn start(
                     &query,
                     Some(&filter),
                     Some(&literals),
-                    &|p| documents.text_of(p),
+                    &|p| documents.search_text_of(p),
                     &cancel,
                     &|mut file| {
                         if dir != &root {

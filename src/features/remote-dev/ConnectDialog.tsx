@@ -38,7 +38,7 @@ function ConnectDialog() {
     setError(null);
     setBusy(true);
     try {
-      const entries = await call(commands.remoteList(ssh, dir));
+      const entries = await call(commands.remoteBootstrapList(ssh, dir));
       const shown = listedDirectory(dir, entries);
       setBrowse({ dir: shown, folders: browsableFolders(entries) });
       setPath(shown);

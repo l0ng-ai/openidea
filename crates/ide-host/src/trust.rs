@@ -194,6 +194,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "project_roots"
             | "index_status"
             | "jvm_file_presentations"
+            | "deploy_coverage"
             | "find_files"
             | "find_symbols"
             | "mark_recent"

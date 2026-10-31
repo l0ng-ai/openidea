@@ -35,8 +35,8 @@ pub async fn vcs_branch_info(
 /// Gutter change markers for a file, computed against its current (unsaved) text.
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_line_hunks(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
-    ide_host::ops::vcs::vcs_line_hunks(&state.host, window.label(), path)
+pub async fn vcs_line_hunks(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<LineHunk>> {
+    ide_host::ops::vcs::vcs_line_hunks(&state.host, window.label(), path).await
 }
 
 #[tauri::command]
@@ -338,8 +338,13 @@ pub fn vcs_diff_hunks(state: State<'_, AppState>, old_text: String, new_text: St
 /// Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_stage_hunks(window: Window, state: State<'_, AppState>, path: PathBuf, hunks: Vec<u32>) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_stage_hunks(&state.host, window.label(), path, hunks)
+pub async fn vcs_stage_hunks(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    hunks: Vec<u32>,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_stage_hunks(&state.host, window.label(), path, hunks).await
 }
 
 /// Clones a repository (Get from VCS). Works without an open project.
@@ -608,14 +613,15 @@ pub async fn vcs_unshelve(
     state: State<'_, AppState>,
     id: String,
     remove: bool,
+    path: Option<String>,
 ) -> IdeResult<ApplyOutcome> {
-    ide_host::ops::vcs::vcs_unshelve(&state.host, window.label(), id, remove).await
+    ide_host::ops::vcs::vcs_unshelve(&state.host, window.label(), id, remove, path).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_shelf_delete(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_shelf_delete(&state.host, window.label(), id)
+pub fn vcs_shelf_delete(window: Window, state: State<'_, AppState>, id: String, path: Option<String>) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_shelf_delete(&state.host, window.label(), id, path)
 }
 
 #[tauri::command]
@@ -626,8 +632,13 @@ pub fn vcs_shelf_rename(window: Window, state: State<'_, AppState>, id: String, 
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_shelf_patch(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<String> {
-    ide_host::ops::vcs::vcs_shelf_patch(&state.host, window.label(), id)
+pub fn vcs_shelf_patch(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    path: Option<String>,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_shelf_patch(&state.host, window.label(), id, path)
 }
 
 #[tauri::command]
@@ -647,4 +658,25 @@ pub fn vcs_changelists_save(window: Window, state: State<'_, AppState>, changeli
 #[specta::specta]
 pub async fn vcs_write_patch(state: State<'_, AppState>, path: PathBuf, patch: String) -> IdeResult<()> {
     ide_host::ops::vcs::vcs_write_patch(&state.host, "", path, patch).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_shelf_diff(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+) -> IdeResult<Vec<ide_vcs::shelf::ShelfDiffFile>> {
+    ide_host::ops::vcs::vcs_shelf_diff(&state.host, window.label(), id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_shelf_import(
+    window: Window,
+    state: State<'_, AppState>,
+    name: String,
+    patch: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_shelf_import(&state.host, window.label(), name, patch).await
 }

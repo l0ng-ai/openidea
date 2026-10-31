@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { provideNotificationService } from "@/workbench/contributions";
+import { provideNotificationService, useDebugRunSessions } from "@/workbench/contributions";
 import type { RunConfig } from "@/platform/ipc";
 import { registerDebugActions } from "../actions";
 import { useDebug } from "../state";
@@ -11,6 +11,7 @@ const ipc = vi.hoisted(() => ({
   cancelRequest: vi.fn(async () => undefined),
   javaDebugServer: vi.fn(async () => ({ status: "ok", data: 5005 })),
   debugStart: vi.fn(async () => ({ status: "ok", data: 42 })),
+  debugStop: vi.fn(async () => ({ status: "ok", data: null })),
   fsReadDir: vi.fn(async () => ({ status: "ok", data: [] })),
 }));
 vi.mock("@/platform/ipc", async (original) => {
@@ -52,23 +53,30 @@ afterEach(() => dispose());
 async function startAndStop() {
   const starting = executeAction("debug.startConfig", config);
   await vi.waitFor(() => expect(ipc.javaResolveLaunch).toHaveBeenCalledOnce());
-  const notification = notify.mock.calls[0]![0];
-  expect(notification).toMatchObject({ sticky: true, title: "Starting debugger for Main…" });
-  expect(notification.actions[0].label).toBe("Stop");
-  notification.actions[0].run();
+  const session = Object.values(useDebug.getState().sessions)[0]!;
+  expect(session).toMatchObject({ name: "Main", status: "starting", runConfig: config });
+  expect(
+    useDebug
+      .getState()
+      .console[session.id]?.map((l) => l.text)
+      .join("\n"),
+  ).toContain("Building and resolving the classpath of Main…");
+  expect(useDebugRunSessions.getState().sessions[0]?.configId).toBe(config.id);
+  await executeAction("debug.stop");
   expect(ipc.cancelRequest).toHaveBeenCalledWith(ipc.javaResolveLaunch.mock.calls[0]![3]);
-  expect(expire).toHaveBeenCalledWith(notification.key);
+  expect(useDebug.getState().sessions[session.id]?.status).toBe("terminated");
+  expect(useDebugRunSessions.getState().sessions).toEqual([]);
   return { starting };
 }
 
 function expectNoLaunch() {
   expect(ipc.javaDebugServer).not.toHaveBeenCalled();
   expect(ipc.debugStart).not.toHaveBeenCalled();
-  expect(useDebug.getState().sessions).toEqual({});
-  expect(notify).toHaveBeenCalledTimes(1);
+  expect(Object.values(useDebug.getState().sessions).every((s) => s.status === "terminated")).toBe(true);
+  expect(notify).not.toHaveBeenCalled();
 }
 
-it("Stop cancels the resolve request and ends silently without starting a session", async () => {
+it("Stop cancels the resolve request and ends the preparation session without starting DAP", async () => {
   const { starting } = await startAndStop();
   respond({ status: "error", error: { kind: "cancelled", message: "Cancelled" } });
   await starting;
@@ -89,7 +97,7 @@ it("ignores a failed resolve arriving after Stop", async () => {
   expectNoLaunch();
 });
 
-it("still reports a real resolve failure and removes the starting notification", async () => {
+it("still reports a real resolve failure in the preparation console", async () => {
   const starting = executeAction("debug.startConfig", config);
   await vi.waitFor(() => expect(ipc.javaResolveLaunch).toHaveBeenCalledOnce());
   respond({ status: "error", error: { kind: "internal", message: "Build failed" } });
@@ -101,6 +109,73 @@ it("still reports a real resolve failure and removes the starting notification",
       body: "Build failed",
     }),
   );
-  expect(expire).toHaveBeenCalledWith(notify.mock.calls[0]![0].key);
+  expect(
+    Object.values(useDebug.getState().console)
+      .flat()
+      .map((line) => line.text)
+      .join("\n"),
+  ).toContain("Build failed");
   expect(ipc.debugStart).not.toHaveBeenCalled();
+});
+
+it("keeps progress and the originating configuration when DAP takes over", async () => {
+  const starting = executeAction("debug.startConfig", config);
+  await vi.waitFor(() => expect(ipc.javaResolveLaunch).toHaveBeenCalledOnce());
+  respond({
+    status: "ok",
+    data: {
+      build: "succeeded",
+      errorCount: 0,
+      errors: [],
+      hints: [],
+      classPaths: ["/p/target/classes"],
+      modulePaths: [],
+      pathListSeparator: ":",
+      javaExec: "java",
+    },
+  });
+  await starting;
+  expect(Object.keys(useDebug.getState().sessions)).toEqual(["42"]);
+  expect(useDebug.getState().sessions[42]).toMatchObject({ status: "running", runConfig: config });
+  expect(
+    useDebug
+      .getState()
+      .console[42]?.map((line) => line.text)
+      .join("\n"),
+  ).toContain("Building and resolving the classpath of Main…");
+});
+
+it.each(["success", "failure"])("handles a late DAP %s after preparation was cancelled", async (outcome) => {
+  let fail!: (error: Error) => void;
+  let finish!: (value: { status: "ok"; data: number }) => void;
+  ipc.debugStart.mockImplementationOnce(
+    () =>
+      new Promise((resolve, reject) => {
+        finish = resolve;
+        fail = reject;
+      }),
+  );
+  const starting = executeAction("debug.startConfig", config);
+  await vi.waitFor(() => expect(ipc.javaResolveLaunch).toHaveBeenCalledOnce());
+  respond({
+    status: "ok",
+    data: {
+      build: "succeeded",
+      errorCount: 0,
+      errors: [],
+      hints: [],
+      classPaths: ["/p/target/classes"],
+      modulePaths: [],
+      pathListSeparator: ":",
+      javaExec: "java",
+    },
+  });
+  await vi.waitFor(() => expect(ipc.debugStart).toHaveBeenCalledOnce());
+  await executeAction("debug.stop");
+  if (outcome === "success") finish({ status: "ok", data: 42 });
+  else fail(new Error("Adapter start failed"));
+  await starting;
+  if (outcome === "success") expect(ipc.debugStop).toHaveBeenCalledWith(42);
+  expect(notify).not.toHaveBeenCalled();
+  expect(useDebugRunSessions.getState().sessions).toEqual([]);
 });

@@ -342,6 +342,15 @@ impl Default for AppearanceSettings {
     }
 }
 
+/// Imported editor colour scheme on top of a built-in base.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomColorScheme {
+    pub name: String,
+    pub parent: String,
+    pub attributes: BTreeMap<String, TextAttributesOverride>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct EditorSettings {
@@ -357,6 +366,8 @@ pub struct EditorSettings {
     pub format_on_save: bool,
     /// Editor colour scheme id; `theme-default` follows the IDE theme.
     pub color_scheme: String,
+    /// Imported editor schemes, stored in user settings.
+    pub custom_schemes: BTreeMap<String, CustomColorScheme>,
     /// Color Scheme edits: scheme id → attribute id → override.
     pub color_overrides: BTreeMap<String, BTreeMap<String, TextAttributesOverride>>,
     /// Color Scheme › Language Defaults › Semantic highlighting: local variables and
@@ -404,6 +415,7 @@ impl Default for EditorSettings {
             format_on_save: false,
             color_scheme: "theme-default".into(),
             color_overrides: BTreeMap::new(),
+            custom_schemes: BTreeMap::new(),
             semantic_highlighting: false,
             rainbow_brackets: false,
             ligatures: false,
@@ -546,6 +558,35 @@ pub struct GoSettings {
     pub goroot: String,
     /// Empty = `go env GOPATH`.
     pub gopath: String,
+    pub build_tags: GoBuildTags,
+    pub modules: GoModules,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GoModules {
+    pub env: BTreeMap<String, String>,
+    pub auto_vendor: bool,
+}
+
+impl Default for GoModules {
+    fn default() -> Self {
+        Self { env: BTreeMap::new(), auto_vendor: true }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GoBuildTags {
+    /// Empty values inherit the selected toolchain's defaults.
+    pub os: String,
+    pub arch: String,
+    pub version: String,
+    pub compiler: String,
+    /// Empty = automatic, "1" = enabled, "0" = disabled.
+    pub cgo: String,
+    pub custom: String,
+    pub experiments: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -752,5 +793,21 @@ mod gradle_settings_tests {
             let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);
         }
+    }
+}
+
+#[cfg(test)]
+mod go_module_tests {
+    use super::*;
+    #[test]
+    fn old_go_settings_inherit_module_defaults() {
+        let old: GoSettings = serde_json::from_str(r#"{"goroot":"/go"}"#).unwrap();
+        assert!(old.modules.auto_vendor);
+        assert!(old.modules.env.is_empty());
+        let configured: GoSettings =
+            serde_json::from_str(r#"{"modules":{"autoVendor":false,"env":{"GOPRIVATE":"example.com/private"}}}"#)
+                .unwrap();
+        assert!(!configured.modules.auto_vendor);
+        assert_eq!(configured.modules.env["GOPRIVATE"], "example.com/private");
     }
 }

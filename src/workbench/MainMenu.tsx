@@ -1,5 +1,5 @@
 /**
- * Windows title bar: IDEA's main menu button. Clicking ☰ expands the menu bar
+ * Frameless title bar (Windows, Linux): IDEA's main menu button. Clicking ☰ expands the menu bar
  * in place (File Edit View …) with File open; hovering another title switches
  * menus, ←/→ walk them, and closing the menu collapses the bar again. The
  * entries come from the same spec as the native menu (`menu_model`). As in

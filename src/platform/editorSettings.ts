@@ -15,6 +15,14 @@ export interface TextAttributesOverride {
   effectColor?: string;
 }
 
+export interface CustomColorScheme {
+  name: string;
+  parent: "dark" | "light";
+  attributes: Record<string, TextAttributesOverride>;
+}
+
+export type CustomColorSchemes = Record<string, CustomColorScheme>;
+
 export interface LanguageCodeStyle {
   useTab?: boolean;
   tabSize?: number;
@@ -55,6 +63,7 @@ export function lineCommentStyleFor(
 }
 
 export const EDITOR_EXTRA_DEFAULTS = {
+  customSchemes: {} as CustomColorSchemes,
   colorOverrides: {} as Record<string, Record<string, TextAttributesOverride>>,
   /** Color Scheme › Language Defaults › Semantic highlighting (rainbow locals / parameters). */
   semanticHighlighting: false,
@@ -177,7 +186,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     formatterOnTag: "@formatter:on",
     formatterTagsRegexp: false,
   },
-  encodings: { global: "utf-8", project: "utf-8", properties: "iso-8859-1", utf8Bom: "never" },
+  encodings: { global: "utf-8", project: "utf-8", properties: "iso-8859-1", nativeToAscii: false, utf8Bom: "never" },
 };
 
 export type EditorExtras = typeof EDITOR_EXTRA_DEFAULTS;

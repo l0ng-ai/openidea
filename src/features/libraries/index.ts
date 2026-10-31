@@ -7,6 +7,7 @@
  * are browsed through the backend's `<archive>!/<entry>` paths.
  */
 import { commands, type LibraryGroup } from "@/bindings";
+import { registerActions } from "@/platform/actions";
 import { setLibraryRoots } from "@/editor/api";
 import { call, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -97,6 +98,7 @@ const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
     l?.rust?.stdlib,
     l?.go?.goroot,
     l?.go?.gopath,
+    l?.go?.modules,
   ]);
 };
 
@@ -135,6 +137,9 @@ export function activate(): () => void {
       .catch((e: unknown) => console.warn("external libraries: cannot list SDK roots", e));
   };
   refresh();
+  const disposeActions = registerActions([
+    { id: "libraries.reload", title: "Reload External Libraries", category: "Go", hidden: true, run: refresh },
+  ]);
   const unsub = useProject.subscribe((s, prev) => {
     if (sdkKey(s) !== sdkKey(prev)) refresh();
   });
@@ -149,6 +154,7 @@ export function activate(): () => void {
     clearTimeout(timer);
     unsub();
     unsubFs();
+    disposeActions();
     clear();
   };
 }

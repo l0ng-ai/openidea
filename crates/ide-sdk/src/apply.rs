@@ -277,6 +277,32 @@ pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     }
 }
 
+/// Workspace compiler defaults; Eclipse project preferences still take precedence.
+pub(crate) fn configure_java_compiler(cfg: &mut LanguageServerConfig, data_dir: &Path) {
+    let file = data_dir.join("lsp/jdtls/compiler-defaults.prefs");
+    const DEFAULTS: &str = "org.eclipse.jdt.core.compiler.problem.forbiddenReference=warning\n\
+org.eclipse.jdt.core.compiler.problem.discouragedReference=warning\n";
+    let write = || -> ide_core::IdeResult<()> {
+        std::fs::create_dir_all(file.parent().expect("compiler preferences directory"))?;
+        if std::fs::read_to_string(&file).ok().as_deref() != Some(DEFAULTS) {
+            ide_vfs::write_atomic(&file, DEFAULTS.as_bytes())?;
+        }
+        Ok(())
+    };
+    if let Err(e) = write() {
+        tracing::warn!("jdtls: cannot write compiler defaults: {e}");
+        return;
+    }
+    // jdtls accepts absolute filesystem paths as well as URLs (including paths
+    // containing spaces and Windows backslashes). Explicit server settings win later.
+    let defaults = json!({"settings": {"java": {"settings": {"url": file.to_string_lossy()}}}});
+    let existing = cfg.initialization_options.clone();
+    merge_init_options(cfg, defaults);
+    if let Some(existing) = existing {
+        merge_init_options(cfg, serde_json::to_value(existing).expect("TOML initialization options"));
+    }
+}
+
 /// Adjusts a language server's launch configuration from settings: interpreter
 /// paths, toolchain `PATH`, env (`GOROOT`, `RUST_SRC_PATH`, `VIRTUAL_ENV`) and
 /// server settings (`python.pythonPath`, rust-analyzer `check.command`, `typescript.tsdk`).
@@ -358,6 +384,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     }
 
     if name == "gopls" {
+        let mut build = crate::go::build_settings(&s.languages.go.build_tags);
+        let module_env = crate::go::module_environment(server_root, &s.languages.go.modules);
+        for (key, value) in module_env {
+            build["env"][key] = json!(value);
+        }
+        let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
+        // gopls retains omitted keys on reconfiguration. Explicit empty values
+        // restore defaults when the last project constraint is cleared.
+        let init = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok());
+        for (key, default) in [("buildFlags", json!([])), ("env", json!({}))] {
+            if settings.get(key).is_none() {
+                settings[key] = init.as_ref().and_then(|v| v.get(key)).cloned().unwrap_or(default);
+            }
+        }
+        merge(&mut settings, build);
+        cfg.settings = Some(settings);
         if let Some(goroot) = goroot(root, s) {
             path_dirs.push(goroot.join("bin"));
             cfg.env.insert("GOROOT".into(), goroot.to_string_lossy().into_owned());
@@ -625,6 +667,9 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
             }
             "go" => {
+                for (key, value) in crate::go::module_environment(root, &s.languages.go.modules) {
+                    c.env.entry(key).or_insert(value);
+                }
                 if let Some(goroot) = &go {
                     let bin = goroot.join("bin");
                     if c.command == "go" && bin.join(exe("go")).is_file() {
@@ -727,6 +772,70 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: Option<&str>) -> Op
         _ => "activate",
     };
     script(target).is_file().then_some(line)
+}
+
+#[cfg(test)]
+mod java_compiler_tests {
+    use super::*;
+
+    fn options(cfg: &LanguageServerConfig) -> Value {
+        serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn compiler_defaults_live_in_the_cache_and_preserve_other_options() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache with spaces 测试");
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        merge_init_options(&mut cfg, json!({"settings": {"java": {"format": {"tabSize": 4}}}}));
+        configure_java_compiler(&mut cfg, &cache);
+        let options = options(&cfg);
+        let path = PathBuf::from(options.pointer("/settings/java/settings/url").unwrap().as_str().unwrap());
+        assert!(path.starts_with(&cache));
+        let prefs = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(prefs.lines().count(), 2);
+        for problem in ["forbiddenReference", "discouragedReference"] {
+            assert!(prefs.contains(&format!("org.eclipse.jdt.core.compiler.problem.{problem}=warning\n")));
+        }
+        assert_eq!(options.pointer("/settings/java/format/tabSize"), Some(&json!(4)));
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        configure_java_compiler(&mut cfg, &cache);
+        assert_eq!(std::fs::metadata(path).unwrap().modified().unwrap(), modified);
+        assert_eq!(self::options(&cfg), options);
+    }
+
+    #[test]
+    fn explicit_compiler_settings_keep_priority() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        merge_init_options(&mut cfg, json!({"settings": {"java": {"settings": {"url": "own.prefs"}}}}));
+        configure_java_compiler(&mut cfg, tmp.path());
+        assert_eq!(options(&cfg).pointer("/settings/java/settings/url"), Some(&json!("own.prefs")));
+
+        for settings in [
+            json!({"java": {"settings": {"url": "custom.prefs"}}}),
+            json!({"settings": {"java": {"settings": {"url": "custom.prefs"}}}}),
+        ] {
+            cfg.settings = None;
+            let mut s = Settings::default();
+            s.language_servers.insert(
+                "jdtls".into(),
+                LanguageServerSettings { settings: Some(settings.clone()), ..Default::default() },
+            );
+            server_protocol_overrides(&mut cfg, &s);
+            assert_eq!(cfg.settings, Some(settings));
+        }
+        let mut s = Settings::default();
+        s.language_servers.insert(
+            "jdtls".into(),
+            LanguageServerSettings {
+                initialization_options: Some(json!({"settings": {"java": {"settings": {"url": "user.prefs"}}}})),
+                ..Default::default()
+            },
+        );
+        server_protocol_overrides(&mut cfg, &s);
+        assert_eq!(options(&cfg).pointer("/settings/java/settings/url"), Some(&json!("user.prefs")));
+    }
 }
 
 #[cfg(test)]
