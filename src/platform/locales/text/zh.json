@@ -23,6 +23,7 @@
   "Security": "安全",
   "Remove Trusted Location": "移除受信任的位置",
   "Cannot determine the module for main class '{value}'": "无法确定主类 '{value}' 所属的模块",
+  "Java module '{value}' is not imported. Wait for Java project import to finish. If it still fails, check the run configuration's module and whether it is included in the parent Maven or Gradle build, or open its folder as a project.": "Java 模块 '{value}' 尚未导入。请等待 Java 项目导入完成。如果仍然失败，请检查运行配置选择的模块，以及该模块是否已包含在父级 Maven 或 Gradle 构建中，或将其文件夹作为项目打开。",
   "Attach": "附加",
   "Remove from Workspace": "从工作区移除",
   "Downloading Java {0} language server runtime": "正在下载 Java {0} 语言服务器运行时",
