@@ -90,6 +90,8 @@ struct Attached {
 
 struct DocState {
     path: PathBuf,
+    /// `path` with links resolved, to recognise a document under another name.
+    canonical: PathBuf,
     uri: lsp::Uri,
     language: LanguageId,
     version: i32,
@@ -685,6 +687,11 @@ impl LspManager {
         if let Some(t) = self.docs.lock().values().find(|d| d.path == path).map(|d| d.text.clone()) {
             return Some(t);
         }
+        if let Ok(key) = dunce::canonicalize(path)
+            && let Some(text) = self.docs.lock().values().find(|d| d.canonical == key).map(|d| d.text.clone())
+        {
+            return Some(text);
+        }
         let key = path.to_str().filter(|s| is_virtual_uri(s))?;
         self.virtual_docs.lock().get(key).map(|d| Arc::new(DocText::new(&d.text)))
     }
@@ -730,8 +737,10 @@ impl LspManager {
         text: &str,
         servers: Vec<Arc<Server>>,
     ) {
+        let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
         let mut state = DocState {
             path,
+            canonical,
             uri,
             language: language.clone(),
             version: version as i32,

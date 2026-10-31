@@ -17,7 +17,16 @@ pub fn search_path() -> OsString {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
     let shell_path = login_env().and_then(|env| env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()));
     let shims: Vec<PathBuf> = version_managers::managers().iter().map(|m| m.shims()).collect();
-    let dirs = search_dirs(host_var_os("PATH").as_deref(), shell_path.as_deref(), home.as_deref(), &shims);
+    // The Windows user `PATH` may not reach a process started before it was set; append its
+    // entries after the inherited ones so missing user tools still resolve.
+    let user_path = crate::process::user_path();
+    let dirs = search_dirs(
+        host_var_os("PATH").as_deref(),
+        shell_path.as_deref(),
+        user_path.as_deref(),
+        home.as_deref(),
+        &shims,
+    );
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
@@ -56,10 +65,12 @@ fn is_executable(path: &Path) -> bool {
 fn search_dirs(
     process_path: Option<&OsStr>,
     shell_path: Option<&OsStr>,
+    user_path: Option<&OsStr>,
     home: Option<&Path>,
     shims: &[PathBuf],
 ) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = process_path.into_iter().chain(shell_path).flat_map(std::env::split_paths).collect();
+    let mut dirs: Vec<PathBuf> =
+        process_path.into_iter().chain(shell_path).chain(user_path).flat_map(std::env::split_paths).collect();
     if let Some(home) = home {
         dirs.extend(USER_DIRS.iter().map(|d| home.join(d)));
         dirs.extend(nvm_bins(&home.join(".nvm/versions/node")));
@@ -172,6 +183,7 @@ mod tests {
             Some(OsStr::new("/usr/bin:.:node_modules/.bin:/opt/tools")),
             // nushell prints `$PATH` as is.
             Some(OsStr::new("$PATH:/opt/tools:/home/me/.asdf/shims")),
+            None,
             Some(Path::new("/home/me")),
             &shims,
         );
@@ -185,8 +197,26 @@ mod tests {
         let unique: HashSet<&PathBuf> = dirs.iter().collect();
         assert_eq!(unique.len(), dirs.len());
         // A `:` can't be in a `PATH` entry: those below such a home are left out.
-        let dirs = search_dirs(Some(OsStr::new("/usr/bin")), None, Some(Path::new("/home/a:b")), &[]);
+        let dirs = search_dirs(Some(OsStr::new("/usr/bin")), None, None, Some(Path::new("/home/a:b")), &[]);
         assert!(dirs.contains(&PathBuf::from("/usr/bin")) && !dirs.iter().any(|d| d.starts_with("/home")));
+    }
+
+    #[test]
+    fn search_dirs_append_user_path_entries_once_after_the_inherited_path() {
+        let (system, dup, usertool) =
+            if cfg!(windows) { ("C:/system", "C:/dup", "C:/usertool") } else { ("/system", "/dup", "/usertool") };
+        let home = Path::new(if cfg!(windows) { "C:/home/me" } else { "/home/me" });
+        let join = |dirs: &[&str]| std::env::join_paths(dirs.iter().map(PathBuf::from)).unwrap();
+        let inherited = join(&[system, dup]);
+        let user = join(&[dup, usertool]);
+        let dirs = search_dirs(Some(inherited.as_os_str()), None, Some(user.as_os_str()), Some(home), &[]);
+        let at = |d: &str| dirs.iter().position(|p| p == Path::new(d)).unwrap();
+        // User entries follow the inherited PATH, de-duplicated, ahead of the fallbacks.
+        assert_eq!(dirs.iter().filter(|d| *d == Path::new(dup)).count(), 1);
+        assert!(at(dup) < at(usertool));
+        // And before this platform's home/system fallbacks.
+        let fallback = dirs.iter().position(|d| d == &home.join(USER_DIRS[0])).unwrap();
+        assert!(at(usertool) < fallback);
     }
 
     #[test]

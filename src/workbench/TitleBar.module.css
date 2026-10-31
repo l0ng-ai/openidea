@@ -99,7 +99,7 @@
   color: var(--fg-secondary);
 }
 
-/* Windows frameless window: caption buttons sit flush with the right and top edges. */
+/* Frameless window (Windows, Linux): caption buttons sit flush with the right and top edges. */
 .frameless {
   padding-right: 0;
 }

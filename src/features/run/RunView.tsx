@@ -3,7 +3,7 @@ import type { RunTargetValid } from "@/platform/remoteSettings";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, Tabs, type TabItem, T } from "@/ui";
 import { executeAction } from "@/platform/actions";
-import { shortcutLabel } from "@/platform/keymap";
+import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { ConsoleModel } from "./console";
 import { ConsoleView } from "./ConsoleView";
 import { TerminalConsole } from "./TerminalConsole";
@@ -43,7 +43,15 @@ function sessionIcon(s: RunSession): string {
   return s.config.isTest ? "check" : "run";
 }
 
-export function SessionPanel({ session }: { session: RunSession }) {
+export function SessionPanel({
+  session,
+  onRerun,
+  onStop,
+}: {
+  session: RunSession;
+  onRerun?: (() => void) | null;
+  onStop?: () => void;
+}) {
   const version = useRun((s) => s.versions[session.id] ?? 0);
   const rt = runtime(session.id);
   const [follow, setFollow] = useState(true);
@@ -52,6 +60,7 @@ export function SessionPanel({ session }: { session: RunSession }) {
   const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
   const softWrap = wrapOverride ?? defaultWrap;
   const [selectedTest, setSelectedTest] = useState<string | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
   const running = session.status === "running" || session.status === "starting";
   const cwd = runDirectory(session.config.cwd);
 
@@ -94,6 +103,8 @@ export function SessionPanel({ session }: { session: RunSession }) {
           softWrap={softWrap}
           follow={testModel ? false : follow}
           onFollowChange={setFollow}
+          findOpen={findOpen}
+          onFindOpenChange={setFindOpen}
           cwd={cwd}
           onClear={() => clearConsole(session.id)}
           input={
@@ -120,7 +131,8 @@ export function SessionPanel({ session }: { session: RunSession }) {
           iconSize={14}
           title="Rerun"
           shortcut={shortcutLabel("run.rerun")}
-          onClick={() => rerunSession(session.id)}
+          disabled={onRerun === null}
+          onClick={onRerun ?? (() => rerunSession(session.id))}
         />
         {rt.tests && (
           <IconButton
@@ -137,9 +149,9 @@ export function SessionPanel({ session }: { session: RunSession }) {
           icon="stop"
           iconSize={13}
           title="Stop"
-          tone={running ? "danger" : "default"}
-          disabled={!running}
-          onClick={() => void stopSession(session.id)}
+          tone={running || onStop ? "danger" : "default"}
+          disabled={!running && !onStop}
+          onClick={onStop ?? (() => void stopSession(session.id))}
         />
         {session.config.kind === "tomcat" && (
           <IconButton
@@ -153,6 +165,14 @@ export function SessionPanel({ session }: { session: RunSession }) {
         <div className={styles.toolbarSep} />
         {!rt.terminal && (
           <>
+            <IconButton
+              icon="search"
+              iconSize={14}
+              title="Find…"
+              shortcut={formatBinding(hostBinding("Meta+F"))}
+              pressed={findOpen}
+              onClick={() => setFindOpen((v) => !v)}
+            />
             <IconButton
               icon="arrow-down"
               iconSize={14}

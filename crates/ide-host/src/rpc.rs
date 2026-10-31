@@ -148,6 +148,9 @@ impl Dispatcher {
             c.host.close_project(&c.window);
             Ok(())
         })
+        .add("jvm_file_presentations", |c| async move {
+            ops::jvm_icons::jvm_file_presentations(&c.host, &c.window, c.arg("paths")?).await
+        })
         .add("project_roots", |c| async move { ops::project::roots(&c.host, &c.window) })
         .add("settings_get", |c| async move { Ok(ops::project::settings(&c.host, &c.window)) })
         .add("settings_set", |c| async move {
@@ -186,6 +189,7 @@ impl Dispatcher {
         })
         .add("doc_save", |c| async move { ops::doc::save(&c.host, &c.window, c.arg("doc")?).await })
         .add("doc_save_all", |c| async move { ops::doc::save_all(&c.host, &c.window).await })
+        .add("doc_sync_from_disk", |c| async move { ops::doc::sync_from_disk(&c.host, &c.window).await })
         .add("doc_snapshot", |c| async move { ops::doc::snapshot(&c.host, &c.window, c.arg("doc")?).await })
         .add("search_start", |c| async move {
             let on_event = c.channel("onEvent")?;

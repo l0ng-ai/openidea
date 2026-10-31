@@ -18,6 +18,7 @@ const config: RunConfig = {
   id: "main",
   name: "Main",
   kind: "application",
+  module: "",
   command: "java",
   args: ["-cp", "${classpath}", "Main"],
   cwd: null,

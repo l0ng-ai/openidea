@@ -138,7 +138,7 @@ fn bin_dirs_in(root: &Path, platform: Platform) -> Vec<PathBuf> {
 }
 
 fn managed_bin_dir(root: &Path, spec: &ToolSpec, platform: Platform) -> Option<PathBuf> {
-    match spec.method {
+    match spec.fallback.unwrap_or(spec.method) {
         Method::Npm { .. } => Some(root.join("node_modules").join(".bin")),
         Method::Go { .. } | Method::Gem { .. } | Method::DotnetTool { .. } | Method::Release { .. } => {
             Some(root.join(spec.name).join("bin"))
@@ -151,11 +151,13 @@ fn managed_bin_dir(root: &Path, spec: &ToolSpec, platform: Platform) -> Option<P
 }
 
 /// Prepends [`tools_bin_dirs`] to this process's `PATH` so language servers,
-/// debug adapters and terminals find managed tools. Call once at startup,
-/// before other threads start (it mutates the process environment).
+/// debug adapters and terminals find managed tools, and appends the Windows user
+/// `PATH` entries a process may not inherit, for agent detection and for what the
+/// tools found there run in turn. Call once at startup, before other threads start
+/// (it mutates the process environment).
 pub fn extend_process_path(app_data: &Path) {
     let current = std::env::var_os("PATH").unwrap_or_default();
-    let extended = path_with_tools(app_data, &current);
+    let extended = path_with_tools(app_data, &ide_core::process::with_user_path(&current));
     if extended != current {
         // SAFETY: documented to run at startup before any other thread reads the environment.
         unsafe { std::env::set_var("PATH", extended) };
@@ -520,16 +522,26 @@ impl Tools {
         parse_version(&out)
     }
 
+    /// The installer that owns this tool: a managed copy is refreshed and removed by the
+    /// fallback that made it, even if the primary installer has appeared since.
+    fn install_method(&self, spec: &ToolSpec) -> Method {
+        let Some(fallback) = spec.fallback else { return spec.method };
+        let managed = managed_bin_dir(&self.root, spec, self.platform)
+            .and_then(|dir| self.exe_in(&dir, spec.commands[0]))
+            .is_some();
+        if managed || self.method_missing(spec.method).is_some() { fallback } else { spec.method }
+    }
+
     /// Requirement check for installing `spec` right now.
     fn unavailable_reason(&self, spec: &ToolSpec) -> Option<String> {
-        self.installer_missing(spec)
+        self.method_missing(self.install_method(spec))
             .or_else(|| spec.needs.iter().find(|(cmd, _)| self.which(cmd).is_none()).map(|(_, why)| why.to_string()))
     }
 
     /// What the install method itself lacks (npm, a build for this platform, …).
-    fn installer_missing(&self, spec: &ToolSpec) -> Option<String> {
+    fn method_missing(&self, method: Method) -> Option<String> {
         let need = |ok: bool, msg: &str| (!ok).then(|| msg.to_string());
-        match spec.method {
+        match method {
             Method::Rustup { .. } => need(self.which("rustup").is_some(), "rustup is required (https://rustup.rs)"),
             Method::Npm { .. } => need(
                 self.which_any(&["npm", "pnpm"]).is_some(),
@@ -602,7 +614,7 @@ impl Tools {
             status,
             path: path.map(Into::into),
             version,
-            install_method: Some(spec.method.label().to_string()),
+            install_method: Some(self.install_method(spec).label().to_string()),
             can_install: unavailable_reason.is_none(),
             unavailable_reason,
             can_uninstall,
@@ -643,7 +655,16 @@ impl Tools {
 
     fn detect(&self, spec: &ToolSpec) -> (ToolStatus, Option<PathBuf>, Option<String>) {
         let main = spec.commands[0];
-        match spec.method {
+        let managed = managed_bin_dir(&self.root, spec, self.platform).and_then(|d| self.exe_in(&d, main));
+        if let Some(path) = managed {
+            let version = match spec.method {
+                Method::Npm { packages } => self.npm_package_version(npm_name(packages[0])),
+                _ => self.manifest(spec.name).and_then(|m| m.version),
+            }
+            .or_else(|| self.query_version(spec, &path));
+            return (ToolStatus::Installed, Some(path), version);
+        }
+        match self.install_method(spec) {
             Method::Rustup { .. } => {
                 let Some(path) = self.which(main) else { return (ToolStatus::Missing, None, None) };
                 // The rustup proxy exists even without the component; it only answers when installed.
@@ -678,24 +699,13 @@ impl Tools {
                     _ => (ToolStatus::Missing, None, None),
                 }
             }
-            _ => {
-                let managed = managed_bin_dir(&self.root, spec, self.platform).and_then(|d| self.exe_in(&d, main));
-                if let Some(path) = managed {
-                    let version = match spec.method {
-                        Method::Npm { packages } => self.npm_package_version(npm_name(packages[0])),
-                        _ => self.manifest(spec.name).and_then(|m| m.version),
-                    }
-                    .or_else(|| self.query_version(spec, &path));
-                    return (ToolStatus::Installed, Some(path), version);
+            _ => match self.which(main) {
+                Some(path) => {
+                    let version = self.query_version(spec, &path);
+                    (ToolStatus::OnPath, Some(path), version)
                 }
-                match self.which(main) {
-                    Some(path) => {
-                        let version = self.query_version(spec, &path);
-                        (ToolStatus::OnPath, Some(path), version)
-                    }
-                    None => (ToolStatus::Missing, None, None),
-                }
-            }
+                None => (ToolStatus::Missing, None, None),
+            },
         }
     }
 
@@ -769,8 +779,9 @@ impl Tools {
         let emit = &fan as Emit;
         let result = (|| {
             std::fs::create_dir_all(&self.root)?;
-            emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, spec.method.label()) });
-            match spec.method {
+            let method = self.install_method(spec);
+            emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, method.label()) });
+            match method {
                 Method::Rustup { component } => {
                     let mut c = self.command(self.which("rustup").expect("checked"));
                     c.args(["component", "add", component]);
@@ -1072,6 +1083,10 @@ impl Tools {
             }
             ReleaseSource::OpenVsx { namespace, extension } => {
                 let json = http.get_text(&sources::openvsx_latest_url(namespace, extension), cancel)?;
+                let json = match sources::openvsx_platform_url(&json, assets, self.platform)? {
+                    Some(url) => http.get_text(&url, cancel)?,
+                    None => json,
+                };
                 sources::openvsx_pick(&json, assets, self.platform)
             }
             ReleaseSource::MavenCentral { group, artifact } => {
@@ -1172,7 +1187,7 @@ impl Tools {
         let _guard = InstallGuard::acquire(&format!("uninstall-{name}"))?;
         let cancel = CancellationToken::new();
         let quiet = |_: InstallEvent| {};
-        match spec.method {
+        match self.install_method(spec) {
             Method::Rustup { component } => {
                 let rustup = self.which("rustup").ok_or_else(|| IdeError::unavailable("rustup not found"))?;
                 let mut c = self.command(rustup);

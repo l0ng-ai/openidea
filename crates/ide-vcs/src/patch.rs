@@ -36,7 +36,12 @@ impl Drop for TempIndex {
 /// Binary-safe patch of the working-tree changes (staged or not, untracked files
 /// included) of `rel_paths` against HEAD, plus the files it touches (renames split
 /// into delete + add). The real index is left untouched.
-pub(crate) fn working_patch(r: &Repo, rel_paths: &[String], reverse: bool) -> IdeResult<(String, Vec<ChangedFile>)> {
+pub(crate) fn working_patch(
+    r: &Repo,
+    rel_paths: &[String],
+    reverse: bool,
+    detect_renames: bool,
+) -> IdeResult<(String, Vec<ChangedFile>)> {
     if rel_paths.is_empty() {
         return Err(IdeError::invalid("no files selected"));
     }
@@ -48,8 +53,16 @@ pub(crate) fn working_patch(r: &Repo, rel_paths: &[String], reverse: bool) -> Id
         run_env(r.root(), &["read-tree", "--empty"], None, &env)?;
     }
     cli::run_paths_env(r.root(), &["--literal-pathspecs", "add", "-A", "--"], rel_paths, None, &env)?;
-    let mut diff =
-        vec!["diff", "--cached", "--binary", "--full-index", "-M", "--no-color", "--no-ext-diff", "--no-textconv"];
+    let mut diff = vec![
+        "diff",
+        "--cached",
+        "--binary",
+        "--full-index",
+        if detect_renames { "-M" } else { "--no-renames" },
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+    ];
     if reverse {
         diff.push("-R");
     }
@@ -163,13 +176,49 @@ fn unmerged(r: &Repo) -> IdeResult<Vec<String>> {
     Ok(out.stdout_str().split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
 }
 
+fn git_path(p: &str) -> String {
+    let Some(p) = p.strip_prefix('"').and_then(|p| p.strip_suffix('"')) else { return p.to_string() };
+    let mut bytes = Vec::new();
+    let mut chars = p.bytes().peekable();
+    while let Some(c) = chars.next() {
+        if c != b'\\' {
+            bytes.push(c);
+            continue;
+        }
+        let Some(c) = chars.next() else { break };
+        bytes.push(match c {
+            b'n' => b'\n',
+            b't' => b'\t',
+            b'r' => b'\r',
+            b'a' => 7,
+            b'b' => 8,
+            b'v' => 11,
+            b'f' => 12,
+            b'0'..=b'7' => {
+                let mut n = c - b'0';
+                for _ in 0..2 {
+                    if let Some(d @ b'0'..=b'7') = chars.peek().copied() {
+                        chars.next();
+                        n = n.wrapping_mul(8).wrapping_add(d - b'0');
+                    } else {
+                        break;
+                    }
+                }
+                n
+            }
+            c => c,
+        });
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 fn strip_prefix(p: &str) -> Option<String> {
-    let p = p.split('\t').next().unwrap_or(p).trim_end();
+    let p = if p.starts_with('"') { p } else { p.split('\t').next().unwrap_or(p) };
     if p == "/dev/null" {
         return None;
     }
-    let p = p.strip_prefix("\"").and_then(|q| q.strip_suffix('"')).unwrap_or(p);
-    Some(p.strip_prefix("a/").or_else(|| p.strip_prefix("b/")).unwrap_or(p).to_string())
+    let p = git_path(p);
+    Some(p.strip_prefix("a/").or_else(|| p.strip_prefix("b/")).unwrap_or(&p).to_string())
 }
 
 /// Files changed by a unified diff (git extended headers or plain `---`/`+++`).
@@ -210,7 +259,12 @@ pub(crate) fn parse_patch(patch: &str) -> Vec<PatchFile> {
         }
         if let Some(rest) = line.strip_prefix("diff --git ") {
             out.extend(cur.take());
-            let path = rest.rsplit_once(" b/").map(|(_, b)| b.to_string()).unwrap_or_else(|| rest.to_string());
+            let path = rest
+                .rsplit_once(" \"b/")
+                .map(|(_, b)| git_path(&format!("\"{b}")))
+                .or_else(|| rest.rsplit_once(" b/").map(|(_, b)| b.to_string()))
+                .unwrap_or_else(|| rest.to_string());
+            let path = path.strip_prefix("b/").unwrap_or(&path).to_string();
             cur = Some(new_file(path));
             fresh_header = true;
         } else if let Some(rest) = line.strip_prefix("--- ") {
@@ -249,10 +303,10 @@ pub(crate) fn parse_patch(patch: &str) -> Vec<PatchFile> {
             } else if line.starts_with("deleted file mode") {
                 c.kind = ChangeKind::Deleted;
             } else if let Some(p) = line.strip_prefix("rename from ") {
-                c.old_path = Some(p.to_string());
+                c.old_path = Some(git_path(p));
                 c.kind = ChangeKind::Renamed;
             } else if let Some(p) = line.strip_prefix("rename to ") {
-                c.path = p.to_string();
+                c.path = git_path(p);
             } else if line.starts_with("GIT binary patch") || line.starts_with("Binary files ") {
                 c.binary = true;
             }
@@ -295,7 +349,7 @@ fn lossless_diff(r: &Repo, args: &[&str], env: &[(&str, &OsStr)]) -> IdeResult<S
 pub(crate) fn encode_text_patch(
     r: &Repo,
     patch: &str,
-    encoding: &dyn Fn(&std::path::Path) -> IdeResult<&'static encoding_rs::Encoding>,
+    encoding: &dyn Fn(&std::path::Path) -> IdeResult<crate::TextEncoding>,
 ) -> IdeResult<Vec<u8>> {
     let mut out = Vec::new();
     let mut header = String::new();
@@ -323,6 +377,52 @@ pub(crate) fn encode_text_patch(
         out.extend_from_slice(line.as_bytes());
     }
     Ok(out)
+}
+
+/// Apply displayed-text line selections in a temporary UTF-8 index, then
+/// serialize the result. Literal escape spelling in the real index must not
+/// prevent a selected patch from matching its decoded base.
+pub(crate) fn stage_converted_patch(
+    r: &Repo,
+    patch: &str,
+    encoding: &dyn Fn(&std::path::Path) -> IdeResult<crate::TextEncoding>,
+) -> IdeResult<()> {
+    use crate::text_encoding::{decode, encode, has_bom};
+    let tmp = TempIndex::new(r);
+    let env = tmp.env();
+    let index = r.git_dir.join("index");
+    if index.exists() {
+        std::fs::copy(index, &tmp.0)?;
+    } else {
+        run_env(r.root(), &["read-tree", "--empty"], None, &env)?;
+    }
+    let mut files = Vec::new();
+    for file in parse_patch(patch) {
+        let path = r.abs_path(&file.path);
+        let enc = encoding(&path)?;
+        let original = r.file_bytes_at(&path, Some(":0"))?;
+        let bom = original.as_ref().is_some_and(|bytes| has_bom(bytes, enc));
+        if let Some(original) = original {
+            crate::write::write_index_blob(r, &file.path, decode(&original, enc).as_bytes(), &env)?;
+        }
+        files.push((file.path, enc, bom));
+    }
+    run_env(
+        r.root(),
+        &["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", "--recount", "-"],
+        Some(patch.as_bytes()),
+        &env,
+    )?;
+    for (rel, enc, bom) in files {
+        let staged = cli::run_raw_env(r.root(), &["show", &format!(":0:{rel}")], None, &env)?;
+        if staged.code == Some(0) {
+            let text = std::str::from_utf8(&staged.stdout).map_err(|e| IdeError::invalid(e.to_string()))?;
+            crate::write::write_index_blob(r, &rel, &encode(text, enc, bom)?, &[])?;
+        } else {
+            run(r.root(), &["--literal-pathspecs", "update-index", "--force-remove", "--", &rel], None)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

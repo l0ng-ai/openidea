@@ -1,3 +1,4 @@
+import { showShelfDiff } from "./shelf";
 import { commitRepo } from "./multiRoot";
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
 import { registerActions, type Action } from "@/platform/actions";
@@ -306,7 +307,8 @@ export function registerVcsActions(): () => void {
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       keyWhen: "!editorTextFocus",
-      run: async ({ arg }) => {
+      run: async ({ arg, ctx }) => {
+        if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
           arg && typeof arg === "object" && "line" in arg ? Number((arg as { line: unknown }).line) : undefined;
         const paths = contextPaths(arg).filter((p) => !p.endsWith("/"));

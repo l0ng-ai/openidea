@@ -31,6 +31,9 @@ export interface FindDeps {
   nextRequestId(): RequestId;
 }
 
+export const countFileMatches = (file: FileMatches): number =>
+  file.matches.reduce((count, line) => count + line.ranges.length, 0);
+
 export const IDLE: FindState = { status: "idle", query: null, files: [], matchCount: 0, summary: null, error: null };
 
 function errorMessage(e: unknown): string {
@@ -86,7 +89,7 @@ export class FindSession {
       const summary = await this.deps.start(request, query, (f) => {
         if (seq !== this.seq) return;
         files.push(f);
-        matchCount += f.matches.length;
+        matchCount += countFileMatches(f);
         this.update({ ...this.state, files: [...files], matchCount });
       });
       if (seq !== this.seq) return;

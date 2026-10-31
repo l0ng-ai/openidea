@@ -31,7 +31,7 @@ import {
   type SimpleRange,
 } from "./model/selectionStack";
 import type { EditorSlot } from "./model/slot";
-import { findAgain, openFindBar } from "./view/FindBar";
+import { findAgain, findPanelTarget, openFindBar, openFindBarResults, useFindPreferences } from "./view/FindBar";
 import {
   collapseAll,
   collapseRecursively,
@@ -479,6 +479,19 @@ export function registerEditorActions(): () => void {
     const pane = s.panes[s.activePane];
     return pane?.active ? { paneId: pane.id, tabId: pane.active } : null;
   };
+  const occurrence = (id: string, title: string, run: (view: EditorView) => unknown): Action => ({
+    id,
+    title,
+    category: "Edit",
+    when: `${TEXT_WHEN} || findBarFocus || findBarOpen && popupOpen`,
+    run: ({ arg, ctx }) => {
+      const view = typeof arg === "string" || ctx.findBarFocus ? findPanelTarget(arg)?.view() : null;
+      if (view) {
+        run(view);
+        view.focus();
+      } else withView(run)();
+    },
+  });
   return registerActions([
     schemeSwitch("editor.toggleSemanticHighlighting", "Semantic Highlighting", "semanticHighlighting", [
       "rainbow variables",
@@ -552,10 +565,8 @@ export function registerEditorActions(): () => void {
       category: "Folding",
       keywords: ["unfold"],
     }),
-    text("code.addCaretNextOccurrence", "Add Selection for Next Occurrence", (v) => addNextOccurrence(v), {
-      category: "Edit",
-    }),
-    text("code.selectAllOccurrences", "Select All Occurrences", (v) => selectAllOccurrences(v), { category: "Edit" }),
+    occurrence("code.addCaretNextOccurrence", "Add Selection for Next Occurrence", addNextOccurrence),
+    occurrence("code.selectAllOccurrences", "Select All Occurrences", selectAllOccurrences),
     text("code.completeStatement", "Complete Current Statement", (v, slot) => completeCurrentStatement(v, slot)),
     text("code.startNewLine", "Start New Line", (v) => startNewLine(v)),
     text("code.startNewLineBefore", "Start New Line Before Current", (v) => startNewLineBefore(v)),
@@ -623,7 +634,7 @@ export function registerEditorActions(): () => void {
     text("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
       category: "Edit",
     }),
-    text("code.unselectOccurrence", "Unselect Occurrence", (v) => unselectOccurrence(v), { category: "Edit" }),
+    occurrence("code.unselectOccurrence", "Unselect Occurrence", unselectOccurrence),
     text("code.pasteFromHistory", "Paste from History…", (v) => pasteFromHistory(v), {
       category: "Edit",
       keywords: ["clipboard", "paste multiple"],
@@ -716,6 +727,22 @@ export function registerEditorActions(): () => void {
         const slot = activeSlot();
         if (slot) toggleReadOnly(slot.model);
       },
+    },
+    {
+      id: "find.openInWindow",
+      title: "Open Results in Find Window",
+      category: "Find",
+      when: "findBarHasResults",
+      keyWhen: "findBarFocus",
+      run: ({ arg }) => openFindBarResults(arg),
+    },
+    {
+      id: "find.scrollToResults",
+      title: "Scroll to Results During Typing",
+      category: "Find",
+      when: "findBarOpen",
+      toggled: () => useFindPreferences.getState().scrollToResults,
+      run: () => useFindPreferences.setState((s) => ({ scrollToResults: !s.scrollToResults })),
     },
     {
       id: "find.inFile",

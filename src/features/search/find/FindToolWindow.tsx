@@ -24,6 +24,7 @@ import {
 import { notifications, useOccurrenceNavigator } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { basename, openLocation, relDir } from "../common/open";
+import { countFileMatches } from "./session";
 import { CodePreview, MatchText, type PreviewHighlight } from "./parts";
 import {
   NO_MARKS,
@@ -104,18 +105,19 @@ export function buildFindTree(files: readonly FileMatches[], groupByDirectory = 
         starts: m.ranges.map(([s]) => ({ line: m.line, col: s + m.textOffset })),
       };
     });
+    const count = countFileMatches(f);
     const file: Node = {
       kind: "file",
       key: `f:${f.path}`,
       path: f.path,
       name: basename(f.relPath),
       dir,
-      count: f.matches.length,
+      count,
       children,
     };
     if (d) {
       d.children.push(file);
-      d.count += f.matches.length;
+      d.count += count;
     } else flat.push(file);
   }
   if (!groupByDirectory) {
@@ -434,6 +436,12 @@ function FindTabView({ tab }: { tab: FindTab }) {
             onSelectionChange={(next, lead) => {
               setSelection(next);
               setLeadNode(lead);
+              if (tab.editorResults && lead?.kind === "match")
+                void openLocation(
+                  lead.path,
+                  { line: lead.line, col: lead.col, endLine: lead.line, endCol: lead.endCol },
+                  { focus: false },
+                );
             }}
             multiSelect
             onActivate={(n) => {

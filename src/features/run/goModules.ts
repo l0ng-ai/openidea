@@ -8,6 +8,10 @@ import { goModuleDir } from "./producers";
 
 const known = new Map<string, string | null>();
 
+export function invalidateGoModules() {
+  known.clear();
+}
+
 export function parseGoModule(gomod: string): string | null {
   const m = /^\s*module\s+("?)([^\s"]+)\1/m.exec(gomod);
   return m?.[2] ?? null;
@@ -21,7 +25,7 @@ export function goModulePath(dir: string): string | null | undefined {
 /** Reads the `go.mod` of every Go configuration's module not read yet. */
 export async function loadGoModules(root: string | null, configs: readonly RunConfig[]): Promise<void> {
   if (!root || !isTauri()) return;
-  const dirs = new Set(configs.filter((c) => c.kind === "go").map((c) => goModuleDir(root, c.cwd)));
+  const dirs = new Set(configs.filter((c) => c.kind === "go").map((c) => goModuleDir(root, c.params?.module ?? c.cwd)));
   await Promise.all(
     [...dirs]
       .filter((d) => !known.has(d))
