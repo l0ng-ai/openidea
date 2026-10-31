@@ -4,7 +4,7 @@
 mod common;
 
 use common::Harness;
-use ide_core::mcp::{McpSettings, McpUiRequest};
+use ide_core::mcp::McpUiRequest;
 use serde_json::{Value, json};
 
 const RUN_TOML: &str = r#"
@@ -410,7 +410,7 @@ async fn declined_commands_do_not_run_and_brave_mode_skips_the_question() {
     assert!(e.contains("declined"), "{e}");
     assert!(!h.path("created.txt").exists());
 
-    h.server.apply(&McpSettings { brave_mode: true, ..Default::default() }).await;
+    h.server.apply(&ide_core::mcp::McpSettings { brave_mode: true, ..Default::default() }).await;
     let asked = h.ui.asked.lock().len();
     let r = h.call_json("execute_terminal_command", json!({ "command": "touch created.txt" })).await;
     assert_eq!(r["command_exit_code"], 0);
