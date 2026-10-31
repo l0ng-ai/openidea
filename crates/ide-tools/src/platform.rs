@@ -61,8 +61,8 @@ pub const fn any_arch(os: Os, pattern: &'static str) -> AssetRule {
 }
 
 /// Picks the asset for `platform`: rules are tried in order and the first
-/// rule matching any asset name wins. Apple Silicon falls back to x64 assets
-/// (Rosetta) when no native build exists.
+/// rule matching any asset name wins. ARM64 macOS and Windows fall back to x64 assets
+/// under OS emulation when no native build exists.
 pub fn select_asset<'a>(names: &[&'a str], rules: &[AssetRule], platform: Platform) -> Option<&'a str> {
     let pick = |arch: Arch| {
         rules
@@ -70,8 +70,11 @@ pub fn select_asset<'a>(names: &[&'a str], rules: &[AssetRule], platform: Platfo
             .filter(|r| r.os == platform.os && r.arch.is_none_or(|a| a == arch))
             .find_map(|r| names.iter().copied().find(|n| glob_match(r.pattern, n)))
     };
-    pick(platform.arch)
-        .or_else(|| (platform.os == Os::Mac && platform.arch == Arch::Arm64).then(|| pick(Arch::X64)).flatten())
+    pick(platform.arch).or_else(|| {
+        (matches!(platform.os, Os::Mac | Os::Windows) && platform.arch == Arch::Arm64)
+            .then(|| pick(Arch::X64))
+            .flatten()
+    })
 }
 
 /// Case-insensitive glob with `*` wildcards only.
@@ -173,6 +176,35 @@ mod tests {
         let old = ["codelldb-aarch64-darwin.vsix", "codelldb-x86_64-linux.vsix"];
         assert_eq!(select_asset(&old, rules, MAC_ARM), Some("codelldb-aarch64-darwin.vsix"));
         assert_eq!(select_asset(&old, rules, LINUX_X64), Some("codelldb-x86_64-linux.vsix"));
+    }
+
+    #[test]
+    fn arm64_native_then_emulated_assets() {
+        for os in [Os::Mac, Os::Windows, Os::Linux] {
+            let rules = [rule(os, Arch::X64, "tool-x64"), rule(os, Arch::Arm64, "tool-arm64")];
+            let platform = Platform { os, arch: Arch::Arm64 };
+            assert_eq!(select_asset(&["tool-x64", "tool-arm64"], &rules, platform), Some("tool-arm64"));
+            let fallback = if os == Os::Linux { None } else { Some("tool-x64") };
+            assert_eq!(select_asset(&["tool-x64"], &rules, platform), fallback);
+            assert_eq!(select_asset(&[], &rules, platform), None);
+        }
+    }
+
+    #[test]
+    fn native_windows_release_rules() {
+        let platform = Platform { os: Os::Windows, arch: Arch::Arm64 };
+        for (tool, asset) in [
+            ("zls", "zls-aarch64-windows.zip"),
+            ("taplo", "taplo-windows-aarch64.zip"),
+            ("buf", "buf-Windows-arm64.zip"),
+            ("texlab", "texlab-aarch64-windows.zip"),
+            ("neocmakelsp", "neocmakelsp-aarch64-pc-windows-msvc.zip"),
+        ] {
+            assert_eq!(
+                select_asset(&[asset], crate::registry::find(tool).unwrap().asset_rules(), platform),
+                Some(asset)
+            );
+        }
     }
 
     #[test]
