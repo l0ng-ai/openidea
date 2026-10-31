@@ -8,7 +8,7 @@
 //! replaced or removed.
 
 use crate::clients::Paths;
-use ide_core::mcp::{McpSkillInfo, McpSkillTarget};
+use ide_core::mcp::{McpSettings, McpSkillInfo, McpSkillTarget};
 use ide_core::{IdeError, IdeResult};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -53,6 +53,8 @@ pub const BUNDLED: &[BundledSkill] = &[BundledSkill {
         "create_new_file",
         "rename_refactoring",
         "reformat_file",
+        "optimize_imports",
+        "add_missing_imports",
         "get_file_problems",
         "lint_files",
         "build_project",
@@ -98,7 +100,17 @@ fn find(id: &str) -> IdeResult<&'static BundledSkill> {
     BUNDLED.iter().find(|s| s.id == id).ok_or_else(|| IdeError::not_found(format!("No bundled skill `{id}`")))
 }
 
-/// None of the tools the skill requires is disabled.
+/// The tools the settings keep from clients: everything the effective filter (`toolStates`,
+/// `toolsFilter`, `disabledTools`, experimental tools) leaves unreachable, directly or
+/// through the router.
+pub fn disabled_tools(settings: &McpSettings) -> HashSet<String> {
+    let tools = crate::tools::all();
+    let reachable: HashSet<&str> =
+        crate::filter::FilterSettings::from(settings).routable_tools(&tools).iter().map(|t| t.name).collect();
+    tools.iter().map(|t| t.name).filter(|n| !reachable.contains(n)).map(str::to_owned).collect()
+}
+
+/// None of the tools the skill requires is disabled ([`disabled_tools`]).
 pub fn available(skill: &BundledSkill, disabled: &HashSet<String>) -> bool {
     skill.required_tools.iter().all(|t| !disabled.contains(*t))
 }

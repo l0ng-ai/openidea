@@ -90,3 +90,25 @@ fn needs_its_required_tools_and_installs_into_projects() {
     let dir = skills::install(skill.id, McpSkillTarget::Codex, SkillRoot::User(&paths), &HashSet::new()).unwrap();
     assert_eq!(dir, home.path().join("codex-home/skills").join(skill.id));
 }
+
+#[test]
+fn availability_follows_the_effective_tool_filter() {
+    use ide_core::mcp::{McpSettings, McpToolState};
+    let skill = &BUNDLED[0];
+    let available = |settings: &McpSettings| skills::available(skill, &skills::disabled_tools(settings));
+    assert!(available(&McpSettings::default()));
+    // A mask filter hides a required tool.
+    assert!(!available(&McpSettings { tools_filter: "-*.read_file".into(), ..Default::default() }));
+    // So does its tool state.
+    let mut settings = McpSettings::default();
+    settings.tool_states.insert("search_text".into(), McpToolState { enabled: false, router_only: true });
+    assert!(!available(&settings));
+    // Router-only tools are still reachable.
+    let routed = McpSettings { invocation_mode: ide_core::mcp::McpInvocationMode::ViaRouter, ..Default::default() };
+    assert!(available(&routed));
+    // `disabledTools` still counts, unless a tool state turns the tool back on.
+    let mut settings = McpSettings { disabled_tools: vec!["read_file".into()], ..Default::default() };
+    assert!(!available(&settings));
+    settings.tool_states.insert("read_file".into(), McpToolState { enabled: true, router_only: true });
+    assert!(available(&settings));
+}

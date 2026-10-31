@@ -248,7 +248,8 @@ pub struct McpDetectedClient {
     pub configured: Option<bool>,
     /// The entries that look like OpenIDEA's use this server's port (`false`: a stale port).
     pub port_correct: bool,
-    /// The `openidea` entry has this server's URL and token.
+    /// The `openidea` entry has this server's URL and token (a project's: the stdio bridge
+    /// with this port, token file and project).
     pub current: bool,
     /// The transports of all the file's server entries.
     pub transports: Vec<McpTransport>,
@@ -290,9 +291,10 @@ pub struct McpClientConfig {
     pub client: McpClientKind,
     /// The file the configuration goes into (`~/.cursor/mcp.json`), if it has one.
     pub file: Option<IpcPath>,
-    /// The snippet to paste there (JSON or TOML), or a command line to run.
+    /// The snippet to paste there (JSON or TOML); it never is a command line, which would
+    /// leave the token in the shell history.
     pub snippet: String,
-    /// `json`, `toml` or `shell`.
+    /// `json` or `toml`.
     pub format: String,
     /// The file already has an `openidea` entry.
     pub configured: bool,

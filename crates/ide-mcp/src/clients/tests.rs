@@ -182,7 +182,7 @@ fn configures_project_files() {
     let root = project.path();
     let file = configure_project(McpClientKind::ClaudeCode, &server("t"), root).unwrap();
     assert_eq!(file, root.join(".mcp.json"));
-    assert_eq!(read_json(&file)["mcpServers"]["openidea"]["url"], URL);
+    assert_eq!(read_json(&file)["mcpServers"]["openidea"]["args"], json!(["mcp-stdio"]));
     // Copilot CLI: `.github/mcp.json`, unless the root's mcp.json is the one in use.
     write(&root.join("mcp.json"), r#"{"mcpServers":{}}"#);
     assert_eq!(configure_project(McpClientKind::GitHubCopilotCli, &server("t"), root).unwrap(), root.join("mcp.json"));
@@ -221,9 +221,9 @@ fn snippets_parse() {
             "toml" => {
                 c.snippet.parse::<toml_edit::DocumentMut>().unwrap();
             }
-            "shell" => assert!(c.snippet.starts_with("claude mcp add")),
             f => panic!("unknown format {f}"),
         }
+        assert!(!c.snippet.contains("claude mcp add"), "no command line with the token: {kind:?}");
         let expected = if kind == McpClientKind::ClaudeDesktop { "mcp-stdio" } else { "Bearer t" };
         assert!(c.snippet.contains(expected), "{kind:?}");
     }
@@ -361,4 +361,68 @@ fn detects_project_configurations() {
     assert_eq!(c.project.clone().map(|p| p.into_path_buf()), Some(root.to_path_buf()));
     assert_eq!((c.configured, c.port_correct), (Some(true), true));
     assert_eq!(one(&found, McpClientKind::VsCode).configured, None);
+}
+
+#[test]
+fn project_configurations_hold_the_bridge_not_the_token() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let s = server("secret-token");
+    let bridge = |extra: Value| {
+        let mut entry = json!({
+            "command": "/Applications/OpenIDEA.app/Contents/MacOS/openidea",
+            "args": ["mcp-stdio"],
+            "env": {
+                "OPENIDEA_MCP_PORT": "64352",
+                "OPENIDEA_MCP_TOKEN_FILE": "/data/mcp-token",
+                "OPENIDEA_MCP_PROJECT_PATH": root.to_string_lossy(),
+            },
+        });
+        entry.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        entry
+    };
+    use McpClientKind::*;
+    for kind in [ClaudeCode, Codex, Cursor, VsCode, Gemini, Junie, Air, GitHubCopilotCli] {
+        let file = configure_project(kind, &s, root).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("secret-token") && !text.contains("Bearer"), "{kind:?}: {text}");
+        assert!(text.contains("mcp-stdio") && text.contains("OPENIDEA_MCP_TOKEN_FILE"), "{kind:?}: {text}");
+        match kind {
+            Codex => {}
+            VsCode => assert_eq!(read_json(&file)["servers"][SERVER_NAME], bridge(json!({ "type": "stdio" }))),
+            GitHubCopilotCli => assert_eq!(
+                read_json(&file)["mcpServers"][SERVER_NAME],
+                bridge(json!({ "type": "local", "tools": ["*"] }))
+            ),
+            _ => assert_eq!(read_json(&file)["mcpServers"][SERVER_NAME], bridge(json!({})), "{kind:?}"),
+        }
+    }
+    // Detection takes the bridge entries for configured and current.
+    let found = detect(&s, &mac(home.path()), Some(root));
+    for kind in [ClaudeCode, Codex, Cursor, VsCode, Gemini, Junie, Air, GitHubCopilotCli] {
+        let c = found.iter().find(|c| c.client == kind && c.project.is_some()).unwrap_or_else(|| panic!("{kind:?}"));
+        assert_eq!((c.configured, c.port_correct, c.current), (Some(true), true, true), "{kind:?}");
+        assert_eq!(c.transports, vec![McpTransport::Stdio], "{kind:?}");
+    }
+    // Another project's entry is not this one's.
+    let elsewhere = detect(&s, &mac(home.path()), Some(home.path()));
+    assert!(elsewhere.iter().all(|c| c.project.is_none() || !c.current));
+}
+
+#[test]
+fn a_current_entry_in_a_jsonc_file_is_configured() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = mac(home.path());
+    let file = config_file(McpClientKind::VsCode, &paths);
+    write(
+        &file,
+        &format!(
+            "// my servers\n{{ \"servers\": {{ \"openidea\": {{ \"type\": \"http\", \"url\": \"{URL}\", \
+\"headers\": {{ \"Authorization\": \"Bearer t\" }}, }}, }} }}"
+        ),
+    );
+    let c = config(McpClientKind::VsCode, &server("t"), &paths);
+    assert!(c.configured && !c.can_write);
+    assert!(!config(McpClientKind::VsCode, &server("other"), &paths).configured);
 }

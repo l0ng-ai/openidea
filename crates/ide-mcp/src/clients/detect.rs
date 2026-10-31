@@ -7,7 +7,7 @@
 //! separately, so a client configured for an older port is reported, not ignored.
 
 use super::{Format, Paths, Server, config_file, format, project_config_file};
-use crate::stdio::{PORT_ENV, SUBCOMMAND, TOKEN_FILE_ENV};
+use crate::stdio::{PORT_ENV, PROJECT_ENV, SUBCOMMAND, TOKEN_FILE_ENV};
 use ide_core::mcp::{McpClientKind, McpDetectedClient, McpTransport};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
@@ -115,13 +115,15 @@ pub(super) fn parse_servers(kind: McpClientKind, text: &str) -> Option<Vec<(Stri
     }
 }
 
-/// Whether `entry` is this server's current configuration for `kind`.
-pub(super) fn is_current(kind: McpClientKind, entry: &Entry, server: &Server) -> bool {
-    if kind == McpClientKind::ClaudeDesktop {
+/// Whether `entry` is this server's current configuration for `kind`, in the user's
+/// configuration or (`project`) in that project's, which uses the stdio bridge.
+pub(super) fn is_current(kind: McpClientKind, entry: &Entry, server: &Server, project: Option<&Path>) -> bool {
+    if kind == McpClientKind::ClaudeDesktop || project.is_some() {
         let command = entry.command.as_deref().map(Path::new);
         return entry.stdio_port() == Some(Some(i64::from(server.port)))
             && command == Some(server.command.as_path())
-            && entry.env.get(TOKEN_FILE_ENV).map(Path::new) == Some(server.token_file.as_path());
+            && entry.env.get(TOKEN_FILE_ENV).map(Path::new) == Some(server.token_file.as_path())
+            && project.is_none_or(|root| entry.env.get(PROJECT_ENV).map(Path::new) == Some(root));
     }
     entry.url.as_deref() == Some(server.url().as_str())
         && entry.authorization.as_deref() == Some(server.authorization().as_str())
@@ -241,7 +243,7 @@ fn report(kind: McpClientKind, file: &Path, project: Option<&Path>, server: &Ser
         file: file.to_path_buf().into(),
         configured: (!servers.is_empty()).then(|| servers.iter().any(|(_, e)| port_here(e).is_some())),
         port_correct: port_correct(&servers, &server.name, expected),
-        current: servers.iter().any(|(n, e)| *n == server.name && is_current(kind, e, server)),
+        current: servers.iter().any(|(n, e)| *n == server.name && is_current(kind, e, server, project)),
         transports: transports(&servers),
     }
 }

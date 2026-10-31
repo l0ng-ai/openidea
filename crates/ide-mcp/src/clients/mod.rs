@@ -4,8 +4,10 @@
 //! `openidea` entry into the client's configuration file, and [`detect`], which finds
 //! installed clients and entries that point at a stale port.
 //!
-//! Network clients get the streamable HTTP endpoint with the bearer token; clients
-//! without HTTP support (Claude Desktop) start `openidea mcp-stdio` ([`crate::stdio`]).
+//! User-level configurations of network clients get the streamable HTTP endpoint with
+//! the bearer token; clients without HTTP support (Claude Desktop) and every project-level
+//! configuration (which may be committed and shared) start `openidea mcp-stdio`
+//! ([`crate::stdio`]), which reads the token from the user's token file.
 
 mod detect;
 
@@ -156,19 +158,40 @@ fn format(kind: McpClientKind) -> Format {
     }
 }
 
-/// The JSON entry for this server in `kind`'s configuration.
-fn json_entry(kind: McpClientKind, server: &Server) -> Value {
+/// The environment of the stdio bridge: the port, the token file (never the token) and,
+/// in a project's configuration, the project.
+fn bridge_env(server: &Server, project: Option<&Path>) -> Map<String, Value> {
+    let mut env = Map::new();
+    env.insert(crate::stdio::PORT_ENV.into(), server.port.to_string().into());
+    env.insert(crate::stdio::TOKEN_FILE_ENV.into(), server.token_file.to_string_lossy().into_owned().into());
+    if let Some(root) = project {
+        env.insert(crate::stdio::PROJECT_ENV.into(), root.to_string_lossy().into_owned().into());
+    }
+    env
+}
+
+/// The JSON entry for this server in `kind`'s configuration: the user's (`project` is
+/// `None`) or project `project`'s, which gets the stdio bridge instead of the token.
+fn json_entry(kind: McpClientKind, server: &Server, project: Option<&Path>) -> Value {
+    if kind == McpClientKind::ClaudeDesktop || project.is_some() {
+        let mut entry = json!({
+            "command": server.command,
+            "args": [crate::stdio::SUBCOMMAND],
+            "env": bridge_env(server, project),
+        });
+        match kind {
+            McpClientKind::VsCode => entry["type"] = "stdio".into(),
+            McpClientKind::GitHubCopilotCli => {
+                entry["type"] = "local".into();
+                entry["tools"] = json!(["*"]);
+            }
+            _ => {}
+        }
+        return entry;
+    }
     let url = server.url();
     let headers = json!({ "Authorization": server.authorization() });
     match kind {
-        McpClientKind::ClaudeDesktop => json!({
-            "command": server.command,
-            "args": [crate::stdio::SUBCOMMAND],
-            "env": {
-                crate::stdio::PORT_ENV: server.port.to_string(),
-                crate::stdio::TOKEN_FILE_ENV: server.token_file,
-            },
-        }),
         McpClientKind::Windsurf => json!({ "serverUrl": url, "type": "http", "headers": headers }),
         McpClientKind::Gemini => json!({ "httpUrl": url, "headers": headers }),
         _ => json!({ "type": "http", "url": url, "headers": headers }),
@@ -256,20 +279,12 @@ pub fn project_config_file(kind: McpClientKind, root: &Path) -> Option<PathBuf> 
 /// What the settings page shows for `kind`.
 pub fn config(kind: McpClientKind, server: &Server, paths: &Paths) -> McpClientConfig {
     let file = config_file(kind, paths);
+    // Claude Code's too is JSON (`mcpServers` of `~/.claude.json`): a `claude mcp add` command
+    // line would leave the token in the shell history and in other processes' view of argv.
     let (snippet, format_name) = match format(kind) {
-        _ if kind == McpClientKind::ClaudeCode => (
-            // The CLI is the documented way; the JSON goes into ~/.claude.json.
-            format!(
-                "claude mcp add --scope user --transport http {} {} --header \"Authorization: {}\"",
-                server.name,
-                server.url(),
-                server.authorization()
-            ),
-            "shell",
-        ),
         Format::Json { key } => {
             let mut servers = Map::new();
-            servers.insert(server.name.clone(), json_entry(kind, server));
+            servers.insert(server.name.clone(), json_entry(kind, server, None));
             let mut root = Map::new();
             root.insert(key.into(), Value::Object(servers));
             (serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_default(), "json")
@@ -282,61 +297,64 @@ pub fn config(kind: McpClientKind, server: &Server, paths: &Paths) -> McpClientC
         file: Some(file.into()),
         snippet,
         format: format_name.into(),
-        configured: state == State::Current,
-        can_write: state != State::Unwritable,
+        configured: state.current,
+        can_write: state.writable,
     }
 }
 
 #[derive(PartialEq, Eq, Debug)]
-enum State {
-    /// The server's entry with this URL and token.
-    Current,
-    /// No entry, or an outdated one.
-    Missing,
-    /// The file exists but cannot be rewritten safely (comments, invalid).
-    Unwritable,
+struct State {
+    /// The file has the server's entry with this URL and token.
+    current: bool,
+    /// Auto-Configure can rewrite the file: missing, empty, or plain JSON / TOML (not JSONC).
+    writable: bool,
 }
 
 fn read_state(kind: McpClientKind, file: &Path, server: &Server) -> State {
     let text = match std::fs::read_to_string(file) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return State::Missing,
-        Err(_) => return State::Unwritable,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return State { current: false, writable: true },
+        Err(_) => return State { current: false, writable: false },
     };
     if text.trim().is_empty() {
-        return State::Missing;
+        return State { current: false, writable: true };
     }
+    // Comments and trailing commas (JSONC) do not keep an entry from being current;
+    // they only keep Auto-Configure from rewriting the file.
+    let servers = detect::parse_servers(kind, &text).unwrap_or_default();
+    let current =
+        servers.iter().any(|(name, entry)| *name == server.name && detect::is_current(kind, entry, server, None));
     let writable = match format(kind) {
         Format::Json { .. } => serde_json::from_str::<Value>(&text).is_ok_and(|v| v.is_object()),
         Format::Toml => text.parse::<toml_edit::DocumentMut>().is_ok(),
     };
-    if !writable {
-        return State::Unwritable;
-    }
-    let servers = detect::parse_servers(kind, &text).unwrap_or_default();
-    match servers.iter().find(|(name, _)| *name == server.name) {
-        Some((_, entry)) if detect::is_current(kind, entry, server) => State::Current,
-        _ => State::Missing,
-    }
+    State { current, writable }
 }
 
 /// Writes (or updates) the server's entry in `kind`'s user configuration file,
 /// keeping everything else in it.
 pub fn configure(kind: McpClientKind, server: &Server, paths: &Paths) -> IdeResult<PathBuf> {
     let file = config_file(kind, paths);
-    configure_file(kind, &file, server)?;
+    configure_file(kind, &file, server, None)?;
     Ok(file)
 }
 
 /// Writes the server's entry into `kind`'s configuration inside project `root`.
+///
+/// Such a file may be committed and shared, so it never holds the bearer token: the entry
+/// starts the stdio bridge (`openidea mcp-stdio`) with `OPENIDEA_MCP_PORT`,
+/// `OPENIDEA_MCP_TOKEN_FILE` (the user's token file) and `OPENIDEA_MCP_PROJECT_PATH`. Those
+/// are machine-specific paths (the OpenIDEA executable, the token file, the project): other
+/// machines need their own entry.
 pub fn configure_project(kind: McpClientKind, server: &Server, root: &Path) -> IdeResult<PathBuf> {
     let file = project_config_file(kind, root)
         .ok_or_else(|| IdeError::invalid(format!("{kind:?} has no project-level configuration")))?;
-    configure_file(kind, &file, server)?;
+    configure_file(kind, &file, server, Some(root))?;
     Ok(file)
 }
 
-fn configure_file(kind: McpClientKind, file: &Path, server: &Server) -> IdeResult<()> {
+/// Writes the entry into `file`: a user configuration, or with `project` that project's.
+fn configure_file(kind: McpClientKind, file: &Path, server: &Server, project: Option<&Path>) -> IdeResult<()> {
     let existing = match std::fs::read_to_string(file) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -358,7 +376,7 @@ fn configure_file(kind: McpClientKind, file: &Path, server: &Server) -> IdeResul
             let Some(servers) = servers.as_object_mut() else {
                 return Err(IdeError::invalid(format!("`{key}` in {} is not an object", file.display())));
             };
-            servers.insert(server.name.clone(), json_entry(kind, server));
+            servers.insert(server.name.clone(), json_entry(kind, server, project));
             let mut text = serde_json::to_string_pretty(&root).map_err(|e| IdeError::internal(e.to_string()))?;
             text.push('\n');
             text
@@ -376,10 +394,22 @@ fn configure_file(kind: McpClientKind, file: &Path, server: &Server) -> IdeResul
                 return Err(IdeError::invalid(format!("`mcp_servers` in {} is not a table", file.display())));
             };
             let mut entry = toml_edit::Table::new();
-            entry.insert("url", toml_edit::value(server.url()));
-            let mut headers = toml_edit::InlineTable::new();
-            headers.insert("Authorization", server.authorization().into());
-            entry.insert("http_headers", toml_edit::value(headers));
+            if project.is_some() {
+                entry.insert("command", toml_edit::value(server.command.to_string_lossy().into_owned()));
+                let mut args = toml_edit::Array::new();
+                args.push(crate::stdio::SUBCOMMAND);
+                entry.insert("args", toml_edit::value(args));
+                let mut env = toml_edit::InlineTable::new();
+                for (k, v) in bridge_env(server, project) {
+                    env.insert(&k, v.as_str().unwrap_or_default().into());
+                }
+                entry.insert("env", toml_edit::value(env));
+            } else {
+                entry.insert("url", toml_edit::value(server.url()));
+                let mut headers = toml_edit::InlineTable::new();
+                headers.insert("Authorization", server.authorization().into());
+                entry.insert("http_headers", toml_edit::value(headers));
+            }
             servers.insert(&server.name, toml_edit::Item::Table(entry));
             let mut text = doc.to_string();
             if !text.ends_with('\n') {

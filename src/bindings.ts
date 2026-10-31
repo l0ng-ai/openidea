@@ -4352,9 +4352,12 @@ export type McpClientConfig = {
 	client: McpClientKind,
 	/**  The file the configuration goes into (`~/.cursor/mcp.json`), if it has one. */
 	file: IpcPath | null,
-	/**  The snippet to paste there (JSON or TOML), or a command line to run. */
+	/**
+	 *  The snippet to paste there (JSON or TOML); it never is a command line, which would
+	 *  leave the token in the shell history.
+	 */
 	snippet: string,
-	/**  `json`, `toml` or `shell`. */
+	/**  `json` or `toml`. */
 	format: string,
 	/**  The file already has an `openidea` entry. */
 	configured: boolean,
@@ -4384,7 +4387,10 @@ export type McpDetectedClient = {
 	configured: boolean | null,
 	/**  The entries that look like OpenIDEA's use this server's port (`false`: a stale port). */
 	portCorrect: boolean,
-	/**  The `openidea` entry has this server's URL and token. */
+	/**
+	 *  The `openidea` entry has this server's URL and token (a project's: the stdio bridge
+	 *  with this port, token file and project).
+	 */
 	current: boolean,
 	/**  The transports of all the file's server entries. */
 	transports: McpTransport[],

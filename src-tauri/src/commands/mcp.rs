@@ -30,7 +30,7 @@ fn server(state: &AppState) -> IdeResult<Server> {
 }
 
 fn disabled_tools(state: &AppState) -> HashSet<String> {
-    state.global_settings.effective().mcp.disabled_tools.into_iter().collect()
+    ide_mcp::skills::disabled_tools(&state.global_settings.effective().mcp)
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
