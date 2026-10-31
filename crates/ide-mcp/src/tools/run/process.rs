@@ -210,7 +210,7 @@ pub async fn run_process(
     if raw_args {
         #[cfg(windows)]
         for a in args {
-            cmd.as_std_mut().raw_arg(a);
+            cmd.raw_arg(a);
         }
         #[cfg(not(windows))]
         cmd.args(args);
