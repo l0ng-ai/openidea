@@ -4,13 +4,22 @@
  * global and staged like every page; the clients, token and tool list are read
  * from the running backend.
  */
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import clsx from "clsx";
-import { call, commands, isTauri, onIdeEvent, type McpClientConfig, type McpToolInfo } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  isTauri,
+  onIdeEvent,
+  type McpClientConfig,
+  type McpStatus,
+  type McpToolInfo,
+} from "@/platform/ipc";
 import { tx, useTx } from "@/platform/i18n";
 import {
   MCP_CLIENT_NAMES,
   MCP_PORT_LIMITS,
+  onlyCallsChanged,
   parseMcpPort,
   useLiveMcpStatus,
   type McpSettingsValid,
@@ -19,6 +28,7 @@ import { Badge, Button, Checkbox, Input, T, copyText } from "@/ui";
 import { confirm } from "@/workbench/messages";
 import { Row, Toggle } from "../components/Form";
 import { useSetting } from "../components/context";
+import { useSettingsDialog } from "../model/staging";
 import type { PageSpec } from "./spec";
 import { TOOLS_GROUP } from "./tools";
 import styles from "./Mcp.module.css";
@@ -104,6 +114,8 @@ function PortRow() {
 }
 
 function ServerOptions() {
+  // Reset drops a half-typed port along with the staged values.
+  const resets = useSettingsDialog((s) => s.resets);
   const [enabled, setEnabled] = useMcpSetting("enabled");
   const [brave, setBrave] = useMcpSetting("braveMode");
   const [agents, setAgents] = useMcpSetting("agents");
@@ -111,7 +123,7 @@ function ServerOptions() {
     <div className={styles.block}>
       <Toggle label="Enable MCP Server" checked={enabled} onChange={setEnabled} />
       <StatusLine enabled={enabled} />
-      <PortRow />
+      <PortRow key={resets} />
       <Toggle
         label="Run shell commands and run configurations without confirmation (brave mode)"
         checked={brave}
@@ -150,15 +162,34 @@ function useClients(): [ClientsState, () => void, (c: McpClientConfig) => void] 
       setState((s) => ({ ...s, clients: s.clients?.map((x) => (x.client === c.client ? c : x)) ?? [c] })),
     [],
   );
+  const lastStatus = useRef<McpStatus | null>(null);
   useEffect(() => {
     load();
-    // A new token or port changes every snippet.
-    return onIdeEvent("mcpStatusChanged", load);
+    const disposers = [
+      // A new token or port changes every snippet; a client's call count does not.
+      onIdeEvent("mcpStatusChanged", (e) => {
+        const quiet = onlyCallsChanged(lastStatus.current, e.status);
+        lastStatus.current = e.status;
+        if (!quiet) load();
+      }),
+      // The snippets use the saved port (from any window).
+      onIdeEvent("settingsChanged", (e) => {
+        if (e.key === "mcp" || e.key.startsWith("mcp.")) load();
+      }),
+    ];
+    return () => disposers.forEach((d) => d());
   }, [load]);
   return [state, load, replace];
 }
 
-function ClientRow({ config, onChange }: { config: McpClientConfig; onChange: (c: McpClientConfig) => void }) {
+interface ClientRowProps {
+  config: McpClientConfig;
+  onChange: (c: McpClientConfig) => void;
+  /** The port or the server switch has unapplied edits: writing the configuration waits for Apply. */
+  unapplied: boolean;
+}
+
+function ClientRow({ config, onChange, unapplied }: ClientRowProps) {
   const t = useTx();
   const name = MCP_CLIENT_NAMES[config.client] ?? config.client;
   const [busy, setBusy] = useState(false);
@@ -166,6 +197,8 @@ function ClientRow({ config, onChange }: { config: McpClientConfig; onChange: (c
   const [copied, setCopied] = useState(false);
   const [shown, setShown] = useState(false);
   const snippetId = useId();
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
   const configure = async () => {
     setBusy(true);
     setError(null);
@@ -181,7 +214,8 @@ function ClientRow({ config, onChange }: { config: McpClientConfig; onChange: (c
     try {
       await copyText(config.snippet);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(false), 2000);
     } catch (e) {
       setError(errorText(e));
     }
@@ -197,8 +231,14 @@ function ClientRow({ config, onChange }: { config: McpClientConfig; onChange: (c
         </Button>
         <Button
           size="small"
-          disabled={!config.canWrite || busy}
-          title={config.canWrite ? undefined : "Copy the configuration and add it by hand"}
+          disabled={!config.canWrite || busy || unapplied}
+          title={
+            !config.canWrite
+              ? "Copy the configuration and add it by hand"
+              : unapplied
+                ? "Apply the settings first"
+                : undefined
+          }
           onClick={() => void configure()}
         >
           <T>Auto-Configure</T>
@@ -236,8 +276,14 @@ function ClientRow({ config, onChange }: { config: McpClientConfig; onChange: (c
   );
 }
 
+/** Keys whose saved value the client configurations are written for. */
+const CONFIG_KEYS = new Set(["mcp", "mcp.port", "mcp.enabled"]);
+
 function Clients() {
   const [{ clients, error }, reload, replace] = useClients();
+  const unapplied = useSettingsDialog((s) =>
+    Object.values(s.staged).some((c) => c.scope === "global" && CONFIG_KEYS.has(c.key)),
+  );
   const [regenerating, setRegenerating] = useState(false);
   const [tokenError, setTokenError] = useState<string | null>(null);
   const regenerate = async () => {
@@ -266,6 +312,11 @@ function Clients() {
       <div className={styles.note}>
         <T>The configurations contain the server's access token: keep them private.</T>
       </div>
+      {unapplied && (
+        <div className={styles.note} role="note">
+          <T>The configurations use the applied settings: apply the new port or server state to update them.</T>
+        </div>
+      )}
       {error && (
         <div className={styles.error} role="alert">
           {error}
@@ -274,7 +325,7 @@ function Clients() {
       {clients && (
         <ul className={styles.clients} aria-label={tx("MCP clients")}>
           {clients.map((c) => (
-            <ClientRow key={c.client} config={c} onChange={replace} />
+            <ClientRow key={c.client} config={c} onChange={replace} unapplied={unapplied} />
           ))}
         </ul>
       )}
@@ -332,7 +383,11 @@ function ConnectedClients() {
 // ---------------------------------------------------------------------------
 // Tools
 
-const KIND_LABEL: Record<McpToolInfo["kind"], string> = { read: "Read", edit: "Edit", execute: "Execute" };
+const KIND_LABEL: Record<McpToolInfo["kind"], (t: typeof tx) => string> = {
+  read: (t) => t("Read"),
+  edit: (t) => t("Edit"),
+  execute: (t) => t("Execute"),
+};
 const KIND_TONE = { read: "neutral", edit: "warning", execute: "danger" } as const;
 
 /** `disabledTools` with `name` switched on or off (sorted, so the list does not depend on click order). */
@@ -372,7 +427,7 @@ function Tools() {
               aria-label={tool.name}
               label={<span className={styles.mono}>{tool.name}</span>}
             />
-            <Badge tone={KIND_TONE[tool.kind]}>{t(KIND_LABEL[tool.kind])}</Badge>
+            <Badge tone={KIND_TONE[tool.kind]}>{KIND_LABEL[tool.kind](t)}</Badge>
             <span className={styles.description} data-tooltip={tool.description}>
               {tool.description}
             </span>

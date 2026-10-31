@@ -70,6 +70,15 @@ export const MCP_CLIENT_NAMES: Record<McpClientKind, string> = {
 
 export const useMcpStatus = create<{ status: McpStatus | null }>(() => ({ status: null }));
 
+const sameStatus = (a: McpStatus | null, b: McpStatus) => !!a && JSON.stringify(a) === JSON.stringify(b);
+
+/** Whether `next` differs from `prev` only in the clients' call counts (no new URL, port or client). */
+export function onlyCallsChanged(prev: McpStatus | null, next: McpStatus): boolean {
+  if (!prev || sameStatus(prev, next)) return false;
+  const withoutCalls = (s: McpStatus) => ({ ...s, clients: s.clients.map((c) => ({ ...c, calls: 0 })) });
+  return sameStatus(withoutCalls(prev), withoutCalls(next));
+}
+
 let watchers = 0;
 let stop: (() => void) | null = null;
 
@@ -82,7 +91,8 @@ export function trackMcpStatus(): () => void {
     let changed = false;
     stop = onIdeEvent("mcpStatusChanged", (e) => {
       changed = true;
-      useMcpStatus.setState({ status: e.status });
+      // Sent again on every few tool calls: an unchanged status re-renders nothing.
+      if (!sameStatus(useMcpStatus.getState().status, e.status)) useMcpStatus.setState({ status: e.status });
     });
     if (isTauri())
       void commands.mcpStatus().then(

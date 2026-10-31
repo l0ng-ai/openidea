@@ -8,10 +8,18 @@ import { onIdeEvent } from "@/platform/ipc";
 import { registerOverlay, registerStatusItem } from "@/workbench/contributions";
 import { McpConfirmHost } from "./ConfirmDialog";
 import { McpStatusWidget } from "./McpStatus";
-import { dropConfirm, handleMcpRequest, useMcpConfirms } from "./requests";
+import { denyAll, dropConfirm, handleMcpRequest } from "./requests";
 
 export function activate(): () => void {
+  // Nobody is left to answer once the window closes or reloads.
+  const onUnload = () => denyAll();
+  window.addEventListener("pagehide", onUnload);
+  window.addEventListener("beforeunload", onUnload);
   const disposers = [
+    () => {
+      window.removeEventListener("pagehide", onUnload);
+      window.removeEventListener("beforeunload", onUnload);
+    },
     registerOverlay({ id: "mcp.confirm", component: McpConfirmHost }),
     onIdeEvent("mcpRequest", (e) => void handleMcpRequest(e.id, e.request)),
     onIdeEvent("mcpRequestDone", (e) => dropConfirm(e.id)),
@@ -25,6 +33,6 @@ export function activate(): () => void {
   ];
   return () => {
     disposers.reverse().forEach((d) => d());
-    useMcpConfirms.setState({ queue: [] });
+    denyAll();
   };
 }

@@ -1,10 +1,14 @@
-/** Status bar widget while the MCP server is enabled: running / failed, the URL and clients as tooltip; opens its settings. */
+/**
+ * Status bar widget while the MCP server is enabled: running / failed, the URL
+ * and clients as tooltip; opens its settings. Whether it is enabled comes from
+ * the live status (the server follows the global settings, not this project's):
+ * it runs, or reports why it could not start.
+ */
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import type { McpStatus } from "@/platform/ipc";
 import { useLiveMcpStatus } from "@/platform/mcp";
-import { useProject } from "@/platform/project";
 import { Icon } from "@/ui";
 import { MCP_SETTINGS_PAGE } from "./model";
 import styles from "./Mcp.module.css";
@@ -26,26 +30,24 @@ export function statusTooltip(status: McpStatus | null, t: ReturnType<typeof use
 }
 
 export function McpStatusWidget() {
-  const enabled = useProject((s) => s.settings?.mcp?.enabled === true);
-  return enabled ? <Widget /> : null;
+  const status = useLiveMcpStatus();
+  return status?.running || status?.error ? <Widget status={status} /> : null;
 }
 
-function Widget() {
+function Widget({ status }: { status: McpStatus }) {
   const t = useTx();
-  const status = useLiveMcpStatus();
-  const failed = !status?.running && !!status?.error;
-  const stopped = !status?.running && !failed;
+  const failed = !status.running;
   return (
     <button
       type="button"
-      className={clsx(styles.statusItem, failed && styles.statusError, stopped && styles.statusStopped)}
+      className={clsx(styles.statusItem, failed && styles.statusError)}
       aria-label={t("MCP Server")}
       data-tooltip={statusTooltip(status, t)}
       onClick={() => void executeAction("file.settings", MCP_SETTINGS_PAGE)}
     >
       <Icon name={failed ? "warning" : "plugin"} size={13} />
       MCP
-      {status?.running && status.clients.length > 0 && <span>{status.clients.length}</span>}
+      {status.running && status.clients.length > 0 && <span>{status.clients.length}</span>}
     </button>
   );
 }

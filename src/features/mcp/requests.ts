@@ -12,6 +12,8 @@ export type McpConfirmRequest = Extract<McpUiRequest, { type: "confirm" }>;
 
 export interface McpConfirm extends Omit<McpConfirmRequest, "type"> {
   id: number;
+  /** Why the last answer could not be sent (the request is asked again). */
+  error?: string;
 }
 
 export type Respond = (id: number, answer: McpAnswer) => Promise<void>;
@@ -24,22 +26,54 @@ export function enqueueConfirm(c: McpConfirm) {
   useMcpConfirms.setState((s) => (s.queue.some((q) => q.id === c.id) ? s : { queue: [...s.queue, c] }));
 }
 
-/** Drops request `id` (answered, timed out or cancelled by the client). */
-export function dropConfirm(id: number) {
+/** Answers on their way to the backend: a request the backend closes meanwhile is not asked again. */
+const sending = new Set<number>();
+
+const removeFromQueue = (id: number) =>
   useMcpConfirms.setState((s) =>
     s.queue.some((q) => q.id === id) ? { queue: s.queue.filter((q) => q.id !== id) } : s,
   );
+
+/** Drops request `id` (answered, timed out or cancelled by the client). */
+export function dropConfirm(id: number) {
+  sending.delete(id);
+  removeFromQueue(id);
 }
 
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Sends the answer and moves on to the next request. An answer the backend did
+ * not take is logged and the request asked again first, with the reason.
+ */
 export function answerConfirm(c: McpConfirm, allow: boolean, respond: Respond = respondToBackend) {
-  dropConfirm(c.id);
-  void respond(c.id, { type: "confirm", allow }).catch(() => {});
+  removeFromQueue(c.id);
+  sending.add(c.id);
+  respond(c.id, { type: "confirm", allow }).then(
+    () => sending.delete(c.id),
+    (e: unknown) => {
+      console.warn(`cannot answer MCP request ${c.id}`, e);
+      if (!sending.delete(c.id)) return;
+      const retry: McpConfirm = { ...c, error: errorText(e) };
+      useMcpConfirms.setState((s) => (s.queue.some((q) => q.id === c.id) ? s : { queue: [retry, ...s.queue] }));
+    },
+  );
 }
 
-const failure = (e: unknown): McpAnswer => ({
-  type: "failed",
-  message: e instanceof Error ? e.message : String(e),
-});
+/**
+ * Denies every waiting confirmation (the window closes or reloads): best effort,
+ * the backend also denies the requests of a window that is gone.
+ */
+export function denyAll(respond: Respond = respondToBackend) {
+  const { queue } = useMcpConfirms.getState();
+  useMcpConfirms.setState({ queue: [] });
+  for (const c of queue) {
+    sending.delete(c.id);
+    void respond(c.id, { type: "confirm", allow: false }).catch(() => {});
+  }
+}
+
+const failure = (e: unknown): McpAnswer => ({ type: "failed", message: errorText(e) });
 
 /** Paths an MCP client can use: files on disk, not virtual documents (diffs, library sources). */
 const onDisk = (path: string | null | undefined): path is string => !!path && !isVirtualUri(path);

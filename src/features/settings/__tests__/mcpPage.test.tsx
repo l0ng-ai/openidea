@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { emitLocalIdeEvent, type McpClientConfig, type McpStatus, type McpToolInfo } from "@/platform/ipc";
+import {
+  emitLocalIdeEvent,
+  type McpClientConfig,
+  type McpStatus,
+  type McpToolInfo,
+  type Settings,
+} from "@/platform/ipc";
 
 const ok = <T,>(data: T) => ({ status: "ok" as const, data });
 const fail = (message: string) => ({ status: "error" as const, error: { kind: "io" as const, message } });
@@ -35,6 +41,8 @@ const mcpClients = vi.fn();
 const mcpConfigureClient = vi.fn();
 const mcpRegenerateToken = vi.fn(async () => ok(null));
 const mcpTools = vi.fn(async () => TOOLS);
+const settingsSet = vi.fn();
+const settingsGet = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -48,6 +56,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       mcpConfigureClient: (k: string) => mcpConfigureClient(k),
       mcpRegenerateToken: () => mcpRegenerateToken(),
       mcpTools: () => mcpTools(),
+      settingsSet: (...a: unknown[]) => settingsSet(...a),
+      settingsGet: () => settingsGet(),
     },
   };
 });
@@ -56,15 +66,23 @@ const { useProject } = await import("@/platform/project");
 const { useMcpStatus } = await import("@/platform/mcp");
 const { MessagesHost } = await import("@/workbench/messages");
 const { PageContext } = await import("../components/context");
-const { DEFAULT_SETTINGS } = await import("../model/schema");
-const { openSettings, useSettingsDialog } = await import("../model/staging");
+const { DEFAULT_SETTINGS, setAt } = await import("../model/schema");
+const { applySettings, openSettings, resetPage, stage, useSettingsDialog } = await import("../model/staging");
 const { OptionsPage } = await import("../pages/OptionsPage");
 const { MCP_PAGE, MCP_PAGES, withToolEnabled } = await import("../pages/mcp");
 
 const staged = (key: string) => useSettingsDialog.getState().staged[`global|${key}`]?.value;
 const writeText = vi.fn(async (_text: string) => {});
 
+let saved: Settings;
+
 beforeEach(() => {
+  saved = structuredClone(DEFAULT_SETTINGS) as Settings;
+  settingsSet.mockReset().mockImplementation(async (_scope: string, key: string, json: string) => {
+    saved = setAt(saved, key, JSON.parse(json));
+    return ok(saved);
+  });
+  settingsGet.mockReset().mockImplementation(async () => saved);
   useProject.setState({ settings: structuredClone(DEFAULT_SETTINGS) as never, project: null });
   useMcpStatus.setState({ status: null });
   mcpClients.mockReset().mockImplementation(async () =>
@@ -222,6 +240,90 @@ describe("Settings › Tools › MCP Server", () => {
     expect(within(tools).getByRole("checkbox", { name: "execute_terminal_command" })).not.toBeChecked();
     fireEvent.click(within(tools).getByRole("checkbox", { name: "execute_terminal_command" }));
     expect(staged("mcp.disabledTools")).toBeUndefined();
+  });
+
+  it("writes the edits to the global settings on Apply", async () => {
+    renderPage();
+    const tools = await screen.findByRole("list", { name: "MCP tools" });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enable MCP Server" }));
+    const port = screen.getByLabelText("Port");
+    fireEvent.change(port, { target: { value: "6400" } });
+    fireEvent.keyDown(port, { key: "Enter" });
+    fireEvent.click(within(tools).getByRole("checkbox", { name: "execute_terminal_command" }));
+    expect(settingsSet).not.toHaveBeenCalled();
+
+    await act(async () => expect(await applySettings()).toBe(true));
+    expect(settingsSet.mock.calls).toEqual([
+      ["global", "mcp.disabledTools", '["execute_terminal_command"]'],
+      ["global", "mcp.enabled", "true"],
+      ["global", "mcp.port", "6400"],
+    ]);
+    expect(useSettingsDialog.getState().staged).toEqual({});
+    expect(port).toHaveValue("6400");
+    expect(screen.getByRole("checkbox", { name: "Enable MCP Server" })).toBeChecked();
+  });
+
+  it("drops a half-typed port on Reset", () => {
+    renderPage();
+    fireEvent.change(screen.getByLabelText("Port"), { target: { value: "80" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a port between 1024 and 65535");
+    act(() => resetPage(MCP_PAGE));
+    expect(screen.getByLabelText("Port")).toHaveValue("64352");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("reloads the clients when the MCP settings are saved, not on every tool call", async () => {
+    renderPage();
+    await screen.findByRole("list", { name: "MCP clients" });
+    expect(mcpClients).toHaveBeenCalledTimes(1);
+
+    act(() => emitLocalIdeEvent({ type: "settingsChanged", key: "editor.fontSize" }));
+    expect(mcpClients).toHaveBeenCalledTimes(1);
+    act(() => emitLocalIdeEvent({ type: "settingsChanged", key: "mcp.port" }));
+    expect(mcpClients).toHaveBeenCalledTimes(2);
+    act(() => emitLocalIdeEvent({ type: "settingsChanged", key: "mcp" }));
+    expect(mcpClients).toHaveBeenCalledTimes(3);
+
+    const used = (calls: number): McpStatus => ({
+      ...RUNNING,
+      clients: [{ name: "claude-code", version: "2.1.0", calls }],
+    });
+    act(() => emitLocalIdeEvent({ type: "mcpStatusChanged", status: used(1) }));
+    expect(mcpClients).toHaveBeenCalledTimes(4);
+    act(() => emitLocalIdeEvent({ type: "mcpStatusChanged", status: used(2) }));
+    act(() => emitLocalIdeEvent({ type: "mcpStatusChanged", status: used(3) }));
+    expect(mcpClients).toHaveBeenCalledTimes(4);
+    // The same status again: a new token (regenerated in another window).
+    act(() => emitLocalIdeEvent({ type: "mcpStatusChanged", status: used(3) }));
+    expect(mcpClients).toHaveBeenCalledTimes(5);
+    act(() =>
+      emitLocalIdeEvent({ type: "mcpStatusChanged", status: { ...used(3), url: "http://127.0.0.1:6400/mcp" } }),
+    );
+    expect(mcpClients).toHaveBeenCalledTimes(6);
+  });
+
+  it("holds Auto-Configure back while the port or the server switch is not applied", async () => {
+    renderPage();
+    const list = await screen.findByRole("list", { name: "MCP clients" });
+    const claude = within(list).getByRole("listitem", { name: "Claude Code" });
+    expect(within(claude).getByRole("button", { name: "Auto-Configure" })).toBeEnabled();
+    expect(screen.queryByText(/use the applied settings/)).toBeNull();
+
+    // Brave mode does not change the configurations.
+    act(() => stage(MCP_PAGE, "global", "mcp.braveMode", true));
+    expect(within(claude).getByRole("button", { name: "Auto-Configure" })).toBeEnabled();
+
+    act(() => stage(MCP_PAGE, "global", "mcp.port", 6400));
+    expect(within(claude).getByRole("button", { name: "Auto-Configure" })).toBeDisabled();
+    expect(screen.getByRole("note")).toHaveTextContent("The configurations use the applied settings");
+    act(() => stage(MCP_PAGE, "global", "mcp.port", 64352));
+    expect(within(claude).getByRole("button", { name: "Auto-Configure" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enable MCP Server" }));
+    expect(within(claude).getByRole("button", { name: "Auto-Configure" })).toBeDisabled();
+    await act(async () => void (await applySettings()));
+    expect(within(claude).getByRole("button", { name: "Auto-Configure" })).toBeEnabled();
+    expect(screen.queryByRole("note")).toBeNull();
   });
 
   it("keeps disabledTools sorted and free of duplicates", () => {

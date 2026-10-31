@@ -14,11 +14,10 @@ vi.mock("@/platform/actions", async (importOriginal) => ({
   executeAction: (...a: unknown[]) => executeAction(...a),
 }));
 
-const { answerConfirm, dropConfirm, enqueueConfirm, handleMcpRequest, openEditors, useMcpConfirms } =
+const { answerConfirm, denyAll, dropConfirm, enqueueConfirm, handleMcpRequest, openEditors, useMcpConfirms } =
   await import("./requests");
 const { McpConfirmHost } = await import("./ConfirmDialog");
 const { McpStatusWidget, statusTooltip } = await import("./McpStatus");
-const { useProject } = await import("@/platform/project");
 const { useMcpStatus } = await import("@/platform/mcp");
 const { activate } = await import(".");
 const { tx } = await import("@/platform/i18n");
@@ -69,6 +68,67 @@ describe("MCP confirmation queue", () => {
     answerConfirm(confirm(1), true, respond);
     expect(respond).toHaveBeenCalledWith(1, { type: "confirm", allow: true });
     expect(useMcpConfirms.getState().queue.map((c) => c.id)).toEqual([2]);
+  });
+
+  it("asks again first, with the reason, when the answer cannot be sent", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const respond = vi.fn(async () => Promise.reject(new Error("IPC closed")));
+    enqueueConfirm(confirm(1));
+    enqueueConfirm(confirm(2));
+    answerConfirm(confirm(1), true, respond);
+    expect(useMcpConfirms.getState().queue.map((c) => c.id)).toEqual([2]);
+    await vi.waitFor(() => expect(useMcpConfirms.getState().queue.map((c) => c.id)).toEqual([1, 2]));
+    expect(useMcpConfirms.getState().queue[0]!.error).toBe("IPC closed");
+    expect(warn).toHaveBeenCalledWith("cannot answer MCP request 1", expect.any(Error));
+
+    // Closed by the backend while the answer was on its way: not asked again.
+    let reject: (e: Error) => void = () => {};
+    const pending = vi.fn(() => new Promise<void>((_, r) => (reject = r)));
+    answerConfirm(confirm(2), false, pending);
+    dropConfirm(2);
+    reject(new Error("IPC closed"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useMcpConfirms.getState().queue.map((c) => c.id)).toEqual([1]);
+    warn.mockRestore();
+  });
+
+  it("denies every waiting request when the window goes away", () => {
+    const respond = vi.fn(async () => {});
+    enqueueConfirm(confirm(1));
+    enqueueConfirm(confirm(2));
+    denyAll(respond);
+    expect(respond.mock.calls).toEqual([
+      [1, { type: "confirm", allow: false }],
+      [2, { type: "confirm", allow: false }],
+    ]);
+    expect(useMcpConfirms.getState().queue).toEqual([]);
+  });
+
+  it("denies the waiting requests when deactivated or when the page unloads", () => {
+    let dispose = activate();
+    act(() => {
+      enqueueConfirm(confirm(1));
+      enqueueConfirm(confirm(2));
+    });
+    dispose();
+    expect(mcpRespond.mock.calls).toEqual([
+      [1, { type: "confirm", allow: false }],
+      [2, { type: "confirm", allow: false }],
+    ]);
+    expect(useMcpConfirms.getState().queue).toEqual([]);
+
+    mcpRespond.mockClear();
+    dispose = activate();
+    try {
+      enqueueConfirm(confirm(3));
+      window.dispatchEvent(new Event("beforeunload"));
+      expect(mcpRespond).toHaveBeenCalledWith(3, { type: "confirm", allow: false });
+      expect(useMcpConfirms.getState().queue).toEqual([]);
+    } finally {
+      dispose();
+    }
+    expect(mcpRespond).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -141,14 +201,14 @@ describe("MCP confirmation dialog", () => {
     let dialog = screen.getByRole("dialog");
     expect(dialog).toHaveTextContent("claude-code wants to run");
     expect(dialog).toHaveTextContent("execute_terminal_command");
-    expect(within(dialog).getByLabelText("Command")).toHaveTextContent("rm -rf build && npm run build");
+    expect(within(dialog).getByLabelText("What will run")).toHaveTextContent("rm -rf build && npm run build");
     expect(dialog).toHaveTextContent("in /work/app");
     expect(dialog).toHaveTextContent("1 more waiting");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Allow" }));
     expect(mcpRespond).toHaveBeenCalledWith(1, { type: "confirm", allow: true });
     dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByLabelText("Command")).toHaveTextContent("cargo test");
+    expect(within(dialog).getByLabelText("What will run")).toHaveTextContent("cargo test");
     expect(dialog).not.toHaveTextContent("more waiting");
 
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
@@ -156,11 +216,13 @@ describe("MCP confirmation dialog", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("makes Deny the default button and links to the brave mode setting", () => {
+  it("makes Deny the default, focused button and links to the brave mode setting", () => {
     render(<McpConfirmHost />);
     act(() => enqueueConfirm(confirm(3)));
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByRole("button", { name: "Deny" })).toHaveAttribute("data-dialog-default");
+    const deny = within(dialog).getByRole("button", { name: "Deny" });
+    expect(deny).toHaveAttribute("data-dialog-default");
+    expect(deny).toHaveFocus();
     fireEvent.click(within(dialog).getByRole("button", { name: "Settings › Tools › MCP Server" }));
     expect(executeAction).toHaveBeenCalledWith("file.settings", "tools.mcpServer");
     fireEvent.click(within(dialog).getByRole("button", { name: "Deny" }));
@@ -211,15 +273,15 @@ describe("MCP status bar widget", () => {
     expect(statusTooltip(null, tx)).toBe("MCP Server not running");
   });
 
-  it("shows only while the server is enabled, and opens its settings", () => {
-    act(() => useProject.setState({ settings: { mcp: { enabled: false } } as never }));
+  it("shows only while the server runs or failed to start, and opens its settings", () => {
+    act(() => useMcpStatus.setState({ status: null }));
     const view = render(<McpStatusWidget />);
     expect(screen.queryByRole("button", { name: "MCP Server" })).toBeNull();
+    // Disabled in the global settings (whatever this project's layer says).
+    act(() => useMcpStatus.setState({ status: { ...running, running: false, url: null, port: null, clients: [] } }));
+    expect(screen.queryByRole("button", { name: "MCP Server" })).toBeNull();
 
-    act(() => {
-      useProject.setState({ settings: { mcp: { enabled: true } } as never });
-      useMcpStatus.setState({ status: running });
-    });
+    act(() => useMcpStatus.setState({ status: running }));
     const widget = screen.getByRole("button", { name: "MCP Server" });
     expect(widget).toHaveAttribute("data-tooltip", expect.stringContaining("running at"));
     act(() =>
@@ -232,6 +294,6 @@ describe("MCP status bar widget", () => {
     fireEvent.click(widget);
     expect(executeAction).toHaveBeenCalledWith("file.settings", "tools.mcpServer");
     view.unmount();
-    act(() => useProject.setState({ settings: null }));
+    act(() => useMcpStatus.setState({ status: null }));
   });
 });

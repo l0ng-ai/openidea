@@ -5328,7 +5328,9 @@
   "Allow": "允许",
   "Deny": "拒绝",
   "Tool:": "工具：",
-  "To run commands without asking, turn on brave mode in": "若要不经询问直接运行命令，请在以下位置开启无确认模式：",
+  "To run commands without asking, turn on brave mode in the MCP Server settings.": "若要不经询问直接运行命令，请在 MCP 服务器设置中开启无确认模式。",
+  "What will run": "将要运行的内容",
+  "Could not send the answer: {error}": "无法发送答复：{error}",
   "Settings › Tools › MCP Server": "设置 › 工具 › MCP 服务器",
   "MCP Server running at {url}": "MCP 服务器正在运行：{url}",
   "MCP Server not running: {error}": "MCP 服务器未运行：{error}",
@@ -5369,5 +5371,8 @@
   "MCP tools": "MCP 工具",
   "Edit tools change files; Execute tools run processes and ask first unless brave mode is on.": "“编辑”类工具会修改文件；“执行”类工具会运行进程，除非开启无确认模式，否则会先询问。",
   "Clients": "客户端",
-  "Connected Clients": "已连接的客户端"
+  "Connected Clients": "已连接的客户端",
+  "Read": "读取",
+  "Apply the settings first": "请先应用设置",
+  "The configurations use the applied settings: apply the new port or server state to update them.": "这些配置使用已应用的设置：应用新的端口或服务器状态后才会更新。"
 }
