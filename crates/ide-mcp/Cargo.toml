@@ -17,6 +17,7 @@ ide-run.workspace = true
 ide-build.workspace = true
 ide-vcs.workspace = true
 ide-terminal.workspace = true
+ide-db.workspace = true
 ide-syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true

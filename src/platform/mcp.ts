@@ -27,6 +27,16 @@ export interface McpSettingsValid {
   experimentalTools: boolean;
   /** Ask confirmations through the MCP client (elicitation) when it supports it. */
   clientConfirmations: boolean;
+  /** What the database tools may do without asking. */
+  databaseConsents: McpDatabaseConsentsValid;
+}
+
+/** `ide-core::mcp::McpDatabaseConsents`. */
+export interface McpDatabaseConsentsValid {
+  readData: boolean;
+  writeData: boolean;
+  readSchema: boolean;
+  writeSchema: boolean;
 }
 
 /** `McpToolState::default()`: offered, and behind the router in router mode. */
@@ -48,6 +58,7 @@ export const DEFAULT_MCP: McpSettingsValid = {
   invocationMode: "direct",
   experimentalTools: false,
   clientConfirmations: false,
+  databaseConsents: { readData: false, writeData: false, readSchema: false, writeSchema: false },
 };
 
 type Obj = Record<string, unknown>;
@@ -72,6 +83,17 @@ export function validateMcp(raw: unknown): McpSettingsValid {
     invocationMode: m.invocationMode === "viaRouter" ? "viaRouter" : "direct",
     experimentalTools: m.experimentalTools === true,
     clientConfirmations: m.clientConfirmations === true,
+    databaseConsents: validateConsents(m.databaseConsents),
+  };
+}
+
+function validateConsents(raw: unknown): McpDatabaseConsentsValid {
+  const c = obj(raw);
+  return {
+    readData: c.readData === true,
+    writeData: c.writeData === true,
+    readSchema: c.readSchema === true,
+    writeSchema: c.writeSchema === true,
   };
 }
 

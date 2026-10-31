@@ -430,6 +430,8 @@ environments and shells the IDE runs later."
             tool: self.tool.into(),
             subject: subject.into(),
             detail,
+            title: None,
+            remember: None,
         };
         let answer = tokio::select! {
             a = self.shared.ui.ask(self.window(), request) => a?,
@@ -448,22 +450,31 @@ environments and shells the IDE runs later."
     /// The client's answer to a confirmation, or `None` when it has no elicitation
     /// support or no stream reaches it.
     async fn elicit_confirmation(&self, subject: &str, detail: Option<&str>) -> IdeResult<Option<bool>> {
-        if !self.shared.config.read().client_confirmations {
-            return Ok(None);
-        }
-        let Some(session) = &self.session else { return Ok(None) };
-        let protocol = {
-            let client = session.client.read();
-            if !client.elicitation {
-                return Ok(None);
-            }
-            client.protocol.clone()
-        };
         let message = crate::elicitation::confirm_message(&self.client, self.tool, subject, detail);
-        let params = crate::elicitation::confirm_params(&protocol, message);
+        let result = self.elicit(|protocol| crate::elicitation::confirm_params(protocol, message)).await?;
+        Ok(result.map(|r| crate::elicitation::allowed(&r)))
+    }
+
+    /// The protocol revision of the client when confirmations may go to it as elicitations:
+    /// client confirmations are on and the client supports elicitation.
+    pub(crate) fn elicitation_protocol(&self) -> Option<String> {
+        if !self.shared.config.read().client_confirmations {
+            return None;
+        }
+        let client = self.session.as_ref()?.client.read();
+        client.elicitation.then(|| client.protocol.clone())
+    }
+
+    /// Sends `elicitation/create` with the params `params` builds for the client's protocol
+    /// revision and returns the client's result, or `None` when confirmations do not go to
+    /// the client ([`Call::elicitation_protocol`]) or no stream reaches it.
+    pub(crate) async fn elicit(&self, params: impl FnOnce(&str) -> Value) -> IdeResult<Option<Value>> {
+        let Some(protocol) = self.elicitation_protocol() else { return Ok(None) };
+        let Some(session) = &self.session else { return Ok(None) };
+        let params = params(&protocol);
         let timeout = self.shared.timing.read().elicitation;
         match session.request(self.outbound.as_ref(), "elicitation/create", params, timeout, &self.cancel).await {
-            Ok(result) => Ok(Some(crate::elicitation::allowed(&result))),
+            Ok(result) => Ok(Some(result)),
             Err(RequestError::NoChannel) => Ok(None),
             Err(RequestError::Rejected(e)) => {
                 tracing::debug!("MCP elicitation rejected by {}: {e}", self.client);

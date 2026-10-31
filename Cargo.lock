@@ -4395,6 +4395,7 @@ dependencies = [
  "globset",
  "ide-build",
  "ide-core",
+ "ide-db",
  "ide-host",
  "ide-index",
  "ide-language",

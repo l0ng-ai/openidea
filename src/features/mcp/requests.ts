@@ -1,6 +1,7 @@
 /**
  * What the built-in MCP server asks this window (`mcpRequest`): confirmations
- * before a tool runs something, shown one at a time while later ones wait, and
+ * before a tool runs something (or, for the database tools, reads or changes a
+ * database), shown one at a time while later ones wait, and
  * editor requests answered at once (open a file, list the open editors).
  */
 import { create } from "zustand";
@@ -46,10 +47,14 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * Sends the answer and moves on to the next request. An answer the backend did
  * not take is logged and the request asked again first, with the reason.
  */
-export function answerConfirm(c: McpConfirm, allow: boolean, respond: Respond = respondToBackend) {
+export function answerConfirm(c: McpConfirm, allow: boolean, respond: Respond = respondToBackend, remember = false) {
   removeFromQueue(c.id);
   sending.add(c.id);
-  respond(c.id, { type: "confirm", allow }).then(
+  // `remember` goes only with requests that offer it (database consents' "Always allow").
+  const answer: McpAnswer = c.remember
+    ? { type: "confirm", allow, remember: allow && remember }
+    : { type: "confirm", allow };
+  respond(c.id, answer).then(
     () => sending.delete(c.id),
     (e: unknown) => {
       console.warn(`cannot answer MCP request ${c.id}`, e);
@@ -106,8 +111,8 @@ export async function handleMcpRequest(
   editor: () => EditorService = editorService,
 ): Promise<void> {
   if (request.type === "confirm") {
-    const { client, tool, subject, detail } = request;
-    enqueueConfirm({ id, client, tool, subject, detail });
+    const { client, tool, subject, detail, title, remember } = request;
+    enqueueConfirm({ id, client, tool, subject, detail, title, remember });
     return;
   }
   let answer: McpAnswer;

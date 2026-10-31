@@ -97,7 +97,10 @@ impl ide_mcp::McpHost for TauriMcpHost {
                 Err(_) => return Err(IdeError::unavailable("The OpenIDEA window did not answer.")),
             };
             match answer {
-                McpAnswer::Confirm { allow } => Ok(Value::Bool(allow)),
+                McpAnswer::Confirm { allow, remember: false } => Ok(Value::Bool(allow)),
+                McpAnswer::Confirm { allow, remember: true } => {
+                    Ok(serde_json::json!({ "allow": allow, "remember": true }))
+                }
                 McpAnswer::Done => Ok(Value::Null),
                 McpAnswer::OpenEditors { editors } => {
                     serde_json::to_value(editors).map_err(|e| IdeError::internal(e.to_string()))

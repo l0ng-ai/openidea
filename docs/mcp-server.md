@@ -56,6 +56,25 @@ The names and parameters follow the JetBrains MCP server (2026.2), so prompts an
 | `execute_terminal_command`                        | execute | Runs a shell command in the project root                                       |
 | `build_project`                                   | execute | Build Project (Maven, Gradle, Cargo, Go, TypeScript) and its problems          |
 
+### Database tools
+
+The database tools work with the data sources of the Database tool window (`.openidea/data-sources.toml`):
+
+| Tool                                                            | What it does                                                                               |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `list_database_connections`                                     | The data sources, with their DBMS, driver, JDBC URL (without passwords) and read-only flag |
+| `test_database_connection`                                      | Connects and reports the server version, or the error                                      |
+| `create_database_connection`, `edit_database_connection`        | A data source from a name, a DBMS (driver name such as `PostgreSQL`) and a JDBC URL        |
+| `list_database_schemas`, `introspect_schema`                    | The schemas the data source shows (its Schemas tab)                                        |
+| `list_schema_object_kinds`, `list_schema_objects`               | Tables, views, materialized views, routines and sequences of a schema                      |
+| `get_database_object_description`                               | An object's columns, keys, indexes, foreign keys and triggers as an indented tree          |
+| `execute_sql_query`, `preview_table_data`, `fetch_query_result` | Runs SQL in a schema and returns the rows as CSV, ten at a time (`resultSetId` pages)      |
+| `list_recent_sql_queries`, `cancel_sql_query`                   | The running and recent statements of a data source's sessions, and cancelling them         |
+
+Before a database tool reads or changes a database it asks for consent, by what the statement does: read data, modify data, read the schema or modify the schema. The consent shows the data source, the schema and the statement, and has an **Always allow** checkbox; what is always allowed can be changed under **Database Permissions** on the settings page (the `databaseConsents` MCP setting). With client confirmations on, a client that supports elicitation (other than Codex) asks instead. Statements on a read-only data source that do more than read are refused. A statement's kind is found from its keywords: calling a routine counts as modifying data, and when a script has several statements the first one that does more than read decides.
+
+The tools' statements run on their own connection in auto-commit mode, outside the consoles' transactions, and appear in the data source's query history. Up to 10 000 rows of a result are kept for `fetch_query_result`; the 25 latest results are kept.
+
 Edits go through the editor's documents, so open editors update and the change can be undone, and are saved to disk. Before a tool reads or changes a file, an open editor without unsaved changes is reloaded from disk, so a file the agent just wrote itself is not overwritten from a stale buffer. Changes outside the project and to version control metadata (`.git`, `.hg`, `.svn`, …) are refused: hooks and configuration there would run code on the next VCS command. Changes to OpenIDEA's own project configuration (`.openidea/`: run configurations and settings, which can hold before-launch commands, environment variables, shells and language server commands) ask first, like the execute tools. The tool list on the settings page turns single tools off.
 
 **Execute** tools ask first: the project window shows which client wants to run what (for a run configuration, with the environment variables the client sets), with **Allow** and **Deny**. Reading or opening a file outside the project and its content roots, and changing `.openidea/`, ask the same way. Check **Run shell commands and run configurations without confirmation (brave mode)** to skip the questions; only do that for clients you trust.
@@ -66,7 +85,7 @@ The confirmation is not a sandbox. Edit tools change files without asking, and t
 
 The server serves at most 64 connections at once (more get `503`) and keeps at most 256 sessions; when they are all busy with an open stream or a running call, a new session is refused until one ends.
 
-In a project in **Restricted Mode** (not trusted yet), only the tools that read, search or change files the way the editor does work (`read_file`, `list_directory_tree`, `search_text`, `search_regex`, `search_file`, `create_new_file`, `apply_patch`, `open_file_in_editor`, `get_all_open_file_paths`, `get_project_modules`, `get_ide_diagnostics` and the `execute_tool` router for those). Tools that start language servers, git, builds or processes answer that the project has to be trusted first.
+In a project in **Restricted Mode** (not trusted yet), only the tools that read, search or change files the way the editor does work (`read_file`, `list_directory_tree`, `search_text`, `search_regex`, `search_file`, `create_new_file`, `apply_patch`, `open_file_in_editor`, `get_all_open_file_paths`, `get_project_modules`, `get_ide_diagnostics` and the `execute_tool` router for those). Tools that start language servers, git, builds or processes, or connect to databases, answer that the project has to be trusted first.
 
 ## Limitations
 

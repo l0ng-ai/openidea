@@ -35,6 +35,23 @@ pub struct McpSettings {
     pub invocation_mode: McpInvocationMode,
     /// Offer experimental tools (`get_ide_diagnostics`, ...) too.
     pub experimental_tools: bool,
+    /// What the database tools may do without asking ("Always allow" of their consent).
+    pub database_consents: McpDatabaseConsents,
+}
+
+/// Database operations MCP clients may run without asking: one flag per operation type, for every client,
+/// project and data source. Statements whose kind is unknown always ask.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct McpDatabaseConsents {
+    /// Read data (`SELECT`).
+    pub read_data: bool,
+    /// Modify data (`INSERT`, `UPDATE`, `DELETE`, calling routines).
+    pub write_data: bool,
+    /// Read the schema (list schema objects).
+    pub read_schema: bool,
+    /// Modify the schema (`CREATE`, `ALTER`, `DROP`).
+    pub write_schema: bool,
 }
 
 impl Default for McpSettings {
@@ -50,6 +67,7 @@ impl Default for McpSettings {
             tool_states: BTreeMap::new(),
             invocation_mode: McpInvocationMode::Direct,
             experimental_tools: false,
+            database_consents: McpDatabaseConsents::default(),
         }
     }
 }
@@ -180,7 +198,8 @@ pub enum McpToolKind {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum McpUiRequest {
-    /// Ask before running something: answered with `true` (allow) or `false`.
+    /// Ask before running something: answered with `true` (allow) or `false`, or with
+    /// `{ "allow": bool, "remember": bool }` when it has a `remember` checkbox.
     Confirm {
         /// The MCP client's name (`claude-code`).
         client: String,
@@ -189,6 +208,12 @@ pub enum McpUiRequest {
         subject: String,
         /// Extra detail (working directory, ...).
         detail: Option<String>,
+        /// The dialog's title instead of the default one (database consents).
+        #[serde(default)]
+        title: Option<String>,
+        /// Label of an "always allow" checkbox; the answer's `remember` tells whether it was checked.
+        #[serde(default)]
+        remember: Option<String>,
     },
     /// Open `path` in an editor at the 1-based `line` / `column`: answered with `null`.
     OpenFile { path: IpcPath, line: Option<u32>, column: Option<u32> },
@@ -306,8 +331,12 @@ pub struct McpClientConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum McpAnswer {
-    /// To `Confirm`.
-    Confirm { allow: bool },
+    /// To `Confirm`; `remember`: its "always allow" checkbox was checked.
+    Confirm {
+        allow: bool,
+        #[serde(default)]
+        remember: bool,
+    },
     /// To `OpenFile`.
     Done,
     /// To `OpenEditors`.

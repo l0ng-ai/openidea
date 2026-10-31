@@ -4309,8 +4309,8 @@ export type MavenSettings = {
 
 /**  A window's answer to an [`McpUiRequest`] (`mcp_respond`). */
 export type McpAnswer = 
-/**  To `Confirm`. */
-{ type: "confirm"; allow: boolean } | 
+/**  To `Confirm`; `remember`: its "always allow" checkbox was checked. */
+{ type: "confirm"; allow: boolean; remember?: boolean } | 
 /**  To `OpenFile`. */
 { type: "done" } | 
 /**  To `OpenEditors`. */
@@ -4385,6 +4385,21 @@ export type McpClientKind = "claudeCode" | "codex" | "cursor" | "vsCode" | "wind
 "gitHubCopilotIdePlugin";
 
 /**
+ *  Database operations MCP clients may run without asking: one flag per operation type, for every client,
+ *  project and data source. Statements whose kind is unknown always ask.
+ */
+export type McpDatabaseConsents = {
+	/**  Read data (`SELECT`). */
+	readData?: boolean,
+	/**  Modify data (`INSERT`, `UPDATE`, `DELETE`, calling routines). */
+	writeData?: boolean,
+	/**  Read the schema (list schema objects). */
+	readSchema?: boolean,
+	/**  Modify the schema (`CREATE`, `ALTER`, `DROP`). */
+	writeSchema?: boolean,
+};
+
+/**
  *  An MCP client found on this machine (`mcp_detect_clients`), and whether its
  *  configuration reaches this server.
  */
@@ -4447,6 +4462,8 @@ export type McpSettings = {
 	invocationMode?: McpInvocationMode,
 	/**  Offer experimental tools (`get_ide_diagnostics`, ...) too. */
 	experimentalTools?: boolean,
+	/**  What the database tools may do without asking ("Always allow" of their consent). */
+	databaseConsents?: McpDatabaseConsents,
 };
 
 /**  A skill OpenIDEA bundles for agents that use its MCP tools. */
@@ -4530,14 +4547,21 @@ export type McpTransport =
 
 /**  What the server needs from a project window's UI; answered with `mcp_respond`. */
 export type McpUiRequest = 
-/**  Ask before running something: answered with `true` (allow) or `false`. */
+/**
+ *  Ask before running something: answered with `true` (allow) or `false`, or with
+ *  `{ "allow": bool, "remember": bool }` when it has a `remember` checkbox.
+ */
 { type: "confirm"; 
 /**  The MCP client's name (`claude-code`). */
 client: string; tool: string; 
 /**  What will run (a command line, a configuration's name). */
 subject: string; 
 /**  Extra detail (working directory, ...). */
-detail: string | null } | 
+detail: string | null; 
+/**  The dialog's title instead of the default one (database consents). */
+title?: string | null; 
+/**  Label of an "always allow" checkbox; the answer's `remember` tells whether it was checked. */
+remember?: string | null } | 
 /**  Open `path` in an editor at the 1-based `line` / `column`: answered with `null`. */
 { type: "openFile"; path: IpcPath; line: number | null; column: number | null } | 
 /**  The open editors: answered with an [`McpOpenEditors`]. */

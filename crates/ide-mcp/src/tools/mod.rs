@@ -3,6 +3,7 @@
 
 pub mod changelists;
 pub mod code;
+pub mod database;
 pub mod diagnostics;
 pub mod edit;
 pub mod files;
@@ -55,6 +56,7 @@ pub fn all() -> Vec<Tool> {
     tools.extend(vcs::tools());
     tools.extend(changelists::tools());
     tools.extend(diagnostics::tools());
+    tools.extend(database::tools());
     tools.extend(universal::tools());
     tools
         .into_iter()

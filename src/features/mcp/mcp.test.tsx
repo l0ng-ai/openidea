@@ -229,6 +229,31 @@ describe("MCP confirmation dialog", () => {
     expect(mcpRespond).toHaveBeenCalledWith(3, { type: "confirm", allow: false });
   });
 
+  it("shows a database consent with its title and an always-allow checkbox", () => {
+    render(<McpConfirmHost />);
+    const consent = (id: number) => ({
+      ...confirm(id, "select * from users"),
+      tool: "execute_sql_query",
+      title: "Allow Claude Code to Read Database Data",
+      remember: "Always allow Claude Code to read database data",
+    });
+    act(() => {
+      enqueueConfirm(consent(4));
+      enqueueConfirm(consent(5));
+    });
+    let dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("Allow Claude Code to Read Database Data");
+    expect(dialog).toHaveTextContent("Database permissions can be changed in the MCP Server settings.");
+    fireEvent.click(within(dialog).getByLabelText("Always allow Claude Code to read database data"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Allow" }));
+    expect(mcpRespond).toHaveBeenCalledWith(4, { type: "confirm", allow: true, remember: true });
+    // The next consent starts unchecked; denying never remembers.
+    dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByLabelText("Always allow Claude Code to read database data")).not.toBeChecked();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deny" }));
+    expect(mcpRespond).toHaveBeenCalledWith(5, { type: "confirm", allow: false, remember: false });
+  });
+
   it("follows the backend events once activated", async () => {
     const dispose = activate();
     try {

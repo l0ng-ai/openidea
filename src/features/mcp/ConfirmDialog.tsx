@@ -1,7 +1,11 @@
-/** The oldest pending MCP confirmation as a modal: Allow runs the tool, Deny (Enter / Escape) refuses it. */
+/**
+ * The oldest pending MCP confirmation as a modal: Allow runs the tool, Deny (Enter / Escape) refuses it.
+ * A database consent has its own title and an "always allow" checkbox.
+ */
+import { useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
-import { Dialog, T } from "@/ui";
+import { Checkbox, Dialog, T } from "@/ui";
 import { answerConfirm, useMcpConfirms, type McpConfirm } from "./requests";
 import { MCP_SETTINGS_PAGE } from "./model";
 import styles from "./Mcp.module.css";
@@ -14,17 +18,18 @@ export function McpConfirmHost() {
 
 function McpConfirmDialog({ request: r, waiting }: { request: McpConfirm; waiting: number }) {
   const t = useTx();
+  const [remember, setRemember] = useState(false);
   const deny = () => answerConfirm(r, false);
   return (
     <Dialog
       open
       icon="warning"
-      title={t`${r.client} wants to run`}
+      title={r.title ?? t`${r.client} wants to run`}
       onClose={deny}
       width={520}
       footerStart={waiting > 0 ? <span className={styles.waiting}>{t`${waiting} more waiting`}</span> : undefined}
       buttons={[
-        { label: "Allow", role: "extra", onClick: () => answerConfirm(r, true) },
+        { label: "Allow", role: "extra", onClick: () => answerConfirm(r, true, undefined, remember) },
         // Enter denies: focused first, never the settings link in the body.
         { label: "Deny", role: "default", autoFocus: true, onClick: deny },
       ]}
@@ -37,6 +42,7 @@ function McpConfirmDialog({ request: r, waiting }: { request: McpConfirm; waitin
           {r.subject}
         </pre>
         {r.detail && <div className={styles.detail}>{r.detail}</div>}
+        {r.remember && <Checkbox label={r.remember} checked={remember} onChange={setRemember} />}
         {r.error && (
           <div className={styles.error} role="alert">
             {t`Could not send the answer: ${r.error}`}
@@ -44,7 +50,11 @@ function McpConfirmDialog({ request: r, waiting }: { request: McpConfirm; waitin
         )}
         <div className={styles.hint}>
           <div>
-            <T>To run commands without asking, turn on brave mode in the MCP Server settings.</T>
+            {r.title ? (
+              <T>Database permissions can be changed in the MCP Server settings.</T>
+            ) : (
+              <T>To run commands without asking, turn on brave mode in the MCP Server settings.</T>
+            )}
           </div>
           <button
             type="button"

@@ -300,24 +300,25 @@ function ClientRow({ config, detected, onChange, unapplied }: ClientRowProps) {
         <span className={styles.clientName}>{name}</span>
         <StatusBadge config={config} detected={detected} />
         {detected && <Badge tone="accent">{t("Installed")}</Badge>}
-        <span className={styles.spacer} />
-        <Button size="small" icon="copy" onClick={() => void copy()}>
-          {copied ? t("Copied") : t("Copy configuration")}
-        </Button>
-        <Button
-          size="small"
-          disabled={!config.canWrite || busy || unapplied}
-          title={
-            !config.canWrite
-              ? "Copy the configuration and add it by hand"
-              : unapplied
-                ? "Apply the settings first"
-                : undefined
-          }
-          onClick={() => void configure()}
-        >
-          {mismatch ? t("Fix Configuration") : t("Auto-Configure")}
-        </Button>
+        <span className={styles.clientActions}>
+          <Button size="small" icon="copy" onClick={() => void copy()}>
+            {copied ? t("Copied") : t("Copy configuration")}
+          </Button>
+          <Button
+            size="small"
+            disabled={!config.canWrite || busy || unapplied}
+            title={
+              !config.canWrite
+                ? "Copy the configuration and add it by hand"
+                : unapplied
+                  ? "Apply the settings first"
+                  : undefined
+            }
+            onClick={() => void configure()}
+          >
+            {mismatch ? t("Fix Configuration") : t("Auto-Configure")}
+          </Button>
+        </span>
       </div>
       {config.client === "claudeDesktop" && (
         <div className={styles.note}>
@@ -699,6 +700,39 @@ function ConnectedClients() {
 }
 
 // ---------------------------------------------------------------------------
+// Database permissions
+
+/** One "Always allow" flag of the database tools' consent (`mcp.databaseConsents.<key>`). */
+function ConsentToggle({
+  flag,
+  label,
+}: {
+  flag: "readData" | "writeData" | "readSchema" | "writeSchema";
+  label: string;
+}) {
+  const [value, set] = useSetting<boolean | undefined>(`mcp.databaseConsents.${flag}`, "global");
+  return <Toggle label={label} checked={value === true} onChange={set} />;
+}
+
+/** What the database tools may do without asking. */
+function DatabasePermissions() {
+  return (
+    <div className={styles.block}>
+      <span className={styles.note}>
+        <T>
+          The database tools ask before they read or change a database unless it is allowed here. Statements whose
+          effect is unknown always ask.
+        </T>
+      </span>
+      <ConsentToggle flag="readSchema" label="Allow reading database schemas" />
+      <ConsentToggle flag="readData" label="Allow reading database data" />
+      <ConsentToggle flag="writeData" label="Allow modifying database data" />
+      <ConsentToggle flag="writeSchema" label="Allow modifying database schemas" />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Exposed tools
 
 function ExposedToolsLink() {
@@ -762,6 +796,22 @@ export const MCP_PAGES: PageSpec[] = [
       {
         title: "Connected Clients",
         options: [{ kind: "custom", label: "Connected clients", component: ConnectedClients }],
+      },
+      {
+        title: "Database Permissions",
+        options: [
+          {
+            kind: "custom",
+            label: "Database permissions",
+            keywords: [
+              "Allow reading database schemas",
+              "Allow reading database data",
+              "Allow modifying database data",
+              "Allow modifying database schemas",
+            ],
+            component: DatabasePermissions,
+          },
+        ],
       },
       {
         title: "Exposed Tools",
