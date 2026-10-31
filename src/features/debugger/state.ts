@@ -226,7 +226,29 @@ function settleStart(id: DebugSessionId | null) {
 
 export function publishContext() {
   const s = activeSession();
+  const retained = Object.values(useDebug.getState().sessions);
   useDebugRunSessions.setState({
+    serviceSessions: retained.flatMap((session) => {
+      if (session.parent != null || !session.runConfig) return [];
+      const paused =
+        isLive(session) && retained.some((child) => child.status === "paused" && rootOf(child).id === session.id);
+      return [
+        {
+          id: session.id,
+          config: session.runConfig,
+          startedAt: session.startedAt ?? 0,
+          status: paused ? ("paused" as const) : session.status,
+          processId: session.process,
+          rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
+          stop: (options?: { stopProcess?: boolean }) => stopSession(session.id, options),
+          show: () => {
+            if (!useDebug.getState().sessions[session.id]) return;
+            selectSession(session.id);
+            toolWindowService().show("debug", true);
+          },
+        },
+      ];
+    }),
     sessions: Object.values(useDebug.getState().sessions)
       .filter((session) => session.parent == null && isLive(session))
       .map((session) => {
@@ -389,6 +411,7 @@ export async function startSession(
     for (const id of ansiStreams.keys()) if (!sessions[id]) ansiStreams.delete(id);
     return { sessions, console: consoleLines, active: s.active != null && sessions[s.active] ? s.active : null };
   });
+  publishContext();
   try {
     if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
@@ -457,7 +480,7 @@ export async function startSession(
   }
 }
 
-export async function stopSession(id: DebugSessionId) {
+export async function stopSession(id: DebugSessionId, options: { stopProcess?: boolean } = {}) {
   const s = useDebug.getState().sessions[id];
   if (!s) return;
   const root = rootOf(s);
@@ -469,7 +492,8 @@ export async function stopSession(id: DebugSessionId) {
     markTerminated(root.id);
   }
   // Detaching leaves an attached JVM running: stop the process it belongs to, like IDEA.
-  if (root.process != null) await call(commands.runStop(root.process)).catch(() => undefined);
+  if (options.stopProcess !== false && root.process != null)
+    await call(commands.runStop(root.process)).catch(() => undefined);
 }
 
 export async function rerunSession(id: DebugSessionId) {

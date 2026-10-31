@@ -1294,4 +1294,20 @@ export interface DebugRunSession {
   resume: () => void;
 }
 
-export const useDebugRunSessions = create<{ sessions: DebugRunSession[] }>(() => ({ sessions: [] }));
+/** Configured debugger roots retained by the debugger, including finished output. */
+export interface DebugServiceSession {
+  id: number;
+  config: RunConfig;
+  startedAt: number;
+  status: "starting" | "running" | "paused" | "terminated";
+  processId: number | null;
+  rerun: (() => void) | null;
+  stop: (options?: { stopProcess?: boolean }) => Promise<void>;
+  show: () => void;
+}
+
+export const useDebugRunSessions = create<{
+  sessions: DebugRunSession[];
+  serviceSessions: DebugServiceSession[];
+  Console: ComponentType<{ sessionId: number }> | null;
+}>(() => ({ sessions: [], serviceSessions: [], Console: null }));
