@@ -398,7 +398,7 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
     return (
       <>
         {virtual ? (
-          <VirtualBanner decompiled={virtual.decompiled} description={virtual.description} />
+          <VirtualBanner path={tab.input.path!} decompiled={virtual.decompiled} description={virtual.description} />
         ) : (
           <EditorBanners path={tab.input.path} />
         )}

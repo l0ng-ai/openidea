@@ -10,7 +10,7 @@ vi.mock("@/platform/virtualDocs", async (importOriginal) => {
   return {
     ...actual,
     virtualDocument: vi.fn(async (uri: string): Promise<VirtualDocument> => {
-      if (uri !== JDT) throw new Error(`no contents for ${uri}`);
+      if (uri !== JDT && uri !== "file:///p/target/classes/Lib.class") throw new Error(`no contents for ${uri}`);
       return {
         uri,
         text: TEXT,
@@ -30,6 +30,7 @@ const { serializeSession } = await import("./model/session");
 const { useDocMeta } = await import("./model/document");
 const { registerMenuGroup } = await import("@/workbench/contributions");
 const { registerActions } = await import("@/platform/actions");
+const { commands } = await import("@/platform/ipc");
 const { resolveMenuItems } = await import("@/ui");
 
 let ctrl: InstanceType<typeof EditorController> | null = null;
@@ -53,6 +54,24 @@ describe("virtual editor input", () => {
     expect(input.data).toEqual({ title: "Lib.class", description: "/m2/lib-1.0.jar", decompiled: true });
     expect(isTextInput(input)).toBe(true);
     expect(isTextInput({ kind: "diff", key: "d" })).toBe(false);
+  });
+
+  it.each([
+    ["/m2/lib.jar!/org/example/Lib.class", JDT, "virtual"],
+    ["/p/target/classes/Lib.class", "/p/Lib.java", "file"],
+    ["/p/build/classes/Lib.class", "file:///p/target/classes/Lib.class", "virtual"],
+  ])("routes %s before choosing a binary viewer", async (path, target, kind) => {
+    const resolve = vi.spyOn(commands, "lspResolveClassFile").mockResolvedValue({ status: "ok", data: target });
+    ctrl = new EditorController(createMemoryBackend({ [target]: TEXT }));
+    ctrl.start();
+    try {
+      await ctrl.openFile(path!, { focus: false });
+      expect(resolve).toHaveBeenCalledWith(path);
+      expect(activeTab().input).toMatchObject({ path: target, kind });
+      expect(ctrl.slotFor(activeTab().id)!.model.ctx().readOnly).toBe(kind === "virtual");
+    } finally {
+      resolve.mockRestore();
+    }
   });
 
   it("opens a URI read-only at the target and keeps it out of the saved session", async () => {
