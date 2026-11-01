@@ -36,11 +36,13 @@ it("escapes CSS special characters without turning a family into a list", () => 
 
 describe("uiFontFamily", () => {
   it.each([
-    ["Inter", '"Inter Variable", "Inter", system-ui, sans-serif'],
-    ["JetBrains Mono", '"JetBrains Mono Variable", "JetBrains Mono", system-ui, sans-serif'],
-    [' "PingFang SC" ', '"PingFang SC", system-ui, sans-serif'],
-  ])("%j", (family, expected) => {
-    expect(uiFontFamily(family)).toBe(expected);
+    ["Inter", "", '"Inter Variable", "Inter", system-ui, sans-serif'],
+    ["JetBrains Mono", "", '"JetBrains Mono Variable", "JetBrains Mono", system-ui, sans-serif'],
+    [' "PingFang SC" ', "", '"PingFang SC", system-ui, sans-serif'],
+    ["Inter", "思源黑体", '"Inter Variable", "Inter", "思源黑体", system-ui, sans-serif'],
+    ["Inter", " ", '"Inter Variable", "Inter", system-ui, sans-serif'],
+  ])("%j + %j", (family, fallback, expected) => {
+    expect(uiFontFamily(family, fallback)).toBe(expected);
   });
 });
 
@@ -124,6 +126,16 @@ describe("macOS user font resolver", () => {
     expect(fonts.uiFontFamily("Menlo")).toBe('"Menlo", system-ui, sans-serif');
     fonts.monoFontFamily("Maple Mono NF CN");
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("loads a UI fallback through the shared macOS user font resolver", async () => {
+    const { fonts, invoke, registered } = await resolver(false);
+    const family = fonts.uiFontFamily("Inter", "Maple Mono NF CN");
+    expect(family).toBe('"Inter Variable", "Inter", "OpenIDEA User Font 0", "Maple Mono NF CN", system-ui, sans-serif');
+    expect(fonts.monoFontFamily("Inter", "Maple Mono NF CN")).toContain('"OpenIDEA User Font 0"');
+    await fonts.fontsLoaded(family, 13);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("user_font_data", { family: "Maple Mono NF CN" });
+    expect(registered).toHaveLength(3);
   });
 
   it("detects user fonts that WKWebView exposes only to connected canvases without loading bytes", async () => {

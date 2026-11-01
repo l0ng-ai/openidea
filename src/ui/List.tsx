@@ -16,6 +16,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { rowSelectionMode } from "./rowSelection";
 import styles from "./List.module.css";
 
 export interface ListRowState {
@@ -32,6 +33,8 @@ export interface ListProps<T> {
   activeIndex?: number;
   defaultActiveIndex?: number;
   onActiveChange?: (index: number) => void;
+  /** Opt into modifier selection; modified clicks select without activating. */
+  onSelect?: (index: number, e: KeyboardEvent | MouseEvent) => void;
   /** Rows selected besides the active one (multi-selection); drawn like the active row. */
   isSelected?: (item: T, index: number) => boolean;
   onActivate?: (item: T, index: number, e: KeyboardEvent | MouseEvent) => void;
@@ -115,6 +118,7 @@ export function List<T>({
   activeIndex,
   defaultActiveIndex,
   onActiveChange,
+  onSelect,
   isSelected,
   onActivate,
   onContextMenu,
@@ -169,7 +173,8 @@ export function List<T>({
     const next = listNavigate(e.key, { items, active, isSection, pageSize });
     if (next === null) return;
     e.preventDefault();
-    if (next !== active) setActive(next);
+    if (onSelect) onSelect(next, e);
+    else if (next !== active) setActive(next);
   };
 
   if (!items.length && empty) return <div className={clsx(styles.list, styles.emptyWrap, className)}>{empty}</div>;
@@ -178,6 +183,7 @@ export function List<T>({
     <div
       ref={scrollRef}
       role="listbox"
+      aria-multiselectable={onSelect ? true : undefined}
       aria-label={aria["aria-label"]}
       aria-labelledby={aria["aria-labelledby"]}
       aria-activedescendant={
@@ -209,6 +215,7 @@ export function List<T>({
               id={`${baseId}-${v.index}`}
               role="option"
               aria-selected={selected}
+              data-lead={isActive || undefined}
               aria-posinset={optionIndex.idx[v.index]}
               aria-setsize={optionIndex.count}
               className={clsx(styles.row, selected && styles.active)}
@@ -217,9 +224,12 @@ export function List<T>({
               onMouseDown={(e) => {
                 if (e.button !== 0) return;
                 if (!focusable) e.preventDefault();
-                setActive(v.index);
+                if (!onSelect) setActive(v.index);
               }}
-              onClick={(e) => onActivate?.(item, v.index, e)}
+              onClick={(e) => {
+                onSelect?.(v.index, e);
+                if (!onSelect || rowSelectionMode(e) === "single") onActivate?.(item, v.index, e);
+              }}
               onContextMenu={onContextMenu ? (e) => onContextMenu(item, v.index, e) : undefined}
             >
               {renderItem(item, { active: isActive, index: v.index })}

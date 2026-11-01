@@ -32,7 +32,7 @@ resolveAdditionalTextEditsSupport = true
 
 [language-servers.initialization-options.settings.java]
 autobuild = { enabled = true }
-contentProvider = { preferred = "fernflower" }
+contentProvider = { preferred = "fernflowerContentProvider" }
 maven = { downloadSources = true, updateSnapshots = false }
 eclipse = { downloadSources = true }
 references = { includeDecompiledSources = true }
