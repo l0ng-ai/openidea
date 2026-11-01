@@ -529,10 +529,11 @@ export function ProjectView() {
   const dragged = useRef(false);
 
   const onRowClick = useCallback((node: ProjectNode, e: ReactMouseEvent) => {
-    if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.detail > 1) return;
+    if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
     if (node.placeholder || dragged.current) return;
     const { options: o, editing: ed } = useProjectTree.getState();
     if (ed) return;
+    if (e.detail > 1 && !(node.dir && o.singleClickExpand && e.detail % 2 === 1)) return;
     if (node.dir) {
       if (o.singleClickExpand) toggleExpanded(node);
       return;
