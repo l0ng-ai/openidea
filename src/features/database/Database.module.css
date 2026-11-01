@@ -687,41 +687,6 @@
   -webkit-user-select: text;
   user-select: text;
 }
-.sqlPreview :global(.tok-keyword),
-.codeText :global(.tok-keyword),
-.sqlPreview :global(.tok-operatorKeyword),
-.codeText :global(.tok-operatorKeyword) {
-  color: var(--syn-keyword);
-}
-.sqlPreview :global(.tok-string),
-.codeText :global(.tok-string),
-.sqlPreview :global(.tok-string2),
-.codeText :global(.tok-string2) {
-  color: var(--syn-string);
-}
-.sqlPreview :global(.tok-number),
-.codeText :global(.tok-number),
-.sqlPreview :global(.tok-bool),
-.codeText :global(.tok-bool),
-.sqlPreview :global(.tok-atom),
-.codeText :global(.tok-atom) {
-  color: var(--syn-number);
-}
-.sqlPreview :global(.tok-typeName),
-.codeText :global(.tok-typeName) {
-  color: var(--syn-keyword);
-}
-.sqlPreview :global(.tok-comment),
-.codeText :global(.tok-comment) {
-  color: var(--syn-comment);
-  font-style: italic;
-}
-.sqlPreview :global(.tok-punctuation),
-.codeText :global(.tok-punctuation),
-.sqlPreview :global(.tok-operator),
-.codeText :global(.tok-operator) {
-  color: var(--syn-punct);
-}
 .modifyBody {
   display: flex;
   flex-direction: column;

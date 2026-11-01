@@ -139,46 +139,6 @@
   outline: 1px dashed var(--border-strong);
 }
 
-/* Lezer classHighlighter tokens in fenced code (same colours as documentation popups). */
-.preview :global(.tok-keyword),
-.preview :global(.tok-modifier),
-.preview :global(.tok-controlKeyword),
-.preview :global(.tok-operatorKeyword) {
-  color: var(--syn-keyword);
-}
-.preview :global(.tok-string),
-.preview :global(.tok-string2) {
-  color: var(--syn-string);
-}
-.preview :global(.tok-number),
-.preview :global(.tok-bool),
-.preview :global(.tok-atom) {
-  color: var(--syn-number);
-}
-.preview :global(.tok-typeName),
-.preview :global(.tok-className),
-.preview :global(.tok-namespace) {
-  color: var(--syn-type);
-}
-.preview :global(.tok-comment) {
-  color: var(--syn-comment);
-  font-style: italic;
-}
-.preview :global(.tok-meta),
-.preview :global(.tok-macroName) {
-  color: var(--syn-annotation);
-}
-.preview :global(.tok-propertyName) {
-  color: var(--syn-property);
-}
-.preview :global(.tok-variableName.tok-definition) {
-  color: var(--syn-function);
-}
-.preview :global(.tok-punctuation),
-.preview :global(.tok-operator) {
-  color: var(--syn-punct);
-}
-
 /* Mermaid diagrams: the source stays until the diagram is drawn, and next to an error. */
 .preview :global([data-mermaid]) {
   margin: 0 0 1em;

@@ -292,44 +292,6 @@
   text-decoration: underline;
 }
 
-/* Lezer classHighlighter tokens in fenced code (same colours as the Markdown preview). */
-.markdown :global(.tok-keyword),
-.markdown :global(.tok-modifier),
-.markdown :global(.tok-controlKeyword),
-.markdown :global(.tok-operatorKeyword) {
-  color: var(--syn-keyword);
-}
-.markdown :global(.tok-string),
-.markdown :global(.tok-string2) {
-  color: var(--syn-string);
-}
-.markdown :global(.tok-number),
-.markdown :global(.tok-bool),
-.markdown :global(.tok-atom) {
-  color: var(--syn-number);
-}
-.markdown :global(.tok-typeName),
-.markdown :global(.tok-className),
-.markdown :global(.tok-namespace) {
-  color: var(--syn-type);
-}
-.markdown :global(.tok-comment) {
-  color: var(--syn-comment);
-}
-.markdown :global(.tok-meta),
-.markdown :global(.tok-macroName) {
-  color: var(--syn-annotation);
-}
-.markdown :global(.tok-propertyName) {
-  color: var(--syn-property);
-}
-.markdown :global(.tok-variableName.tok-definition) {
-  color: var(--syn-function);
-}
-.markdown :global(.tok-punctuation),
-.markdown :global(.tok-operator) {
-  color: var(--syn-punct);
-}
 .markdown :global(ul),
 .markdown :global(ol) {
   margin: 0 0 8px;

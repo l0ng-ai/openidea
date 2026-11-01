@@ -160,6 +160,54 @@ a:hover {
   font-family: var(--font-mono);
 }
 
+/* Syntax colours for read-only previews and result lines: the `tok-*` classes
+   CodeMirror's `classHighlighter` emits (`codeHighlighter`/`tokenSpans`). One
+   shared set instead of a copy per view module; editor tooltips have the same
+   colours scoped to their DOM in editor/lsp/theme.ts. The main editor is
+   unaffected: it colours itself with the inline `HighlightStyle` in
+   editor/core/cm/highlight.ts. */
+.tok-keyword,
+.tok-modifier,
+.tok-controlKeyword,
+.tok-operatorKeyword {
+  color: var(--syn-keyword);
+}
+.tok-string,
+.tok-string2 {
+  color: var(--syn-string);
+}
+.tok-number,
+.tok-bool,
+.tok-atom {
+  color: var(--syn-number);
+}
+.tok-typeName,
+.tok-className,
+.tok-namespace {
+  color: var(--syn-type);
+}
+.tok-comment {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+.tok-meta,
+.tok-macroName {
+  color: var(--syn-annotation);
+}
+.tok-propertyName {
+  color: var(--syn-property);
+}
+.tok-variableName.tok-definition {
+  color: var(--syn-function);
+}
+.tok-punctuation,
+.tok-operator {
+  color: var(--syn-punct);
+}
+.tok-invalid {
+  color: var(--syn-invalid);
+}
+
 /* macOS-style overlay scrollbars (ScrollBar.Mac.thumbColor / hoverThumbColor) */
 ::-webkit-scrollbar {
   width: 10px;
