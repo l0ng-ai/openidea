@@ -199,8 +199,10 @@ pub async fn maven_exclude_dependency(
         let (path, text, range) = declaring_pom(&project, &pom, &dependency)?;
         match ide_build::pom_edit::add_exclusion(&text, &dependency, &exclusion) {
             Some(Exclusion::Edit(edit)) => {
-                let edit =
-                    WorkspaceEdit { files: vec![FileEdit::Edit { path: path.clone().into(), edits: vec![edit] }] };
+                let edit = WorkspaceEdit {
+                    files: vec![FileEdit::Edit { path: path.clone().into(), edits: vec![edit], version: None }],
+                    ..Default::default()
+                };
                 apply_workspace_edit(&project.documents, &edit)?;
             }
             Some(Exclusion::Present) => {}

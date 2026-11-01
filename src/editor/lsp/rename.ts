@@ -21,7 +21,7 @@ import {
   type RequestId,
   type WorkspaceEdit,
 } from "@/platform/ipc";
-import { whenSynced, type EditorDocContext } from "@/editor/api";
+import { whenAllSynced, whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure } from "@/editor/structure";
 import { docOf, incompleteNote, isUnavailable, lspRequest, reportLspError } from "./lsp";
 import { comparePos, offsetToPos, rangeToOffsets } from "./positions";
@@ -42,6 +42,7 @@ import { tx } from "@/platform/i18n";
 
 async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
   try {
+    await whenAllSynced();
     await lspRequest(() => commands.applyWorkspaceEdit(edit));
   } catch (e) {
     reportLspError(view, e, true);

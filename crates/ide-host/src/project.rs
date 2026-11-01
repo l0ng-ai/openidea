@@ -825,37 +825,7 @@ impl Project {
 
 /// Applies a multi-file edit through the document layer so open editors update live.
 pub fn apply_workspace_edit(documents: &Documents, edit: &ide_core::WorkspaceEdit) -> IdeResult<()> {
-    use ide_core::FileEdit;
-    let mut edit = edit.clone();
-    edit.deduplicate();
-    for file in &edit.files {
-        match file {
-            FileEdit::Edit { path, edits } => {
-                // Files not open in an editor are opened transiently and closed again.
-                let (doc, transient) = match documents.by_path(path) {
-                    Some(doc) => (doc, false),
-                    None => (documents.open(path)?.id, true),
-                };
-                let result = documents.apply_edits(doc, edits).and_then(|_| documents.save(doc));
-                if transient {
-                    documents.close(doc);
-                }
-                result?;
-            }
-            FileEdit::Create { path, overwrite } => {
-                if path.exists() {
-                    if *overwrite {
-                        ide_vfs::save_text(path, "", "utf-8", false)?;
-                    }
-                } else {
-                    ide_vfs::create_file(path)?;
-                }
-            }
-            FileEdit::Rename { from, to } => ide_vfs::rename(from, to)?,
-            FileEdit::Delete { path, .. } => ide_vfs::delete(path)?,
-        }
-    }
-    Ok(())
+    documents.apply_workspace_edit(edit)
 }
 
 /// Files the watcher reports per batch that Local History snapshots.
@@ -1192,10 +1162,14 @@ mod workspace_edit_tests {
         let doc = documents.open(&alias).unwrap();
         let changes = |path: PathBuf| FileEdit::Edit {
             path: path.into(),
+            version: None,
             edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "sum_values".into() }],
         };
-        apply_workspace_edit(&documents, &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)] })
-            .unwrap();
+        apply_workspace_edit(
+            &documents,
+            &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)], ..Default::default() },
+        )
+        .unwrap();
         assert_eq!(std::fs::read_to_string(real).unwrap(), "sum_values();\n");
         assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
     }
