@@ -7,7 +7,7 @@ import { useTasks } from "@/workbench/tasks";
 import { MemoryToolsBackend, sampleTools, setToolsBackend } from "../backend";
 import { cancelInstall, installTool, refreshTools, uninstallTool, useTools } from "../store";
 import { filterTools, LanguageServersPage } from "../LanguageServersPage";
-import { installMissingServerPrompts, missingKey } from "../missing";
+import { installMissingServerPrompts, missingKey, promptInstall } from "../missing";
 import { resetTestForm, stagedFor, TestSettingsForm } from "./settingsForm";
 
 type Note = Parameters<NotificationService["notify"]>[0];
@@ -104,6 +104,34 @@ describe("tools store", () => {
 });
 
 describe("missing language server prompt", () => {
+  it("uses the same install prompt for Prettier with a Reformat Code explanation", async () => {
+    const template = sampleTools()[0]!;
+    backend.tools.push({
+      ...template,
+      name: "prettier",
+      displayName: "Prettier",
+      command: "prettier",
+      kind: "formatter",
+      status: "missing",
+      installMethod: "npm",
+      languages: ["Markdown"],
+    });
+    await promptInstall("prettier");
+    expect(notes[0]).toMatchObject({
+      title: "Prettier is not installed",
+      key: missingKey("prettier"),
+      sticky: true,
+      body: "Reformat Code needs Prettier. Install it via npm?",
+    });
+    expect(notes[0]!.actions!.map((a) => a.label)).toEqual(["Install", "Language Servers…"]);
+    await promptInstall("prettier", false);
+    expect(notes.at(-1)).toMatchObject({ key: missingKey("prettier"), sticky: false });
+    notes[0]!.actions![0]!.run();
+    await waitFor(() =>
+      expect(notes.at(-1)).toMatchObject({ title: "Prettier installed", key: missingKey("prettier") }),
+    );
+  });
+
   it("offers Install for installable servers, once, replacing the generic notice", async () => {
     const off = installMissingServerPrompts();
     const ev = { type: "languageServer", server: 1, name: "gopls", status: "missing", message: null } as const;

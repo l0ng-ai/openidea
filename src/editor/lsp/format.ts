@@ -5,6 +5,8 @@
  * reports "Formatted N lines" with a link to the Reformat File dialog
  * (⌥⇧⌘L: scope and Optimize Imports).
  */
+import { createElement } from "react";
+import styles from "./format.module.css";
 import { indentUnit } from "@codemirror/language";
 import { isolateHistory } from "@codemirror/commands";
 import type { EditorState, Text } from "@codemirror/state";
@@ -116,17 +118,22 @@ async function format(
   try {
     edits = await lspRequest(() => commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave }));
   } catch (e) {
-    if (e instanceof IpcError && e.message.startsWith("Prettier")) {
-      const missing = e.message === "Prettier is not installed";
-      notifications().notify({
-        group: "tools",
-        level: missing ? "warning" : "error",
-        title: "Prettier",
-        body: txTemplate(e.message),
-        key: missing ? "tools-install-prettier" : "prettier-format-error",
-        sticky: true,
-        actions: missing ? [{ label: "Install", run: () => void executeAction("tools.install", "prettier") }] : [],
-      });
+    if (e instanceof IpcError && e.data?.type === "tool" && e.data.tool === "prettier") {
+      if (e.kind === "notFound" && e.data.missing) {
+        await executeAction("tools.promptInstall", { name: "prettier", sticky: !opts.onSave });
+      } else if (e.kind !== "cancelled") {
+        notifications().notify({
+          group: "tools",
+          level: "error",
+          title: tx("Prettier formatting failed"),
+          body:
+            e.kind === "timedOut"
+              ? tx("Prettier formatting timed out")
+              : createElement("span", { className: styles.diagnostics }, e.message),
+          key: `prettier-format-error:${doc.path}`,
+          sticky: false,
+        });
+      }
     } else reportLspError(view, e, opts.explicit);
     return NOTHING;
   }

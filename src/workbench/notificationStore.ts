@@ -116,8 +116,8 @@ export const STICKY_BALLOON_TIMEOUT = 5 * 60 * 1000;
 
 /** Fade-out delay of a balloon, or null when it stays until dismissed. */
 export function balloonTimeout(n: Pick<IdeNotification, "level" | "sticky" | "logged">): number | null {
-  if (n.sticky || BALLOON_TIMEOUT[n.level] === null) return n.logged ? STICKY_BALLOON_TIMEOUT : null;
-  return BALLOON_TIMEOUT[n.level];
+  if (n.sticky) return n.logged ? STICKY_BALLOON_TIMEOUT : null;
+  return BALLOON_TIMEOUT[n.level] ?? BALLOON_TIMEOUT.info;
 }
 const MAX_HISTORY = 200;
 let seq = 0;

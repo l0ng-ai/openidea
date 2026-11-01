@@ -30,6 +30,10 @@ fn package_bin(package: &Path) -> IdeResult<PathBuf> {
 impl Tools {
     /// Explicit executable/script, then the nearest project package, then managed tools and PATH.
     pub fn formatter_command(&self, tool: &str, file: &Path, custom: Option<&Path>) -> IdeResult<Command> {
+        self.resolve_formatter_command(tool, file, custom).map_err(|e| e.with_tool(tool))
+    }
+
+    fn resolve_formatter_command(&self, tool: &str, file: &Path, custom: Option<&Path>) -> IdeResult<Command> {
         if tool != "prettier" {
             return Err(IdeError::unavailable(format!("Unknown external formatter: {tool}")));
         }
@@ -42,7 +46,7 @@ impl Tools {
         } else if self.root.join("node_modules/prettier/package.json").is_file() {
             (package_bin(&self.root.join("node_modules/prettier"))?, true)
         } else {
-            (self.which("prettier").ok_or_else(|| IdeError::unavailable("Prettier is not installed"))?, false)
+            (self.which("prettier").ok_or_else(|| IdeError::missing_tool("prettier"))?, false)
         };
         if node {
             let node = self.which("node").ok_or_else(|| IdeError::unavailable("Prettier: Node.js is required"))?;
@@ -97,13 +101,36 @@ pub fn arguments(
 }
 
 pub fn run(mut command: Command, text: &str, cancel: &CancellationToken) -> IdeResult<String> {
-    crate::process::run_input(&mut command, text, Duration::from_secs(15), cancel)
-        .map_err(|e| IdeError::new(e.kind, format!("Prettier: {}", e.message)))
+    crate::process::run_input(&mut command, text, Duration::from_secs(15), cancel).map_err(|e| e.with_tool("prettier"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_formatter_is_structured_but_invalid_custom_path_is_not_an_install_prompt() {
+        use ide_core::error::{ErrorData, ErrorKind};
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::with_paths(dir.path().join("tools"), OsString::new(), crate::platform::Platform::current());
+        let file = dir.path().join("file.md");
+        let missing = tools.formatter_command("prettier", &file, None).unwrap_err();
+        assert_eq!(missing.kind, ErrorKind::NotFound);
+        assert_eq!(missing.data, Some(ErrorData::Tool { tool: "prettier".into(), missing: true }));
+        let custom = tools.formatter_command("prettier", &file, Some(&dir.path().join("absent-prettier"))).unwrap();
+        let failure = run(custom, "text", &Default::default()).unwrap_err();
+        assert_eq!(failure.data, Some(ErrorData::Tool { tool: "prettier".into(), missing: false }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stderr_is_preserved_verbatim_even_when_longer_than_four_thousand_characters() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "i=0; while [ $i -lt 1000 ]; do printf 'error\\n' >&2; i=$((i+1)); done; exit 1"]);
+        let failure = run(command, "", &Default::default()).unwrap_err();
+        assert_eq!(failure.message, "error\n".repeat(1000));
+        assert_eq!(failure.data, Some(ide_core::error::ErrorData::Tool { tool: "prettier".into(), missing: false }));
+    }
 
     #[test]
     fn discovers_nearest_package_and_ignore_above_nested_file() {

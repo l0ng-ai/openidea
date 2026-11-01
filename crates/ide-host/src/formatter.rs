@@ -75,9 +75,7 @@ pub async fn format(
             ),
         });
     }
-    edits.map_err(|e| {
-        if e.message.starts_with("Prettier") { e } else { IdeError::new(e.kind, format!("Prettier: {}", e.message)) }
-    })
+    edits.map_err(|e| e.with_tool("prettier"))
 }
 
 #[cfg(test)]

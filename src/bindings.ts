@@ -9,27 +9,27 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
-	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
-	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
-	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
-	projectTrustList: () => typedError<TrustDecisions, IdeError>(__TAURI_INVOKE("project_trust_list")),
-	projectTrustSet: (path: string, trusted: boolean, folder: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_set", { path, trusted, folder })),
-	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_remove_location", { path })),
-	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
-	workspaceAttach: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_attach", { path })),
-	workspaceUpdate: (name: string, projects: string[]) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("workspace_update", { name, projects })),
-	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
-	windowGroupMerge: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_merge")),
-	windowGroupSelect: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_select", { label })),
-	windowGroupDetach: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach")),
-	windowGroupClose: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close", { label })),
-	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
-	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
+	removeRecentProject: (path: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("remove_recent_project", { path })),
+	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError_Serialize>(__TAURI_INVOKE("open_project", { path })),
+	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError_Serialize>(__TAURI_INVOKE("project_trust_status", { path })),
+	projectTrustList: () => typedError<TrustDecisions, IdeError_Serialize>(__TAURI_INVOKE("project_trust_list")),
+	projectTrustSet: (path: string, trusted: boolean, folder: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("project_trust_set", { path, trusted, folder })),
+	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("project_trust_remove_location", { path })),
+	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError_Serialize>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
+	workspaceAttach: (path: string) => typedError<IpcPath, IdeError_Serialize>(__TAURI_INVOKE("workspace_attach", { path })),
+	workspaceUpdate: (name: string, projects: string[]) => typedError<ProjectInfo_Serialize, IdeError_Serialize>(__TAURI_INVOKE("workspace_update", { name, projects })),
+	windowGroupCurrent: () => typedError<WindowTab[], IdeError_Serialize>(__TAURI_INVOKE("window_group_current")),
+	windowGroupMerge: () => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("window_group_merge")),
+	windowGroupSelect: (label: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("window_group_select", { label })),
+	windowGroupDetach: () => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("window_group_detach")),
+	windowGroupClose: (label: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("window_group_close", { label })),
+	windowGroupReorder: (labels: string[]) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("window_group_reorder", { labels })),
+	windowGroupRestore: () => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("window_group_restore")),
 	/**
 	 *  Edits the loose file `path` in this window without a project (LightEdit);
 	 *  a window already in LightEdit keeps its files. Returns the effective (global) settings.
 	 */
-	lightEditOpen: (path: string) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("light_edit_open", { path })),
+	lightEditOpen: (path: string) => typedError<Settings_Serialize, IdeError_Serialize>(__TAURI_INVOKE("light_edit_open", { path })),
 	/**  The project open in this window (a settings window: its parent's), if any. */
 	projectCurrent: () => __TAURI_INVOKE<{
 	trusted: boolean,
@@ -53,24 +53,24 @@ export const commands = {
 	 *  value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 	 *  re-reads its effective settings.
 	 */
-	settingsSet: (scope: SettingsScope, key: string, value: string) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("settings_set", { scope, key, value })),
+	settingsSet: (scope: SettingsScope, key: string, value: string) => typedError<Settings_Serialize, IdeError_Serialize>(__TAURI_INVOKE("settings_set", { scope, key, value })),
 	/**
 	 *  File › Manage IDE Settings › Export Settings…: the global settings plus the
 	 *  frontend's IDE-level `storage` (live / file templates, macros) to `path`.
 	 */
-	settingsExport: (path: string, storage: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("settings_export", { path, storage })),
+	settingsExport: (path: string, storage: { [key in string]: string }) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("settings_export", { path, storage })),
 	/**  Import Settings…: replaces the global settings with the file's; every window re-reads them. */
-	settingsImport: (path: string) => typedError<SettingsImport_Serialize, IdeError>(__TAURI_INVOKE("settings_import", { path })),
+	settingsImport: (path: string) => typedError<SettingsImport_Serialize, IdeError_Serialize>(__TAURI_INVOKE("settings_import", { path })),
 	/**
 	 *  File › Rename Project…: the project's display name (title bar, recent
 	 *  projects); an empty `name` restores the folder name. Stored in the project's settings.
 	 */
-	projectRename: (name: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("project_rename", { name })),
+	projectRename: (name: string) => typedError<ProjectInfo_Serialize, IdeError_Serialize>(__TAURI_INVOKE("project_rename", { name })),
 	/**
 	 *  Effective source / test / resource / excluded roots of the window's project:
 	 *  auto-detected from build files, overridden by Settings › Project Structure.
 	 */
-	projectRoots: () => typedError<ProjectRoots, IdeError>(__TAURI_INVOKE("project_roots")),
+	projectRoots: () => typedError<ProjectRoots, IdeError_Serialize>(__TAURI_INVOKE("project_roots")),
 	cancelRequest: (id: RequestId) => __TAURI_INVOKE<void>("cancel_request", { id }),
 	/**
 	 *  Stops a background task the backend reported with `cancellable` set; false when it
@@ -80,224 +80,224 @@ export const commands = {
 	/**  Routes frontend logs into the backend `tracing` pipeline. */
 	logFrontend: (level: LogLevel, message: string) => __TAURI_INVOKE<void>("log_frontend", { level, message }),
 	/**  Streams the project's agent events to this window; returns every task. */
-	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
-	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError_Serialize>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
+	agentProviders: () => typedError<AgentProvider[], IdeError_Serialize>(__TAURI_INVOKE("agent_providers")),
 	/**
 	 *  Agents of the ACP Registry this machine can run, with what is installed; the list
 	 *  saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 	 */
-	agentRegistryList: (request: RequestId) => typedError<AgentRegistry, IdeError>(__TAURI_INVOKE("agent_registry_list", { request })),
+	agentRegistryList: (request: RequestId) => typedError<AgentRegistry, IdeError_Serialize>(__TAURI_INVOKE("agent_registry_list", { request })),
 	/**
 	 *  Installs the registry's current version of agent `id` (also to update it), streaming
 	 *  progress through `on_event`. Cancel with `cancel_request(request)`.
 	 */
-	agentRegistryInstall: (id: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("agent_registry_install", { id, request, onEvent })),
+	agentRegistryInstall: (id: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("agent_registry_install", { id, request, onEvent })),
 	/**  Removes a registry agent: its agent file and installed files. */
-	agentRegistryRemove: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_registry_remove", { id })),
+	agentRegistryRemove: (id: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("agent_registry_remove", { id })),
 	/**
 	 *  Slash commands to complete for `provider` in `task`'s directory, or in the project
 	 *  before a task exists (skills and custom commands on disk included).
 	 */
-	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError>(__TAURI_INVOKE("agent_commands", { provider, task })),
+	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError_Serialize>(__TAURI_INVOKE("agent_commands", { provider, task })),
 	/**  Entries of `task`'s conversation, or of its subagent `subagent`'s. */
-	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
-	agentCreate: (request: NewAgentTask) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create", { request })),
+	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError_Serialize>(__TAURI_INVOKE("agent_entries", { task, subagent })),
+	agentCreate: (request: NewAgentTask) => typedError<AgentTask, IdeError_Serialize>(__TAURI_INVOKE("agent_create", { request })),
 	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
-	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
+	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
 	/**  Drops a queued message and returns it (to edit it). */
-	agentUnqueue: (task: string, queued: string) => typedError<AgentQueued, IdeError>(__TAURI_INVOKE("agent_unqueue", { task, queued })),
+	agentUnqueue: (task: string, queued: string) => typedError<AgentQueued, IdeError_Serialize>(__TAURI_INVOKE("agent_unqueue", { task, queued })),
 	/**  Sends a queued message now, interrupting the current turn. */
-	agentSendQueuedNow: (task: string, queued: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_send_queued_now", { task, queued })),
+	agentSendQueuedNow: (task: string, queued: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("agent_send_queued_now", { task, queued })),
 	/**  Changes a session setting (model, mode, thinking effort…). */
-	agentSetConfig: (task: string, option: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_config", { task, option, value })),
+	agentSetConfig: (task: string, option: string, value: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("agent_set_config", { task, option, value })),
 	/**  Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`). */
-	agentFork: (task: string, turns: number | null) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
+	agentFork: (task: string, turns: number | null) => typedError<AgentTask, IdeError_Serialize>(__TAURI_INVOKE("agent_fork", { task, turns })),
 	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
 	agentRollback: (task: string, turns: number) => typedError<{
 	text: string,
 	files: IpcPath[],
 	images: AgentImage[],
-} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns })),
+} | null, IdeError_Serialize>(__TAURI_INVOKE("agent_rollback", { task, turns })),
 	/**
 	 *  What the agent reports about itself when it starts (no session: no MCP servers, hooks
 	 *  or sign-in run). Remembered until `refresh`.
 	 */
-	agentProbe: (provider: string, refresh: boolean) => typedError<AgentProbe, IdeError>(__TAURI_INVOKE("agent_probe", { provider, refresh })),
+	agentProbe: (provider: string, refresh: boolean) => typedError<AgentProbe, IdeError_Serialize>(__TAURI_INVOKE("agent_probe", { provider, refresh })),
 	/**  Stops the task's current turn, or with `subagent` only that subagent's work. */
-	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
+	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
 	/**  Answers a permission request; `option: null` cancels it. */
-	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
-	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
-	agentUnarchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unarchive", { task })),
-	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
-	agentChanges: (task: string) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task })),
+	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
+	agentArchive: (task: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("agent_archive", { task })),
+	agentUnarchive: (task: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("agent_unarchive", { task })),
+	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
+	agentChanges: (task: string) => typedError<AgentChange[], IdeError_Serialize>(__TAURI_INVOKE("agent_changes", { task })),
 	/**  Content of `path` when the task started (left side of its diff). */
-	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
-	notebookOpen: (path: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_open", { path })),
-	notebookGet: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_get", { id })),
-	notebookEdit: (id: string, version: number, edit: NotebookEdit) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_edit", { id, version, edit })),
-	notebookSave: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_save", { id })),
-	notebookReload: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_reload", { id })),
-	notebookUndo: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_undo", { id })),
-	notebookRedo: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_redo", { id })),
-	notebookClose: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("notebook_close", { id })),
-	notebookExecute: (id: string, cells: string[], python: string | null, request: RequestId, onOutput: Channel<NotebookOutputEvent>) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_execute", { id, cells, python, request, onOutput })),
-	notebookInterrupt: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("notebook_interrupt", { id })),
-	notebookRestart: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_restart", { id })),
-	fsReadDir: (path: string) => typedError<FileEntry[], IdeError>(__TAURI_INVOKE("fs_read_dir", { path })),
-	fsEntryKind: (path: string) => typedError<EntryKind, IdeError>(__TAURI_INVOKE("fs_entry_kind", { path })),
+	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError_Serialize>(__TAURI_INVOKE("agent_base_text", { task, path })),
+	notebookOpen: (path: string) => typedError<NotebookSnapshot, IdeError_Serialize>(__TAURI_INVOKE("notebook_open", { path })),
+	notebookGet: (id: string) => typedError<NotebookSnapshot, IdeError_Serialize>(__TAURI_INVOKE("notebook_get", { id })),
+	notebookEdit: (id: string, version: number, edit: NotebookEdit) => typedError<NotebookSnapshot, IdeError_Serialize>(__TAURI_INVOKE("notebook_edit", { id, version, edit })),
+	notebookSave: (id: string) => typedError<NotebookSnapshot, IdeError_Serialize>(__TAURI_INVOKE("notebook_save", { id })),
+	notebookReload: (id: string) => typedError<NotebookSnapshot, IdeError_Serialize>(__TAURI_INVOKE("notebook_reload", { id })),
+	notebookUndo: (id: string) => typedError<NotebookSnapshot, IdeError_Serialize>(__TAURI_INVOKE("notebook_undo", { id })),
+	notebookRedo: (id: string) => typedError<NotebookSnapshot, IdeError_Serialize>(__TAURI_INVOKE("notebook_redo", { id })),
+	notebookClose: (id: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("notebook_close", { id })),
+	notebookExecute: (id: string, cells: string[], python: string | null, request: RequestId, onOutput: Channel<NotebookOutputEvent>) => typedError<NotebookSnapshot, IdeError_Serialize>(__TAURI_INVOKE("notebook_execute", { id, cells, python, request, onOutput })),
+	notebookInterrupt: (id: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("notebook_interrupt", { id })),
+	notebookRestart: (id: string) => typedError<NotebookSnapshot, IdeError_Serialize>(__TAURI_INVOKE("notebook_restart", { id })),
+	fsReadDir: (path: string) => typedError<FileEntry[], IdeError_Serialize>(__TAURI_INVOKE("fs_read_dir", { path })),
+	fsEntryKind: (path: string) => typedError<EntryKind, IdeError_Serialize>(__TAURI_INVOKE("fs_entry_kind", { path })),
 	/**  Size and text/binary classification, from the file's head only. */
-	fsProbe: (path: string) => typedError<FileProbe, IdeError>(__TAURI_INVOKE("fs_probe", { path })),
+	fsProbe: (path: string) => typedError<FileProbe, IdeError_Serialize>(__TAURI_INVOKE("fs_probe", { path })),
 	/**  Up to `len` bytes from `offset` (capped per call), base64-encoded. */
-	fsReadRange: (path: string, offset: number, len: number) => typedError<ByteRange, IdeError>(__TAURI_INVOKE("fs_read_range", { path, offset, len })),
+	fsReadRange: (path: string, offset: number, len: number) => typedError<ByteRange, IdeError_Serialize>(__TAURI_INVOKE("fs_read_range", { path, offset, len })),
 	/**  An image file as a `data:` URL. */
-	fsReadImage: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("fs_read_image", { path })),
+	fsReadImage: (path: string) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("fs_read_image", { path })),
 	/**
 	 *  Creates an empty file; inside a project, honours the EditorConfig
 	 *  `charset` (writes the BOM for `utf-8-bom` / UTF-16).
 	 */
-	fsCreateFile: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file", { path })),
-	fsCreateFileBytes: (path: string, data: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
-	fsCreateDir: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_dir", { path })),
-	fsRename: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_rename", { from, to })),
+	fsCreateFile: (path: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("fs_create_file", { path })),
+	fsCreateFileBytes: (path: string, data: number[]) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
+	fsCreateDir: (path: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("fs_create_dir", { path })),
+	fsRename: (from: string, to: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("fs_rename", { from, to })),
 	/**
 	 *  Toggle Read-only Attribute: sets the writable bit (and the open document's
 	 *  state). Returns whether the file is read-only now.
 	 */
-	fsSetWritable: (path: string, writable: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("fs_set_writable", { path, writable })),
+	fsSetWritable: (path: string, writable: boolean) => typedError<boolean, IdeError_Serialize>(__TAURI_INVOKE("fs_set_writable", { path, writable })),
 	/**  Moving to the trash can take a while (large trees): kept off the main thread. */
-	fsDelete: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_delete", { path })),
-	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
-	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
-	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
+	fsDelete: (path: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("fs_delete", { path })),
+	fsCopy: (from: string, to: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("fs_copy", { from, to })),
+	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
+	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError_Serialize>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
 	/**
 	 *  Reads a text file without opening it as a document (previews, quick
 	 *  definition). Prefers the unsaved buffer when the file is open.
 	 */
-	fsReadText: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("fs_read_text", { path })),
+	fsReadText: (path: string) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("fs_read_text", { path })),
 	/**  Absolute paths on the clipboard, empty when it holds no file list. */
-	clipboardFileList: () => typedError<string[], IdeError>(__TAURI_INVOKE("clipboard_file_list")),
+	clipboardFileList: () => typedError<string[], IdeError_Serialize>(__TAURI_INVOKE("clipboard_file_list")),
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
 	clipboardHasFiles: () => __TAURI_INVOKE<boolean>("clipboard_has_files"),
 	/**
 	 *  Replaces the clipboard with `paths`, so Explorer can paste them. Best-effort:
 	 *  false when the clipboard stayed busy; the caller keeps working either way.
 	 */
-	clipboardSetFileList: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("clipboard_set_file_list", { paths })),
+	clipboardSetFileList: (paths: string[]) => typedError<boolean, IdeError_Serialize>(__TAURI_INVOKE("clipboard_set_file_list", { paths })),
 	/**
 	 *  Every installed family, sorted, each flagged monospaced or not. Read on
 	 *  first use (off the command threads), cached, and re-queried on `refresh`.
 	 */
-	systemFontFamilies: (refresh: boolean) => typedError<FontFamily[], IdeError>(__TAURI_INVOKE("system_font_families", { refresh })),
+	systemFontFamilies: (refresh: boolean) => typedError<FontFamily[], IdeError_Serialize>(__TAURI_INVOKE("system_font_families", { refresh })),
 	/**
 	 *  Opens a document. Async: reading and decoding a large file must not block
 	 *  the main thread (synchronous commands run on it).
 	 */
-	docOpen: (path: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open", { path })),
+	docOpen: (path: string) => typedError<DocumentInfo, IdeError_Serialize>(__TAURI_INVOKE("doc_open", { path })),
 	/**
 	 *  Opens a read-only virtual document (see `lsp_virtual_document`) as an
 	 *  editor buffer, so syntax features and language-server requests work in it.
 	 */
-	docOpenVirtual: (uri: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_virtual", { uri })),
-	docClose: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_close", { doc })),
+	docOpenVirtual: (uri: string) => typedError<DocumentInfo, IdeError_Serialize>(__TAURI_INVOKE("doc_open_virtual", { uri })),
+	docClose: (doc: DocId) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("doc_close", { doc })),
 	/**
 	 *  Applies a CodeMirror change set; returns the new version. Rejects with
 	 *  `outOfSync` when `base_version` is stale; the UI then calls `doc_snapshot`.
 	 */
-	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
-	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
-	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
-	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
-	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
+	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError_Serialize>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
+	docSave: (doc: DocId) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("doc_save", { doc })),
+	docSaveAll: () => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("doc_save_all")),
+	docSyncFromDisk: () => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("doc_sync_from_disk")),
+	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError_Serialize>(__TAURI_INVOKE("doc_snapshot", { doc })),
 	/**
 	 *  The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
 	 *  without opening it: previews of closed files.
 	 */
-	docUiMode: (path: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("doc_ui_mode", { path })),
+	docUiMode: (path: string) => typedError<string | null, IdeError_Serialize>(__TAURI_INVOKE("doc_ui_mode", { path })),
 	/**  "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label. */
-	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
-	docSetLineEnding: (doc: DocId, lineEnding: LineEnding) => typedError<null, IdeError>(__TAURI_INVOKE("doc_set_line_ending", { doc, lineEnding })),
+	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
+	docSetLineEnding: (doc: DocId, lineEnding: LineEnding) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("doc_set_line_ending", { doc, lineEnding })),
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
 	 *  visibility), tree-sitter otherwise.
 	 *  Tree-sitter answers come from the per-document tree cache (incremental
 	 *  re-parse); large documents get no syntax structure.
 	 */
-	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
-	docFolding: (doc: DocId) => typedError<FoldRange[], IdeError>(__TAURI_INVOKE("doc_folding", { doc })),
+	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError_Serialize>(__TAURI_INVOKE("doc_outline", { doc })),
+	docFolding: (doc: DocId) => typedError<FoldRange[], IdeError_Serialize>(__TAURI_INVOKE("doc_folding", { doc })),
 	/**
 	 *  Tree-sitter highlighting for languages the UI has no CodeMirror mode for;
 	 *  empty when the grammar has no highlights query or the document is large.
 	 */
-	docHighlights: (doc: DocId) => typedError<SyntaxHighlights, IdeError>(__TAURI_INVOKE("doc_highlights", { doc })),
+	docHighlights: (doc: DocId) => typedError<SyntaxHighlights, IdeError_Serialize>(__TAURI_INVOKE("doc_highlights", { doc })),
 	/**
 	 *  Extend Selection (⌥↑): syntax ranges around `offset`, innermost first.
 	 *  Large documents fall back to word / line / document ranges.
 	 */
-	docSelectionRanges: (doc: DocId, offset: number) => typedError<Range[], IdeError>(__TAURI_INVOKE("doc_selection_ranges", { doc, offset })),
-	jvmFilePresentations: (paths: string[]) => typedError<JvmFilePresentation[], IdeError>(__TAURI_INVOKE("jvm_file_presentations", { paths })),
+	docSelectionRanges: (doc: DocId, offset: number) => typedError<Range[], IdeError_Serialize>(__TAURI_INVOKE("doc_selection_ranges", { doc, offset })),
+	jvmFilePresentations: (paths: string[]) => typedError<JvmFilePresentation[], IdeError_Serialize>(__TAURI_INVOKE("jvm_file_presentations", { paths })),
 	/**
 	 *  What the structure service supports for a language (`tree`: every query,
 	 *  `locals`: scope analysis).
 	 */
-	syntaxSupport: (language: LanguageId) => typedError<StructureSupport, IdeError>(__TAURI_INVOKE("syntax_support", { language })),
+	syntaxSupport: (language: LanguageId) => typedError<StructureSupport, IdeError_Serialize>(__TAURI_INVOKE("syntax_support", { language })),
 	/**  The smallest named node covering `range`, with its ancestors (parent first). */
 	syntaxNodeAt: (doc: DocId, range: Range, request: number | null) => typedError<{
 	node: SyntaxNode,
 	/**  Parent first, the root last. */
 	ancestors: SyntaxNode[],
-} | null, IdeError>(__TAURI_INVOKE("syntax_node_at", { doc, range, request })),
+} | null, IdeError_Serialize>(__TAURI_INVOKE("syntax_node_at", { doc, range, request })),
 	/**
 	 *  The expression a selection denotes (exact or minimally enclosing), with its
 	 *  statement, block and caret candidates.
 	 */
-	syntaxExpressionAt: (doc: DocId, range: Range, request: number | null) => typedError<ExpressionAt, IdeError>(__TAURI_INVOKE("syntax_expression_at", { doc, range, request })),
+	syntaxExpressionAt: (doc: DocId, range: Range, request: number | null) => typedError<ExpressionAt, IdeError_Serialize>(__TAURI_INVOKE("syntax_expression_at", { doc, range, request })),
 	/**  `ERROR` / `MISSING` nodes (e.g. a missing `;`) in document order. */
-	syntaxErrors: (doc: DocId, request: number | null) => typedError<SyntaxErrors, IdeError>(__TAURI_INVOKE("syntax_errors", { doc, request })),
+	syntaxErrors: (doc: DocId, request: number | null) => typedError<SyntaxErrors, IdeError_Serialize>(__TAURI_INVOKE("syntax_errors", { doc, request })),
 	/**
 	 *  Scope analysis of the identifier at `pos`: its local definition and
 	 *  references, or why it is not a local.
 	 */
-	syntaxLocals: (doc: DocId, pos: Pos, request: number | null) => typedError<Locals, IdeError>(__TAURI_INVOKE("syntax_locals", { doc, pos, request })),
+	syntaxLocals: (doc: DocId, pos: Pos, request: number | null) => typedError<Locals, IdeError_Serialize>(__TAURI_INVOKE("syntax_locals", { doc, pos, request })),
 	/**  Identifier tokens spelled `name` in a document, excluding comments and strings. */
-	syntaxIdentifiers: (doc: DocId, name: string, request: number | null) => typedError<IdentifierOccurrence[], IdeError>(__TAURI_INVOKE("syntax_identifiers", { doc, name, request })),
+	syntaxIdentifiers: (doc: DocId, name: string, request: number | null) => typedError<IdentifierOccurrence[], IdeError_Serialize>(__TAURI_INVOKE("syntax_identifiers", { doc, name, request })),
 	/**
 	 *  [`syntax_identifiers`] over files (open buffers win over disk); files
 	 *  without occurrences or without a grammar are left out. Cancellable.
 	 */
-	syntaxIdentifiersInFiles: (paths: string[], name: string, request: RequestId) => typedError<FileIdentifiers[], IdeError>(__TAURI_INVOKE("syntax_identifiers_in_files", { paths, name, request })),
+	syntaxIdentifiersInFiles: (paths: string[], name: string, request: RequestId) => typedError<FileIdentifiers[], IdeError_Serialize>(__TAURI_INVOKE("syntax_identifiers_in_files", { paths, name, request })),
 	/**
 	 *  Extend Selection chain plus statement / declaration ranges at `pos`
 	 *  (Move Statement, Complete Statement for languages without a Lezer grammar).
 	 */
-	syntaxStructuralRanges: (doc: DocId, pos: Pos, request: number | null) => typedError<StructuralRanges, IdeError>(__TAURI_INVOKE("syntax_structural_ranges", { doc, pos, request })),
-	historyList: (path: string) => typedError<HistoryEntry[], IdeError>(__TAURI_INVOKE("history_list", { path })),
-	historyContent: (id: string) => typedError<string, IdeError>(__TAURI_INVOKE("history_content", { id })),
+	syntaxStructuralRanges: (doc: DocId, pos: Pos, request: number | null) => typedError<StructuralRanges, IdeError_Serialize>(__TAURI_INVOKE("syntax_structural_ranges", { doc, pos, request })),
+	historyList: (path: string) => typedError<HistoryEntry[], IdeError_Serialize>(__TAURI_INVOKE("history_list", { path })),
+	historyContent: (id: string) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("history_content", { id })),
 	/**  Show History on a folder: snapshots of the files under it (deleted ones included) and labels. */
-	historyListDir: (path: string) => typedError<DirectoryHistory, IdeError>(__TAURI_INVOKE("history_list_dir", { path })),
+	historyListDir: (path: string) => typedError<DirectoryHistory, IdeError_Serialize>(__TAURI_INVOKE("history_list_dir", { path })),
 	/**  Local History › Put Label…: a named point in the history of every file. */
-	historyPutLabel: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("history_put_label", { label })),
+	historyPutLabel: (label: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("history_put_label", { label })),
 	/**
 	 *  Revert to a snapshot: writes its content to `path` (re-creating a deleted
 	 *  file and its folders); an open editor updates in place.
 	 */
-	historyRestore: (path: string, id: string) => typedError<null, IdeError>(__TAURI_INVOKE("history_restore", { path, id })),
+	historyRestore: (path: string, id: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("history_restore", { path, id })),
 	/**  `workspace/willRenameFiles` on every interested server (before the move). Cancellable. */
-	refactorFileMoveEdits: (request: RequestId, moves: FileMove[]) => typedError<FileRenameEdits, IdeError>(__TAURI_INVOKE("refactor_file_move_edits", { request, moves })),
+	refactorFileMoveEdits: (request: RequestId, moves: FileMove[]) => typedError<FileRenameEdits, IdeError_Serialize>(__TAURI_INVOKE("refactor_file_move_edits", { request, moves })),
 	/**
 	 *  "Search in comments and strings": textual occurrences of the moved files'
 	 *  names, qualified names and paths (before the move). Cancellable.
 	 */
-	refactorFileMoveTextEdits: (request: RequestId, moves: FileMove[]) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("refactor_file_move_text_edits", { request, moves })),
+	refactorFileMoveTextEdits: (request: RequestId, moves: FileMove[]) => typedError<WorkspaceEdit, IdeError_Serialize>(__TAURI_INVOKE("refactor_file_move_text_edits", { request, moves })),
 	/**
 	 *  Applies `edit` (from [`refactor_file_move_edits`], possibly empty), moves the
 	 *  files and notifies the servers. Returns the id for [`refactor_undo_file_move`].
 	 */
-	refactorMoveFiles: (moves: FileMove[], edit: WorkspaceEdit, label: string) => typedError<number, IdeError>(__TAURI_INVOKE("refactor_move_files", { moves, edit, label })),
+	refactorMoveFiles: (moves: FileMove[], edit: WorkspaceEdit, label: string) => typedError<number, IdeError_Serialize>(__TAURI_INVOKE("refactor_move_files", { moves, edit, label })),
 	/**  Undoes a file move: moves back and reverts the reference updates. */
-	refactorUndoFileMove: (id: number) => typedError<UndoOutcome, IdeError>(__TAURI_INVOKE("refactor_undo_file_move", { id })),
+	refactorUndoFileMove: (id: number) => typedError<UndoOutcome, IdeError_Serialize>(__TAURI_INVOKE("refactor_undo_file_move", { id })),
 	/**  Whether the file move `id` can still be undone. */
-	refactorCanUndoFileMove: (id: number) => typedError<boolean, IdeError>(__TAURI_INVOKE("refactor_can_undo_file_move", { id })),
+	refactorCanUndoFileMove: (id: number) => typedError<boolean, IdeError_Serialize>(__TAURI_INVOKE("refactor_can_undo_file_move", { id })),
 	/**  Schedules the invalidation for the next start (`None` cancels a pending one). */
 	cachesScheduleInvalidation: (options: {
 	/**  Local History of every project. */
@@ -306,40 +306,40 @@ export const commands = {
 	languageServers?: boolean,
 	/**  Build tool sync results (Maven / Gradle) and other per-project caches. */
 	buildCaches?: boolean,
-} | null) => typedError<null, IdeError>(__TAURI_INVOKE("caches_schedule_invalidation", { options })),
+} | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("caches_schedule_invalidation", { options })),
 	/**  Quits through every window's unsaved-changes check, then starts again. */
 	appRestart: () => __TAURI_INVOKE<void>("app_restart"),
-	indexStatus: () => typedError<IndexStatus, IdeError>(__TAURI_INVOKE("index_status")),
-	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
-	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
-	markRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("mark_recent", { path })),
+	indexStatus: () => typedError<IndexStatus, IdeError_Serialize>(__TAURI_INVOKE("index_status")),
+	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError_Serialize>(__TAURI_INVOKE("find_files", { query, limit })),
+	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError_Serialize>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
+	markRecent: (path: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("mark_recent", { path })),
 	/**  Recently opened files, most recent first (⌘E). */
-	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
-	removeRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent", { path })),
+	recentFiles: () => typedError<IpcPath[], IdeError_Serialize>(__TAURI_INVOKE("recent_files")),
+	removeRecent: (path: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("remove_recent", { path })),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
 	webGoto: (doc: DocId, pos: Pos) => typedError<{
 	reference: WebReference,
 	targets: Location[],
-} | null, IdeError>(__TAURI_INVOKE("web_goto", { doc, pos })),
+} | null, IdeError_Serialize>(__TAURI_INVOKE("web_goto", { doc, pos })),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
-	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
+	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError_Serialize>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
-	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
+	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError_Serialize>(__TAURI_INVOKE("path_completions", { from, prefix })),
 	/**  Paths in an HTML document or stylesheet that name no existing file. */
-	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError>(__TAURI_INVOKE("web_unresolved_references", { doc })),
+	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError_Serialize>(__TAURI_INVOKE("web_unresolved_references", { doc })),
 	/**
 	 *  Misspelt words in the comments, string literals and declared names of
 	 *  `doc` that `scope` includes (all of its text for prose). Cancel with
 	 *  `cancel_request(request)`.
 	 */
-	spellCheck: (doc: DocId, scope: SpellScope, request: RequestId) => typedError<Typo[], IdeError>(__TAURI_INVOKE("spell_check", { doc, scope, request })),
+	spellCheck: (doc: DocId, scope: SpellScope, request: RequestId) => typedError<Typo[], IdeError_Serialize>(__TAURI_INVOKE("spell_check", { doc, scope, request })),
 	/**  Replacements for a misspelt `word`, best first (Typo › Change to…). */
-	spellSuggest: (word: string) => typedError<string[], IdeError>(__TAURI_INVOKE("spell_suggest", { word })),
+	spellSuggest: (word: string) => typedError<string[], IdeError_Serialize>(__TAURI_INVOKE("spell_suggest", { word })),
 	/**
 	 *  Find in Files. Results stream through `on_event`; ends with `Done`.
 	 *  Cancel with `cancel_request(request)`.
 	 */
-	searchStart: (request: RequestId, query: SearchQuery, onEvent: Channel<SearchEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("search_start", { request, query, onEvent })),
+	searchStart: (request: RequestId, query: SearchQuery, onEvent: Channel<SearchEvent>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("search_start", { request, query, onEvent })),
 	/**
 	 *  Replace in Files. Runs off the command thread; progress streams through
 	 *  `on_event` and ends with `Done`. Cancel with `cancel_request(request)`.
@@ -349,238 +349,238 @@ export const commands = {
 	 *  editor buffers are replaced in place and left unsaved; files that were not
 	 *  open are opened transiently, saved and closed.
 	 */
-	replaceInFiles: (request: RequestId, query: SearchQuery, replacement: string, preserveCase: boolean, targets: ReplaceTarget[], onEvent: Channel<ReplaceEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("replace_in_files", { request, query, replacement, preserveCase, targets, onEvent })),
+	replaceInFiles: (request: RequestId, query: SearchQuery, replacement: string, preserveCase: boolean, targets: ReplaceTarget[], onEvent: Channel<ReplaceEvent>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("replace_in_files", { request, query, replacement, preserveCase, targets, onEvent })),
 	/**  Before / after text of `path` for Replace › Preview (unsaved buffer included). */
-	replacePreview: (query: SearchQuery, replacement: string, preserveCase: boolean, path: string, only: Pos[] | null) => typedError<ReplacePreview, IdeError>(__TAURI_INVOKE("replace_preview", { query, replacement, preserveCase, path, only })),
+	replacePreview: (query: SearchQuery, replacement: string, preserveCase: boolean, path: string, only: Pos[] | null) => typedError<ReplacePreview, IdeError_Serialize>(__TAURI_INVOKE("replace_preview", { query, replacement, preserveCase, path, only })),
 	/**  Validates a query (e.g. regex syntax) while the user types. */
-	searchValidate: (query: SearchQuery) => typedError<null, IdeError>(__TAURI_INVOKE("search_validate", { query })),
-	lspCompletion: (request: RequestId, doc: DocId, pos: Pos, trigger: string | null) => typedError<CompletionList, IdeError>(__TAURI_INVOKE("lsp_completion", { request, doc, pos, trigger })),
+	searchValidate: (query: SearchQuery) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("search_validate", { query })),
+	lspCompletion: (request: RequestId, doc: DocId, pos: Pos, trigger: string | null) => typedError<CompletionList, IdeError_Serialize>(__TAURI_INVOKE("lsp_completion", { request, doc, pos, trigger })),
 	/**  Inline (ghost text) suggestions at `pos`; `automatic` when triggered by typing. */
-	lspInlineCompletion: (request: RequestId, doc: DocId, pos: Pos, automatic: boolean) => typedError<InlineCompletionItem[], IdeError>(__TAURI_INVOKE("lsp_inline_completion", { request, doc, pos, automatic })),
-	lspResolveCompletion: (doc: DocId, item: CompletionItem) => typedError<CompletionItem, IdeError>(__TAURI_INVOKE("lsp_resolve_completion", { doc, item })),
+	lspInlineCompletion: (request: RequestId, doc: DocId, pos: Pos, automatic: boolean) => typedError<InlineCompletionItem[], IdeError_Serialize>(__TAURI_INVOKE("lsp_inline_completion", { request, doc, pos, automatic })),
+	lspResolveCompletion: (doc: DocId, item: CompletionItem) => typedError<CompletionItem, IdeError_Serialize>(__TAURI_INVOKE("lsp_resolve_completion", { doc, item })),
 	lspHover: (request: RequestId, doc: DocId, pos: Pos) => typedError<{
 	contents: Markup,
 	range: Range | null,
-} | null, IdeError>(__TAURI_INVOKE("lsp_hover", { request, doc, pos })),
+} | null, IdeError_Serialize>(__TAURI_INVOKE("lsp_hover", { request, doc, pos })),
 	lspSignatureHelp: (doc: DocId, pos: Pos) => typedError<{
 	signatures: Signature[],
 	activeSignature: number,
 	activeParameter: number,
-} | null, IdeError>(__TAURI_INVOKE("lsp_signature_help", { doc, pos })),
-	lspGoto: (doc: DocId, pos: Pos, kind: GotoKind) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_goto", { doc, pos, kind })),
+} | null, IdeError_Serialize>(__TAURI_INVOKE("lsp_signature_help", { doc, pos })),
+	lspGoto: (doc: DocId, pos: Pos, kind: GotoKind) => typedError<Location[], IdeError_Serialize>(__TAURI_INVOKE("lsp_goto", { doc, pos, kind })),
 	/**
 	 *  Implementations of the symbols at `positions`, one list per position (the
 	 *  editor's "is implemented / overridden" gutter markers). Cancel with
 	 *  `cancel_request(request)`.
 	 */
-	lspImplementations: (request: RequestId, doc: DocId, positions: Pos[]) => typedError<Location[][], IdeError>(__TAURI_INVOKE("lsp_implementations", { request, doc, positions })),
+	lspImplementations: (request: RequestId, doc: DocId, positions: Pos[]) => typedError<Location[][], IdeError_Serialize>(__TAURI_INVOKE("lsp_implementations", { request, doc, positions })),
 	/**
 	 *  Contents of a read-only language-server document, including JDT library
 	 *  classes and disk class files. Cached per project.
 	 */
-	lspVirtualDocument: (uri: string) => typedError<VirtualDocument, IdeError>(__TAURI_INVOKE("lsp_virtual_document", { uri })),
-	lspResolveClassFile: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("lsp_resolve_class_file", { path })),
+	lspVirtualDocument: (uri: string) => typedError<VirtualDocument, IdeError_Serialize>(__TAURI_INVOKE("lsp_virtual_document", { uri })),
+	lspResolveClassFile: (path: string) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("lsp_resolve_class_file", { path })),
 	/**
 	 *  References of the symbol at `pos`. `project_wide` also searches project files
 	 *  outside the language server's analysis scope; bulk scans over many symbols
 	 *  leave it off. Cancel with `cancel_request(request)`.
 	 */
-	lspReferences: (request: RequestId, doc: DocId, pos: Pos, includeDeclaration: boolean, projectWide: boolean) => typedError<References, IdeError>(__TAURI_INVOKE("lsp_references", { request, doc, pos, includeDeclaration, projectWide })),
-	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
-	lspWorkspaceSymbols: (request: RequestId, query: string) => typedError<WorkspaceSymbol[], IdeError>(__TAURI_INVOKE("lsp_workspace_symbols", { request, query })),
-	lspCodeActions: (doc: DocId, range: Range, only: string[]) => typedError<CodeAction[], IdeError>(__TAURI_INVOKE("lsp_code_actions", { doc, range, only })),
+	lspReferences: (request: RequestId, doc: DocId, pos: Pos, includeDeclaration: boolean, projectWide: boolean) => typedError<References, IdeError_Serialize>(__TAURI_INVOKE("lsp_references", { request, doc, pos, includeDeclaration, projectWide })),
+	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError_Serialize>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
+	lspWorkspaceSymbols: (request: RequestId, query: string) => typedError<WorkspaceSymbol[], IdeError_Serialize>(__TAURI_INVOKE("lsp_workspace_symbols", { request, query })),
+	lspCodeActions: (doc: DocId, range: Range, only: string[]) => typedError<CodeAction[], IdeError_Serialize>(__TAURI_INVOKE("lsp_code_actions", { doc, range, only })),
 	/**  Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability). */
-	lspCodeActionQuery: (request: RequestId, doc: DocId, range: Range, only: string[]) => typedError<CodeActionQuery, IdeError>(__TAURI_INVOKE("lsp_code_action_query", { request, doc, range, only })),
+	lspCodeActionQuery: (request: RequestId, doc: DocId, range: Range, only: string[]) => typedError<CodeActionQuery, IdeError_Serialize>(__TAURI_INVOKE("lsp_code_action_query", { request, doc, range, only })),
 	/**  Resolves a code action's edit without applying it (intention preview). */
-	lspResolveCodeAction: (doc: DocId, action: CodeAction) => typedError<CodeAction, IdeError>(__TAURI_INVOKE("lsp_resolve_code_action", { doc, action })),
+	lspResolveCodeAction: (doc: DocId, action: CodeAction) => typedError<CodeAction, IdeError_Serialize>(__TAURI_INVOKE("lsp_resolve_code_action", { doc, action })),
 	/**  Resolves (if needed), applies the edit, then runs the command of a code action. */
-	lspApplyCodeAction: (doc: DocId, action: CodeAction) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_apply_code_action", { doc, action })),
+	lspApplyCodeAction: (doc: DocId, action: CodeAction) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("lsp_apply_code_action", { doc, action })),
 	lspPrepareRename: (doc: DocId, pos: Pos) => typedError<{
 	start: Pos,
 	end: Pos,
-} | null, IdeError>(__TAURI_INVOKE("lsp_prepare_rename", { doc, pos })),
+} | null, IdeError_Serialize>(__TAURI_INVOKE("lsp_prepare_rename", { doc, pos })),
 	/**  Computes the rename edit without applying it, so the UI can preview conflicts. */
-	lspRename: (request: RequestId, doc: DocId, pos: Pos, newName: string) => typedError<Renamed, IdeError>(__TAURI_INVOKE("lsp_rename", { request, doc, pos, newName })),
+	lspRename: (request: RequestId, doc: DocId, pos: Pos, newName: string) => typedError<Renamed, IdeError_Serialize>(__TAURI_INVOKE("lsp_rename", { request, doc, pos, newName })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
-} | null, options: FormatOptions) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("lsp_format", { doc, range, options })),
-	lspInlayHints: (doc: DocId, range: Range) => typedError<InlayHint[], IdeError>(__TAURI_INVOKE("lsp_inlay_hints", { doc, range })),
+} | null, options: FormatOptions) => typedError<TextEdit[], IdeError_Serialize>(__TAURI_INVOKE("lsp_format", { doc, range, options })),
+	lspInlayHints: (doc: DocId, range: Range) => typedError<InlayHint[], IdeError_Serialize>(__TAURI_INVOKE("lsp_inlay_hints", { doc, range })),
 	lspSemanticTokens: (doc: DocId) => typedError<{
 	/**  Flattened `[line, col, len, typeIdx, modifierBits]` quintuples (absolute). */
 	data: number[],
 	tokenTypes: string[],
 	tokenModifiers: string[],
-} | null, IdeError>(__TAURI_INVOKE("lsp_semantic_tokens", { doc })),
-	lspCodeLens: (doc: DocId) => typedError<CodeLens[], IdeError>(__TAURI_INVOKE("lsp_code_lens", { doc })),
+} | null, IdeError_Serialize>(__TAURI_INVOKE("lsp_semantic_tokens", { doc })),
+	lspCodeLens: (doc: DocId) => typedError<CodeLens[], IdeError_Serialize>(__TAURI_INVOKE("lsp_code_lens", { doc })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
-	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
-	lspCallHierarchy: (request: RequestId, doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<CallHierarchy, IdeError>(__TAURI_INVOKE("lsp_call_hierarchy", { request, doc, pos, direction })),
-	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
-	lspServers: () => typedError<ServerInfo[], IdeError>(__TAURI_INVOKE("lsp_servers")),
+	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError_Serialize>(__TAURI_INVOKE("lsp_document_links", { doc })),
+	lspCallHierarchy: (request: RequestId, doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<CallHierarchy, IdeError_Serialize>(__TAURI_INVOKE("lsp_call_hierarchy", { request, doc, pos, direction })),
+	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError_Serialize>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
+	lspServers: () => typedError<ServerInfo[], IdeError_Serialize>(__TAURI_INVOKE("lsp_servers")),
 	/**  Re-emits the language servers' current diagnostics (the UI loaded after they arrived). */
-	lspResendDiagnostics: () => typedError<null, IdeError>(__TAURI_INVOKE("lsp_resend_diagnostics")),
-	lspRestart: (server: ServerId) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_restart", { server })),
+	lspResendDiagnostics: () => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("lsp_resend_diagnostics")),
+	lspRestart: (server: ServerId) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("lsp_restart", { server })),
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
-	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
+	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	/**
 	 *  Runs a server command (`workspace/executeCommand`), e.g. a completion item's
 	 *  follow-up command. Edits the server requests arrive via `workspace/applyEdit`.
 	 */
-	lspExecuteCommand: (doc: DocId, command: Command) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_execute_command", { doc, command })),
+	lspExecuteCommand: (doc: DocId, command: Command) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("lsp_execute_command", { doc, command })),
 	lspResolveCommand: (request: RequestId, doc: DocId, server: ServerId, command: Command, answers: FormAnswer[]) => typedError<{
 	command: Command,
 	formFields: FormField[],
 	formAnswers: FormAnswer[],
-} | null, IdeError>(__TAURI_INVOKE("lsp_resolve_command", { request, doc, server, command, answers })),
-	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
+} | null, IdeError_Serialize>(__TAURI_INVOKE("lsp_resolve_command", { request, doc, server, command, answers })),
+	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError_Serialize>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**  Changes of every repository of the project. */
-	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
+	vcsStatus: () => typedError<FileStatus[], IdeError_Serialize>(__TAURI_INVOKE("vcs_status")),
 	/**  The project's repositories, the primary one first. */
-	vcsRoots: () => typedError<VcsRoot[], IdeError>(__TAURI_INVOKE("vcs_roots")),
-	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
+	vcsRoots: () => typedError<VcsRoot[], IdeError_Serialize>(__TAURI_INVOKE("vcs_roots")),
+	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo, IdeError_Serialize>(__TAURI_INVOKE("vcs_branch_info", { repo })),
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
-	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
-	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
-	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
-	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
-	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
+	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError_Serialize>(__TAURI_INVOKE("vcs_line_hunks", { path })),
+	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError_Serialize>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
+	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError_Serialize>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
+	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError_Serialize>(__TAURI_INVOKE("vcs_log", { repo, query })),
+	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError_Serialize>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
 	/**  Combined changes of several commits, `commits` oldest first. */
-	vcsCommitsChanges: (repo: string | null, commits: string[]) => typedError<RevisionChange[], IdeError>(__TAURI_INVOKE("vcs_commits_changes", { repo, commits })),
-	vcsBranches: (repo: string | null) => typedError<Branch[], IdeError>(__TAURI_INVOKE("vcs_branches", { repo })),
-	vcsStashes: (repo: string | null) => typedError<Stash[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
-	vcsStage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage", { paths })),
-	vcsAddToIgnore: (paths: string[], destination: IgnoreDestination) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_add_to_ignore", { paths, destination })),
-	vcsUnstage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_unstage", { paths })),
-	vcsStagePatch: (patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_patch", { patch })),
-	vcsDiscard: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_discard", { paths })),
-	vcsCommit: (repo: string | null, message: string, options: CommitOptions) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_commit", { repo, message, options })),
+	vcsCommitsChanges: (repo: string | null, commits: string[]) => typedError<RevisionChange[], IdeError_Serialize>(__TAURI_INVOKE("vcs_commits_changes", { repo, commits })),
+	vcsBranches: (repo: string | null) => typedError<Branch[], IdeError_Serialize>(__TAURI_INVOKE("vcs_branches", { repo })),
+	vcsStashes: (repo: string | null) => typedError<Stash[], IdeError_Serialize>(__TAURI_INVOKE("vcs_stashes", { repo })),
+	vcsStage: (paths: string[]) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_stage", { paths })),
+	vcsAddToIgnore: (paths: string[], destination: IgnoreDestination) => typedError<string[], IdeError_Serialize>(__TAURI_INVOKE("vcs_add_to_ignore", { paths, destination })),
+	vcsUnstage: (paths: string[]) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_unstage", { paths })),
+	vcsStagePatch: (patch: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_stage_patch", { patch })),
+	vcsDiscard: (paths: string[]) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_discard", { paths })),
+	vcsCommit: (repo: string | null, message: string, options: CommitOptions) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("vcs_commit", { repo, message, options })),
 	vcsCheckout: (repo: string | null, branch: string, create: boolean, options: {
 	mode?: CheckoutMode,
 	/**  Required when checking out a remote branch whose local namesake is ahead of it. */
 	diverged?: DivergedLocal | null,
-} | null) => typedError<CheckoutOutcome, IdeError>(__TAURI_INVOKE("vcs_checkout", { repo, branch, create, options })),
-	vcsDeleteBranch: (repo: string | null, branch: string) => typedError<DeletedBranch, IdeError>(__TAURI_INVOKE("vcs_delete_branch", { repo, branch })),
+} | null) => typedError<CheckoutOutcome, IdeError_Serialize>(__TAURI_INVOKE("vcs_checkout", { repo, branch, create, options })),
+	vcsDeleteBranch: (repo: string | null, branch: string) => typedError<DeletedBranch, IdeError_Serialize>(__TAURI_INVOKE("vcs_delete_branch", { repo, branch })),
 	/**  "Restore" of the branch-deleted notification. */
-	vcsRestoreBranch: (repo: string | null, deleted: DeletedBranch) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_branch", { repo, deleted })),
+	vcsRestoreBranch: (repo: string | null, deleted: DeletedBranch) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_restore_branch", { repo, deleted })),
 	/**  New Branch: creates `name` at `start` (HEAD when absent), optionally checking it out. */
-	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout })),
+	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout })),
 	/**
 	 *  Undo Commit: moves HEAD back to the commit's parent, keeping its changes staged.
 	 *  Returns the undone commit's message.
 	 */
-	vcsUndoCommit: (repo: string | null, commit: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_undo_commit", { repo, commit })),
-	vcsRenameBranch: (repo: string | null, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to })),
-	vcsMerge: (repo: string | null, branch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch })),
-	vcsRebase: (repo: string | null, onto: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto })),
-	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex })),
-	vcsStashApply: (repo: string | null, index: number, pop: boolean, reinstateIndex: boolean, branch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_apply", { repo, index, pop, reinstateIndex, branch })),
-	vcsStashDrop: (repo: string | null, index: number) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_drop", { repo, index })),
+	vcsUndoCommit: (repo: string | null, commit: string) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("vcs_undo_commit", { repo, commit })),
+	vcsRenameBranch: (repo: string | null, from: string, to: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to })),
+	vcsMerge: (repo: string | null, branch: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_merge", { repo, branch })),
+	vcsRebase: (repo: string | null, onto: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_rebase", { repo, onto })),
+	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex })),
+	vcsStashApply: (repo: string | null, index: number, pop: boolean, reinstateIndex: boolean, branch: string | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_stash_apply", { repo, index, pop, reinstateIndex, branch })),
+	vcsStashDrop: (repo: string | null, index: number) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_stash_drop", { repo, index })),
 	/**  Network operation; progress lines stream through `on_output`. Cancellable. */
-	vcsRemote: (repo: string | null, request: RequestId, op: RemoteOp, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_remote", { repo, request, op, onOutput })),
+	vcsRemote: (repo: string | null, request: RequestId, op: RemoteOp, onOutput: Channel<string>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_remote", { repo, request, op, onOutput })),
 	/**  The user's side is `ours` (sides swapped during a rebase, as in IDEA). */
-	vcsConflictVersions: (path: string) => typedError<MergeVersions, IdeError>(__TAURI_INVOKE("vcs_conflict_versions", { path })),
-	vcsDiffText: (path: string, staged: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_diff_text", { path, staged })),
+	vcsConflictVersions: (path: string) => typedError<MergeVersions, IdeError_Serialize>(__TAURI_INVOKE("vcs_conflict_versions", { path })),
+	vcsDiffText: (path: string, staged: boolean) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("vcs_diff_text", { path, staged })),
 	/**  Line hunks between two arbitrary texts (diff viewer, commit dialog). */
 	vcsDiffHunks: (oldText: string, newText: string) => __TAURI_INVOKE<LineHunk[]>("vcs_diff_hunks", { oldText, newText }),
 	/**
 	 *  Stages only the selected hunks of a file's working-tree changes.
 	 *  Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
 	 */
-	vcsStageHunks: (path: string, hunks: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_hunks", { path, hunks })),
+	vcsStageHunks: (path: string, hunks: number[]) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_stage_hunks", { path, hunks })),
 	/**  Clones a repository (Get from VCS). Works without an open project. */
-	vcsClone: (request: RequestId, url: string, dest: string, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, onOutput })),
+	vcsClone: (request: RequestId, url: string, dest: string, onOutput: Channel<string>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_clone", { request, url, dest, onOutput })),
 	/**  `git init` in `dir` (File › New Project… "Create Git repository"). */
-	vcsInit: (dir: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_init", { dir })),
+	vcsInit: (dir: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_init", { dir })),
 	/**
 	 *  Settings › Git › Test: runs `git --version` on `path`, or on the auto-detected
 	 *  executable when `path` is empty.
 	 */
-	vcsGitVersion: (path: string) => typedError<GitExecutableInfo, IdeError>(__TAURI_INVOKE("vcs_git_version", { path })),
+	vcsGitVersion: (path: string) => typedError<GitExecutableInfo, IdeError_Serialize>(__TAURI_INVOKE("vcs_git_version", { path })),
 	/**  The auto-detected git executable (shown as the field's placeholder). */
 	vcsDetectedGit: () => __TAURI_INVOKE<string | null>("vcs_detected_git"),
 	/**  `git config --get <key>` in the project repository; `None` when unset. */
-	vcsConfigGet: (repo: string | null, key: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_config_get", { repo, key })),
+	vcsConfigGet: (repo: string | null, key: string) => typedError<string | null, IdeError_Serialize>(__TAURI_INVOKE("vcs_config_get", { repo, key })),
 	/**
 	 *  Local history operation that may take a while (hooks, large checkouts); git's
 	 *  output streams through `on_output`. Cancellable.
 	 */
-	vcsOperation: (repo: string | null, request: RequestId, op: GitOperation, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_operation", { repo, request, op, onOutput })),
-	vcsCreateTag: (repo: string | null, name: string, commit: string, message: string | null, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_tag", { repo, name, commit, message, force })),
-	vcsTags: (repo: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_tags", { repo })),
+	vcsOperation: (repo: string | null, request: RequestId, op: GitOperation, onOutput: Channel<string>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_operation", { repo, request, op, onOutput })),
+	vcsCreateTag: (repo: string | null, name: string, commit: string, message: string | null, force: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_create_tag", { repo, name, commit, message, force })),
+	vcsTags: (repo: string | null) => typedError<string[], IdeError_Serialize>(__TAURI_INVOKE("vcs_tags", { repo })),
 	/**  Merge dialog: merges `branches` into the current branch. */
-	vcsMergeWith: (repo: string | null, branches: string[], options: MergeOptions) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge_with", { repo, branches, options })),
+	vcsMergeWith: (repo: string | null, branches: string[], options: MergeOptions) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_merge_with", { repo, branches, options })),
 	/**  Rebase dialog: rebases the current branch onto `upstream` (or `--onto`). */
-	vcsRebaseWith: (repo: string | null, upstream: string, options: RebaseOptions) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase_with", { repo, upstream, options })),
-	vcsRemotes: (repo: string | null) => typedError<Remote[], IdeError>(__TAURI_INVOKE("vcs_remotes", { repo })),
-	vcsEditRemote: (repo: string | null, edit: RemoteEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_edit_remote", { repo, edit })),
-	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
-	vcsAddWorktree: (repo: string | null, path: string, commitish: string, newBranch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_add_worktree", { repo, path, commitish, newBranch })),
-	vcsRemoveWorktree: (repo: string | null, path: string, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_remove_worktree", { repo, path, force })),
+	vcsRebaseWith: (repo: string | null, upstream: string, options: RebaseOptions) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_rebase_with", { repo, upstream, options })),
+	vcsRemotes: (repo: string | null) => typedError<Remote[], IdeError_Serialize>(__TAURI_INVOKE("vcs_remotes", { repo })),
+	vcsEditRemote: (repo: string | null, edit: RemoteEdit) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_edit_remote", { repo, edit })),
+	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError_Serialize>(__TAURI_INVOKE("vcs_worktrees", { repo })),
+	vcsAddWorktree: (repo: string | null, path: string, commitish: string, newBranch: string | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_add_worktree", { repo, path, commitish, newBranch })),
+	vcsRemoveWorktree: (repo: string | null, path: string, force: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_remove_worktree", { repo, path, force })),
 	/**  Compare with Local: tracked files that differ between `rev` and the working tree. */
-	vcsDiffWithWorktree: (repo: string | null, rev: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_with_worktree", { repo, rev })),
-	vcsCompareScope: (paths: string[]) => typedError<CompareScope, IdeError>(__TAURI_INVOKE("vcs_compare_scope", { paths })),
-	vcsComparePaths: (paths: string[], revision: string, repositories: string[] | null, request: RequestId) => typedError<CompareResult, IdeError>(__TAURI_INVOKE("vcs_compare_paths", { paths, revision, repositories, request })),
+	vcsDiffWithWorktree: (repo: string | null, rev: string) => typedError<ChangedFile[], IdeError_Serialize>(__TAURI_INVOKE("vcs_diff_with_worktree", { repo, rev })),
+	vcsCompareScope: (paths: string[]) => typedError<CompareScope, IdeError_Serialize>(__TAURI_INVOKE("vcs_compare_scope", { paths })),
+	vcsComparePaths: (paths: string[], revision: string, repositories: string[] | null, request: RequestId) => typedError<CompareResult, IdeError_Serialize>(__TAURI_INVOKE("vcs_compare_paths", { paths, revision, repositories, request })),
 	/**  Files that differ between two revisions (the "N files updated" of Update Project). */
-	vcsDiffRevisions: (repo: string | null, from: string, to: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_revisions", { repo, from, to })),
+	vcsDiffRevisions: (repo: string | null, from: string, to: string) => typedError<ChangedFile[], IdeError_Serialize>(__TAURI_INVOKE("vcs_diff_revisions", { repo, from, to })),
 	/**  The best common ancestor of `a` and `b` (`git merge-base`), if any. */
-	vcsMergeBase: (repo: string | null, a: string, b: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_merge_base", { repo, a, b })),
-	vcsCreatePatch: (repo: string | null, source: PatchSource) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_create_patch", { repo, source })),
-	vcsPatchPreview: (repo: string | null, patch: string) => typedError<PatchFile[], IdeError>(__TAURI_INVOKE("vcs_patch_preview", { repo, patch })),
-	vcsApplyPatch: (repo: string | null, patch: string) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_patch", { repo, patch })),
+	vcsMergeBase: (repo: string | null, a: string, b: string) => typedError<string | null, IdeError_Serialize>(__TAURI_INVOKE("vcs_merge_base", { repo, a, b })),
+	vcsCreatePatch: (repo: string | null, source: PatchSource) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("vcs_create_patch", { repo, source })),
+	vcsPatchPreview: (repo: string | null, patch: string) => typedError<PatchFile[], IdeError_Serialize>(__TAURI_INVOKE("vcs_patch_preview", { repo, patch })),
+	vcsApplyPatch: (repo: string | null, patch: string) => typedError<ApplyOutcome, IdeError_Serialize>(__TAURI_INVOKE("vcs_apply_patch", { repo, patch })),
 	/**  Shelve Changes: saves the changes of `paths` as a patch on the shelf and reverts them. */
-	vcsShelve: (name: string, paths: string[]) => typedError<ShelvedChangeList, IdeError>(__TAURI_INVOKE("vcs_shelve", { name, paths })),
-	vcsShelves: () => typedError<ShelvedChangeList[], IdeError>(__TAURI_INVOKE("vcs_shelves")),
+	vcsShelve: (name: string, paths: string[]) => typedError<ShelvedChangeList, IdeError_Serialize>(__TAURI_INVOKE("vcs_shelve", { name, paths })),
+	vcsShelves: () => typedError<ShelvedChangeList[], IdeError_Serialize>(__TAURI_INVOKE("vcs_shelves")),
 	/**
 	 *  Unshelve: applies the shelved patch (3-way merging; conflicts are left for the
 	 *  merge UI); with `remove`, deletes it from the shelf.
 	 */
-	vcsUnshelve: (id: string, remove: boolean, path: string | null) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_unshelve", { id, remove, path })),
-	vcsShelfDelete: (id: string, path: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_delete", { id, path })),
-	vcsShelfRename: (id: string, name: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_rename", { id, name })),
-	vcsShelfPatch: (id: string, path: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id, path })),
-	vcsShelfDiff: (id: string) => typedError<ShelfDiffFile[], IdeError>(__TAURI_INVOKE("vcs_shelf_diff", { id })),
-	vcsShelfImport: (name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { name, patch })),
-	vcsChangelistsLoad: () => typedError<ChangelistState, IdeError>(__TAURI_INVOKE("vcs_changelists_load")),
-	vcsChangelistsSave: (changelists: ChangelistState) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_changelists_save", { changelists })),
+	vcsUnshelve: (id: string, remove: boolean, path: string | null) => typedError<ApplyOutcome, IdeError_Serialize>(__TAURI_INVOKE("vcs_unshelve", { id, remove, path })),
+	vcsShelfDelete: (id: string, path: string | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_shelf_delete", { id, path })),
+	vcsShelfRename: (id: string, name: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_shelf_rename", { id, name })),
+	vcsShelfPatch: (id: string, path: string | null) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("vcs_shelf_patch", { id, path })),
+	vcsShelfDiff: (id: string) => typedError<ShelfDiffFile[], IdeError_Serialize>(__TAURI_INVOKE("vcs_shelf_diff", { id })),
+	vcsShelfImport: (name: string, patch: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_shelf_import", { name, patch })),
+	vcsChangelistsLoad: () => typedError<ChangelistState, IdeError_Serialize>(__TAURI_INVOKE("vcs_changelists_load")),
+	vcsChangelistsSave: (changelists: ChangelistState) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_changelists_save", { changelists })),
 	/**  Create Patch › Save to file. */
-	vcsWritePatch: (path: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch })),
+	vcsWritePatch: (path: string, patch: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("vcs_write_patch", { path, patch })),
 	/**
 	 *  Async to stay off the main thread: forking the IDE (its whole address space)
 	 *  to start the shell takes tens of milliseconds, a frozen UI if run there.
 	 */
-	termSpawn: (options: TerminalOptions, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("term_spawn", { options, onOutput })),
-	termWrite: (id: TerminalId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("term_write", { id, data })),
-	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
-	termKill: (id: TerminalId) => typedError<null, IdeError>(__TAURI_INVOKE("term_kill", { id })),
+	termSpawn: (options: TerminalOptions, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError_Serialize>(__TAURI_INVOKE("term_spawn", { options, onOutput })),
+	termWrite: (id: TerminalId, data: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("term_write", { id, data })),
+	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
+	termKill: (id: TerminalId) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("term_kill", { id })),
 	/**
 	 *  Whether the session is running a command (closing its tab asks first). A
 	 *  `tcgetpgrp` or one process snapshot: async only to stay off the main thread.
 	 */
-	termIsBusy: (id: TerminalId) => typedError<boolean, IdeError>(__TAURI_INVOKE("term_is_busy", { id })),
+	termIsBusy: (id: TerminalId) => typedError<boolean, IdeError_Serialize>(__TAURI_INVOKE("term_is_busy", { id })),
 	/**  Shell used when Settings › Terminal › Shell path is empty. */
 	termDefaultShell: () => __TAURI_INVOKE<string>("term_default_shell"),
 	/**  Installed shells for the Terminal's "New Predefined Session" menu. */
 	termAvailableShells: () => __TAURI_INVOKE<string[]>("term_available_shells"),
 	/**  Detected configs followed by user-defined ones (user ids win on conflict). */
-	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
-	runSaveConfigs: (configs: RunConfig_Deserialize[], removedDetectedIds: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_configs", { configs, removedDetectedIds })),
+	runConfigs: () => typedError<RunConfig_Serialize[], IdeError_Serialize>(__TAURI_INVOKE("run_configs")),
+	runSaveConfigs: (configs: RunConfig_Deserialize[], removedDetectedIds: string[] | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("run_save_configs", { configs, removedDetectedIds })),
 	/**  Configuration templates: per-type defaults applied to new configurations. */
-	runTemplates: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_templates")),
-	runSaveTemplates: (templates: RunConfig_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_templates", { templates })),
+	runTemplates: () => typedError<RunConfig_Serialize[], IdeError_Serialize>(__TAURI_INVOKE("run_templates")),
+	runSaveTemplates: (templates: RunConfig_Deserialize[]) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("run_save_templates", { templates })),
 	/**  The environment runs inherit when "Include system environment variables" is on. */
 	runSystemEnv: () => __TAURI_INVOKE<{ [key in string]: string }>("run_system_env"),
-	runStart: (config: RunConfig_Deserialize, onOutput: Channel<OutputChunk>) => typedError<RunInfo, IdeError>(__TAURI_INVOKE("run_start", { config, onOutput })),
-	runStop: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_stop", { id })),
-	runStdin: (id: RunId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_stdin", { id, data })),
+	runStart: (config: RunConfig_Deserialize, onOutput: Channel<OutputChunk>) => typedError<RunInfo, IdeError_Serialize>(__TAURI_INVOKE("run_start", { config, onOutput })),
+	runStop: (id: RunId) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("run_stop", { id })),
+	runStdin: (id: RunId, data: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("run_stdin", { id, data })),
 	runList: () => __TAURI_INVOKE<RunInfo[]>("run_list"),
-	runCloseStdin: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_close_stdin", { id })),
+	runCloseStdin: (id: RunId) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("run_close_stdin", { id })),
 	/**  Terminal size of a run started with "Emulate terminal in output console". */
-	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
+	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
 	/**  Writes the Gradle init script adding `jvm_args` to the JVMs the build forks; returns its path. */
-	runGradleJvmArgsScript: (jvmArgs: string[]) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_jvm_args_script", { jvmArgs })),
-	runTomcatHome: (home: string) => typedError<TomcatHome, IdeError>(__TAURI_INVOKE("run_tomcat_home", { home })),
-	runTomcatArtifacts: () => typedError<WebArtifact[], IdeError>(__TAURI_INVOKE("run_tomcat_artifacts")),
+	runGradleJvmArgsScript: (jvmArgs: string[]) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("run_gradle_jvm_args_script", { jvmArgs })),
+	runTomcatHome: (home: string) => typedError<TomcatHome, IdeError_Serialize>(__TAURI_INVOKE("run_tomcat_home", { home })),
+	runTomcatArtifacts: () => typedError<WebArtifact[], IdeError_Serialize>(__TAURI_INVOKE("run_tomcat_artifacts")),
 	runTomcatBuild: (config: RunConfig_Deserialize) => typedError<({
 	/**  Stable id, e.g. `npm:dev`, `cargo:run:app`, or a uuid for user-defined. */
 	id: string,
@@ -599,143 +599,143 @@ export const commands = {
 	debugAdapter: string | null,
 	/**  "Allow multiple instances": Run on a running config starts another one instead of restarting it. */
 	allowParallel?: boolean,
-}) & (RunExtras_Serialize) | null, IdeError>(__TAURI_INVOKE("run_tomcat_build", { config })),
-	runApplicationBuild: (config: RunConfig_Deserialize, module: string) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_application_build", { config, module })),
-	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
-	runTomcatUpdate: (config: RunConfig_Deserialize, mode: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_tomcat_update", { config, mode })),
+}) & (RunExtras_Serialize) | null, IdeError_Serialize>(__TAURI_INVOKE("run_tomcat_build", { config })),
+	runApplicationBuild: (config: RunConfig_Deserialize, module: string) => typedError<RunConfig_Serialize, IdeError_Serialize>(__TAURI_INVOKE("run_application_build", { config, module })),
+	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
+	runTomcatUpdate: (config: RunConfig_Deserialize, mode: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("run_tomcat_update", { config, mode })),
 	/**
 	 *  Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
 	 *  `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
 	 */
-	runTestReports: (module: string | null, sinceMs: number | null) => typedError<TestCaseReport[], IdeError>(__TAURI_INVOKE("run_test_reports", { module, sinceMs })),
+	runTestReports: (module: string | null, sinceMs: number | null) => typedError<TestCaseReport[], IdeError_Serialize>(__TAURI_INVOKE("run_test_reports", { module, sinceMs })),
 	/**  Maven and Gradle projects of the window's project, from the build files plus the last sync. */
-	buildModel: () => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_model")),
+	buildModel: () => typedError<BuildModel, IdeError_Serialize>(__TAURI_INVOKE("build_model")),
 	/**
 	 *  Runs Maven (`help:effective-pom dependency:tree`) or Gradle (`tasks --all`) in the
 	 *  background, reporting progress on `on_progress`; cancellable with `cancel_request(request)`.
 	 *  Returns the refreshed model; a failed build is reported in its `syncError`.
 	 */
-	buildSync: (tool: BuildTool, request: RequestId, offline: boolean, profiles: string[], onProgress: Channel<SyncProgress>) => typedError<BuildModel, IdeError>(__TAURI_INVOKE("build_sync", { tool, request, offline, profiles, onProgress })),
+	buildSync: (tool: BuildTool, request: RequestId, offline: boolean, profiles: string[], onProgress: Channel<SyncProgress>) => typedError<BuildModel, IdeError_Serialize>(__TAURI_INVOKE("build_sync", { tool, request, offline, profiles, onProgress })),
 	/**  Where the direct dependency `dependency` of the Maven module `pom` is declared. */
-	mavenDependencyDeclaration: (pom: string, dependency: ArtifactKey) => typedError<Location, IdeError>(__TAURI_INVOKE("maven_dependency_declaration", { pom, dependency })),
+	mavenDependencyDeclaration: (pom: string, dependency: ArtifactKey) => typedError<Location, IdeError_Serialize>(__TAURI_INVOKE("maven_dependency_declaration", { pom, dependency })),
 	/**
 	 *  Adds an `<exclusion>` of `exclusion` to the declaration of the direct dependency
 	 *  `dependency` of the Maven module `pom`, through the open document when there is one
 	 *  (saved). Returns the declaration; nothing changes when it already excludes it.
 	 */
-	mavenExcludeDependency: (pom: string, dependency: ArtifactKey, exclusion: ArtifactKey) => typedError<Location, IdeError>(__TAURI_INVOKE("maven_exclude_dependency", { pom, dependency, exclusion })),
+	mavenExcludeDependency: (pom: string, dependency: ArtifactKey, exclusion: ArtifactKey) => typedError<Location, IdeError_Serialize>(__TAURI_INVOKE("maven_exclude_dependency", { pom, dependency, exclusion })),
 	/**
 	 *  Build › Build Project / Rebuild Project / Build Module (`file`: a file or folder of the
 	 *  module) / Build Artifacts, streaming the console and messages on `on_event`; cancellable
 	 *  with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
 	 *  are cleared first; the new messages are published as `build` diagnostics.
 	 */
-	buildRun: (kind: BuildKind, file: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, request, clear, onEvent })),
+	buildRun: (kind: BuildKind, file: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError_Serialize>(__TAURI_INVOKE("build_run", { kind, file, request, clear, onEvent })),
 	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds the workspace (when `build`), then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, build: boolean, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, build, request })),
+	javaResolveLaunch: (module: string, test: boolean, build: boolean, request: RequestId) => typedError<JavaLaunchInfo, IdeError_Serialize>(__TAURI_INVOKE("java_resolve_launch", { module, test, build, request })),
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
-	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
+	javaDebugServer: (module: string) => typedError<number, IdeError_Serialize>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
-	javaBuildWorkspace: (module: string) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module })),
+	javaBuildWorkspace: (module: string) => typedError<JavaBuildStatus, IdeError_Serialize>(__TAURI_INVOKE("java_build_workspace", { module })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
-	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
-	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
-	debugThreads: (session: DebugSessionId) => typedError<ThreadInfo[], IdeError>(__TAURI_INVOKE("debug_threads", { session })),
-	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame[], IdeError>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),
-	debugScopes: (session: DebugSessionId, frameId: number) => typedError<Scope[], IdeError>(__TAURI_INVOKE("debug_scopes", { session, frameId })),
-	debugVariables: (session: DebugSessionId, reference: number) => typedError<Variable[], IdeError>(__TAURI_INVOKE("debug_variables", { session, reference })),
-	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
-	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
-	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
-	debugStep: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step", { session, threadId, kind })),
-	debugRunTo: (session: DebugSessionId, threadId: number, path: string, line: number, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("debug_run_to", { session, threadId, path, line, force })),
-	debugStop: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_stop", { session })),
+	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError_Serialize>(__TAURI_INVOKE("debug_start", { config })),
+	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError_Serialize>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
+	debugThreads: (session: DebugSessionId) => typedError<ThreadInfo[], IdeError_Serialize>(__TAURI_INVOKE("debug_threads", { session })),
+	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame[], IdeError_Serialize>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),
+	debugScopes: (session: DebugSessionId, frameId: number) => typedError<Scope[], IdeError_Serialize>(__TAURI_INVOKE("debug_scopes", { session, frameId })),
+	debugVariables: (session: DebugSessionId, reference: number) => typedError<Variable[], IdeError_Serialize>(__TAURI_INVOKE("debug_variables", { session, reference })),
+	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable, IdeError_Serialize>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
+	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("debug_resume", { session, threadId })),
+	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("debug_pause", { session, threadId })),
+	debugStep: (session: DebugSessionId, threadId: number, kind: StepKind) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("debug_step", { session, threadId, kind })),
+	debugRunTo: (session: DebugSessionId, threadId: number, path: string, line: number, force: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("debug_run_to", { session, threadId, path, line, force })),
+	debugStop: (session: DebugSessionId) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("debug_stop", { session })),
 	/**  Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`. */
-	debugEvaluateIn: (session: DebugSessionId, frameId: number | null, expression: string, context: string | null) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_evaluate_in", { session, frameId, expression, context })),
+	debugEvaluateIn: (session: DebugSessionId, frameId: number | null, expression: string, context: string | null) => typedError<Variable, IdeError_Serialize>(__TAURI_INVOKE("debug_evaluate_in", { session, frameId, expression, context })),
 	/**  Last known verification states of a file's breakpoints (refetch on `breakpointsChanged`). */
-	debugBreakpointStates: (path: string) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_breakpoint_states", { path })),
+	debugBreakpointStates: (path: string) => typedError<BreakpointState[], IdeError_Serialize>(__TAURI_INVOKE("debug_breakpoint_states", { path })),
 	/**  This window's live sessions, including adapter-started child sessions. */
-	debugSessions: () => typedError<SessionInfo[], IdeError>(__TAURI_INVOKE("debug_sessions")),
+	debugSessions: () => typedError<SessionInfo[], IdeError_Serialize>(__TAURI_INVOKE("debug_sessions")),
 	/**  Status of every known language server / debug adapter and the languages using it. */
-	toolsList: () => typedError<ToolInfo[], IdeError>(__TAURI_INVOKE("tools_list")),
+	toolsList: () => typedError<ToolInfo[], IdeError_Serialize>(__TAURI_INVOKE("tools_list")),
 	/**
 	 *  Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
 	 *  `on_event`. Cancel with `cancel_request(request)`.
 	 */
-	toolsInstall: (name: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_install", { name, request, onEvent })),
+	toolsInstall: (name: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<ToolInfo, IdeError_Serialize>(__TAURI_INVOKE("tools_install", { name, request, onEvent })),
 	/**  Removes a tool the IDE installed. */
-	toolsUninstall: (name: string) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_uninstall", { name })),
+	toolsUninstall: (name: string) => typedError<ToolInfo, IdeError_Serialize>(__TAURI_INVOKE("tools_uninstall", { name })),
 	/**  JDK distributions Download JDK offers. */
 	jdkDownloadVendors: () => __TAURI_INVOKE<JdkVendor[]>("jdk_download_vendors"),
 	/**  Java versions `vendor` publishes; cancellable with `cancel_request(request)`. */
-	jdkDownloadReleases: (vendor: string, request: RequestId) => typedError<JdkReleases, IdeError>(__TAURI_INVOKE("jdk_download_releases", { vendor, request })),
+	jdkDownloadReleases: (vendor: string, request: RequestId) => typedError<JdkReleases, IdeError_Serialize>(__TAURI_INVOKE("jdk_download_releases", { vendor, request })),
 	/**  Where Download JDK puts JDKs unless told otherwise. */
-	jdkDownloadLocation: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("jdk_download_location")),
+	jdkDownloadLocation: () => typedError<IpcPath, IdeError_Serialize>(__TAURI_INVOKE("jdk_download_location")),
 	/**
 	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
 	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable
 	 *  with `cancel_request(request)`. The JDK is then detected like an installed one,
 	 *  and language servers waiting for a JDK (jdtls) start on it.
 	 */
-	jdkDownload: (vendor: string, version: number, location: string | null, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("jdk_download", { vendor, version, location, request, onEvent })),
+	jdkDownload: (vendor: string, version: number, location: string | null, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<Sdk, IdeError_Serialize>(__TAURI_INVOKE("jdk_download", { vendor, version, location, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
-	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
+	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError_Serialize>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
-	sdkPythonEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective")),
+	sdkPythonEffective: () => typedError<string | null, IdeError_Serialize>(__TAURI_INVOKE("sdk_python_effective")),
 	/**
 	 *  SDK / library source folders shown under "External Libraries" in the Project view,
 	 *  with the Maven / Gradle dependency jars of the build model.
 	 */
-	sdkProjectLibraries: () => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries")),
+	sdkProjectLibraries: () => typedError<LibraryGroup[], IdeError_Serialize>(__TAURI_INVOKE("sdk_project_libraries")),
 	/**  Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path. */
-	sdkLocateTools: (names: string[], near: string | null) => typedError<LocatedTools, IdeError>(__TAURI_INVOKE("sdk_locate_tools", { names, near })),
+	sdkLocateTools: (names: string[], near: string | null) => typedError<LocatedTools, IdeError_Serialize>(__TAURI_INVOKE("sdk_locate_tools", { names, near })),
 	/**  `base -m venv location`; output lines stream through `on_output`. */
-	sdkPythonCreateVenv: (base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { base, location, request, onOutput })),
-	sdkPythonPackages: (python: string, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, request })),
+	sdkPythonCreateVenv: (base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError_Serialize>(__TAURI_INVOKE("sdk_python_create_venv", { base, location, request, onOutput })),
+	sdkPythonPackages: (python: string, request: RequestId) => typedError<PythonPackage[], IdeError_Serialize>(__TAURI_INVOKE("sdk_python_packages", { python, request })),
 	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
-	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
+	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
 	/**
 	 *  Opens `path` in a new window (`new_window`) or tells the caller to open it
 	 *  itself (`current`). A project already open in some window is focused instead.
 	 *  `files` then open in that project's editor.
 	 */
-	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
+	windowOpenProject: (path: string, newWindow: boolean, files: string[]) => typedError<OpenOutcome, IdeError_Serialize>(__TAURI_INVOKE("window_open_project", { path, newWindow, files })),
 	/**
 	 *  Loose `files` opened from a window without a local project: a file inside a local project
 	 *  open in some window goes to that window, the others to the LightEdit window (this one,
 	 *  another, or a new one from a remote project window). Returns the files this window opens
 	 *  itself, in LightEdit.
 	 */
-	windowOpenFiles: (files: string[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("window_open_files", { files })),
+	windowOpenFiles: (files: string[]) => typedError<IpcPath[], IdeError_Serialize>(__TAURI_INVOKE("window_open_files", { files })),
 	/**
 	 *  Detaches an editor tab: opens `file` in a forced new window (`project`, None
 	 *  for LightEdit, decided by the caller), bypassing the focus-an-existing-window
 	 *  routing of [`window_open_project`] / [`window_open_files`].
 	 */
-	windowOpenFileInNewWindow: (project: string | null, file: string) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_file_in_new_window", { project, file })),
+	windowOpenFileInNewWindow: (project: string | null, file: string) => typedError<OpenOutcome, IdeError_Serialize>(__TAURI_INVOKE("window_open_file_in_new_window", { project, file })),
 	/**
 	 *  [`window_open_project`] for folder `path` on the host of SSH configuration
 	 *  `ssh_config` (Remote Development); a new window connects itself.
 	 */
-	windowOpenRemote: (sshConfig: string, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_open_remote", { sshConfig, path, newWindow })),
+	windowOpenRemote: (sshConfig: string, path: string, newWindow: boolean) => typedError<OpenOutcome, IdeError_Serialize>(__TAURI_INVOKE("window_open_remote", { sshConfig, path, newWindow })),
 	/**  Opens an empty (welcome) window; returns its label. */
-	windowNew: () => typedError<string, IdeError>(__TAURI_INVOKE("window_new")),
+	windowNew: () => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("window_new")),
 	/**
 	 *  Opens this window's Settings window on `page` (or focuses it and navigates);
 	 *  `new_projects` edits the global layer only ("Settings for New Projects").
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
-	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
-	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
+	windowToggleFullscreen: () => typedError<boolean, IdeError_Serialize>(__TAURI_INVOKE("window_toggle_fullscreen")),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
-	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
+	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
 	/**  What this window was opened for (taken once). */
 	windowTakeLaunch: () => __TAURI_INVOKE<{
 	/**  Project folder to open. */
@@ -754,7 +754,7 @@ export const commands = {
 } | null>("window_take_launch"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
-	windowOpenProjects: () => typedError<OpenProject[], IdeError>(__TAURI_INVOKE("window_open_projects")),
+	windowOpenProjects: () => typedError<OpenProject[], IdeError_Serialize>(__TAURI_INVOKE("window_open_projects")),
 	/**  Quits: closes every window, each of which runs its own unsaved-changes check. */
 	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 	/**  A window vetoed the quit (user cancelled its unsaved-changes prompt). */
@@ -770,9 +770,9 @@ export const commands = {
 	 *  disabled in place (no rebuild).
 	 */
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
-	appLogLocation: () => typedError<LogLocation, IdeError>(__TAURI_INVOKE("app_log_location")),
+	appLogLocation: () => typedError<LogLocation, IdeError_Serialize>(__TAURI_INVOKE("app_log_location")),
 	appBuildInfo: () => __TAURI_INVOKE<BuildInfo>("app_build_info"),
-	appCheckUpdate: () => typedError<UpdateCheck, IdeError>(__TAURI_INVOKE("app_check_update")),
+	appCheckUpdate: () => typedError<UpdateCheck, IdeError_Serialize>(__TAURI_INVOKE("app_check_update")),
 	/**
 	 *  The background check made once per process when the first window starts;
 	 *  later calls (other windows) and debug builds get `None`. Failures are logged,
@@ -789,193 +789,193 @@ export const commands = {
 	 *  Cancellable through `request` until the download completes; the UI then restarts
 	 *  with `app_restart`. One install runs at a time.
 	 */
-	appInstallUpdate: (request: RequestId, onProgress: Channel<UpdateProgress>) => typedError<null, IdeError>(__TAURI_INVOKE("app_install_update", { request, onProgress })),
-	debugExceptionFilters: () => typedError<SessionExceptionFilters[], IdeError>(__TAURI_INVOKE("debug_exception_filters")),
-	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
-	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
+	appInstallUpdate: (request: RequestId, onProgress: Channel<UpdateProgress>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("app_install_update", { request, onProgress })),
+	debugExceptionFilters: () => typedError<SessionExceptionFilters[], IdeError_Serialize>(__TAURI_INVOKE("debug_exception_filters")),
+	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
+	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable, IdeError_Serialize>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
 	/**  Force Step Over: step over with every breakpoint suspended until the step ends. */
-	debugForceStepOver: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_force_step_over", { session, threadId })),
+	debugForceStepOver: (session: DebugSessionId, threadId: number) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("debug_force_step_over", { session, threadId })),
 	/**  Smart Step Into: the calls on the current line of `frame_id`. */
-	debugStepInTargets: (session: DebugSessionId, frameId: number) => typedError<StepInTarget[], IdeError>(__TAURI_INVOKE("debug_step_in_targets", { session, frameId })),
-	debugStepInTarget: (session: DebugSessionId, threadId: number, targetId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_step_in_target", { session, threadId, targetId })),
+	debugStepInTargets: (session: DebugSessionId, frameId: number) => typedError<StepInTarget[], IdeError_Serialize>(__TAURI_INVOKE("debug_step_in_targets", { session, frameId })),
+	debugStepInTarget: (session: DebugSessionId, threadId: number, targetId: number) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("debug_step_in_target", { session, threadId, targetId })),
 	/**  Reset Frame (Drop Frame). */
-	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
-	debugCapabilities: (session: DebugSessionId) => typedError<DebugCapabilities, IdeError>(__TAURI_INVOKE("debug_capabilities", { session })),
+	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
+	debugCapabilities: (session: DebugSessionId) => typedError<DebugCapabilities, IdeError_Serialize>(__TAURI_INVOKE("debug_capabilities", { session })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
-	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
+	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError_Serialize>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
-	debugSetDataBreakpoints: (breakpoints: DataBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_data_breakpoints", { breakpoints })),
-	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
+	debugSetDataBreakpoints: (breakpoints: DataBreakpoint[]) => typedError<BreakpointState[], IdeError_Serialize>(__TAURI_INVOKE("debug_set_data_breakpoints", { breakpoints })),
+	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError_Serialize>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
 	/**  Attach to Process: the user's processes a debugger can attach to. */
-	debugAttachableProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_attachable_processes")),
+	debugAttachableProcesses: () => typedError<AttachableProcess[], IdeError_Serialize>(__TAURI_INVOKE("debug_attachable_processes")),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
 	 */
-	debugListenForJvm: (request: RequestId, host: string, port: number) => typedError<number, IdeError>(__TAURI_INVOKE("debug_listen_for_jvm", { request, host, port })),
+	debugListenForJvm: (request: RequestId, host: string, port: number) => typedError<number, IdeError_Serialize>(__TAURI_INVOKE("debug_listen_for_jvm", { request, host, port })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
-	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
+	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError_Serialize>(__TAURI_INVOKE("debug_redefine_classes", { session })),
 	/**
 	 *  How to run `config` with coverage: the command to launch and where its report will be,
 	 *  or which tool is missing.
 	 */
-	coveragePrepare: (config: RunConfig_Deserialize) => typedError<CoveragePrepared_Serialize, IdeError>(__TAURI_INVOKE("coverage_prepare", { config })),
+	coveragePrepare: (config: RunConfig_Deserialize) => typedError<CoveragePrepared_Serialize, IdeError_Serialize>(__TAURI_INVOKE("coverage_prepare", { config })),
 	/**  Reads the report a coverage run left behind. */
-	coverageCollect: (report: CoverageReportSpec) => typedError<CoverageSuite, IdeError>(__TAURI_INVOKE("coverage_collect", { report })),
+	coverageCollect: (report: CoverageReportSpec) => typedError<CoverageSuite, IdeError_Serialize>(__TAURI_INVOKE("coverage_collect", { report })),
 	/**
 	 *  Reads a report collected elsewhere (CI): lcov, a Go cover profile or JaCoCo XML,
 	 *  with paths mapped into this project.
 	 */
-	coverageImport: (path: IpcPath) => typedError<CoverageSuite, IdeError>(__TAURI_INVOKE("coverage_import", { path })),
+	coverageImport: (path: IpcPath) => typedError<CoverageSuite, IdeError_Serialize>(__TAURI_INVOKE("coverage_import", { path })),
 	/**  The browsers installed on this machine. */
-	webBrowsers: () => typedError<Browser[], IdeError>(__TAURI_INVOKE("web_browsers")),
+	webBrowsers: () => typedError<Browser[], IdeError_Serialize>(__TAURI_INVOKE("web_browsers")),
 	/**  The built-in server's URL for `path` (started on first use). */
-	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
+	webUrl: (path: IpcPath) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("web_url", { path })),
 	/**  Opens `url` in `browser` (an id from `web_browsers`), or the default browser. */
-	webOpen: (url: string, browser: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("web_open", { url, browser })),
+	webOpen: (url: string, browser: string | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("web_open", { url, browser })),
 	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
-	profilerPrepare: (config: RunConfig_Deserialize) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config })),
+	profilerPrepare: (config: RunConfig_Deserialize) => typedError<ProfilePrepared_Serialize, IdeError_Serialize>(__TAURI_INVOKE("profiler_prepare", { config })),
 	/**  Reads the profile a profiled run left behind. */
-	profilerCollect: (spec: ProfileSpec) => typedError<Profile, IdeError>(__TAURI_INVOKE("profiler_collect", { spec })),
+	profilerCollect: (spec: ProfileSpec) => typedError<Profile, IdeError_Serialize>(__TAURI_INVOKE("profiler_collect", { spec })),
 	/**  Routes this window's plugin events to `on_event` (replaces an earlier subscription). */
 	pluginSubscribe: (onEvent: Channel<PluginEvent>) => __TAURI_INVOKE<void>("plugin_subscribe", { onEvent }),
 	/**
 	 *  Installed plugins plus the dev plugins of this window's project
 	 *  (`<project>/.openidea/plugins/*`, rescanned on every call).
 	 */
-	pluginList: () => typedError<PluginsSnapshot, IdeError>(__TAURI_INVOKE("plugin_list")),
-	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
+	pluginList: () => typedError<PluginsSnapshot, IdeError_Serialize>(__TAURI_INVOKE("plugin_list")),
+	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
 	/**  Installs the plugin package in `path` (a folder with `plugin.toml`). */
-	pluginInstallDir: (path: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_install_dir", { path })),
+	pluginInstallDir: (path: string) => typedError<PluginInfo, IdeError_Serialize>(__TAURI_INVOKE("plugin_install_dir", { path })),
 	/**
 	 *  Plugin packages available locally for installation: `<resources>/plugins`
 	 *  when bundled, plus the repository's sample `plugins/` in debug builds.
 	 *  There is no network marketplace.
 	 */
-	pluginCatalog: () => typedError<CatalogPlugin[], IdeError>(__TAURI_INVOKE("plugin_catalog")),
-	pluginUninstall: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_uninstall", { id })),
+	pluginCatalog: () => typedError<CatalogPlugin[], IdeError_Serialize>(__TAURI_INVOKE("plugin_catalog")),
+	pluginUninstall: (id: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("plugin_uninstall", { id })),
 	/**  Re-reads a plugin from disk (after rebuilding a dev plugin). */
-	pluginReload: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_reload", { id })),
+	pluginReload: (id: string) => typedError<PluginInfo, IdeError_Serialize>(__TAURI_INVOKE("plugin_reload", { id })),
 	/**  Runs a plugin command in the context of this window's project. */
-	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg })),
+	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null) => typedError<string | null, IdeError_Serialize>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg })),
 	/**  The UI reports the focused editor's file (`active-file` for plugins). */
 	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
 	pluginSetTheme: (pluginId: string | null, themeId: string | null) => typedError<{
 	pluginId: string,
 	theme: ThemeDef,
-} | null, IdeError>(__TAURI_INVOKE("plugin_set_theme", { pluginId, themeId })),
+} | null, IdeError_Serialize>(__TAURI_INVOKE("plugin_set_theme", { pluginId, themeId })),
 	/**
 	 *  The UI reports the selected plugin theme's resolved frame colour (`#rrggbb[aa]`),
 	 *  which new windows open in before their page loads.
 	 */
-	pluginSetThemeFrame: (color: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_theme_frame", { color })),
+	pluginSetThemeFrame: (color: string | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("plugin_set_theme_frame", { color })),
 	/**
 	 *  Snapshot of process memory and subsystem sizes, summed over all projects.
 	 *  Async: the process walk runs on the blocking pool, not the main thread.
 	 */
-	appMetrics: () => typedError<AppMetrics, IdeError>(__TAURI_INVOKE("app_metrics")),
+	appMetrics: () => typedError<AppMetrics, IdeError_Serialize>(__TAURI_INVOKE("app_metrics")),
 	/**
 	 *  "Clear caches": drops syntax trees and EditorConfig files of the window's
 	 *  project, shrinks the in-memory index and compacts its on-disk cache.
 	 */
-	clearCaches: () => typedError<ClearCachesResult, IdeError>(__TAURI_INVOKE("clear_caches")),
+	clearCaches: () => typedError<ClearCachesResult, IdeError_Serialize>(__TAURI_INVOKE("clear_caches")),
 	/**
 	 *  Inspect Code: diagnostics of every file in `scope` that a language server
 	 *  serves. Files stream through `on_event` as they finish; ends with `Done`.
 	 */
-	inspectCode: (request: RequestId, scope: SearchScope, onEvent: Channel<InspectEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("inspect_code", { request, scope, onEvent })),
+	inspectCode: (request: RequestId, scope: SearchScope, onEvent: Channel<InspectEvent>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("inspect_code", { request, scope, onEvent })),
 	/**  Locate Duplicates over the files of `scope`. */
-	analysisLocateDuplicates: (request: RequestId, scope: SearchScope, options: DuplicateOptions) => typedError<DuplicatesReport, IdeError>(__TAURI_INVOKE("analysis_locate_duplicates", { request, scope, options })),
+	analysisLocateDuplicates: (request: RequestId, scope: SearchScope, options: DuplicateOptions) => typedError<DuplicatesReport, IdeError_Serialize>(__TAURI_INVOKE("analysis_locate_duplicates", { request, scope, options })),
 	/**  Languages Search Structurally supports (those with a bundled grammar). */
-	structuralLanguages: () => typedError<StructuralLanguage[], IdeError>(__TAURI_INVOKE("structural_languages")),
+	structuralLanguages: () => typedError<StructuralLanguage[], IdeError_Serialize>(__TAURI_INVOKE("structural_languages")),
 	/**  Checks a structural search template (and language) while the user types. */
-	structuralValidate: (query: StructuralQuery) => typedError<null, IdeError>(__TAURI_INVOKE("structural_validate", { query })),
+	structuralValidate: (query: StructuralQuery) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("structural_validate", { query })),
 	/**
 	 *  Search Structurally over `scope`; files with matches stream through
 	 *  `on_event`, ending with `Done`. With a replacement, matches carry their
 	 *  replacement text (applied by the UI as a workspace edit).
 	 */
-	structuralSearch: (request: RequestId, scope: SearchScope, query: StructuralQuery, onEvent: Channel<StructuralEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("structural_search", { request, scope, query, onEvent })),
+	structuralSearch: (request: RequestId, scope: SearchScope, query: StructuralQuery, onEvent: Channel<StructuralEvent>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("structural_search", { request, scope, query, onEvent })),
 	/**  Availability plus containers, images, volumes and networks. */
-	dockerSnapshot: (endpoint: DockerEndpoint) => typedError<DockerSnapshot, IdeError>(__TAURI_INVOKE("docker_snapshot", { endpoint })),
-	dockerContainerOp: (endpoint: DockerEndpoint, ids: string[], op: ContainerOp) => typedError<null, IdeError>(__TAURI_INVOKE("docker_container_op", { endpoint, ids, op })),
-	dockerRemove: (endpoint: DockerEndpoint, object: DockerObject, ids: string[], force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("docker_remove", { endpoint, object, ids, force })),
+	dockerSnapshot: (endpoint: DockerEndpoint) => typedError<DockerSnapshot, IdeError_Serialize>(__TAURI_INVOKE("docker_snapshot", { endpoint })),
+	dockerContainerOp: (endpoint: DockerEndpoint, ids: string[], op: ContainerOp) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("docker_container_op", { endpoint, ids, op })),
+	dockerRemove: (endpoint: DockerEndpoint, object: DockerObject, ids: string[], force: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("docker_remove", { endpoint, object, ids, force })),
 	/**  Pretty-printed `docker inspect` JSON. */
-	dockerInspect: (endpoint: DockerEndpoint, object: DockerObject, id: string) => typedError<string, IdeError>(__TAURI_INVOKE("docker_inspect", { endpoint, object, id })),
+	dockerInspect: (endpoint: DockerEndpoint, object: DockerObject, id: string) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("docker_inspect", { endpoint, object, id })),
 	/**  Streams a container's log lines until it stops or the request is cancelled. */
-	dockerLogs: (request: RequestId, endpoint: DockerEndpoint, id: string, tail: number, follow: boolean, timestamps: boolean, onLine: Channel<DockerLogLine>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_logs", { request, endpoint, id, tail, follow, timestamps, onLine })),
+	dockerLogs: (request: RequestId, endpoint: DockerEndpoint, id: string, tail: number, follow: boolean, timestamps: boolean, onLine: Channel<DockerLogLine>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("docker_logs", { request, endpoint, id, tail, follow, timestamps, onLine })),
 	/**  Follows `docker events` until the daemon goes away or the request is cancelled. */
-	dockerEvents: (request: RequestId, endpoint: DockerEndpoint, onEvent: Channel<DockerEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_events", { request, endpoint, onEvent })),
+	dockerEvents: (request: RequestId, endpoint: DockerEndpoint, onEvent: Channel<DockerEvent>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("docker_events", { request, endpoint, onEvent })),
 	/**  `docker pull`, logging in first when a saved registry with a password serves the image. */
-	dockerPull: (request: RequestId, endpoint: DockerEndpoint, reference: string, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_pull", { request, endpoint, reference, onOutput })),
-	dockerPrune: (request: RequestId, endpoint: DockerEndpoint, target: PruneTarget, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_prune", { request, endpoint, target, onOutput })),
+	dockerPull: (request: RequestId, endpoint: DockerEndpoint, reference: string, onOutput: Channel<string>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("docker_pull", { request, endpoint, reference, onOutput })),
+	dockerPrune: (request: RequestId, endpoint: DockerEndpoint, target: PruneTarget, onOutput: Channel<string>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("docker_prune", { request, endpoint, target, onOutput })),
 	/**  `docker compose` start / stop / restart / down of a project found through labels. */
-	dockerComposeOp: (request: RequestId, endpoint: DockerEndpoint, project: string, files: string[], workingDir: string | null, op: ComposeOp, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_compose_op", { request, endpoint, project, files, workingDir, op, onOutput })),
+	dockerComposeOp: (request: RequestId, endpoint: DockerEndpoint, project: string, files: string[], workingDir: string | null, op: ComposeOp, onOutput: Channel<string>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("docker_compose_op", { request, endpoint, project, files, workingDir, op, onOutput })),
 	/**  Docker connections and registries (app-wide). */
-	dockerSettings: () => typedError<DockerSettings, IdeError>(__TAURI_INVOKE("docker_settings")),
-	dockerSaveSettings: (settings: DockerSettings) => typedError<null, IdeError>(__TAURI_INVOKE("docker_save_settings", { settings })),
+	dockerSettings: () => typedError<DockerSettings, IdeError_Serialize>(__TAURI_INVOKE("docker_settings")),
+	dockerSaveSettings: (settings: DockerSettings) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("docker_save_settings", { settings })),
 	/**  Saves (`None`: forgets) a registry's password. */
-	dockerSetRegistryPassword: (id: string, password: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("docker_set_registry_password", { id, password })),
+	dockerSetRegistryPassword: (id: string, password: string | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("docker_set_registry_password", { id, password })),
 	/**  Test login to `registry` (`password`, else the saved one) through `endpoint`'s daemon. */
-	dockerRegistryLogin: (endpoint: DockerEndpoint, registry: DockerRegistry, password: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("docker_registry_login", { endpoint, registry, password })),
+	dockerRegistryLogin: (endpoint: DockerEndpoint, registry: DockerRegistry, password: string | null) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("docker_registry_login", { endpoint, registry, password })),
 	/**
 	 *  Environment for a Docker run configuration's command line: selects `endpoint`'s
 	 *  daemon and puts the docker executable on `PATH`.
 	 */
-	dockerRunEnv: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_run_env", { endpoint })),
-	ghAvailability: () => typedError<GhAvailability, IdeError>(__TAURI_INVOKE("gh_availability")),
+	dockerRunEnv: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError_Serialize>(__TAURI_INVOKE("docker_run_env", { endpoint })),
+	ghAvailability: () => typedError<GhAvailability, IdeError_Serialize>(__TAURI_INVOKE("gh_availability")),
 	/**  A GitHub GraphQL / REST call through `gh api`; returns the response body. */
-	ghApi: (request: GhApiRequest) => typedError<string, IdeError>(__TAURI_INVOKE("gh_api", { request })),
-	ghPrList: (query: PrListQuery) => typedError<PullRequestSummary[], IdeError>(__TAURI_INVOKE("gh_pr_list", { query })),
-	ghPrView: (number: number) => typedError<PullRequestDetails, IdeError>(__TAURI_INVOKE("gh_pr_view", { number })),
-	ghPrReviewComments: (number: number) => typedError<PrReviewComment[], IdeError>(__TAURI_INVOKE("gh_pr_review_comments", { number })),
-	ghPrCheckout: (request: RequestId, number: number, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_checkout", { request, number, onOutput })),
+	ghApi: (request: GhApiRequest) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("gh_api", { request })),
+	ghPrList: (query: PrListQuery) => typedError<PullRequestSummary[], IdeError_Serialize>(__TAURI_INVOKE("gh_pr_list", { query })),
+	ghPrView: (number: number) => typedError<PullRequestDetails, IdeError_Serialize>(__TAURI_INVOKE("gh_pr_view", { number })),
+	ghPrReviewComments: (number: number) => typedError<PrReviewComment[], IdeError_Serialize>(__TAURI_INVOKE("gh_pr_review_comments", { number })),
+	ghPrCheckout: (request: RequestId, number: number, onOutput: Channel<string>) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("gh_pr_checkout", { request, number, onOutput })),
 	/**  Creates a pull request from the current branch (pushing it first when asked); returns its URL. */
-	ghPrCreate: (request: RequestId, pr: CreatePullRequest, onOutput: Channel<string>) => typedError<string, IdeError>(__TAURI_INVOKE("gh_pr_create", { request, pr, onOutput })),
-	ghPrReview: (number: number, event: ReviewEvent, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_review", { number, event, body })),
-	ghPrComment: (number: number, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_comment", { number, body })),
+	ghPrCreate: (request: RequestId, pr: CreatePullRequest, onOutput: Channel<string>) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("gh_pr_create", { request, pr, onOutput })),
+	ghPrReview: (number: number, event: ReviewEvent, body: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("gh_pr_review", { number, event, body })),
+	ghPrComment: (number: number, body: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("gh_pr_comment", { number, body })),
 	/**  Fetches what is missing to diff a pull request locally; returns the revisions to compare. */
-	ghPrPrepareDiff: (request: RequestId, number: number, headOid: string, baseOid: string, baseRef: string, nameWithOwner: string, onOutput: Channel<string>) => typedError<PrDiffRevisions, IdeError>(__TAURI_INVOKE("gh_pr_prepare_diff", { request, number, headOid, baseOid, baseRef, nameWithOwner, onOutput })),
+	ghPrPrepareDiff: (request: RequestId, number: number, headOid: string, baseOid: string, baseRef: string, nameWithOwner: string, onOutput: Channel<string>) => typedError<PrDiffRevisions, IdeError_Serialize>(__TAURI_INVOKE("gh_pr_prepare_diff", { request, number, headOid, baseOid, baseRef, nameWithOwner, onOutput })),
 	/**  The requests of an `.http` file (gutter run icons, Run All). */
 	httpRequests: (text: string) => __TAURI_INVOKE<HttpRequestBlock[]>("http_requests", { text }),
 	/**  Environment names from the `http-client(.private).env.json` files that apply to `path`. */
-	httpEnvironments: (path: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("http_environments", { path })),
+	httpEnvironments: (path: string | null) => typedError<string[], IdeError_Serialize>(__TAURI_INVOKE("http_environments", { path })),
 	/**
 	 *  Sends request `index` of `text` (the editor buffer of `path`) and records
 	 *  the exchange in the response history. Cancel with `cancel_request(request)`.
 	 */
-	httpExecute: (request: RequestId, path: string | null, text: string, index: number, env: string | null) => typedError<HttpExchange, IdeError>(__TAURI_INVOKE("http_execute", { request, path, text, index, env })),
-	httpHistory: () => typedError<HttpHistoryEntry[], IdeError>(__TAURI_INVOKE("http_history")),
-	httpHistoryGet: (id: string) => typedError<HttpExchange, IdeError>(__TAURI_INVOKE("http_history_get", { id })),
-	httpHistoryClear: () => typedError<null, IdeError>(__TAURI_INVOKE("http_history_clear")),
+	httpExecute: (request: RequestId, path: string | null, text: string, index: number, env: string | null) => typedError<HttpExchange, IdeError_Serialize>(__TAURI_INVOKE("http_execute", { request, path, text, index, env })),
+	httpHistory: () => typedError<HttpHistoryEntry[], IdeError_Serialize>(__TAURI_INVOKE("http_history")),
+	httpHistoryGet: (id: string) => typedError<HttpExchange, IdeError_Serialize>(__TAURI_INVOKE("http_history_get", { id })),
+	httpHistoryClear: () => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("http_history_clear")),
 	/**
 	 *  System Settings › HTTP Proxy › Check connection: GETs `url` through `proxy` as
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
-	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
-	dbSources: () => typedError<DataSource[], IdeError>(__TAURI_INVOKE("db_sources")),
-	dbSaveSources: (sources: DataSource[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
+	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	dbSources: () => typedError<DataSource[], IdeError_Serialize>(__TAURI_INVOKE("db_sources")),
+	dbSaveSources: (sources: DataSource[]) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("db_save_sources", { sources })),
 	/**
 	 *  Remembers the password of data source `id` for the session, and in the OS
 	 *  saved passwords when `save` (`None` forgets it).
 	 */
-	dbSetPassword: (id: string, password: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_password", { id, password, save })),
+	dbSetPassword: (id: string, password: string | null, save: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("db_set_password", { id, password, save })),
 	/**  Remembers the SSH password / key passphrase of a data source (see `db_set_password`). */
-	dbSetSshSecret: (id: string, secret: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_ssh_secret", { id, secret, save })),
+	dbSetSshSecret: (id: string, secret: string | null, save: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("db_set_ssh_secret", { id, secret, save })),
 	/**
 	 *  Trusts the SSH host key that made the last connection of `id` fail with
 	 *  "Unknown SSH host key" (records it in `~/.ssh/known_hosts`).
 	 */
-	dbTrustSshHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_trust_ssh_host", { id })),
+	dbTrustSshHost: (id: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("db_trust_ssh_host", { id })),
 	/**  Test Connection: connects with `config` as edited (not necessarily saved). */
-	sshTest: (config: SshConfiguration, secret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("ssh_test", { config, secret })),
+	sshTest: (config: SshConfiguration, secret: string | null) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("ssh_test", { config, secret })),
 	/**  Remembers the password / passphrase of configuration `id` (`None` forgets it). */
 	sshSetSecret: (id: string, secret: string | null, save: boolean) => __TAURI_INVOKE<void>("ssh_set_secret", { id, secret, save }),
 	/**  Whether connecting with configuration `id` needs a password first. */
-	sshNeedsSecret: (id: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("ssh_needs_secret", { id })),
+	sshNeedsSecret: (id: string) => typedError<boolean, IdeError_Serialize>(__TAURI_INVOKE("ssh_needs_secret", { id })),
 	/**  Trusts the host key that failed the last connection of configuration `id`. */
-	sshTrustHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("ssh_trust_host", { id })),
+	sshTrustHost: (id: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("ssh_trust_host", { id })),
 	/**  Ids of the configurations with an open connection. */
 	sshConnected: () => __TAURI_INVOKE<string[]>("ssh_connected"),
 	sshDisconnect: (id: string) => __TAURI_INVOKE<void>("ssh_disconnect", { id }),
@@ -989,33 +989,33 @@ export const commands = {
 	 *  Tools › Start SSH Session: the system `ssh` command line for configuration `id`
 	 *  (run in a terminal tab, so prompts and host-key questions are answered there).
 	 */
-	sshTerminalCommand: (id: string) => typedError<SshTerminalCommand, IdeError>(__TAURI_INVOKE("ssh_terminal_command", { id })),
-	deployCoverage: (paths: IpcPath[]) => typedError<DeploymentCoverage[], IdeError>(__TAURI_INVOKE("deploy_coverage", { paths })),
-	deployUpload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_upload", { paths, server, request })),
-	deployDownload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_download", { paths, server, request })),
-	deployDeleteRemote: (paths: IpcPath[], server: string | null) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_delete_remote", { paths, server })),
-	deployCompare: (path: IpcPath, server: string | null, request: RequestId) => typedError<SyncEntry[], IdeError>(__TAURI_INVOKE("deploy_compare", { path, server, request })),
-	deploySync: (steps: SyncStep[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("deploy_sync", { steps, server, request })),
+	sshTerminalCommand: (id: string) => typedError<SshTerminalCommand, IdeError_Serialize>(__TAURI_INVOKE("ssh_terminal_command", { id })),
+	deployCoverage: (paths: IpcPath[]) => typedError<DeploymentCoverage[], IdeError_Serialize>(__TAURI_INVOKE("deploy_coverage", { paths })),
+	deployUpload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError_Serialize>(__TAURI_INVOKE("deploy_upload", { paths, server, request })),
+	deployDownload: (paths: IpcPath[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError_Serialize>(__TAURI_INVOKE("deploy_download", { paths, server, request })),
+	deployDeleteRemote: (paths: IpcPath[], server: string | null) => typedError<TransferReport, IdeError_Serialize>(__TAURI_INVOKE("deploy_delete_remote", { paths, server })),
+	deployCompare: (path: IpcPath, server: string | null, request: RequestId) => typedError<SyncEntry[], IdeError_Serialize>(__TAURI_INVOKE("deploy_compare", { path, server, request })),
+	deploySync: (steps: SyncStep[], server: string | null, request: RequestId) => typedError<TransferReport, IdeError_Serialize>(__TAURI_INVOKE("deploy_sync", { steps, server, request })),
 	deployInfo: (path: IpcPath, server: string | null) => typedError<{
 	server: string,
 	remotePath: string,
 	webUrl: string | null,
-} | null, IdeError>(__TAURI_INVOKE("deploy_info", { path, server })),
-	deployServerRoot: (server: string) => typedError<string, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
-	remoteList: (connection: FsConnection, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_list", { connection, path })),
-	deployTestConnection: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path })),
-	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
+} | null, IdeError_Serialize>(__TAURI_INVOKE("deploy_info", { path, server })),
+	deployServerRoot: (server: string) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("deploy_server_root", { server })),
+	remoteList: (connection: FsConnection, path: string) => typedError<RemoteEntry[], IdeError_Serialize>(__TAURI_INVOKE("remote_list", { connection, path })),
+	deployTestConnection: (connection: FsConnection, path: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("deploy_test_connection", { connection, path })),
+	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError_Serialize>(__TAURI_INVOKE("remote_open", { connection, path })),
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
-	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
-	remoteMkdir: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_mkdir", { connection, path })),
-	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
+	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("remote_delete", { connection, path })),
+	remoteMkdir: (connection: FsConnection, path: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("remote_mkdir", { connection, path })),
+	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
 	/**  Browse before connecting, using the desktop's SSH configuration even in a remote window. */
-	remoteBootstrapList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_bootstrap_list", { ssh, path })),
+	remoteBootstrapList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError_Serialize>(__TAURI_INVOKE("remote_bootstrap_list", { ssh, path })),
 	/**
 	 *  File › Remote Development: opens `path` on the host of SSH configuration
 	 *  `ssh_config` in this window (installs / starts the server as needed).
 	 */
-	remoteConnect: (sshConfig: string, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { sshConfig, path, onProgress })),
+	remoteConnect: (sshConfig: string, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError_Serialize>(__TAURI_INVOKE("remote_connect", { sshConfig, path, onProgress })),
 	/**  The remote session of this window (a settings window: its parent's), if any. */
 	remoteCurrent: () => __TAURI_INVOKE<{
 	sshConfig: string,
@@ -1029,60 +1029,60 @@ export const commands = {
 	 *  text. Streaming arguments are `{ "$channel": id }`; their values arrive on
 	 *  `on_channel` tagged with the id.
 	 */
-	remoteInvoke: (cmd: string, args: string, onChannel: Channel<ChannelFrame>) => typedError<string, IdeError>(__TAURI_INVOKE("remote_invoke", { cmd, args, onChannel })),
+	remoteInvoke: (cmd: string, args: string, onChannel: Channel<ChannelFrame>) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("remote_invoke", { cmd, args, onChannel })),
 	/**  A client OS file belongs to this machine even when its destination is remote. */
-	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
+	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<string[], IdeError_Serialize>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
 	/**
 	 *  Reload Environment: new child processes get the login shell's current environment
 	 *  (and the project's `remoteEnv` on a remote host); running ones keep theirs.
 	 */
-	envReload: () => typedError<EnvReloaded, IdeError>(__TAURI_INVOKE("env_reload")),
+	envReload: () => typedError<EnvReloaded, IdeError_Serialize>(__TAURI_INVOKE("env_reload")),
 	/**  Test Connection: connects with unsaved settings and returns the server version. */
-	dbTest: (source: DataSource, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
-	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
+	dbTest: (source: DataSource, password: string | null, sshSecret: string | null) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
+	dbConnected: () => typedError<string[], IdeError_Serialize>(__TAURI_INVOKE("db_connected")),
 	/**  Connects (fails with `permissionDenied` when the password is missing or wrong). */
-	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
-	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
+	dbConnect: (id: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("db_connect", { id })),
+	dbDisconnect: (id: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("db_disconnect", { id })),
 	/**  Databases of the server of data source `id` (PostgreSQL); connect to one as `<id>:<database>`. */
-	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
-	dbSchemas: (id: string) => typedError<string[], IdeError>(__TAURI_INVOKE("db_schemas", { id })),
-	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
-	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
+	dbDatabases: (id: string) => typedError<DbDatabases, IdeError_Serialize>(__TAURI_INVOKE("db_databases", { id })),
+	dbSchemas: (id: string) => typedError<string[], IdeError_Serialize>(__TAURI_INVOKE("db_schemas", { id })),
+	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError_Serialize>(__TAURI_INVOKE("db_tables", { id, schema })),
+	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError_Serialize>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
 	/**  The DDL of table or view `table` (Go to DDL, Generate DDL). */
-	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
+	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
 	/**  The routines and sequences of `schema` (the tree's `routines` / `sequences`). */
-	dbSchemaObjects: (id: string, schema: string) => typedError<DbSchemaObjects, IdeError>(__TAURI_INVOKE("db_schema_objects", { id, schema })),
+	dbSchemaObjects: (id: string, schema: string) => typedError<DbSchemaObjects, IdeError_Serialize>(__TAURI_INVOKE("db_schema_objects", { id, schema })),
 	/**  The definition of a routine, trigger or sequence (Go to DDL, Quick Documentation). */
-	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
+	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError_Serialize>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
 	/**  Explain Plan: the execution plan of `statement` on `id`, without running it. */
-	dbExplain: (request: RequestId, id: string, statement: string) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement })),
+	dbExplain: (request: RequestId, id: string, statement: string) => typedError<DbPlanNode[], IdeError_Serialize>(__TAURI_INVOKE("db_explain", { request, id, statement })),
 	/**  The statements data source `id` ran, newest first (Browse Query History). */
-	dbHistory: (id: string) => typedError<DbHistoryEntry[], IdeError>(__TAURI_INVOKE("db_history", { id })),
+	dbHistory: (id: string) => typedError<DbHistoryEntry[], IdeError_Serialize>(__TAURI_INVOKE("db_history", { id })),
 	/**  Removes statements from the query history of `id` (`None`: all of them). */
-	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
+	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	/**  Tables, columns and foreign keys for SQL completion. */
-	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
+	dbCompletion: (id: string) => typedError<DbCompletion, IdeError_Serialize>(__TAURI_INVOKE("db_completion", { id })),
 	/**  Writes exported result data (CSV, JSON, SQL…) to `path`. */
-	dbExportFile: (path: string, text: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_export_file", { path, text })),
+	dbExportFile: (path: string, text: string) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("db_export_file", { path, text })),
 	/**
 	 *  Switches a data source between auto-commit and manual commit (leaving
 	 *  manual mode rolls back what was not committed).
 	 */
-	dbSetManualCommit: (id: string, manual: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_manual_commit", { id, manual })),
+	dbSetManualCommit: (id: string, manual: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("db_set_manual_commit", { id, manual })),
 	/**  Commits or rolls back the open transaction of a manual-commit data source. */
-	dbFinishTransaction: (id: string, commit: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_finish_transaction", { id, commit })),
+	dbFinishTransaction: (id: string, commit: boolean) => typedError<null, IdeError_Serialize>(__TAURI_INVOKE("db_finish_transaction", { id, commit })),
 	/**  Statements a console runs: the selection's (`from < to`) or the one at the caret (`from`). */
-	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
+	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError_Serialize>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
 	/**
 	 *  Runs `statements` in order on data source `id`, stopping at the first
 	 *  error. Cancel with `cancel_request(request)`.
 	 */
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, maxRows })),
-	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number) => typedError<DbStatementOutcome[], IdeError_Serialize>(__TAURI_INVOKE("db_execute", { request, id, statements, maxRows })),
+	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError_Serialize>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	/**  Submits the table editor's changes in one transaction; returns the rows changed. */
-	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
+	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError_Serialize>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
 	/**  The query console file of data source `id` (`<appData>/consoles/db/<id>/console.sql`), created on first use. */
-	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
+	dbConsolePath: (id: string) => typedError<IpcPath, IdeError_Serialize>(__TAURI_INVOKE("db_console_path", { id })),
 };
 
 /* Types */
@@ -2975,9 +2975,11 @@ export type EnvReloaded = {
 	shellRead: boolean,
 };
 
+export type ErrorData = { type: "tool"; tool: string; missing: boolean };
+
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  Document version mismatch; the UI must resync the full text. */
-"outOfSync" | "cancelled" | 
+"outOfSync" | "cancelled" | "timedOut" | 
 /**  A required external tool (language server, git, debugger) is unavailable. */
 "unavailable" | "io" | "protocol" | "internal";
 
@@ -3541,9 +3543,30 @@ export type HunkRange = {
  *  Crates keep rich internal errors and convert at their public edge; the UI
  *  switches on `kind` and shows `message`.
  */
-export type IdeError = {
+export type IdeError = IdeError_Serialize | IdeError_Deserialize;
+
+/**
+ *  The single error type that crosses the IPC boundary.
+ * 
+ *  Crates keep rich internal errors and convert at their public edge; the UI
+ *  switches on `kind` and shows `message`.
+ */
+export type IdeError_Deserialize = {
 	kind: ErrorKind,
 	message: string,
+	data?: ErrorData | null,
+};
+
+/**
+ *  The single error type that crosses the IPC boundary.
+ * 
+ *  Crates keep rich internal errors and convert at their public edge; the UI
+ *  switches on `kind` and shows `message`.
+ */
+export type IdeError_Serialize = {
+	kind: ErrorKind,
+	message: string,
+	data?: ErrorData | null,
 };
 
 export type IdeEvent = 

@@ -507,7 +507,7 @@ pub(crate) fn run_input(
             break Err(IdeError::cancelled());
         }
         if started.elapsed() >= timeout {
-            break Err(IdeError::unavailable("Formatting timed out"));
+            break Err(IdeError::new(ErrorKind::TimedOut, "Formatting timed out"));
         }
         if status.is_none() {
             match child.try_wait() {
@@ -537,7 +537,7 @@ pub(crate) fn run_input(
     let errors = errors.unwrap()?;
     let status = status.unwrap();
     if !status.success() {
-        let diagnostics: String = String::from_utf8_lossy(&errors).chars().take(4000).collect();
+        let diagnostics: String = String::from_utf8_lossy(&errors).into_owned();
         return Err(IdeError::invalid(if diagnostics.trim().is_empty() {
             format!("Formatter exited with {status}")
         } else {
@@ -568,11 +568,9 @@ mod input_tests {
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 10 &"]);
         let start = Instant::now();
-        assert!(
-            run_input(&mut command, "", Duration::from_millis(50), &Default::default())
-                .unwrap_err()
-                .message
-                .contains("timed out")
+        assert_eq!(
+            run_input(&mut command, "", Duration::from_millis(50), &Default::default()).unwrap_err().kind,
+            ErrorKind::TimedOut
         );
         assert!(start.elapsed() < Duration::from_secs(2));
         let cancel = CancellationToken::new();
