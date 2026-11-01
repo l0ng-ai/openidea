@@ -30,6 +30,35 @@
   text-align: center;
 }
 
+.command {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.commandTitleLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.commandName {
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.commandHint {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.commandRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.commandRow > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
 .list {
   flex: 1;
   min-height: 240px;

@@ -6,7 +6,14 @@ import { tx } from "@/platform/i18n";
 import { MessagesHost } from "@/workbench/messages";
 import { AgentRegistryPage } from "./AgentRegistryPage";
 import { ADD_AGENT, providerOptions } from "./providerOptions";
-import { afterRemove, matchesQuery, rowActions, sortAgents, type RegistryBackend } from "./registry";
+import {
+  afterRemove,
+  matchesQuery,
+  rowActions,
+  sortAgents,
+  type CommandsBackend,
+  type RegistryBackend,
+} from "./registry";
 
 const agent = (partial: Partial<RegistryAgent> & Pick<RegistryAgent, "id" | "name">): RegistryAgent => ({
   version: "1.0.0",
@@ -256,5 +263,65 @@ describe("Agents settings page", () => {
     backend.list.mockRejectedValueOnce(new IpcError({ kind: "io", message: "offline" }));
     render(<AgentRegistryPage backend={backend} />);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the ACP Registry: offline"));
+  });
+});
+
+class FakeCommands implements CommandsBackend {
+  list: AgentProvider[] = [];
+  saved: [string, string | null][] = [];
+  providers = vi.fn(async () => this.list);
+  async set(id: string, command: string | null) {
+    this.saved.push([id, command]);
+    // What the agent list shows after the override takes effect.
+    this.list = this.list.map((p) => (p.id === id ? { ...p, command: command ?? p.id } : p));
+  }
+}
+
+const claudeProvider = (command: string): AgentProvider => ({
+  id: "claude",
+  name: "Claude Code",
+  command,
+  installed: true,
+  config: [],
+  commands: [],
+  source: { kind: "builtin" },
+});
+
+describe("Claude Code command override", () => {
+  it("is hidden when providers cannot be read (no trusted project)", async () => {
+    const commands = new FakeCommands();
+    commands.providers.mockRejectedValue(new IpcError({ kind: "unavailable", message: "restricted" }));
+    render(<AgentRegistryPage backend={new FakeBackend()} commandBackend={commands} />);
+    await waitFor(() => expect(row("Amp")).toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: "Claude Code command" })).toBeNull();
+  });
+
+  it("saves a binary path, shows the override, and resets to the PATH default", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    const onChanged = vi.fn();
+    render(<AgentRegistryPage onChanged={onChanged} backend={new FakeBackend()} commandBackend={commands} />);
+    const section = await screen.findByRole("region", { name: "Claude Code command" });
+    expect(screen.queryByText("Custom command")).toBeNull();
+    const field = within(section).getByRole("textbox", { name: "Claude Code command" });
+    expect(field).toHaveValue("claude");
+
+    fireEvent.change(field, { target: { value: "D:\\tools\\claude.exe" } });
+    fireEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(commands.saved).toEqual([["claude", "D:\\tools\\claude.exe"]]));
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(within(section).getByText("Custom command")).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "Reset" })).toBeInTheDocument();
+
+    fireEvent.click(within(section).getByRole("button", { name: "Reset" }));
+    await waitFor(() =>
+      expect(commands.saved).toEqual([
+        ["claude", "D:\\tools\\claude.exe"],
+        ["claude", null],
+      ]),
+    );
+    await waitFor(() => expect(within(section).queryByText("Custom command")).toBeNull());
+    expect(field).toHaveValue("claude");
+    expect(onChanged).toHaveBeenCalledTimes(2);
   });
 });

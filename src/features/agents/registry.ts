@@ -1,6 +1,13 @@
 /** Agents of the ACP Registry: listing, install / update / remove (`agent_registry_*`). */
 import { Channel } from "@tauri-apps/api/core";
-import type { AgentRegistry, InstallEvent, RegistryAgent, RegistryDistribution, RequestId } from "@/bindings";
+import type {
+  AgentProvider,
+  AgentRegistry,
+  InstallEvent,
+  RegistryAgent,
+  RegistryDistribution,
+  RequestId,
+} from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 
 export interface RegistryBackend {
@@ -8,6 +15,12 @@ export interface RegistryBackend {
   install(id: string, request: RequestId, onEvent: (e: InstallEvent) => void): Promise<void>;
   remove(id: string): Promise<void>;
   cancel(request: RequestId): void;
+}
+
+/** The built-in agents' launch commands: read, and override through an agent file. */
+export interface CommandsBackend {
+  providers(): Promise<AgentProvider[]>;
+  set(id: string, command: string | null): Promise<void>;
 }
 
 export const tauriRegistry: RegistryBackend = {
@@ -21,6 +34,13 @@ export const tauriRegistry: RegistryBackend = {
     await call(commands.agentRegistryRemove(id));
   },
   cancel: (request) => void commands.cancelRequest(request).catch(() => {}),
+};
+
+export const tauriCommands: CommandsBackend = {
+  providers: () => call(commands.agentProviders()),
+  set: async (id, command) => {
+    await call(commands.agentSetCommand(id, command));
+  },
 };
 
 export const DISTRIBUTION_LABEL: Record<RegistryDistribution, string> = {

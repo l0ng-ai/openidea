@@ -1,14 +1,14 @@
 /**
- * Settings › Tools › Agents: agents of the ACP Registry this machine can run, with
- * Install / Update / Remove. Installs run in the background with progress; leaving the
- * page cancels one.
+ * Settings › Tools › Agents: the launch command of built-in agents (Claude Code…), and
+ * agents of the ACP Registry this machine can run, with Install / Update / Remove.
+ * Installs run in the background with progress; leaving the page cancels one.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRegistry, RegistryAgent, RequestId } from "@/bindings";
 import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
-import { Badge, Button, ProgressBar, SearchField, Spinner, T } from "@/ui";
+import { Badge, Button, Input, ProgressBar, SearchField, Spinner, T } from "@/ui";
 import { confirm } from "@/workbench/messages";
 import {
   DISTRIBUTION_LABEL,
@@ -17,7 +17,9 @@ import {
   matchesQuery,
   rowActions,
   sortAgents,
+  tauriCommands,
   tauriRegistry,
+  type CommandsBackend,
   type RegistryBackend,
 } from "./registry";
 import styles from "./AgentRegistry.module.css";
@@ -34,10 +36,12 @@ interface Job {
 export function AgentRegistryPage({
   onChanged,
   backend = tauriRegistry,
+  commandBackend = tauriCommands,
 }: {
   /** An agent was installed, updated or removed (the agent list changed). */
   onChanged?: () => void;
   backend?: RegistryBackend;
+  commandBackend?: CommandsBackend;
 }) {
   const [registry, setRegistry] = useState<AgentRegistry | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -133,6 +137,7 @@ export function AgentRegistryPage({
 
   return (
     <div className={styles.body}>
+      <ClaudeCommand backend={commandBackend} onChanged={onChanged} />
       <SearchField
         autoFocus
         value={query}
@@ -185,6 +190,93 @@ export function AgentRegistryPage({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The Claude Code binary to run. Saving writes `<config>/agents/claude.toml` (driver and
+ * arguments stay the built-in's); resetting removes it, finding `claude` on PATH again.
+ * Hidden outside a trusted project, where providers cannot be read.
+ */
+function ClaudeCommand({ backend, onChanged }: { backend: CommandsBackend; onChanged?: () => void }) {
+  const [current, setCurrent] = useState<string | null>(null);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    backend
+      .providers()
+      .then((providers) => {
+        const claude = providers.find((p) => p.id === "claude");
+        if (live && claude) {
+          setCurrent(claude.command);
+          setValue(claude.command);
+        }
+      })
+      .catch(() => {}); // no trusted project: the section stays hidden
+    return () => {
+      live = false;
+    };
+  }, [backend]);
+
+  if (current == null) return null;
+
+  const save = async (command: string | null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await backend.set("claude", command);
+      const providers = await backend.providers();
+      const claude = providers.find((p) => p.id === "claude");
+      if (claude) {
+        setCurrent(claude.command);
+        setValue(claude.command);
+      }
+      onChanged?.();
+    } catch (e: unknown) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const overridden = current !== "claude";
+  return (
+    <section className={styles.command} aria-label="Claude Code command">
+      <div className={styles.commandTitleLine}>
+        <span className={styles.commandName}>Claude Code</span>
+        {overridden && <Badge>{tx("Custom command")}</Badge>}
+      </div>
+      <p className={styles.commandHint}>
+        <T>
+          The Claude Code binary to run; a full path when it is not on your PATH. Clear the field and save to find
+          `claude` on your PATH again.
+        </T>
+      </p>
+      <div className={styles.commandRow}>
+        <Input mono value={value} onChange={(e) => setValue(e.target.value)} aria-label="Claude Code command" />
+        <Button
+          size="small"
+          variant="primary"
+          disabled={busy || value === current}
+          onClick={() => void save(value.trim() || null)}
+        >
+          {tx("Save")}
+        </Button>
+        {overridden && (
+          <Button size="small" disabled={busy} onClick={() => void save(null)}>
+            {tx("Reset")}
+          </Button>
+        )}
+      </div>
+      {error && (
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }
 

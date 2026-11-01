@@ -318,6 +318,15 @@ impl AgentManager {
         list
     }
 
+    /// Overrides built-in `id`'s command with `command` (the driver and arguments stay
+    /// the built-in's) through its agent file, or returns it to auto-detection with `None`.
+    pub fn set_builtin_command(&self, id: &str, command: Option<String>) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::set_builtin_command(&dir, id, command.as_deref())
+    }
+
     /// The slash commands to complete for `provider`, in `task`'s directory or (without one)
     /// in the project: what the agent offered last time there, unadvertised builtins,
     /// and, for Claude Code, skills and custom commands on disk it has not listed.
