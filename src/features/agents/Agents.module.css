@@ -3,10 +3,22 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
 }
-.view > * {
+.content {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.content > * {
+  flex: 1;
+  min-height: 0;
+}
+/* A session editor tab hovers over the tool window: it will dock here. */
+.dropTarget {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .loading {
@@ -123,4 +135,63 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+/* A conversation docked in the tool window, above the task list. */
+.docked {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dockedBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.dockedTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.dockedSession {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tasks {
+  flex: 2 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+
+/* Keep the conversation usable in a short bottom tool window; the tree scrolls. */
+.docked + .tasks {
+  flex: 0 0 20%;
+  max-height: 160px;
+}
+
+/* A wide bottom window has room beside the conversation, preserving message height. */
+@container (min-width: 600px) {
+  .content {
+    flex-direction: row;
+  }
+  .docked + .tasks {
+    flex: 0 0 220px;
+    max-width: 30%;
+    max-height: none;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
 }

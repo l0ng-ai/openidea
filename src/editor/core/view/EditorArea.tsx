@@ -13,6 +13,9 @@ import { setContext } from "@/platform/context";
 import { useEditorPrefs } from "@/platform/editorSettings";
 import { basename, dirname } from "@/platform/project";
 import {
+  EDITOR_TAB_MIME,
+  acceptsEditorDrop,
+  dropOnEditor,
   getFileDecoration,
   prepareMenuGroups,
   textEditorWrapperFor,
@@ -54,10 +57,46 @@ import { tx } from "@/platform/i18n";
 export function EditorAreaView() {
   const layout = useTabs((s) => s.layout);
   const empty = useTabs((s) => Object.values(s.panes).every((p) => p.tabs.length === 0));
-  if (empty && layout.kind === "pane") return <EmptyEditor />;
+  if (empty && layout.kind === "pane") return <EmptyEditorArea />;
   return (
     <div className={styles.area}>
       <LayoutView node={layout} />
+    </div>
+  );
+}
+
+/** The empty editor still accepts drops: reopening tabs, opening files, feature drags (agent tasks). */
+function EmptyEditorArea() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [over, setOver] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    return registerDropTarget(el, {
+      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
+      over: () => setOver(true),
+      leave: () => setOver(false),
+      drop: (data) => {
+        setOver(false);
+        const paneId = Object.keys(useTabs.getState().panes)[0];
+        if (!paneId) return;
+        if (data.type === FILES_DRAG) {
+          void editorController().openFilesIn(data.payload.split("\n").filter(Boolean), paneId, "center");
+          return;
+        }
+        if (data.type !== EDITOR_TAB_MIME) {
+          dropOnEditor(data);
+          return;
+        }
+        const p = parseTabPayload(data.payload);
+        if (p) editorController().moveTab(p.paneId, p.tabId, paneId, 0);
+      },
+    });
+  }, []);
+  return (
+    <div ref={ref} className={styles.area}>
+      <EmptyEditor />
+      {over && <div className={clsx(styles.dropZone, styles["drop-center"])} aria-hidden="true" />}
     </div>
   );
 }
@@ -77,9 +116,6 @@ function LayoutView({ node }: { node: LayoutNode }): ReactNode {
     </SplitGroup>
   );
 }
-
-/** MIME type of a dragged editor tab: `{"paneId","tabId"}` JSON. */
-export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
 
 type DropZone = SplitEdge | "center";
 
@@ -232,14 +268,19 @@ function PaneView({ paneId }: { paneId: string }) {
     if (!el) return;
     const zoneAt = (x: number, y: number) => dropZoneAt(x, y, el.getBoundingClientRect());
     return registerDropTarget(el, {
-      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG,
-      over: (_, x, y) => setDropZone(zoneAt(x, y)),
+      accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
+      over: (data, x, y) =>
+        setDropZone(data.type === EDITOR_TAB_MIME || data.type === FILES_DRAG ? zoneAt(x, y) : "center"),
       leave: () => setDropZone(null),
       drop: (data, x, y) => {
         const zone = zoneAt(x, y);
         setDropZone(null);
         if (data.type === FILES_DRAG) {
           void ctrl.openFilesIn(data.payload.split("\n").filter(Boolean), paneId, zone);
+          return;
+        }
+        if (data.type !== EDITOR_TAB_MIME) {
+          dropOnEditor(data);
           return;
         }
         const p = parseTabPayload(data.payload);

@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { AgentEntry, AgentEvent, AgentTask } from "@/bindings";
-import { useContributions } from "@/workbench/contributions";
+import { dropOnEditor, useContributions } from "@/workbench/contributions";
 import { AgentsView } from "./AgentsView";
 import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
-import { connect, disconnect, markVisible, useAgents } from "./store";
+import * as actions from "@/platform/actions";
+import { TASK_DRAG } from "./model";
+import { connect, disconnect, dockTask, markVisible, undockTask, useAgents } from "./store";
 
 const backend = vi.hoisted(() => ({
   channel: null as { onmessage: (event: AgentEvent) => void } | null,
@@ -13,6 +15,7 @@ const backend = vi.hoisted(() => ({
   notify: vi.fn(),
   openInput: vi.fn(),
   closeInput: vi.fn(),
+  showToolWindow: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", async (original) => ({
@@ -36,6 +39,7 @@ vi.mock("@/platform/ipc", async (original) => ({
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   editorService: () => ({ openInput: backend.openInput, closeInput: backend.closeInput }),
+  toolWindowService: () => ({ show: backend.showToolWindow }),
   notifications: () => ({ notify: backend.notify }),
 }));
 
@@ -220,5 +224,54 @@ describe("agent unread indicators", () => {
     } finally {
       act(dispose);
     }
+  });
+});
+
+describe("docking a conversation in the tool window", () => {
+  it("shows the task in the tool window, closing its editor tab, and undocks back to one", async () => {
+    act(() => dockTask("one"));
+    expect(useAgents.getState().docked).toBe("one");
+    expect(backend.showToolWindow).toHaveBeenCalledWith("agents", true);
+    expect(backend.closeInput).toHaveBeenCalledWith("agent:one");
+    act(() => undockTask());
+    expect(useAgents.getState().docked).toBeNull();
+    expect(backend.openInput).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "agent-session", key: "agent:one" }),
+      { focus: true },
+    );
+  });
+
+  it("undocks a removed task", async () => {
+    act(() => dockTask("one"));
+    emit({ type: "removed", id: "one" });
+    expect(useAgents.getState().docked).toBeNull();
+  });
+
+  it("drops a dragged task into the editor: undocking when docked, opening a tab otherwise", () => {
+    const dispose = activate();
+    const execute = vi.spyOn(actions, "executeAction");
+    act(() => dropOnEditor({ type: TASK_DRAG, payload: "two" }));
+    expect(execute).toHaveBeenCalledWith("agents.openTask", "two");
+    expect(useAgents.getState().docked).toBeNull();
+    expect(backend.openInput).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "agent-session", key: "agent:two" }),
+      { focus: true },
+    );
+    backend.openInput.mockClear();
+    act(() => dockTask("one"));
+    act(() => dropOnEditor({ type: TASK_DRAG, payload: "one" }));
+    expect(execute).toHaveBeenCalledWith("agents.undockTask", "one");
+    expect(useAgents.getState().docked).toBeNull();
+    expect(backend.openInput).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "agent-session", key: "agent:one" }),
+      { focus: true },
+    );
+    dispose();
+  });
+
+  it("drops the dock when the project changes", async () => {
+    act(() => dockTask("one"));
+    disconnect();
+    expect(useAgents.getState().docked).toBeNull();
   });
 });

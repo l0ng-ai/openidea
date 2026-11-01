@@ -15,13 +15,14 @@ import type {
 import { useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { editorService, notifications } from "@/workbench/contributions";
+import { editorService, notifications, toolWindowService } from "@/workbench/contributions";
 import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
 import { withQuote } from "./conversation";
 import {
   HOME_KEY,
   HOME_KIND,
   SESSION_KIND,
+  TOOL_WINDOW,
   attentionChange,
   entriesKey,
   isBusy,
@@ -53,6 +54,8 @@ interface AgentsState {
   /** Entries of the tasks (and subagents) opened in this window, by `entriesKey`. */
   entries: Map<string, AgentEntry[]>;
   changes: Map<string, AgentChange[]>;
+  /** Scroll position and follow-output preference by conversation, shared by both hosts. */
+  scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
   draft: Draft;
   composers: Map<string, ComposerDraft>;
@@ -62,6 +65,8 @@ interface AgentsState {
   history: string[];
   /** The composer asked to take focus (`seq` tells repeated requests apart). */
   focus: { key: string; seq: number } | null;
+  /** Task shown inside the Agents tool window instead of an editor tab. */
+  docked: string | null;
 }
 
 const DRAFT_KEY = "openidea.agents.draft.v2";
@@ -100,6 +105,8 @@ export const useAgents = create<AgentsState>(() => ({
   lastComposer: HOME,
   history: load<string[]>(HISTORY_KEY, []),
   focus: null,
+  docked: null,
+  scrollPositions: new Map(),
 }));
 
 export function updateDraft(patch: Partial<Draft>) {
@@ -202,6 +209,8 @@ export function disconnect() {
     unread: new Set(),
     entries: new Map(),
     changes: new Map(),
+    docked: null,
+    scrollPositions: new Map(),
   });
 }
 
@@ -227,7 +236,7 @@ function onEvent(e: AgentEvent) {
       composers.delete(e.id);
       const unread = new Set(s.unread);
       unread.delete(e.id);
-      useAgents.setState({ tasks, composers, unread });
+      useAgents.setState({ tasks, composers, unread, ...(s.docked === e.id ? { docked: null } : {}) });
       void editorService().closeInput?.(sessionKey(e.id));
       break;
     }
@@ -347,6 +356,21 @@ export function openTask(task: string) {
   // The title rides along so a restored tab has it before the tasks load.
   const title = useAgents.getState().tasks.get(task)?.title;
   void editorService().openInput({ kind: SESSION_KIND, key: sessionKey(task), data: { task, title } }, { focus: true });
+}
+
+/** Shows the conversation inside the Agents tool window, closing its editor tab. */
+export function dockTask(task: string) {
+  useAgents.setState({ docked: task });
+  toolWindowService().show(TOOL_WINDOW, true);
+  void editorService().closeInput?.(sessionKey(task));
+}
+
+/** Moves the docked conversation back to an editor tab. */
+export function undockTask() {
+  const docked = useAgents.getState().docked;
+  if (!docked) return;
+  useAgents.setState({ docked: null });
+  openTask(docked);
 }
 
 /** Opens the New Task page; `prompt` pre-fills it. */
