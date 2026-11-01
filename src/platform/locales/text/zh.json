@@ -5440,5 +5440,15 @@
   "copy paths must belong to the comparison roots": "复制路径必须位于比较的根目录内",
   "cannot copy overlapping paths": "无法在相互包含的路径之间复制",
   "cannot copy through a destination symlink": "无法通过目标目录内的符号链接复制",
-  "expected a relative comparison entry path": "需要比较条目的相对路径"
+  "expected a relative comparison entry path": "需要比较条目的相对路径",
+  "IntelliJ IDEA": "IntelliJ IDEA",
+  "Formatting profile": "格式化方案",
+  "Custom Eclipse formatter XML": "自定义 Eclipse 格式化 XML",
+  "Eclipse formatter XML": "Eclipse 格式化 XML",
+  "Changes take effect after Apply without restarting the Java language server.": "应用后即生效，无需重启 Java 语言服务器。",
+  "Absolute or project-relative path. To reload an edited XML file, switch to Default, apply, then select Custom again.": "使用绝对路径或项目相对路径。修改 XML 文件后，请切换到默认方案并应用，再重新选择自定义方案。",
+  "Cannot read Java formatter XML {path}: {error}": "无法读取 Java 格式化 XML {path}：{error}",
+  "Java formatter configuration unavailable": "Java 格式化配置不可用",
+  "Choose an Eclipse formatter XML file.": "请选择 Eclipse 格式化 XML 文件。",
+  "Not a formatter XML file: {path}": "不是格式化 XML 文件：{path}"
 }

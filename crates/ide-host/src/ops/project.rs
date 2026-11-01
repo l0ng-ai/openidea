@@ -172,9 +172,12 @@ pub fn set_settings(
         host.apply_proxy();
     }
     // A new interpreter / toolchain / server executable restarts the language servers it affects.
-    if ["languages", "tools", "languageServers", "projectStructure"]
-        .iter()
-        .any(|k| key == *k || key.starts_with(&format!("{k}.")))
+    if key == "editor"
+        || key == "editor.codeStyle"
+        || key.starts_with("editor.codeStyle.")
+        || ["languages", "tools", "languageServers", "projectStructure"]
+            .iter()
+            .any(|k| key == *k || key.starts_with(&format!("{k}.")))
     {
         for project in affected() {
             if let Some(bridge) = &project.kotlin_bridge {
