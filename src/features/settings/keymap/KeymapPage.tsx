@@ -6,11 +6,13 @@
  * double-click adds). Edits are staged as the `keymap`, `keymapOverrides`
  * (bundled keymaps) and `customKeymaps` (user keymaps) settings, global scope.
  */
-import { useMemo, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
-import { useActions, allActions, type Action } from "@/platform/actions";
+import { executeAction, registerActions, useActions, allActions, type Action } from "@/platform/actions";
+import { call, commands } from "@/platform/ipc";
 import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS } from "@/platform/keymap";
-import { confirm } from "@/workbench/messages";
+import { parseKeymapXml } from "@/platform/keymapXml";
+import { ask, confirm, showError } from "@/workbench/messages";
 import {
   HighlightedText,
   Icon,
@@ -35,6 +37,7 @@ import {
   copyName,
   deleteKeymap,
   duplicateKeymap,
+  importKeymap,
   isModified,
   keymapName,
   removeBinding,
@@ -172,7 +175,73 @@ export function KeymapPage() {
   const [recordFor, setRecordFor] = useState<Action | null>(null);
   const [recordMouse, setRecordMouse] = useState(false);
   const [nameDialog, setNameDialog] = useState<NameDialog>(null);
+  const [busy, setBusy] = useState(false);
   const gearRef = useRef<HTMLButtonElement>(null);
+
+  const importHandler = useRef<(file?: string) => Promise<void>>(async () => {});
+  useEffect(() => {
+    importHandler.current = async (file) => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const path =
+        file ??
+        (await open({
+          multiple: false,
+          filters: [{ name: tx("IntelliJ Keymap"), extensions: ["xml"] }],
+        }));
+      if (!path) return;
+      const fallbackName = path.split(/[\\/]/).pop()?.replace(/\.xml$/i, "");
+      const parsed = parseKeymapXml(await call(commands.fsReadText(path)), { fallbackName, customs });
+      let overwrite = false;
+      const existsPreset = Object.values(PRESET_TITLES).includes(parsed.keymap.name);
+      const canOverwrite = Object.values(customs).some((k) => k.name === parsed.keymap.name);
+      if (existsPreset || canOverwrite) {
+        const { button } = await ask({
+          title: tx("Import Keymap"),
+          body: tx`A keymap named '${parsed.keymap.name}' already exists.`,
+          buttons: [
+            ...(canOverwrite ? [{ id: "overwrite", label: tx("Overwrite") }] : []),
+            { id: "both", label: tx("Keep Both"), primary: true },
+          ],
+        });
+        if (button !== "overwrite" && button !== "both") return;
+        overwrite = button === "overwrite";
+      }
+      const next = importKeymap(customs, parsed.keymap, overwrite);
+      setCustoms(next.customs);
+      setSelected(next.id);
+    };
+  });
+  const pending = useRef(false);
+  useEffect(
+    () =>
+      registerActions([
+        {
+          id: "keymap.import",
+          title: "Import Keymap",
+          category: "Settings",
+          hidden: true,
+          run: async ({ arg }) => {
+            if (pending.current) return;
+            pending.current = true;
+            setBusy(true);
+            try {
+              await importHandler.current(typeof arg === "string" ? arg : undefined);
+            } catch (error) {
+              await showError(
+                tx("Keymap"),
+                error instanceof Error && error.message === "Invalid IntelliJ keymap XML"
+                  ? tx("Invalid IntelliJ keymap XML")
+                  : String(error),
+              );
+            } finally {
+              pending.current = false;
+              setBusy(false);
+            }
+          },
+        },
+      ]),
+    [],
+  );
 
   const roots = useMemo(
     () => buildKeymapTree(actions, draft, query.trim(), byShortcut ? shortcut : ""),
@@ -238,6 +307,8 @@ export function KeymapPage() {
       run: () => setNameDialog({ mode: "rename", initial: keymapName(selectedId, customs) }),
     },
     { label: "Restore Defaults", icon: "undo", disabled: !overrideCount, run: () => change({}) },
+    { kind: "separator" },
+    { label: "Import…", disabled: busy, run: () => void executeAction("keymap.import") },
     // Bundled keymaps cannot be deleted (IDEA hides the item for them).
     ...(isCustom
       ? ([

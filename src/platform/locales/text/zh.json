@@ -5494,5 +5494,10 @@
   "Cannot paste image": "无法粘贴图片",
   "Remote server does not support image paste.": "远程服务器不支持粘贴图片。",
   "Clipboard image reading is unavailable.": "无法读取剪贴板图片。",
-  "Image is too large to paste (limit {limit} MB).": "图片过大，无法粘贴（上限 {limit} MB）。"
+  "Image is too large to paste (limit {limit} MB).": "图片过大，无法粘贴（上限 {limit} MB）。",
+  "IntelliJ Classic (macOS)": "IntelliJ 经典 (macOS)",
+  "IntelliJ Keymap": "IntelliJ 按键映射",
+  "Import Keymap": "导入按键映射",
+  "Invalid IntelliJ keymap XML": "无效的 IntelliJ 按键映射 XML",
+  "A keymap named '{name}' already exists.": "名为“{name}”的按键映射已存在。"
 }
