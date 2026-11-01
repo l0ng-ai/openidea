@@ -44,6 +44,8 @@ export interface Draft {
 /** Composer key of the New Task page; sessions use their task id. */
 export const HOME = "home";
 
+export type SessionLocation = "editor" | "toolWindow";
+
 interface AgentsState {
   loaded: boolean;
   /** Why the tasks could not be loaded. */
@@ -67,11 +69,15 @@ interface AgentsState {
   focus: { key: string; seq: number } | null;
   /** Task shown inside the Agents tool window instead of an editor tab. */
   docked: string | null;
+  sessionLocation: SessionLocation;
+  lastTask: string | null;
+  homeOpen: boolean;
 }
 
 const DRAFT_KEY = "openidea.agents.draft.v2";
 const HISTORY_KEY = "openidea.agents.history.v1";
 const HISTORY_SIZE = 50;
+const SESSION_LOCATION_KEY = "openidea.agents.sessionLocation.v1";
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -106,6 +112,9 @@ export const useAgents = create<AgentsState>(() => ({
   history: load<string[]>(HISTORY_KEY, []),
   focus: null,
   docked: null,
+  sessionLocation: load<unknown>(SESSION_LOCATION_KEY, null) === "toolWindow" ? "toolWindow" : "editor",
+  lastTask: null,
+  homeOpen: false,
   scrollPositions: new Map(),
 }));
 
@@ -210,6 +219,8 @@ export function disconnect() {
     entries: new Map(),
     changes: new Map(),
     docked: null,
+    lastTask: null,
+    homeOpen: false,
     scrollPositions: new Map(),
   });
 }
@@ -353,24 +364,76 @@ export function useAgentCommands(
 }
 
 export function openTask(task: string) {
+  if (useAgents.getState().sessionLocation === "toolWindow") {
+    showDockedTask(task);
+    return;
+  }
+  useAgents.setState({ lastTask: task, homeOpen: false });
+  openTaskInEditor(task);
+}
+
+function openTaskInEditor(task: string) {
   // The title rides along so a restored tab has it before the tasks load.
   const title = useAgents.getState().tasks.get(task)?.title;
   void editorService().openInput({ kind: SESSION_KIND, key: sessionKey(task), data: { task, title } }, { focus: true });
 }
 
-/** Shows the conversation inside the Agents tool window, closing its editor tab. */
-export function dockTask(task: string) {
-  useAgents.setState({ docked: task });
+function showDockedTask(task: string) {
+  useAgents.setState({ docked: task, lastTask: task, homeOpen: false });
   toolWindowService().show(TOOL_WINDOW, true);
   void editorService().closeInput?.(sessionKey(task));
 }
 
-/** Moves the docked conversation back to an editor tab. */
+function saveSessionLocation(location: SessionLocation) {
+  useAgents.setState({ sessionLocation: location });
+  save(SESSION_LOCATION_KEY, location);
+  if (location === "toolWindow") {
+    for (const { input } of editorService().openTabs?.() ?? []) {
+      if (input.kind === SESSION_KIND || input.kind === HOME_KIND) void editorService().closeInput?.(input.key);
+    }
+  }
+}
+
+/** Conversation placement is an Agents-wide preference, shared by every task. */
+export function setSessionLocation(location: SessionLocation) {
+  const s = useAgents.getState();
+  if (s.sessionLocation === location) return;
+  const active = editorService().activeInput?.();
+  const activeTask = active?.kind === SESSION_KIND ? (active.data as { task: string }).task : null;
+  const home = s.homeOpen || active?.kind === HOME_KIND;
+  const task =
+    s.docked ??
+    activeTask ??
+    (s.lastTask && s.tasks.has(s.lastTask) ? s.lastTask : null) ??
+    [...s.tasks.values()]
+      .filter((t) => t.status !== "archived")
+      .sort((a, b) => (b.updatedMs ?? b.createdMs ?? 0) - (a.updatedMs ?? a.createdMs ?? 0))[0]?.id;
+  saveSessionLocation(location);
+  useAgents.setState({ docked: null, homeOpen: false });
+  if (home) {
+    openHome();
+  } else if (task) {
+    openTask(task);
+  } else if (location === "toolWindow") {
+    openHome();
+  }
+}
+
+/** Dragging a session into the tool window selects the same placement for other tasks. */
+export function dockTask(task: string) {
+  saveSessionLocation("toolWindow");
+  showDockedTask(task);
+}
+
 export function undockTask() {
-  const docked = useAgents.getState().docked;
-  if (!docked) return;
-  useAgents.setState({ docked: null });
-  openTask(docked);
+  setSessionLocation("editor");
+}
+
+/** An explicit editor drop also updates where subsequent sessions open. */
+export function openTaskInEditorLocation(task: string) {
+  saveSessionLocation("editor");
+  useAgents.setState({ docked: null, homeOpen: false });
+  openTask(task);
 }
 
 /** Opens the New Task page; `prompt` pre-fills it. */
@@ -382,6 +445,12 @@ export function openHome(prompt?: string) {
     updateDraft({ projectRoot, ...(projectRoot !== previous ? { base: null } : {}) });
   }
   if (prompt !== undefined) updateComposer(HOME, { text: prompt });
+  if (useAgents.getState().sessionLocation === "toolWindow") {
+    useAgents.setState({ docked: null, homeOpen: true });
+    toolWindowService().show(TOOL_WINDOW, true);
+    void editorService().closeInput?.(HOME_KEY);
+    return;
+  }
   void editorService().openInput({ kind: HOME_KIND, key: HOME_KEY, data: {} }, { focus: true });
 }
 
