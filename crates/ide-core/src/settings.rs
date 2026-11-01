@@ -722,6 +722,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tool_window_badges_default_on_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"showToolWindowNames":true}}"#).unwrap();
+        assert!(old.appearance.show_tool_window_badges);
+        assert!(Settings::default().appearance.show_tool_window_badges);
+        for enabled in [false, true] {
+            let mut settings = Settings::default();
+            settings.appearance.show_tool_window_badges = enabled;
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["appearance"]["showToolWindowBadges"], enabled);
+            let restored: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.appearance.show_tool_window_badges, enabled);
+        }
+    }
+
+    #[test]
     fn main_menu_style_defaults_and_round_trips() {
         let old: Settings = serde_json::from_str(r#"{"appearance":{"compactMode":true}}"#).unwrap();
         assert_eq!(old.appearance.main_menu_style, "hamburger");
