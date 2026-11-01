@@ -1,8 +1,8 @@
 /**
- * Go to declaration / implementation / type declaration (⌘B, ⌥⌘B, ⇧⌘B and
- * ⌘-click with a link underline while ⌘ is held), the multiple-targets
- * chooser, and document highlights (occurrences of the symbol at the caret,
- * plus the sticky find.highlightUsages variant).
+ * Go to declaration / implementation / type declaration (⌘B, ⌥⌘B, ⇧⌘B,
+ * ⌘-click with a link underline while ⌘ is held, and a plain middle-button
+ * click), the multiple-targets chooser, and document highlights (occurrences
+ * of the symbol at the caret, plus the sticky find.highlightUsages variant).
  */
 import { EditorSelection, Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import {
@@ -489,7 +489,7 @@ const linkPlugin = ViewPlugin.fromClass(
         this.show(false);
       },
       mousedown(e, view) {
-        if (e.button !== 0) return false;
+        if (e.button !== 0 && e.button !== 1) return false;
         if (
           dispatchMouseShortcut(e, () => {
             const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
@@ -502,7 +502,8 @@ const linkPlugin = ViewPlugin.fromClass(
           e.preventDefault();
           return true;
         }
-        if (!isNavigationGesture(e)) return false;
+        // IDEA parity: middle button navigates on a plain click, without the modifier.
+        if (e.button === 1 ? e.metaKey || e.ctrlKey || e.altKey || e.shiftKey : !isNavigationGesture(e)) return false;
         const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
         if (pos == null) return false;
         e.preventDefault();
