@@ -822,9 +822,18 @@ fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri:
 /// scale and its position is given in physical pixels.
 #[cfg(not(target_os = "macos"))]
 fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+    // Placement setters leave maximized mode. Fit the restored frame, then reapply the saved state.
+    // A restored fullscreen window already covers its display and must not be fitted to the work area.
+    if window.is_fullscreen()? {
+        return Ok(());
+    }
     let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
         return Ok(());
     };
+    let maximized = window.is_maximized()?;
+    if maximized {
+        window.unmaximize()?;
+    }
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
     let origin = area.position.to_logical::<f64>(scale);
@@ -852,6 +861,9 @@ fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> taur
             SETTINGS_MIN_SIZE.1.min(height),
         )))?;
         window.set_size(tauri::LogicalSize::new(width, height))?;
+    }
+    if maximized {
+        window.maximize()?;
     }
     Ok(())
 }

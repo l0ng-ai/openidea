@@ -17,6 +17,8 @@ mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
 mod window_groups;
+#[cfg(any(windows, test))]
+mod window_work_area;
 mod windows;
 
 use parking_lot::Mutex;
@@ -68,6 +70,9 @@ pub fn run() {
     // Single instance first: a second launch focuses this one and opens its path argument.
     // Debug builds have a separate identifier per worktree.
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
+    // Install before window-state restores maximized geometry during window creation.
+    #[cfg(windows)]
+    let app = app.plugin(window_work_area::init());
     let app = app
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
