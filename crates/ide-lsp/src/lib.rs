@@ -129,6 +129,7 @@ impl Target {
 }
 
 struct DocSnap {
+    version: i32,
     path: PathBuf,
     uri: lsp::Uri,
     language: LanguageId,
@@ -175,6 +176,7 @@ pub struct LspManager {
     excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
     shutting_down: AtomicBool,
     execution_allowed: AtomicBool,
+    java_usages_warned: AtomicBool,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
@@ -307,6 +309,7 @@ impl LspManager {
             excludes_hook: RwLock::new(None),
             shutting_down: AtomicBool::new(false),
             execution_allowed: AtomicBool::new(true),
+            java_usages_warned: AtomicBool::new(false),
             shown_messages: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
@@ -914,6 +917,7 @@ impl LspManager {
         let docs = self.docs.lock();
         let d = docs.get(&doc).ok_or_else(|| IdeError::not_found(format!("{doc} is not open")))?;
         Ok(DocSnap {
+            version: d.version,
             path: d.path.clone(),
             uri: d.uri.clone(),
             language: d.language.clone(),
@@ -1182,6 +1186,106 @@ impl LspManager {
         cancel: CancellationToken,
     ) -> IdeResult<References> {
         let (snap, targets) = self.doc_targets(doc, "find references", |c| c.has("referencesProvider")).await?;
+        // The extension preserves method identity before JDT collapses references to locations.
+        // Old/custom servers retain the standard protocol, including cancellation and scope widening.
+        if targets.len() == 1
+            && targets[0].server.name == "jdtls"
+            && targets[0].caps().commands().iter().any(|c| c == "openidea.java.usages")
+        {
+            let classified = async {
+                let t = &targets[0];
+                let extension_error = Mutex::new(None);
+                let query = || async {
+                    if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                        return Err(IdeError::cancelled());
+                    }
+                    let params = snap.pos_params(t, pos);
+                    #[derive(serde::Deserialize)]
+                    struct JavaReference {
+                        #[serde(default)]
+                        access: Option<ReferenceAccess>,
+                        location: lsp::Location,
+                        kind: ReferenceKind,
+                    }
+                    let result: IdeResult<Vec<JavaReference>> = self
+                        .call(
+                            t,
+                            "workspace/executeCommand",
+                            json!({
+                                "command": "openidea.java.usages",
+                                "arguments": [params["textDocument"]["uri"], params["position"]["line"],
+                                    params["position"]["character"], include_declaration]
+                            }),
+                            Some(&cancel),
+                            LONG_TIMEOUT,
+                        )
+                        .await;
+                    if let Err(e) = &result {
+                        *extension_error.lock() = Some(e.clone());
+                    }
+                    let rows = result?;
+                    if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                        return Err(IdeError::cancelled());
+                    }
+                    let conv = self.conv(t.enc());
+                    Ok(rows
+                        .into_iter()
+                        .filter_map(|r| {
+                            conv.location(&r.location).map(|location| ClassifiedReference {
+                                location,
+                                kind: r.kind,
+                                access: r.access,
+                            })
+                        })
+                        .collect::<Vec<_>>())
+                };
+                let files = |v: &Vec<ClassifiedReference>| {
+                    v.iter().filter(|r| r.location.uri.is_none()).map(|r| r.location.path.to_path_buf()).collect()
+                };
+                let widened = if project_wide {
+                    self.widened(&snap, t, pos, &cancel, query, files).await?
+                } else {
+                    let first = query().await?;
+                    let empty = first.is_empty();
+                    scope::Widened::only(first, empty, &t.server)
+                };
+                // A changed source also invalidates an earlier answer retained by scope widening.
+                if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                    return Err(IdeError::cancelled());
+                }
+                // Scope widening can retain the first answer after a failed second query.
+                if let Some(e) = extension_error.into_inner() {
+                    return Err(e);
+                }
+                let mut seen = std::collections::HashSet::new();
+                // Prefer the second query's metadata for repeated locations.
+                let classified: Vec<_> = widened
+                    .second
+                    .into_iter()
+                    .flatten()
+                    .chain(widened.first)
+                    .filter(|r| seen.insert(r.location.clone()))
+                    .collect();
+                let locations: Vec<Location> = classified.iter().map(|r| r.location.clone()).collect();
+                self.note_virtual(&t.server, locations.iter().map(|l| l.uri.as_deref()));
+                Ok(References { locations, classified, incomplete: widened.incomplete })
+            }
+            .await;
+            match classified {
+                Ok(references) => return Ok(references),
+                Err(e) => {
+                    if e.kind == ErrorKind::Cancelled
+                        || cancel.is_cancelled()
+                        || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version)
+                    {
+                        return Err(IdeError::cancelled());
+                    }
+                    if !self.java_usages_warned.swap(true, Ordering::Relaxed) {
+                        tracing::warn!("Java usages extension failed; using standard references: {e}");
+                    }
+                }
+            }
+        }
         let requests = targets.iter().map(|t| {
             let (snap, cancel) = (&snap, &cancel);
             async move {

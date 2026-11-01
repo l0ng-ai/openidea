@@ -1726,6 +1726,13 @@ export type CheckoutOutcome = { kind: "done" } |
  */
 { kind: "conflicts"; files: string[] };
 
+export type ClassifiedReference = {
+	/**  Optional for older Java extensions; missing means unclassified. */
+	access?: ReferenceAccess | null,
+	location: Location,
+	kind: ReferenceKind,
+};
+
 export type ClearCachesResult = {
 	/**  Syntax trees dropped (they are rebuilt on demand). */
 	syntaxTrees: number,
@@ -4968,7 +4975,13 @@ export type RecentProject = {
 	branch: string | null,
 };
 
+export type ReferenceAccess = "read" | "write" | "readWrite" | "unknown";
+
+export type ReferenceKind = "getter" | "setter" | "field" | "unknown";
+
 export type References = {
+	/**  Semantic classifications supplied by a language extension. Missing entries are unknown. */
+	classified?: ClassifiedReference[],
 	locations: Location[],
 	incomplete: ReferencesIncomplete | null,
 };
