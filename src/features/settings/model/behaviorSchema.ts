@@ -33,6 +33,7 @@ export interface AppearanceExtras {
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
   showToolWindowNames: boolean;
+  showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
 }
 
@@ -84,6 +85,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
   showToolWindowNames: false,
+  showToolWindowBadges: true,
   widescreenToolWindows: false,
 };
 
@@ -134,6 +136,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
     showToolWindowNames: b("showToolWindowNames"),
+    showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
   };
 }

@@ -1985,6 +1985,8 @@
   "Show the parameter info popup in": "在以下时间后显示形参信息弹出窗口",
   "Show the selected coverage suite in editors and the project view": "在编辑器和项目视图中显示所选覆盖率套件",
   "Show tool window bars": "显示工具窗口栏",
+  "Show tool window badges": "显示工具窗口角标",
+  "Counts on the stripe icons, e.g. changed files or agent tasks needing input": "侧栏图标上的数字，如变更文件数、等待输入的智能体任务数",
   "Show tool window names": "显示工具窗口名称",
   "Show value tooltip on code selection": "选中代码时显示值提示",
   "Show value tooltip on mouse hover": "鼠标悬停时显示值工具提示",
