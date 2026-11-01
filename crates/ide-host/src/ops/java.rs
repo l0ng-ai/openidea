@@ -61,7 +61,7 @@ async fn resolve_launch(
     let external_build = if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
     let mut info = project.lsp.java_launch(&module, test, build && !delegated, cancel).await?;
     let lsp_ms = started.elapsed().as_millis();
-    let data_dir = host.data_dir.clone();
+    let data_dir = host.local_data_dir.clone();
     let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
         let _external_build = external_build;

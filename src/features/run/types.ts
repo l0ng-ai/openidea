@@ -22,6 +22,8 @@ import { useProject } from "@/platform/project";
 import { tomcatType } from "./tomcat";
 import { goBuildType, goTestType } from "./goTypes";
 
+import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
+
 export const COMPOUND = "compound";
 
 const on = (v: string | undefined) => v === "true";
@@ -396,6 +398,8 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   maven,
   godot,
   pytest,
+  dotnetProjectType,
+  dotnetTestType,
   goBuildType,
   goTestType,
   applicationType,
@@ -444,6 +448,10 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
   if (!line) return { ...rest, params, command: "", args: [] };
   return {
     ...rest,
+    ...(config.kind === "dotnet" && config.beforeLaunch === undefined
+      ? { beforeLaunch: [{ kind: "dotnetBuild", target: "" }] }
+      : {}),
+    ...(config.kind === "dotnet-test" ? { isTest: true } : {}),
     params: params.goKind ? { ...params, programArgv: JSON.stringify(parseArgs(params.programArgs ?? "")) } : params,
     ...(config.kind === "go-test" && !config.id.startsWith("template:") ? { kind: "go" } : {}),
     ...(params.goKind ? { isTest: params.goKind === "test" } : {}),

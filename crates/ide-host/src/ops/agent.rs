@@ -25,7 +25,7 @@ pub fn providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
 
 /// Where ACP Registry agents are saved (`<config>/agents`, like the user's own) and installed.
 pub(crate) fn registry_paths(host: &Host) -> RegistryPaths {
-    RegistryPaths::new(&host.config_dir, &host.data_dir)
+    RegistryPaths::new(&host.config_dir, &host.local_data_dir)
 }
 
 fn join_err(e: impl std::fmt::Display) -> IdeError {

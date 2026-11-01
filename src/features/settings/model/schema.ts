@@ -4,6 +4,7 @@
  * so `validateSettings` never throws — anything unknown or malformed falls
  * back to the default (mirrors `ide-core::settings` defaults).
  */
+import { validateCMake } from "@/platform/cmakeSettings";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
 import { validateFileTypeOverrides, validateFileTypes, type FileTypeAssociations } from "@/platform/fileTypes";
 import type { LanguageServerSettings, Settings } from "@/platform/ipc";
@@ -82,6 +83,7 @@ export interface ValidSettings extends WorkflowSettings {
   /** System Settings › HTTP Proxy (global). */
   proxy: ProxySettingsValid;
   languages: LanguagesValid;
+  cmake: ReturnType<typeof validateCMake>;
   projectStructure: ProjectStructureValid;
   inspections: InspectionSettingsValid;
   /** Editor › Natural Languages › Spelling. */
@@ -150,6 +152,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   notifications: DEFAULT_NOTIFICATIONS,
   proxy: DEFAULT_PROXY,
   languages: DEFAULT_LANGUAGES,
+  cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
   inspections: DEFAULT_INSPECTIONS,
   spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
@@ -254,6 +257,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     notifications: validateNotifications(root.notifications),
     proxy: validateProxy(root.proxy),
     languages: validateLanguages(root.languages),
+    cmake: validateCMake(root.cmake),
     projectStructure: validateProjectStructure(root.projectStructure),
     inspections: validateInspections(root.inspections),
     spelling: validateSpelling(root.spelling),

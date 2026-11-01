@@ -5,6 +5,23 @@ use crate::rpc::Dispatcher;
 use ide_core::{IdeError, IdeResult};
 use ide_run::RunConfig;
 
+pub async fn run_dotnet_resolve(host: &Host, window: &str, config: RunConfig, debug: bool) -> IdeResult<RunConfig> {
+    host.require_trust(window)?;
+    if !matches!(config.kind.as_str(), "dotnet" | "dotnet-test")
+        || config.extras.target.as_ref().is_some_and(|s| !s.is_empty())
+    {
+        return Err(IdeError::invalid(".NET Project requires the local machine"));
+    }
+    let project = host.project(window)?;
+    let mut config = host.blocking(move || ide_run::dotnet::resolve(&project.root, config)).await?;
+    if debug {
+        let root = host.project(window)?.root.clone();
+        let target = ide_run::dotnet::target_path(&root, &config).await?;
+        config.extras.params.insert("targetPath".into(), target);
+    }
+    Ok(config)
+}
+
 fn application_cache(project: &crate::project::Project, id: &str) -> std::path::PathBuf {
     use std::hash::{Hash, Hasher};
     let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -206,6 +223,9 @@ pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mod
 
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
+    d.add("run_dotnet_resolve", |c| async move {
+        run_dotnet_resolve(&c.host, &c.window, c.arg("config")?, c.arg("debug")?).await
+    });
     d.add("run_application_build", |c| async move {
         run_application_build(&c.host, &c.window, c.arg("config")?, c.arg("module")?).await
     });
