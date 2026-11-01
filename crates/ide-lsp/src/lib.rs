@@ -176,8 +176,8 @@ pub struct LspManager {
     excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
     shutting_down: AtomicBool,
     execution_allowed: AtomicBool,
-    /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     java_usages_warned: AtomicBool,
+    /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
     virtual_origins: Mutex<HashMap<String, ide_core::ServerId>>,
