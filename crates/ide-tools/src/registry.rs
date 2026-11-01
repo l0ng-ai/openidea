@@ -12,6 +12,7 @@ pub enum ToolKind {
     Debugger,
     /// Loaded into another tool's process, e.g. a jdtls agent.
     Plugin,
+    Formatter,
 }
 
 /// Where release archives come from.
@@ -105,7 +106,7 @@ impl ToolSpec {
 
 use Arch::{Arm64, X64};
 use Os::{Linux, Mac, Windows};
-use ToolKind::{Debugger, LanguageServer, Plugin};
+use ToolKind::{Debugger, Formatter, LanguageServer, Plugin};
 
 const V: Option<(&str, &[&str])> = None;
 const JAVA: &[(&str, &str)] = &[("java", "Java is required (https://adoptium.net)")];
@@ -122,6 +123,17 @@ const fn ver(cmd: &'static str) -> Option<(&'static str, &'static [&'static str]
 pub const TYPESCRIPT: &str = "typescript@6";
 
 pub static TOOLS: &[ToolSpec] = &[
+    ToolSpec {
+        name: "prettier",
+        display: "Prettier",
+        kind: Formatter,
+        commands: &["prettier"],
+        method: Method::Npm { packages: &["prettier"] },
+        fallback: None,
+        version: ver("prettier"),
+        needs: NODE,
+        homepage: "https://prettier.io",
+    },
     ToolSpec {
         name: "rust-analyzer",
         display: "rust-analyzer",
@@ -941,6 +953,11 @@ mod tests {
             }
             if let Some(d) = &l.debugger {
                 known.insert((d.adapter.clone(), d.command.clone()));
+            }
+        }
+        for l in &langs {
+            if let Some(f) = &l.formatter {
+                known.insert((f.tool.clone(), f.tool.clone()));
             }
         }
         for t in TOOLS.iter().filter(|t| t.kind != Plugin) {

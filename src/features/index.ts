@@ -10,6 +10,7 @@ import { activate as editorLsp } from "@/editor/lsp";
 import { activate as welcome } from "./welcome";
 import { activate as projectTree } from "./project-tree";
 import { activate as search } from "./search";
+import { activate as dependencies } from "./dependencies";
 import { activate as codeInsight } from "./code-insight";
 import { activate as vcs, activateSettingsPages as vcsPages } from "./vcs";
 import { activate as terminal } from "./terminal";
@@ -55,6 +56,7 @@ const features: Array<[string, Activate]> = [
   ["project-tree", projectTree],
   ["search", search],
   ["code-insight", codeInsight],
+  ["dependencies", dependencies],
   ["vcs", vcs],
   ["terminal", terminal],
   ["run", run],

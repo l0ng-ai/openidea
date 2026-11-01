@@ -49,7 +49,7 @@ export function startupLaunchHandled(): Promise<void> {
 }
 
 export async function openProject(path: string): Promise<ProjectInfo> {
-  await confirmProjectTrust(path);
+  await confirmProjectTrust(path, "local");
   useProject.setState({ opening: true });
   try {
     const project = await call(commands.openProject(path));

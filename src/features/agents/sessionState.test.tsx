@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
-import type { AgentEntry, AgentTask } from "@/bindings";
+import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
 import { SessionEditor } from "./SessionEditor";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
@@ -9,7 +9,7 @@ import { disconnect, useAgents } from "./store";
 import { taskActions } from "./taskActions";
 import styles from "./Session.module.css";
 
-const backend = vi.hoisted(() => ({ entries: new Map<string, AgentEntry[]>() }));
+const backend = vi.hoisted(() => ({ entries: new Map<string, AgentEntry[]>(), changes: [] as AgentChange[] }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   commands: {
@@ -17,7 +17,7 @@ vi.mock("@/platform/ipc", async (original) => ({
       status: "ok",
       data: backend.entries.get(sub ? `${id}/${sub}` : id) ?? [],
     }),
-    agentChanges: async () => ({ status: "ok", data: [] }),
+    agentChanges: async () => ({ status: "ok", data: backend.changes }),
     vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
   },
 }));
@@ -76,6 +76,8 @@ afterEach(() => {
 
 beforeEach(() => {
   disconnect();
+  localStorage.clear();
+  backend.changes = [];
   backend.entries = new Map([
     ["A", [{ type: "agent", text: "Answer A" }, subagent]],
     [entriesKey("A", "child"), [{ type: "agent", text: "Child answer" }]],
@@ -83,6 +85,8 @@ beforeEach(() => {
   ]);
   useAgents.setState({
     loaded: true,
+    sessionLocation: "editor",
+    homeOpen: false,
     tasks: new Map([task("A"), task("B")].map((t) => [t.id, t])),
     entries: new Map(backend.entries),
   });
@@ -92,12 +96,13 @@ describe("session state across tasks and hosts", () => {
   it("returns to the task conversation when the docked task changes after opening a subagent", async () => {
     const dispose = registerActions(taskActions);
     try {
-      useAgents.setState({ docked: "A" });
+      useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
       render(<AgentsView />);
       fireEvent.click(screen.getByRole("button", { name: /Explore task A/ }));
       expect(await screen.findByText("Child answer")).toBeInTheDocument();
       expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
-      fireEvent.mouseDown(within(screen.getByRole("tree", { name: "Agent tasks" })).getByText("B"), { button: 0 });
+      fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
+      fireEvent.click(within(screen.getByRole("tree", { name: "Agent tasks" })).getByText("B"));
       expect(await screen.findByText("Answer B")).toBeInTheDocument();
       expect(screen.getByRole("textbox", { name: "Message" })).toBeInTheDocument();
       expect(screen.queryByText("Child answer")).not.toBeInTheDocument();
@@ -108,6 +113,45 @@ describe("session state across tasks and hosts", () => {
     } finally {
       dispose();
     }
+  });
+
+  it("keeps docked changes opt-in, preserves the draft, and returns to the same conversation", async () => {
+    backend.changes = [
+      {
+        path: "/project/very-long-file-name.ts",
+        relPath: "very-long-file-name.ts",
+        kind: "modified",
+        added: 8,
+        removed: 2,
+      },
+    ];
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+    useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
+    render(<AgentsView />);
+    await screen.findByText("Answer A");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show changes" })).toBeEnabled());
+    expect(screen.queryByRole("complementary", { name: "Changes" })).toBeNull();
+    const markVisible = vi.spyOn(await import("./store"), "markVisible");
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const message = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(message, { target: { value: "Draft to keep" } });
+    const conversation = stream();
+    fireEvent.click(screen.getByRole("button", { name: "Show changes" }));
+    expect(screen.getByRole("complementary", { name: "Changes" })).toBeVisible();
+    expect(screen.getByText("Answer A")).not.toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+    act(() => useAgents.setState({ unread: new Set(["A"]) }));
+    fireEvent(window, new Event("focus"));
+    expect(useAgents.getState().unread.has("A")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
+    expect(screen.getByText("Answer A")).toBeVisible();
+    expect(stream()).toBe(conversation);
+    expect(markVisible).toHaveBeenCalledWith("A");
+    expect(useAgents.getState().unread.has("A")).toBe(false);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(message);
+    expect(message).toHaveValue("Draft to keep");
+    expect(useAgents.getState().composers.get("A")?.text).toBe("Draft to keep");
+    expect(JSON.parse(localStorage.getItem("openidea.agents.changesOpen.v1")!).A).toBe(true);
   });
 
   it.each([false, true])("retains scrolling and follow-output (%s) when moving in both directions", async (stick) => {
@@ -133,7 +177,7 @@ describe("session state across tasks and hosts", () => {
     expect(useAgents.getState().scrollPositions.get("A")).toEqual({ top: stick ? 1600 : 230, stick });
     view.unmount();
     viewport = 150;
-    useAgents.setState({ docked: "A" });
+    useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
     const dock = render(<AgentsView />);
     await screen.findByText("Answer A");
     expect(stream().scrollTop).toBe(stick ? height - viewport : 230);

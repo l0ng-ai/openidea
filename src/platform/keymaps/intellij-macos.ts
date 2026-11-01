@@ -284,7 +284,7 @@ export const intellijMacos: Record<string, string[]> = {
   "debug.setValue": ["F2"],
   "debug.jumpToSource": ["F4", "Meta+Down"],
   "debug.evaluate": ["Alt+F8"],
-  "debug.quickEvaluate": ["Meta+Alt+F8"],
+  "debug.quickEvaluate": ["Meta+Alt+F8", "Alt+Button1"],
   "debug.browseConsoleHistory": ["Meta+Alt+E"],
 
   // VCS

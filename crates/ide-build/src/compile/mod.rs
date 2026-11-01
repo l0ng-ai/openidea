@@ -3,7 +3,10 @@
 //! background with cancellation and parses the compiler output into messages
 //! for the Build tool window, the Problems view and the editor.
 
+mod fingerprint;
 mod parse;
+
+pub use fingerprint::{LaunchFingerprint, launch_fingerprint};
 
 use crate::process::{self, Stream};
 use crate::{BuildModel, maven};

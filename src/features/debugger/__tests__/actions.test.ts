@@ -6,6 +6,7 @@ const ipc = vi.hoisted(() => {
   return {
     ok,
     debugStep: vi.fn(() => ok(null)),
+    debugResume: vi.fn(() => ok(null)),
     debugForceStepOver: vi.fn(() => ok(null)),
     debugRunTo: vi.fn(() => ok(null)),
     debugStepInTargets: vi.fn(() => ok([] as Array<{ id: number; label: string }>)),
@@ -54,7 +55,7 @@ import type { DebugCapabilities } from "@/platform/ipc";
 import { registerDebugActions } from "../actions";
 import { breakpointsOf, loadBreakpoints } from "../breakpoints/store";
 import { loadSpecialBreakpoints, removeAllSpecial, useSpecialBreakpoints } from "../breakpoints/special";
-import { publishContext, useDebug, type DebugSession } from "../state";
+import { publishContext, updateExecutionPoint, useExecutionPoint, useDebug, type DebugSession } from "../state";
 import { focusDebugView, blurDebugView } from "../ui/focusedView";
 import { useOverlays } from "../ui/popoverStore";
 
@@ -97,6 +98,7 @@ function paused(p: Partial<DebugSession> = {}) {
   };
   useDebug.setState({ sessions: { 3: s }, active: 3 });
   publishContext();
+  updateExecutionPoint();
 }
 
 function caret(path: string, language: string, doc: string, line: number) {
@@ -154,15 +156,41 @@ describe("debugger actions (IDEA parity)", () => {
     expect(getAction("debug.jumpToSource")!.keyWhen).toBe("debugFramesFocus || debugVariablesFocus");
   });
 
+  it.each([
+    ["debug.resume", "debugResume"],
+    ["debug.stepOver", "debugStep"],
+    ["debug.stepInto", "debugStep"],
+    ["debug.stepOut", "debugStep"],
+    ["debug.forceStepOver", "debugForceStepOver"],
+    ["debug.forceStepInto", "debugStep"],
+    ["debug.smartStepInto", "debugStep"],
+    ["debug.runToCursor", "debugRunTo"],
+    ["debug.forceRunToCursor", "debugRunTo"],
+    ["debug.resetFrame", "debugRestartFrame"],
+  ] as const)("%s clears the old execution point before its request", async (id, command) => {
+    paused({ caps: caps({ restartFrame: true }) });
+    caret("/p/app.py", "python", "a\nb\nc", 2);
+    const request = ipc[command].mockImplementationOnce(() => {
+      expect(useExecutionPoint.getState().path).toBeNull();
+      expect(useDebug.getState().sessions[3]?.status).toBe("running");
+      return ipc.ok(null);
+    });
+    await executeAction(id);
+    expect(request).toHaveBeenCalledOnce();
+  });
+
   it("Force Step Over / Force Step Into / Force Run to Cursor", async () => {
     paused();
     caret("/p/app.py", "python", "a\nb\nc\nd", 2);
     await executeAction("debug.forceStepOver");
     expect(ipc.debugForceStepOver).toHaveBeenCalledWith(3, 1);
+    paused();
     await executeAction("debug.forceStepInto");
     expect(ipc.debugStep).toHaveBeenCalledWith(3, 1, "into");
+    paused();
     await executeAction("debug.forceRunToCursor");
     expect(ipc.debugRunTo).toHaveBeenCalledWith(3, 1, "/p/app.py", 2, true);
+    paused();
     await executeAction("debug.runToCursor");
     expect(ipc.debugRunTo).toHaveBeenLastCalledWith(3, 1, "/p/app.py", 2, false);
   });
@@ -180,6 +208,7 @@ describe("debugger actions (IDEA parity)", () => {
     expect(ipc.debugStepInTargets).toHaveBeenCalledWith(3, 71);
     expect(useOverlays.getState().smartStep?.targets.map((t) => t.label)).toEqual(["str(i)", "parse(str(i))"]);
 
+    paused({ caps: caps({ stepInTargets: true }) });
     ipc.debugStepInTargets.mockReturnValueOnce(ipc.ok([{ id: 5, label: "parse()" }]));
     await executeAction("debug.smartStepInto");
     await settle();

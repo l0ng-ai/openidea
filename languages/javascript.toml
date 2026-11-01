@@ -1,5 +1,6 @@
 id = "javascript"
 name = "JavaScript"
+formatter = { tool = "prettier", parser = "babel", range = true }
 extensions = ["js", "mjs", "cjs"]
 first-line = "^#!.*\\b(node|nodejs|deno|bun)\\b"
 line-comment = "//"

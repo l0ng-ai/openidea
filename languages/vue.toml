@@ -1,5 +1,6 @@
 id = "vue"
 name = "Vue"
+formatter = { tool = "prettier", parser = "vue", range = true }
 extensions = ["vue"]
 block-comment = ["<!--", "-->"]
 indent = { tab-size = 2, insert-spaces = true }

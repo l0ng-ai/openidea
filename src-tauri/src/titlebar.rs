@@ -5,19 +5,26 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2_app_kit::{NSWindow, NSWindowButton, NSWindowDidUpdateNotification, NSWindowStyleMask};
-use objc2_foundation::{NSNotificationCenter, NSObjectProtocol, NSPoint};
+use objc2_app_kit::{NSWindow, NSWindowButton, NSWindowStyleMask};
+use objc2_core_foundation::{
+    CFIndex, CFOptionFlags, CFRetained, CFRunLoop, CFRunLoopActivity, CFRunLoopObserver, kCFRunLoopCommonModes,
+};
+use objc2_foundation::NSPoint;
+
+/// AppKit lays out the title bar in a run loop observer and puts the buttons back at their
+/// defaults on resize, title changes and fullscreen exit. Core Animation commits at 2000000, so
+/// correcting the frames just before it keeps AppKit's positions off screen.
+const BEFORE_COMMIT: CFIndex = 1_999_999;
 
 struct Titlebar {
     height: Rc<Cell<f64>>,
-    observer: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+    spacing: f64,
+    observer: CFRetained<CFRunLoopObserver>,
 }
 
 impl Drop for Titlebar {
     fn drop(&mut self) {
-        unsafe { NSNotificationCenter::defaultCenter().removeObserver((*self.observer).as_ref()) };
+        self.observer.invalidate();
     }
 }
 
@@ -30,22 +37,30 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<(
     // with_webview runs on the AppKit thread; the observer is also delivered there.
     window.with_webview(move |webview| unsafe {
         let native = &*webview.ns_window().cast::<NSWindow>();
+        let Some(close) = native.standardWindowButton(NSWindowButton::CloseButton) else { return };
+        let Some(minimize) = native.standardWindowButton(NSWindowButton::MiniaturizeButton) else { return };
+        let Some(run_loop) = CFRunLoop::main() else { return };
+        let spacing = minimize.frame().origin.x - close.frame().origin.x;
         TITLEBARS.with_borrow_mut(|bars| {
-            let bar = bars.entry(label).or_insert_with(|| {
-                let height = Rc::new(Cell::new(height));
-                let current = height.clone();
-                let pointer = native as *const NSWindow;
-                let block = RcBlock::new(move |_| center_buttons(&*pointer, current.get()));
-                let observer = NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-                    Some(NSWindowDidUpdateNotification),
-                    Some(native),
-                    None,
-                    &block,
-                );
-                Titlebar { height, observer }
+            if let Some(bar) = bars.get(&label) {
+                bar.height.set(height);
+                center_buttons(native, height, bar.spacing);
+                return;
+            }
+            let shared = Rc::new(Cell::new(height));
+            let current = shared.clone();
+            let pointer = native as *const NSWindow;
+            let block = RcBlock::new(move |_: *mut CFRunLoopObserver, _: CFRunLoopActivity| {
+                center_buttons(&*pointer, current.get(), spacing)
             });
-            bar.height.set(height);
-            center_buttons(native, height);
+            let activities = CFRunLoopActivity::BeforeWaiting.0 as CFOptionFlags;
+            let Some(observer) = CFRunLoopObserver::with_handler(None, activities, true, BEFORE_COMMIT, Some(&block))
+            else {
+                return;
+            };
+            run_loop.add_observer(Some(&observer), kCFRunLoopCommonModes);
+            center_buttons(native, height, spacing);
+            bars.insert(label, Titlebar { height: shared, spacing, observer });
         });
     })
 }
@@ -57,14 +72,12 @@ pub fn forget(window: &tauri::Window) {
     });
 }
 
-unsafe fn center_buttons(window: &NSWindow, height: f64) {
+unsafe fn center_buttons(window: &NSWindow, height: f64, spacing: f64) {
     // Fullscreen uses AppKit's own revealable title bar.
     if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
         return;
     }
     let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else { return };
-    let Some(minimize) = window.standardWindowButton(NSWindowButton::MiniaturizeButton) else { return };
-    let spacing = minimize.frame().origin.x - close.frame().origin.x;
     let Some(container) = (unsafe { close.superview().and_then(|view| view.superview()) }) else { return };
     let Some(content) = window.contentView() else { return };
     let mut frame = container.frame();

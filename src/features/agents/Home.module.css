@@ -60,3 +60,47 @@
 .warning {
   color: var(--danger);
 }
+
+.docked {
+  justify-content: flex-end;
+  padding: 16px 12px 12px;
+}
+.docked .inner {
+  gap: 8px;
+}
+.docked .where {
+  order: -1;
+  flex-wrap: nowrap;
+  min-width: 0;
+  gap: 6px;
+}
+.docked .project,
+.docked .projectPicker {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 30%;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.docked .branch,
+.docked .basePicker {
+  order: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0;
+}
+.docked .isolation {
+  order: 2;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  margin-left: auto;
+}
+.branchName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

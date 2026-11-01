@@ -51,8 +51,13 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
     let fullscreen = from.is_fullscreen().map_err(err)?;
     if fullscreen {
-        from.set_fullscreen(false).map_err(err)?;
-        to.set_fullscreen(true).map_err(err)?;
+        #[cfg(target_os = "macos")]
+        crate::macos::transfer_fullscreen(from, to).map_err(err)?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            from.set_fullscreen(false).map_err(err)?;
+            to.set_fullscreen(true).map_err(err)?;
+        }
         return Ok(());
     }
     to.set_fullscreen(false).map_err(err)?;
@@ -60,7 +65,10 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     if !maximized {
         to.unmaximize().map_err(err)?;
         to.set_position(from.outer_position().map_err(err)?).map_err(err)?;
-        to.set_size(from.inner_size().map_err(err)?).map_err(err)?;
+        let size = from.inner_size().map_err(err)?;
+        #[cfg(target_os = "linux")]
+        crate::linux_window_state::normal_size_requested(to.app_handle(), to.label(), size);
+        to.set_size(size).map_err(err)?;
     } else {
         to.maximize().map_err(err)?;
     }
@@ -104,6 +112,13 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     }
     changed(app);
     result
+}
+
+#[cfg(target_os = "macos")]
+pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
+    let state = app.state::<WindowsState>();
+    state.groups.lock().join(anchor, new_window)?;
+    select(app, anchor, new_window)
 }
 
 pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
@@ -232,7 +247,7 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
             } else if path.is_dir() {
                 let window = match windows::find_project_window(app, path) {
                     Some(w) => w,
-                    None => windows::create_window(app, Some(path.clone()))?,
+                    None => windows::create_restored_window(app, path.clone())?,
                 };
                 Some(window.label().to_owned())
             } else {

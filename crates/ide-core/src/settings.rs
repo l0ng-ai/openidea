@@ -58,6 +58,43 @@ pub struct Settings {
     pub deployment: DeploymentSettings,
     /// Build, Execution, Deployment › Run Targets.
     pub run_targets: Vec<RunTarget>,
+    pub cmake: CMakeSettings,
+}
+
+/// Absent profiles retain automatic discovery for existing projects.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CMakeSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub profiles: Option<Vec<CMakeProfile>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CMakeProfile {
+    pub name: String,
+    pub build_type: String,
+    pub generator: String,
+    pub cmake_args: Vec<String>,
+    /// Empty uses cmake-build-<lowercase build type>.
+    pub build_dir: String,
+    pub build_args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+}
+
+impl Default for CMakeProfile {
+    fn default() -> Self {
+        Self {
+            name: "Debug".into(),
+            build_type: "Debug".into(),
+            generator: String::new(),
+            cmake_args: Vec::new(),
+            build_dir: String::new(),
+            build_args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -154,6 +191,7 @@ impl Default for Settings {
             ssh: SshSettings::default(),
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
+            cmake: CMakeSettings::default(),
         }
     }
 }
@@ -276,6 +314,8 @@ pub struct AppearanceSettings {
     /// Apply `ui_font_family` / `ui_font_size` (otherwise the theme's).
     pub use_custom_font: bool,
     pub ui_font_family: String,
+    /// Font tried when `ui_font_family` lacks a glyph; empty = none.
+    pub ui_font_fallback: String,
     pub contrast_scrollbars: bool,
     /// Adjust colours for red-green vision deficiency.
     pub red_green_vision: bool,
@@ -326,6 +366,7 @@ impl Default for AppearanceSettings {
             zoom: 100,
             use_custom_font: false,
             ui_font_family: "Inter".into(),
+            ui_font_fallback: String::new(),
             contrast_scrollbars: false,
             red_green_vision: false,
             different_tool_window_background: false,
@@ -505,7 +546,48 @@ pub struct LanguagesSettings {
     pub rust: RustSettings,
     pub go: GoSettings,
     pub typescript: TypeScriptSettings,
+    pub prettier: PrettierSettings,
     pub java: JavaSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PrettierSettings {
+    /// Empty path: project node_modules, managed installation, then PATH.
+    pub path: String,
+    pub languages: Vec<String>,
+    /// Prefer Prettier even when a language server offers formatting.
+    pub prefer: bool,
+    pub run_on_save: bool,
+}
+
+impl Default for PrettierSettings {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            languages: [
+                "markdown",
+                "yaml",
+                "css",
+                "scss",
+                "less",
+                "html",
+                "graphql",
+                "javascript",
+                "javascriptreact",
+                "typescript",
+                "typescriptreact",
+                "json",
+                "jsonc",
+                "vue",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            prefer: false,
+            run_on_save: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -720,6 +802,38 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmake_profile_argument_arrays_round_trip() {
+        let mut settings = Settings::default();
+        assert!(settings.cmake.profiles.is_none());
+        assert!(CMakeProfile::default().cmake_args.is_empty());
+        assert!(CMakeProfile::default().build_args.is_empty());
+        let profile = CMakeProfile {
+            cmake_args: ["-DMESSAGE=two words", "-DQUOTE=\"hello\"", ""].map(String::from).into(),
+            build_args: ["-j", "8", "--", "LABEL=it's a build"].map(String::from).into(),
+            ..Default::default()
+        };
+        settings.cmake.profiles = Some(vec![profile.clone()]);
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["cmake"]["profiles"][0]["cmakeArgs"], serde_json::json!(profile.cmake_args));
+        assert_eq!(value["cmake"]["profiles"][0]["buildArgs"], serde_json::json!(profile.build_args));
+        assert_eq!(serde_json::from_value::<Settings>(value).unwrap(), settings);
+    }
+
+    #[test]
+    fn ui_font_fallback_defaults_empty_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"useCustomFont":true}}"#).unwrap();
+        assert!(old.appearance.ui_font_fallback.is_empty());
+        for family in ["", "Songti SC", "Maple Mono NF CN"] {
+            let mut settings = Settings::default();
+            settings.appearance.ui_font_fallback = family.into();
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["appearance"]["uiFontFallback"], family);
+            let restored: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.appearance.ui_font_fallback, family);
+        }
+    }
 
     #[test]
     fn tool_window_badges_default_on_and_round_trip() {

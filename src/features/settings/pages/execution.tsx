@@ -3,6 +3,7 @@
  * Stepping), Python Debugger and Run/Debug. Consumed by the run and debugger
  * features (and `ide-run` for encoding / termination timeout).
  */
+import { CMakeProfiles } from "./cmake";
 import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
 import type { SelectOption } from "@/ui";
 import { GlobListEditor, NumberInput, Row } from "../components/Form";
@@ -90,6 +91,25 @@ function TooltipDelayRow() {
 }
 
 export const EXECUTION_PAGES: PageSpec[] = [
+  {
+    id: "build.cmake",
+    title: "CMake",
+    group: BUILD_GROUP,
+    order: 357,
+    projectScope: true,
+    defaultScope: "project",
+    keywords: [
+      "profile",
+      "generator",
+      "Ninja",
+      "Build type",
+      "CMake arguments",
+      "Build directory",
+      "Build arguments",
+      "Environment variables",
+    ],
+    component: CMakeProfiles,
+  },
   {
     id: "build.gradle",
     projectScope: true,

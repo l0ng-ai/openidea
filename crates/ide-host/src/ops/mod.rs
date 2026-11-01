@@ -8,6 +8,7 @@ pub mod build;
 pub mod bytes;
 pub mod coverage;
 pub mod debug;
+pub mod dependencies;
 pub mod deploy;
 pub mod doc;
 pub mod env;
@@ -69,6 +70,7 @@ pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     analysis::register(d);
     syntax::register(d);
     spell::register(d);
+    dependencies::register(d);
     history::register(d);
     coverage::register(d);
     build::register(d);

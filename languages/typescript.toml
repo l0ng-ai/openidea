@@ -1,5 +1,6 @@
 id = "typescript"
 name = "TypeScript"
+formatter = { tool = "prettier", parser = "typescript", range = true }
 extensions = ["ts", "mts", "cts"]
 line-comment = "//"
 block-comment = ["/*", "*/"]

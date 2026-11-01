@@ -538,7 +538,14 @@ export function activate(): () => void {
     }),
     // Detected configs carry the selected toolchains (interpreter, JDK, Maven home and options).
     onIdeEvent("settingsChanged", (e) => {
-      if (e.key === "languages" || e.key.startsWith("languages.")) scheduleReload();
+      if (
+        !e.key ||
+        e.key === "languages" ||
+        e.key.startsWith("languages.") ||
+        e.key === "cmake" ||
+        e.key.startsWith("cmake.")
+      )
+        scheduleReload();
     }),
   );
 

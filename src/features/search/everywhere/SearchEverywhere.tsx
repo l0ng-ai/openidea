@@ -18,12 +18,16 @@ import {
   Select,
   Toggle,
   listNavigate,
+  selectRow,
+  selectedRows,
+  rowSelectionMode,
+  type RowSelection,
   type MenuItem,
   T,
 } from "@/ui";
 import { useFileDecoration } from "@/workbench/contributions";
 import { highlightTokens, languageForPath, type CodeToken } from "@/editor/lsp/markdown";
-import { badgeKind, basename, openLocation, relDir } from "../common/open";
+import { badgeKind, basename, openInListOrder, openLocation, relDir } from "../common/open";
 import { parseLocationQuery } from "../common/query";
 import { CodePreview, type PreviewHighlight } from "../find/parts";
 import { SeController, type SeSnapshot } from "./controller";
@@ -81,7 +85,8 @@ export function SearchEverywhereOverlay() {
   return open ? <SearchEverywhereDialog /> : null;
 }
 
-type Selection = { key: string | null; index: number; moved: boolean };
+type Selection = RowSelection & { key: string | null; anchorKey: string | null; moved: boolean };
+const INITIAL_SELECTION: Selection = { key: null, anchorKey: null, lead: -1, anchor: -1, keys: null, moved: false };
 
 function SearchEverywhereDialog() {
   const tx = useTx();
@@ -100,7 +105,7 @@ function SearchEverywhereDialog() {
   const [extra, setExtra] = useState<Partial<Record<SectionId, number>>>({});
   const [snap, setSnap] = useState<SeSnapshot | null>(null);
   const [controller] = useState(() => new SeController(ipcDeps(ctx), setSnap));
-  const [sel, setSel] = useState<Selection>({ key: null, index: -1, moved: false });
+  const [sel, setSel] = useState<Selection>(INITIAL_SELECTION);
   const [menu, setMenu] = useState<{
     anchor: Element;
     items: MenuItem[];
@@ -134,12 +139,19 @@ function SearchEverywhereDialog() {
     return () => clearTimeout(t);
   }, [query, debounced]);
 
+  // Reset selection immediately, including while the new query is debouncing.
+  const [selectionInputs, setSelectionInputs] = useState({ query, tab });
+  if (selectionInputs.query !== query || selectionInputs.tab !== tab) {
+    setSelectionInputs({ query, tab });
+    setSel(INITIAL_SELECTION);
+  }
+
   // New query / scope: forget "Show more" and the user's selection.
   const [prevInputs, setPrevInputs] = useState({ debounced, tab });
   if (prevInputs.debounced !== debounced || prevInputs.tab !== tab) {
     setPrevInputs({ debounced, tab });
     setExtra({});
-    setSel({ key: null, index: -1, moved: false });
+    setSel(INITIAL_SELECTION);
   }
 
   // "/fi" lists scope commands instead of searching.
@@ -177,7 +189,7 @@ function SearchEverywhereDialog() {
     () => listing ?? (snap ? buildRows(snap.sections, { headers: !parsed.text.trim(), mix }) : []),
     [listing, snap, parsed.text, mix],
   );
-  const active = stableIndex(rows, sel.key, sel.index, sel.moved);
+  const active = stableIndex(rows, sel.key, sel.lead, sel.moved);
   const activeRow = active >= 0 ? rows[active] : undefined;
   // Rows still answer an older query (debounce / in-flight search): Enter must wait.
   const settled =
@@ -187,8 +199,20 @@ function SearchEverywhereDialog() {
     snap.tab === tab &&
     topResultSettled(snap.sections, mix);
   const pendingEnter = useRef<{ side: boolean } | null>(null);
+  const opening = useRef(false);
 
-  const select = (index: number) => setSel({ key: rows[index]?.key ?? null, index, moved: true });
+  const chosen = selectedRows(rows, { ...sel, lead: active });
+  const select = (index: number, e?: KeyboardEvent | MouseEvent) => {
+    const anchor = rows.findIndex((r) => r.key === sel.anchorKey);
+    const next = selectRow(
+      rows,
+      { ...sel, lead: active, anchor: anchor < 0 ? active : anchor },
+      index,
+      rowSelectionMode(e),
+      isSectionRow,
+    );
+    setSel({ ...next, key: rows[next.lead]?.key ?? null, anchorKey: rows[next.anchor]?.key ?? null, moved: true });
+  };
   /** Typed or picked query; "/files foo" switches to Files with "foo". */
   const setQuery = (value: string) => {
     history.current.pos = -1;
@@ -246,24 +270,13 @@ function SearchEverywhereDialog() {
       case "more": {
         const step = tab === "all" ? MORE_STEP_ALL : MORE_STEP_TAB;
         setExtra((e) => ({ ...e, [row.section]: (e[row.section] ?? 0) + step }));
-        setSel({ key: null, index: rows.indexOf(row), moved: true });
+        setSel({ ...INITIAL_SELECTION, lead: rows.indexOf(row), moved: true });
         return;
       }
       case "file":
-        return closeThen(
-          () => void openLocation(row.path, row.line !== null ? { line: row.line, col: row.col ?? 0 } : null, { side }),
-        );
       case "symbol":
-        return closeThen(() => void openLocation(row.path, { line: row.line, col: row.col }, { side }));
       case "text":
-        return closeThen(
-          () =>
-            void openLocation(
-              row.path,
-              { line: row.line, col: row.col, endLine: row.line, endCol: row.endCol },
-              { side },
-            ),
-        );
+        return closeThen(() => void openResult(row, { side }));
       case "action":
         if (!row.enabled) return;
         pushRecentAction(row.id);
@@ -277,11 +290,27 @@ function SearchEverywhereDialog() {
     }
   };
 
+  const activateSelection = (side = false) => {
+    if (opening.current) return;
+    if (chosen.length <= 1) return activate(chosen[0], side);
+    const navigable = chosen.filter(isNavigationRow);
+    if (!navigable.length) return close();
+    opening.current = true;
+    pushSearchHistory(tab, query);
+    void openInListOrder(
+      navigable,
+      activeRow && isNavigationRow(activeRow) ? activeRow : undefined,
+      openResult,
+      side,
+      () => new Promise((resolve) => closeThen(resolve)),
+    );
+  };
+
   useEffect(() => {
     const pending = pendingEnter.current;
     if (!pending || !settled) return;
     pendingEnter.current = null;
-    activate(activeRow, pending.side);
+    activateSelection(pending.side);
   });
 
   /** IDEA's ⌥↵ on an action: record a shortcut for it (written to the active keymap). */
@@ -291,7 +320,7 @@ function SearchEverywhereDialog() {
     const row = activeRow;
     if (!row || row.kind === "section" || row.kind === "more" || row.kind === "command") return;
     if (row.kind === "action") return assignShortcut(row.id);
-    const anchor = listRef.current?.querySelector('[aria-selected="true"]') ?? inputRef.current;
+    const anchor = listRef.current?.querySelector('[data-lead="true"]') ?? inputRef.current;
     if (!anchor) return;
     const copy = (text: string) => void navigator.clipboard?.writeText(text).catch(() => {});
     const items: MenuItem[] =
@@ -331,7 +360,7 @@ function SearchEverywhereDialog() {
         closeThen(() => void executeAction("find.inPath", { query: parsed.text }));
       else if (listing) activate(activeRow);
       else if (!settled && !sel.moved) pendingEnter.current = { side: e.shiftKey };
-      else activate(activeRow, e.shiftKey);
+      else activateSelection(e.shiftKey);
       return;
     }
     if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
@@ -347,15 +376,15 @@ function SearchEverywhereDialog() {
       const jump = groupJump(rows, active, e.key === "PageDown" || e.key === "ArrowDown" ? 1 : -1);
       if (jump !== null) {
         e.preventDefault();
-        select(jump);
+        select(jump, e);
         return;
       }
     }
     if (!["ArrowDown", "ArrowUp", "PageDown", "PageUp"].includes(e.key)) return;
-    const next = listNavigate(e.key, { items: rows, active, isSection: isSectionRow, wrap: true, pageSize: 10 });
+    const next = listNavigate(e.key, { items: rows, active, isSection: isSectionRow, wrap: !e.shiftKey, pageSize: 10 });
     if (next === null) return;
     e.preventDefault();
-    select(next);
+    select(next, e);
   };
 
   const maxList = preview ? MAX_LIST_PREVIEW : MAX_LIST;
@@ -522,7 +551,8 @@ function SearchEverywhereDialog() {
                 <span className={styles.section}>{r.kind === "section" ? <T>{r.title}</T> : ""}</span>
               )}
               activeIndex={active}
-              onActiveChange={select}
+              onSelect={select}
+              isSelected={(r) => !!sel.keys?.has(r.key)}
               onActivate={(r, _i, e) => activate(r, (e as MouseEvent).shiftKey)}
               focusable={false}
               rowHeight={ROW}
@@ -842,5 +872,23 @@ function FileRow({
         {dir && <span className={styles.location}>{dir}</span>}
       </span>
     </>
+  );
+}
+
+type NavigationRow = Extract<SeRow, { kind: "file" | "symbol" | "text" }>;
+function isNavigationRow(row: SeRow): row is NavigationRow {
+  return row.kind === "file" || row.kind === "symbol" || row.kind === "text";
+}
+function openResult(row: NavigationRow, options: Parameters<typeof openLocation>[2]): Promise<void> {
+  if (row.kind === "file")
+    return openLocation(row.path, row.line !== null ? { line: row.line, col: row.col ?? 0 } : null, options);
+  return openLocation(
+    row.path,
+    {
+      line: row.line,
+      col: row.col,
+      ...(row.kind === "text" ? { endLine: row.line, endCol: row.endCol } : {}),
+    },
+    options,
   );
 }

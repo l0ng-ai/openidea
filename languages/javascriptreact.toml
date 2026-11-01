@@ -1,5 +1,6 @@
 id = "javascriptreact"
 name = "JavaScript JSX"
+formatter = { tool = "prettier", parser = "babel", range = true }
 extensions = ["jsx"]
 line-comment = "//"
 block-comment = ["/*", "*/"]

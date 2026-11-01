@@ -35,6 +35,16 @@ describe("languages settings", () => {
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
   });
 
+  it("keeps Prettier opt-in on save and normalizes its enabled languages", () => {
+    expect(validateLanguages({}).prettier).toMatchObject({ prefer: false, runOnSave: false, path: "" });
+    expect(
+      validateLanguages({
+        prettier: { path: " ./bin/prettier ", languages: ["markdown", 4, "markdown"], prefer: true, runOnSave: true },
+      }).prettier,
+    ).toEqual({ path: "./bin/prettier", languages: ["markdown"], prefer: true, runOnSave: true });
+    expect(validateLanguages({ prettier: { languages: [] } }).prettier.languages).toEqual([]);
+  });
+
   it("marks folders with one role each", () => {
     expect(normalizeFolder("./src/main/")).toBe("src/main");
     let ps = validateProjectStructure({ sourceRoots: ["src/", "src", 3], excluded: ["/dist"] });
@@ -58,6 +68,7 @@ describe("language pages", () => {
       "Java",
       "Node.js",
       "Python Interpreter",
+      "Prettier",
       "Rust",
       "TypeScript",
     ]);

@@ -6,9 +6,9 @@ import { registerActions } from "@/platform/actions";
 import { EDITOR_TAB_MIME, type EditorInput } from "@/workbench/contributions";
 import { confirmChecked, showError } from "@/workbench/messages";
 import { ContextMenuHost, dragSession, hideContextMenu } from "@/ui";
-import { AgentsView } from "./AgentsView";
+import { AgentsHeaderActions, AgentsLocationActions, AgentsView } from "./AgentsView";
 import { SESSION_KIND } from "./model";
-import { archiveTask, unarchiveTask, deleteTask, dockTask, openTask, undockTask, useAgents } from "./store";
+import { archiveTask, unarchiveTask, deleteTask, dockTask, openTask, setSessionLocation, useAgents } from "./store";
 import { taskActions, taskMenu } from "./taskActions";
 import styles from "./Agents.module.css";
 
@@ -39,7 +39,7 @@ vi.mock("./store", async (original) => ({
   unarchiveTask: vi.fn(async () => {}),
   deleteTask: vi.fn(async () => {}),
   dockTask: vi.fn(),
-  undockTask: vi.fn(),
+  setSessionLocation: vi.fn(),
 }));
 
 vi.mock("./SessionEditor", () => ({ SessionEditor: () => <div data-testid="docked-session" /> }));
@@ -103,6 +103,8 @@ beforeEach(() => {
     error: null,
     tasks: new Map([task("one"), task("two"), task("three"), task("four")].map((t) => [t.id, t])),
     docked: null,
+    homeOpen: false,
+    sessionLocation: "editor",
   });
   dispose = registerActions(taskActions);
 });
@@ -115,6 +117,8 @@ afterEach(() => {
 function setup() {
   render(
     <>
+      <AgentsLocationActions />
+      <AgentsHeaderActions />
       <AgentsView />
       <ContextMenuHost />
     </>,
@@ -158,24 +162,44 @@ describe("Agents selection", () => {
 });
 
 describe("Agents docked view", () => {
-  it("shows the docked conversation above the list and switches it by selecting a task", () => {
+  it("opens session history on demand and closes it after switching tasks", () => {
     useAgents.setState({ docked: "one" });
     setup();
     expect(screen.getByTestId("docked-session")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open in Editor" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Chat in Editor" })).toBeTruthy();
     expect(openTask).not.toHaveBeenCalled();
-    select("two");
-    expect(actions.executeAction).toHaveBeenCalledWith("agents.dockTask", "two");
-    expect(dockTask).toHaveBeenCalledWith("two");
-    expect(openTask).not.toHaveBeenCalled();
+    expect(screen.queryByRole("tree", { name: "Agent tasks" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
+    fireEvent.click(within(screen.getByRole("tree", { name: "Agent tasks" })).getByText("two"));
+    expect(screen.queryByRole("dialog", { name: "Agent sessions" })).toBeNull();
+    expect(actions.executeAction).toHaveBeenCalledWith("agents.openTask", "two");
+    expect(openTask).toHaveBeenCalledWith("two");
   });
 
-  it("hides the docked task from the list below", () => {
+  it("lets keyboard users browse history before confirming a session", () => {
     useAgents.setState({ docked: "one" });
     setup();
+    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
+    const tree = screen.getByRole("tree", { name: "Agent tasks" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(screen.getByRole("dialog", { name: "Agent sessions" })).toBeTruthy();
+    expect(openTask).not.toHaveBeenCalled();
+    fireEvent.keyDown(tree, { key: "Enter" });
+    expect(openTask).toHaveBeenCalledWith("two");
+    expect(screen.queryByRole("dialog", { name: "Agent sessions" })).toBeNull();
+  });
+
+  it("includes the current session in history and keeps the conversation mounted", () => {
+    useAgents.setState({ docked: "one" });
+    setup();
+    const session = screen.getByTestId("docked-session");
+    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
     const tree = within(screen.getByRole("tree", { name: "Agent tasks" }));
-    expect(tree.queryByText("one")).toBeNull();
+    expect(tree.getByText("one")).toBeTruthy();
     expect(tree.getByText("two")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("tree", { name: "Agent tasks" })).toBeNull();
+    expect(screen.getByTestId("docked-session")).toBe(session);
   });
 
   it("gives the whole tool window to the conversation when the docked task is the only one", () => {
@@ -185,11 +209,15 @@ describe("Agents docked view", () => {
     expect(screen.getByTestId("docked-session")).toBeTruthy();
   });
 
-  it("undocks from the docked conversation's bar", () => {
-    useAgents.setState({ docked: "one" });
+  it("switches placement from the global Agents header", () => {
+    useAgents.setState({ docked: "one", sessionLocation: "toolWindow" });
     setup();
-    fireEvent.click(screen.getByRole("button", { name: "Open in Editor" }));
-    expect(undockTask).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Open in Editor" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Chat in Tool Window" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Chat in Editor" }));
+    expect(setSessionLocation).toHaveBeenCalledWith("editor");
+    fireEvent.click(screen.getByRole("button", { name: "Chat in Tool Window" }));
+    expect(setSessionLocation).toHaveBeenCalledWith("toolWindow");
   });
 
   it("opens tabs as usual without a docked conversation", () => {
@@ -282,21 +310,12 @@ describe("Agents bulk actions", () => {
 });
 
 describe("Agents task menu", () => {
-  it("offers to dock a task into the tool window", async () => {
-    setup();
-    context("one");
-    fireEvent.click(screen.getByRole("menuitem", { name: "Open in Tool Window" }));
-    await waitFor(() => expect(dockTask).toHaveBeenCalledWith("one"));
-  });
-
-  it("offers to move the docked task back to an editor", async () => {
-    useAgents.setState({ docked: "one" });
-    setup();
-    // The docked task is not listed; its menu lives on the docked conversation's header.
+  it.each([null, "one"])("keeps placement out of session menus (docked: %s)", (docked) => {
+    useAgents.setState({ docked });
     const menu = taskMenu([useAgents.getState().tasks.get("one")!]);
-    expect(menu).toContainEqual(expect.objectContaining({ action: "agents.undockTask", label: "Open in Editor" }));
-    await taskActions.find((action) => action.id === "agents.undockTask")!.run({ ctx: {}, arg: "one" });
-    await waitFor(() => expect(undockTask).toHaveBeenCalledTimes(1));
+    expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.dockTask" }));
+    expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.undockTask" }));
+    expect(menu).toContainEqual(expect.objectContaining({ action: "agents.openTask" }));
   });
 });
 

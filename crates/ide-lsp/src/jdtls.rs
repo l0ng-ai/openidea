@@ -17,6 +17,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const SERVER: &str = "jdtls";
+
+mod formatter;
+pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
 /// A workspace build of a large multi-module project can take far longer than
@@ -396,7 +399,8 @@ impl LspManager {
         self.jdtls_command_cancellable(path, command, arguments, &CancellationToken::new()).await
     }
 
-    async fn jdtls_command_cancellable(
+    /// Cancellable delegate commands for project-owned background services.
+    pub async fn jdtls_command_cancellable(
         &self,
         path: &Path,
         command: &str,

@@ -69,7 +69,7 @@ describe("IDEA keymap parity", () => {
     ["navigate.nextHighlightedUsage", ["Ctrl+Alt+Down"], ["Ctrl+Alt+Down"]],
     ["analyze.inspectFile", ["Alt+Shift+I"], ["Alt+Shift+I"]],
     ["project.copyElement", ["F5"], ["F5"]],
-    ["debug.quickEvaluate", ["Meta+Alt+F8"], ["Ctrl+Alt+F8"]],
+    ["debug.quickEvaluate", ["Meta+Alt+F8", "Alt+Button1"], ["Ctrl+Alt+F8", "Alt+Button1"]],
     ["run.chooseDebugConfig", ["Ctrl+Alt+D"], ["Alt+Shift+F9"]],
     ["editor.nextSplitter", ["Alt+Tab"], ["Alt+Tab"]],
     ["toolwindow.resizeLeft", ["Ctrl+Alt+Left"], ["Ctrl+Alt+Shift+Left"]],

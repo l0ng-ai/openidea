@@ -2,6 +2,7 @@
 
 mod config;
 mod detect;
+pub mod dotnet;
 pub mod envfile;
 pub mod go;
 pub mod gradle_jvm;
@@ -199,6 +200,15 @@ pub fn detect(root: &Path) -> Vec<RunConfig> {
 /// Detects configurations excluding the supplied project-relative Maven POM paths.
 pub fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<RunConfig> {
     detect::detect_excluding(root, excluded_poms)
+}
+
+/// Detects configurations with explicit CMake profiles, or legacy discovery when absent.
+pub fn detect_with_profiles(
+    root: &Path,
+    excluded_poms: &[PathBuf],
+    profiles: Option<&[ide_core::settings::CMakeProfile]>,
+) -> Vec<RunConfig> {
+    detect::detect_with_profiles(root, excluded_poms, profiles)
 }
 
 /// Reads `<root>/.openidea/run.toml`; a missing file yields no configs.
