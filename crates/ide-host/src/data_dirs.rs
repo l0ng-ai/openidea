@@ -244,7 +244,7 @@ fn relocate_shims(root: &Path, source: &Path) -> io::Result<()> {
         }
         let text = fs::read_to_string(&path)?;
         if text.starts_with("@echo off\r\n") {
-            let updated = text.replace(source.to_string_lossy().as_ref(), "%~dp0..");
+            let updated = relative_wrapper(&text, source);
             if updated != text {
                 fs::write(path, updated)?;
             }
@@ -253,9 +253,36 @@ fn relocate_shims(root: &Path, source: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn relative_wrapper(text: &str, source: &Path) -> String {
+    // PathBuf can contain both separators (notably roots joined with "tools/demo").
+    // Compare normalized paths, but retain every other byte of the managed wrapper.
+    let normalized = text.replace('\\', "/");
+    let prefix = source.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    let (normalized, prefix) = (normalized.to_ascii_lowercase(), prefix.to_ascii_lowercase());
+    let mut updated = text.to_owned();
+    let offsets: Vec<_> = normalized.match_indices(&prefix).map(|(offset, _)| offset).collect();
+    for offset in offsets.into_iter().rev() {
+        let end = offset + prefix.len();
+        if normalized.as_bytes().get(end) == Some(&b'/') {
+            updated.replace_range(offset..end, "%~dp0..");
+        }
+    }
+    updated
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrappers_accept_mixed_separators_without_rewriting_neighbor_paths() {
+        let text = "@echo off\r\n\"C:\\old\\tools/demo\\payload.exe\" \"C:\\old\\tools/demo-other\\x\" %*\r\n";
+        assert_eq!(
+            relative_wrapper(text, Path::new("C:/old/tools/demo")),
+            "@echo off\r\n\"%~dp0..\\payload.exe\" \"C:\\old\\tools/demo-other\\x\" %*\r\n"
+        );
+    }
 
     #[test]
     fn storage_policy_is_conservative_and_preserves_unix_layout() {

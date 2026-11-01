@@ -104,7 +104,7 @@ pub async fn jdk_download_releases(
     vendor: String,
     request: RequestId,
 ) -> IdeResult<JdkReleases> {
-    let tools = Tools::new(&host.data_dir);
+    let tools = Tools::new(&host.local_data_dir);
     let cancel = host.begin_request(request);
     let result = tokio::task::spawn_blocking(move || tools.jdk_releases(&vendor, &cancel)).await.map_err(join_err);
     host.end_request(request);
@@ -130,7 +130,7 @@ pub async fn jdk_download(
     request: RequestId,
     on_event: Channel<InstallEvent>,
 ) -> IdeResult<Sdk> {
-    let tools = Tools::new(&host.data_dir);
+    let tools = Tools::new(&host.local_data_dir);
     let location = location.filter(|p| !p.as_os_str().is_empty());
     let cancel = host.begin_request(request);
     let result = tokio::task::spawn_blocking(move || {

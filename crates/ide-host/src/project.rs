@@ -255,8 +255,8 @@ impl Host {
 
         let kotlin_bridge = crate::kotlin_bridge::KotlinBridge::new(
             root.clone(),
-            self.data_dir.join("cache").join(&project_key).join("build"),
-            &self.data_dir,
+            self.local_data_dir.join("cache").join(&project_key).join("build"),
+            &self.local_data_dir,
             settings.clone(),
             lsp.clone(),
             sink.clone(),
