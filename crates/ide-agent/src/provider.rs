@@ -91,36 +91,42 @@ pub(crate) fn builtin_spec(id: &str) -> Option<ProviderSpec> {
     builtins().into_iter().find(|s| s.id == id)
 }
 
-/// Overrides built-in `id`'s command with `command` through its agent file (the driver
-/// and arguments stay the built-in's), or with `None` removes that file, returning the
-/// built-in to auto-detection.
+/// Overrides built-in `id`'s command through its agent file, preserving other
+/// customizations. `None` restores the built-in command and removes a redundant file.
 pub(crate) fn set_builtin_command(custom_dir: &Path, id: &str, command: Option<&str>) -> IdeResult<()> {
+    let Some(builtin) = builtin_spec(id) else {
+        return Err(IdeError::invalid(format!("{id} is not a built-in agent")));
+    };
     let file = custom_dir.join(format!("{id}.toml"));
-    if let Ok(agent) = CustomAgent::read(&file)
-        && agent.registry.is_some()
-    {
+    let mut agent = if file.try_exists()? {
+        CustomAgent::read(&file).map_err(IdeError::invalid)?
+    } else {
+        CustomAgent {
+            name: Some(builtin.name.clone()),
+            driver: builtin.driver,
+            command: builtin.command.clone(),
+            args: builtin.args.clone(),
+            env: BTreeMap::new(),
+            registry: None,
+        }
+    };
+    if agent.registry.is_some() {
         return Err(IdeError::invalid(format!("{id} is installed from the ACP Registry")));
     }
-    let Some(command) = command else {
-        // The file is the override itself: removing it returns the built-in to auto-detection.
+    if command.is_none()
+        && agent.name.as_deref() == Some(builtin.name.as_str())
+        && agent.driver == builtin.driver
+        && agent.args == builtin.args
+        && agent.env.is_empty()
+    {
         match std::fs::remove_file(&file) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
         return Ok(());
-    };
-    let Some(builtin) = builtin_spec(id) else {
-        return Err(IdeError::invalid(format!("{id} is not a built-in agent")));
-    };
-    CustomAgent {
-        name: Some(builtin.name),
-        driver: builtin.driver,
-        command: command.to_owned(),
-        args: builtin.args,
-        env: BTreeMap::new(),
-        registry: None,
     }
-    .write(&file)?;
+    agent.command = command.unwrap_or(&builtin.command).to_owned();
+    agent.write(&file)?;
     Ok(())
 }
 
@@ -278,7 +284,7 @@ mod tests {
         assert_eq!((claude.command.as_str(), claude.driver), ("/opt/claude", Driver::Claude));
         assert!(claude.args.is_empty());
         // A registry install is neither overwritten nor removed by a command override.
-        let path = dir.path().join("amp-acp.toml");
+        let path = dir.path().join("codex.toml");
         CustomAgent {
             name: None,
             driver: Driver::Acp,
@@ -289,14 +295,68 @@ mod tests {
         }
         .write(&path)
         .unwrap();
-        set_builtin_command(dir.path(), "amp-acp", Some("/x")).unwrap_err();
-        set_builtin_command(dir.path(), "amp-acp", None).unwrap_err();
+        set_builtin_command(dir.path(), "codex", Some("/x")).unwrap_err();
+        set_builtin_command(dir.path(), "codex", None).unwrap_err();
         assert!(path.exists());
         // Clearing (twice) returns the built-in to auto-detection.
         set_builtin_command(dir.path(), "claude", None).unwrap();
         set_builtin_command(dir.path(), "claude", None).unwrap();
         assert!(!dir.path().join("claude.toml").exists());
         assert_eq!(load(Some(dir.path())).iter().find(|s| s.id == "claude").unwrap().command, "claude");
+    }
+
+    #[test]
+    fn set_builtin_command_preserves_other_customizations_on_save_and_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude.toml");
+        for field in ["name", "driver", "args", "env", "unnamed"] {
+            let mut agent = CustomAgent {
+                name: Some("Claude Code".into()),
+                driver: Driver::Claude,
+                command: "/old/claude".into(),
+                args: vec![],
+                env: BTreeMap::new(),
+                registry: None,
+            };
+            match field {
+                "name" => agent.name = Some("My Claude".into()),
+                "driver" => agent.driver = Driver::Acp,
+                "args" => agent.args.push("--verbose".into()),
+                "env" => {
+                    agent.env.insert("K".into(), "v".into());
+                }
+                "unnamed" => agent.name = None,
+                _ => unreachable!(),
+            }
+            agent.write(&path).unwrap();
+
+            set_builtin_command(dir.path(), "claude", Some("/new/claude")).unwrap();
+            agent.command = "/new/claude".into();
+            assert_eq!(CustomAgent::read(&path).unwrap(), agent, "{field}");
+
+            set_builtin_command(dir.path(), "claude", None).unwrap();
+            agent.command = "claude".into();
+            assert_eq!(CustomAgent::read(&path).unwrap(), agent, "{field}");
+        }
+    }
+
+    #[test]
+    fn resetting_a_command_only_override_removes_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("codex.toml");
+        std::fs::write(
+            &path,
+            "name = \"Codex\"\ndriver = \"codex\"\ncommand = \"/custom/codex\"\nargs = [\"app-server\"]\n",
+        )
+        .unwrap();
+
+        set_builtin_command(dir.path(), "codex", None).unwrap();
+
+        assert!(!path.exists());
+        assert_eq!(
+            load(Some(dir.path())).into_iter().find(|s| s.id == "codex").unwrap(),
+            builtin_spec("codex").unwrap()
+        );
     }
 
     #[test]
