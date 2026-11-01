@@ -39,7 +39,7 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
             .await?;
     }
     if config.adapter == ide_dap::kotlin::ADAPTER {
-        let data_dir = host.data_dir.clone();
+        let data_dir = host.local_data_dir.clone();
         let runtime_root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();
         let runtime_settings = settings.clone();
         let runtime = host

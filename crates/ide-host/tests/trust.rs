@@ -11,6 +11,7 @@ fn host(base: &Path, environment: bool) -> Arc<Host> {
     Arc::new(Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
