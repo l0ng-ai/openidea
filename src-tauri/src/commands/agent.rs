@@ -36,6 +36,19 @@ pub fn agent_providers(window: Window, state: State<'_, AppState>) -> IdeResult<
     agent::providers(&state.host, window.label())
 }
 
+/// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
+/// built-in's driver and arguments), or returns it to auto-detection with `None`.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_set_command(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    command: Option<String>,
+) -> IdeResult<()> {
+    agent::set_command(&state.host, window.label(), id, command)
+}
+
 /// Agents of the ACP Registry this machine can run, with what is installed; the list
 /// saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 #[tauri::command]

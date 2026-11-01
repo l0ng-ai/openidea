@@ -18,6 +18,12 @@ export interface StagedChange {
   page: string;
 }
 
+interface ExternalChange {
+  page: string;
+  value: unknown;
+  apply(): Promise<unknown>;
+}
+
 export interface SettingsDialogState {
   open: boolean;
   pageId: string;
@@ -33,6 +39,9 @@ export interface SettingsDialogState {
   staged: Record<string, StagedChange>;
   /** SSH credentials stay outside settings JSON until Apply / OK. */
   stagedSecrets: Record<string, string>;
+  stagedExternal: Record<string, ExternalChange>;
+  /** Values written outside settings JSON since opening the dialog. */
+  externalApplied: Record<string, unknown>;
   /** Scope chosen per page (Global / This project). */
   scopes: Record<string, Scope>;
   saving: boolean;
@@ -52,6 +61,8 @@ export const useSettingsDialog = create<SettingsDialogState>(() => ({
   newProjects: false,
   staged: {},
   stagedSecrets: {},
+  stagedExternal: {},
+  externalApplied: {},
   scopes: {},
   saving: false,
   error: null,
@@ -79,6 +90,8 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean } = 
     newProjects: opts.newProjects ?? false,
     staged: {},
     stagedSecrets: {},
+    stagedExternal: {},
+    externalApplied: {},
     saving: false,
     error: null,
   });
@@ -108,7 +121,15 @@ type Bases = Pick<SettingsDialogState, "base" | "globalBase">;
 const baseFor = (s: Bases, scope: Scope) => (scope === "global" ? s.globalBase : s.base);
 
 export function closeSettings() {
-  useSettingsDialog.setState({ open: false, staged: {}, stagedSecrets: {}, error: null, saving: false });
+  useSettingsDialog.setState({
+    open: false,
+    staged: {},
+    stagedSecrets: {},
+    stagedExternal: {},
+    externalApplied: {},
+    error: null,
+    saving: false,
+  });
 }
 
 /** Shows `pageId` (`page#focus` also selects `focus` on it). */
@@ -180,11 +201,25 @@ export function stageSshSecret(id: string, value: string) {
   });
 }
 
+export const externalKey = (page: string, key: string) => `${page}|${key}`;
+
+export function stageExternal<T>(page: string, key: string, value: T, base: T, apply: (value: T) => Promise<T>) {
+  useSettingsDialog.setState((s) => {
+    if (s.saving) return {};
+    const stagedExternal = { ...s.stagedExternal };
+    const id = externalKey(page, key);
+    if (deepEqual(value, base)) delete stagedExternal[id];
+    else stagedExternal[id] = { page, value, apply: () => apply(value) };
+    return { stagedExternal, error: null };
+  });
+}
+
 /** Discards staged edits of one page (the dialog's Reset button). */
 export function resetPage(page: string) {
   useSettingsDialog.setState((s) => ({
     staged: Object.fromEntries(Object.entries(s.staged).filter(([, c]) => c.page !== page)),
     stagedSecrets: page === SSH_SETTINGS_PAGE ? {} : s.stagedSecrets,
+    stagedExternal: Object.fromEntries(Object.entries(s.stagedExternal).filter(([, c]) => c.page !== page)),
     error: null,
   }));
 }
@@ -254,7 +289,8 @@ export async function applySettings(deps: PersistDeps = defaultDeps()): Promise<
   if (initial.saving) return false;
   const changes = pendingChanges(initial);
   const secrets = Object.entries(initial.stagedSecrets);
-  if (!changes.length && !secrets.length) return true;
+  const external = Object.entries(initial.stagedExternal);
+  if (!changes.length && !secrets.length && !external.length) return true;
   useSettingsDialog.setState({ saving: true, error: null });
   const result = await persistChanges(changes, deps);
   const { written } = result;
@@ -289,6 +325,22 @@ export async function applySettings(deps: PersistDeps = defaultDeps()): Promise<
         });
       } catch (e) {
         error = `SSH secret: ${e instanceof Error ? e.message : String(e)}`;
+        break;
+      }
+    }
+  }
+  if (!error) {
+    for (const [id, change] of external) {
+      if (useSettingsDialog.getState().stagedExternal[id] !== change) continue;
+      try {
+        const value = await change.apply();
+        useSettingsDialog.setState((s) => {
+          const stagedExternal = { ...s.stagedExternal };
+          if (stagedExternal[id] === change) delete stagedExternal[id];
+          return { stagedExternal, externalApplied: { ...s.externalApplied, [id]: value } };
+        });
+      } catch (e) {
+        error = `${id}: ${e instanceof Error ? e.message : String(e)}`;
         break;
       }
     }

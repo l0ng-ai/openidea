@@ -1,12 +1,34 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { AgentProvider, AgentRegistry, InstallEvent, RegistryAgent, RequestId } from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { MessagesHost } from "@/workbench/messages";
-import { AgentRegistryPage } from "./AgentRegistryPage";
+import { AgentRegistryPage as RegistryPage } from "./AgentRegistryPage";
+import { SettingsFormContext, registerSettingsPage } from "@/workbench/contributions";
+import { useSettingsFormFor } from "@/features/settings/components/context";
+import { closeSettings, openSettings, selectPage } from "@/features/settings/model/staging";
+import { SettingsDialog } from "@/features/settings/dialog/SettingsDialog";
+import { REGISTRY_PAGE } from "./model";
+import type { ComponentProps } from "react";
+
+function AgentRegistryPage(props: ComponentProps<typeof RegistryPage>) {
+  const form = useSettingsFormFor(REGISTRY_PAGE, "global");
+  return (
+    <SettingsFormContext.Provider value={form}>
+      <RegistryPage {...props} />
+    </SettingsFormContext.Provider>
+  );
+}
 import { ADD_AGENT, providerOptions } from "./providerOptions";
-import { afterRemove, matchesQuery, rowActions, sortAgents, type RegistryBackend } from "./registry";
+import {
+  afterRemove,
+  matchesQuery,
+  rowActions,
+  sortAgents,
+  type CommandsBackend,
+  type RegistryBackend,
+} from "./registry";
 
 const agent = (partial: Partial<RegistryAgent> & Pick<RegistryAgent, "id" | "name">): RegistryAgent => ({
   version: "1.0.0",
@@ -256,5 +278,165 @@ describe("Agents settings page", () => {
     backend.list.mockRejectedValueOnce(new IpcError({ kind: "io", message: "offline" }));
     render(<AgentRegistryPage backend={backend} />);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the ACP Registry: offline"));
+  });
+});
+
+class FakeCommands implements CommandsBackend {
+  list: AgentProvider[] = [];
+  saved: [string, string | null][] = [];
+  providers = vi.fn(async () => this.list);
+  async set(id: string, command: string | null) {
+    this.saved.push([id, command]);
+    // What the agent list shows after the override takes effect.
+    this.list = this.list.map((p) => (p.id === id ? { ...p, command: command ?? p.id } : p));
+  }
+}
+
+const claudeProvider = (command: string): AgentProvider => ({
+  id: "claude",
+  name: "Claude Code",
+  command,
+  installed: true,
+  config: [],
+  commands: [],
+  source: { kind: "builtin" },
+});
+
+describe("Claude Code command override", () => {
+  let dispose = () => {};
+  beforeEach(() => openSettings(REGISTRY_PAGE));
+  afterEach(() => {
+    closeSettings();
+    dispose();
+  });
+
+  const openCommands = async (commands: FakeCommands, onChanged = vi.fn()) => {
+    const backend = new FakeBackend();
+    dispose = registerSettingsPage({
+      id: REGISTRY_PAGE,
+      title: "Agents",
+      group: "Tools",
+      component: () => <RegistryPage backend={backend} commandBackend={commands} onChanged={onChanged} />,
+    });
+    render(<SettingsDialog />);
+    return screen.findByRole("region", { name: "Claude Code command" });
+  };
+  const apply = () => screen.getByRole("button", { name: "Apply" });
+  const field = () => screen.getByRole("textbox", { name: "Claude Code command" });
+
+  it("is hidden when providers cannot be read (no trusted project)", async () => {
+    const commands = new FakeCommands();
+    commands.providers.mockRejectedValue(new IpcError({ kind: "unavailable", message: "restricted" }));
+    render(<AgentRegistryPage backend={new FakeBackend()} commandBackend={commands} />);
+    await waitFor(() => expect(row("Amp")).toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: "Claude Code command" })).toBeNull();
+  });
+
+  it.each(["Apply", "OK"])("stages a binary path and writes it only on %s", async (button) => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    const onChanged = vi.fn();
+    const section = await openCommands(commands, onChanged);
+    expect(apply()).toBeDisabled();
+    expect(field()).toHaveValue("claude");
+    expect(within(section).queryByRole("button", { name: "Save" })).toBeNull();
+    fireEvent.change(field(), { target: { value: "D:\\tools\\claude.exe" } });
+    expect(commands.saved).toEqual([]);
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(apply()).toBeEnabled();
+    expect(within(section).queryByText("Custom command")).toBeNull();
+
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: button })));
+    expect(commands.saved).toEqual([["claude", "D:\\tools\\claude.exe"]]);
+    expect(onChanged).toHaveBeenCalledOnce();
+    if (button === "Apply") {
+      expect(within(section).getByText("Custom command")).toBeInTheDocument();
+      expect(apply()).toBeDisabled();
+    } else expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("Cancel discards command edits without writing", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("/saved/claude")];
+    await openCommands(commands);
+    fireEvent.change(field(), { target: { value: "/unsaved/claude" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(commands.saved).toEqual([]);
+    act(() => openSettings(REGISTRY_PAGE));
+    expect(await screen.findByRole("textbox", { name: "Claude Code command" })).toHaveValue("/saved/claude");
+    expect(apply()).toBeDisabled();
+  });
+
+  it.each(["clear", "Reset"])("%s stages automatic detection until Apply", async (action) => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("/saved/claude")];
+    const section = await openCommands(commands);
+    if (action === "clear") fireEvent.change(field(), { target: { value: "" } });
+    else fireEvent.click(within(section).getByRole("button", { name: "Reset" }));
+    expect(field()).toHaveValue("");
+    expect(commands.saved).toEqual([]);
+    expect(within(section).getByText("Custom command")).toBeInTheDocument();
+    expect(apply()).toBeEnabled();
+    await act(async () => fireEvent.click(apply()));
+    expect(commands.saved).toEqual([["claude", null]]);
+    expect(field()).toHaveValue("claude");
+    expect(within(section).queryByText("Custom command")).toBeNull();
+    expect(apply()).toBeDisabled();
+  });
+
+  it("page Reset discards edits and returning to the saved value clears the modified state", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("/saved/claude")];
+    await openCommands(commands);
+    fireEvent.change(field(), { target: { value: "/edited/claude" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Reset" })[0]!);
+    expect(field()).toHaveValue("/saved/claude");
+    expect(apply()).toBeDisabled();
+    fireEvent.change(field(), { target: { value: "/edited/claude" } });
+    fireEvent.change(field(), { target: { value: "/saved/claude" } });
+    expect(apply()).toBeDisabled();
+    expect(commands.saved).toEqual([]);
+  });
+
+  it.each([false, true])("keeps edits across page navigation and applies with Agents mounted=%s", async (mounted) => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    await openCommands(commands);
+    const off = registerSettingsPage({ id: "other", title: "Other" });
+    try {
+      fireEvent.change(field(), { target: { value: "/custom/claude" } });
+      act(() => selectPage("other"));
+      expect(apply()).toBeEnabled();
+      if (mounted) {
+        act(() => selectPage(REGISTRY_PAGE));
+        expect(await screen.findByRole("textbox", { name: "Claude Code command" })).toHaveValue("/custom/claude");
+      }
+      await act(async () => fireEvent.click(apply()));
+      act(() => selectPage(REGISTRY_PAGE));
+      expect(await screen.findByRole("textbox", { name: "Claude Code command" })).toHaveValue("/custom/claude");
+      expect(screen.getByText("Custom command")).toBeInTheDocument();
+      expect(commands.saved).toEqual([["claude", "/custom/claude"]]);
+      expect(apply()).toBeDisabled();
+    } finally {
+      off();
+    }
+  });
+
+  it("retains a failed command for retry and shows only the applied badge", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    const set = vi.spyOn(commands, "set").mockRejectedValueOnce(new Error("Read-only configuration"));
+    const section = await openCommands(commands);
+    fireEvent.change(field(), { target: { value: " /custom/claude " } });
+    await act(async () => fireEvent.click(apply()));
+    expect(screen.getByRole("status")).toHaveTextContent("Read-only configuration");
+    expect(field()).toHaveValue(" /custom/claude ");
+    expect(within(section).queryByText("Custom command")).toBeNull();
+    expect(apply()).toBeEnabled();
+    await act(async () => fireEvent.click(apply()));
+    expect(set).toHaveBeenCalledTimes(2);
+    expect(commands.saved).toEqual([["claude", "/custom/claude"]]);
+    expect(field()).toHaveValue("/custom/claude");
+    expect(within(section).getByText("Custom command")).toBeInTheDocument();
   });
 });
