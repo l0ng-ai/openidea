@@ -122,7 +122,9 @@ export function maskJava(text: string): string {
 // ---------------------------------------------------------------------------
 // Top-level type
 
-const TYPE_RE = /(?<!@)\b(interface|class|enum|record)\s+([A-Za-z_$][\w$]*)/g;
+// The `@` is matched instead of a lookbehind (unsupported in WebKit < 16.4)
+// and rejected below, so `@interface` (an annotation) is not a type.
+const TYPE_RE = /@?\b(interface|class|enum|record)\s+([A-Za-z_$][\w$]*)/g;
 
 interface TypeDecl {
   kind: "interface" | "class";
@@ -136,6 +138,8 @@ function findTypeDecl(masked: string): TypeDecl | null {
   TYPE_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = TYPE_RE.exec(masked))) {
+    // Skip `@interface` annotation declarations: the `@` is part of the match.
+    if (masked[m.index] === "@") continue;
     const kind = m[1] === "interface" ? "interface" : "class";
     const name = m[2]!;
     const at = m.index;
