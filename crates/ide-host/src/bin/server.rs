@@ -55,6 +55,7 @@ async fn run(base: PathBuf) -> i32 {
     let sink_peer = peer.clone();
     let host = Arc::new(Host::new(HostConfig {
         config_dir,
+        local_data_dir: data_dir.clone(),
         data_dir,
         languages,
         syntax: Arc::default(),

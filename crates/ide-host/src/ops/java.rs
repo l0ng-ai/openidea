@@ -42,7 +42,7 @@ async fn resolve_launch(
     // Let jdtls finish its build before the external compiler writes Kotlin/Scala classes.
     let mut info = project.lsp.java_launch(&module, test, build, cancel).await?;
     let lsp_ms = started.elapsed().as_millis();
-    let data_dir = host.data_dir.clone();
+    let data_dir = host.local_data_dir.clone();
     let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
         let built = if build && compile::has_non_java_sources(&module) {

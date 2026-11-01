@@ -56,6 +56,7 @@ async fn serves_projects_files_documents_search_and_runs() {
     let host = Arc::new(Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
@@ -228,6 +229,7 @@ async fn local_deployment_runs_on_the_project_host() {
     let host = Arc::new(Host::new(HostConfig {
         config_dir: tmp.path().join("config"),
         data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_slot.clone(), Some(w.to_owned()))),
@@ -295,6 +297,7 @@ async fn properties_conversion_through_remote_dispatch_without_a_remote_host() {
     let host = Arc::new(Host::new(HostConfig {
         config_dir: tmp.path().join("config"),
         data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),

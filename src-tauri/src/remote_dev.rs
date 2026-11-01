@@ -182,7 +182,7 @@ fn local_server_binary(state: &AppState, os: &str, arch: &str) -> Option<std::pa
     if let Some(p) = std::env::var_os("OPENIDEA_SERVER_BINARY").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
-    let bundled = state.data_dir.join("server").join(format!("{os}-{arch}")).join("openidea-server");
+    let bundled = state.local_data_dir.join("server").join(format!("{os}-{arch}")).join("openidea-server");
     if bundled.is_file() {
         return Some(bundled);
     }
@@ -205,7 +205,7 @@ async fn download_server(
     arch: &str,
     progress: Arc<Progress>,
 ) -> IdeResult<std::path::PathBuf> {
-    let (data, version, os, arch) = (state.data_dir.clone(), version.to_owned(), os.to_owned(), arch.to_owned());
+    let (data, version, os, arch) = (state.local_data_dir.clone(), version.to_owned(), os.to_owned(), arch.to_owned());
     tokio::task::spawn_blocking(move || {
         ide_tools::server::fetch(&data, &version, &os, &arch, &ide_core::CancellationToken::new(), &|e| match e {
             ide_tools::InstallEvent::Line { text } => tracing::info!("openidea-server download: {text}"),
@@ -259,7 +259,12 @@ async fn ensure_server(state: &AppState, session: &ide_ssh::Session, progress: A
                          `cargo build --release -p ide-host --bin openidea-server` for that platform and put it at {} \
                          (or set OPENIDEA_SERVER_BINARY)",
                         e.message,
-                        state.data_dir.join("server").join(format!("{os}-{arch}")).join("openidea-server").display()
+                        state
+                            .local_data_dir
+                            .join("server")
+                            .join(format!("{os}-{arch}"))
+                            .join("openidea-server")
+                            .display()
                     ))
                 });
             }

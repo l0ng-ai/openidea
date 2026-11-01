@@ -12,7 +12,7 @@ use std::path::PathBuf;
 /// The installer, reporting the executables chosen in the window's settings.
 fn tools(host: &Host, window: &str) -> IdeResult<Tools> {
     host.require_trust(window)?;
-    let data = host.data_dir.clone();
+    let data = host.local_data_dir.clone();
     let (settings, root) = match host.project(window) {
         Ok(project) => (project.settings.effective(), project.root.clone()),
         Err(_) => (host.global_settings.effective(), Default::default()),
@@ -113,7 +113,7 @@ pub async fn jdk_download_releases(
 
 /// Where Download JDK puts JDKs unless told otherwise.
 pub fn jdk_download_location(host: &Host, _window: &str) -> IdeResult<ide_core::IpcPath> {
-    Ok(ide_tools::jdk::jdks_dir(&host.data_dir).into())
+    Ok(ide_tools::jdk::jdks_dir(&host.local_data_dir).into())
 }
 
 /// Downloads the latest `vendor` JDK of Java `version` into `location` (default:
