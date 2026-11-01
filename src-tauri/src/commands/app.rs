@@ -75,6 +75,9 @@ pub fn app_home_set(path: String) -> IdeResult<()> {
     if let crate::paths::Layout::Custom(base) = &resolved.layout
         && base == &target
     {
+        // The same directory: nothing to switch, but choosing it again
+        // revives the prompt a decline may have silenced.
+        crate::paths::clear_skip_marker(&resolved.defaults.0);
         return Ok(());
     }
     std::fs::create_dir_all(&target).map_err(|e| IdeError::internal(e.to_string()))?;

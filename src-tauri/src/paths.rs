@@ -53,10 +53,6 @@ static RESOLVED: OnceLock<Resolved> = OnceLock::new();
 const POINTER_NAME: &str = "home.txt";
 const SKIP_NAME: &str = ".skip-migration";
 
-/// The installed app's identifier (matches `tauri.conf.json`); dev builds
-/// override it per worktree (`crate::dev`), which is what isolates them.
-pub const RELEASE_IDENTIFIER: &str = "ai.l0ng.openidea";
-
 /// Legacy entry → its place in a custom base. The sources are the platform
 /// defaults — config-side files in `app_config_dir`, everything else in
 /// `app_data_dir` (the same directory on macOS) — and every name is looked
