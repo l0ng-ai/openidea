@@ -37,7 +37,7 @@ fn kill_tree(child: &mut Child) {
 /// `program` as spawnable: a bare name (`mvn`, `mvn.cmd`) resolves on the IDE's
 /// search path — the login shell's `PATH` plus version-manager shims — since the
 /// app's own `PATH` can be minimal and `Command` would not see `mvn` there.
-fn program_path(program: &str, env: &BTreeMap<String, String>) -> std::path::PathBuf {
+pub(crate) fn program_path(program: &str, env: &BTreeMap<String, String>) -> std::path::PathBuf {
     let path = std::path::Path::new(program);
     if !path.is_relative() || path.components().count() > 1 {
         return path.to_path_buf();

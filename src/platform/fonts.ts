@@ -140,7 +140,8 @@ export async function fontsLoaded(family: string, size: number): Promise<void> {
   }
 }
 
-/** Bundled aliases also apply when selected for the interface. */
-export function uiFontFamily(family: string): string {
-  return [...familyFaces(family), "system-ui", "sans-serif"].join(", ");
+/** Bundled aliases also apply when selected for the interface; `fallback` covers glyphs `family` lacks (empty = none). */
+export function uiFontFamily(family: string, fallback = ""): string {
+  const fb = familyName(fallback);
+  return [...familyFaces(family), ...(fb ? familyFaces(fb) : []), "system-ui", "sans-serif"].join(", ");
 }
