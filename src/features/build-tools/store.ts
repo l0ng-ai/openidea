@@ -142,6 +142,18 @@ export function pushHistory(tool: BuildTool, line: string) {
 // Model
 
 let generation = 0;
+/** Root whose never-synced Gradle build was imported on open (once per open). */
+let autoImported: string | null = null;
+let externalChange = false;
+
+/**
+ * A build file changed outside the editor (VCS update, another tool): the next model load
+ * reloads a build it finds stale, IDEA's default "Reload after external changes". Edits in
+ * the editor only show "Load … Changes".
+ */
+export function noteExternalBuildChange() {
+  externalChange = true;
+}
 
 /** Re-reads the build model (and the run configurations) of the open project. */
 export async function loadModel(): Promise<void> {
@@ -167,6 +179,18 @@ export async function loadModel(): Promise<void> {
     ]);
     if (gen !== generation) return;
     useBuild.setState({ model, configs, loading: false, error: null });
+    // Like IDEA, a Gradle build is imported when first opened; later changes wait for Reload.
+    if (model.gradle && model.gradle.syncedAt === null && autoImported !== root) {
+      autoImported = root;
+      void syncTool("gradle");
+    }
+    if (externalChange) {
+      externalChange = false;
+      for (const tool of ["maven", "gradle"] as const) {
+        const info = tool === "maven" ? model.maven : model.gradle;
+        if (info?.stale && info.syncedAt !== null && !useBuild.getState().syncing[tool]) void syncTool(tool);
+      }
+    }
   } catch (e) {
     if (gen === generation) useBuild.setState({ loading: false, error: e instanceof Error ? e.message : String(e) });
   }

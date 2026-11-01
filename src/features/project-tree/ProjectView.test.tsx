@@ -386,6 +386,16 @@ describe("Show Members", () => {
     expect(opts).toMatchObject({ focus: true, selection: { line: 10, col: 0 } });
   });
 
+  it("restores the tree as left: a collapsed root and folders outside the project", () => {
+    const outside = ["\u0000group:gradleGroup:Shop", "/w/billing", "/w/billing/modules/core"];
+    localStorage.setItem(`openidea.projectTree.expanded:${ROOT}`, JSON.stringify(outside));
+    initProjectTree(ROOT, "acme");
+    expect([...useProjectTree.getState().expanded]).toEqual(outside);
+    localStorage.removeItem(`openidea.projectTree.expanded:${ROOT}`);
+    initProjectTree(ROOT, "acme");
+    expect([...useProjectTree.getState().expanded]).toEqual([ROOT]);
+  });
+
   it.each([true, false])(
     "loads restored expanded files when Show Members becomes enabled (initially %s)",
     async (enabled) => {

@@ -140,6 +140,17 @@ describe("application configurations", () => {
     expect(jvmModuleDir("odd/App.java", [cfg({ id: "m", kind: "maven", cwd: "odd" })])).toBe("odd");
   });
 
+  it("takes the innermost module the build model knows, like IDEA's file index", () => {
+    const modules = ["", "/w/billing", "/w/billing/modules/core", "legacy"];
+    // `sourceSets.main.java.srcDirs = ['src']`: no `src/main/java` to guess from.
+    expect(jvmModuleDir("legacy/src/a/App.java", [], modules)).toBe("legacy");
+    expect(jvmModuleDir("/w/billing/modules/core/src/main/java/a/App.java", [], modules)).toBe(
+      "/w/billing/modules/core",
+    );
+    // A module the model does not know yet (before the first sync): the source layout.
+    expect(jvmModuleDir("services/api/src/main/java/a/App.java", [], modules)).toBe("services/api");
+  });
+
   it("adds JDWP to a script explicitly assigned the Kotlin debugger", () => {
     const rc = cfg({ id: "kotlin-script", kind: "shell", command: "./run.sh", debugAdapter: "kotlin-debug-adapter" });
     expect(jdwpLaunch(rc)?.env.JAVA_TOOL_OPTIONS).toContain("-agentlib:jdwp=");
@@ -378,6 +389,25 @@ describe("temporary configurations", () => {
     const used = adoptTemporary(applicationConfig({ className: "a.Main" }, "src/main/java/a/Main.java"));
     expect(used.name).toBe("Mine");
     expect(useRun.getState().temporary).toEqual([]);
+  });
+
+  it("reuse a configuration of the same main class and module, whatever its id", () => {
+    const own = (module: string) =>
+      cfg({
+        id: `user:${module}`,
+        kind: "spring-boot",
+        name: `Mine ${module}`,
+        args: ["-Xmx1g", "-cp", "${classpath}", "a.Main"],
+        module,
+        detected: false,
+      });
+    useRun.setState({ configs: [own("other"), own("app")] });
+    expect(adoptTemporary(applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java")).name).toBe(
+      "Mine app",
+    );
+    expect(useRun.getState().temporary).toEqual([]);
+    const fresh = adoptTemporary(applicationConfig({ className: "a.Other" }, "app/src/main/java/a/Other.java"));
+    expect(useRun.getState().temporary).toEqual([fresh.id]);
   });
 
   it("offer Save in the chooser while selected", async () => {

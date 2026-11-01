@@ -3,6 +3,7 @@
  * project has that build system, like IDEA. The model is re-read when build
  * files change; running goals / tasks goes through the run feature's actions.
  */
+import { openEditorPaths } from "@/editor/api";
 import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { onIdeEvent, type BuildModel, type BuildTool } from "@/platform/ipc";
@@ -25,6 +26,7 @@ import {
   unlinkProjects,
   cancelSync,
   loadModel,
+  noteExternalBuildChange,
   openAnalyzer,
   resetBuild,
   setExpanded,
@@ -39,7 +41,8 @@ export const MAVEN_WHEN = "projectOpen && build.maven";
 export const GRADLE_WHEN = "projectOpen && build.gradle";
 
 /** Build files whose creation / change / removal re-reads the model. */
-const BUILD_FILE = /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?)$/;
+const BUILD_FILE =
+  /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?|gradle\.properties|gradle-wrapper\.properties|[^/]+\.versions\.toml)$/;
 
 function expandAll(tool: BuildTool) {
   const { model, configs } = useBuild.getState();
@@ -159,7 +162,13 @@ export function activate(): () => void {
       if (s.project) void loadModel();
     }),
     onIdeEvent("fsChanged", (e) => {
-      if ([...e.created, ...e.modified, ...e.removed].some((p) => BUILD_FILE.test(p))) scheduleLoad();
+      const changed = [...e.created, ...e.modified, ...e.removed].filter((p) => BUILD_FILE.test(p));
+      if (!changed.length) return;
+      // shortcut: a file open in a tab counts as edited in the IDE even if a tool rewrote it;
+      // telling saves apart needs the backend to tag its own writes.
+      const open = new Set(openEditorPaths());
+      if (changed.some((p) => !open.has(p))) noteExternalBuildChange();
+      scheduleLoad();
     }),
     onIdeEvent("projectRootsChanged", scheduleLoad),
     // Project JDK / Maven home and options are applied to the model's launchers.

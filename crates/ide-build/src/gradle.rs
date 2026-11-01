@@ -32,7 +32,8 @@ pub struct GradleModel {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct GradleProject {
-    /// Gradle path: `:` for the root project, `:app`, `:libs:core`.
+    /// Gradle path: `:` for the root project, `:app`, `:libs:core`; for a project of a
+    /// nested build its identity path (`:lib:core`), which addresses its tasks from the root.
     pub path: String,
     pub name: String,
     /// Project-relative directory.
@@ -40,6 +41,10 @@ pub struct GradleProject {
     /// Project-relative build script, if any.
     pub build_file: Option<String>,
     pub tasks: Vec<GradleTask>,
+    /// Identity path of the nested build holding the project (`:lib` for `includeBuild`,
+    /// `:buildSrc`); null for the opened build.
+    #[serde(default)]
+    pub build: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -129,35 +134,88 @@ fn include_args(after: &str) -> Vec<String> {
     out
 }
 
-/// `(root project name, included project paths)` from a settings script.
-pub fn parse_settings(text: &str) -> (Option<String>, Vec<String>) {
+/// What a settings script declares, read statically.
+#[derive(Debug, Default, PartialEq)]
+pub struct Settings {
+    pub name: Option<String>,
+    /// Included project paths (`:app`), in declaration order.
+    pub includes: Vec<String>,
+    /// Project directories that differ from the default `<path>` under the build
+    /// dir, relative to it: `includeFlat` siblings and literal `projectDir = file(..)`.
+    pub dirs: BTreeMap<String, String>,
+}
+
+/// The included projects, root project name and directory overrides of a settings script.
+/// Interpolated (`"$m"`) names and directories cannot be read without Gradle and are skipped.
+pub fn parse_settings(text: &str) -> Settings {
     let text = strip_comments(text);
-    let mut name = None;
-    let mut includes: Vec<String> = Vec::new();
+    let mut s = Settings::default();
     for (i, _) in text.match_indices("rootProject.name") {
         let line = text[i + "rootProject.name".len()..].lines().next().unwrap_or_default();
         if let Some(n) = literals(line).into_iter().next() {
-            name = Some(n);
+            s.name = Some(n);
         }
     }
     let mut from = 0;
     while let Some(i) = text[from..].find("include") {
         let at = from + i;
         from = at + "include".len();
+        let flat = text[from..].starts_with("Flat");
+        if flat {
+            from += "Flat".len();
+        }
         let before_ok = at == 0 || !text[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.');
         let after = &text[from..];
         let after_ok = after.starts_with(|c: char| c == '(' || c.is_whitespace());
         if !before_ok || !after_ok {
             continue;
         }
-        for p in include_args(after) {
+        for p in include_args(after).into_iter().filter(|p| !p.contains('$')) {
             let path = if p.starts_with(':') { p } else { format!(":{p}") };
-            if path.len() > 1 && !includes.contains(&path) {
-                includes.push(path);
+            if path.len() <= 1 {
+                continue;
+            }
+            // `includeFlat 'a'` is the sibling directory `../a` of the root project.
+            if flat {
+                s.dirs.insert(path.clone(), format!("../{}", path.trim_start_matches(':')));
+            }
+            if !s.includes.contains(&path) {
+                s.includes.push(path);
             }
         }
     }
-    (name, includes)
+    // `project(':a').projectDir = file('../a')`; a later assignment wins, as in Gradle.
+    for line in text.lines() {
+        let Some((left, right)) = line.split_once(".projectDir") else { continue };
+        let Some(right) = right.trim_start().strip_prefix('=') else { continue };
+        let Some(arg) = right.trim_start().strip_prefix("file") else { continue };
+        let (Some(path), Some(dir)) = (
+            left.rsplit_once("project").map(|(_, p)| literals(p)).and_then(|l| l.into_iter().next()),
+            literals(arg).into_iter().next(),
+        ) else {
+            continue;
+        };
+        if !path.contains('$') && !dir.contains('$') {
+            let path = if path.starts_with(':') { path } else { format!(":{path}") };
+            s.dirs.insert(path, dir);
+        }
+    }
+    s
+}
+
+/// `a/b/../c` → `a/c`, without touching the filesystem.
+fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir if out.file_name().is_some() => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The directory of the Gradle build under `root`: the root itself, or a direct
@@ -235,31 +293,159 @@ pub fn default_tasks(is_root: bool, script: &str) -> Vec<GradleTask> {
 }
 
 /// Reads the Gradle build under `root` (no Gradle run), or `None` when there is none.
+fn read_first(d: &Path, names: &[&str]) -> Option<(String, String)> {
+    names.iter().find_map(|n| std::fs::read_to_string(d.join(n)).ok().map(|t| (n.to_string(), t)))
+}
+
+/// The project `path` in `pdir`, with the default tasks of its build script.
+/// Outside `root` the directory stays absolute (`rel` falls back).
+fn project_at(root: &Path, path: String, name: String, pdir: &Path) -> GradleProject {
+    let script = read_first(pdir, BUILD_FILES);
+    let tasks = default_tasks(path == ":", script.as_ref().map(|(_, t)| t.as_str()).unwrap_or_default());
+    GradleProject {
+        build_file: script.map(|(n, _)| rel(root, &pdir.join(n))),
+        dir: rel(root, pdir),
+        path,
+        name,
+        tasks,
+        build: None,
+    }
+}
+
+/// A project as Gradle evaluated it (the sync's init script, `gradle-model.gradle`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportedProject {
+    pub path: String,
+    /// Absolute, canonical.
+    pub dir: String,
+    /// Absolute output folder (`layout.buildDirectory`).
+    #[serde(default)]
+    pub build_dir: Option<String>,
+    #[serde(default)]
+    pub source_sets: Vec<ReportedSourceSet>,
+    /// Toolchain language version, else target compatibility.
+    #[serde(default)]
+    pub java: Option<u32>,
+    /// Identity path of the nested build (included build, buildSrc) reporting the project.
+    #[serde(default)]
+    pub build: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReportedSourceSet {
+    pub name: String,
+    pub test: bool,
+    /// Absolute source folders (Java, Kotlin, Groovy, …), which need not exist.
+    #[serde(default)]
+    pub src: Vec<String>,
+    /// Absolute resource folders.
+    #[serde(default)]
+    pub res: Vec<String>,
+}
+
+const MODEL_LINE: &str = "@openidea-model\t";
+
+/// The projects printed by `gradle-model.gradle`; malformed lines are skipped.
+pub fn parse_reported_projects(output: &str) -> Vec<ReportedProject> {
+    output.lines().filter_map(|l| serde_json::from_str(l.trim_end().strip_prefix(MODEL_LINE)?).ok()).collect()
+}
+
+/// Source roots of the reported source sets: `(absolute folder, is test, is resources)`.
+pub fn reported_source_roots(reported: &[ReportedProject]) -> Vec<(PathBuf, ReportedRoot)> {
+    let mut out: Vec<(PathBuf, ReportedRoot)> = Vec::new();
+    for p in reported {
+        for set in &p.source_sets {
+            let (src, res) = if set.test {
+                (ReportedRoot::Test, ReportedRoot::TestResources)
+            } else {
+                (ReportedRoot::Source, ReportedRoot::Resources)
+            };
+            for (dir, kind) in set.src.iter().map(|d| (d, src)).chain(set.res.iter().map(|d| (d, res))) {
+                let dir = PathBuf::from(dir);
+                // A folder shared by `main` and another set is `main`'s, as in IDEA.
+                if !out.iter().any(|(d, _)| *d == dir) {
+                    out.push((dir, kind));
+                }
+            }
+        }
+        // IDEA excludes the build folder of every module.
+        if let Some(b) = &p.build_dir {
+            out.push((PathBuf::from(b), ReportedRoot::Excluded));
+        }
+    }
+    out
+}
+
+/// Role of a folder a Gradle sync reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportedRoot {
+    Source,
+    Test,
+    Resources,
+    TestResources,
+    Excluded,
+}
+
+/// Replaces the statically read projects with the ones Gradle reported (root first):
+/// settings scripts may compute their projects, which no static reading sees.
+pub fn merge_reported_projects(root: &Path, model: &mut GradleModel, reported: &[ReportedProject]) {
+    if reported.is_empty() {
+        return;
+    }
+    let root_name = model.projects.iter().find(|p| p.path == ":").map(|p| p.name.clone());
+    model.projects = reported
+        .iter()
+        .map(|p| {
+            let name = match p.path.as_str() {
+                ":" => root_name.clone().unwrap_or_default(),
+                path => path.rsplit(':').next().unwrap_or_default().to_owned(),
+            };
+            let mut project = project_at(root, p.path.clone(), name, Path::new(&p.dir));
+            // buildSrc is built before the build, never addressable as `:buildSrc:<task>`.
+            if p.build.as_deref().is_some_and(|b| b.ends_with(":buildSrc")) {
+                project.tasks.clear();
+            }
+            project.build = p.build.clone();
+            project
+        })
+        .collect();
+    // Each build reports its projects when it is evaluated (nested builds first).
+    model.projects.sort_by(|a, b| a.path.cmp(&b.path));
+    // One JDK runs the whole build: the newest any module needs.
+    if let Some(v) = reported.iter().filter_map(|p| p.java).max() {
+        model.java_version = Some(v);
+    }
+}
+
+/// Project directories outside `root`, outermost only (`../svc`, not also `../svc/sources/app`):
+/// the folders IDEA shows as extra top-level module roots.
+pub fn external_roots<'a>(root: &Path, dirs: impl IntoIterator<Item = &'a str>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = dirs.into_iter().map(|d| root.join(d)).filter(|d| !d.starts_with(root)).collect();
+    dirs.sort();
+    dirs.dedup();
+    let mut out: Vec<PathBuf> = Vec::new();
+    for d in dirs {
+        if !out.iter().any(|o| d.starts_with(o)) {
+            out.push(d);
+        }
+    }
+    out
+}
+
 pub fn load(root: &Path) -> Option<GradleModel> {
     let dir = build_dir(root)?;
-    let read = |d: &Path, names: &[&str]| {
-        names.iter().find_map(|n| std::fs::read_to_string(d.join(n)).ok().map(|t| (n.to_string(), t)))
-    };
-    let (name, includes) = read(&dir, SETTINGS_FILES).map(|(_, t)| parse_settings(&t)).unwrap_or_default();
+    let settings = read_first(&dir, SETTINGS_FILES).map(|(_, t)| parse_settings(&t)).unwrap_or_default();
     let root_name =
-        name.unwrap_or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-    let mut projects = Vec::new();
-    let mut add = |path: String, name: String, pdir: PathBuf| {
-        let script = read(&pdir, BUILD_FILES);
-        let tasks = default_tasks(path == ":", script.as_ref().map(|(_, t)| t.as_str()).unwrap_or_default());
-        projects.push(GradleProject {
-            build_file: script.map(|(n, _)| rel(root, &pdir.join(n))),
-            dir: rel(root, &pdir),
-            path,
-            name,
-            tasks,
-        });
-    };
-    add(":".into(), root_name, dir.clone());
-    for path in includes {
-        let pdir = dir.join(path.trim_start_matches(':').replace(':', "/"));
+        settings.name.unwrap_or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+    let mut projects = vec![project_at(root, ":".into(), root_name, &dir)];
+    for path in settings.includes {
+        let pdir = match settings.dirs.get(&path) {
+            Some(d) => normalize(&dir.join(d)),
+            None => dir.join(path.trim_start_matches(':').replace(':', "/")),
+        };
         let name = path.rsplit(':').next().unwrap_or_default().to_owned();
-        add(path, name, pdir);
+        projects.push(project_at(root, path, name, &pdir));
     }
     let java_version = projects
         .iter()
@@ -358,7 +544,30 @@ pub fn build_files(root: &Path, model: &GradleModel) -> Vec<PathBuf> {
     let dir = root.join(&model.dir);
     let mut out: Vec<PathBuf> = SETTINGS_FILES.iter().map(|f| dir.join(f)).filter(|p| p.is_file()).collect();
     out.extend(model.projects.iter().filter_map(|p| p.build_file.as_ref().map(|f| root.join(f))));
+    // The settings of each nested build (its root project's folder).
+    for p in model.projects.iter().filter(|p| p.build.as_deref() == Some(p.path.as_str())) {
+        let nested = root.join(&p.dir);
+        out.extend(SETTINGS_FILES.iter().map(|f| nested.join(f)).filter(|f| f.is_file()));
+    }
+    // What IDEA's auto-import also watches: properties, the wrapper and version catalogs.
+    let extra = ["gradle.properties", "gradle/wrapper/gradle-wrapper.properties"].map(|f| dir.join(f));
+    out.extend(extra.into_iter().filter(|p| p.is_file()));
+    if let Ok(entries) = std::fs::read_dir(dir.join("gradle")) {
+        let mut catalogs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.to_string_lossy().ends_with(".versions.toml") && p.is_file())
+            .collect();
+        catalogs.sort();
+        out.extend(catalogs);
+    }
     out
+}
+
+/// A build script without comments and with whitespace runs collapsed, so editing a
+/// comment or reformatting does not make a sync stale (IDEA hashes lexer tokens alike).
+pub(crate) fn script_fingerprint(text: &str) -> String {
+    strip_comments(text).split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// `(project path, task)` from `gradle tasks --all` console output; tasks listed as
@@ -451,14 +660,60 @@ dependencies {
             /* include("block") */
             includeBuild("plugins")
         "#;
-        let (name, includes) = parse_settings(kts);
-        assert_eq!(name.as_deref(), Some("gradle-demo"));
-        assert_eq!(includes, [":app", ":lib", ":libs:core"]);
+        let s = parse_settings(kts);
+        assert_eq!(s.name.as_deref(), Some("gradle-demo"));
+        assert_eq!(s.includes, [":app", ":lib", ":libs:core"]);
+        assert!(s.dirs.is_empty());
 
         let groovy = "rootProject.name = 'demo'\ninclude 'a',\n        'b'\ninclude ':c'\nprintln 'x'\n";
-        let (name, includes) = parse_settings(groovy);
-        assert_eq!(name.as_deref(), Some("demo"));
-        assert_eq!(includes, [":a", ":b", ":c"]);
+        let s = parse_settings(groovy);
+        assert_eq!(s.name.as_deref(), Some("demo"));
+        assert_eq!(s.includes, [":a", ":b", ":c"]);
+    }
+
+    #[test]
+    fn settings_include_flat_and_project_dirs() {
+        let groovy = r#"
+            includeFlat 'svc-a'
+            includeFlat 'svc-b', 'svc-c' // trailing comment
+            ['x', 'y'].each { m -> include ":svc-a:$m" }
+            include ':wo'
+            project(':wo').projectDir = file('../svc-a/.worktrees/wo')
+            project(":dyn").projectDir = file("${rootDir}/dyn")
+            includeFlated 'not-a-call'
+        "#;
+        let s = parse_settings(groovy);
+        assert_eq!(s.includes, [":svc-a", ":svc-b", ":svc-c", ":wo"]);
+        assert_eq!(
+            s.dirs.into_iter().collect::<Vec<_>>(),
+            [
+                (":svc-a".into(), "../svc-a".into()),
+                (":svc-b".into(), "../svc-b".into()),
+                (":svc-c".into(), "../svc-c".into()),
+                (":wo".into(), "../svc-a/.worktrees/wo".into()),
+            ]
+        );
+
+        let kts = "includeFlat(\"k\")\nproject(\":k\").projectDir = file(\"../other\")";
+        let s = parse_settings(kts);
+        assert_eq!(s.includes, [":k"]);
+        assert_eq!(s.dirs.get(":k").map(String::as_str), Some("../other"));
+    }
+
+    #[test]
+    fn loads_include_flat_siblings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::create_dir_all(ws.join("root")).unwrap();
+        std::fs::create_dir_all(ws.join("svc")).unwrap();
+        std::fs::write(ws.join("root/settings.gradle"), "rootProject.name = 'Root'\nincludeFlat 'svc'").unwrap();
+        std::fs::write(ws.join("svc/build.gradle"), "plugins { id 'java' }").unwrap();
+        let root = ws.join("root");
+        let m = load(&root).unwrap();
+        let svc = m.projects.iter().find(|p| p.path == ":svc").unwrap();
+        assert_eq!(Path::new(&svc.dir), ws.join("svc"));
+        assert_eq!(svc.build_file.as_deref().map(Path::new), Some(ws.join("svc/build.gradle").as_path()));
+        assert!(root.join(svc.build_file.as_ref().unwrap()).is_file());
     }
 
     #[test]
@@ -538,5 +793,49 @@ Pattern: clean<TaskName>: Cleans the output files of a task.
 
         let none = tempfile::tempdir().unwrap();
         assert!(load(none.path()).is_none());
+    }
+
+    #[test]
+    fn merges_included_builds_and_build_src_by_identity_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        for d in ["shop/app", "shop/buildSrc", "lib/core"] {
+            std::fs::create_dir_all(ws.join(d)).unwrap();
+        }
+        std::fs::write(ws.join("shop/settings.gradle"), "rootProject.name = 'shop'\ninclude 'app'").unwrap();
+        std::fs::write(ws.join("lib/settings.gradle"), "include 'core'").unwrap();
+        let root = ws.join("shop");
+        let dir = |d: &str| ws.join(d).to_string_lossy().into_owned();
+        // In evaluation order, as the init script prints it: nested builds first.
+        let line = |path: &str, d: &str, build: Option<&str>| {
+            let build = build.map(|b| format!(r#","build":"{b}""#)).unwrap_or_default();
+            format!("@openidea-model\t{{\"path\":\"{path}\",\"dir\":\"{}\"{build}}}\n", dir(d))
+        };
+        let out = [
+            line(":lib", "lib", Some(":lib")),
+            line(":lib:core", "lib/core", Some(":lib")),
+            line(":buildSrc", "shop/buildSrc", Some(":buildSrc")),
+            line(":", "shop", None),
+            line(":app", "shop/app", None),
+        ]
+        .concat();
+        let mut model = load(&root).unwrap();
+        merge_reported_projects(&root, &mut model, &parse_reported_projects(&out));
+        let projects: Vec<_> =
+            model.projects.iter().map(|p| (p.path.as_str(), p.name.as_str(), p.build.as_deref())).collect();
+        assert_eq!(
+            projects,
+            [
+                (":", "shop", None),
+                (":app", "app", None),
+                (":buildSrc", "buildSrc", Some(":buildSrc")),
+                (":lib", "lib", Some(":lib")),
+                (":lib:core", "core", Some(":lib")),
+            ]
+        );
+        let build_src = &model.projects[2];
+        assert!(build_src.tasks.is_empty(), "buildSrc tasks cannot run from the root build");
+        assert!(!model.projects[4].tasks.is_empty());
+        assert!(build_files(&root, &model).contains(&ws.join("lib/settings.gradle")));
     }
 }

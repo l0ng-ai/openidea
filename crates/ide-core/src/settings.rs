@@ -709,6 +709,19 @@ pub struct GradleSettings {
     pub home: String,
     /// Empty = Gradle's default user home.
     pub user_home: String,
+    /// IDEA's "Build and run using": who builds and launches an Application main.
+    pub run_using: GradleRunUsing,
+}
+
+/// IDEA's "Build and run using" for Gradle builds; IDEA defaults to Gradle.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GradleRunUsing {
+    /// A `JavaExec` task on the source set's runtime classpath (`gradleRun.gradle`).
+    #[default]
+    Gradle,
+    /// The Java language server's classpath, launched by OpenIDEA.
+    Ide,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -935,6 +948,7 @@ mod gradle_settings_tests {
                 distribution,
                 home: "/gradle".into(),
                 user_home: "/cache/gradle".into(),
+                run_using: GradleRunUsing::Ide,
             };
             let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);

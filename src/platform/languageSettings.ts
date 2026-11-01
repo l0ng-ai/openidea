@@ -47,7 +47,14 @@ export interface LanguagesValid {
     jdk: string;
     jdtlsJdk: string;
     jdtlsVmArgs: string;
-    gradle: { jvm: string; distribution: "wrapper" | "local"; home: string; userHome: string };
+    gradle: {
+      jvm: string;
+      distribution: "wrapper" | "local";
+      home: string;
+      userHome: string;
+      /** IDEA's "Build and run using": Gradle (`JavaExec`) or the IDE (the language server's classpath). */
+      runUsing: "gradle" | "ide";
+    };
     maven: { home: string; userSettings: string; localRepository: string; unlinkedProjects: string[] };
   };
 }
@@ -106,7 +113,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     jdk: "",
     jdtlsJdk: "",
     jdtlsVmArgs: "",
-    gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "" },
+    gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
     maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [] },
   },
 };
@@ -217,6 +224,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         distribution: oneOf(gradle.distribution, ["wrapper", "local"] as const, d.java.gradle.distribution),
         home: text(gradle.home, d.java.gradle.home),
         userHome: text(gradle.userHome, d.java.gradle.userHome),
+        runUsing: oneOf(gradle.runUsing, ["gradle", "ide"] as const, d.java.gradle.runUsing),
       },
       maven: {
         home: text(maven.home, d.java.maven.home),
