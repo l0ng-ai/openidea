@@ -95,6 +95,39 @@ async fn serves_projects_files_documents_search_and_runs() {
     let entries = invoke(&peer, "fs_read_dir", json!({ "path": project })).await.unwrap();
     assert!(entries.as_array().unwrap().iter().any(|e| e["name"] == "src"), "{entries}");
 
+    // Directory comparisons, streamed progress and confirmed copies share the remote filesystem.
+    let left = project.join("compare-left");
+    let right = project.join("compare-right");
+    std::fs::create_dir_all(&left).unwrap();
+    std::fs::create_dir_all(&right).unwrap();
+    std::fs::write(left.join("中文.bin"), [0, 255, 1]).unwrap();
+    std::fs::write(right.join("中文.bin"), [0, 254, 1]).unwrap();
+    assert_eq!(invoke(&peer, "fs_entry_kind", json!({"path": left})).await.unwrap(), "dir");
+    assert_eq!(invoke(&peer, "fs_entry_kind", json!({"path": left.join("中文.bin")})).await.unwrap(), "file");
+    let compare_args =
+        |request| json!({"left": left, "right": right, "request": request, "onProgress": {"$channel": 520}});
+    let rows = invoke(&peer, "fs_compare_directories", compare_args(520)).await.unwrap();
+    assert_eq!(rows[0]["status"], "different");
+    assert!(client.channels.lock().iter().any(|c| c.id == 520 && c.data["compared"] == 1));
+    let copy_args =
+        |overwrite| json!({"sourceRoot": left, "destinationRoot": right, "path": "中文.bin", "overwrite": overwrite});
+    let error = invoke(&peer, "fs_copy_merge", copy_args(false)).await.unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::AlreadyExists);
+    invoke(&peer, "fs_copy_merge", copy_args(true)).await.unwrap();
+    let rows = invoke(&peer, "fs_compare_directories", compare_args(521)).await.unwrap();
+    assert_eq!(rows[0]["status"], "equal");
+    invoke(&peer, "cancel_request", json!({"id": 522})).await.unwrap();
+    let error = invoke(&peer, "fs_compare_directories", compare_args(522)).await.unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled);
+    let error = invoke(
+        &peer,
+        "fs_copy_merge",
+        json!({"sourceRoot": left, "destinationRoot": right, "path": "../escape", "overwrite": true}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
+
     // JVM icons use the same read-only protocol as local windows.
     let java = project.join("src/Foo.java");
     let kotlin = project.join("src/Singleton.kt");

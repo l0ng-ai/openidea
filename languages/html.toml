@@ -1,5 +1,6 @@
 id = "html"
 name = "HTML"
+formatter = { tool = "prettier", parser = "html", range = false }
 extensions = ["html", "htm", "xhtml", "shtml", "html.tmpl"]
 first-line = "^\\s*<!(?i:doctype)\\s+html"
 block-comment = ["<!--", "-->"]

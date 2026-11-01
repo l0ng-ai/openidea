@@ -276,6 +276,8 @@ pub struct AppearanceSettings {
     /// Apply `ui_font_family` / `ui_font_size` (otherwise the theme's).
     pub use_custom_font: bool,
     pub ui_font_family: String,
+    /// Font tried when `ui_font_family` lacks a glyph; empty = none.
+    pub ui_font_fallback: String,
     pub contrast_scrollbars: bool,
     /// Adjust colours for red-green vision deficiency.
     pub red_green_vision: bool,
@@ -326,6 +328,7 @@ impl Default for AppearanceSettings {
             zoom: 100,
             use_custom_font: false,
             ui_font_family: "Inter".into(),
+            ui_font_fallback: String::new(),
             contrast_scrollbars: false,
             red_green_vision: false,
             different_tool_window_background: false,
@@ -505,7 +508,48 @@ pub struct LanguagesSettings {
     pub rust: RustSettings,
     pub go: GoSettings,
     pub typescript: TypeScriptSettings,
+    pub prettier: PrettierSettings,
     pub java: JavaSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PrettierSettings {
+    /// Empty path: project node_modules, managed installation, then PATH.
+    pub path: String,
+    pub languages: Vec<String>,
+    /// Prefer Prettier even when a language server offers formatting.
+    pub prefer: bool,
+    pub run_on_save: bool,
+}
+
+impl Default for PrettierSettings {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            languages: [
+                "markdown",
+                "yaml",
+                "css",
+                "scss",
+                "less",
+                "html",
+                "graphql",
+                "javascript",
+                "javascriptreact",
+                "typescript",
+                "typescriptreact",
+                "json",
+                "jsonc",
+                "vue",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            prefer: false,
+            run_on_save: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -720,6 +764,20 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_font_fallback_defaults_empty_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"useCustomFont":true}}"#).unwrap();
+        assert!(old.appearance.ui_font_fallback.is_empty());
+        for family in ["", "Songti SC", "Maple Mono NF CN"] {
+            let mut settings = Settings::default();
+            settings.appearance.ui_font_fallback = family.into();
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["appearance"]["uiFontFallback"], family);
+            let restored: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.appearance.ui_font_fallback, family);
+        }
+    }
 
     #[test]
     fn tool_window_badges_default_on_and_round_trip() {

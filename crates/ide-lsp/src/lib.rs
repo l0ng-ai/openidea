@@ -1886,6 +1886,12 @@ impl LspManager {
         }
     }
 
+    /// Checks initialized capabilities, including dynamic registrations, before choosing a formatter.
+    pub async fn can_format(&self, doc: DocId) -> IdeResult<bool> {
+        let snap = self.snapshot(doc)?;
+        Ok(!self.ready_targets(&snap.servers, |c| c.has("documentFormattingProvider")).await.is_empty())
+    }
+
     pub async fn format(&self, doc: DocId, range: Option<Range>, options: FormatOptions) -> IdeResult<Vec<TextEdit>> {
         let (method, cap, feature) = match range {
             None => ("textDocument/formatting", "documentFormattingProvider", "formatting"),
@@ -2166,6 +2172,7 @@ impl LspManager {
             return Ok(d.clone());
         }
         let scheme = virtual_doc::scheme(uri).to_owned();
+        let class_file = scheme == "jdt" || (scheme == "file" && uri.ends_with(".class"));
         let origin = self.origin_server(uri);
         let mut servers: Vec<Arc<Server>> = origin.iter().cloned().collect();
         servers.extend(self.servers.lock().iter().filter(|s| Some(s.id) != origin.as_ref().map(|o| o.id)).cloned());
@@ -2174,7 +2181,7 @@ impl LspManager {
         for t in &targets {
             let languages = t.server.languages();
             let serves_scheme = t.caps().content_schemes().contains(&scheme);
-            let result: IdeResult<Option<String>> = if serves_scheme {
+            let result: IdeResult<Option<String>> = if serves_scheme && !class_file {
                 self.call::<_, Option<Value>>(
                     t,
                     "workspace/textDocumentContent",
@@ -2184,7 +2191,7 @@ impl LspManager {
                 )
                 .await
                 .map(|v| v.and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_owned)))
-            } else if scheme == "jdt" && languages.iter().any(|l| l.as_str() == "java") {
+            } else if class_file && languages.iter().any(|l| l.as_str() == "java") {
                 self.call::<_, Option<String>>(t, "java/classFileContents", json!({ "uri": uri }), None, LONG_TIMEOUT)
                     .await
             } else {

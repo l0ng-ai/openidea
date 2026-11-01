@@ -371,6 +371,12 @@ pub struct TextAttributesOverride {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LanguageCodeStyle {
+    /// Java formatter: `default` | `intellij` | `custom` (other languages ignore it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formatter: Option<String>,
+    /// Eclipse formatter XML; relative paths start at the project root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formatter_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_tab: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -4,12 +4,17 @@ import { confirmProjectTrust } from "@/platform/projectTrust";
 import { executeAction } from "@/platform/actions";
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { invokeLocal } from "@/platform/tauriCore";
 import { OverlayHost } from "@/workbench/OverlayHost";
 import { useContributions } from "@/workbench/contributions";
 import { activate } from "./index";
 
 const status = vi.fn();
 const decide = vi.fn();
+vi.mock("@/platform/tauriCore", async (original) => ({
+  ...(await original<typeof import("@/platform/tauriCore")>()),
+  invokeLocal: vi.fn(),
+}));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
@@ -24,6 +29,7 @@ vi.mock("@/platform/ipc", async (original) => {
 });
 let dispose: () => void;
 beforeEach(() => {
+  vi.mocked(invokeLocal).mockReset();
   status
     .mockReset()
     .mockImplementation(async (root: string) => ({ status: "ok", data: { root, trusted: false, decided: false } }));
@@ -81,3 +87,26 @@ it("shows and trusts the canonical folder when opening through a symlink", async
   await act(async () => opening);
   expect(decide).toHaveBeenCalledWith("/real/projects/new", true, true);
 });
+
+it.each(["Trust Project", "Preview in Restricted Mode"])(
+  "keeps a local opening's trust decision on the client: %s",
+  async (button) => {
+    const project = { root: "/remote", name: "Remote", isGit: false, trusted: true, settings: {} };
+    useProject.setState({ project });
+    vi.mocked(invokeLocal).mockResolvedValueOnce({ root: "/local", trusted: false, decided: false });
+    render(<OverlayHost />);
+    const opening = confirmProjectTrust("/local", "local");
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: button }));
+    await act(async () => opening);
+    expect(invokeLocal).toHaveBeenCalledWith("project_trust_status", { path: "/local" });
+    expect(invokeLocal).toHaveBeenCalledWith("project_trust_set", {
+      path: "/local",
+      trusted: button === "Trust Project",
+      folder: false,
+    });
+    expect(status).not.toHaveBeenCalled();
+    expect(decide).not.toHaveBeenCalled();
+    expect(useProject.getState().project).toBe(project);
+  },
+);

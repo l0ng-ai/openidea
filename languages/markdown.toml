@@ -1,5 +1,6 @@
 id = "markdown"
 name = "Markdown"
+formatter = { tool = "prettier", parser = "markdown", range = false }
 extensions = ["md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "mdx", "ronn", "workbook"]
 block-comment = ["<!--", "-->"]
 indent = { tab-size = 2, insert-spaces = true }

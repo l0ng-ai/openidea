@@ -105,7 +105,7 @@ async fn properties_search_git_and_document_coordinates_agree() {
         "main",
         opened.id,
         opened.version,
-        ChangeSet { changes: vec![TextChange { from: 10, to: 16, insert: "世界".into() }] },
+        ChangeSet { changes: vec![TextChange { from: 10, to: 16, insert: r"\u4E16\u754C".into() }] },
     )
     .unwrap();
     let hunks = vcs::vcs_line_hunks(&host, "main", path.clone()).await.unwrap();
@@ -130,7 +130,7 @@ async fn properties_search_git_and_document_coordinates_agree() {
     assert!(project.documents.snapshot(opened.id).unwrap().version > snap.version);
     assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).await.unwrap().is_empty());
     // Partial commits identify hunks in displayed line coordinates as well.
-    let partial_text = displayed.replace("target", "世界").replace("logical", "changed");
+    let partial_text = displayed.replace("target", r"\u4E16\u754C").replace("logical", "changed");
     project.documents.replace_all(opened.id, &partial_text).unwrap();
     doc::save(&host, "main", opened.id).await.unwrap();
     let hunks = ide_vcs::diff_hunks(displayed, &partial_text);
@@ -170,7 +170,7 @@ async fn properties_search_git_and_document_coordinates_agree() {
         "main",
         RequestId(520),
         query,
-        "世界".into(),
+        r"\u4E16\u754C".into(),
         false,
         vec![ide_search::ReplaceTarget {
             path: closed_path.clone().into(),
@@ -182,5 +182,6 @@ async fn properties_search_git_and_document_coordinates_agree() {
     .unwrap();
     assert_eq!(std::fs::read_to_string(&closed_path).unwrap(), r"value=\u4F60\u597D\uD83D\uDE00\u4E16\u754C");
     assert!(project.documents.by_path(&closed_path).is_none());
+    assert_eq!(project.text_of(&closed_path).unwrap(), "value=你好😀世界");
     host.close_project("main");
 }

@@ -252,6 +252,7 @@ fn harness_configured(
         indent: None,
         ui_mode: None,
         framework_ui_modes: Vec::new(),
+        formatter: None,
         tree_sitter: None,
         language_servers: servers
             .iter()
@@ -1017,6 +1018,70 @@ async fn settings_changes_reach_servers_without_restarts() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_formatter_profiles_reach_initialization_and_live_configuration_without_restart() {
+    let h = harness_configured("java", "java", &[("jdtls", incremental_caps())], |cfg| {
+        cfg.initialization_options = Some(
+            toml::Value::try_from(json!({
+                "settings": {"java": {"autobuild": {"enabled": false}}}
+            }))
+            .unwrap(),
+        );
+    });
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(h.root.join("custom.xml"), "<profiles/>").unwrap();
+    let style = Arc::new(Mutex::new(ide_core::editor_settings::LanguageCodeStyle {
+        formatter: Some("intellij".into()),
+        formatter_path: Some("custom.xml".into()),
+        ..Default::default()
+    }));
+    h.mgr.set_config_hook(Box::new({
+        let style = style.clone();
+        let root = h.root.clone();
+        let data = data.path().to_path_buf();
+        move |cfg, _| ide_lsp::jdtls::configure_formatter(cfg, Some(&style.lock()), &root, &data, None).unwrap()
+    }));
+    h.open("Main.java", "public class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let init = state.requested("initialize")[0].clone();
+    assert_eq!(
+        init["initializationOptions"]["settings"]["java"]["format"]["settings"]["profile"],
+        "OpenIDEA IntelliJ IDEA"
+    );
+    for mode in ["custom", "default", "intellij", "default"] {
+        style.lock().formatter = Some(mode.into());
+        h.mgr.reconfigure().await;
+        let expected = match mode {
+            "custom" => uri_of(&h.root.join("custom.xml")),
+            "intellij" => uri_of(&data.path().join("lsp/jdtls/intellij.xml")),
+            _ => String::new(),
+        };
+        eventually(|| {
+            state
+                .notified("workspace/didChangeConfiguration")
+                .last()
+                .is_some_and(|p| p["settings"]["java"]["format"]["settings"]["url"] == expected)
+        })
+        .await;
+        let result: Value = state
+            .peer()
+            .request(
+                "workspace/configuration",
+                json!({
+                    "items": [{"section": "java.format.settings"}, {"section": "java.autobuild.enabled"}]
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result[0]["url"], expected);
+        assert_eq!(result[0]["profile"], if mode == "intellij" { "OpenIDEA IntelliJ IDEA" } else { "" });
+        assert_eq!(result[1], false);
+        assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn java_source_paths_reach_initialization_live_configuration_and_builds() {
     let h = harness_configured("java", "java", &[("jdtls", incremental_caps())], |cfg| {
         cfg.initialization_options = Some(
@@ -1248,12 +1313,17 @@ async fn navigation_rename_format_and_decorations() {
     assert!(matches!(&edit.files[0], FileEdit::Edit { edits, .. } if edits.len() == 2));
     assert_eq!(s.requested("textDocument/rename")[0]["newName"], "bar");
 
+    assert!(h.mgr.can_format(doc).await.unwrap());
     s.respond("textDocument/formatting", json!([{ "range": r(0,10,0,11), "newText": "\n}" }]));
-    let edits = h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true }).await.unwrap();
+    let edits =
+        h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false }).await.unwrap();
     assert_eq!(edits[0].range, rng(0, 10, 0, 11));
     assert_eq!(s.requested("textDocument/formatting")[0]["options"], json!({ "tabSize": 2, "insertSpaces": true }));
     assert!(
-        h.mgr.format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true }).await.is_err()
+        h.mgr
+            .format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
+            .await
+            .is_err()
     );
 
     s.respond("textDocument/semanticTokens/full", json!({ "data": [0, 3, 3, 0, 1, 1, 0, 3, 0, 0] }));
@@ -1617,6 +1687,61 @@ async fn jdt_class_file_contents() {
     assert_eq!(vd.title, "Lib.class");
     assert_eq!(vd.language_id.as_str(), "java");
     assert_eq!(vd.description.as_deref(), Some("/m2/lib-1.0.jar"));
+    let source_uri = jdt.replace("Lib.class", "WithSources.class");
+    s.respond(
+        "java/classFileContents",
+        json!("/* Copyright library author */\npackage org.example;\npublic class WithSources {}"),
+    );
+    let source = h.mgr.virtual_document(&source_uri).await.unwrap();
+    assert!(!source.decompiled);
+    assert_eq!(source.title, "WithSources.java");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn class_file_opening_routes_sources_and_binary_documents() {
+    let mut caps = incremental_caps();
+    caps["workspaceSymbolProvider"] = json!(true);
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Outer.java?=demo/%5C/m2%5C/lib.jar%3Cp%28Outer.class";
+    s.respond("workspace/symbol", json!([
+        {"name":"Outer", "kind":5, "location":{"uri":jdt,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}}
+    ]));
+    let archive = Some((PathBuf::from("/m2/lib.jar"), "p/Outer$1.class".into()));
+    assert_eq!(h.mgr.java_class_file(Path::new("/m2/lib.jar!/p/Outer$1.class"), archive).await.unwrap(), jdt);
+    assert!(
+        h.mgr
+            .java_class_file(
+                Path::new("/other/lib.jar!/p/Outer.class"),
+                Some(("/other/lib.jar".into(), "p/Outer.class".into()))
+            )
+            .await
+            .is_err()
+    );
+
+    let sources = h.root.join("src/main/java");
+    std::fs::create_dir_all(sources.join("p")).unwrap();
+    let source = sources.join("p/Outer.java");
+    std::fs::write(&source, "package p; class Outer {} ").unwrap();
+    s.respond("java/classFileContents", json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Outer {}"));
+    s.respond("workspace/executeCommand", json!({"org.eclipse.jdt.ls.core.sourcePaths":[sources]}));
+    for class in ["Outer", "Outer$Nested", "Outer$1"] {
+        let path = h.root.join(format!("target/classes/p/{class}.class"));
+        let resolved = h.mgr.java_class_file(&path, None).await.unwrap();
+        // Compare as paths: the manager joins the relative source path with std::path, so
+        // separators can differ from the literal "p/Outer.java" used to build `source` on Windows.
+        assert_eq!(Path::new(&resolved), source.as_path());
+    }
+    let path = h.root.join("build/classes/java/main/p/Missing.class");
+    let uri = uri_of(&path);
+    assert_eq!(h.mgr.java_class_file(&path, None).await.unwrap(), uri);
+    let vd = h.mgr.virtual_document(&uri).await.unwrap();
+    assert!(vd.decompiled);
+    assert_eq!(vd.language_id.as_str(), "java");
+    assert_eq!(vd.title, "Missing.class");
+    assert!(s.requested("java/classFileContents").iter().any(|p| p["uri"] == uri));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2681,4 +2806,33 @@ async fn interactive_capability_is_scoped_to_gopls() {
         .unwrap();
     assert!(form.is_none());
     assert!(s.requested("command/resolve").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn formatting_provider_selection_tracks_dynamic_registration() {
+    let h = harness(&[("mock", json!({ "textDocumentSync": 1, "documentRangeFormattingProvider": true }))]);
+    let (doc, _) = h.open("a.mk", "hello\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(!h.mgr.can_format(doc).await.unwrap(), "a range provider alone cannot format the whole document");
+    let peer = h.launcher.state("mock").peer();
+    peer.request::<_, Value>(
+        "client/registerCapability",
+        json!({"registrations": [
+            {"id": "formatter", "method": "textDocument/formatting"}
+        ]}),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(h.mgr.can_format(doc).await.unwrap());
+    peer.request::<_, Value>(
+        "client/unregisterCapability",
+        json!({"unregisterations": [
+            {"id": "formatter", "method": "textDocument/formatting"}
+        ]}),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!h.mgr.can_format(doc).await.unwrap());
 }

@@ -40,6 +40,7 @@ const OTHER_ACTIONS = [
   "localHistory.putLabel",
   "diff.compareWith",
   "diff.compareFiles",
+  "diff.compareDirectories",
   "vcs.commit",
   "vcs.addToVcs",
   "vcs.annotate",
@@ -75,6 +76,14 @@ afterEach(() => {
 });
 
 describe("project view context menu", () => {
+  it("offers directory comparison only for two folders and Compare With for a single folder", () => {
+    expect(labels(contextMenuItems([node("/p/left", true), node("/p/right", true)]))).toContain("Compare Directories");
+    expect(labels(contextMenuItems([node("/p/left", true)]))).toContain("Compare With…");
+    const mixed = labels(contextMenuItems([node("/p/left", true), node("/p/a.txt")]));
+    for (const label of ["Compare Directories", "Compare Files", "Compare With…"]) expect(mixed).not.toContain(label);
+    expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/b.txt")]))).toContain("Compare Files");
+  });
+
   it("follows IDEA's order for a file", () => {
     const items = contextMenuItems([node(`${ROOT}/src/a.py`)]);
     expect(labels(items)).toEqual([
@@ -161,7 +170,7 @@ describe("project view context menu", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
     expect(l).toContain("Mark Directory as");
     expect(sub(contextMenuItems([node(`${ROOT}/src`, true)]), "Refactor")).toContain("Move Directory…");
-    for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Compare With…", "Run 'a'"])
+    for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Run 'a'"])
       expect(l).not.toContain(fileOnly);
   });
 

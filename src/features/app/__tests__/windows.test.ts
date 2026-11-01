@@ -6,6 +6,12 @@ const projectCurrent = vi.fn();
 const windowOpenProject = vi.fn();
 const windowOpenFiles = vi.fn();
 const windowTakeLaunch = vi.fn();
+const cancelClose = vi.fn();
+const notify = vi.fn();
+vi.mock("@/platform/remote", async (original) => ({
+  ...(await original<typeof import("@/platform/remote")>()),
+  isRemoteWindow: vi.fn(() => false),
+}));
 // The backend answers with the global settings, here: whatever the test set up.
 const lightEditOpen = vi.fn(async (_path: string) => ({ status: "ok", data: useProject.getState().settings ?? {} }));
 const fsReadDir = vi.fn(async (_path: string) => ({ status: "ok", data: [] }));
@@ -48,7 +54,10 @@ const {
   windowActions,
 } = await import("../windows");
 const { useProject } = await import("@/platform/project");
-const { provideEditorService } = await import("@/workbench/contributions");
+const { provideEditorService, provideNotificationService } = await import("@/workbench/contributions");
+const { isRemoteWindow } = await import("@/platform/remote");
+const { IpcError } = await import("@/platform/ipc");
+provideNotificationService({ notify });
 
 const opened: string[] = [];
 let activePath: string | null = null;
@@ -58,6 +67,7 @@ provideEditorService({
   activePath: () => activePath,
   activeCursor: () => null,
   saveAll: async () => {},
+  cancelClose,
 });
 
 const ok = (data: unknown) => ({ status: "ok", data });
@@ -66,6 +76,9 @@ const projectState = (root: string) => ({ project: { root, name: root, trusted: 
 beforeEach(() => {
   for (const f of [windowOpenProject, windowOpenFiles, windowTakeLaunch]) f.mockReset();
   for (const f of [lightEditOpen, fsReadDir, openProject]) f.mockClear();
+  cancelClose.mockClear();
+  notify.mockClear();
+  vi.mocked(isRemoteWindow).mockReturnValue(false);
   opened.length = 0;
   activePath = null;
   useProject.setState({ project: null, lightEdit: false, settings: null } as never);
@@ -98,6 +111,37 @@ describe("openProjectInWindow", () => {
     windowOpenProject.mockResolvedValue(ok({ kind: "focused", label: "main" }));
     await openProjectInWindow("/p/a", true);
     expect(openProject).not.toHaveBeenCalled();
+  });
+});
+
+describe("replacing a project in this window", () => {
+  it.each([
+    new Error("local folder unavailable"),
+    new IpcError({ kind: "cancelled", message: "Project opening cancelled" }),
+  ])("releases the close decision after opening fails or is cancelled: %s", async (error) => {
+    useProject.setState({
+      ...projectState("/remote"),
+      settings: { general: { openProjectIn: "same" } },
+    } as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    openProject.mockRejectedValueOnce(error);
+    await openProjectWithPolicy("/local");
+    expect(cancelClose).toHaveBeenCalledOnce();
+    expect(useProject.getState().project?.root).toBe("/remote");
+    await openProjectWithPolicy("/local");
+    expect(useProject.getState().project?.root).toBe("/local");
+  });
+
+  it("opens the local project when its path matches the remote root", async () => {
+    useProject.setState({
+      ...projectState("/same"),
+      settings: { general: { openProjectIn: "same" } },
+    } as never);
+    vi.mocked(isRemoteWindow).mockReturnValue(true);
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    await openProjectWithPolicy("/same");
+    expect(windowOpenProject).toHaveBeenCalledWith("/same", false, []);
+    expect(openProject).toHaveBeenCalledWith("/same");
   });
 });
 

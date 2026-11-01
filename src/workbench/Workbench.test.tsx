@@ -148,6 +148,17 @@ describe("notifications", () => {
     expect(useNotifications.getState().items).toHaveLength(2);
   });
 
+  it("explicitly non-sticky errors fade after the ordinary balloon timeout", () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    render(<Balloons />);
+    act(() => void notify({ level: "error", title: "Formatting failed", sticky: false }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Formatting failed");
+    act(() => vi.advanceTimersByTime(BALLOON_TIMEOUT.info! + 10));
+    expect(screen.queryByText("Formatting failed")).toBeNull();
+    expect(useNotifications.getState().items[0]).toMatchObject({ sticky: false, balloon: false });
+  });
+
   it("sticky balloons fade into the tool window after 5 minutes, staying unread", () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);

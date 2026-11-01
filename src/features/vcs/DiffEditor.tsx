@@ -200,6 +200,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
   const [attached, setAttached] = useState<Attached | null>(null);
+  const [binary, setBinary] = useState<boolean | null>(null);
   /** Text of the sides that are not live documents. */
   const [statics, setStatics] = useState<{ a: string | null; b: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -263,15 +264,18 @@ export function DiffEditor({ input }: { input: EditorInput }) {
   const reload = useCallback(async () => {
     if (!attached) return;
     try {
-      const [a, b] = await Promise.all([
+      const paths = [sideFile(left, path), sideFile(right, path)].filter((p): p is string => !!p);
+      const [a, b, probes] = await Promise.all([
         attached.a ? null : loadSide(path, left),
         attached.b ? null : loadSide(path, right),
+        Promise.all(paths.map((p) => call(commands.fsProbe(p)).catch(() => null))),
       ]);
       const prev = staticsRef.current;
       if (!prev || prev.a !== a || prev.b !== b) {
         staticsRef.current = { a, b };
         setStatics({ a, b });
       }
+      setBinary(probes.some((p) => p?.binary));
       setError(null);
     } catch (e) {
       setError(errorMessage(e));
@@ -311,9 +315,9 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     left.rev === "HEAD" &&
     !left.path &&
     isWorktree(right);
-  const editableA = !!attached?.a && !attached.a.readOnly;
-  const editableB = !!attached?.b && !attached.b.readOnly;
-  const ready = !!attached && !!statics && lang !== null;
+  const editableA = !binary && !!attached?.a && !attached.a.readOnly;
+  const editableB = !binary && !!attached?.b && !attached.b.readOnly;
+  const ready = !!attached && !!statics && lang !== null && binary !== null;
 
   // Read when the views are built; toggling it later goes through `setSync`.
   const syncScroll = useRef(opts.syncScroll);
@@ -983,7 +987,8 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         <span className={styles.sep} />
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
         <span className={styles.count}>
-          {!ready
+          {binary && tx("Binary content")}
+          {!ready || binary
             ? ""
             : chunkInfo.count === 0
               ? identical
@@ -1047,7 +1052,11 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           />
         </div>
       )}
-      {error ? (
+      {binary ? (
+        <div className={styles.message}>
+          <T>Binary files cannot be shown as text</T>
+        </div>
+      ) : error ? (
         <div className={styles.message}>{error}</div>
       ) : !ready ? (
         <div className={styles.message}>
@@ -1061,7 +1070,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
           opts.highlight === "none" && styles.noHighlight,
           opts.mode === "split" && (opts.alignChanges ? !opts.syncScroll && styles.unsynced : styles.unaligned),
         )}
-        hidden={!!error || !ready}
+        hidden={!!binary || !!error || !ready}
         aria-label={diffTitle(data)}
         role="region"
         onContextMenu={onContextMenu}
