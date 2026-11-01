@@ -5518,5 +5518,10 @@
   "Passed as --settings; empty keeps DJANGO_SETTINGS_MODULE or the default in manage.py": "作为 --settings 传入；留空则沿用 DJANGO_SETTINGS_MODULE 或 manage.py 中的默认值",
   "e.g. --keepdb --parallel": "例如 --keepdb --parallel",
   "select files in a git repository to shelve": "请选择 Git 仓库中的文件以搁置更改",
-  "select files from a single git repository to shelve": "请一次只选择同一个 Git 仓库中的文件以搁置更改"
+  "select files from a single git repository to shelve": "请一次只选择同一个 Git 仓库中的文件以搁置更改",
+  "IntelliJ Classic (macOS)": "IntelliJ 经典 (macOS)",
+  "IntelliJ Keymap": "IntelliJ 按键映射",
+  "Import Keymap": "导入按键映射",
+  "Invalid IntelliJ keymap XML": "无效的 IntelliJ 按键映射 XML",
+  "A keymap named '{name}' already exists.": "名为“{name}”的按键映射已存在。"
 }
