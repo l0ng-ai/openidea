@@ -235,6 +235,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "agent_registry_remove"
             | "coverage_import"
             | "system_font_families"
+            | "user_font_data"
             | "plugin_subscribe"
             | "plugin_list"
             | "plugin_set_active_file"
