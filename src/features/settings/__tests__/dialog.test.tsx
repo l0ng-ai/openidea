@@ -84,6 +84,29 @@ describe("Settings dialog", () => {
     expect(settingsSet).toHaveBeenLastCalledWith("global", "editor.encodings.nativeToAscii", "false");
   });
 
+  it("edits CMake profiles in project settings and persists them on Apply", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.cmake");
+    expect(within(dialog).getByRole("option", { name: "Debug" })).toBeInTheDocument();
+    fireEvent.click(
+      within(within(dialog).getByRole("toolbar", { name: "CMake profile actions" })).getByRole("button", {
+        name: "Add",
+      }),
+    );
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Release" } });
+    fireEvent.change(within(dialog).getByLabelText("Build type"), { target: { value: "Release" } });
+    fireEvent.change(within(dialog).getByLabelText("Generator"), { target: { value: "Ninja" } });
+    fireEvent.change(within(dialog).getByLabelText("Build arguments"), { target: { value: "-j 8" } });
+    expect(settingsSet).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    const write = settingsSet.mock.calls.find((c) => c[1] === "cmake.profiles")!;
+    expect(write[0]).toBe("project");
+    expect(JSON.parse(write[2])).toEqual([
+      expect.objectContaining({ name: "Debug", buildType: "Debug" }),
+      expect.objectContaining({ name: "Release", buildType: "Release", generator: "Ninja", buildArgs: "-j 8" }),
+    ]);
+  });
+
   it("finds Gradle JVM and applies project Gradle settings", async () => {
     useProject.setState({ project: { root: "/project" } as never });
     const dialog = await openDialog("build.gradle");

@@ -58,6 +58,43 @@ pub struct Settings {
     pub deployment: DeploymentSettings,
     /// Build, Execution, Deployment › Run Targets.
     pub run_targets: Vec<RunTarget>,
+    pub cmake: CMakeSettings,
+}
+
+/// Absent profiles retain automatic discovery for existing projects.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CMakeSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub profiles: Option<Vec<CMakeProfile>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CMakeProfile {
+    pub name: String,
+    pub build_type: String,
+    pub generator: String,
+    pub cmake_args: String,
+    /// Empty uses cmake-build-<lowercase build type>.
+    pub build_dir: String,
+    pub build_args: String,
+    pub env: BTreeMap<String, String>,
+}
+
+impl Default for CMakeProfile {
+    fn default() -> Self {
+        Self {
+            name: "Debug".into(),
+            build_type: "Debug".into(),
+            generator: String::new(),
+            cmake_args: String::new(),
+            build_dir: String::new(),
+            build_args: String::new(),
+            env: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -154,6 +191,7 @@ impl Default for Settings {
             ssh: SshSettings::default(),
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
+            cmake: CMakeSettings::default(),
         }
     }
 }

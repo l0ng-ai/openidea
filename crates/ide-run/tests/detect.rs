@@ -652,3 +652,44 @@ fn go_default_build_output_is_ignored_by_version_control() {
     let ignore = fs::read_to_string(dir.path().join(".openidea/.gitignore")).unwrap();
     assert!(ignore.lines().any(|l| l == "/bin/"), "{ignore}");
 }
+
+#[test]
+fn cmake_profiles_control_commands_names_and_environment() {
+    use ide_core::settings::CMakeProfile;
+    let dir = project(&[("CMakeLists.txt", "project(app)")]);
+    for generator in ["", "Ninja", "Unix Makefiles", "Ninja Multi-Config", "Visual Studio 17 2022"] {
+        let profile = CMakeProfile {
+            name: "Production".into(),
+            build_type: "Release".into(),
+            generator: generator.into(),
+            cmake_args: "-DFEATURE=ON '-DMESSAGE=two words'".into(),
+            build_dir: "output dir".into(),
+            build_args: "-j 8 -- VERBOSE=1".into(),
+            env: [("MY_ENV".into(), "yes".into())].into(),
+        };
+        let configs = ide_run::detect_with_profiles(dir.path(), &[], Some(std::slice::from_ref(&profile)));
+        let configure = find(&configs, "cmake:profile:0:configure");
+        let mut expected = vec!["-S", ".", "-B", "output dir"];
+        if !generator.is_empty() {
+            expected.extend(["-G", generator]);
+        }
+        expected.extend([
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            "-DFEATURE=ON",
+            "-DMESSAGE=two words",
+        ]);
+        assert_eq!(configure.args, expected);
+        assert_eq!(configure.name, "CMake Configure (output dir)");
+        let build = find(&configs, "cmake:profile:0:build");
+        assert_eq!(build.args, ["--build", "output dir", "--config", "Release", "-j", "8", "--", "VERBOSE=1"]);
+        assert_eq!(build.extras.before_launch[0].target, configure.id);
+        assert!(configs.iter().all(|c| c.env == profile.env));
+        let configs = ide_run::detect_with_profiles(dir.path(), &[], Some(&[CMakeProfile::default(), profile]));
+        assert!(find(&configs, "cmake:profile:0:build").name.ends_with("[Debug]"));
+        assert!(find(&configs, "cmake:profile:1:build").name.ends_with("[Production]"));
+        assert_eq!(find(&configs, "cmake:profile:0:build").args[1], "cmake-build-debug");
+    }
+    assert_eq!(ide_run::detect_with_profiles(dir.path(), &[], None), detect(dir.path()));
+    assert!(ide_run::detect_with_profiles(dir.path(), &[], Some(&[])).is_empty());
+}

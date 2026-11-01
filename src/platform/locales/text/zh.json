@@ -5440,5 +5440,18 @@
   "copy paths must belong to the comparison roots": "复制路径必须位于比较的根目录内",
   "cannot copy overlapping paths": "无法在相互包含的路径之间复制",
   "cannot copy through a destination symlink": "无法通过目标目录内的符号链接复制",
-  "expected a relative comparison entry path": "需要比较条目的相对路径"
+  "expected a relative comparison entry path": "需要比较条目的相对路径",
+  "CMake profiles": "CMake 配置",
+  "CMake profile actions": "CMake 配置操作",
+  "No CMake profiles. Click + to add one.": "没有 CMake 配置。点击 + 添加。",
+  "Profile settings": "配置设置",
+  "Build type": "构建类型",
+  "Generator": "生成器",
+  "CMake arguments": "CMake 参数",
+  "Build directory": "构建目录",
+  "Build arguments": "构建参数",
+  "CMake default": "CMake 默认",
+  "Quote arguments containing spaces. Build arguments go to cmake --build; use -- before native build tool options.": "包含空格的参数请加引号。构建参数传给 cmake --build；原生构建工具参数前请加 --。",
+  "CMake": "CMake",
+  "CMake profile {0}": "CMake 配置 {0}"
 }
