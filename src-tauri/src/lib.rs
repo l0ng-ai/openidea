@@ -11,6 +11,8 @@ mod events;
 #[cfg(any(target_os = "linux", test))]
 mod linux_window_state;
 mod logging;
+#[cfg(target_os = "macos")]
+mod macos;
 mod menu;
 mod remote_dev;
 
@@ -172,7 +174,10 @@ pub fn run() {
         tauri::WindowEvent::Focused(false) => application_focus::changed(window.app_handle(), false),
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
-            titlebar::forget(window);
+            {
+                titlebar::forget(window);
+                macos::forget_fullscreen(window.label());
+            }
             window_groups::destroyed(window.app_handle(), window.label());
             if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {
                 let _ = settings.destroy();
