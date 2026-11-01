@@ -44,6 +44,9 @@ export function TestSettingsForm({
   const form = useMemo<SettingsForm>(
     () => ({
       scope,
+      useExternal: () => {
+        throw new Error("External settings are not supported by this stand-in");
+      },
       useValue: (key) => useTestForm((s) => getAt(s.values, key)),
       set: (key, value) =>
         useTestForm.setState((s) => ({ values: putAt(s.values, key, value), staged: [...s.staged, [key, value]] })),
