@@ -721,3 +721,69 @@ fn cmake_profile_build_configures_only_without_a_cache() {
         }
     }
 }
+
+#[test]
+fn ruby_projects_list_rake_tasks_rspec_and_rails() {
+    let rakefile = "\
+require 'rake/testtask'
+
+desc \"Build it\"
+task :build do
+  sh 'make'
+end
+task \"lint\" => [:build]
+task deploy: :build do |t|
+  puts t
+end
+namespace :db do
+  desc 'Migrate'
+  task :migrate, [:version] do |t, args|
+    puts args
+  end
+  namespace :schema do
+    task :load
+  end
+end
+Rake::TestTask.new do |t|
+  t.libs << 'test'
+end
+task default: :build
+";
+    let dir = project(&[
+        ("Gemfile", "source 'https://rubygems.org'\ngem 'rspec'\n"),
+        ("Rakefile", rakefile),
+        ("bin/rails", "#!/usr/bin/env ruby\n"),
+        ("spec/a_spec.rb", ""),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(
+        ids(&c),
+        [
+            "rails:server",
+            "rake:build",
+            "rake:lint",
+            "rake:deploy",
+            "rake:db:migrate",
+            "rake:db:schema:load",
+            "rake:test",
+            "rake:default",
+            "rspec"
+        ]
+    );
+    assert_eq!(cmdline(find(&c, "rails:server")), "ruby bin/rails server");
+    assert_eq!(cmdline(find(&c, "rake:db:migrate")), "bundle exec rake db:migrate");
+    assert_eq!(find(&c, "rake:db:migrate").kind, "rake");
+    assert!(find(&c, "rake:test").is_test);
+    assert_eq!(cmdline(find(&c, "rspec")), "bundle exec rspec");
+    assert!(find(&c, "rspec").is_test);
+    assert_eq!(find(&c, "rake:build").extras.folder.as_deref(), Some("Rake"));
+}
+
+#[test]
+fn ruby_without_bundler_runs_bare_tools() {
+    let dir = project(&[("Rakefile", "task :test\n")]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["rake:test"]);
+    assert_eq!(cmdline(&c[0]), "rake test");
+    assert!(detect(project(&[("a.rb", "puts 1\n")]).path()).is_empty());
+}

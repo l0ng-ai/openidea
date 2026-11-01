@@ -33,6 +33,7 @@ pub(crate) fn detect_with_profiles(
     detect_maven(root, excluded_poms, &mut out);
     detect_go(root, &mut out);
     detect_python(root, &mut out);
+    detect_ruby(root, &mut out);
     cmake::detect(root, profiles, &mut out);
     dotnet::detect(root, &mut out);
     detect_make(root, &mut out);
@@ -889,6 +890,135 @@ fn detect_python(root: &Path, out: &mut Vec<RunConfig>) {
     }
     if uses_pytest(root) || env.has_tool(root, "pytest") {
         out.push(py_config("pytest".into(), "pytest".into(), "pytest", env.tool(root, "pytest"), &[]).test());
+    }
+}
+
+// ---------------------------------------------------------------------- ruby
+
+/// Tasks a Rakefile defines statically: `task :name`, `task "name" => deps`,
+/// `task name: [...]`, qualified by enclosing `namespace` blocks. `desc` lines are
+/// skipped; a `Rake::TestTask` contributes `test`. `load`/`import`ed files are not followed.
+pub(crate) fn rake_tasks(src: &str) -> Vec<String> {
+    let mut tasks = Vec::new();
+    let mut namespaces: Vec<String> = Vec::new();
+    let mut depth: Vec<bool> = Vec::new(); // per open block: whether it is a namespace
+    let name_of = |rest: &str| -> Option<String> {
+        let rest = rest.trim_start();
+        let (name, _) = if let Some(r) = rest.strip_prefix(':') {
+            r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().map(|n| (n.to_owned(), ()))?
+        } else if let Some(r) = rest.strip_prefix(['"', '\'']) {
+            r.split(['"', '\'']).next().map(|n| (n.to_owned(), ()))?
+        } else {
+            let n: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            (!n.is_empty() && rest[n.len()..].starts_with(':')).then(|| (n, ()))?
+        };
+        (!name.is_empty()).then_some(name)
+    };
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let opens = line.ends_with(" do") || line.contains(" do |") || line.contains(" do ") && !line.contains(" end");
+        if let Some(rest) = line.strip_prefix("namespace ") {
+            if let Some(ns) = name_of(rest) {
+                namespaces.push(ns);
+                depth.push(true);
+                continue;
+            }
+        }
+        if let Some(rest) = line.strip_prefix("task ").or_else(|| line.strip_prefix("task(")) {
+            if let Some(name) = name_of(rest) {
+                let full = namespaces.iter().chain([&name]).cloned().collect::<Vec<_>>().join(":");
+                if !tasks.contains(&full) {
+                    tasks.push(full);
+                }
+            }
+        }
+        if line.contains("Rake::TestTask.new") || line.contains("RSpec::Core::RakeTask.new") {
+            let name = name_of(line.split_once(".new").map(|(_, r)| r.trim_start_matches(['(', ' '])).unwrap_or(""))
+                .unwrap_or_else(|| if line.contains("RSpec") { "spec".into() } else { "test".into() });
+            let full = namespaces.iter().chain([&name]).cloned().collect::<Vec<_>>().join(":");
+            if !tasks.contains(&full) {
+                tasks.push(full);
+            }
+        }
+        if opens && !line.starts_with("namespace ") {
+            depth.push(false);
+        }
+        if line == "end" || line.starts_with("end ") || line.starts_with("end#") {
+            if depth.pop() == Some(true) {
+                namespaces.pop();
+            }
+        }
+    }
+    tasks
+}
+
+/// `bundle exec <tool>` when the project has a Gemfile, else the bare tool.
+fn ruby_tool(root: &Path, tool: &str) -> (String, Vec<String>) {
+    if root.join("Gemfile").is_file() {
+        ("bundle".into(), vec!["exec".into(), tool.into()])
+    } else {
+        (tool.into(), Vec::new())
+    }
+}
+
+fn ruby_config(
+    id: String,
+    name: String,
+    kind: &str,
+    (command, mut args): (String, Vec<String>),
+    extra: &[&str],
+) -> RunConfig {
+    args.extend(extra.iter().map(|a| (*a).to_owned()));
+    let mut c = config(id, name, kind, &command, &[]);
+    c.args = args;
+    c
+}
+
+fn uses_rspec(root: &Path) -> bool {
+    root.join("spec").is_dir()
+        || root.join(".rspec").is_file()
+        || read(&root.join("Gemfile")).is_some_and(|g| g.contains("rspec"))
+}
+
+fn detect_ruby(root: &Path, out: &mut Vec<RunConfig>) {
+    let markers = ["Gemfile", "Rakefile", "rakefile", "Rakefile.rb", ".ruby-version", "config.ru"];
+    let gemspec = fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.path().extension().is_some_and(|x| x == "gemspec"));
+    if !gemspec && !markers.iter().any(|m| root.join(m).is_file()) {
+        return;
+    }
+    if root.join("bin/rails").is_file() {
+        let mut c = ruby_config(
+            "rails:server".into(),
+            "rails server".into(),
+            "ruby",
+            ("ruby".into(), Vec::new()),
+            &["bin/rails", "server"],
+        );
+        c.extras.folder = Some("Rails".into());
+        out.push(c);
+    }
+    if let Some(rakefile) = first_existing(root, &["Rakefile", "rakefile", "Rakefile.rb"])
+        && let Some(src) = read(&rakefile)
+    {
+        for task in rake_tasks(&src) {
+            let mut c =
+                ruby_config(format!("rake:{task}"), format!("rake {task}"), "rake", ruby_tool(root, "rake"), &[&task]);
+            if task == "test" || task == "spec" || task.ends_with(":test") || task.ends_with(":spec") {
+                c = c.test();
+            }
+            c.extras.folder = Some("Rake".into());
+            out.push(c);
+        }
+    }
+    if uses_rspec(root) {
+        out.push(ruby_config("rspec".into(), "rspec".into(), "rspec", ruby_tool(root, "rspec"), &[]).test());
     }
 }
 

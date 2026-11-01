@@ -3,7 +3,7 @@
  * Languages & Frameworks › Go / Java / Node.js / Rust / TypeScript. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
-import { GoPage, JavaPage, NodePage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
+import { GoPage, JavaPage, NodePage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
 import { PrettierPage } from "../languages/PrettierPage";
 import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
@@ -117,6 +117,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 403.5,
     keywords: ["formatter", "prettier", "markdown", "yaml", "css", "format on save", "node_modules"],
     component: PrettierPage,
+  },
+  {
+    id: "languages.ruby",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Ruby",
+    group: LANGUAGES_GROUP,
+    order: 403.8,
+    keywords: ["ruby interpreter", "rbenv", "rvm", "chruby", "bundler", "gems", "rake", "rspec"],
+    component: RubyPage,
   },
   {
     id: "languages.rust",

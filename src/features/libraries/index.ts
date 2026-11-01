@@ -26,6 +26,8 @@ const GROUP_ICONS: Record<string, string> = {
   goModules: "file-gomod",
   maven: "maven-project",
   gradle: "file-gradle",
+  ruby: "file-ruby",
+  gems: "file-ruby",
 };
 
 /** An archive's root (`/jdk/lib/src.zip!`): its entries live below `<archive>!/`. */
