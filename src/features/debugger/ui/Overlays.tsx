@@ -13,7 +13,7 @@ import {
   updateBreakpoint,
   useBreakpoints,
 } from "../breakpoints/store";
-import { activeSession, addWatch, evaluate, isLive, startSession, useDebug } from "../state";
+import { activeSession, addWatch, evaluate, isLive, startSession, useDebug, resumeExecution } from "../state";
 import {
   addMethodBreakpoint,
   removeAllSpecial,
@@ -978,7 +978,9 @@ function SmartStepChooser() {
   const pick = (targetId: number) => {
     if (!state) return;
     close();
-    void call(commands.debugStepInTarget(state.session, state.thread, targetId)).catch((e) =>
+    void resumeExecution(state.session, () =>
+      call(commands.debugStepInTarget(state.session, state.thread, targetId)),
+    ).catch((e) =>
       notifications().notify({ group: "run", level: "error", title: "Smart Step Into failed", body: errorText(e) }),
     );
   };
