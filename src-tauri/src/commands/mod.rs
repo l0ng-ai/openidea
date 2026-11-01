@@ -201,6 +201,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_goto,
         lsp::lsp_implementations,
         lsp::lsp_virtual_document,
+        lsp::lsp_resolve_class_file,
         lsp::lsp_references,
         lsp::lsp_document_highlights,
         lsp::lsp_workspace_symbols,

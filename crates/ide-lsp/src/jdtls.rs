@@ -532,6 +532,59 @@ impl LspManager {
         collect()
     }
 
+    /// Resolve a disk/archive class to project source or the server's binary document.
+    /// Archive URIs must come from JDT's Java model: fabricated handles cannot map debug lines.
+    pub async fn java_class_file(&self, path: &Path, archive: Option<(PathBuf, String)>) -> IdeResult<String> {
+        let cancel = CancellationToken::new();
+        self.jdtls(&self.project_root, &cancel).await?;
+        if let Some((jar, entry)) = archive {
+            let entry = entry
+                .strip_prefix("META-INF/versions/")
+                .and_then(|s| s.split_once('/').map(|(_, s)| s))
+                .unwrap_or(&entry);
+            let class = entry.strip_suffix(".class").ok_or_else(|| IdeError::not_found("expected a class file"))?;
+            let outer = class.split('$').next().unwrap_or(class);
+            let (package, name) = outer.rsplit_once('/').unwrap_or(("", outer));
+            let query = outer.replace('/', ".");
+            let symbols = self.workspace_symbols(&query, cancel).await?;
+            let package = package.replace('/', ".");
+            let name = name.to_owned();
+            let outer = outer.to_owned();
+            return tokio::task::spawn_blocking(move || {
+                symbols
+                    .into_iter()
+                    .filter_map(|s| s.location.uri)
+                    .find(|uri| crate::virtual_doc::matches_class(uri, &jar, &package, &name))
+                    .ok_or_else(|| {
+                        IdeError::not_found(format!("jdtls could not resolve {} in {}", outer, jar.display()))
+                    })
+            })
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?;
+        }
+        let uri = crate::uri::path_to_uri_string(path);
+        // classFileContents accepts file URIs, but java-debug's line mapping only accepts JDT handles.
+        let doc = self.virtual_document(&uri).await?;
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").split('$').next().unwrap_or("");
+        let package = doc
+            .text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("package ").and_then(|p| p.strip_suffix(';')))
+            .unwrap_or("");
+        let relative = PathBuf::from(package.replace('.', "/")).join(format!("{name}.java"));
+        let key = "org.eclipse.jdt.ls.core.sourcePaths";
+        let settings = self
+            .jdtls_project_command(path, "java.project.getSettings", vec![json!(uri), json!([key])], &cancel)
+            .await?;
+        let roots: Vec<PathBuf> =
+            settings[key].as_array().into_iter().flatten().filter_map(Value::as_str).map(PathBuf::from).collect();
+        let source =
+            tokio::task::spawn_blocking(move || roots.into_iter().map(|r| r.join(&relative)).find(|p| p.is_file()))
+                .await
+                .map_err(|e| IdeError::internal(e.to_string()))?;
+        Ok(source.map(|s| s.to_string_lossy().into_owned()).unwrap_or(uri))
+    }
+
     /// Starts (or reuses) java-debug's DAP server inside jdtls and returns its port.
     pub async fn java_debug_server(&self, path: &Path) -> IdeResult<u16> {
         let v = self.jdtls_command(path, "vscode.java.startDebugSession", Vec::new()).await.map_err(|e| {
@@ -542,7 +595,7 @@ impl LspManager {
             }
         })?;
         // Hot code replace after each (auto-)build; errors only cost the feature.
-        let settings = json!({ "hotCodeReplace": "auto", "showStaticVariables": false, "showQualifiedNames": false,
+        let settings = json!({ "debugSupportOnDecompiledSource": "on", "hotCodeReplace": "auto", "showStaticVariables": false, "showQualifiedNames": false,
             "showLogicalStructure": true, "showToString": true, "maxStringLength": 0,
             // java-debug NPEs on a missing level (java.util.logging names).
             "logLevel": "WARNING" });
@@ -574,6 +627,7 @@ mod tests {
         assert_eq!(settings["java"]["project"]["sourcePaths"], json!(["src/main/java", "tests"]));
         assert_eq!(settings["java"]["project"]["referencedLibraries"], json!(["lib/**/*.jar"]));
         assert_eq!(settings["java"]["autobuild"]["enabled"], true);
+        assert_eq!(settings["java"]["contentProvider"]["preferred"], "fernflowerContentProvider");
         assert!(settings.get("bundles").is_none());
         assert!(settings.get("settings").is_none(), "didChangeConfiguration takes java settings directly");
     }

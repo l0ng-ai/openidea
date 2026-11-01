@@ -4467,6 +4467,7 @@
   "Plan node properties": "计划节点属性",
   "Values": "值",
   "Vim rc file": "Vim rc 文件",
+  "Breakpoints are not supported in output classes without source code.": "输出目录中无源码的类不支持断点。",
   "Decompiled .class file: sources are not available.": "已反编译的 .class 文件：没有可用的源代码。",
   "No column of the file matches the table": "文件中没有与该表匹配的列",
   "Not a URL of PostgreSQL, MySQL, SQLite or a compatible database": "不是 PostgreSQL、MySQL、SQLite 或兼容数据库的 URL",
