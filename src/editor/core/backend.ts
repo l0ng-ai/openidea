@@ -106,6 +106,7 @@ interface MemDoc {
 }
 
 const EXT_LANG: Record<string, string> = {
+  astro: "astro",
   ts: "typescript",
   tsx: "typescriptreact",
   js: "javascript",
@@ -137,6 +138,15 @@ const EXT_LANG: Record<string, string> = {
 };
 
 const MEM_LANGUAGES: LanguageInfo[] = [
+  {
+    id: "astro",
+    name: "Astro",
+    extensions: ["astro"],
+    uiMode: "Astro",
+    lineComment: null,
+    blockComment: ["<!--", "-->"],
+    indent: { tabSize: 2, insertSpaces: true },
+  },
   {
     id: "typescript",
     name: "TypeScript",

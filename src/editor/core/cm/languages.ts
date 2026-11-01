@@ -63,6 +63,11 @@ const supports = new Map<string, Promise<LanguageSupport | null>>();
 /** Frontend modes that extend or replace the bundled parsers. */
 const OWN_MODES = [
   LanguageDescription.of({
+    name: "Astro",
+    extensions: ["astro"],
+    load: () => import("@fazelstudio/codemirror-lang-astro").then((m) => m.astro()),
+  }),
+  LanguageDescription.of({
     name: "CMake",
     extensions: ["cmake", "cmake.in"],
     filename: /^(?:CMakeLists\.txt|.*\.cmake(?:\.in)?)$/,

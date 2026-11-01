@@ -1,0 +1,13 @@
+id = "astro"
+name = "Astro"
+extensions = ["astro"]
+block-comment = ["<!--", "-->"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "Astro"
+
+[[language-servers]]
+name = "astro-language-server"
+command = "astro-ls"
+args = ["--stdio"]
+root-markers = ["astro.config.mjs", "astro.config.ts", "astro.config.js", "astro.config.mts", "package.json", "tsconfig.json"]
+install-hint = "npm i -g @astrojs/language-server typescript@6"

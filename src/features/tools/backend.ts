@@ -88,6 +88,13 @@ export function sampleTools(): ToolInfo[] {
     }),
     tool({ name: "vtsls", displayName: "vtsls (TypeScript)", languages: ["TypeScript", "JavaScript"] }),
     tool({
+      name: "astro-language-server",
+      displayName: "Astro Language Server",
+      command: "astro-ls",
+      languages: ["Astro"],
+      defaultArgs: ["--stdio"],
+    }),
+    tool({
       name: "typescript-language-server",
       languages: ["TypeScript", "JavaScript"],
       status: "onPath",
@@ -221,6 +228,7 @@ export class MemoryToolsBackend implements ToolsBackend {
 
   async languages() {
     return [
+      { id: "astro", name: "Astro" },
       { id: "go", name: "Go" },
       { id: "python", name: "Python" },
       { id: "rust", name: "Rust" },

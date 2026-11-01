@@ -81,6 +81,32 @@ describe("Language Servers page settings", () => {
     return within(details("Pyright")).getByRole("button", { name: "Language server for Python" });
   };
 
+  it("offers Astro in custom servers and stages the built-in server's enable setting", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(listItem("astro-language-server")).not.toBeNull());
+    await user.click(listItem("astro-language-server")!);
+    const pane = details("Astro Language Server");
+    const enabled = within(pane).getByRole("checkbox", { name: /Use Astro Language Server/ });
+    expect(enabled).toBeChecked();
+    await user.click(enabled);
+    expect(stagedFor("languageServers.astro-language-server.enabled")).toBe(false);
+    await user.click(enabled);
+    expect(stagedFor("languageServers.astro-language-server.enabled")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Add Language Server…" }));
+    const dialog = screen.getByRole("dialog", { name: "New Language Server" });
+    await user.type(within(dialog).getByRole("textbox", { name: "Command" }), "custom-astro-ls --stdio");
+    await user.click(within(dialog).getByRole("button", { name: "Languages" }));
+    await user.click(await screen.findByRole("checkbox", { name: "Astro" }));
+    await user.keyboard("{Escape}");
+    await user.click(within(dialog).getByRole("button", { name: "OK" }));
+    expect(stagedFor("languageServers.custom-astro-ls")).toEqual({
+      command: "custom-astro-ls",
+      args: ["--stdio"],
+      languages: ["astro"],
+    });
+  });
+
   it("lists one picker per group of interchangeable servers, on each member", async () => {
     const user = userEvent.setup();
     renderPage();

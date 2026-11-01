@@ -3,7 +3,7 @@
 
 use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path};
-use crate::{angular, godot, pinned, vue};
+use crate::{angular, astro, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{LanguageServerSettings, Settings};
 use ide_core::version_managers::Tool;
@@ -458,6 +458,9 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     // Last: it finds the server on the `PATH` set above.
     if name == angular::SERVER {
         configure_angular(cfg, root, server_root, s);
+    }
+    if name == astro::SERVER {
+        astro::configure(cfg, root, server_root, s);
     }
 }
 

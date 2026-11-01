@@ -17,6 +17,8 @@ describe("path completion context", () => {
     // Closed strings and module specifiers (the language server's job) are left alone.
     expect(pathContext('log("done") + x', "python")).toBeNull();
     expect(pathContext('import { a } from "./ut', "typescript")).toBeNull();
+    expect(pathContext('import Layout from "../layouts/', "astro")).toBeNull();
+    expect(pathContext('<img src="./images/', "astro")).toEqual({ prefix: "./images/", eager: true });
     expect(pathContext('const m = await import("./m', "javascript")).toBeNull();
     expect(pathContext('fetch("./data/', "typescript")).toEqual({ prefix: "./data/", eager: false });
   });

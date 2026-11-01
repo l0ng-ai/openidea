@@ -1,0 +1,24 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+const items = ["One", "Two", "Three"];
+---
+
+<Layout title={title}>
+  <h1>{title}</h1>
+
+  {items.map((item) => (
+    <p class="item">{item}</p>
+  ))}
+</Layout>
+
+<style>
+  .item {
+    color: red;
+  }
+</style>

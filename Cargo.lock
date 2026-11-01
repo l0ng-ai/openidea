@@ -4375,6 +4375,7 @@ dependencies = [
  "ide-core",
  "ide-jsonrpc",
  "ide-language",
+ "ide-sdk",
  "ide-text",
  "ide-vfs",
  "ignore",

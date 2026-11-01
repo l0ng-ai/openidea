@@ -14,8 +14,8 @@ vi.mock("../controller", async () => {
 });
 
 const { useEditorStatus } = await import("../controller");
-const { useOutline } = await import("../model/document");
-const { Breadcrumbs, CodeBreadcrumbs } = await import("./StatusItems");
+const { useOutline, useDocMeta } = await import("../model/document");
+const { Breadcrumbs, CodeBreadcrumbs, LanguageStatus } = await import("./StatusItems");
 const { NavBarPopup } = await import("./NavBarPopup");
 
 const PATH = "/p/Orders.ts";
@@ -42,6 +42,32 @@ const caret = (line: number, col: number): EditorStatus => ({
 });
 
 describe("caret-driven status widgets", () => {
+  it("shows the registered Astro language name and follows the active file", async () => {
+    const { loadLanguageInfos, _resetLanguages } = await import("../cm/languages");
+    const { createMemoryBackend } = await import("../backend");
+    _resetLanguages();
+    await loadLanguageInfos(createMemoryBackend());
+    const meta = {
+      doc: 1,
+      path: PATH,
+      language: "astro",
+      uiMode: "Astro",
+      encoding: "UTF-8",
+      lineEnding: "lf" as const,
+      readOnly: false,
+      dirty: false,
+      banner: null,
+      indent: { tabSize: 2, insertSpaces: true },
+    };
+    useDocMeta.setState({ [PATH]: meta });
+    useEditorStatus.setState({ status: caret(0, 0) });
+    render(<LanguageStatus />);
+    expect(screen.getByRole("button", { name: "File Type" })).toHaveTextContent("Astro");
+    act(() => useDocMeta.setState({ [PATH]: { ...meta, language: "typescript" } }));
+    expect(screen.getByRole("button", { name: "File Type" })).toHaveTextContent("TypeScript");
+    act(() => useEditorStatus.setState({ status: null }));
+    expect(screen.queryByRole("button", { name: "File Type" })).toBeNull();
+  });
   it("re-render when the symbol at the caret changes, not on every caret move", () => {
     useOutline.setState({ [PATH]: [item("Orders", 0, 40, [item("place", 2, 10), item("cancel", 12, 20)])] });
     act(() => useEditorStatus.setState({ status: caret(3, 4) }));

@@ -37,7 +37,7 @@ const MARKDOWN_LINK = /\]\(([^)\s]*)$/;
 const STRING = /(["'`])([^"'`\\]*)$/;
 /** Module specifiers: the language server completes those. */
 const MODULE_SPECIFIER = /(?:\bimport\b|\bfrom\b|\brequire\s*\(|\bimport\s*\()\s*["'`][^"'`]*$/;
-const JS_LIKE = new Set(["javascript", "typescript", "javascriptreact", "typescriptreact", "vue", "svelte"]);
+const JS_LIKE = new Set(["javascript", "typescript", "javascriptreact", "typescriptreact", "vue", "svelte", "astro"]);
 
 /** Whether `prefix` already reads like a path (`./`, `../`, `a/b`). */
 export const pathLike = (prefix: string) => /^\.{1,2}\/|\//.test(prefix);

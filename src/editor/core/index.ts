@@ -28,6 +28,7 @@ import {
   EncodingStatus,
   IndentStatus,
   LineEndingStatus,
+  LanguageStatus,
   ReadOnlyStatus,
 } from "./view/StatusItems";
 
@@ -112,6 +113,14 @@ export function activate(): void | (() => void) {
       priority: 55,
       component: ReadOnlyStatus,
       title: "Read-only Attribute",
+      lightEdit: true,
+    }),
+    registerStatusItem({
+      id: "editor.language",
+      align: "right",
+      priority: 60,
+      component: LanguageStatus,
+      title: "File Type",
       lightEdit: true,
     }),
   ];

@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@fazelstudio/codemirror-lang-astro@0.2.0': 62a01a257561aa0420e596866c536a29d08a2e6e59ed6c0e8515582ba77b6b97
+
 importers:
 
   .:
@@ -44,6 +47,9 @@ importers:
       '@codemirror/view':
         specifier: ^6.43.14
         version: 6.43.14
+      '@fazelstudio/codemirror-lang-astro':
+        specifier: 0.2.0
+        version: 0.2.0(patch_hash=62a01a257561aa0420e596866c536a29d08a2e6e59ed6c0e8515582ba77b6b97)
       '@floating-ui/react-dom':
         specifier: ^2.1.9
         version: 2.1.9(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -389,6 +395,9 @@ packages:
     peerDependenciesMeta:
       '@noble/hashes':
         optional: true
+
+  '@fazelstudio/codemirror-lang-astro@0.2.0':
+    resolution: {integrity: sha512-TddvEDlitGJjYTp/0uIfkqoa4XklrjMIpEz7lwyjNUqhOONf7+8riFC68utIUfNJm153Ff+cOQfmJci52SUq9A==}
 
   '@floating-ui/core@1.8.0':
     resolution: {integrity: sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ==}
@@ -2657,6 +2666,17 @@ snapshots:
     optional: true
 
   '@exodus/bytes@1.16.0': {}
+
+  '@fazelstudio/codemirror-lang-astro@0.2.0(patch_hash=62a01a257561aa0420e596866c536a29d08a2e6e59ed6c0e8515582ba77b6b97)':
+    dependencies:
+      '@codemirror/lang-css': 6.3.1
+      '@codemirror/lang-javascript': 6.2.5
+      '@codemirror/language': 6.13.1
+      '@codemirror/state': 6.7.6
+      '@lezer/common': 1.5.3
+      '@lezer/highlight': 1.2.5
+      '@lezer/html': 1.3.13
+      '@lezer/lr': 1.4.11
 
   '@floating-ui/core@1.8.0':
     dependencies:

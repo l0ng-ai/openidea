@@ -7,6 +7,7 @@
 
 mod angular;
 pub mod apply;
+mod astro;
 mod discover;
 mod exec;
 pub mod go;

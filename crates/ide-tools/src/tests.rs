@@ -134,6 +134,16 @@ fn everything_missing_on_an_empty_system() {
     assert_eq!(angular.command, "ngserver");
     assert_eq!(angular.install_method.as_deref(), Some("npm"));
     assert_eq!(angular.languages, ["HTML", "TypeScript"]);
+    let astro = find(&list, "astro-language-server");
+    assert_eq!(astro.command, "astro-ls");
+    assert_eq!(astro.display_name, "Astro Language Server");
+    assert_eq!(astro.install_method.as_deref(), Some("npm"));
+    assert_eq!(astro.languages, ["Astro"]);
+    assert_eq!(astro.default_args, ["--stdio"]);
+    assert!(matches!(
+        registry::TOOLS.iter().find(|t| t.name == astro.name).unwrap().method,
+        Method::Npm { packages: ["@astrojs/language-server", "typescript@6"] }
+    ));
     // Servers without an installer are listed with their manual hint.
     let hls = find(&list, "haskell-language-server");
     assert_eq!(hls.install_method, None);

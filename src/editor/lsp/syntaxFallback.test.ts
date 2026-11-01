@@ -138,6 +138,7 @@ describe("usageRole / filterSymbols", () => {
   it("only keeps declarations from the same language family", () => {
     expect(fb.compatibleFiles("/a/Main.kt", "/b/Util.java")).toBe(true);
     expect(fb.compatibleFiles("/a/app.tsx", "/b/util.js")).toBe(true);
+    expect(fb.compatibleFiles("/a/index.astro", "/b/util.ts")).toBe(true);
     expect(fb.compatibleFiles("/a/pets.rb", "/b/util.lua")).toBe(false);
     expect(fb.compatibleFiles("/a/x.lua", "/b/y.lua")).toBe(true);
     expect(fb.compatibleFiles("/a/Makefile", "/b/y.lua")).toBe(true);
