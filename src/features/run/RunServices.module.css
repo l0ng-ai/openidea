@@ -35,3 +35,12 @@
   height: 100%;
   min-height: 0;
 }
+
+.importList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px 0;
+}

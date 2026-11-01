@@ -196,7 +196,7 @@ async function pickForKind(kind: string) {
     return;
   }
   const hidden = new Set(currentHidden()[kind] ?? []);
-  const picked = await pickServices(kind, configs, new Set(configs.filter((c) => !hidden.has(c.id)).map((c) => c.id)));
+  const picked = await pickServices(configs, new Set(configs.filter((c) => !hidden.has(c.id)).map((c) => c.id)));
   if (!picked) return;
   addType(kind);
   const remaining = configs.filter((c) => !picked.has(c.id)).map((c) => c.id);
@@ -721,6 +721,7 @@ export const runServiceProvider: ServiceProviderContribution = {
         ranIds(useProject.getState().project?.root ?? null),
         order,
         useDebugRunSessions.getState().serviceSessions,
+        currentHidden(),
       ).find((g) => g.key === TYPE_PREFIX + kind);
       const ids = group?.children?.map((c) => c.key.slice(CONFIG_PREFIX.length)) ?? [];
       const from = source.key.slice(CONFIG_PREFIX.length),
