@@ -290,10 +290,23 @@ pub fn base_conflicts(base: &Path, defaults: &(PathBuf, PathBuf), current: Optio
     if let Some(current) = current {
         used.push(current.to_path_buf());
     }
-    let base = dunce::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    let base = canonical(base);
     used.iter().any(|u| {
-        let u = dunce::canonicalize(u).unwrap_or_else(|_| u.clone());
+        let u = canonical(u);
         base.starts_with(&u) || u.starts_with(&base)
+    })
+}
+
+/// Canonicalizes for comparison; a path that does not exist yet (a freshly
+/// chosen base) is canonicalized through its parent so a symlinked ancestor
+/// (macOS `/var` → `/private/var`) cannot make two names of one directory
+/// look unrelated.
+fn canonical(path: &Path) -> PathBuf {
+    dunce::canonicalize(path).unwrap_or_else(|_| {
+        path.parent()
+            .and_then(|parent| dunce::canonicalize(parent).ok())
+            .map(|parent| parent.join(path.file_name().unwrap_or_default()))
+            .unwrap_or_else(|| path.to_path_buf())
     })
 }
 
@@ -585,7 +598,6 @@ mod tests {
         let data = tmp.path().join("default-data");
         fs::create_dir_all(&config).unwrap();
         fs::create_dir_all(&data).unwrap();
-        let defaults = (config.clone(), data.clone());
         for &(name, target) in MOVES {
             let root = if DEFAULT_CONFIG_SIDE.contains(&name) { &config } else { &data };
             if target.contains('.') {
@@ -610,7 +622,7 @@ mod tests {
     fn custom_fixture(tmp: &TempDir) -> PathBuf {
         let base = tmp.path().join("custom-base");
         fs::create_dir_all(&base).unwrap();
-        for &(name, target) in MOVES {
+        for &(_, target) in MOVES {
             if target.contains('.') {
                 file(&base, target);
             } else {
@@ -1010,7 +1022,7 @@ mod tests {
         write_pointer(&default_config, &Layout::Custom(target.clone()), None).unwrap();
 
         let recorded = fs::read_to_string(pointer_file(&default_config)).unwrap();
-        assert_eq!(recorded, format!("{}\n", target.display()));
+        assert_eq!(recorded, target.to_string_lossy());
         let defaults = defaults_of(&default_config, &tmp.path().join("default-data"));
         let (layout, _) = resolve(None, Some(&recorded), &defaults, &tmp.path().join("home"));
         assert_eq!(layout, Layout::Custom(target));

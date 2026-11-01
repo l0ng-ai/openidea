@@ -7,6 +7,29 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
+	appHome: () => __TAURI_INVOKE<AppHome>("app_home"),
+	/**
+	 *  Records a switch to `path` (Settings › Configuration directory). The new
+	 *  directory takes effect on the next start, when the migration dialog asks
+	 *  whether to move the existing data.
+	 */
+	appHomeSet: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("app_home_set", { path })),
+	/**  Records a switch back to the platform defaults; mirrors `app_home_set`. */
+	appHomeReset: () => typedError<null, IdeError>(__TAURI_INVOKE("app_home_reset")),
+	migrationStatus: () => __TAURI_INVOKE<MigrationStatus>("migration_status"),
+	/**
+	 *  Moves the previous location's data into the resolved one (after a
+	 *  switch): migrate, rewrite stored paths, move the previous directories to
+	 *  the trash, and drop the pointer's previous line so the dialog stays gone.
+	 *  With any failed entry the previous location is kept and asked about again
+	 *  on the next start.
+	 */
+	migrationApply: () => __TAURI_INVOKE<Migration>("migration_apply"),
+	/**
+	 *  The dialog's "Don't migrate"; `remember` records "don't ask again" until
+	 *  the next switch.
+	 */
+	migrationDecline: (remember: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("migration_decline", { remember })),
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
@@ -1366,6 +1389,18 @@ export type AgentUsage = {
 	used: number,
 	/**  Size of the context window. */
 	size: number,
+};
+
+/**
+ *  The directories the app currently uses, for the Configuration directory
+ *  settings row (Settings › System Settings).
+ */
+export type AppHome = {
+	configDir: IpcPath,
+	dataDir: IpcPath,
+	/**  The custom base itself, when one is set (config/ and system/ under it). */
+	base: IpcPath | null,
+	envOverride: boolean,
 };
 
 export type AppInfo = {
@@ -4402,6 +4437,23 @@ export type MethodStat = {
 	frame: number,
 	selfWeight: number | null,
 	total: number | null,
+};
+
+/**  Outcome of a migration, for the dialog's result reporting. */
+export type Migration = {
+	moved: number,
+	failed: number,
+};
+
+/**
+ *  What a migration would do, for the startup dialog: move `entries` from
+ *  the previous location into the resolved one.
+ */
+export type MigrationStatus = {
+	pending: boolean,
+	entries: number,
+	from: IpcPath[],
+	to: IpcPath[],
 };
 
 export type NewAgentTask = {
