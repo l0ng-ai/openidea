@@ -8,6 +8,8 @@ mod commands;
 #[cfg(debug_assertions)]
 mod dev;
 mod events;
+#[cfg(any(target_os = "linux", test))]
+mod linux_window_state;
 mod logging;
 mod menu;
 mod remote_dev;
@@ -16,7 +18,6 @@ mod state;
 mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
-mod window_geometry;
 mod window_groups;
 mod windows;
 
@@ -51,16 +52,6 @@ pub fn run() {
     logging::init(&context.config().identifier);
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
-    // GTK Wayland drops the window-state plugin's restore resize, collapsing
-    // the window to its minimum size (#594): take the remembered geometry out
-    // of the plugin's file so it is applied when windows are built instead.
-    let remembered_geometry = if window_geometry::is_wayland() {
-        dirs::config_dir()
-            .map(|dir| window_geometry::RememberedGeometry::take(&dir.join(&context.config().identifier)))
-            .unwrap_or_default()
-    } else {
-        Default::default()
-    };
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
     if let Some(data) = dirs::data_dir() {
         ide_tools::extend_process_path(&data.join(&context.config().identifier));
@@ -79,16 +70,18 @@ pub fn run() {
     // Single instance first: a second launch focuses this one and opens its path argument.
     // Debug builds have a separate identifier per worktree.
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
+    let app = app.plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_dialog::init());
+    #[cfg(target_os = "linux")]
+    let app = app.plugin(linux_window_state::plugin());
+    #[cfg(not(target_os = "linux"))]
+    let app = app.plugin(
+        tauri_plugin_window_state::Builder::default()
+            .with_state_flags(window_state_flags())
+            // One remembered geometry shared by every project's settings window.
+            .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
+            .build(),
+    );
     let app = app
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(window_state_flags())
-                // One remembered geometry shared by every project's settings window.
-                .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
-                .build(),
-        )
         // Inert until an endpoint is configured (see `commands::window::app_check_update`).
         .plugin(tauri_plugin_updater::Builder::new().build());
     // E2E automation bridge (Tauri MCP), debug builds only, localhost only.
@@ -155,7 +148,6 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
-        app.manage(remembered_geometry);
         if let Some(paths) = setup_opens.lock().take() {
             windows::open_paths_at_launch(app.handle(), paths);
         }
@@ -164,6 +156,8 @@ pub fn run() {
         Ok(())
     })
     .on_window_event(|window, event| match event {
+        #[cfg(target_os = "linux")]
+        tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -216,6 +210,7 @@ pub fn run() {
     });
 }
 
+#[cfg(not(target_os = "linux"))]
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     use tauri_plugin_window_state::StateFlags;
     StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
