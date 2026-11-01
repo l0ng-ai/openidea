@@ -5,6 +5,7 @@ import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { activeEditor } from "@/editor/api";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
+import { classFileBreakpointReason } from "@/platform/classFiles";
 import { canPlaceBreakpoint } from "./breakpoints/languages";
 import {
   removeAllBreakpoints,
@@ -75,10 +76,18 @@ function pausedTarget(): { s: DebugSession; thread: number } | null {
   return thread == null ? null : { s, thread };
 }
 
+function breakpointPathAllowed(path: string): boolean {
+  const reason = classFileBreakpointReason(path);
+  if (!reason) return true;
+  showStatusInfo(tx(reason));
+  return false;
+}
+
 /** Run to Cursor at `line` (0-based) of `path` in the paused session. */
 export function runToLine(path: string, line: number) {
   const t = pausedTarget();
-  if (t) void report("Run to Cursor failed", call(commands.debugRunTo(t.s.id, t.thread, path, line, false)));
+  if (t && breakpointPathAllowed(path))
+    void report("Run to Cursor failed", call(commands.debugRunTo(t.s.id, t.thread, path, line, false)));
 }
 
 function notSupported(what: string, s: DebugSession) {
@@ -518,7 +527,7 @@ export function registerDebugActions(): () => void {
       run: () => {
         const t = pausedTarget();
         const c = cursor();
-        if (t && c)
+        if (t && c && breakpointPathAllowed(c.path))
           void report("Run to Cursor failed", call(commands.debugRunTo(t.s.id, t.thread, c.path, c.line, false)));
       },
     },
@@ -532,7 +541,7 @@ export function registerDebugActions(): () => void {
       run: () => {
         const t = pausedTarget();
         const c = cursor();
-        if (t && c)
+        if (t && c && breakpointPathAllowed(c.path))
           void report("Force Run to Cursor failed", call(commands.debugRunTo(t.s.id, t.thread, c.path, c.line, true)));
       },
     },
@@ -543,7 +552,7 @@ export function registerDebugActions(): () => void {
       icon: "breakpoint",
       run: () => {
         const c = cursor();
-        if (!c) return;
+        if (!c || !breakpointPathAllowed(c.path)) return;
         const exists = useBreakpoints.getState().byFile[c.path]?.some((b) => b.line === c.line);
         const language = activeEditor()?.ctx.language ?? "";
         if (!exists && !canPlaceBreakpoint(language)) {
@@ -568,7 +577,8 @@ export function registerDebugActions(): () => void {
       description: "A line breakpoint that is removed after it is hit",
       run: () => {
         const c = cursor();
-        if (c && canPlaceBreakpoint(activeEditor()?.ctx.language ?? "")) toggleTemporaryBreakpoint(c.path, c.line);
+        if (c && breakpointPathAllowed(c.path) && canPlaceBreakpoint(activeEditor()?.ctx.language ?? "", c.path))
+          toggleTemporaryBreakpoint(c.path, c.line);
       },
     },
     {
@@ -579,7 +589,7 @@ export function registerDebugActions(): () => void {
       run: () => {
         const ed = activeEditor();
         const c = cursor();
-        if (!ed || !c) return;
+        if (!ed || !c || !breakpointPathAllowed(c.path)) return;
         const existing = specialAt(c.path).find((b) => b.kind === "method" && b.line === c.line);
         const method = methodAt(ed.ctx.language, ed.view.state.doc.toString(), c.line);
         if (!existing && !method) {
@@ -602,7 +612,7 @@ export function registerDebugActions(): () => void {
       run: () => {
         const ed = activeEditor();
         const c = cursor();
-        if (!ed || !c) return;
+        if (!ed || !c || !breakpointPathAllowed(c.path)) return;
         const existing = specialAt(c.path).find((b) => b.kind === "field" && b.line === c.line);
         const field = fieldAt(ed.ctx.language, ed.view.state.doc.toString(), c.line);
         if (!existing && !field) {
