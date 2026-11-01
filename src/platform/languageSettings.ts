@@ -88,7 +88,14 @@ export interface LanguagesValid {
       /** IDEA's "Build and run using": Gradle (`JavaExec`) or the IDE (the language server's classpath). */
       runUsing: "gradle" | "ide";
     };
-    maven: { home: string; userSettings: string; localRepository: string; unlinkedProjects: string[] };
+    maven: {
+      home: string;
+      userSettings: string;
+      localRepository: string;
+      unlinkedProjects: string[];
+      daemon: boolean;
+      mvndHome: string;
+    };
   };
   /** Preview font size in px; `null` follows the editor font size. */
   markdown: { previewFontSize: number | null };
@@ -132,7 +139,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     jdtlsJdk: "",
     jdtlsVmArgs: "",
     gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
-    maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [] },
+    maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [], daemon: false, mvndHome: "" },
   },
   markdown: { previewFontSize: null },
 };
@@ -264,6 +271,8 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
         unlinkedProjects: folders(maven.unlinkedProjects),
+        daemon: bool(maven.daemon, d.java.maven.daemon),
+        mvndHome: text(maven.mvndHome, d.java.maven.mvndHome),
       },
     },
     markdown: { previewFontSize: previewSize(markdown.previewFontSize) },

@@ -145,11 +145,7 @@ function normalizeDir(cwd: string | null | undefined): string {
     .replace(/\/+$/, "");
 }
 
-export function mavenChildren(
-  node: BuildNode,
-  model: MavenModel,
-  configs: readonly RunConfig[],
-): BuildNode[] | undefined {
+export function mavenChildren(node: BuildNode, model: MavenModel): BuildNode[] | undefined {
   switch (node.kind) {
     case "profiles":
       return model.profiles.map((profile) => ({ kind: "profile", key: `mvn:profile:${profile.id}`, profile }));
@@ -162,8 +158,6 @@ export function mavenChildren(
       ];
       if (p.dependencies.length)
         out.push({ kind: "dependencies", key: `${k}:deps`, project: p, dependencies: p.dependencies });
-      const runs = mavenRunConfigs(p, configs);
-      if (runs.length) out.push({ kind: "runConfigs", key: `${k}:runs`, configs: runs });
       for (const pom of p.modules) {
         const m = model.projects.find((x) => x.pom === pom);
         if (m) out.push({ kind: "mavenProject", key: projectKey(m), project: m });
@@ -246,19 +240,11 @@ export function gradleSubprojects(model: GradleModel, path: string): GradleProje
   });
 }
 
-export function gradleChildren(
-  node: BuildNode,
-  model: GradleModel,
-  configs: readonly RunConfig[],
-): BuildNode[] | undefined {
+export function gradleChildren(node: BuildNode, model: GradleModel): BuildNode[] | undefined {
   switch (node.kind) {
     case "gradleProject": {
       const p = node.project;
       const out: BuildNode[] = [{ kind: "tasks", key: `${node.key}:tasks`, project: p }];
-      if (p.path === ":") {
-        const runs = gradleRunConfigs(configs);
-        if (runs.length) out.push({ kind: "runConfigs", key: `${node.key}:runs`, configs: runs });
-      }
       for (const sub of gradleSubprojects(model, p.path))
         out.push({ kind: "gradleProject", key: `gradle:${sub.path}`, project: sub });
       return out;
@@ -413,6 +399,13 @@ export function mavenArgs(
   const profiles = profilesArg(model.profiles, options.profiles);
   if (profiles && !args.some((a) => a.startsWith("-P"))) args.push(`-P${profiles}`);
   return args;
+}
+
+/** Skip Tests mode: running the bare `test` phase alone is refused, as in IntelliJ —
+ * `-DskipTests` would skip it, so the run could only ever do nothing. Mixed selections
+ * (e.g. `clean` + `test`) and plugin goals like `surefire:test` stay runnable. */
+export function skippedTestRun(nodes: readonly BuildNode[], skipTests: boolean): boolean {
+  return skipTests && nodes.length > 0 && nodes.every((n) => n.kind === "phase" && n.phase === "test");
 }
 
 /** IDEA names Maven configurations `<project> [goal1,goal2]`. */

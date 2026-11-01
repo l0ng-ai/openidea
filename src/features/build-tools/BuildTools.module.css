@@ -79,6 +79,11 @@
   text-overflow: ellipsis;
   color: var(--fg);
 }
+/* Skip Tests mode: the `test` phase is skipped, shown struck through like IntelliJ. */
+.skippedLabel {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
 .selectedLabel {
   color: var(--fg-strong);
 }
