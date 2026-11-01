@@ -1,4 +1,5 @@
 /** Actions of the LSP editor layer (ids from keymaps/intellij-macos.ts). */
+import { isGenerateAction } from "./generate";
 import type { EditorView } from "@codemirror/view";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { activeEditor, editorsFor, registerSaveParticipant, type TextEditorHandle } from "@/editor/api";
@@ -281,8 +282,7 @@ export function registerLspActions(): () => void {
       "Code",
       (v) =>
         runKindAction(v, "", {
-          title:
-            /^(generate|implement|override|add (missing|derive|impl|getter|setter|constructor)|create (constructor|getter|setter))/i,
+          predicate: isGenerateAction,
           none: "Nothing to generate here",
           label: "Generate",
         }),

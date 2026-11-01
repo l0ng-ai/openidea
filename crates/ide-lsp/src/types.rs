@@ -145,6 +145,34 @@ pub struct Command {
     pub arguments: Vec<serde_json::Value>,
 }
 
+/// The string form supported by gopls's experimental interactive command protocol.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FormAnswer {
+    pub id: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FormField {
+    pub id: String,
+    pub description: String,
+    pub required: bool,
+    #[serde(default)]
+    pub default: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandForm {
+    pub command: Command,
+    pub form_fields: Vec<FormField>,
+    pub form_answers: Vec<FormAnswer>,
+}
+
 /// One `textDocument/inlineCompletion` suggestion (ghost text at the caret).
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

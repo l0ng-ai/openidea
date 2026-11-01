@@ -2547,3 +2547,138 @@ async fn external_projects_are_capability_gated_and_follow_lifecycle() {
         h.mgr.shutdown_all().await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gopls_interactive_command_validates_before_execution_and_applies_edits() {
+    let mut caps = incremental_caps();
+    caps["experimental"] = json!({"interactiveResolveProvider": {"kinds": ["command"]}});
+    caps["executeCommandProvider"] = json!({"commands": ["gopls.implement_interface", "gopls.add_test"]});
+    let h = harness(&[("gopls", caps)]);
+    let (doc, path) = h.open("probe.mk", "type T struct{}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    let s = h.launcher.state("gopls");
+    let server = h.mgr.servers()[0].id;
+    assert_eq!(
+        s.requested("initialize")[0]["capabilities"]["experimental"]["interactiveResolve"],
+        json!({"inputTypes": ["string"]})
+    );
+    let new_file = h.root.join("probe_test.go");
+    let edit = json!({"documentChanges": [{"kind": "create", "uri": uri_of(&new_file)}, {
+        "textDocument": {"uri": uri_of(&path), "version": 1},
+        "edits": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "// generated\n"}]
+    }]});
+    *s.responder.lock() = Some(Arc::new(move |s, method, p| {
+        if method == "command/resolve" {
+            let valid = p["formAnswers"][0]["value"] == "pkg.I";
+            return Some(if valid {
+                json!({"command": p["command"], "arguments": p["arguments"], "formAnswers": p["formAnswers"]})
+            } else {
+                json!({"command": p["command"], "arguments": p["arguments"], "formFields": [{"id": "interface", "description": "Enter interface", "required": true, "type": {"kind": "string"}, "error": if p["formAnswers"].as_array().is_some_and(|a| !a.is_empty()) { "Unknown interface" } else { "" }}]})
+            });
+        }
+        if method == "workspace/executeCommand" {
+            if p["command"] != "gopls.add_test" {
+                assert_eq!(p["formAnswers"], json!([{"id": "interface", "value": "pkg.I"}]));
+            }
+            let reply: Value = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(s.peer().request(
+                    "workspace/applyEdit",
+                    json!({"edit": edit}),
+                    None,
+                ))
+            })
+            .unwrap();
+            assert_eq!(reply, json!({"applied": true}));
+            return Some(Value::Null);
+        }
+        None
+    }));
+    let applied = Arc::new(Mutex::new(Vec::new()));
+    let received = applied.clone();
+    h.mgr.set_apply_edit_hook(Box::new(move |edit| {
+        received.lock().push(edit);
+        true
+    }));
+    let command = Command {
+        title: "Implement".into(),
+        command: "gopls.implement_interface".into(),
+        arguments: vec![json!({"location": 1})],
+    };
+    let token = ide_core::CancellationToken::new;
+    let initial = h.mgr.resolve_command(doc, server, command.clone(), vec![], token()).await.unwrap().unwrap();
+    assert_eq!(initial.form_fields[0].description, "Enter interface");
+    let invalid = h
+        .mgr
+        .resolve_command(
+            doc,
+            server,
+            command.clone(),
+            vec![FormAnswer { id: "interface".into(), value: "bad".into() }],
+            token(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(invalid.form_fields[0].error.as_deref(), Some("Unknown interface"));
+    assert!(applied.lock().is_empty());
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let cancelled = token();
+    cancelled.cancel();
+    let err = h.mgr.resolve_command(doc, server, command.clone(), vec![], cancelled).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    let cancelled = token();
+    cancelled.cancel();
+    let err = h.mgr.execute_action_command(doc, server, command.clone(), vec![], cancelled).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(applied.lock().is_empty());
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let validated = h
+        .mgr
+        .resolve_command(
+            doc,
+            server,
+            command,
+            vec![FormAnswer { id: "interface".into(), value: "pkg.I".into() }],
+            token(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(validated.form_fields.is_empty());
+    h.mgr.execute_action_command(doc, server, validated.command, validated.form_answers, token()).await.unwrap();
+    assert_eq!(applied.lock().len(), 1);
+    let created = h
+        .mgr
+        .execute_action_command(
+            doc,
+            server,
+            Command { title: "Test".into(), command: "gopls.add_test".into(), arguments: vec![] },
+            vec![],
+            token(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created, vec![new_file]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interactive_capability_is_scoped_to_gopls() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("probe.mk", "x\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    assert_eq!(s.requested("initialize")[0]["capabilities"]["experimental"], json!({}));
+    let form = h
+        .mgr
+        .resolve_command(
+            doc,
+            h.mgr.servers()[0].id,
+            Command { title: "Run".into(), command: "mock.run".into(), arguments: vec![json!(1)] },
+            vec![],
+            ide_core::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(form.is_none());
+    assert!(s.requested("command/resolve").is_empty());
+}

@@ -222,6 +222,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_restart,
         lsp::apply_workspace_edit,
         lsp::lsp_execute_command,
+        lsp::lsp_resolve_command,
+        lsp::lsp_execute_code_action,
         vcs::vcs_status,
         vcs::vcs_roots,
         vcs::vcs_branch_info,

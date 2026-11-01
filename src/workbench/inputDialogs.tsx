@@ -7,7 +7,7 @@
  *
  * Rendered by `InputDialogsHost` (in `OverlayHost`).
  */
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import { t } from "@/platform/i18n";
 import { Dialog, Input, List, T } from "@/ui";
@@ -21,6 +21,10 @@ export interface PromptInputOptions {
   okLabel?: string;
   /** An error message for `value`, or null when valid (default: must not be blank). */
   validate?: (value: string) => string | null;
+  /** Validate on submission without closing the dialog; cancelling aborts pending validation. */
+  submit?: (value: string, signal: AbortSignal) => Promise<string | null>;
+  /** Initial server validation error. */
+  error?: string;
   /** Extra content under the field (hints). */
   hint?: ReactNode;
 }
@@ -80,19 +84,50 @@ const notBlank = (v: string) => (v.trim() ? null : "Value must not be empty");
 function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v: string | null) => void }) {
   const [value, setValue] = useState(options.initial ?? "");
   const [touched, setTouched] = useState(false);
-  const error = (options.validate ?? notBlank)(value);
-  const submit = () => {
+  const [serverError, setServerError] = useState(options.error ?? null);
+  const [pending, setPending] = useState(false);
+  const validation = useRef<AbortController | null>(null);
+  useEffect(() => () => validation.current?.abort(), []);
+  const localError = (options.validate ?? notBlank)(value);
+  const error = localError ?? serverError;
+  const close = () => {
+    validation.current?.abort();
+    done(null);
+  };
+  const submit = async () => {
     setTouched(true);
-    if (!error) done(value.trim());
+    if (localError || validation.current) return;
+    if (!options.submit) return done(value.trim());
+    const controller = new AbortController();
+    validation.current = controller;
+    setPending(true);
+    try {
+      const message = await options.submit(value.trim(), controller.signal);
+      if (controller.signal.aborted) return;
+      setServerError(message);
+      if (!message) done(value.trim());
+    } catch (e) {
+      if (!controller.signal.aborted) setServerError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (!controller.signal.aborted) {
+        validation.current = null;
+        setPending(false);
+      }
+    }
   };
   return (
     <Dialog
       open
       title={options.title}
-      onClose={() => done(null)}
+      onClose={close}
       width={420}
       buttons={[
-        { label: options.okLabel ?? "OK", role: "default", disabled: !!error, onClick: submit },
+        {
+          label: options.okLabel ?? "OK",
+          role: "default",
+          disabled: !!localError || pending,
+          onClick: () => void submit(),
+        },
         { label: t("common.cancel"), role: "cancel" },
       ]}
     >
@@ -100,7 +135,7 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
         className={styles.form}
         onSubmit={(e) => {
           e.preventDefault();
-          submit();
+          void submit();
         }}
       >
         {options.label && (
@@ -113,13 +148,15 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
           aria-label={options.label ?? options.title}
           value={value}
           placeholder={options.placeholder}
-          invalid={touched && !!error}
+          disabled={pending}
+          invalid={(touched || !!serverError) && !!error}
           onChange={(e) => {
             setTouched(true);
             setValue(e.target.value);
+            setServerError(null);
           }}
         />
-        {touched && error && (
+        {(touched || !!serverError) && error && (
           <div className={styles.error}>
             <T>{error}</T>
           </div>
