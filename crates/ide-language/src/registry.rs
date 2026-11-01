@@ -567,13 +567,31 @@ mod tests {
         };
         // After the TypeScript fallback (an available server before it would hide
         // it); before the HTML server (hover, rename and symbols take the first).
-        assert_eq!(names("typescript"), ["vtsls", "typescript-language-server", "angular-language-server"]);
+        assert_eq!(names("typescript"), ["vtsls", "typescript-language-server", "angular-language-server", "oxlint"]);
         assert_eq!(names("html"), ["angular-language-server", "vscode-html-language-server"]);
         for lang in ["typescript", "html"] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let angular = cfg.language_servers.iter().find(|s| s.name == "angular-language-server").unwrap();
             assert!(angular.require_root_marker && !angular.fallback, "{lang}");
             assert_eq!(angular.root_markers, ["angular.json", "node_modules/@angular/core"], "{lang}");
+        }
+    }
+
+    #[test]
+    fn oxlint_serves_js_files_only_below_its_config() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("apps/web/src")).unwrap();
+        std::fs::write(root.join("apps/web/.oxlintrc.json"), "{}").unwrap();
+        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte"] {
+            let cfg = reg.get(&LanguageId::new(lang)).unwrap();
+            let oxlint = cfg.language_servers.iter().find(|s| s.name == "oxlint").unwrap();
+            assert_eq!((oxlint.command.as_str(), oxlint.args.as_slice()), ("oxlint", ["--lsp".to_string()].as_slice()));
+            assert!(oxlint.require_root_marker && !oxlint.fallback, "{lang}");
+            let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &oxlint.root_markers);
+            assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
+            assert_eq!(served("apps/api/main.ts"), None, "{lang}");
         }
     }
 

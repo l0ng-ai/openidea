@@ -37,6 +37,14 @@ root-markers = ["angular.json", "node_modules/@angular/core"]
 require-root-marker = true
 install-hint = "npm i -g @angular/language-server"
 
+[[language-servers]]
+name = "oxlint"
+command = "oxlint"
+args = ["--lsp"]
+root-markers = [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"]
+require-root-marker = true
+install-hint = "npm i -D oxlint"
+
 [debugger]
 adapter = "js-debug"
 command = "js-debug-adapter"

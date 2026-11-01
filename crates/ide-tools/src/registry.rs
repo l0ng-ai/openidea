@@ -135,6 +135,28 @@ pub static TOOLS: &[ToolSpec] = &[
         homepage: "https://prettier.io",
     },
     ToolSpec {
+        name: "oxfmt",
+        display: "oxfmt",
+        kind: Formatter,
+        commands: &["oxfmt"],
+        method: Method::Npm { packages: &["oxfmt"] },
+        fallback: None,
+        version: ver("oxfmt"),
+        needs: NODE,
+        homepage: "https://oxc.rs/docs/guide/usage/formatter",
+    },
+    ToolSpec {
+        name: "oxlint",
+        display: "oxlint",
+        kind: LanguageServer,
+        commands: &["oxlint"],
+        method: Method::Npm { packages: &["oxlint"] },
+        fallback: None,
+        version: ver("oxlint"),
+        needs: NODE,
+        homepage: "https://oxc.rs/docs/guide/usage/linter",
+    },
+    ToolSpec {
         name: "rust-analyzer",
         display: "rust-analyzer",
         kind: LanguageServer,
@@ -955,12 +977,8 @@ mod tests {
                 known.insert((d.adapter.clone(), d.command.clone()));
             }
         }
-        for l in &langs {
-            if let Some(f) = &l.formatter {
-                known.insert((f.tool.clone(), f.tool.clone()));
-            }
-        }
-        for t in TOOLS.iter().filter(|t| t.kind != Plugin) {
+        // The host selects the formatter of each file (Prettier or oxfmt).
+        for t in TOOLS.iter().filter(|t| !matches!(t.kind, Plugin | Formatter)) {
             assert!(
                 known.contains(&(t.name.to_string(), t.commands[0].to_string())),
                 "{} / {} is not referenced by languages/*.toml",

@@ -7,6 +7,16 @@ use ide_core::{DocId, IdeError, IdeEvent, IdeResult, Range, TextEdit};
 use ide_language::FormatterConfig;
 use ide_lsp::types::FormatOptions;
 use ide_tools::{Tools, formatter};
+use std::path::Path;
+
+const OXFMT_CONFIGS: [&str; 4] = [".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.config.ts", "oxfmt.config.mts"];
+
+/// oxfmt below an oxfmt configuration file, else Prettier. The Prettier
+/// settings (languages, preference, on save) apply to both.
+fn external_tool(file: &Path) -> &'static str {
+    let oxfmt = OXFMT_CONFIGS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some());
+    if oxfmt { "oxfmt" } else { "prettier" }
+}
 
 fn external_selected(config: Option<&FormatterConfig>, language: &str, settings: &PrettierSettings, lsp: bool) -> bool {
     config.is_some_and(|c| c.tool == "prettier")
@@ -44,16 +54,19 @@ pub async fn format(
         return Err(IdeError::invalid("The file is read-only"));
     }
     let config = config.unwrap().clone();
-    let custom = ide_sdk::apply::setting_path(&project.root, &prettier.path);
+    let tool = external_tool(&snap.path);
+    let name = formatter::display_name(tool);
+    let custom = ide_sdk::apply::setting_path(&project.root, &prettier.path).filter(|_| tool == "prettier");
     let tools = Tools::new(&host.local_data_dir);
-    let whole_selection = range.is_some() && !config.range;
+    let whole_selection = range.is_some() && !formatter::supports_range(tool, &config);
     let edits: IdeResult<Vec<TextEdit>> = tokio::task::spawn_blocking(move || {
         let text = ide_text::Document::new(&snap.text);
         let offsets = range.map(|r| (text.pos_to_offset(r.start), text.pos_to_offset(r.end)));
-        let mut command = tools.formatter_command(&config.tool, &snap.path, custom.as_deref())?;
-        command.current_dir(snap.path.parent().ok_or_else(|| IdeError::invalid("Prettier: file has no directory"))?);
-        command.args(formatter::arguments(&config, &snap.path, options.tab_size, options.insert_spaces, offsets));
-        let formatted = formatter::run(command, &snap.text, &Default::default())?;
+        let mut command = tools.formatter_command(tool, &snap.path, custom.as_deref())?;
+        let dir = snap.path.parent().ok_or_else(|| IdeError::invalid(format!("{name}: file has no directory")))?;
+        command.current_dir(dir);
+        command.args(formatter::arguments(tool, &config, &snap.path, options.tab_size, options.insert_spaces, offsets));
+        let formatted = formatter::run(tool, command, &snap.text, &Default::default())?;
         Ok(text
             .diff(&formatted)
             .changes
@@ -69,13 +82,13 @@ pub async fn format(
     if edits.is_ok() && whole_selection {
         project.sink.emit(IdeEvent::Notify {
             level: NotifyLevel::Info,
-            title: "Prettier".into(),
-            body: Some(
-                "Prettier does not support selection formatting for this language; formatted the whole file".into(),
-            ),
+            title: name.into(),
+            body: Some(format!(
+                "{name} does not support selection formatting for this language; formatted the whole file"
+            )),
         });
     }
-    edits.map_err(|e| e.with_tool("prettier"))
+    edits.map_err(|e| e.with_tool(tool))
 }
 
 #[cfg(test)]
@@ -103,5 +116,20 @@ mod tests {
         settings.languages.clear();
         assert!(!external_selected(ts.formatter.as_ref(), "typescript", &settings, false));
         assert!(!external_selected(None, "rust", &settings, false));
+    }
+
+    #[test]
+    fn oxfmt_config_selects_oxfmt_over_prettier() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("web/src")).unwrap();
+        let (web, api) = (root.join("web/src/app.ts"), root.join("api/main.ts"));
+        assert_eq!(external_tool(&web), "prettier");
+        for config in OXFMT_CONFIGS {
+            std::fs::write(root.join("web").join(config), "{}").unwrap();
+            assert_eq!(external_tool(&web), "oxfmt", "{config}");
+            assert_eq!(external_tool(&api), "prettier", "{config}");
+            std::fs::remove_file(root.join("web").join(config)).unwrap();
+        }
     }
 }

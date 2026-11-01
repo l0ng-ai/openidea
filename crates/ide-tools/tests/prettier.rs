@@ -19,8 +19,8 @@ fn format(
     };
     let mut cmd = tools.formatter_command("prettier", path, None)?;
     cmd.current_dir(path.parent().unwrap());
-    cmd.args(formatter::arguments(&config, path, 4, true, range));
-    formatter::run(cmd, text, &CancellationToken::new())
+    cmd.args(formatter::arguments("prettier", &config, path, 4, true, range));
+    formatter::run("prettier", cmd, text, &CancellationToken::new())
 }
 
 #[test]
