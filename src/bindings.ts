@@ -3424,7 +3424,10 @@ export type GradleModel = {
 };
 
 export type GradleProject = {
-	/**  Gradle path: `:` for the root project, `:app`, `:libs:core`. */
+	/**
+	 *  Gradle path: `:` for the root project, `:app`, `:libs:core`; for a project of a
+	 *  nested build its identity path (`:lib:core`), which addresses its tasks from the root.
+	 */
 	path: string,
 	name: string,
 	/**  Project-relative directory. */
@@ -3432,6 +3435,11 @@ export type GradleProject = {
 	/**  Project-relative build script, if any. */
 	buildFile: string | null,
 	tasks: GradleTask[],
+	/**
+	 *  Identity path of the nested build holding the project (`:lib` for `includeBuild`,
+	 *  `:buildSrc`); null for the opened build.
+	 */
+	build?: string | null,
 };
 
 /**  IDEA's "Build and run using" for Gradle builds; IDEA defaults to Gradle. */

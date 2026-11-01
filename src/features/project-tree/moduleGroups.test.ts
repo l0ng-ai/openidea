@@ -65,6 +65,30 @@ describe("gradleModuleGroups (IDEA's module groups)", () => {
       },
     ]);
   });
+
+  it("names an included build's modules after it and lists it as an ungrouped module", () => {
+    const projects = [
+      { path: ":", dir: "" },
+      { path: ":app", dir: "app" },
+      { path: ":buildSrc", dir: "buildSrc", build: ":buildSrc" },
+      { path: ":lib", dir: "/w/lib", build: ":lib" },
+      { path: ":lib:core", dir: "/w/lib/core", build: ":lib" },
+    ];
+    expect(gradleModuleGroups(projects, "Shop", "/w/shop").map(shape)).toEqual([{ label: "lib" }]);
+    // Beside includeFlat modules: the group (every `Shop.*` module), then the included build.
+    const both = [...projects, { path: ":svc", dir: "/w/svc" }];
+    expect(gradleModuleGroups(both, "Shop", "/w/shop").map(shape)).toEqual([
+      {
+        label: "Shop",
+        children: [
+          { label: "app", detail: "Shop.app" },
+          { label: "buildSrc", detail: "Shop.buildSrc" },
+          { label: "svc", detail: "Shop.svc" },
+        ],
+      },
+      { label: "lib" },
+    ]);
+  });
 });
 
 const dir = (path: string): FileEntry => ({

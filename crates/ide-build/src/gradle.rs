@@ -32,7 +32,8 @@ pub struct GradleModel {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct GradleProject {
-    /// Gradle path: `:` for the root project, `:app`, `:libs:core`.
+    /// Gradle path: `:` for the root project, `:app`, `:libs:core`; for a project of a
+    /// nested build its identity path (`:lib:core`), which addresses its tasks from the root.
     pub path: String,
     pub name: String,
     /// Project-relative directory.
@@ -40,6 +41,10 @@ pub struct GradleProject {
     /// Project-relative build script, if any.
     pub build_file: Option<String>,
     pub tasks: Vec<GradleTask>,
+    /// Identity path of the nested build holding the project (`:lib` for `includeBuild`,
+    /// `:buildSrc`); null for the opened build.
+    #[serde(default)]
+    pub build: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -297,7 +302,14 @@ fn read_first(d: &Path, names: &[&str]) -> Option<(String, String)> {
 fn project_at(root: &Path, path: String, name: String, pdir: &Path) -> GradleProject {
     let script = read_first(pdir, BUILD_FILES);
     let tasks = default_tasks(path == ":", script.as_ref().map(|(_, t)| t.as_str()).unwrap_or_default());
-    GradleProject { build_file: script.map(|(n, _)| rel(root, &pdir.join(n))), dir: rel(root, pdir), path, name, tasks }
+    GradleProject {
+        build_file: script.map(|(n, _)| rel(root, &pdir.join(n))),
+        dir: rel(root, pdir),
+        path,
+        name,
+        tasks,
+        build: None,
+    }
 }
 
 /// A project as Gradle evaluated it (the sync's init script, `gradle-model.gradle`).
@@ -315,6 +327,9 @@ pub struct ReportedProject {
     /// Toolchain language version, else target compatibility.
     #[serde(default)]
     pub java: Option<u32>,
+    /// Identity path of the nested build (included build, buildSrc) reporting the project.
+    #[serde(default)]
+    pub build: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -386,9 +401,17 @@ pub fn merge_reported_projects(root: &Path, model: &mut GradleModel, reported: &
                 ":" => root_name.clone().unwrap_or_default(),
                 path => path.rsplit(':').next().unwrap_or_default().to_owned(),
             };
-            project_at(root, p.path.clone(), name, Path::new(&p.dir))
+            let mut project = project_at(root, p.path.clone(), name, Path::new(&p.dir));
+            // buildSrc is built before the build, never addressable as `:buildSrc:<task>`.
+            if p.build.as_deref().is_some_and(|b| b.ends_with(":buildSrc")) {
+                project.tasks.clear();
+            }
+            project.build = p.build.clone();
+            project
         })
         .collect();
+    // Each build reports its projects when it is evaluated (nested builds first).
+    model.projects.sort_by(|a, b| a.path.cmp(&b.path));
     // One JDK runs the whole build: the newest any module needs.
     if let Some(v) = reported.iter().filter_map(|p| p.java).max() {
         model.java_version = Some(v);
@@ -521,6 +544,11 @@ pub fn build_files(root: &Path, model: &GradleModel) -> Vec<PathBuf> {
     let dir = root.join(&model.dir);
     let mut out: Vec<PathBuf> = SETTINGS_FILES.iter().map(|f| dir.join(f)).filter(|p| p.is_file()).collect();
     out.extend(model.projects.iter().filter_map(|p| p.build_file.as_ref().map(|f| root.join(f))));
+    // The settings of each nested build (its root project's folder).
+    for p in model.projects.iter().filter(|p| p.build.as_deref() == Some(p.path.as_str())) {
+        let nested = root.join(&p.dir);
+        out.extend(SETTINGS_FILES.iter().map(|f| nested.join(f)).filter(|f| f.is_file()));
+    }
     // What IDEA's auto-import also watches: properties, the wrapper and version catalogs.
     let extra = ["gradle.properties", "gradle/wrapper/gradle-wrapper.properties"].map(|f| dir.join(f));
     out.extend(extra.into_iter().filter(|p| p.is_file()));
@@ -765,5 +793,49 @@ Pattern: clean<TaskName>: Cleans the output files of a task.
 
         let none = tempfile::tempdir().unwrap();
         assert!(load(none.path()).is_none());
+    }
+
+    #[test]
+    fn merges_included_builds_and_build_src_by_identity_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        for d in ["shop/app", "shop/buildSrc", "lib/core"] {
+            std::fs::create_dir_all(ws.join(d)).unwrap();
+        }
+        std::fs::write(ws.join("shop/settings.gradle"), "rootProject.name = 'shop'\ninclude 'app'").unwrap();
+        std::fs::write(ws.join("lib/settings.gradle"), "include 'core'").unwrap();
+        let root = ws.join("shop");
+        let dir = |d: &str| ws.join(d).to_string_lossy().into_owned();
+        // In evaluation order, as the init script prints it: nested builds first.
+        let line = |path: &str, d: &str, build: Option<&str>| {
+            let build = build.map(|b| format!(r#","build":"{b}""#)).unwrap_or_default();
+            format!("@openidea-model\t{{\"path\":\"{path}\",\"dir\":\"{}\"{build}}}\n", dir(d))
+        };
+        let out = [
+            line(":lib", "lib", Some(":lib")),
+            line(":lib:core", "lib/core", Some(":lib")),
+            line(":buildSrc", "shop/buildSrc", Some(":buildSrc")),
+            line(":", "shop", None),
+            line(":app", "shop/app", None),
+        ]
+        .concat();
+        let mut model = load(&root).unwrap();
+        merge_reported_projects(&root, &mut model, &parse_reported_projects(&out));
+        let projects: Vec<_> =
+            model.projects.iter().map(|p| (p.path.as_str(), p.name.as_str(), p.build.as_deref())).collect();
+        assert_eq!(
+            projects,
+            [
+                (":", "shop", None),
+                (":app", "app", None),
+                (":buildSrc", "buildSrc", Some(":buildSrc")),
+                (":lib", "lib", Some(":lib")),
+                (":lib:core", "core", Some(":lib")),
+            ]
+        );
+        let build_src = &model.projects[2];
+        assert!(build_src.tasks.is_empty(), "buildSrc tasks cannot run from the root build");
+        assert!(!model.projects[4].tasks.is_empty());
+        assert!(build_files(&root, &model).contains(&ws.join("lib/settings.gradle")));
     }
 }

@@ -4,9 +4,14 @@
 import groovy.json.JsonOutput
 
 def canon = { File f -> f.canonicalPath }
+// Init scripts also run in included builds and buildSrc, whose projects reuse `:`, `:core`…:
+// the identity path (`:lib:core`, `:buildSrc`) tells them apart and addresses their tasks
+// from the root build. Internal API, hence the fallback.
+def identity = { Project p -> try { p.identityPath.toString() } catch (ignored) { p.path } }
 
 def describe = { Project p ->
-    def m = [path: p.path, dir: canon(p.projectDir), buildDir: canon(p.layout.buildDirectory.get().asFile)]
+    def m = [path: identity(p), dir: canon(p.projectDir), buildDir: canon(p.layout.buildDirectory.get().asFile)]
+    if (p.gradle.parent != null) m.build = identity(p.rootProject)
     def sets = p.extensions.findByName('sourceSets')
     if (sets != null) {
         // Test source sets as IDEA classifies them: `test`, test fixtures, JVM test suites,

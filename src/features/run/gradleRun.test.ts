@@ -105,6 +105,24 @@ describe("Build and run using: Gradle", () => {
     expect(delegatedGradleConfig(stray, "/elsewhere", ctx)).toBeNull();
   });
 
+  it("runs included builds' modules by identity path, never buildSrc's", () => {
+    const nested = {
+      ...ctx,
+      gradle: {
+        ...gradle,
+        projects: [
+          ...gradle.projects,
+          { path: ":lib:core", name: "core", dir: "/w/lib/core", buildFile: null, tasks: [], build: ":lib" },
+          { path: ":buildSrc", name: "buildSrc", dir: "buildSrc", buildFile: null, tasks: [], build: ":buildSrc" },
+        ],
+      },
+    };
+    const main = (file: string) => applicationConfig({ className: "a.Main" }, file, []);
+    const lib = delegatedGradleConfig(main("/w/lib/core/src/main/java/a/Main.java"), "/w/lib/core", nested)!;
+    expect(lib.args.at(-1)).toBe(":lib:core:openideaRun");
+    expect(delegatedGradleConfig(main("buildSrc/src/main/java/a/Main.java"), "buildSrc", nested)).toBeNull();
+  });
+
   it("is a Gradle run from then on: never delegated twice, the Application's params dropped", () => {
     const app = { ...applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java", []) };
     const run = delegatedGradleConfig({ ...app, params: { vmOptions: "-Xmx1g" } }, "app", ctx)!;
