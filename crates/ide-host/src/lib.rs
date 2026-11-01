@@ -4,6 +4,7 @@
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod environment;
+mod formatter;
 mod java_runtime;
 mod kotlin_bridge;
 pub mod notebook;

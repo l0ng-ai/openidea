@@ -79,6 +79,8 @@ const BUILT_AT_RUNTIME = new Set<string>([]);
 
 /** Text that stays as written in every locale: names, code, formats, shortcuts. */
 const UNTRANSLATED = new Set<string>([
+  // Product names
+  "Prettier",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",

@@ -14,10 +14,12 @@ export type * from "@/bindings";
 
 export class IpcError extends Error {
   readonly kind: IdeError["kind"];
+  readonly data: IdeError["data"];
   constructor(error: IdeError) {
     super(error.message);
     this.name = "IpcError";
     this.kind = error.kind;
+    this.data = error.data;
   }
 }
 

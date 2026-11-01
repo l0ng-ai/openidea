@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { Text } from "@codemirror/state";
+import { describe, expect, it, vi } from "vitest";
+import { EditorState, Text } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { CONTRIBUTED_FORMAT } from "@/editor/api";
+import { useProject } from "@/platform/project";
+import type { Settings } from "@/bindings";
 import {
   formatExcluded,
   guardFormatChanges,
@@ -7,7 +11,7 @@ import {
   protectedRegions,
   type FormatGuardOptions,
 } from "@/platform/formatGuard";
-import { dedentsToColumnZero, formattedLines } from "./format";
+import { dedentsToColumnZero, formatDocument, formattedLines } from "./format";
 
 describe("formattedLines", () => {
   const doc = Text.of(["fn  main(){", "let x=1;", "}", "", "fn other() {}"]);
@@ -103,5 +107,30 @@ describe("dedentsToColumnZero", () => {
     expect(dedentsToColumnZero("\n    override fun f() { }\n", "\noverride fun f() {}\n")).toBe(true);
     expect(dedentsToColumnZero("\n\tfun f() {\n\t}\n", "\n    fun f() {\n    }\n")).toBe(false);
     expect(dedentsToColumnZero("fun f() {}\n", "fun f() { }\n")).toBe(false);
+  });
+});
+
+describe("format on save provider isolation", () => {
+  it("does not enable contributed formatters when only Prettier save is enabled", async () => {
+    const previous = useProject.getState();
+    const formatter = vi.fn(() => [{ from: 0, to: 6, insert: "SELECT" }]);
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "select",
+        extensions: [EditorState.languageData.of(() => [{ [CONTRIBUTED_FORMAT]: formatter }])],
+      }),
+    });
+    try {
+      const settings = { editor: { formatOnSave: false }, languages: { prettier: { runOnSave: true } } } as Settings;
+      useProject.setState({ settings });
+      expect((await formatDocument(view, { explicit: false, onSave: true })).applied).toBe(false);
+      expect(formatter).not.toHaveBeenCalled();
+      useProject.setState({ settings: { ...settings, editor: { ...settings.editor, formatOnSave: true } } });
+      expect((await formatDocument(view, { explicit: false, onSave: true })).applied).toBe(true);
+      expect(view.state.doc.toString()).toBe("SELECT");
+    } finally {
+      view.destroy();
+      useProject.setState(previous);
+    }
   });
 });

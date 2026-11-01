@@ -5,11 +5,14 @@
  * reports "Formatted N lines" with a link to the Reformat File dialog
  * (⌥⇧⌘L: scope and Optimize Imports).
  */
+import { createElement } from "react";
+import styles from "./format.module.css";
 import { indentUnit } from "@codemirror/language";
 import { isolateHistory } from "@codemirror/commands";
 import type { EditorState, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { commands } from "@/platform/ipc";
+import { commands, IpcError } from "@/platform/ipc";
+import { notifications } from "@/workbench/contributions";
 import { shortcutLabel } from "@/platform/keymap";
 import { executeAction } from "@/platform/actions";
 import {
@@ -78,14 +81,17 @@ export function formatOptionsOf(state: EditorState): { tabSize: number; insertSp
 
 export async function formatDocument(
   view: EditorView,
-  opts: { explicit: boolean; selectionOnly?: boolean } = { explicit: true },
+  opts: { explicit: boolean; selectionOnly?: boolean; onSave?: boolean } = { explicit: true },
 ): Promise<FormatResult> {
   const result = await format(view, opts);
   if (opts.explicit && result.applied) formattedHint(view, result.lines);
   return result;
 }
 
-async function format(view: EditorView, opts: { explicit: boolean; selectionOnly?: boolean }): Promise<FormatResult> {
+async function format(
+  view: EditorView,
+  opts: { explicit: boolean; selectionOnly?: boolean; onSave?: boolean },
+): Promise<FormatResult> {
   const { project, settings } = useProject.getState();
   const guard = formatGuardOptions(settings);
   const path = docOf(view)?.path;
@@ -95,7 +101,10 @@ async function format(view: EditorView, opts: { explicit: boolean; selectionOnly
     return NOTHING;
   }
   const own = contributedAt<ContributedFormatter>(view.state, CONTRIBUTED_FORMAT, 0);
-  if (own) return applyContributedFormat(view, own, opts, guard);
+  if (own) {
+    if (opts.onSave && !settings?.editor?.formatOnSave) return NOTHING;
+    return applyContributedFormat(view, own, opts, guard);
+  }
   const doc = docOf(view);
   if (!doc || doc.readOnly) return NOTHING;
   // The server formats the backend's copy: let pending keystrokes reach it first.
@@ -107,9 +116,25 @@ async function format(view: EditorView, opts: { explicit: boolean; selectionOnly
   const options = formatOptionsOf(state);
   let edits;
   try {
-    edits = await lspRequest(() => commands.lspFormat(doc.doc, range, options));
+    edits = await lspRequest(() => commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave }));
   } catch (e) {
-    reportLspError(view, e, opts.explicit);
+    if (e instanceof IpcError && e.data?.type === "tool" && e.data.tool === "prettier") {
+      if (e.kind === "notFound" && e.data.missing) {
+        await executeAction("tools.promptInstall", { name: "prettier", sticky: !opts.onSave });
+      } else if (e.kind !== "cancelled") {
+        notifications().notify({
+          group: "tools",
+          level: "error",
+          title: tx("Prettier formatting failed"),
+          body:
+            e.kind === "timedOut"
+              ? tx("Prettier formatting timed out")
+              : createElement("span", { className: styles.diagnostics }, e.message),
+          key: `prettier-format-error:${doc.path}`,
+          sticky: false,
+        });
+      }
+    } else reportLspError(view, e, opts.explicit);
     return NOTHING;
   }
   if (view.state.doc !== state.doc) {
@@ -179,7 +204,7 @@ export async function formatLines(view: EditorView, from: number, to: number): P
 function applyContributedFormat(
   view: EditorView,
   format: ContributedFormatter,
-  opts: { explicit: boolean; selectionOnly?: boolean },
+  opts: { explicit: boolean; selectionOnly?: boolean; onSave?: boolean },
   guard: FormatGuardOptions,
 ): FormatResult {
   const state = view.state;

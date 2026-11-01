@@ -508,7 +508,48 @@ pub struct LanguagesSettings {
     pub rust: RustSettings,
     pub go: GoSettings,
     pub typescript: TypeScriptSettings,
+    pub prettier: PrettierSettings,
     pub java: JavaSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PrettierSettings {
+    /// Empty path: project node_modules, managed installation, then PATH.
+    pub path: String,
+    pub languages: Vec<String>,
+    /// Prefer Prettier even when a language server offers formatting.
+    pub prefer: bool,
+    pub run_on_save: bool,
+}
+
+impl Default for PrettierSettings {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            languages: [
+                "markdown",
+                "yaml",
+                "css",
+                "scss",
+                "less",
+                "html",
+                "graphql",
+                "javascript",
+                "javascriptreact",
+                "typescript",
+                "typescriptreact",
+                "json",
+                "jsonc",
+                "vue",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            prefer: false,
+            run_on_save: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

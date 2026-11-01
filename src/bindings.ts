@@ -2975,9 +2975,11 @@ export type EnvReloaded = {
 	shellRead: boolean,
 };
 
+export type ErrorData = { type: "tool"; tool: string; missing: boolean };
+
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  Document version mismatch; the UI must resync the full text. */
-"outOfSync" | "cancelled" | 
+"outOfSync" | "cancelled" | "timedOut" | 
 /**  A required external tool (language server, git, debugger) is unavailable. */
 "unavailable" | "io" | "protocol" | "internal";
 
@@ -3207,6 +3209,7 @@ export type FormField = {
 export type FormatOptions = {
 	tabSize: number,
 	insertSpaces: boolean,
+	onSave?: boolean,
 };
 
 /**  One occurrence of a duplicated code fragment. */
@@ -3543,6 +3546,8 @@ export type HunkRange = {
 export type IdeError = {
 	kind: ErrorKind,
 	message: string,
+	/**  Structured detail for errors the UI acts on; `null` for plain errors. */
+	data?: ErrorData | null,
 };
 
 export type IdeEvent = 
@@ -4028,6 +4033,7 @@ export type LanguagesSettings = {
 	rust?: RustSettings,
 	go?: GoSettings,
 	typescript?: TypeScriptSettings,
+	prettier?: PrettierSettings,
 	java?: JavaSettings,
 };
 
@@ -4769,6 +4775,15 @@ export type PreparedRequest = {
 	url: string,
 	headers: ([string, string])[],
 	body: string | null,
+};
+
+export type PrettierSettings = {
+	/**  Empty path: project node_modules, managed installation, then PATH. */
+	path?: string,
+	languages?: string[],
+	/**  Prefer Prettier even when a language server offers formatting. */
+	prefer?: boolean,
+	runOnSave?: boolean,
 };
 
 /**  Memory of one row of the breakdown. */
@@ -6186,7 +6201,7 @@ export type ToolInfo = {
 
 export type ToolKind = "languageServer" | "debugger" | 
 /**  Loaded into another tool's process, e.g. a jdtls agent. */
-"plugin";
+"plugin" | "formatter";
 
 export type ToolSettings = {
 	/**  Executable to launch instead of the managed / `PATH` one; empty = auto-detect. */
