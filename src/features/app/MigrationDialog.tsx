@@ -18,10 +18,11 @@ const useOpen = create<{ open: boolean }>(() => ({ open: false }));
 /** Silent check once per app start; the dialog opens only when something can move. */
 export async function checkMigrationOnStartup(): Promise<void> {
   if (!isTauri()) return;
-  // Settings windows spawn later and re-run activation: only a project
-  // window prompts (one dialog; a migration restarts the app).
+  // Only the main window prompts: settings and project windows spawn later
+  // and re-run activation, and one dialog is enough (a migration restarts
+  // the app).
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  if (getCurrentWindow().label.startsWith("settings-")) return;
+  if (getCurrentWindow().label !== "main") return;
   const status = await commands.migrationStatus().catch(() => null);
   if (status?.pending) useOpen.setState({ open: true });
 }
