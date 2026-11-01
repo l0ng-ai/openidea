@@ -189,6 +189,9 @@ export function changedOutsideIde(paths: readonly string[], now = Date.now()): b
   return external;
 }
 
+/** Root whose never-synced Gradle build was imported on open (once per open). */
+let autoImported: string | null = null;
+
 /** Re-reads the build model (and the run configurations) of the open project. */
 export async function loadModel(): Promise<void> {
   const root = useProject.getState().project?.root ?? null;
@@ -217,6 +220,11 @@ export async function loadModel(): Promise<void> {
       externalChange = false;
       const maven = model.maven;
       if (maven?.stale && maven.syncedAt !== null && !useBuild.getState().syncing.maven) void syncTool("maven");
+    }
+    // Like IDEA, a Gradle build is imported when first opened; later changes wait for Reload.
+    if (model.gradle && model.gradle.syncedAt === null && autoImported !== root) {
+      autoImported = root;
+      void syncTool("gradle");
     }
   } catch (e) {
     if (gen === generation) useBuild.setState({ loading: false, error: e instanceof Error ? e.message : String(e) });

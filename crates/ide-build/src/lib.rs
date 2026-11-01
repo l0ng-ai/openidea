@@ -65,6 +65,18 @@ pub fn load_linked(
     BuildModel { maven, gradle }
 }
 
+/// Gradle project folders outside `root` as of the last sync (`includeFlat` siblings):
+/// extra content roots, as IDEA lists module roots beside the project folder.
+/// Reads only the sync's cached projects (no build script), so it is cheap enough for hot paths.
+pub fn gradle_external_roots(root: &Path, cache_dir: &Path) -> Vec<PathBuf> {
+    gradle::external_roots(root, sync::reported_gradle_projects(cache_dir).iter().map(|p| p.dir.as_str()))
+}
+
+/// Source, resource and build folders of the last Gradle sync, absolute.
+pub fn gradle_source_roots(cache_dir: &Path) -> Vec<(PathBuf, gradle::ReportedRoot)> {
+    gradle::reported_source_roots(&sync::reported_gradle_projects(cache_dir))
+}
+
 /// A library the project depends on, as `groupId:artifactId:version`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DependencyCoordinate {
