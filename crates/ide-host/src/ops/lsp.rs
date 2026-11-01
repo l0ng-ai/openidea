@@ -83,10 +83,16 @@ pub async fn lsp_implementations(
     result
 }
 
-/// Contents of a virtual document (library class, decompiled code) that a
-/// language server returned a non-`file:` URI for. Cached per project.
+/// Contents of a read-only language-server document, including JDT library
+/// classes and disk class files. Cached per project.
 pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> IdeResult<VirtualDocument> {
     host.project(window)?.lsp.virtual_document(&uri).await
+}
+
+/// Opens compiled classes through JDT, with project source taking priority on disk.
+pub async fn lsp_resolve_class_file(host: &Host, window: &str, path: std::path::PathBuf) -> IdeResult<String> {
+    let archive = ide_vfs::split_archive_path(&path);
+    host.project(window)?.lsp.java_class_file(&path, archive).await
 }
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
@@ -290,6 +296,58 @@ pub async fn lsp_execute_command(host: &Host, window: &str, doc: DocId, command:
     host.project(window)?.lsp.execute_command(doc, command).await
 }
 
+/// Resolves an interactive command without applying edits or executing it.
+pub async fn lsp_resolve_command(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    server: ServerId,
+    command: Command,
+    answers: Vec<FormAnswer>,
+) -> IdeResult<Option<CommandForm>> {
+    let lsp = host.project(window)?.lsp.clone();
+    let cancel = host.begin_request(request);
+    let result = lsp.resolve_command(doc, server, command, answers, cancel).await;
+    host.end_request(request);
+    result
+}
+
+/// Applies an explicitly invoked action after the interactive answers have been validated.
+pub async fn lsp_execute_code_action(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    action: CodeAction,
+    answers: Vec<FormAnswer>,
+) -> IdeResult<Vec<ide_core::IpcPath>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = async {
+        if cancel.is_cancelled() {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        if let Some(edit) = action.edit {
+            let documents = project.documents.clone();
+            tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
+                .await
+                .map_err(|e| ide_core::IdeError::internal(e.to_string()))??;
+        }
+        match action.command {
+            Some(command) => project
+                .lsp
+                .execute_action_command(doc, action.server, command, answers, cancel)
+                .await
+                .map(|paths| paths.into_iter().map(ide_core::IpcPath::from).collect()),
+            None => Ok(Vec::new()),
+        }
+    }
+    .await;
+    host.end_request(request);
+    result
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_completion", |c| async move {
@@ -315,6 +373,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_implementations", |c| async move {
         lsp_implementations(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("positions")?).await
     });
+    d.add(
+        "lsp_resolve_class_file",
+        |c| async move { lsp_resolve_class_file(&c.host, &c.window, c.arg("path")?).await },
+    );
     d.add("lsp_virtual_document", |c| async move { lsp_virtual_document(&c.host, &c.window, c.arg("uri")?).await });
     d.add("lsp_references", |c| async move {
         lsp_references(
@@ -374,6 +436,29 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_resend_diagnostics", |c| async move { lsp_resend_diagnostics(&c.host, &c.window) });
     d.add("lsp_restart", |c| async move { lsp_restart(&c.host, &c.window, c.arg("server")?).await });
     d.add("apply_workspace_edit", |c| async move { apply_workspace_edit(&c.host, &c.window, c.arg("edit")?) });
+    d.add("lsp_resolve_command", |c| async move {
+        lsp_resolve_command(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("server")?,
+            c.arg("command")?,
+            c.arg("answers")?,
+        )
+        .await
+    });
+    d.add("lsp_execute_code_action", |c| async move {
+        lsp_execute_code_action(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("action")?,
+            c.arg("answers")?,
+        )
+        .await
+    });
     d.add("lsp_execute_command", |c| async move {
         lsp_execute_command(&c.host, &c.window, c.arg("doc")?, c.arg("command")?).await
     });

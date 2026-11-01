@@ -717,6 +717,20 @@ mod tests {
         configure_jdtls(&mut plain, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], None);
         let data = |c: &LanguageServerConfig| c.args[c.args.iter().position(|a| a == "-data").unwrap() + 1].clone();
         assert_ne!(data(&cfg), data(&plain), "a separate workspace, so everything is rebuilt with the agent");
+        let patched = Path::new("/managed/lombok-1.18.48-openidea.1.jar");
+        let mut fixed = jdtls();
+        configure_jdtls(
+            &mut fixed,
+            Path::new("/p"),
+            Path::new("/data"),
+            &[],
+            None,
+            None,
+            JDTLS_MIN_JAVA,
+            &[],
+            Some(patched),
+        );
+        assert_ne!(data(&cfg), data(&fixed), "the patch must rebuild classes compiled with the official agent");
         let before = cfg.clone();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], Some(jar));
         assert_eq!(cfg, before, "idempotent");

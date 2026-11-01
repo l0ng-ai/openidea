@@ -189,9 +189,12 @@ impl ClientHandler {
         // Convert before calling the hook: it re-enters document sync.
         let edit = convert::workspace_edit(&mgr.conv(self.encoding()), edit);
         let applied = match mgr.apply_edit_hook() {
-            Some(hook) => hook(edit),
+            Some(hook) => hook(edit.clone()),
             None => false,
         };
+        if applied {
+            let _ = mgr.applied_edits.send((self.server.id, edit));
+        }
         let mut reply = json!({ "applied": applied });
         if !applied {
             reply["failureReason"] = json!("edit could not be applied");

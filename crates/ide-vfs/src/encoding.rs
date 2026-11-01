@@ -62,20 +62,19 @@ pub fn decode_properties_escapes(text: &str) -> String {
 }
 
 /// Serializes displayed properties text as ASCII, using uppercase UTF-16 units.
+/// Existing ASCII Unicode escapes retain their spelling and meaning on disk.
 pub fn encode_properties_ascii(text: &str) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(c) = rest.chars().next() {
-        let current = rest;
         rest = &rest[c.len_utf8()..];
         if c == '\\' {
             if rest.starts_with('\\') {
                 out.push_str("\\\\");
                 rest = &rest[1..];
-            } else if unicode_character(current).is_some() || rest.chars().next().is_some_and(|next| !next.is_ascii()) {
-                // Keep a literal backslash from swallowing a generated escape,
-                // or becoming a Unicode escape on the next load.
+            } else if rest.chars().next().is_some_and(|next| !next.is_ascii()) {
+                // Keep a literal backslash from swallowing a generated escape.
                 out.push_str("\\u005C");
             } else {
                 out.push(c);
@@ -387,11 +386,30 @@ mod tests {
         for text in ["plain=ASCII\r\n", r"escaped=\\u0041", r"bad=\u12xz", r"bad=\uD800"] {
             assert_eq!(encode_properties_ascii(text), text);
         }
-        for text in ["你好😀", "\0", "\\中", "\\\\中", "\\\\\\😀", r"\u0041", r"\\u0041", r"\uD83D\uDE00"] {
+        for text in ["你好😀", "\0", "\\中", "\\\\中", "\\\\\\😀", r"\\u0041"] {
             let ascii = encode_properties_ascii(text);
             assert!(ascii.is_ascii());
             assert_eq!(decode_properties_escapes(&ascii), text, "{ascii}");
         }
+    }
+
+    #[test]
+    fn properties_ascii_escapes_are_not_escaped_again() {
+        for text in [
+            r"test.key2=\u4F60\u597D",
+            r"test.key3=\u4f60\u597d",
+            r"ascii=\u0041\u005C\u000A",
+            r"emoji=\uD83D\uDE00",
+            r"slashes=\\u4F60 \\\u4F60 \\\\u4F60",
+            r"bad=\u123 \u12xz \uu0041 \uD800 \uDC00",
+        ] {
+            assert_eq!(encode_properties_ascii(text), text, "{text}");
+        }
+        let mixed = "raw=\\u4f60\\u597d; native=你好😀";
+        let expected = r"raw=\u4f60\u597d; native=\u4F60\u597D\uD83D\uDE00";
+        assert_eq!(encode_properties_ascii(mixed), expected);
+        assert_eq!(encode_properties_ascii(expected), expected);
+        assert_eq!(decode_properties_escapes(expected), "raw=你好; native=你好😀");
     }
 
     #[test]

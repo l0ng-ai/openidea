@@ -1617,6 +1617,58 @@ async fn jdt_class_file_contents() {
     assert_eq!(vd.title, "Lib.class");
     assert_eq!(vd.language_id.as_str(), "java");
     assert_eq!(vd.description.as_deref(), Some("/m2/lib-1.0.jar"));
+    let source_uri = jdt.replace("Lib.class", "WithSources.class");
+    s.respond(
+        "java/classFileContents",
+        json!("/* Copyright library author */\npackage org.example;\npublic class WithSources {}"),
+    );
+    let source = h.mgr.virtual_document(&source_uri).await.unwrap();
+    assert!(!source.decompiled);
+    assert_eq!(source.title, "WithSources.java");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn class_file_opening_routes_sources_and_binary_documents() {
+    let mut caps = incremental_caps();
+    caps["workspaceSymbolProvider"] = json!(true);
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Outer.java?=demo/%5C/m2%5C/lib.jar%3Cp%28Outer.class";
+    s.respond("workspace/symbol", json!([
+        {"name":"Outer", "kind":5, "location":{"uri":jdt,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}}
+    ]));
+    let archive = Some((PathBuf::from("/m2/lib.jar"), "p/Outer$1.class".into()));
+    assert_eq!(h.mgr.java_class_file(Path::new("/m2/lib.jar!/p/Outer$1.class"), archive).await.unwrap(), jdt);
+    assert!(
+        h.mgr
+            .java_class_file(
+                Path::new("/other/lib.jar!/p/Outer.class"),
+                Some(("/other/lib.jar".into(), "p/Outer.class".into()))
+            )
+            .await
+            .is_err()
+    );
+
+    let sources = h.root.join("src/main/java");
+    std::fs::create_dir_all(sources.join("p")).unwrap();
+    let source = sources.join("p/Outer.java");
+    std::fs::write(&source, "package p; class Outer {} ").unwrap();
+    s.respond("java/classFileContents", json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Outer {}"));
+    s.respond("workspace/executeCommand", json!({"org.eclipse.jdt.ls.core.sourcePaths":[sources]}));
+    for class in ["Outer", "Outer$Nested", "Outer$1"] {
+        let path = h.root.join(format!("target/classes/p/{class}.class"));
+        assert_eq!(h.mgr.java_class_file(&path, None).await.unwrap(), source.to_string_lossy());
+    }
+    let path = h.root.join("build/classes/java/main/p/Missing.class");
+    let uri = uri_of(&path);
+    assert_eq!(h.mgr.java_class_file(&path, None).await.unwrap(), uri);
+    let vd = h.mgr.virtual_document(&uri).await.unwrap();
+    assert!(vd.decompiled);
+    assert_eq!(vd.language_id.as_str(), "java");
+    assert_eq!(vd.title, "Missing.class");
+    assert!(s.requested("java/classFileContents").iter().any(|p| p["uri"] == uri));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2546,4 +2598,139 @@ async fn external_projects_are_capability_gated_and_follow_lifecycle() {
         .await;
         h.mgr.shutdown_all().await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gopls_interactive_command_validates_before_execution_and_applies_edits() {
+    let mut caps = incremental_caps();
+    caps["experimental"] = json!({"interactiveResolveProvider": {"kinds": ["command"]}});
+    caps["executeCommandProvider"] = json!({"commands": ["gopls.implement_interface", "gopls.add_test"]});
+    let h = harness(&[("gopls", caps)]);
+    let (doc, path) = h.open("probe.mk", "type T struct{}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    let s = h.launcher.state("gopls");
+    let server = h.mgr.servers()[0].id;
+    assert_eq!(
+        s.requested("initialize")[0]["capabilities"]["experimental"]["interactiveResolve"],
+        json!({"inputTypes": ["string"]})
+    );
+    let new_file = h.root.join("probe_test.go");
+    let edit = json!({"documentChanges": [{"kind": "create", "uri": uri_of(&new_file)}, {
+        "textDocument": {"uri": uri_of(&path), "version": 1},
+        "edits": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "// generated\n"}]
+    }]});
+    *s.responder.lock() = Some(Arc::new(move |s, method, p| {
+        if method == "command/resolve" {
+            let valid = p["formAnswers"][0]["value"] == "pkg.I";
+            return Some(if valid {
+                json!({"command": p["command"], "arguments": p["arguments"], "formAnswers": p["formAnswers"]})
+            } else {
+                json!({"command": p["command"], "arguments": p["arguments"], "formFields": [{"id": "interface", "description": "Enter interface", "required": true, "type": {"kind": "string"}, "error": if p["formAnswers"].as_array().is_some_and(|a| !a.is_empty()) { "Unknown interface" } else { "" }}]})
+            });
+        }
+        if method == "workspace/executeCommand" {
+            if p["command"] != "gopls.add_test" {
+                assert_eq!(p["formAnswers"], json!([{"id": "interface", "value": "pkg.I"}]));
+            }
+            let reply: Value = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(s.peer().request(
+                    "workspace/applyEdit",
+                    json!({"edit": edit}),
+                    None,
+                ))
+            })
+            .unwrap();
+            assert_eq!(reply, json!({"applied": true}));
+            return Some(Value::Null);
+        }
+        None
+    }));
+    let applied = Arc::new(Mutex::new(Vec::new()));
+    let received = applied.clone();
+    h.mgr.set_apply_edit_hook(Box::new(move |edit| {
+        received.lock().push(edit);
+        true
+    }));
+    let command = Command {
+        title: "Implement".into(),
+        command: "gopls.implement_interface".into(),
+        arguments: vec![json!({"location": 1})],
+    };
+    let token = ide_core::CancellationToken::new;
+    let initial = h.mgr.resolve_command(doc, server, command.clone(), vec![], token()).await.unwrap().unwrap();
+    assert_eq!(initial.form_fields[0].description, "Enter interface");
+    let invalid = h
+        .mgr
+        .resolve_command(
+            doc,
+            server,
+            command.clone(),
+            vec![FormAnswer { id: "interface".into(), value: "bad".into() }],
+            token(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(invalid.form_fields[0].error.as_deref(), Some("Unknown interface"));
+    assert!(applied.lock().is_empty());
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let cancelled = token();
+    cancelled.cancel();
+    let err = h.mgr.resolve_command(doc, server, command.clone(), vec![], cancelled).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    let cancelled = token();
+    cancelled.cancel();
+    let err = h.mgr.execute_action_command(doc, server, command.clone(), vec![], cancelled).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(applied.lock().is_empty());
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let validated = h
+        .mgr
+        .resolve_command(
+            doc,
+            server,
+            command,
+            vec![FormAnswer { id: "interface".into(), value: "pkg.I".into() }],
+            token(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(validated.form_fields.is_empty());
+    h.mgr.execute_action_command(doc, server, validated.command, validated.form_answers, token()).await.unwrap();
+    assert_eq!(applied.lock().len(), 1);
+    let created = h
+        .mgr
+        .execute_action_command(
+            doc,
+            server,
+            Command { title: "Test".into(), command: "gopls.add_test".into(), arguments: vec![] },
+            vec![],
+            token(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created, vec![new_file]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interactive_capability_is_scoped_to_gopls() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("probe.mk", "x\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    assert_eq!(s.requested("initialize")[0]["capabilities"]["experimental"], json!({}));
+    let form = h
+        .mgr
+        .resolve_command(
+            doc,
+            h.mgr.servers()[0].id,
+            Command { title: "Run".into(), command: "mock.run".into(), arguments: vec![json!(1)] },
+            vec![],
+            ide_core::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(form.is_none());
+    assert!(s.requested("command/resolve").is_empty());
 }

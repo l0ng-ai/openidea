@@ -44,6 +44,7 @@ export function activate(): void | (() => void) {
     focus: () => ctrl.focus(),
     openPaths: () => ctrl.openPaths(),
     openTabs: () => ctrl.openTabs(),
+    tabInput: (paneId, tabId) => ctrl.tabInput(paneId, tabId),
     activeInput: () => ctrl.activeInput(),
     onActiveInputChange: (fn) => ctrl.onActiveInputChange(fn),
     closePath: (path) => ctrl.closePath(path),

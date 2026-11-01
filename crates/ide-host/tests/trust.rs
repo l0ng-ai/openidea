@@ -20,6 +20,94 @@ fn host(base: &Path, environment: bool) -> Arc<Host> {
     }))
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn application_commands_work_in_restricted_projects_and_without_a_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    let host = host(&tmp.path().join("app"), false);
+    assert!(host.project("welcome").is_err());
+    assert!(ide_host::ops::project::roots(&host, "welcome").is_err());
+    assert!(!host.open_project("main", &root).unwrap().is_trusted());
+    for command in [
+        "app_info",
+        "app_build_info",
+        "app_log_location",
+        "app_check_update",
+        "app_startup_update_check",
+        "app_install_update",
+        "caches_schedule_invalidation",
+        "clear_caches",
+        "clipboard_file_list",
+        "clipboard_has_files",
+        "clipboard_set_file_list",
+        "jdk_download_vendors",
+        "jdk_download_releases",
+        "jdk_download_location",
+        "jdk_download",
+        "run_system_env",
+        "run_gradle_jvm_args_script",
+        "proxy_check_connection",
+        "docker_settings",
+        "docker_save_settings",
+        "docker_set_registry_password",
+        "docker_run_env",
+        "db_console_path",
+        "db_export_file",
+        "vcs_write_patch",
+    ] {
+        assert!(ide_host::trust::restricted_command_allowed(command), "{command}");
+        for window in ["main", "welcome"] {
+            assert!(host.authorize_command(window, command).is_ok(), "{window}: {command}");
+        }
+    }
+    for command in [
+        "run_start",
+        "build_sync",
+        "debug_start",
+        "sdk_detect",
+        "tools_list",
+        "tools_install",
+        "tools_uninstall",
+        "plugin_install_dir",
+        "plugin_reload",
+        "vcs_git_version",
+        "docker_compose_op",
+        "db_execute",
+        "unknown_command",
+    ] {
+        assert!(!ide_host::trust::restricted_command_allowed(command), "{command}");
+        for window in ["main", "welcome"] {
+            assert!(host.authorize_command(window, command).is_err(), "{window}: {command}");
+        }
+    }
+    // These requests validate the vendor before any network access, independently of project trust.
+    for window in ["main", "welcome"] {
+        let error = ide_host::ops::tools::jdk_download_releases(
+            &host,
+            window,
+            "unknown-vendor".into(),
+            ide_core::RequestId(901),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
+        let error = ide_host::ops::tools::jdk_download(
+            &host,
+            window,
+            "unknown-vendor".into(),
+            25,
+            None,
+            ide_core::RequestId(902),
+            ide_host::ops::Channel::new(|_| {}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
+    }
+    host.shutdown().await;
+}
+
 #[test]
 fn persists_user_decisions_locations_revocation_and_one_time_migration() {
     let tmp = tempfile::tempdir().unwrap();

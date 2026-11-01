@@ -98,7 +98,12 @@ pub fn run() {
     // Paths macOS asked to open (Finder's Open With, the Dock) before setup ran: the first window takes them.
     let early_opens: Arc<Mutex<Option<Vec<PathBuf>>>> = Arc::default();
     let setup_opens = early_opens.clone();
-    let invoke = Arc::new(builder.invoke_handler());
+    let typed_invoke = builder.invoke_handler();
+    // Raw Response is not a JSON/Specta type; keep the binary command out of generated bindings.
+    let raw_invoke: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![commands::fonts::user_font_data];
+    let invoke = Arc::new(move |request: tauri::ipc::Invoke| {
+        if request.message.command() == "user_font_data" { raw_invoke(request) } else { typed_invoke(request) }
+    });
     app.invoke_handler(move |request| {
         let webview = request.message.webview_ref();
         if let Some(state) = webview.try_state::<AppState>() {

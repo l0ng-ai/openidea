@@ -319,14 +319,40 @@ fn terminal_activation_for_project_venv() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/bin/zsh")), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "/bin/zsh"), None);
     fake_venv(tmp.path(), ".venv");
-    let line = terminal_activation(tmp.path(), &s, Some("/bin/zsh")).unwrap();
+    let line = terminal_activation(tmp.path(), &s, "/bin/zsh").unwrap();
     assert!(line.starts_with("source '") && line.ends_with("/activate'"), "{line}");
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/usr/bin/fish")), None, "no activate.fish");
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("docker")), None, "not a shell");
+    assert_eq!(terminal_activation(tmp.path(), &s, "/usr/bin/fish"), None, "no activate.fish");
+    assert_eq!(terminal_activation(tmp.path(), &s, "docker"), None, "not a shell");
     s.languages.python.activate_virtualenv = false;
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/bin/zsh")), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "/bin/zsh"), None);
+}
+
+#[test]
+fn terminal_activation_for_windows_shell_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.python.interpreter = fake_venv(tmp.path(), ".venv with spaces 'quoted'").to_string_lossy().into_owned();
+    let bin = tmp.path().join(".venv with spaces 'quoted'").join(bin_dir());
+    for (shell, script, powershell) in [
+        (r"C:\Program Files\PowerShell\7\pwsh.exe", "Activate.ps1", true),
+        (r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", "Activate.ps1", true),
+        (r"C:\Windows\System32\cmd.exe", "activate.bat", false),
+    ] {
+        assert_eq!(terminal_activation(tmp.path(), &s, shell), None, "missing {script}");
+        let path = bin.join(script);
+        std::fs::write(&path, "").unwrap();
+        let expected = if powershell {
+            format!("& '{}'", path.to_string_lossy().replace('\'', "''"))
+        } else {
+            format!("\"{}\"", path.display())
+        };
+        assert_eq!(terminal_activation(tmp.path(), &s, shell), Some(expected), "{shell}");
+        std::fs::remove_file(path).unwrap();
+    }
+    assert_eq!(terminal_activation(tmp.path(), &s, ""), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "   "), None);
 }
 
 #[test]
@@ -514,12 +540,12 @@ fn build_dependencies_resolve_to_local_jars() {
         std::fs::write(&p, "").unwrap();
         p
     };
-    touch(m2.join("com/google/guava/guava/33.0/guava-33.0.jar"));
-    let guava_src = touch(m2.join("com/google/guava/guava/33.0/guava-33.0-sources.jar"));
+    let guava = touch(m2.join("com/google/guava/guava/33.0/guava-33.0.jar"));
+    touch(m2.join("com/google/guava/guava/33.0/guava-33.0-sources.jar"));
     let junit = touch(m2.join("junit/junit/4.13/junit-4.13.jar"));
     let files = gradle.join("caches/modules-2/files-2.1/org.slf4j/slf4j-api/2.0.9");
-    touch(files.join("a1b2/slf4j-api-2.0.9.jar"));
-    let slf4j_src = touch(files.join("c3d4/slf4j-api-2.0.9-sources.jar"));
+    let slf4j = touch(files.join("a1b2/slf4j-api-2.0.9.jar"));
+    touch(files.join("c3d4/slf4j-api-2.0.9-sources.jar"));
     let dep = |gradle: bool, g: &str, a: &str, v: &str| BuildDependency {
         gradle,
         group: g.into(),
@@ -540,14 +566,14 @@ fn build_dependencies_resolve_to_local_jars() {
     assert_eq!(
         shown,
         [
-            ("Maven: com.google.guava:guava:33.0", "maven", "guava-33.0-sources.jar"),
+            ("Maven: com.google.guava:guava:33.0", "maven", "guava-33.0.jar"),
             ("Maven: junit:junit:4.13", "maven", "junit-4.13.jar"),
-            ("Gradle: org.slf4j:slf4j-api:2.0.9", "gradle", "slf4j-api-2.0.9-sources.jar"),
+            ("Gradle: org.slf4j:slf4j-api:2.0.9", "gradle", "slf4j-api-2.0.9.jar"),
         ]
     );
-    assert_eq!(groups[0].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&guava_src)));
+    assert_eq!(groups[0].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&guava)));
     assert_eq!(groups[1].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&junit)));
-    assert_eq!(groups[2].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&slf4j_src)));
+    assert_eq!(groups[2].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&slf4j)));
     // A Gradle build also finds jars installed in the Maven local repository (`mavenLocal()`).
     let groups = dependency_libraries(&[dep(true, "junit", "junit", "4.13")], Some(&m2), Some(&gradle));
     assert_eq!(groups[0].name, "Gradle: junit:junit:4.13");
