@@ -301,8 +301,12 @@ pub fn runtimes(jdks: &[Jdk]) -> Vec<serde_json::Value> {
 
 /// Stable FNV-1a hash of a path, for per-workspace directories.
 fn path_key(p: &Path) -> String {
+    text_key(&p.to_string_lossy())
+}
+
+fn text_key(text: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
-    for b in p.to_string_lossy().as_bytes() {
+    for b in text.as_bytes() {
         h ^= *b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
@@ -340,10 +344,15 @@ pub fn configure_jdtls(
     if !cfg.args.iter().any(|a| a == "-data") {
         // ECJ builds incrementally: classes compiled without (or with another) Lombok
         // agent would be kept, so each agent gets its own workspace and a full build.
-        let key = match agent {
+        let mut key = match agent {
             Some(jar) => format!("{}-{}", path_key(server_root), path_key(jar)),
             None => path_key(server_root),
         };
+        if let Some(paths) = cfg.settings.as_ref().and_then(|s| s.pointer("/java/project/sourcePaths")) {
+            // Invisible projects retain a cached resource tree across restarts.
+            // A different source model needs a clean import, including new folders.
+            key.push_str(&format!("-sources-{}", text_key(&paths.to_string())));
+        }
         let dir = data_dir.join("lsp").join("jdtls").join(key);
         cfg.args.extend(["-data".to_owned(), dir.to_string_lossy().into_owned()]);
     }
@@ -527,6 +536,26 @@ fn parse_java_version(v: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unmanaged_source_models_have_separate_jdtls_workspaces() {
+        let data = tempfile::tempdir().unwrap();
+        let workspace = |paths: Option<serde_json::Value>| {
+            let mut cfg: LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+            if let Some(paths) = paths {
+                cfg.settings = Some(json!({"java": {"project": {"sourcePaths": paths}}}));
+            }
+            configure_jdtls(&mut cfg, Path::new("/project"), data.path(), &[], None, None, 25, &[], None);
+            cfg.args.windows(2).find(|a| a[0] == "-data").unwrap()[1].clone()
+        };
+        let inferred = workspace(None);
+        let source = workspace(Some(json!(["src/main/java"])));
+        let tests = workspace(Some(json!(["src/main/java", "src/test/java"])));
+        assert_ne!(inferred, source);
+        assert_ne!(source, tests);
+        assert_eq!(source, workspace(Some(json!(["src/main/java"]))));
+        assert_eq!(inferred, workspace(None), "build-tool projects retain their existing cache key");
+    }
 
     #[test]
     fn provisioning_runtime_preserves_implicit_project_jdk() {

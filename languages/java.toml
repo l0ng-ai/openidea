@@ -38,6 +38,7 @@ eclipse = { downloadSources = true }
 references = { includeDecompiledSources = true }
 signatureHelp = { enabled = true }
 configuration = { updateBuildConfiguration = "automatic" }
+project = { referencedLibraries = ["lib/**/*.jar"] }
 # Generated code (implement methods, getters, toString…) indents like the editor (`indent` above).
 format = { insertSpaces = true, tabSize = 4 }
 # Calls complete as `name()` with the caret inside and parameter info, not guessed arguments;

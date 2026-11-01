@@ -5,6 +5,7 @@
 //! and merges what the last sync ([`sync_maven`] / [`sync_gradle`], which run
 //! Maven / Gradle in the background) cached for the project.
 
+pub mod application_update;
 pub mod compile;
 pub mod gradle;
 pub mod maven;

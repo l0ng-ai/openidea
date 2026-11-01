@@ -18,6 +18,7 @@ export type ToggleOption = { [K in keyof ViewOptions]: ViewOptions[K] extends bo
 export const OPTION_LABELS: Array<[ToggleOption, string]> = [
   ["showHidden", "Show Hidden Files"],
   ["showExcluded", "Show Excluded Files"],
+  ["showMembers", "Show Members"],
   ["compact", "Compact Middle Packages"],
   ["foldersFirst", "Sort Folders First"],
   ["autoscrollToSource", "Autoscroll to Source"],
@@ -55,7 +56,7 @@ export function useProjectHeaderMenu(): MenuItem[] {
   const options = useProjectTree((s) => s.options);
   return [
     { kind: "header", label: "Appearance" },
-    ...OPTION_LABELS.slice(0, 4).map(([key, label]) => option(key, label, options)),
+    ...OPTION_LABELS.slice(0, 5).map(([key, label]) => option(key, label, options)),
     { kind: "separator" },
     ...SORT_LABELS.map(([sortBy, label]): MenuItem => ({
       id: `sort.${sortBy}`,
@@ -65,7 +66,7 @@ export function useProjectHeaderMenu(): MenuItem[] {
     })),
     { kind: "separator" },
     { kind: "header", label: "Behavior" },
-    ...OPTION_LABELS.slice(4).map(([key, label]) => option(key, label, options)),
+    ...OPTION_LABELS.slice(5).map(([key, label]) => option(key, label, options)),
   ];
 }
 

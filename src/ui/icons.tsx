@@ -121,8 +121,9 @@ const ICONS = {
   "file-go": "openidea/fileTypes/go",
   "file-gomod": "openidea/fileTypes/goMod",
   "file-gowork": "openidea/fileTypes/goWork",
-  "file-rust": "openidea/fileTypes/rust",
-  "file-cargo": "openidea/fileTypes/cargo",
+  "file-rust": "fileTypes/rust",
+  "file-cargo": "fileTypes/cargo",
+  "file-cargo-lock": "fileTypes/cargoLock",
   "file-ruby": "openidea/fileTypes/ruby",
   "file-lua": "openidea/fileTypes/lua",
   "file-zig": "openidea/fileTypes/zig",
@@ -757,9 +758,9 @@ const FILE_NAMES = table({
   "file-makefile": "makefile gnumakefile bsdmakefile makefile.am makefile.in kbuild",
   "file-cmake": "cmakelists.txt cmakecache.txt",
   "file-perl": "makefile.pl build.pl cpanfile",
-  "file-git": ".gitignore .gitignore_global .gitattributes .gitmodules .gitconfig .git-blame-ignore-revs .mailmap",
+  "file-git": ".gitattributes .gitmodules .gitconfig .git-blame-ignore-revs .mailmap",
   "file-ignored":
-    ".dockerignore .npmignore .prettierignore .eslintignore .stylelintignore .hgignore .ignore .rgignore " +
+    ".gitignore .gitignore_global .dockerignore .npmignore .prettierignore .eslintignore .stylelintignore .hgignore .ignore .rgignore " +
     ".fdignore .helmignore .vscodeignore .gcloudignore .slugignore .cfignore .bzrignore .containerignore",
   "file-config":
     ".editorconfig justfile procfile .npmrc .nvmrc .yarnrc .node-version .python-version .ruby-version " +
@@ -769,6 +770,7 @@ const FILE_NAMES = table({
   "file-lock":
     "package-lock.json npm-shrinkwrap.json pnpm-lock.yaml bun.lockb deno.lock go.sum go.work.sum " + "package.resolved",
   "file-cargo": "cargo.toml",
+  "file-cargo-lock": "cargo.lock",
   "file-gomod": "go.mod",
   "file-gowork": "go.work",
   "file-pyproject": "pyproject.toml",
@@ -847,8 +849,7 @@ const EXT_ICONS = table({
   "file-config": "ini cfg conf cnf inf reg url desktop service socket timer config",
   "file-dotenv": "env",
   "file-lock": "lock lockb",
-  "file-git": "gitignore",
-  "file-ignored": "dockerignore",
+  "file-ignored": "dockerignore gitignore",
   "file-properties": "properties prefs",
   "file-font": "ttf otf woff woff2",
   "file-patch": "patch diff rej",
