@@ -237,12 +237,7 @@ fn maven_steps(root: &Path, model: &BuildModel, kind: BuildKind, module: Option<
     if !m.projects.iter().any(|p| p.dir == rel) {
         return Err(IdeError::not_found("no linked Maven project found for module"));
     }
-    let top = tops
-        .iter()
-        .filter(|t| t.dir.is_empty() || rel == t.dir || rel.starts_with(&format!("{}/", t.dir)))
-        .max_by_key(|t| t.dir.len())
-        .copied()
-        .unwrap_or(tops[0]);
+    let top = maven_reactor(m, &rel).ok_or_else(|| IdeError::not_found("no linked Maven project found for module"))?;
     let top_dir = subdir(root, &top.dir);
     if module == top_dir {
         return Ok(vec![step(top, &[])]);
@@ -611,6 +606,90 @@ pub fn has_non_java_sources(module: &Path) -> bool {
     walk(&module.join("src"), 12)
 }
 
+fn reactor_projects<'a>(m: &'a maven::MavenModel, top: &'a maven::MavenProject) -> Vec<&'a maven::MavenProject> {
+    let mut projects = Vec::new();
+    let mut pending = vec![top];
+    let mut seen = HashSet::new();
+    while let Some(p) = pending.pop() {
+        if !seen.insert(&p.pom) {
+            continue;
+        }
+        projects.push(p);
+        pending.extend(m.projects.iter().filter(|child| p.modules.contains(&child.pom)));
+    }
+    projects
+}
+
+fn maven_reactor<'a>(m: &'a maven::MavenModel, module: &str) -> Option<&'a maven::MavenProject> {
+    m.projects.iter().filter(|p| !p.aggregated).find(|top| reactor_projects(m, top).iter().any(|p| p.dir == module))
+}
+
+/// Launch module first, followed by its upstream modules in the same Maven reactor.
+/// External artifacts and unrelated linked reactors are never rebuilt for this launch.
+fn maven_launch_projects<'a>(
+    root: &Path,
+    m: &'a maven::MavenModel,
+    module: &Path,
+    test: bool,
+) -> Vec<&'a maven::MavenProject> {
+    let rel = rel_str(root, module);
+    let Some(top) = maven_reactor(m, &rel) else { return Vec::new() };
+    let reactor = reactor_projects(m, top);
+    let Some(start) = reactor.iter().find(|p| p.dir == rel) else { return Vec::new() };
+    let mut pending = vec![*start];
+    let mut seen = HashSet::new();
+    let mut projects = Vec::new();
+    while let Some(p) = pending.pop() {
+        if !seen.insert(&p.pom) {
+            continue;
+        }
+        projects.push(p);
+        for dep in &p.dependencies {
+            if !dep.resolved() || (dep.scope == "test" && (!test || p.pom != start.pom)) {
+                continue;
+            }
+            if let Some(upstream) = reactor.iter().find(|u| {
+                u.group_id == dep.group_id
+                    && u.artifact_id == dep.artifact_id
+                    && dep.version.as_ref().is_none_or(|v| *v == u.version)
+            }) {
+                pending.push(*upstream);
+            }
+        }
+    }
+    projects
+}
+
+/// Whether a launch requires the external JVM compiler. Maven includes upstream
+/// reactor dependencies; adapter selection remains a separate, module-local decision.
+pub fn launch_has_non_java_sources(root: &Path, model: &BuildModel, module: &Path, test: bool) -> bool {
+    if let Some(m) = &model.maven {
+        let projects = maven_launch_projects(root, m, module, test);
+        if !projects.is_empty() {
+            return projects.iter().any(|p| has_non_java_sources(&subdir(root, &p.dir)));
+        }
+    }
+    has_non_java_sources(module)
+}
+
+fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool) -> IdeResult<BuildPlan> {
+    let kind = if model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| subdir(root, &p.dir) == module)) {
+        // JDT may have left newer error stubs in Maven's output directories.
+        BuildKind::Rebuild
+    } else {
+        BuildKind::Build
+    };
+    let mut plan = plan(root, model, kind, Some(module))?;
+    if plan.system == BuildSystem::Maven && !test {
+        for step in &mut plan.steps {
+            if let Some(goal) = step.args.last_mut() {
+                *goal = "compile".into();
+            }
+        }
+    }
+    Ok(plan)
+}
+
 /// Compiles the module at `module` with its build system before a JVM launch and
 /// returns the class directories it wrote, to put ahead of the jdtls classpath.
 pub fn build_for_launch(
@@ -620,7 +699,7 @@ pub fn build_for_launch(
     test: bool,
     cancel: &CancellationToken,
 ) -> IdeResult<Vec<PathBuf>> {
-    let plan = plan(root, model, BuildKind::Build, Some(module))?;
+    let plan = launch_plan(root, model, module, test)?;
     let result = run(root, &plan, cancel, &|_| {})?;
     if !result.success {
         let errors: Vec<String> = result
@@ -634,6 +713,14 @@ pub fn build_for_launch(
             })
             .collect();
         return Err(IdeError::internal(format!("Build failed:\n{}", errors.join("\n"))));
+    }
+    if plan.system == BuildSystem::Maven
+        && let Some(m) = &model.maven
+    {
+        return Ok(maven_launch_projects(root, m, module, test)
+            .iter()
+            .flat_map(|p| launch_class_dirs(plan.system, &subdir(root, &p.dir), test && subdir(root, &p.dir) == module))
+            .collect());
     }
     Ok(launch_class_dirs(plan.system, module, test))
 }
@@ -819,6 +906,142 @@ mod tests {
                 self.0.lock().unwrap().clone()
             }
         }
+    }
+
+    fn reactor_model() -> BuildModel {
+        let project = |dir: &str, deps: &[&str]| maven::MavenProject {
+            pom: format!("{dir}/pom.xml"),
+            dir: dir.into(),
+            group_id: "probe".into(),
+            artifact_id: dir.into(),
+            version: "1".into(),
+            aggregated: true,
+            dependencies: deps
+                .iter()
+                .map(|d| maven::MavenDependency {
+                    group_id: "probe".into(),
+                    artifact_id: (*d).into(),
+                    version: Some("1".into()),
+                    scope: "compile".into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut projects = vec![
+            project("app", &["middle"]),
+            project("middle", &["lib"]),
+            project("lib", &["app"]),
+            project("unrelated", &[]),
+        ];
+        projects.insert(
+            0,
+            maven::MavenProject {
+                pom: "pom.xml".into(),
+                artifact_id: "reactor".into(),
+                command: "mvnw".into(),
+                modules: projects.iter().map(|p| p.pom.clone()).collect(),
+                options: vec!["-s".into(), "settings.xml".into()],
+                env: BTreeMap::from([("JAVA_HOME".into(), "/jdk".into())]),
+                ..Default::default()
+            },
+        );
+        BuildModel { maven: Some(maven::MavenModel { projects, ..Default::default() }), ..Default::default() }
+    }
+
+    #[test]
+    fn mixed_launch_detection_follows_only_reactor_dependencies() {
+        for extension in ["kt", "groovy", "scala"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let mut model = reactor_model();
+            write(root, "app/src/main/java/Application.java", "class Application {}");
+            write(root, &format!("unrelated/src/main/java/Other.{extension}"), "");
+            assert!(!launch_has_non_java_sources(root, &model, &root.join("app"), false));
+            write(root, &format!("lib/src/main/java/Channel.{extension}"), "");
+            assert!(launch_has_non_java_sources(root, &model, &root.join("app"), false));
+            assert_eq!(
+                maven_launch_projects(root, model.maven.as_ref().unwrap(), &root.join("app"), false).len(),
+                3,
+                "cycles terminate"
+            );
+            let m = model.maven.as_mut().unwrap();
+            m.projects[2].dependencies[0].scope = "test".into();
+            assert!(
+                !launch_has_non_java_sources(root, &model, &root.join("app"), true),
+                "upstream test dependencies are not transitive"
+            );
+            let m = model.maven.as_mut().unwrap();
+            m.projects[1].dependencies[0].scope = "test".into();
+            m.projects[2].dependencies[0].scope = "compile".into();
+            assert!(!launch_has_non_java_sources(root, &model, &root.join("app"), false));
+            assert!(launch_has_non_java_sources(root, &model, &root.join("app"), true));
+            model.maven.as_mut().unwrap().projects[2].dependencies[0].version = Some("external".into());
+            assert!(!launch_has_non_java_sources(root, &model, &root.join("app"), true));
+            model.maven.as_mut().unwrap().projects[2].dependencies[0].version = Some("1".into());
+            model.maven.as_mut().unwrap().projects[3].aggregated = false;
+            model.maven.as_mut().unwrap().projects[0].modules.retain(|p| p != "lib/pom.xml");
+            assert!(
+                !launch_has_non_java_sources(root, &model, &root.join("app"), true),
+                "another linked reactor is external"
+            );
+        }
+    }
+
+    #[test]
+    fn maven_launch_steps_use_reactor_settings_and_launch_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "app/pom.xml", "<project/>");
+        let model = reactor_model();
+        for (test, goal) in [(false, "compile"), (true, "test-compile")] {
+            let plan = launch_plan(root, &model, &root.join("app"), test).unwrap();
+            let step = &plan.steps[0];
+            assert_eq!(step.cwd, root);
+            assert_eq!(step.program, "mvnw");
+            assert_eq!(step.env["JAVA_HOME"], "/jdk");
+            assert_eq!(
+                step.args,
+                ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", "clean", goal]
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_launch_returns_upstream_outputs_and_blocks_failure_or_cancellation() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "app/pom.xml", "<project/>");
+        write(
+            root,
+            "mvnw",
+            "#!/bin/sh\nmkdir -p app/target/classes middle/target/classes lib/target/classes app/target/test-classes\n",
+        );
+        let wrapper = root.join("mvnw");
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut model = reactor_model();
+        model.maven.as_mut().unwrap().projects[0].command = wrapper.to_string_lossy().into_owned();
+        let dirs = build_for_launch(root, &model, &root.join("app"), true, &CancellationToken::new()).unwrap();
+        assert_eq!(
+            dirs,
+            ["app/target/test-classes", "app/target/classes", "middle/target/classes", "lib/target/classes"]
+                .map(|p| root.join(p))
+        );
+        write(
+            root,
+            "mvnw",
+            "#!/bin/sh\necho '[ERROR] Kotlin compilation failed: unresolved reference broken' >&2\nexit 1\n",
+        );
+        let error = build_for_launch(root, &model, &root.join("app"), false, &CancellationToken::new()).unwrap_err();
+        assert!(error.message.contains("Kotlin compilation failed"), "{}", error.message);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert_eq!(
+            build_for_launch(root, &model, &root.join("app"), false, &cancel).unwrap_err().kind,
+            ide_core::error::ErrorKind::Cancelled
+        );
     }
 
     #[test]

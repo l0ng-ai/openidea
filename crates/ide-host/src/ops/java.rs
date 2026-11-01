@@ -5,7 +5,7 @@ use crate::rpc::Dispatcher;
 use super::build::load;
 use ide_build::compile;
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
-use ide_lsp::jdtls::JavaLaunchInfo;
+use ide_lsp::jdtls::{JavaBuildStatus, JavaLaunchInfo};
 use std::path::PathBuf;
 
 /// Cancellable with `cancel_request(request)`.
@@ -39,22 +39,41 @@ async fn resolve_launch(
     let project = host.project(window)?;
     let module = project.root.join(module);
     let settings = project.settings.effective();
-    // Let jdtls finish its build before the external compiler writes Kotlin/Scala classes.
-    let mut info = project.lsp.java_launch(&module, test, build, cancel).await?;
+    let (model, external, delegated) = {
+        let project = project.clone();
+        let settings = settings.clone();
+        let module = module.clone();
+        tokio::task::spawn_blocking(move || {
+            let model = load(&project.root, &project.build_cache_dir(), &settings);
+            let external = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
+            let delegated = external
+                && model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module));
+            (model, external, delegated)
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+    };
+    let external_build = if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
+    let mut info = project.lsp.java_launch(&module, test, build && !delegated, cancel).await?;
     let lsp_ms = started.elapsed().as_millis();
     let data_dir = host.data_dir.clone();
     let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
-        let built = if build && compile::has_non_java_sources(&module) {
-            compile::build_for_launch(
-                &project.root,
-                &load(&project.root, &project.build_cache_dir(), &settings),
-                &module,
-                test,
-                &cancel,
-            )?
+        let _external_build = external_build;
+        let built = if external {
+            compile::build_for_launch(&project.root, &model, &module, test, &cancel)?
         } else {
             Vec::new()
+        };
+        let built = if delegated {
+            let (snapshot, copies) = snapshot_outputs(&mut info, &built, &cancel)?;
+            project.java_launch_outputs.lock().push(snapshot);
+            info.build = Some(JavaBuildStatus::Succeeded);
+            info.errors.clear();
+            info.error_count = 0;
+            copies
+        } else {
+            built
         };
         let mut class_paths: Vec<String> = built.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         for p in std::mem::take(&mut info.class_paths) {
@@ -103,6 +122,35 @@ async fn resolve_launch(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+fn snapshot_outputs(
+    info: &mut JavaLaunchInfo,
+    built: &[PathBuf],
+    cancel: &CancellationToken,
+) -> IdeResult<(tempfile::TempDir, Vec<PathBuf>)> {
+    let snapshot = tempfile::Builder::new().prefix("openidea-java-launch-").tempdir()?;
+    let mut copies = Vec::new();
+    for (index, source) in built.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let dest = snapshot.path().join(index.to_string());
+        ide_vfs::copy(source, &dest)?;
+        let original = source.to_string_lossy();
+        info.class_paths.retain(|p| p != original.as_ref());
+        let mut modular = false;
+        for path in &mut info.module_paths {
+            if path == original.as_ref() {
+                *path = dest.to_string_lossy().into_owned();
+                modular = true;
+            }
+        }
+        if !modular {
+            copies.push(dest);
+        }
+    }
+    Ok((snapshot, copies))
+}
+
 /// Port of java-debug's DAP server inside the jdtls serving `module` (started on demand).
 pub async fn java_debug_server(host: &Host, window: &str, module: PathBuf) -> IdeResult<u16> {
     host.require_trust(window)?;
@@ -131,4 +179,44 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("java_debug_server", |c| async move { java_debug_server(&c.host, &c.window, c.arg("module")?).await });
     d.add("java_build_workspace", |c| async move { java_build_workspace(&c.host, &c.window, c.arg("module")?).await });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_snapshots_survive_jdt_overwrites_and_replace_module_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("app/target/classes");
+        let lib = root.path().join("lib/target/classes");
+        for dir in [&app, &lib] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("Channel.class"), "Maven bytecode").unwrap();
+        }
+        let mut info = JavaLaunchInfo {
+            class_paths: vec![app.to_string_lossy().into_owned(), "stdlib.jar".into()],
+            module_paths: vec![lib.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let (snapshot, paths) =
+            snapshot_outputs(&mut info, &[app.clone(), lib.clone()], &CancellationToken::new()).unwrap();
+        assert_eq!(paths, [snapshot.path().join("0")]);
+        assert_eq!(info.class_paths, ["stdlib.jar"]);
+        assert_eq!(info.module_paths, [snapshot.path().join("1").to_string_lossy().into_owned()]);
+        std::fs::write(app.join("Channel.class"), "JDT error stub").unwrap();
+        std::fs::remove_dir_all(lib).unwrap();
+        for index in ["0", "1"] {
+            assert_eq!(
+                std::fs::read_to_string(snapshot.path().join(index).join("Channel.class")).unwrap(),
+                "Maven bytecode"
+            );
+        }
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert_eq!(
+            snapshot_outputs(&mut info, &[app], &cancel).unwrap_err().kind,
+            ide_core::error::ErrorKind::Cancelled
+        );
+    }
 }
