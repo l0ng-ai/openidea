@@ -64,21 +64,28 @@ impl AppState {
         }
         let config_dir = app.path().app_config_dir()?;
         let data_dir = app.path().app_data_dir()?;
+        let local_data_dir = app.path().app_local_data_dir()?;
         std::fs::create_dir_all(&config_dir)?;
         std::fs::create_dir_all(&data_dir)?;
+        if let Err(error) = std::fs::create_dir_all(&local_data_dir) {
+            tracing::warn!(?local_data_dir, %error, "cannot create local data directory");
+        }
+        tracing::info!(?data_dir, ?local_data_dir, "application data directories");
         // Saved git HTTPS credentials (askpass answers them silently).
         ide_ssh::git_creds::init(data_dir.join("git-credentials.json"));
         // File › Invalidate Caches… requested at the last run.
-        let removed = ide_workspace::caches::apply_pending(&data_dir);
+        let removed = ide_workspace::caches::apply_pending(&data_dir, &local_data_dir);
         if !removed.is_empty() {
             tracing::info!("invalidated caches: {removed:?}");
         }
+        ide_host::data_dirs::migrate(&data_dir, &local_data_dir);
         let global_sink: SharedSink = Arc::new(TauriSink { app: app.clone(), window: None });
         let languages = Arc::new(LanguageRegistry::load(Some(&config_dir.join("languages")))?);
         let sink_app = app.clone();
         let host = Arc::new(Host::new(ide_host::HostConfig {
             config_dir: config_dir.clone(),
             data_dir: data_dir.clone(),
+            local_data_dir,
             languages: languages.clone(),
             syntax,
             sink_for: Box::new(move |window| {

@@ -32,7 +32,7 @@ pub fn set_command(host: &Host, window: &str, id: String, command: Option<String
 
 /// Where ACP Registry agents are saved (`<config>/agents`, like the user's own) and installed.
 pub(crate) fn registry_paths(host: &Host) -> RegistryPaths {
-    RegistryPaths::new(&host.config_dir, &host.data_dir)
+    RegistryPaths::new(&host.config_dir, &host.local_data_dir)
 }
 
 fn join_err(e: impl std::fmt::Display) -> IdeError {
