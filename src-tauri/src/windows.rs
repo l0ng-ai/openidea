@@ -931,10 +931,10 @@ pub fn sanitize_window_state(app: &AppHandle) {
         Err(_) => return,
     };
     let fallback = app.primary_monitor().ok().flatten().map(|m| (m.work_area().size.width, m.work_area().size.height));
-    if clamp_window_sizes(&mut state, &areas, fallback) {
-        if let Ok(serialized) = serde_json::to_vec_pretty(&state) {
-            let _ = std::fs::write(&path, serialized);
-        }
+    if clamp_window_sizes(&mut state, &areas, fallback)
+        && let Ok(serialized) = serde_json::to_vec_pretty(&state)
+    {
+        let _ = std::fs::write(&path, serialized);
     }
 }
 
