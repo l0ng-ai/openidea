@@ -1,4 +1,9 @@
 {
+  "Kotlin bridge requires a Maven build root": "Kotlin 桥接需要 Maven 构建根目录",
+  "Kotlin bridge bundle is unavailable": "Kotlin 桥接扩展不可用",
+  "Kotlin bridge command did not acknowledge its library snapshot": "Kotlin 桥接命令未确认类库更新",
+  "Maven compilation failed": "Maven 编译失败",
+  "Kotlin editor compilation failed": "Kotlin 编辑器编译失败",
   "Updating results…": "正在更新结果…",
   "Uploading files": "正在上传文件",
   "No files on the clipboard": "剪贴板中没有文件",
