@@ -16,6 +16,14 @@ pub(crate) fn detect(root: &Path) -> Vec<RunConfig> {
 }
 
 pub(crate) fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<RunConfig> {
+    detect_with_profiles(root, excluded_poms, None)
+}
+
+pub(crate) fn detect_with_profiles(
+    root: &Path,
+    excluded_poms: &[PathBuf],
+    profiles: Option<&[ide_core::settings::CMakeProfile]>,
+) -> Vec<RunConfig> {
     let mut out = Vec::new();
     detect_node(root, &mut out);
     detect_deno(root, &mut out);
@@ -24,7 +32,7 @@ pub(crate) fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<Ru
     detect_maven(root, excluded_poms, &mut out);
     detect_go(root, &mut out);
     detect_python(root, &mut out);
-    cmake::detect(root, &mut out);
+    cmake::detect(root, profiles, &mut out);
     detect_make(root, &mut out);
     detect_just(root, &mut out);
     detect_godot(root, &mut out);

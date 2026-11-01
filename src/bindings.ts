@@ -1639,6 +1639,30 @@ export type ByteRange = {
 	total: number,
 };
 
+export type CMakeProfile = {
+	name?: string,
+	buildType?: string,
+	generator?: string,
+	cmakeArgs?: string[],
+	/**  Empty uses cmake-build-<lowercase build type>. */
+	buildDir?: string,
+	buildArgs?: string[],
+	env?: { [key in string]: string },
+};
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings = CMakeSettings_Serialize | CMakeSettings_Deserialize;
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings_Deserialize = {
+	profiles?: CMakeProfile[] | null,
+};
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings_Serialize = {
+	profiles?: CMakeProfile[] | null,
+};
+
 export type CallHierarchy = {
 	items: HierarchyItem[],
 	incomplete: ReferencesIncomplete | null,
@@ -5635,6 +5659,7 @@ export type Settings_Deserialize = {
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets?: RunTarget[],
+	cmake?: CMakeSettings_Deserialize,
 };
 
 export type Settings_Serialize = {
@@ -5690,6 +5715,7 @@ export type Settings_Serialize = {
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets: RunTarget[],
+	cmake: CMakeSettings_Serialize,
 };
 
 export type Severity = "error" | "warning" | "info" | "hint";
