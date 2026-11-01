@@ -93,7 +93,7 @@ import styles from "./GitLog.module.css";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { gitTabs, shownTab } from "./gitTabs";
-import { ChangesTree, StashContent, tabItems, useStashTabCounts } from "./CommitView";
+import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
 import { WorktreesPanel } from "./gitMenuDialogs";
 
 const ROW = 26;
@@ -148,7 +148,7 @@ export function GitToolWindow() {
       aria-labelledby={`openidea-git-tab-${shown}`}
     >
       {shown === "changes" ? (
-        <ChangesTree mode="local" />
+        <LocalChangesView />
       ) : shown === "shelf" || shown === "stashes" ? (
         <StashContent tab={shown} />
       ) : shown === "console" ? (
