@@ -51,7 +51,8 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
   if (!parsed.mainClass) return null;
   const dir = absolute(ctx.root, module);
   const project = ctx.gradle.projects.find((p) => absolute(ctx.root, p.dir) === dir);
-  if (!project) return null;
+  // buildSrc tasks are not addressable from the root build; included builds' are (`:lib:core:…`).
+  if (!project || project.build?.endsWith(":buildSrc")) return null;
   const task = project.path === ":" ? `:${TASK}` : `${project.path}:${TASK}`;
   const args = [
     "--console=plain",

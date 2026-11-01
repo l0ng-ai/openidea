@@ -6,7 +6,9 @@ import groovy.json.JsonSlurper
 def target = System.getProperty('openidea.run.project')
 if (target != null) {
     allprojects { p ->
-        if (p.path != target) return
+        // `target` is an identity path (`:lib:core` for a project of an included build).
+        def id = { try { p.identityPath.toString() } catch (ignored) { p.path } }
+        if (id() != target) return
         p.plugins.withId('java') {
             def json = new JsonSlurper()
             def list = { String key -> (List) json.parseText(System.getProperty(key, '[]')) }
