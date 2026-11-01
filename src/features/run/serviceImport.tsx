@@ -54,6 +54,7 @@ export function pickServices(configs: readonly RunConfig[], shown: ReadonlySet<s
   });
 }
 
+/** A checkbox list of the kind's configurations; OK returns the picked set, Cancel/Escape null. */
 function ImportDialog(props: {
   configs: readonly RunConfig[];
   shown: ReadonlySet<string>;
