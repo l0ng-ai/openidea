@@ -291,6 +291,21 @@ impl Handler for ClientHandler {
 /// `initializationOptions` with its `settings` merged over them.
 pub(crate) fn all_settings(cfg: &ide_language::LanguageServerConfig) -> Value {
     let mut out = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or(Value::Null);
+    if cfg.name == "jdtls" {
+        out = out.get("settings").cloned().unwrap_or_else(|| json!({}));
+        if let Some(settings) = &cfg.settings {
+            // Accept the initialization-options wrapper as well as LSP settings.
+            if let Some(nested) = settings.get("settings") {
+                merge(&mut out, nested.clone());
+            }
+            let mut direct = settings.clone();
+            if let Some(direct) = direct.as_object_mut() {
+                direct.remove("settings");
+            }
+            merge(&mut out, direct);
+        }
+        return out;
+    }
     if let Some(settings) = &cfg.settings {
         merge(&mut out, settings.clone());
     }

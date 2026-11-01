@@ -172,7 +172,10 @@ pub fn set_settings(
         host.apply_proxy();
     }
     // A new interpreter / toolchain / server executable restarts the language servers it affects.
-    if ["languages", "tools", "languageServers"].iter().any(|k| key == *k || key.starts_with(&format!("{k}."))) {
+    if ["languages", "tools", "languageServers", "projectStructure"]
+        .iter()
+        .any(|k| key == *k || key.starts_with(&format!("{k}.")))
+    {
         for project in affected() {
             let lsp = project.lsp.clone();
             host.runtime.spawn(async move { lsp.reconfigure().await });

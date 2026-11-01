@@ -1013,6 +1013,76 @@ async fn settings_changes_reach_servers_without_restarts() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_source_paths_reach_initialization_live_configuration_and_builds() {
+    let h = harness_configured("java", "java", &[("jdtls", incremental_caps())], |cfg| {
+        cfg.initialization_options = Some(
+            toml::Value::try_from(json!({
+                "bundles": [], "settings": {"java": {"project": {"referencedLibraries": ["lib/**/*.jar"]}}}
+            }))
+            .unwrap(),
+        );
+    });
+    let paths = Arc::new(Mutex::new(Some(vec!["src/main/java".into()])));
+    h.mgr.set_config_hook(Box::new({
+        let paths = paths.clone();
+        move |cfg, _| ide_lsp::jdtls::configure_source_paths(cfg, paths.lock().clone())
+    }));
+    let (_, file) = h.open("Main.java", "public class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let init = state.requested("initialize")[0].clone();
+    assert_eq!(init["initializationOptions"]["settings"]["java"]["project"]["sourcePaths"], json!(["src/main/java"]));
+    assert_eq!(init["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+    *paths.lock() = Some(vec!["generated".into(), "tests".into()]);
+    h.mgr.reconfigure().await;
+    eventually(|| {
+        state
+            .notified("workspace/didChangeConfiguration")
+            .last()
+            .is_some_and(|p| p["settings"]["java"]["project"]["sourcePaths"] == json!(["generated", "tests"]))
+    })
+    .await;
+    let notification = state.notified("workspace/didChangeConfiguration").pop().unwrap();
+    assert_eq!(notification["settings"]["java"]["project"]["referencedLibraries"], json!(["lib/**/*.jar"]));
+    assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    state.respond("java/buildWorkspace", json!(1));
+    assert_eq!(
+        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        ide_lsp::jdtls::JavaBuildStatus::Succeeded
+    );
+    assert_eq!(state.requested("java/buildWorkspace"), vec![json!(false)]);
+
+    // Removing the last hint restores importer inference. Omitting a setting
+    // in didChangeConfiguration would retain jdtls's previous preference.
+    *paths.lock() = None;
+    h.mgr.reconfigure().await;
+    eventually(|| state.launches.load(Ordering::SeqCst) == 2).await;
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let init = state.requested("initialize").pop().unwrap();
+    assert!(init["initializationOptions"]["settings"]["java"]["project"].get("sourcePaths").is_none());
+    assert_eq!(init["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    std::fs::create_dir_all(h.root.join("src/demo")).unwrap();
+    let file = h.root.join("src/demo/Main.java");
+    std::fs::write(&file, "package demo; public class Main {}").unwrap();
+    h.mgr.set_config_hook(Box::new(|cfg, _| {
+        ide_lsp::jdtls::configure_source_paths(cfg, Some(vec!["src".into()]));
+    }));
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    assert_eq!(
+        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        ide_lsp::jdtls::JavaBuildStatus::Succeeded
+    );
+    assert_eq!(state.requested("initialize")[0]["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+    assert!(state.notified("textDocument/didOpen").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     // Preferred installed: the alternative is never started.
     let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);

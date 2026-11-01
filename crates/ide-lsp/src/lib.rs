@@ -513,7 +513,19 @@ impl LspManager {
             }
         };
 
-        let init = self.initialize_params(&server);
+        let mut init = self.initialize_params(&server);
+        if server.name == "jdtls"
+            && init["initializationOptions"].get("triggerFiles").is_none()
+            && let Some(paths) = init
+                .pointer("/initializationOptions/settings/java/project/sourcePaths")
+                .and_then(Value::as_array)
+                .cloned()
+        {
+            let root = server.root.clone();
+            if let Ok(Some(path)) = tokio::task::spawn_blocking(move || jdtls::source_trigger(&root, &paths)).await {
+                init["initializationOptions"]["triggerFiles"] = json!([uri::path_to_uri_string(&path)]);
+            }
+        }
         let result = tokio::time::timeout(INITIALIZE_TIMEOUT, peer.request::<_, Value>("initialize", init, None))
             .await
             .unwrap_or(Err(RpcError::Timeout));
@@ -656,12 +668,26 @@ impl LspManager {
     fn initialize_params(&self, server: &Server) -> Value {
         let root_uri = uri::path_to_uri(&server.root);
         let name = server.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "root".into());
-        let init_options = server
-            .effective_config()
-            .initialization_options
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok())
-            .unwrap_or(Value::Null);
+        let cfg = server.effective_config();
+        let mut init_options =
+            cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or(Value::Null);
+        if server.name == "jdtls" {
+            if !init_options.is_object() {
+                init_options = json!({});
+            }
+            init_options["settings"] = handler::all_settings(&cfg);
+            let triggers: Vec<_> = self
+                .docs
+                .lock()
+                .values()
+                .filter(|d| d.language.as_str() == "java" && d.path.starts_with(&server.root))
+                .map(|d| uri::path_to_uri_string(&d.path))
+                .collect();
+            if !triggers.is_empty() && init_options.get("triggerFiles").is_none() {
+                // Re-import cached invisible projects with the current source model.
+                init_options["triggerFiles"] = json!(triggers);
+            }
+        }
         let mut params = json!({
             "processId": std::process::id(),
             "clientInfo": { "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
@@ -2081,6 +2107,7 @@ impl LspManager {
             let without_settings = |c: &LanguageServerConfig| LanguageServerConfig { settings: None, ..c.clone() };
             if let Some(run) = s.running()
                 && without_settings(&next) == without_settings(&current)
+                && !jdtls::source_paths_removed(&current, &next)
             {
                 s.set_effective_config(next);
                 let params = json!({ "settings": handler::all_settings(&s.effective_config()) });

@@ -216,7 +216,8 @@ describe("review threads in a pull request diff", () => {
     expect(right.contains(t1)).toBe(true);
     expect(t1.closest(".cm-lineInlay")!.previousElementSibling?.textContent).toBe("line three");
     expect(right.querySelectorAll(".cm-reviewControl-toggle")).toHaveLength(2);
-    expect(inlay("T2")).not.toBeNull();
+    // Each thread's inlay mounts in its own effect, so T2 may land a tick after T1.
+    await waitFor(() => expect(inlay("T2")).not.toBeNull());
 
     act(() => setReviewDiffSettings({ threadsView: "unresolved" }));
     await waitFor(() => expect(inlay("T2")).toBeNull());

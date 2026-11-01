@@ -34,6 +34,7 @@ import {
   setPageScope,
   setQuery,
   settingsTitle,
+  SSH_SETTINGS_PAGE,
   useSettingsDialog,
   type Scope,
 } from "../model/staging";
@@ -219,7 +220,7 @@ function SettingsDialogInner() {
 /** Page tree + current page; reads the shared settings staging store. */
 export function SettingsLayout() {
   const pages = useSettingsPages((s) => s.pages);
-  const { pageId, query, staged, saving } = useSettingsDialog();
+  const { pageId, query, staged, stagedSecrets, saving } = useSettingsDialog();
   const treeRef = useRef<TreeHandle>(null);
 
   const tree = useMemo(() => buildPageTree(pages.values()), [pages]);
@@ -231,7 +232,11 @@ export function SettingsLayout() {
 
   const current = all.find((n) => n.key === pageId) ?? all.find((n) => n.page);
   const crumbs = current ? breadcrumb(tree, current.key) : [];
-  const dirtyPages = useMemo(() => new Set(Object.values(staged).map((c) => c.page)), [staged]);
+  const dirtyPages = useMemo(() => {
+    const pages = new Set(Object.values(staged).map((c) => c.page));
+    if (Object.keys(stagedSecrets).length) pages.add(SSH_SETTINGS_PAGE);
+    return pages;
+  }, [staged, stagedSecrets]);
   const pageDirty = !!current && dirtyPages.has(current.key);
 
   // Back / forward through pages visited while the dialog is open.
@@ -333,7 +338,7 @@ export function SettingsLayout() {
 
 /** OK / Cancel / Apply, ordered per platform by the dialog primitive. */
 function useSettingsButtons(): DialogButton[] {
-  const { staged, base, globalBase, saving } = useSettingsDialog();
+  const { staged, stagedSecrets, base, globalBase, saving } = useSettingsDialog();
   const pending = useMemo(() => pendingChanges({ base, globalBase, staged }).length > 0, [base, globalBase, staged]);
   const ok = async () => {
     if (await applySettings()) closeSettings();
@@ -341,7 +346,11 @@ function useSettingsButtons(): DialogButton[] {
   return [
     { label: "OK", role: "default", disabled: saving, onClick: () => void ok() },
     { label: "Cancel", role: "cancel", onClick: closeSettings },
-    { label: "Apply", disabled: !pending || saving, onClick: () => void applySettings() },
+    {
+      label: "Apply",
+      disabled: (!pending && !Object.keys(stagedSecrets).length) || saving,
+      onClick: () => void applySettings(),
+    },
   ];
 }
 
