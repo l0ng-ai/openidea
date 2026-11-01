@@ -81,6 +81,7 @@ const BUILT_AT_RUNTIME = new Set<string>([]);
 const UNTRANSLATED = new Set<string>([
   // Product names
   "Cargo",
+  "CMake",
   "Prettier",
   "IntelliJ IDEA",
   // Go environment variables and placeholder values
