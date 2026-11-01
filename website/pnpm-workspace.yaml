@@ -1,0 +1,2 @@
+# Keep this standalone package independent of the desktop workspace above it.
+packages: []
