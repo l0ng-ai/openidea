@@ -60,7 +60,10 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     if !maximized {
         to.unmaximize().map_err(err)?;
         to.set_position(from.outer_position().map_err(err)?).map_err(err)?;
-        to.set_size(from.inner_size().map_err(err)?).map_err(err)?;
+        let size = from.inner_size().map_err(err)?;
+        #[cfg(target_os = "linux")]
+        crate::linux_window_state::normal_size_requested(to.app_handle(), to.label(), size);
+        to.set_size(size).map_err(err)?;
     } else {
         to.maximize().map_err(err)?;
     }

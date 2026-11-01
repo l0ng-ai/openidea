@@ -172,15 +172,14 @@ pub fn set_settings(
         host.apply_proxy();
     }
     // A new interpreter / toolchain / server executable restarts the language servers it affects.
-    if key == "editor"
-        || key == "editor.codeStyle"
-        || key.starts_with("editor.codeStyle.")
-        || ["languages", "tools", "languageServers", "projectStructure"]
-            .iter()
-            .any(|k| key == *k || key.starts_with(&format!("{k}.")))
-    {
+    let code_style = key == "editor" || key == "editor.codeStyle" || key.starts_with("editor.codeStyle.");
+    let toolchain = ["languages", "tools", "languageServers", "projectStructure"]
+        .iter()
+        .any(|k| key == *k || key.starts_with(&format!("{k}.")));
+    // Code style only reaches servers as settings (e.g. jdtls' formatter profile); builds don't depend on it.
+    if code_style || toolchain {
         for project in affected() {
-            if let Some(bridge) = &project.kotlin_bridge {
+            if toolchain && let Some(bridge) = &project.kotlin_bridge {
                 bridge.schedule();
             }
             let lsp = project.lsp.clone();

@@ -403,30 +403,37 @@ export function Composer(props: ComposerProps) {
         }}
       />
       <div className={styles.bar} onClick={(e) => e.stopPropagation()}>
-        {props.toolbar}
-        <span className={styles.spacer} />
-        <IconButton
-          icon="file"
-          title="Reference a File (@)"
-          size="small"
-          onClick={() => {
-            const glue = text && !/\s$/.test(text) ? " " : "";
-            setText(`${text}${glue}@`, text.length + glue.length + 1);
-          }}
-        />
-        <IconButton icon="file-image" title="Attach Image…" size="small" onClick={() => imageInput.current?.click()} />
-        <input
-          ref={imageInput}
-          type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp"
-          multiple
-          hidden
-          onChange={(e) => {
-            readImageFiles(e.target.files ?? []);
-            e.target.value = "";
-          }}
-        />
-        {props.actions}
+        <div className={styles.toolbar}>{props.toolbar}</div>
+        <div className={styles.actions}>
+          <IconButton
+            icon="file"
+            title="Reference a File (@)"
+            size="small"
+            onClick={() => {
+              const glue = text && !/\s$/.test(text) ? " " : "";
+              setText(`${text}${glue}@`, text.length + glue.length + 1);
+            }}
+          />
+          <IconButton
+            icon="file-image"
+            title="Attach Image…"
+            size="small"
+            onClick={() => imageInput.current?.click()}
+          />
+          <input
+            ref={imageInput}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            hidden
+            onChange={(e) => {
+              readImageFiles(e.target.files ?? []);
+              e.target.value = "";
+            }}
+          />
+          <span className={styles.spacer} />
+          {props.actions}
+        </div>
       </div>
     </div>
   );
