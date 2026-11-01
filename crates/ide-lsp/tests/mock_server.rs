@@ -1018,6 +1018,70 @@ async fn settings_changes_reach_servers_without_restarts() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_formatter_profiles_reach_initialization_and_live_configuration_without_restart() {
+    let h = harness_configured("java", "java", &[("jdtls", incremental_caps())], |cfg| {
+        cfg.initialization_options = Some(
+            toml::Value::try_from(json!({
+                "settings": {"java": {"autobuild": {"enabled": false}}}
+            }))
+            .unwrap(),
+        );
+    });
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(h.root.join("custom.xml"), "<profiles/>").unwrap();
+    let style = Arc::new(Mutex::new(ide_core::editor_settings::LanguageCodeStyle {
+        formatter: Some("intellij".into()),
+        formatter_path: Some("custom.xml".into()),
+        ..Default::default()
+    }));
+    h.mgr.set_config_hook(Box::new({
+        let style = style.clone();
+        let root = h.root.clone();
+        let data = data.path().to_path_buf();
+        move |cfg, _| ide_lsp::jdtls::configure_formatter(cfg, Some(&style.lock()), &root, &data, None).unwrap()
+    }));
+    h.open("Main.java", "public class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let init = state.requested("initialize")[0].clone();
+    assert_eq!(
+        init["initializationOptions"]["settings"]["java"]["format"]["settings"]["profile"],
+        "OpenIDEA IntelliJ IDEA"
+    );
+    for mode in ["custom", "default", "intellij", "default"] {
+        style.lock().formatter = Some(mode.into());
+        h.mgr.reconfigure().await;
+        let expected = match mode {
+            "custom" => uri_of(&h.root.join("custom.xml")),
+            "intellij" => uri_of(&data.path().join("lsp/jdtls/intellij.xml")),
+            _ => String::new(),
+        };
+        eventually(|| {
+            state
+                .notified("workspace/didChangeConfiguration")
+                .last()
+                .is_some_and(|p| p["settings"]["java"]["format"]["settings"]["url"] == expected)
+        })
+        .await;
+        let result: Value = state
+            .peer()
+            .request(
+                "workspace/configuration",
+                json!({
+                    "items": [{"section": "java.format.settings"}, {"section": "java.autobuild.enabled"}]
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result[0]["url"], expected);
+        assert_eq!(result[0]["profile"], if mode == "intellij" { "OpenIDEA IntelliJ IDEA" } else { "" });
+        assert_eq!(result[1], false);
+        assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn java_source_paths_reach_initialization_live_configuration_and_builds() {
     let h = harness_configured("java", "java", &[("jdtls", incremental_caps())], |cfg| {
         cfg.initialization_options = Some(
