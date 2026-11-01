@@ -365,7 +365,9 @@ export function textOccurrences(
   const out: { from: number; to: number }[] = [];
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const from = m.index;
-    if (/[\p{L}\p{N}_$]$/u.test(text.slice(Math.max(0, from - 2), from))) continue;
+    // The last code point is taken apart: on Node 26, `/[\p{L}]$/u` does not match a lone astral letter.
+    const previous = [...text.slice(Math.max(0, from - 2), from)].at(-1) ?? "";
+    if (/[\p{L}\p{N}_$]/u.test(previous)) continue;
     if (ids.has(from) || (from >= exclude.from && from < exclude.to)) continue;
     out.push({ from, to: from + name.length });
   }

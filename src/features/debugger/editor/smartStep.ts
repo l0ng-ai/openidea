@@ -29,7 +29,9 @@ function callPattern(name: string, flags: string): RegExp {
 }
 
 function isCallBoundary(text: string, from: number): boolean {
-  return !/[\p{L}\p{N}_$]$/u.test(text.slice(Math.max(0, from - 2), from));
+  // The last code point is taken apart: on Node 26, `/[\p{L}]$/u` does not match a lone astral letter.
+  const previous = [...text.slice(Math.max(0, from - 2), from)].at(-1) ?? "";
+  return !/[\p{L}\p{N}_$]/u.test(previous);
 }
 
 function identifierEnd(text: string, from: number): number {
