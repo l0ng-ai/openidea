@@ -32,7 +32,8 @@ icon set, copied unmodified (some renamed) from JetBrains' open-source repositor
 - [intellij-plugins](https://github.com/JetBrains/intellij-plugins) (each plugin
   carries its own licence): `protobuf/protoeditor-core` (`newui/protoFile` →
   `fileTypes/protoFile`, Apache-2.0); `terraform` (`newui/hashiCorp` →
-  `fileTypes/hashiCorp`, Apache-2.0); `makefile` (`expui/makefile` →
+  `fileTypes/hashiCorp`, Apache-2.0); `Astro` (`icons/astro` → `fileTypes/astro`,
+  Apache-2.0); `makefile` (`expui/makefile` →
   `fileTypes/makefile`, MIT, Copyright (c) 2016 Victor Kropp — full text below).
 
 The read/write usage filter assets (`actions/showReadAccess{,_dark}.svg` and

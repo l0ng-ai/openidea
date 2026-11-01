@@ -1,0 +1,19 @@
+id = "astro"
+name = "Astro"
+extensions = ["astro"]
+block-comment = ["<!--", "-->"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "Astro"
+
+[[language-servers]]
+name = "astro-ls"
+command = "astro-ls"
+args = ["--stdio"]
+root-markers = ["astro.config.mjs", "astro.config.js", "astro.config.ts", "astro.config.mts", "astro.config.cjs", "astro.config.cts"]
+# astro-ls ships no TypeScript and refuses to start without `tsdk`. Servers start
+# in their workspace root, so this relative path is the project's own TypeScript
+# (6 or older: 7 has no tsserverlibrary.js). A TypeScript elsewhere, such as an
+# npm workspace root, goes in Settings › Language Servers › astro-ls ›
+# Initialization options as an absolute `typescript.tsdk`.
+initialization-options = { typescript = { tsdk = "node_modules/typescript/lib" } }
+install-hint = "npm i -g @astrojs/language-server, and add typescript@6 to the project"
