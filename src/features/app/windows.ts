@@ -50,12 +50,13 @@ function openFailed(path: string, e: unknown) {
 
 /** Opens project `path` in this window; true once it is this window's project. */
 async function openHere(path: string): Promise<boolean> {
-  if (useProject.getState().project?.root === path) return true;
+  if (!isRemoteWindow() && useProject.getState().project?.root === path) return true;
   if (!(await confirmLeaveProject())) return false;
   try {
     await openProject(path);
     return true;
   } catch (e) {
+    maybeEditorService()?.cancelClose?.();
     openFailed(path, e);
     return false;
   }
@@ -139,8 +140,8 @@ export async function openProjectWithPolicy(path: string, files: readonly string
   if (desktopOnly()) return;
   const { project: current, lightEdit } = useProject.getState();
   if (!current && !lightEdit) return openProjectInWindow(path, false, files);
-  if (current?.root === path) return openInEditor(files);
-  if (current?.workspace?.projects.includes(path)) {
+  if (!isRemoteWindow() && current?.root === path) return openInEditor(files);
+  if (!isRemoteWindow() && current?.workspace?.projects.includes(path)) {
     await executeAction("project.reveal", path);
     return openInEditor(files);
   }

@@ -1,16 +1,20 @@
 import { IpcError } from "./ipc";
 
-let prompt: ((path: string) => Promise<boolean>) | null = null;
+export type ProjectTrustScope = "current" | "local";
 
-export function provideProjectTrustPrompt(value: (path: string) => Promise<boolean>): () => void {
+let prompt: ((path: string, scope: ProjectTrustScope) => Promise<boolean>) | null = null;
+
+export function provideProjectTrustPrompt(
+  value: (path: string, scope: ProjectTrustScope) => Promise<boolean>,
+): () => void {
   prompt = value;
   return () => {
     if (prompt === value) prompt = null;
   };
 }
 
-export async function confirmProjectTrust(path: string): Promise<void> {
-  if (prompt && !(await prompt(path))) {
+export async function confirmProjectTrust(path: string, scope: ProjectTrustScope = "current"): Promise<void> {
+  if (prompt && !(await prompt(path, scope))) {
     throw new IpcError({ kind: "cancelled", message: "Project opening cancelled" });
   }
 }
