@@ -1617,6 +1617,58 @@ async fn jdt_class_file_contents() {
     assert_eq!(vd.title, "Lib.class");
     assert_eq!(vd.language_id.as_str(), "java");
     assert_eq!(vd.description.as_deref(), Some("/m2/lib-1.0.jar"));
+    let source_uri = jdt.replace("Lib.class", "WithSources.class");
+    s.respond(
+        "java/classFileContents",
+        json!("/* Copyright library author */\npackage org.example;\npublic class WithSources {}"),
+    );
+    let source = h.mgr.virtual_document(&source_uri).await.unwrap();
+    assert!(!source.decompiled);
+    assert_eq!(source.title, "WithSources.java");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn class_file_opening_routes_sources_and_binary_documents() {
+    let mut caps = incremental_caps();
+    caps["workspaceSymbolProvider"] = json!(true);
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Outer.java?=demo/%5C/m2%5C/lib.jar%3Cp%28Outer.class";
+    s.respond("workspace/symbol", json!([
+        {"name":"Outer", "kind":5, "location":{"uri":jdt,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}}
+    ]));
+    let archive = Some((PathBuf::from("/m2/lib.jar"), "p/Outer$1.class".into()));
+    assert_eq!(h.mgr.java_class_file(Path::new("/m2/lib.jar!/p/Outer$1.class"), archive).await.unwrap(), jdt);
+    assert!(
+        h.mgr
+            .java_class_file(
+                Path::new("/other/lib.jar!/p/Outer.class"),
+                Some(("/other/lib.jar".into(), "p/Outer.class".into()))
+            )
+            .await
+            .is_err()
+    );
+
+    let sources = h.root.join("src/main/java");
+    std::fs::create_dir_all(sources.join("p")).unwrap();
+    let source = sources.join("p/Outer.java");
+    std::fs::write(&source, "package p; class Outer {} ").unwrap();
+    s.respond("java/classFileContents", json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Outer {}"));
+    s.respond("workspace/executeCommand", json!({"org.eclipse.jdt.ls.core.sourcePaths":[sources]}));
+    for class in ["Outer", "Outer$Nested", "Outer$1"] {
+        let path = h.root.join(format!("target/classes/p/{class}.class"));
+        assert_eq!(h.mgr.java_class_file(&path, None).await.unwrap(), source.to_string_lossy());
+    }
+    let path = h.root.join("build/classes/java/main/p/Missing.class");
+    let uri = uri_of(&path);
+    assert_eq!(h.mgr.java_class_file(&path, None).await.unwrap(), uri);
+    let vd = h.mgr.virtual_document(&uri).await.unwrap();
+    assert!(vd.decompiled);
+    assert_eq!(vd.language_id.as_str(), "java");
+    assert_eq!(vd.title, "Missing.class");
+    assert!(s.requested("java/classFileContents").iter().any(|p| p["uri"] == uri));
 }
 
 #[tokio::test(flavor = "multi_thread")]
