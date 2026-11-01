@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { setDiagnostics } from "@codemirror/lint";
 import type { CodeAction } from "@/bindings";
 
 const resolved: CodeAction = {
@@ -35,6 +36,7 @@ const {
   intentionPreview,
   lightsBulb,
   listedCodeActions,
+  listedIntentions,
   withInspectionControls,
 } = await import("./intentions");
 const { setFileDiagnostics } = await import("./diagnostics");
@@ -90,6 +92,27 @@ describe("inspection controls in ⌥↵ (issue #42)", () => {
     setFileDiagnostics("/p/two.py", "ruff", []);
     expect(withInspectionControls(view, [])).toEqual([]);
   });
+
+  it.each(["info", "warning", "error"] as const)(
+    "uses the effective %s severity for local and LSP fixes",
+    (severity) => {
+      const path = `/p/severity-${severity}.py`;
+      setFileDiagnostics(path, "ruff", [{ ...unused, severity }]);
+      const view = editorAt(path);
+      view.dispatch(setDiagnostics(view.state, [{ from: 7, to: 9, severity, message: unused.message }]));
+      const items = listedIntentions(view, [
+        { id: "refactor", label: "Extract method", icon: "bulb", run: vi.fn() },
+        { id: "local", label: "Local fix", quickFix: true, run: vi.fn() },
+        { id: "lsp", label: "LSP fix", quickFix: true, emphasis: true, run: vi.fn() },
+      ]);
+      expect(items.map((i) => i.id)).toEqual(["lsp", "local", "refactor"]);
+      expect(items.slice(0, 2).map((i) => i.icon)).toEqual(Array(2).fill(severity === "error" ? "bulb-fix" : "bulb"));
+      const controls = withInspectionControls(view, items);
+      expect(controls.slice(0, 2).every((i) => i.submenu?.length === 2)).toBe(true);
+      expect(controls[2]!.submenu).toBeUndefined();
+      setFileDiagnostics(path, "ruff", []);
+    },
+  );
 });
 
 describe("intention preview", () => {

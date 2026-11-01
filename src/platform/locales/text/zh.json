@@ -1,4 +1,8 @@
 {
+  "Newer dependency version available": "有更新的依赖版本可用",
+  "Reports newer crate versions that Cargo.toml requirements do not already allow.": "报告 Cargo.toml 版本要求尚未允许的较新 crate 版本。",
+  "Update to {latest}": "更新至 {latest}",
+  "A newer version is available: {latest}": "有新版本可用：{latest}",
   "Kotlin bridge requires a Maven build root": "Kotlin 桥接需要 Maven 构建根目录",
   "Kotlin bridge bundle is unavailable": "Kotlin 桥接扩展不可用",
   "Kotlin bridge command did not acknowledge its library snapshot": "Kotlin 桥接命令未确认类库更新",
