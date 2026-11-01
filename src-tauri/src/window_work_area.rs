@@ -44,8 +44,8 @@ mod native {
                 RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
             },
             WindowsAndMessaging::{
-                GWL_STYLE, GetWindowLongPtrW, IsIconic, IsZoomed, MINMAXINFO, NCCALCSIZE_PARAMS, SWP_NOMOVE,
-                SWP_NOSIZE, WINDOWPOS, WM_GETMINMAXINFO, WM_NCCALCSIZE, WM_NCDESTROY, WM_WINDOWPOSCHANGING, WS_CAPTION,
+                GWL_STYLE, GetWindowLongPtrW, IsZoomed, MINMAXINFO, NCCALCSIZE_PARAMS, WM_GETMINMAXINFO, WM_NCCALCSIZE,
+                WM_NCDESTROY, WS_CAPTION,
             },
         },
     };
@@ -144,29 +144,6 @@ mod native {
                 } else {
                     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
                 }
-            }
-            WM_WINDOWPOSCHANGING if !fullscreen => {
-                let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-                let pos = unsafe { &mut *(lparam as *mut WINDOWPOS) };
-                // Windows can add the invisible resize frame after WM_GETMINMAXINFO.
-                // Constrain the final outer placement too, without changing restore,
-                // minimize, Snap, or changes that only affect stacking/visibility.
-                if pos.flags & SWP_NOSIZE == 0 && unsafe { IsZoomed(hwnd) } != 0 && unsafe { IsIconic(hwnd) } == 0 {
-                    let monitor = if pos.flags & SWP_NOMOVE != 0 {
-                        unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }
-                    } else {
-                        let proposed = RECT { left: pos.x, top: pos.y, right: pos.x + pos.cx, bottom: pos.y + pos.cy };
-                        unsafe { MonitorFromRect(&proposed, MONITOR_DEFAULTTONEAREST) }
-                    };
-                    if let Some((_, area)) = unsafe { monitor_bounds(monitor, false) } {
-                        pos.x = area.left;
-                        pos.y = area.top;
-                        pos.cx = area.right - area.left;
-                        pos.cy = area.bottom - area.top;
-                        pos.flags &= !SWP_NOMOVE;
-                    }
-                }
-                result
             }
             WM_NCDESTROY => {
                 unsafe { RemoveWindowSubclass(hwnd, Some(window_proc), SUBCLASS) };
