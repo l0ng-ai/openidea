@@ -359,8 +359,10 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
 }
 
 function StripeBadge({ useBadge }: { useBadge: () => number | string | null }) {
+  // Settings › Appearance › Tool Windows › "Show tool window badges".
+  const showBadges = useProject((s) => s.settings?.appearance?.showToolWindowBadges) !== false;
   const value = useBadge();
-  if (value === null || value === 0 || value === "") return null;
+  if (!showBadges || value === null || value === 0 || value === "") return null;
   return <span className={styles.badge}>{typeof value === "number" && value > 99 ? "99+" : value}</span>;
 }
 

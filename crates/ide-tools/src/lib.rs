@@ -10,6 +10,8 @@
 //! [`tools_bin_dirs`] on the process `PATH` at startup.
 
 pub mod archive;
+mod bundled;
+pub mod formatter;
 pub mod jdk;
 pub mod platform;
 mod process;
@@ -146,7 +148,7 @@ fn managed_bin_dir(root: &Path, spec: &ToolSpec, platform: Platform) -> Option<P
         Method::PipVenv { .. } => {
             Some(root.join(spec.name).join("venv").join(if platform.os == Os::Windows { "Scripts" } else { "bin" }))
         }
-        Method::Rustup { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => None,
+        Method::Bundled { .. } | Method::Rustup { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => None,
     }
 }
 
@@ -322,6 +324,9 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
         }
     };
     for l in langs {
+        if let Some(f) = &l.formatter {
+            add(&f.tool, &f.tool, ToolKind::Formatter, None, &l.name);
+        }
         for s in &l.language_servers {
             add(&s.name, &s.command, ToolKind::LanguageServer, s.install_hint.as_ref(), &l.name);
         }
@@ -389,9 +394,12 @@ fn is_bundle(command: &str) -> bool {
     command.ends_with(".jar")
 }
 
-/// Path of an installed plugin bundle (`<tools>/<name>/bin/<jar>`), if present.
+/// Path of an app-provided or installed plugin jar. Embedded jars are materialized on demand.
 pub fn managed_bundle(app_data: &Path, name: &str) -> Option<PathBuf> {
     let spec = registry::find(name)?;
+    if matches!(spec.method, Method::Bundled { .. }) {
+        return bundled::install(&tools_dir(app_data), spec).ok();
+    }
     let jar = spec.commands.first().filter(|c| is_bundle(c))?;
     let path = tools_dir(app_data).join(spec.name).join("bin").join(jar);
     path.is_file().then_some(path)
@@ -542,6 +550,7 @@ impl Tools {
     fn method_missing(&self, method: Method) -> Option<String> {
         let need = |ok: bool, msg: &str| (!ok).then(|| msg.to_string());
         match method {
+            Method::Bundled { .. } => None,
             Method::Rustup { .. } => need(self.which("rustup").is_some(), "rustup is required (https://rustup.rs)"),
             Method::Npm { .. } => need(
                 self.which_any(&["npm", "pnpm"]).is_some(),
@@ -604,7 +613,8 @@ impl Tools {
         };
         let (status, path, version) = self.detect(spec);
         let unavailable_reason = self.unavailable_reason(spec);
-        let can_uninstall = status == ToolStatus::Installed;
+        let bundled = matches!(spec.method, Method::Bundled { .. });
+        let can_uninstall = status == ToolStatus::Installed && !bundled;
         Some(ToolInfo {
             name: spec.name.to_string(),
             display_name: spec.display.to_string(),
@@ -615,7 +625,7 @@ impl Tools {
             path: path.map(Into::into),
             version,
             install_method: Some(self.install_method(spec).label().to_string()),
-            can_install: unavailable_reason.is_none(),
+            can_install: unavailable_reason.is_none() && !bundled,
             unavailable_reason,
             can_uninstall,
             install_hint,
@@ -654,6 +664,12 @@ impl Tools {
     }
 
     fn detect(&self, spec: &ToolSpec) -> (ToolStatus, Option<PathBuf>, Option<String>) {
+        if let Method::Bundled { version, .. } = spec.method {
+            return match bundled::install(&self.root, spec) {
+                Ok(path) => (ToolStatus::Installed, Some(path), Some(version.to_owned())),
+                Err(_) => (ToolStatus::Missing, None, None),
+            };
+        }
         let main = spec.commands[0];
         let managed = managed_bin_dir(&self.root, spec, self.platform).and_then(|d| self.exe_in(&d, main));
         if let Some(path) = managed {
@@ -782,6 +798,9 @@ impl Tools {
             let method = self.install_method(spec);
             emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, method.label()) });
             match method {
+                Method::Bundled { .. } => {
+                    bundled::install(&self.root, spec)?;
+                }
                 Method::Rustup { component } => {
                     let mut c = self.command(self.which("rustup").expect("checked"));
                     c.args(["component", "add", component]);
@@ -1188,6 +1207,8 @@ impl Tools {
         let cancel = CancellationToken::new();
         let quiet = |_: InstallEvent| {};
         match self.install_method(spec) {
+            // App-owned resources remain available for every project/window.
+            Method::Bundled { .. } => {}
             Method::Rustup { component } => {
                 let rustup = self.which("rustup").ok_or_else(|| IdeError::unavailable("rustup not found"))?;
                 let mut c = self.command(rustup);

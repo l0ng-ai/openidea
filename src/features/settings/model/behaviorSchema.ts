@@ -20,6 +20,7 @@ export interface AppearanceExtras {
   zoom: number;
   useCustomFont: boolean;
   uiFontFamily: string;
+  uiFontFallback: string;
   contrastScrollbars: boolean;
   redGreenVision: boolean;
   differentToolWindowBackground: boolean;
@@ -33,6 +34,7 @@ export interface AppearanceExtras {
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
   showToolWindowNames: boolean;
+  showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
 }
 
@@ -71,6 +73,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   zoom: 100,
   useCustomFont: false,
   uiFontFamily: "Inter",
+  uiFontFallback: "",
   contrastScrollbars: false,
   redGreenVision: false,
   differentToolWindowBackground: false,
@@ -84,6 +87,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
   showToolWindowNames: false,
+  showToolWindowBadges: true,
   widescreenToolWindows: false,
 };
 
@@ -121,6 +125,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     zoom: int(a.zoom, d.zoom, ZOOM_LIMITS),
     useCustomFont: b("useCustomFont"),
     uiFontFamily: typeof a.uiFontFamily === "string" && a.uiFontFamily.trim() ? a.uiFontFamily.trim() : d.uiFontFamily,
+    uiFontFallback: typeof a.uiFontFallback === "string" ? a.uiFontFallback.trim() : d.uiFontFallback,
     contrastScrollbars: b("contrastScrollbars"),
     redGreenVision: b("redGreenVision"),
     differentToolWindowBackground: b("differentToolWindowBackground"),
@@ -134,6 +139,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
     showToolWindowNames: b("showToolWindowNames"),
+    showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
   };
 }

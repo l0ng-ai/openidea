@@ -16,11 +16,15 @@ pub fn spawn(
         options.args.clear();
         options.env = global.env;
     }
-    // Python › "Activate virtualenv": typed into the new shell, like PyCharm.
-    let activation =
-        host.project(window).ok().filter(|p| p.is_trusted()).and_then(|p| {
-            ide_sdk::apply::terminal_activation(&p.root, &p.settings.effective(), options.shell.as_deref())
-        });
+    let (shell, args) = ide_terminal::resolve_shell(options.shell.as_deref(), &options.args);
+    options.shell = Some(shell.clone());
+    options.args = args;
+    // Python › "Activate virtualenv": typed into the same shell the PTY starts.
+    let activation = host
+        .project(window)
+        .ok()
+        .filter(|p| p.is_trusted())
+        .and_then(|p| ide_sdk::apply::terminal_activation(&p.root, &p.settings.effective(), &shell));
     let info = host.terminals.spawn(options, host.window_sink(window), Box::new(move |chunk| on_output(chunk)))?;
     if let Some(line) = activation {
         let _ = host.terminals.write(info.id, &format!(" {line}\r"));

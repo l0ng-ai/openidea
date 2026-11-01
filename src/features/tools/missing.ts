@@ -12,7 +12,7 @@ import { tx } from "@/platform/i18n";
 
 export const missingKey = (name: string) => `lsp-missing-${name}`;
 
-export async function promptInstall(name: string): Promise<boolean> {
+export async function promptInstall(name: string, sticky = true): Promise<boolean> {
   if (!useTools.getState().loaded) await refreshTools();
   const tool = toolByName(name);
   if (!tool || !tool.canInstall || tool.status !== "missing") return false;
@@ -26,16 +26,19 @@ export async function promptInstall(name: string): Promise<boolean> {
         t.status !== "missing" &&
         t.languages.some((l) => tool.languages.includes(l)),
     );
-  if (served) return false;
+  if (tool.kind !== "formatter" && served) return false;
   const key = missingKey(name);
   const langs = tool.languages.length ? tool.languages.join(", ") : "these files";
   notifications().notify({
     group: "tools",
     level: "warning",
-    title: `${tool.displayName} is not installed`,
-    body: tx`Code insight for ${langs} needs ${tool.command}. Install it via ${tool.installMethod}?`,
+    title: tx`${tool.displayName} is not installed`,
+    body:
+      tool.kind === "formatter"
+        ? tx`Reformat Code needs ${tool.displayName}. Install it via ${tool.installMethod}?`
+        : tx`Code insight for ${langs} needs ${tool.command}. Install it via ${tool.installMethod}?`,
     key,
-    sticky: true,
+    sticky,
     actions: [
       { label: "Install", run: () => void installTool(name, { notificationKey: key }) },
       { label: "Language Servers…", run: () => void executeAction("file.settings", SETTINGS_PAGE_ID) },

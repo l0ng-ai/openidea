@@ -1,5 +1,6 @@
 id = "typescriptreact"
 name = "TypeScript JSX"
+formatter = { tool = "prettier", parser = "typescript", range = true }
 extensions = ["tsx"]
 line-comment = "//"
 block-comment = ["/*", "*/"]

@@ -95,8 +95,8 @@ pub async fn lsp_implementations(
     ide_host::ops::lsp::lsp_implementations(&state.host, window.label(), request, doc, positions).await
 }
 
-/// Contents of a virtual document (library class, decompiled code) that a
-/// language server returned a non-`file:` URI for. Cached per project.
+/// Contents of a read-only language-server document, including JDT library
+/// classes and disk class files. Cached per project.
 #[tauri::command]
 #[specta::specta]
 pub async fn lsp_virtual_document(
@@ -105,6 +105,16 @@ pub async fn lsp_virtual_document(
     uri: String,
 ) -> IdeResult<VirtualDocument> {
     ide_host::ops::lsp::lsp_virtual_document(&state.host, window.label(), uri).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_resolve_class_file(
+    window: Window,
+    state: State<'_, AppState>,
+    path: std::path::PathBuf,
+) -> IdeResult<String> {
+    ide_host::ops::lsp::lsp_resolve_class_file(&state.host, window.label(), path).await
 }
 
 /// References of the symbol at `pos`. `project_wide` also searches project files

@@ -717,6 +717,20 @@ mod tests {
         configure_jdtls(&mut plain, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], None);
         let data = |c: &LanguageServerConfig| c.args[c.args.iter().position(|a| a == "-data").unwrap() + 1].clone();
         assert_ne!(data(&cfg), data(&plain), "a separate workspace, so everything is rebuilt with the agent");
+        let patched = Path::new("/managed/lombok-1.18.48-openidea.1.jar");
+        let mut fixed = jdtls();
+        configure_jdtls(
+            &mut fixed,
+            Path::new("/p"),
+            Path::new("/data"),
+            &[],
+            None,
+            None,
+            JDTLS_MIN_JAVA,
+            &[],
+            Some(patched),
+        );
+        assert_ne!(data(&cfg), data(&fixed), "the patch must rebuild classes compiled with the official agent");
         let before = cfg.clone();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], Some(jar));
         assert_eq!(cfg, before, "idempotent");
@@ -931,6 +945,49 @@ mod tests {
         assert_eq!(project_java_version(dir), Some(11));
         std::fs::write(dir.join("build.gradle.kts"), "sourceCompatibility = '1.8'").unwrap();
         assert_eq!(project_java_version(dir), Some(8));
+    }
+}
+
+/// The same jar supplies the JDT command and the private Maven output redirector.
+pub fn kotlin_bridge_bundle(data_dir: &Path) -> Option<PathBuf> {
+    let extension = data_dir.join("kotlin-bridge-1.0.0.jar");
+    let bytes = include_bytes!("../../../plugins/kotlin-bridge/openidea-kotlin-bridge.jar");
+    if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
+        return Some(extension);
+    }
+    let temporary = data_dir.join(format!(
+        "kotlin-bridge-{}-{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos()
+    ));
+    let result = std::fs::create_dir_all(data_dir)
+        .and_then(|_| std::fs::write(&temporary, bytes))
+        .and_then(|_| std::fs::rename(&temporary, &extension));
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(temporary);
+        tracing::warn!("Kotlin bridge extension unavailable: {error}");
+        return std::fs::read(&extension).is_ok_and(|old| old == bytes).then_some(extension);
+    }
+    Some(extension)
+}
+
+#[cfg(test)]
+mod kotlin_bridge_bundle_tests {
+    #[test]
+    fn embeds_both_runtime_targets_and_repairs_a_damaged_installation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = super::kotlin_bridge_bundle(directory.path()).unwrap();
+        let expected = std::fs::read(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&expected)).unwrap();
+        for (class, major) in [("KotlinLibraries", 65), ("IsolatedOutput", 52)] {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            archive.by_name(&format!("ai/openidea/kotlin/{class}.class")).unwrap().read_to_end(&mut bytes).unwrap();
+            assert_eq!(u16::from_be_bytes([bytes[6], bytes[7]]), major);
+        }
+        std::fs::write(&path, "incomplete").unwrap();
+        assert_eq!(super::kotlin_bridge_bundle(directory.path()), Some(path.clone()));
+        assert_eq!(std::fs::read(path).unwrap(), expected);
     }
 }
 

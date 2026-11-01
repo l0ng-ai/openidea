@@ -299,7 +299,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         config.background_color = Some(frame_color(a, false));
     }
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| b.build())
+        .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
@@ -771,7 +771,7 @@ pub fn open_settings_window(
     #[cfg(not(target_os = "macos"))]
     let builder = builder.and_then(|b| b.parent(&parent));
     let window = builder
-        .and_then(|b| b.build())
+        .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
@@ -883,6 +883,39 @@ fn fit_bounds(parent: (f64, f64, f64, f64), size: (f64, f64), work: (f64, f64, f
 /// (never above the parent's top edge, so the title bar stays reachable).
 fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
+}
+
+/// Reproduce WKWebView's user-font restriction before WKWebView creation. The
+/// private selector and environment override are absent from release builds.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn dev_font_preferences(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    if std::env::var("OPENIDEA_DEV_DISALLOW_USER_FONTS").as_deref() == Ok("1") {
+        use objc2::{MainThreadMarker, msg_send, sel};
+        use objc2_foundation::NSObjectProtocol;
+        let config = unsafe {
+            objc2_web_kit::WKWebViewConfiguration::new(MainThreadMarker::new().expect("window creation on main thread"))
+        };
+        let preferences = unsafe { config.preferences() };
+        if preferences.respondsToSelector(sel!(_setShouldAllowUserInstalledFonts:)) {
+            unsafe {
+                let _: () = msg_send![&preferences, _setShouldAllowUserInstalledFonts: false];
+            }
+            let allowed: bool = unsafe { msg_send![&preferences, _shouldAllowUserInstalledFonts] };
+            tracing::info!(allowed, "Development user-installed fonts override");
+            return builder.with_webview_configuration(config);
+        }
+        tracing::warn!("WKPreferences user-font development selector unavailable");
+    }
+    builder
+}
+
+#[cfg(not(all(debug_assertions, target_os = "macos")))]
+fn dev_font_preferences(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    builder
 }
 
 #[cfg(test)]

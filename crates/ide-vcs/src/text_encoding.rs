@@ -3,7 +3,7 @@ use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use ide_core::{IdeError, IdeResult};
 use std::borrow::Cow;
 
-/// File charset plus an optional reversible ASCII representation (for properties).
+/// File charset plus an optional ASCII representation (for properties).
 /// The host supplies conversion functions so Git and documents share one codec.
 #[derive(Clone, Copy)]
 pub struct TextEncoding {
