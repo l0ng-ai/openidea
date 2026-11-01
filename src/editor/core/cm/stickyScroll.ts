@@ -10,7 +10,6 @@ import { foldNodeProp, syntaxTree } from "@codemirror/language";
 import { highlightTree } from "@lezer/highlight";
 import { backendFolds } from "./folding";
 import { openideaHighlightStyle } from "./highlight";
-import { isScrollSettled } from "./scrollThrottle";
 
 /** Maximum number of sticky lines (Settings › Editor › Code Editing). */
 export const stickyMaxLines = Facet.define<number, number>({
@@ -121,36 +120,23 @@ class StickyScroll {
   update(u: ViewUpdate) {
     if (
       u.docChanged ||
+      u.viewportChanged ||
       u.geometryChanged ||
       syntaxTree(u.startState) !== syntaxTree(u.state) ||
-      u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false) ||
-      isScrollSettled(u)
+      u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false)
     )
       this.schedule();
-    // Viewport moves during a scroll burst are wasteful: the previous rows
-    // stay painted (just no longer aligned), so skip re-measuring until the
-    // scrollSettled effect above re-runs one pass.
-    if (u.viewportChanged && !u.view.dom.classList.contains("cm-scrolling")) this.schedule();
   }
 
-  private onScroll = () => {
-    // The class is set by the scrollThrottle plugin on the same element;
-    // during a burst the stale rows stay visible instead of re-measuring
-    // every frame — catch up on the trailing update after scrolling settles.
-    if (this.view.dom.classList.contains("cm-scrolling")) return;
-    this.schedule();
-  };
+  private onScroll = () => this.schedule();
 
   private schedule() {
-    if (this.scheduled || this.view.dom.classList.contains("cm-scrolling")) return;
+    if (this.scheduled) return;
     this.scheduled = true;
     this.view.requestMeasure({
       key: this,
       read: (view) => {
         this.scheduled = false;
-        // A queued measurement may outlive the start of a scroll burst.
-        // Preserve the painted rows until scrollSettled schedules a fresh pass.
-        if (view.dom.classList.contains("cm-scrolling")) return null;
         const scroller = view.scrollDOM;
         const scrollTop = scroller.scrollTop;
         const docOffset = view.documentTop - scroller.getBoundingClientRect().top + scrollTop;
@@ -180,9 +166,7 @@ class StickyScroll {
         }
         return { lines: headers, gutterWidth, numberWidth, numberLeft, scrollLeft: scroller.scrollLeft };
       },
-      write: (measured) => {
-        if (!measured) return;
-        const { lines, gutterWidth, numberWidth, numberLeft, scrollLeft } = measured;
+      write: ({ lines, gutterWidth, numberWidth, numberLeft, scrollLeft }) => {
         const state = this.view.state;
         const texts = lines.map((n) => (n <= state.doc.lines ? state.doc.line(n).text : ""));
         const tree = syntaxTree(state);
