@@ -243,12 +243,9 @@ pub fn find_executable(name: &str, search: &OsStr) -> Option<std::path::PathBuf>
 /// (`REG_EXPAND_SZ`) are expanded against the current environment. `None` elsewhere:
 /// there a login shell already supplies the user's whole `PATH`.
 #[cfg(windows)]
-use windows_sys::Win32::System::Registry::HKEY;
-
-#[cfg(windows)]
 pub fn user_path() -> Option<OsString> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, KEY_READ, RegCloseKey, RegOpenKeyExW};
+    use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_READ, RegCloseKey, RegOpenKeyExW};
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -275,7 +272,7 @@ pub fn user_path() -> Option<OsString> {
 /// panic with "strings passed to WinAPI cannot contain NULs" — so the text is cut at
 /// the first NUL, not just stripped of trailing ones.
 #[cfg(windows)]
-fn read_registry_string(key: HKEY, name: &[u16]) -> Option<String> {
+fn read_registry_string(key: windows_sys::Win32::System::Registry::HKEY, name: &[u16]) -> Option<String> {
     use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW};
 
@@ -355,10 +352,28 @@ mod tests {
             s.encode_utf16().chain(std::iter::once(0)).collect()
         }
 
+        struct TestState {
+            key: HKEY,
+            name: String,
+            variable: String,
+            previous: Option<OsString>,
+        }
+        impl Drop for TestState {
+            fn drop(&mut self) {
+                // SAFETY: the key belongs to this test; Windows environment mutation is safe.
+                unsafe {
+                    RegCloseKey(self.key);
+                    RegDeleteTreeW(HKEY_CURRENT_USER, wide(&self.name).as_ptr());
+                    match &self.previous {
+                        Some(value) => std::env::set_var(&self.variable, value),
+                        None => std::env::remove_var(&self.variable),
+                    }
+                }
+            }
+        }
         let name = format!("Software\\ai.l0ng.openidea.registry-read-test-{}", std::process::id());
+        let variable = format!("OPENIDEA_TEST_REGVAR_{}", std::process::id());
         let long = "x".repeat(600);
-        // SAFETY: called from this test thread, which no other thread reads the environment on.
-        unsafe { std::env::set_var("OPENIDEA_TEST_REGVAR", &long) };
         let mut key: HKEY = std::ptr::null_mut();
         let opened = unsafe {
             RegCreateKeyExW(
@@ -374,6 +389,9 @@ mod tests {
             )
         };
         assert_eq!(opened, ERROR_SUCCESS, "the test key must be creatable under HKCU\\Software");
+        let _cleanup = TestState { key, name, previous: std::env::var_os(&variable), variable: variable.clone() };
+        // SAFETY: Windows permits environment mutation. No other test uses this process-specific name.
+        unsafe { std::env::set_var(&variable, &long) };
         let set = |value: &str, kind: u32, data: &[u16]| {
             // SAFETY: `key` is open for writing and `data` holds `data.len() * 2` bytes.
             assert_eq!(
@@ -392,17 +410,23 @@ mod tests {
         };
         let read = |value: &str| read_registry_string(key, &wide(value));
         set("Plain", REG_SZ, &wide("plain"));
-        set("Expand", REG_EXPAND_SZ, &wide("%OPENIDEA_TEST_REGVAR%\\bin"));
-        set("ExpandLong", REG_EXPAND_SZ, &wide("%OPENIDEA_TEST_REGVAR%"));
+        set("Expand", REG_EXPAND_SZ, &wide(&format!("%{variable}%\\bin")));
+        set("ExpandLong", REG_EXPAND_SZ, &wide(&format!("%{variable}%")));
+        // Reproduce the reported interior terminator followed by a stale UTF-16 unit.
+        set("TrailingGarbage", REG_SZ, &wide("C:\\Zed\\bin\0n"));
+        set("ExpandTrailingGarbage", REG_EXPAND_SZ, &wide(&format!("%{variable}%\\bin\0n")));
+        set("Empty", REG_SZ, &wide(""));
         let plain = read("Plain");
         let expand = read("Expand");
         let expand_long = read("ExpandLong");
-        unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, wide(&name).as_ptr()) };
-        unsafe { RegCloseKey(key) };
         assert_eq!(plain.as_deref(), Some("plain"));
         assert_eq!(expand.as_deref(), Some(format!("{long}\\bin")).as_deref());
         // Longer than its unexpanded form: needs the re-read at the expanded size.
         assert_eq!(expand_long.as_deref(), Some(long.as_str()));
+        assert_eq!(read("TrailingGarbage").as_deref(), Some("C:\\Zed\\bin"));
+        assert_eq!(read("ExpandTrailingGarbage").as_deref(), Some(format!("{long}\\bin")).as_deref());
+        assert_eq!(read("Empty").as_deref(), Some(""));
+        assert_eq!(read("Missing"), None);
     }
 
     #[test]
