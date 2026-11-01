@@ -1886,6 +1886,12 @@ impl LspManager {
         }
     }
 
+    /// Checks initialized capabilities, including dynamic registrations, before choosing a formatter.
+    pub async fn can_format(&self, doc: DocId) -> IdeResult<bool> {
+        let snap = self.snapshot(doc)?;
+        Ok(!self.ready_targets(&snap.servers, |c| c.has("documentFormattingProvider")).await.is_empty())
+    }
+
     pub async fn format(&self, doc: DocId, range: Option<Range>, options: FormatOptions) -> IdeResult<Vec<TextEdit>> {
         let (method, cap, feature) = match range {
             None => ("textDocument/formatting", "documentFormattingProvider", "formatting"),

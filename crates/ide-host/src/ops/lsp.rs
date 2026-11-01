@@ -214,7 +214,7 @@ pub async fn lsp_format(
     range: Option<Range>,
     options: FormatOptions,
 ) -> IdeResult<Vec<TextEdit>> {
-    host.project(window)?.lsp.format(doc, range, options).await
+    crate::formatter::format(host, window, doc, range, options).await
 }
 
 pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range) -> IdeResult<Vec<InlayHint>> {

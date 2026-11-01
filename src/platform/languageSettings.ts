@@ -42,6 +42,7 @@ export interface LanguagesValid {
     modules: { env: Record<string, string>; autoVendor: boolean };
   };
   typescript: { version: string };
+  prettier: { path: string; languages: string[]; prefer: boolean; runOnSave: boolean };
   java: {
     jdk: string;
     jdtlsJdk: string;
@@ -80,6 +81,27 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
+  prettier: {
+    path: "",
+    languages: [
+      "markdown",
+      "yaml",
+      "css",
+      "scss",
+      "less",
+      "html",
+      "graphql",
+      "javascript",
+      "javascriptreact",
+      "typescript",
+      "typescriptreact",
+      "json",
+      "jsonc",
+      "vue",
+    ],
+    prefer: false,
+    runOnSave: false,
+  },
   java: {
     jdk: "",
     jdtlsJdk: "",
@@ -142,6 +164,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const tags = obj(go.buildTags);
   const modules = obj(go.modules);
   const ts = obj(l.typescript);
+  const prettier = obj(l.prettier);
   const java = obj(l.java);
   const maven = obj(java.maven);
   const gradle = obj(java.gradle);
@@ -177,6 +200,14 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       },
     },
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
+    prettier: {
+      path: text(prettier.path, d.prettier.path),
+      languages: Array.isArray(prettier.languages)
+        ? [...new Set(prettier.languages.filter((v): v is string => typeof v === "string"))]
+        : d.prettier.languages,
+      prefer: bool(prettier.prefer, d.prettier.prefer),
+      runOnSave: bool(prettier.runOnSave, d.prettier.runOnSave),
+    },
     java: {
       jdk: text(java.jdk, d.java.jdk),
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),

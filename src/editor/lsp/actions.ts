@@ -5,6 +5,7 @@ import { executeAction, registerActions, type Action } from "@/platform/actions"
 import { activeEditor, editorsFor, registerSaveParticipant, type TextEditorHandle } from "@/editor/api";
 import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
+import { validateLanguages } from "@/platform/languageSettings";
 import { explicitCompletion } from "./completion";
 import { triggerSignatureHelp } from "./signature";
 import { quickDefinition, quickDocumentation } from "./hover";
@@ -122,8 +123,15 @@ export function registerFormatOnSave(): () => void {
     id: "lsp.formatOnSave",
     order: 50,
     beforeSave: async (ctx, handle) => {
-      if (!handle || ctx.readOnly || !useProject.getState().settings?.editor?.formatOnSave) return;
-      await formatDocument(handle.view, { explicit: false, selectionOnly: false });
+      const settings = useProject.getState().settings;
+      const prettier = validateLanguages(settings?.languages).prettier;
+      if (
+        !handle ||
+        ctx.readOnly ||
+        (!settings?.editor?.formatOnSave && !(prettier.runOnSave && prettier.languages.includes(ctx.language)))
+      )
+        return;
+      await formatDocument(handle.view, { explicit: false, selectionOnly: false, onSave: true });
     },
   });
 }
