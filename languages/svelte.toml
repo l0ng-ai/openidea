@@ -3,6 +3,9 @@ name = "Svelte"
 extensions = ["svelte"]
 block-comment = ["<!--", "-->"]
 indent = { tab-size = 2, insert-spaces = true }
+# No Svelte mode ships with @codemirror/language-data; the HTML mode already
+# parses <script> as TypeScript and <style> as CSS, so components get highlighted.
+ui-mode = "HTML"
 
 [[language-servers]]
 name = "svelte-language-server"
