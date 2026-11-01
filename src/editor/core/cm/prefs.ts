@@ -432,6 +432,7 @@ export const GUTTER_ICON_GROUPS = [
   { id: "bookmarks", gutterClass: "cm-openidea-bookmarks" },
   { id: "inheritors", gutterClass: "cm-openidea-gutter-lineMarkers" },
   { id: "supers", gutterClass: "cm-openidea-gutter-lineMarkers" },
+  { id: "mybatis", gutterClass: "cm-openidea-gutter-mybatis" },
 ] as const;
 
 export interface PrefsOptions {

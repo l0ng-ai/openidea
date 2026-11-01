@@ -1,0 +1,26 @@
+/* MyBatis gutter icons (green arrow): Java mapper methods ↔ mapper.xml statements. */
+.gutter :global(.cm-gutterElement) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+.marker {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+.marker:hover {
+  background: var(--bg-hover);
+}
+/* The target path in the Create Mapper XML dialog. */
+.path {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+  word-break: break-all;
+  opacity: 0.75;
+}

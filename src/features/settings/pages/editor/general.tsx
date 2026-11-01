@@ -597,6 +597,12 @@ const GUTTER = editorPage({
               keywords: ["super method", "overrides", "implements"],
               component: () => <GutterGroup id="supers" label="Implementing and overriding methods" />,
             },
+            {
+              t: "custom",
+              label: "MyBatis",
+              keywords: ["mybatis", "mapper", "xml statement"],
+              component: () => <GutterGroup id="mybatis" label="MyBatis mapper statements" />,
+            },
           ],
         },
       ],

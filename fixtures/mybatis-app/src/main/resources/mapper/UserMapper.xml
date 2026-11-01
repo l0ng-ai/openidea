@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mapper.UserMapper">
+
+
+    <update id="updateName">
+        UPDATE user SET name = #{newName} WHERE id = #{userId}
+    </update>
+    <select id="allUsers">
+        <!-- TODO: write SELECT -->
+    </select>
+
+
+    <select id="count" resultType="long">
+        <!-- TODO: write SELECT -->
+    </select>
+
+
+    <delete id="deleteById">
+        <!-- TODO: write DELETE -->
+    </delete>
+
+    <insert id="insertUser" parameterType="com.example.entity.User">
+        <!-- TODO: write INSERT -->
+        <!-- TODO: add useGeneratedKeys="true" keyProperty="id" to return generated keys -->
+    </insert>
+
+    <select id="selectByStatus">
+        <!-- TODO: write SELECT; params: #{status}, #{keyword} -->
+    </select>
+
+</mapper>
