@@ -1,6 +1,6 @@
 //! Lombok for jdtls: ECJ only generates Lombok members when the language
 //! server's JVM runs `-javaagent:lombok.jar`, so a project using Lombok gets the
-//! newest jar available, managed (installed by the IDE) or in the Maven / Gradle caches.
+//! app-provided jar, or falls back to the newest release in the Maven / Gradle caches.
 
 use crate::home_dir;
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ pub enum LombokAgent {
     Missing,
     Found {
         jar: PathBuf,
-        /// `None` for the managed jar (the latest release when installed).
+        /// `None` for the app-provided jar (its version is shown by the tool registry).
         version: Option<String>,
     },
 }
@@ -64,7 +64,7 @@ pub fn agent_in_args<'a>(args: impl IntoIterator<Item = &'a str>) -> Option<Path
 }
 
 /// The Lombok agent for the project at `root`: the user's own (`own`, from the JVM
-/// options) wins, then `managed` (the IDE-installed jar, always attached: it is inert
+/// options) wins, then `managed` (the app-provided jar, always attached: it is inert
 /// without Lombok on the classpath), then, for a project using Lombok, the build caches
 /// (`maven_repo`, the configured Maven local repository, else the default one).
 pub fn lombok_agent(
@@ -497,6 +497,23 @@ mod tests {
         let managed = lombok_agent(tmp.path(), None, Some("/managed/lombok.jar".into()), Some(repo));
         assert_eq!(managed.jar(), Some(Path::new("/managed/lombok.jar")));
         assert_eq!(managed.problem(), None);
+    }
+
+    #[test]
+    fn the_patched_agent_wins_over_project_caches_but_respects_explicit_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("pom.xml"), LOMBOK_DEP).unwrap();
+        let repo = tmp.path().join("m2");
+        let cache = repo.join("org/projectlombok/lombok/1.18.48");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("lombok-1.18.48.jar"), b"official agent").unwrap();
+        let patched = PathBuf::from("/managed/lombok-1.18.47-openidea.1.jar");
+        let selected = lombok_agent(tmp.path(), None, Some(patched.clone()), Some(repo.clone()));
+        assert_eq!(selected.jar(), Some(patched.as_path()));
+        assert_eq!(selected.problem(), None);
+        let own = PathBuf::from("/custom/lombok.jar");
+        let selected = lombok_agent(tmp.path(), Some(own.clone()), Some(patched), Some(repo));
+        assert_eq!(selected.jar(), Some(own.as_path()));
     }
 
     #[test]

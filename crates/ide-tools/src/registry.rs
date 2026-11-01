@@ -31,6 +31,8 @@ pub enum ReleaseSource {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Method {
+    /// An app-owned plugin jar, materialized without a network download.
+    Bundled { filename: &'static str, version: &'static str, bytes: &'static [u8] },
     /// `rustup component add <component>`.
     Rustup { component: &'static str },
     /// npm / pnpm packages installed into `<tools>/node_modules`; the first is the primary one.
@@ -56,6 +58,7 @@ pub enum Method {
 impl Method {
     pub fn label(&self) -> &'static str {
         match self {
+            Method::Bundled { .. } => "Bundled",
             Method::Rustup { .. } => "rustup",
             Method::Npm { .. } => "npm",
             Method::Go { .. } => "go install",
@@ -578,15 +581,13 @@ pub static TOOLS: &[ToolSpec] = &[
         display: "Lombok (jdtls agent)",
         kind: Plugin,
         commands: &["lombok.jar"],
-        // Newer than the Lombok a project pins: old ones fail inside current ECJ.
-        method: Method::Release {
-            source: ReleaseSource::MavenCentral { group: "org.projectlombok", artifact: "lombok" },
-            assets: &[
-                any_arch(Mac, "lombok-*.jar"),
-                any_arch(Linux, "lombok-*.jar"),
-                any_arch(Windows, "lombok-*.jar"),
-            ],
-            locate: &["lombok.jar"],
+        // Equinox removed getModuleClassLoader(boolean), breaking lombok.config lookup.
+        // Return to Maven Central once an official release includes lombok#4059.
+        // Source commit, build instructions and checksum: plugins/lombok/README.md.
+        method: Method::Bundled {
+            filename: "lombok-1.18.47-openidea.1.jar",
+            version: "1.18.47-openidea.1",
+            bytes: include_bytes!("../../../plugins/lombok/lombok-1.18.47-openidea.1.jar"),
         },
         fallback: None,
         version: V,
