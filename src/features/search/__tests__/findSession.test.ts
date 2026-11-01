@@ -96,6 +96,59 @@ describe("FindSession", () => {
     expect(last().status).toBe("searching");
   });
 
+  it("invalidates before debounce, drops old events, and keeps rows until the first new file", async () => {
+    const { session, deps, running, last } = setup();
+    void session.search(q("foo"));
+    await flush();
+    running[0]!.onFile(file("old.kt", [1, 2]));
+    await flush();
+    const oldFiles = last().files;
+    session.invalidate();
+    expect(deps.cancel).toHaveBeenCalledWith(1);
+    expect(last()).toMatchObject({ stale: true, matchCount: 0, summary: null });
+    expect(last().files).toBe(oldFiles);
+    running[0]!.onFile(file("late.kt", [3]));
+    running[0]!.finish(summary(3));
+    await flush();
+    expect(last().files).toBe(oldFiles);
+    let validate!: () => void;
+    vi.mocked(deps.validate).mockImplementationOnce(
+      () =>
+        new Promise<void>((r) => {
+          validate = r;
+        }),
+    );
+    void session.search(q("bar"));
+    expect(last().stale).toBe(true);
+    expect(last().files).toBe(oldFiles);
+    validate();
+    await flush();
+    expect(last().status).toBe("searching");
+    expect(last().stale).toBe(true);
+    expect(last().files).toBe(oldFiles);
+    running[1]!.onFile(file("new.kt", [4]));
+    await flush();
+    expect(last().stale).toBe(false);
+    expect(last().files.map((f) => f.relPath)).toEqual(["new.kt"]);
+    expect(last().matchCount).toBe(1);
+  });
+
+  it("clears retained rows on completion without results", async () => {
+    const { session, running, last } = setup();
+    void session.search(q("foo"));
+    await flush();
+    running[0]!.onFile(file("old.kt", [1]));
+    running[0]!.finish(summary(1));
+    await flush();
+    void session.search(q("absent"));
+    await flush();
+    expect(last().stale).toBe(true);
+    expect(last().files).toHaveLength(1);
+    running[1]!.finish({ ...summary(0), files: 0 });
+    await flush();
+    expect(last()).toMatchObject({ status: "done", stale: false, files: [], matchCount: 0 });
+  });
+
   it("reports invalid patterns without starting a search", async () => {
     const { session, deps, last } = setup();
     await session.search(q("(", { isRegex: true }));

@@ -120,6 +120,12 @@
 .results > * {
   flex: 1;
 }
+.outdated .rowText,
+.outdated .rowText *,
+.outdated .rowFile,
+.outdated .rowFile * {
+  color: var(--fg-faint);
+}
 .rowText {
   flex: 1;
   min-width: 0;
