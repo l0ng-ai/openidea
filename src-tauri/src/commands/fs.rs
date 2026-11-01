@@ -7,6 +7,38 @@ use tauri::{State, Window};
 
 #[tauri::command]
 #[specta::specta]
+pub async fn fs_entry_kind(state: State<'_, AppState>, path: PathBuf) -> IdeResult<ide_vfs::EntryKind> {
+    fs::entry_kind(&state.host, path).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn fs_compare_directories(
+    window: Window,
+    state: State<'_, AppState>,
+    left: PathBuf,
+    right: PathBuf,
+    request: ide_core::RequestId,
+    on_progress: tauri::ipc::Channel<ide_vfs::DirectoryCompareProgress>,
+) -> IdeResult<Vec<ide_vfs::DirectoryCompareEntry>> {
+    fs::compare_directories(&state.host, window.label(), left, right, request, super::sender(on_progress)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn fs_copy_merge(
+    window: Window,
+    state: State<'_, AppState>,
+    source_root: PathBuf,
+    destination_root: PathBuf,
+    path: PathBuf,
+    overwrite: bool,
+) -> IdeResult<()> {
+    fs::copy_merge(&state.host, window.label(), source_root, destination_root, path, overwrite).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn fs_read_dir(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
     fs::read_dir(&state.host, window.label(), path)
 }

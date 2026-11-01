@@ -1,5 +1,6 @@
 id = "less"
 name = "Less"
+formatter = { tool = "prettier", parser = "less", range = false }
 extensions = ["less"]
 line-comment = "//"
 block-comment = ["/*", "*/"]

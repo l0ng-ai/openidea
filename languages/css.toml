@@ -1,5 +1,6 @@
 id = "css"
 name = "CSS"
+formatter = { tool = "prettier", parser = "css", range = false }
 extensions = ["css", "pcss", "postcss"]
 block-comment = ["/*", "*/"]
 indent = { tab-size = 2, insert-spaces = true }

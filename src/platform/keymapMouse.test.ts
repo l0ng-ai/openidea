@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   formatBinding,
+  dispatchMouseShortcut,
   installKeyboardDispatcher,
   isMouseBinding,
   isValidBinding,
@@ -13,6 +14,7 @@ import {
   useKeymap,
 } from "./keymap";
 import { registerAction } from "./actions";
+import { setContext } from "./context";
 
 const noMods = { metaKey: false, ctrlKey: false, altKey: false, shiftKey: false };
 
@@ -83,6 +85,23 @@ describe("mouse shortcuts", () => {
       for (const e of events) target.dispatchEvent(e);
       return events;
     };
+
+    it("does not prepare the editor for a disabled mouse action", () => {
+      const run = vi.fn();
+      const prepare = vi.fn(() => true);
+      const remove = registerAction({ id: "test.pausedMouse", title: "Evaluate", when: "debugSessionPaused", run });
+      useKeymap.setState({ overrides: { "test.pausedMouse": ["Alt+Button1"] } });
+      setContext("debugSessionPaused", false);
+      const e = new MouseEvent("mousedown", { button: 0, altKey: true, cancelable: true });
+      try {
+        expect(dispatchMouseShortcut(e, prepare)).toBe(false);
+        expect(prepare).not.toHaveBeenCalled();
+        expect(run).not.toHaveBeenCalled();
+        expect(e.defaultPrevented).toBe(false);
+      } finally {
+        remove();
+      }
+    });
 
     it.each([
       ["the editor", () => editor],

@@ -12,6 +12,7 @@ pub enum ToolKind {
     Debugger,
     /// Loaded into another tool's process, e.g. a jdtls agent.
     Plugin,
+    Formatter,
 }
 
 /// Where release archives come from.
@@ -31,6 +32,8 @@ pub enum ReleaseSource {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Method {
+    /// An app-owned plugin jar, materialized without a network download.
+    Bundled { filename: &'static str, version: &'static str, bytes: &'static [u8] },
     /// `rustup component add <component>`.
     Rustup { component: &'static str },
     /// npm / pnpm packages installed into `<tools>/node_modules`; the first is the primary one.
@@ -56,6 +59,7 @@ pub enum Method {
 impl Method {
     pub fn label(&self) -> &'static str {
         match self {
+            Method::Bundled { .. } => "Bundled",
             Method::Rustup { .. } => "rustup",
             Method::Npm { .. } => "npm",
             Method::Go { .. } => "go install",
@@ -102,7 +106,7 @@ impl ToolSpec {
 
 use Arch::{Arm64, X64};
 use Os::{Linux, Mac, Windows};
-use ToolKind::{Debugger, LanguageServer, Plugin};
+use ToolKind::{Debugger, Formatter, LanguageServer, Plugin};
 
 const V: Option<(&str, &[&str])> = None;
 const JAVA: &[(&str, &str)] = &[("java", "Java is required (https://adoptium.net)")];
@@ -119,6 +123,17 @@ const fn ver(cmd: &'static str) -> Option<(&'static str, &'static [&'static str]
 pub const TYPESCRIPT: &str = "typescript@6";
 
 pub static TOOLS: &[ToolSpec] = &[
+    ToolSpec {
+        name: "prettier",
+        display: "Prettier",
+        kind: Formatter,
+        commands: &["prettier"],
+        method: Method::Npm { packages: &["prettier"] },
+        fallback: None,
+        version: ver("prettier"),
+        needs: NODE,
+        homepage: "https://prettier.io",
+    },
     ToolSpec {
         name: "rust-analyzer",
         display: "rust-analyzer",
@@ -578,15 +593,13 @@ pub static TOOLS: &[ToolSpec] = &[
         display: "Lombok (jdtls agent)",
         kind: Plugin,
         commands: &["lombok.jar"],
-        // Newer than the Lombok a project pins: old ones fail inside current ECJ.
-        method: Method::Release {
-            source: ReleaseSource::MavenCentral { group: "org.projectlombok", artifact: "lombok" },
-            assets: &[
-                any_arch(Mac, "lombok-*.jar"),
-                any_arch(Linux, "lombok-*.jar"),
-                any_arch(Windows, "lombok-*.jar"),
-            ],
-            locate: &["lombok.jar"],
+        // Equinox removed getModuleClassLoader(boolean), breaking lombok.config lookup.
+        // Return to Maven Central once an official release includes lombok#4059.
+        // Source commit, build instructions and checksum: plugins/lombok/README.md.
+        method: Method::Bundled {
+            filename: "lombok-1.18.48-openidea.1.jar",
+            version: "1.18.48-openidea.1",
+            bytes: include_bytes!("../../../plugins/lombok/lombok-1.18.48-openidea.1.jar"),
         },
         fallback: None,
         version: V,
@@ -940,6 +953,11 @@ mod tests {
             }
             if let Some(d) = &l.debugger {
                 known.insert((d.adapter.clone(), d.command.clone()));
+            }
+        }
+        for l in &langs {
+            if let Some(f) = &l.formatter {
+                known.insert((f.tool.clone(), f.tool.clone()));
             }
         }
         for t in TOOLS.iter().filter(|t| t.kind != Plugin) {

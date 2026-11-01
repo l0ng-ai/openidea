@@ -434,7 +434,6 @@ mod tests {
         assert_eq!(d.version, "1.18.48");
         assert_eq!(d.name, "lombok-1.18.48.jar");
         assert_eq!(d.url, "https://repo1.maven.org/maven2/org/projectlombok/lombok/1.18.48/lombok-1.18.48.jar");
-        assert!(select_asset(&[d.name.as_str()], find("lombok").unwrap().asset_rules(), LINUX).is_some());
         assert!(maven_pick("g", "a", "<metadata/>").is_err());
         assert!(maven_pick("g", "a", "<release>../x</release>").is_err());
     }

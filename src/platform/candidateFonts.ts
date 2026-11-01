@@ -3,7 +3,7 @@
  * can miss installed families and are only hints; they say nothing about coverage.
  */
 import type { FontFamily } from "@/bindings";
-import { monoFontFamily } from "./fonts";
+import { createFontProbeCanvas, quoteFontFamily } from "./fonts";
 
 // Keep the former editor's 31 candidates for recovery, not as an installed-font whitelist.
 const CANDIDATES = [
@@ -41,9 +41,11 @@ const CANDIDATES = [
 ];
 
 export function detectCandidateFonts(): FontFamily[] {
+  let canvas: HTMLCanvasElement | undefined;
   try {
     if (typeof document === "undefined") return [];
-    const ctx = document.createElement("canvas").getContext("2d");
+    canvas = createFontProbeCanvas();
+    const ctx = canvas.getContext("2d");
     if (!ctx) return [];
     const width = (font: string, text: string) => {
       ctx.font = `32px ${font}`;
@@ -53,13 +55,13 @@ export function detectCandidateFonts(): FontFamily[] {
     const out: FontFamily[] = [];
     for (const name of CANDIDATES) {
       const present = ["monospace", "serif", "sans-serif"].some((base) => {
-        const measured = width(monoFontFamily(name, "", base), sample);
+        const measured = width(`${quoteFontFamily(name)}, ${base}`, sample);
         const baseline = width(base, sample);
         return Number.isFinite(measured) && Number.isFinite(baseline) && measured !== baseline;
       });
       if (!present) continue;
-      const narrow = width(monoFontFamily(name, "", "monospace"), "iiiiiiiiii");
-      const wide = width(monoFontFamily(name, "", "monospace"), "WWWWWWWWWW");
+      const narrow = width(`${quoteFontFamily(name)}, monospace`, "iiiiiiiiii");
+      const wide = width(`${quoteFontFamily(name)}, monospace`, "WWWWWWWWWW");
       out.push({
         name,
         monospaced: Number.isFinite(narrow) && Number.isFinite(wide) && Math.abs(narrow - wide) < 0.5,
@@ -70,5 +72,7 @@ export function detectCandidateFonts(): FontFamily[] {
     // Canvas can be absent or disabled in browser development / hardened webviews.
     // Never mark unmeasurable candidates as installed. The service adds bundled faces.
     return [];
+  } finally {
+    canvas?.remove();
   }
 }

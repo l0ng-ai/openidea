@@ -68,8 +68,12 @@ import { setFocusedSession, focusedSession, type FocusedSession } from "./sessio
 import { taskMenu } from "./taskActions";
 import styles from "./Session.module.css";
 
-export function SessionEditor({ input }: { input: EditorInput }) {
+export function SessionEditor({ input, docked = false }: { input: EditorInput; docked?: boolean }) {
   const id = (input.data as { task: string }).task;
+  return <TaskSession key={id} id={id} docked={docked} />;
+}
+
+function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const task = useAgents((s) => s.tasks.get(id));
   const entries = useAgents((s) => s.entries.get(id));
   const changes = useAgents((s) => s.changes.get(id));
@@ -78,7 +82,7 @@ export function SessionEditor({ input }: { input: EditorInput }) {
     task?.isolation === "local" ? task.status : null,
     project?.workspace ? (task?.projectRoot ?? project.root) : null,
   );
-  const [changesOpen, setChangesOpen] = useChangesOpen(id, changes ?? null);
+  const [changesOpen, setChangesOpen] = useChangesOpen(id, changes ?? null, docked);
   // The subagent conversation shown, with the subagents that lead to it (empty: the task's own).
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
@@ -90,8 +94,10 @@ export function SessionEditor({ input }: { input: EditorInput }) {
   useEffect(() => {
     void loadEntries(id).catch(() => undefined);
     void refreshChanges(id);
-    return markVisible(id);
   }, [id]);
+  useEffect(() => {
+    if (!docked || !changesOpen) return markVisible(id);
+  }, [id, docked, changesOpen]);
   useEffect(() => {
     if (view) void loadEntries(id, view).catch(() => undefined);
   }, [id, view]);
@@ -113,7 +119,7 @@ export function SessionEditor({ input }: { input: EditorInput }) {
   if (!task) return <EmptyState title="This agent task no longer exists" />;
   return (
     <div
-      className={styles.session}
+      className={clsx(styles.session, docked && styles.docked)}
       onFocusCapture={() => setFocusedSession(session)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedSession() === session) {
@@ -121,7 +127,7 @@ export function SessionEditor({ input }: { input: EditorInput }) {
         }
       }}
     >
-      <div className={styles.conversation}>
+      <div className={styles.conversation} hidden={docked && changesOpen}>
         <Header
           task={task}
           entries={entries ?? null}
@@ -129,6 +135,7 @@ export function SessionEditor({ input }: { input: EditorInput }) {
           changes={changes ?? null}
           changesOpen={changesOpen}
           onToggleChanges={() => setChangesOpen(!changesOpen)}
+          docked={docked}
         />
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
         <PermissionBanner task={task} entries={entries ?? null} />
@@ -151,7 +158,13 @@ export function SessionEditor({ input }: { input: EditorInput }) {
         )}
       </div>
       {changesOpen && (
-        <ChangesPane task={task} changes={changes ?? null} head={head} onHide={() => setChangesOpen(false)} />
+        <ChangesPane
+          task={task}
+          changes={changes ?? null}
+          head={head}
+          docked={docked}
+          onHide={() => setChangesOpen(false)}
+        />
       )}
     </div>
   );
@@ -193,6 +206,7 @@ function Header({
   changes,
   changesOpen,
   onToggleChanges,
+  docked,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
@@ -200,6 +214,8 @@ function Header({
   changes: AgentChange[] | null;
   changesOpen: boolean;
   onToggleChanges: () => void;
+  /** The tool window bar above a docked conversation already shows the title. */
+  docked?: boolean;
 }) {
   const project = useProject((s) => s.project);
   const projectName = project?.workspace ? basename(task.projectRoot ?? project.root) : null;
@@ -215,9 +231,11 @@ function Header({
       }}
     >
       <TaskStatusIcon status={task.status} />
-      <span className={styles.title} title={task.title}>
-        {task.title}
-      </span>
+      {!docked && (
+        <span className={styles.title} title={task.title}>
+          {task.title}
+        </span>
+      )}
       <span className={styles.headerDetail} title={task.cwd}>
         <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
         <span className={styles.headerText}>
@@ -258,6 +276,7 @@ function Header({
         className={styles.changesToggle}
         aria-pressed={changesOpen}
         disabled={count === 0 && !changesOpen}
+        aria-label={changesOpen ? tx("Hide changes") : tx("Show changes")}
         title={changesOpen ? tx("Hide changes") : tx("Show changes")}
         onClick={onToggleChanges}
       >
@@ -372,11 +391,29 @@ interface StreamProps {
 function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
-  const stick = useRef(true);
+  const key = entriesKey(task.id, subagent?.id ?? null);
+  const positions = useAgents.getState().scrollPositions;
+  const position = useRef(positions.get(key) ?? { top: 0, stick: true });
+  const restored = useRef(false);
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
+    if (!el || entries === null) return;
+    if (position.current.stick) el.scrollTop = el.scrollHeight;
+    else if (!restored.current) el.scrollTop = position.current.top;
+    restored.current = true;
   });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      if (position.current.stick) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
+    };
+  }, [key, positions]);
   const waiting = entries?.some((e) => e.type === "permission" && !e.chosen);
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
@@ -391,7 +428,8 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         tabIndex={-1}
         onScroll={(e) => {
           const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          position.current = { top: el.scrollTop, stick: el.scrollHeight - el.scrollTop - el.clientHeight < 40 };
+          positions.set(key, position.current);
         }}
         // Copy, plus Quote for a selection: replies to it in the composer.
         onContextMenu={(e) => {
@@ -1261,16 +1299,22 @@ function loadChangesOpen(): Record<string, boolean> {
 
 /**
  * Whether the Changes pane is shown for `task`: the user's choice once made, else
- * only while the task has changes (so it opens when the agent first edits a file).
+ * only while the task has changes. Docked sessions stay in the conversation until
+ * the user explicitly opens changes; navigation there does not change editor preferences.
  */
-function useChangesOpen(task: string, changes: AgentChange[] | null): [boolean, (open: boolean) => void] {
+function useChangesOpen(
+  task: string,
+  changes: AgentChange[] | null,
+  docked: boolean,
+): [boolean, (open: boolean) => void] {
   const [state, setState] = useState<{ task: string; open: boolean | undefined }>(() => ({
     task,
-    open: loadChangesOpen()[task],
+    open: docked ? false : loadChangesOpen()[task],
   }));
-  const chosen = state.task === task ? state.open : loadChangesOpen()[task];
+  const chosen = state.task === task ? state.open : docked ? false : loadChangesOpen()[task];
   const set = (open: boolean) => {
     setState({ task, open });
+    if (docked) return;
     try {
       globalThis.localStorage?.setItem(CHANGES_OPEN_KEY, JSON.stringify({ ...loadChangesOpen(), [task]: open }));
     } catch {
@@ -1284,11 +1328,13 @@ function ChangesPane({
   task,
   changes,
   head,
+  docked,
   onHide,
 }: {
   task: AgentTask;
   changes: AgentChange[] | null;
   head: string | null;
+  docked: boolean;
   onHide: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -1297,6 +1343,7 @@ function ChangesPane({
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
       <div className={styles.changesHeader}>
+        {docked && <IconButton icon="arrow-left" title="Back to conversation" size="small" onClick={onHide} />}
         <span className={styles.changesTitle}>
           <T>Changes</T>
         </span>
@@ -1307,7 +1354,7 @@ function ChangesPane({
         )}
         <span className={styles.bannerSpacer} />
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshChanges(task.id)} />
-        <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />
+        {!docked && <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />}
       </div>
       {(head ?? task.base) && (
         <div className={styles.changesSummary}>

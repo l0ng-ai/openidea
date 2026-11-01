@@ -735,8 +735,8 @@ fn sh_quote(s: &str) -> String {
 }
 
 /// Command typed into a new terminal to activate the project virtualenv
-/// (PyCharm's Tools › Terminal › "Activate virtualenv"), for the given shell.
-pub fn terminal_activation(root: &Path, s: &Settings, shell: Option<&str>) -> Option<String> {
+/// (Tools › Terminal › "Activate virtualenv"). `shell` must be the resolved PTY shell.
+pub fn terminal_activation(root: &Path, s: &Settings, shell: &str) -> Option<String> {
     if !s.languages.python.activate_virtualenv {
         return None;
     }
@@ -744,12 +744,8 @@ pub fn terminal_activation(root: &Path, s: &Settings, shell: Option<&str>) -> Op
     if std::env::var_os("VIRTUAL_ENV").is_some_and(|v| Path::new(&v) == venv) {
         return None;
     }
-    let shell = shell
-        .map(str::to_owned)
-        .or_else(|| std::env::var("SHELL").ok())
-        .or_else(|| std::env::var("COMSPEC").ok())
-        .unwrap_or_default();
-    let name = Path::new(&shell).file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    let name = Path::new(name).file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let script = |file: &str| venv.join(bin_dir()).join(file);
     let line = match name.as_str() {
         "fish" => format!("source {}", sh_quote(&script("activate.fish").to_string_lossy())),

@@ -497,7 +497,7 @@ pub fn available_shells() -> Vec<String> {
 
 /// Picks the shell binary and its arguments. A default (or explicitly chosen but
 /// argument-less) POSIX shell is started as a login shell, like Terminal.app/IDEA.
-fn resolve_shell(shell: Option<&str>, args: &[String]) -> (String, Vec<String>) {
+pub fn resolve_shell(shell: Option<&str>, args: &[String]) -> (String, Vec<String>) {
     let shell = shell.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or_else(default_shell);
     if !args.is_empty() {
         return (shell, args.to_vec());
@@ -808,8 +808,12 @@ mod tests {
         assert_eq!((shell.as_str(), args), ("/bin/zsh", vec!["-l".to_owned()]));
         let (_, args) = resolve_shell(Some("/usr/bin/python3"), &[]);
         assert!(args.is_empty());
-        let (_, args) = resolve_shell(None, &[]);
-        assert_eq!(args, vec!["-l".to_owned()]);
+        for configured in [None, Some(""), Some(" \t ")] {
+            let (shell, args) = resolve_shell(configured, &[]);
+            assert_eq!(shell, default_shell_path());
+            assert_eq!(args, vec!["-l".to_owned()]);
+        }
+        assert_eq!(resolve_shell(Some(" /bin/bash "), &["-i".into()]), ("/bin/bash".into(), vec!["-i".into()]));
         assert_eq!(shell_title("C:\\Program Files\\PowerShell\\7\\pwsh.exe"), "pwsh");
         let env = terminal_env(&BTreeMap::from([("TERM".into(), "dumb".into())]));
         assert_eq!(env["TERM"], "dumb");

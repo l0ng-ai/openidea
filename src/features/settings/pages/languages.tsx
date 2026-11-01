@@ -4,6 +4,7 @@
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
 import { GoPage, JavaPage, NodePage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
+import { PrettierPage } from "../languages/PrettierPage";
 import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
 import { GoBuildTagsPage, GO_BUILD_TAG_SECTIONS } from "../languages/GoBuildTags";
@@ -106,6 +107,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 402,
     keywords: ["node interpreter", "package manager", "npm", "pnpm", "yarn", "bun", "nvm"],
     component: NodePage,
+  },
+  {
+    id: "languages.prettier",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Prettier",
+    group: LANGUAGES_GROUP,
+    order: 403.5,
+    keywords: ["formatter", "prettier", "markdown", "yaml", "css", "format on save", "node_modules"],
+    component: PrettierPage,
   },
   {
     id: "languages.rust",

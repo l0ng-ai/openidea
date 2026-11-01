@@ -1,0 +1,5 @@
+<component-set><components><component>
+  <role>org.apache.maven.AbstractMavenLifecycleParticipant</role>
+  <role-hint>openidea-kotlin-output</role-hint>
+  <implementation>ai.openidea.kotlin.IsolatedOutput</implementation>
+</component></components></component-set>

@@ -284,6 +284,11 @@ fn hex_color(hex: &str) -> Option<Color> {
 /// Builds a project window painted in the saved theme's frame colour, so it
 /// doesn't flash the light default before its page (and splash) loads.
 fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<WebviewWindow> {
+    let visible = cfg!(target_os = "macos") && config.visible;
+    let focused = config.focus;
+    if visible {
+        config.visible = false;
+    }
     let state = app.try_state::<AppState>();
     let appearance = state.as_ref().map(|s| s.global_settings.effective().appearance);
     // A plugin theme replaces the built-in one in either OS mode; the UI records its resolved frame.
@@ -293,8 +298,10 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     } else if let Some(a) = &appearance {
         config.background_color = Some(frame_color(a, false));
     }
+    #[cfg(target_os = "linux")]
+    let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| b.build())
+        .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
@@ -304,6 +311,16 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         && window.theme().is_ok_and(|t| t == Theme::Dark)
     {
         let _ = window.set_background_color(Some(frame_color(&a, true)));
+    }
+    #[cfg(target_os = "linux")]
+    if show_after_build {
+        window.show().map_err(|e| IdeError::internal(format!("cannot show window: {e}")))?;
+    }
+    if visible {
+        window.show().map_err(|e| IdeError::internal(format!("cannot show window: {e}")))?;
+        if focused {
+            let _ = window.set_focus();
+        }
     }
     Ok(window)
 }
@@ -754,13 +771,15 @@ pub fn open_settings_window(
         config.background_color = Some(color);
     }
     windows.set_launch(&label, Launch { settings_page: page, new_projects, ..Default::default() });
+    #[cfg(target_os = "linux")]
+    crate::linux_window_state::prepare(app, &mut config);
     let builder = WebviewWindowBuilder::from_config(app, &config);
     // AppKit child windows can disappear when dragged to another display's Space.
     // The settings label already tracks ownership and parent-close cleanup.
     #[cfg(not(target_os = "macos"))]
     let builder = builder.and_then(|b| b.parent(&parent));
     let window = builder
-        .and_then(|b| b.build())
+        .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create settings window: {e}")))?;
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
@@ -821,7 +840,7 @@ fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri:
 /// may still be on another display with a different scale, so its size is converted with its own
 /// scale and its position is given in physical pixels.
 #[cfg(not(target_os = "macos"))]
-fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+pub(super) fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
     // Placement setters leave maximized mode. Fit the restored frame, then reapply the saved state.
     // A restored fullscreen window already covers its display and must not be fitted to the work area.
     if window.is_fullscreen()? {
@@ -884,6 +903,39 @@ fn fit_bounds(parent: (f64, f64, f64, f64), size: (f64, f64), work: (f64, f64, f
 /// (never above the parent's top edge, so the title bar stays reachable).
 fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
+}
+
+/// Reproduce WKWebView's user-font restriction before WKWebView creation. The
+/// private selector and environment override are absent from release builds.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn dev_font_preferences(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    if std::env::var("OPENIDEA_DEV_DISALLOW_USER_FONTS").as_deref() == Ok("1") {
+        use objc2::{MainThreadMarker, msg_send, sel};
+        use objc2_foundation::NSObjectProtocol;
+        let config = unsafe {
+            objc2_web_kit::WKWebViewConfiguration::new(MainThreadMarker::new().expect("window creation on main thread"))
+        };
+        let preferences = unsafe { config.preferences() };
+        if preferences.respondsToSelector(sel!(_setShouldAllowUserInstalledFonts:)) {
+            unsafe {
+                let _: () = msg_send![&preferences, _setShouldAllowUserInstalledFonts: false];
+            }
+            let allowed: bool = unsafe { msg_send![&preferences, _shouldAllowUserInstalledFonts] };
+            tracing::info!(allowed, "Development user-installed fonts override");
+            return builder.with_webview_configuration(config);
+        }
+        tracing::warn!("WKPreferences user-font development selector unavailable");
+    }
+    builder
+}
+
+#[cfg(not(all(debug_assertions, target_os = "macos")))]
+fn dev_font_preferences(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    builder
 }
 
 #[cfg(test)]

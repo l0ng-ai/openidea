@@ -97,6 +97,7 @@ pub async fn build_sync(
     host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
+    let bridge_profiles = profiles.clone();
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         let current = load(&root, &cache, &settings);
@@ -137,6 +138,9 @@ pub async fn build_sync(
         // jdtls re-imports on pom changes but misses artifacts added to ~/.m2
         // meanwhile ("missing artifact" stays until Invalidate Caches); asking it
         // to update the project configurations re-resolves them (#436).
+        if let Some(bridge) = &project.kotlin_bridge {
+            bridge.configure_maven(offline, bridge_profiles);
+        }
         let lsp = project.lsp.clone();
         let uris = maven.projects.iter().map(|p| ide_lsp::path_to_uri_string(&project.root.join(&p.pom))).collect();
         tokio::spawn(async move {

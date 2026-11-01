@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentConfigOption } from "@/bindings";
 import { ConfigPickers, configPickerOptions } from "./ConfigPickers";
@@ -84,4 +84,29 @@ it("sends the complete nested model id through ConfigPickers", () => {
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByRole("option", { name: "Beamcmc/Beam" }));
   expect(onChange).toHaveBeenCalledExactlyOnceWith("model", "9router/cmc/Beam");
+});
+
+it("edits secondary settings from the compact popup and restores focus when dismissed", () => {
+  const approval: AgentConfigOption = {
+    id: "approvals",
+    name: "Approvals",
+    category: "approval",
+    description: null,
+    current: "ask",
+    via: "option",
+    values: [value("ask", "Ask first"), value("bypass", "Bypass approvals")],
+  };
+  const onChange = vi.fn();
+  render(<ConfigPickers config={[approval]} values={{ approvals: "bypass" }} onChange={onChange} />);
+  const trigger = screen.getByRole("button", { name: "Agent settings" });
+  trigger.focus();
+  fireEvent.click(trigger);
+  const dialog = screen.getByRole("dialog", { name: "Agent settings" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Approvals" }));
+  fireEvent.click(screen.getByRole("option", { name: "Ask first" }));
+  expect(onChange).toHaveBeenCalledExactlyOnceWith("approvals", "ask");
+  expect(dialog).toBeInTheDocument();
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "Agent settings" })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
 });
