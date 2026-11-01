@@ -1665,7 +1665,10 @@ async fn class_file_opening_routes_sources_and_binary_documents() {
     s.respond("workspace/executeCommand", json!({"org.eclipse.jdt.ls.core.sourcePaths":[sources]}));
     for class in ["Outer", "Outer$Nested", "Outer$1"] {
         let path = h.root.join(format!("target/classes/p/{class}.class"));
-        assert_eq!(h.mgr.java_class_file(&path, None).await.unwrap(), source.to_string_lossy());
+        let resolved = h.mgr.java_class_file(&path, None).await.unwrap();
+        // Compare as paths: the manager joins the relative source path with std::path, so
+        // separators can differ from the literal "p/Outer.java" used to build `source` on Windows.
+        assert_eq!(Path::new(&resolved), source.as_path());
     }
     let path = h.root.join("build/classes/java/main/p/Missing.class");
     let uri = uri_of(&path);
