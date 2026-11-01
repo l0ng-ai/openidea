@@ -13,12 +13,21 @@ import { basename } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, IconButton, List, Popup, fileIconName, listNavigate } from "@/ui";
 import { openLocation, readFileLines } from "./ipc";
-import { showUsageResults, usageCount, useUsagesPopup, type Usage, type UsageGroup } from "./usages";
+import {
+  dismissUsagesPopup,
+  showUsageResults,
+  usageCount,
+  useUsagesPopup,
+  type Usage,
+  type UsageGroup,
+} from "./usages";
 import { UsagePreview } from "./UsagesView";
 import styles from "./UsagesPopup.module.css";
 import { tx } from "@/platform/i18n";
 
-const close = () => useUsagesPopup.setState({ open: false });
+import { UsageAccessFilter, filterUsageAccess, useUsageAccessOptions } from "./UsageAccessFilter";
+
+const close = dismissUsagesPopup;
 
 const PREVIEW_KEY = "openidea.usages.popupPreview.v1";
 
@@ -52,10 +61,13 @@ export function filterUsages(items: readonly Usage[], filter: string): Usage[] {
 /** The popup's groups as locations for the Find Usages tool window. */
 export function usageLocations(groups: readonly UsageGroup[]) {
   return groups.flatMap((g) =>
-    g.usages.map((u) => ({
-      path: u.path,
-      range: { start: { line: u.line, col: u.col }, end: { line: u.line, col: u.endCol } },
-    })),
+    g.usages.map(
+      (u) =>
+        u.sourceLocation ?? {
+          path: u.path,
+          range: { start: { line: u.line, col: u.col }, end: { line: u.line, col: u.endCol } },
+        },
+    ),
   );
 }
 
@@ -71,7 +83,11 @@ function UsagesPopupInner() {
   const preview = useUsagesPopupPreview((s) => s.preview);
   const all = useMemo<Usage[]>(() => groups.flatMap((g) => g.usages), [groups]);
   const [filter, setFilter] = useState("");
-  const items = useMemo(() => filterUsages(all, filter), [all, filter]);
+  const accessOptions = useUsageAccessOptions();
+  const items = useMemo(
+    () => filterUsages(filterUsageAccess(all, accessOptions), filter),
+    [all, filter, accessOptions],
+  );
   const [active, setActive] = useState(0);
   const current = Math.min(active, items.length - 1);
   const total = usageCount(groups);
@@ -82,10 +98,22 @@ function UsagesPopupInner() {
   };
   const openInFindWindow = () => {
     close();
-    void showUsageResults({ symbol, locations: usageLocations(groups) });
+    void showUsageResults({
+      symbol,
+      note,
+      locations: usageLocations(groups),
+      classified: groups.flatMap((g) =>
+        g.usages.map((u) => ({
+          location: usageLocations([{ path: g.path, usages: [u] }])[0]!,
+          kind: u.kind ?? "unknown",
+          access: u.access,
+        })),
+      ),
+    });
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key !== "Escape" && e.target instanceof Element && e.target.closest("button")) return;
     const next = listNavigate(e.key, { items, active: current, wrap: true, pageSize: 10 });
     if (next !== null) {
       e.preventDefault();
@@ -120,7 +148,9 @@ function UsagesPopupInner() {
         <div className={styles.header}>
           <span className={styles.title}>
             {symbol ? tx`Usages of ${symbol}` : tx("Usages")}{" "}
-            <span className={styles.count}>{filter ? tx`${items.length} of ${total} found` : tx`${total} found`}</span>
+            <span className={styles.count}>
+              {filter || items.length !== total ? tx`${items.length} of ${total} found` : tx`${total} found`}
+            </span>
           </span>
           {filter && (
             <span className={clsx(styles.filter, !items.length && styles.noMatch)} role="status">
@@ -140,11 +170,14 @@ function UsagesPopupInner() {
             {keys ? ` ${keys}` : ""}
           </button>
         </div>
+        <UsageAccessFilter items={all} />
         {note && <div className={styles.note}>{note}</div>}
         <div className={styles.body} style={{ height: Math.max(1, Math.min(14, items.length)) * ROW }}>
           <List
             items={items}
-            getKey={(u) => `${u.path}:${u.line}:${u.col}`}
+            getKey={(u) =>
+              `${u.path}:${u.line}:${u.col}:${u.sourceLocation?.range.end.line ?? u.line}:${u.sourceLocation?.range.end.col ?? u.endCol}`
+            }
             activeIndex={current}
             onActiveChange={setActive}
             focusable={false}
@@ -152,7 +185,11 @@ function UsagesPopupInner() {
             rowHeight={ROW}
             aria-label="Usages"
             onActivate={pick}
-            empty={<div className={styles.empty}>{tx`Nothing matches '${filter}'`}</div>}
+            empty={
+              <div className={styles.empty}>
+                {filter ? tx`Nothing matches '${filter}'` : tx("No usages match the access filters")}
+              </div>
+            }
             renderItem={(u) => (
               <div className={styles.row}>
                 <Icon name={fileIconName(basename(u.path))} size={14} className={styles.icon} />

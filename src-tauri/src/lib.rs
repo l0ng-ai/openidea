@@ -3,6 +3,7 @@
 //! This crate is glue only. Each `commands/<domain>.rs` is a thin, typed
 //! adapter from IPC to a backend crate; no domain logic lives here.
 
+mod application_focus;
 mod commands;
 #[cfg(debug_assertions)]
 mod dev;
@@ -95,10 +96,19 @@ pub fn run() {
                 let label = label.to_owned();
                 let command = request.message.command().to_owned();
                 let invoke = invoke.clone();
+                let app = webview.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
                     match connection.authorize_command(&label, &command).await {
                         Ok(()) => {
-                            invoke(request);
+                            let resolver = request.resolver.clone();
+                            // Sync commands must run on the main thread, as they do in local windows.
+                            if let Err(error) = app.run_on_main_thread(move || {
+                                invoke(request);
+                            }) {
+                                resolver.reject(ide_core::IdeError::internal(format!(
+                                    "failed to dispatch command on the main thread: {error}"
+                                )));
+                            }
                         }
                         Err(error) => request.resolver.reject(error),
                     }
@@ -125,6 +135,9 @@ pub fn run() {
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
         app.manage(windows);
+        app.manage(application_focus::ApplicationFocus::default());
+        #[cfg(target_os = "macos")]
+        application_focus::observe(app.handle());
         app.manage(menu_state);
         if let Some(paths) = setup_opens.lock().take() {
             windows::open_paths_at_launch(app.handle(), paths);
@@ -135,10 +148,12 @@ pub fn run() {
     })
     .on_window_event(|window, event| match event {
         tauri::WindowEvent::Focused(true) => {
+            application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.focused(window.label());
             }
         }
+        tauri::WindowEvent::Focused(false) => application_focus::changed(window.app_handle(), false),
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
             titlebar::forget(window);

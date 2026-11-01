@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { DEFAULT_SSH_CONFIG } from "@/platform/remoteSettings";
 import { commands, type Settings } from "@/platform/ipc";
 
 const settingsSet = vi.fn();
@@ -239,6 +240,28 @@ describe("Settings dialog", () => {
       ["global", "editor.boldFontWeight", "650"],
       ["global", "editor.fontWeight", "450"],
     ]);
+  });
+
+  it("enables Apply and Reset for a secret-only edit, and Reset discards it", async () => {
+    current = setAt(current, "ssh.configs", [{ ...DEFAULT_SSH_CONFIG, id: "ssh-dialog", auth: "password" }]);
+    useProject.setState({ settings: current });
+    const needsSecret = vi.spyOn(commands, "sshNeedsSecret").mockResolvedValue({ status: "ok", data: true });
+    const setSecret = vi.spyOn(commands, "sshSetSecret").mockResolvedValue();
+    try {
+      const dialog = await openDialog("tools.sshConfigurations");
+      const apply = within(dialog).getByRole("button", { name: "Apply" });
+      expect(apply).toBeDisabled();
+      fireEvent.change(within(dialog).getByLabelText("Password"), { target: { value: crypto.randomUUID() } });
+      expect(apply).toBeEnabled();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Reset" }));
+      expect(within(dialog).getByLabelText("Password")).toHaveValue("");
+      expect(apply).toBeDisabled();
+      expect(setSecret).not.toHaveBeenCalled();
+      expect(settingsSet).not.toHaveBeenCalled();
+    } finally {
+      needsSecret.mockRestore();
+      setSecret.mockRestore();
+    }
   });
 
   it("Cancel discards staged edits", async () => {

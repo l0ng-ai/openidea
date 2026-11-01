@@ -343,3 +343,30 @@ pub async fn lsp_execute_command(
 ) -> IdeResult<()> {
     ide_host::ops::lsp::lsp_execute_command(&state.host, window.label(), doc, command).await
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_resolve_command(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    server: ServerId,
+    command: Command,
+    answers: Vec<FormAnswer>,
+) -> IdeResult<Option<CommandForm>> {
+    ide_host::ops::lsp::lsp_resolve_command(&state.host, window.label(), request, doc, server, command, answers).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_execute_code_action(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    action: CodeAction,
+    answers: Vec<FormAnswer>,
+) -> IdeResult<Vec<ide_core::IpcPath>> {
+    ide_host::ops::lsp::lsp_execute_code_action(&state.host, window.label(), request, doc, action, answers).await
+}

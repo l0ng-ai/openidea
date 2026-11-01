@@ -27,6 +27,7 @@ struct MockState {
     /// uri → text as reconstructed by the mock from didOpen/didChange.
     docs: Mutex<HashMap<String, String>>,
     responses: Mutex<HashMap<String, Value>>,
+    errors: Mutex<HashMap<String, (i64, String)>>,
     /// Computes a response from the request and the open documents (before `responses`).
     responder: Mutex<Option<Responder>>,
     peer: Mutex<Option<Peer>>,
@@ -122,6 +123,9 @@ impl Handler for MockHandler {
             "initialize" => Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } })),
             "shutdown" => Ok(Value::Null),
             _ => {
+                if let Some(error) = s.errors.lock().get(method).cloned() {
+                    return Err(error);
+                }
                 let responder = s.responder.lock().clone();
                 if let Some(v) = responder.and_then(|f| f(s, method, &params)) {
                     return Ok(v);
@@ -1010,6 +1014,76 @@ async fn settings_changes_reach_servers_without_restarts() {
     h.wait_status("extra", ServerStatus::Ready).await;
     eventually(|| h.launcher.state("extra").notified("textDocument/didOpen").len() == 2).await;
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_source_paths_reach_initialization_live_configuration_and_builds() {
+    let h = harness_configured("java", "java", &[("jdtls", incremental_caps())], |cfg| {
+        cfg.initialization_options = Some(
+            toml::Value::try_from(json!({
+                "bundles": [], "settings": {"java": {"project": {"referencedLibraries": ["lib/**/*.jar"]}}}
+            }))
+            .unwrap(),
+        );
+    });
+    let paths = Arc::new(Mutex::new(Some(vec!["src/main/java".into()])));
+    h.mgr.set_config_hook(Box::new({
+        let paths = paths.clone();
+        move |cfg, _| ide_lsp::jdtls::configure_source_paths(cfg, paths.lock().clone())
+    }));
+    let (_, file) = h.open("Main.java", "public class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let init = state.requested("initialize")[0].clone();
+    assert_eq!(init["initializationOptions"]["settings"]["java"]["project"]["sourcePaths"], json!(["src/main/java"]));
+    assert_eq!(init["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+    *paths.lock() = Some(vec!["generated".into(), "tests".into()]);
+    h.mgr.reconfigure().await;
+    eventually(|| {
+        state
+            .notified("workspace/didChangeConfiguration")
+            .last()
+            .is_some_and(|p| p["settings"]["java"]["project"]["sourcePaths"] == json!(["generated", "tests"]))
+    })
+    .await;
+    let notification = state.notified("workspace/didChangeConfiguration").pop().unwrap();
+    assert_eq!(notification["settings"]["java"]["project"]["referencedLibraries"], json!(["lib/**/*.jar"]));
+    assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    state.respond("java/buildWorkspace", json!(1));
+    assert_eq!(
+        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        ide_lsp::jdtls::JavaBuildStatus::Succeeded
+    );
+    assert_eq!(state.requested("java/buildWorkspace"), vec![json!(false)]);
+
+    // Removing the last hint restores importer inference. Omitting a setting
+    // in didChangeConfiguration would retain jdtls's previous preference.
+    *paths.lock() = None;
+    h.mgr.reconfigure().await;
+    eventually(|| state.launches.load(Ordering::SeqCst) == 2).await;
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let init = state.requested("initialize").pop().unwrap();
+    assert!(init["initializationOptions"]["settings"]["java"]["project"].get("sourcePaths").is_none());
+    assert_eq!(init["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    std::fs::create_dir_all(h.root.join("src/demo")).unwrap();
+    let file = h.root.join("src/demo/Main.java");
+    std::fs::write(&file, "package demo; public class Main {}").unwrap();
+    h.mgr.set_config_hook(Box::new(|cfg, _| {
+        ide_lsp::jdtls::configure_source_paths(cfg, Some(vec!["src".into()]));
+    }));
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    assert_eq!(
+        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        ide_lsp::jdtls::JavaBuildStatus::Succeeded
+    );
+    assert_eq!(state.requested("initialize")[0]["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+    assert!(state.notified("textDocument/didOpen").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1960,6 +2034,155 @@ async fn references_report_a_capped_candidate_search() {
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
 }
 
+/// The Java command must participate in the same widening contract as standard LSP.
+#[tokio::test(flavor = "multi_thread")]
+async fn classified_java_references_widen_without_losing_metadata() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    *s.responder.lock() = Some(Arc::new(|s, method, _| {
+        (method == "workspace/executeCommand").then(|| {
+            let docs = s.docs.lock();
+            let access = if docs.len() == 1 { "read" } else { "readWrite" };
+            Value::Array(
+                docs.iter()
+                    .flat_map(|(uri, text)| {
+                        occurrences(uri, text)
+                            .into_iter()
+                            .map(|location| json!({"location": location, "kind": "field", "access": access}))
+                    })
+                    .collect(),
+            )
+        })
+    }));
+    let b = h.root.join("b.java");
+    std::fs::write(&b, "target++;").unwrap();
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let seen = grep_candidates(&h);
+    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    assert_eq!(scoped.locations.len(), 1);
+    assert!(seen.lock().is_empty());
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 2);
+    assert_eq!(refs.classified.len(), 2);
+    assert!(refs.classified.iter().all(|r| matches!(r.access, Some(ReferenceAccess::ReadWrite))));
+    assert!(refs.classified.iter().all(|r| matches!(r.kind, ReferenceKind::Field)));
+    assert_eq!(refs.incomplete, None);
+    assert_eq!(s.requested("workspace/executeCommand").len(), 3);
+    assert!(s.requested("textDocument/references").is_empty());
+    eventually(|| uris(&s.notified("textDocument/didClose")) == vec![uri_of(&b)]).await;
+    for limit_hit in [true, false] {
+        let skipped = h.root.join("large.java");
+        std::fs::write(&skipped, " ".repeat((1 << 20) + 1)).unwrap();
+        h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+            files: vec![skipped.clone()],
+            limit_hit,
+        }));
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        assert_eq!(
+            refs.incomplete,
+            Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_java_command_falls_back_to_unclassified_native_references() {
+    for project_wide in [false, true] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+        let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+        let s = h.launcher.state("jdtls");
+        s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "NoSuchMethodError".into()));
+        *s.responder.lock() = Some(open_files_only(Vec::new()));
+        let (doc, path) = h.open("a.java", "int target;");
+        h.wait_status("jdtls", ServerStatus::Ready).await;
+        eventually(|| s.docs.lock().len() == 1).await;
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, project_wide, Default::default()).await.unwrap();
+        assert_eq!(refs.locations.len(), 1);
+        assert_eq!(refs.locations[0].path, path);
+        assert!(refs.classified.is_empty());
+        assert_eq!(s.requested("workspace/executeCommand").len(), 1);
+        assert_eq!(s.requested("textDocument/references").len(), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_widened_java_command_retries_with_native_references() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let native = open_files_only(Vec::new());
+    *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+        if method == "workspace/executeCommand" {
+            // The initial query succeeds, but the next extension query fails.
+            s.errors.lock().insert(method.into(), (-32603, "reflection failed".into()));
+            return Some(Value::Array(
+                s.docs
+                    .lock()
+                    .iter()
+                    .flat_map(|(uri, text)| {
+                        occurrences(uri, text)
+                            .into_iter()
+                            .map(|location| json!({"location": location, "kind": "field", "access": "read"}))
+                    })
+                    .collect(),
+            ));
+        }
+        native(s, method, params)
+    }));
+    std::fs::write(h.root.join("b.java"), "target++;").unwrap();
+    grep_candidates(&h);
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 2);
+    assert!(refs.classified.is_empty());
+    assert_eq!(s.requested("workspace/executeCommand").len(), 2);
+    assert_eq!(s.requested("textDocument/references").len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn superseded_java_command_does_not_fall_back() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let mgr = Arc::downgrade(&h.mgr);
+    *s.responder.lock() = Some(Arc::new(move |_, method, _| {
+        if method != "workspace/executeCommand" {
+            return None;
+        }
+        mgr.upgrade().unwrap().did_change(doc, 2, &[change(rng(0, 0, 0, 0), " ")], &|| unreachable!());
+        // Invalid extension response after the source version changed.
+        Some(json!({"failed": true}))
+    }));
+    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(s.requested("textDocument/references").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelled_java_command_does_not_fall_back() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32800, "cancelled".into()));
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(s.requested("textDocument/references").is_empty());
+}
+
 /// What each search widened with candidate files reports for the symbol at the start of `doc`.
 async fn incomplete_reports(h: &Harness, doc: DocId) -> Vec<(&'static str, Option<ReferencesIncomplete>)> {
     let at = Pos::new(0, 5);
@@ -2323,4 +2546,139 @@ async fn external_projects_are_capability_gated_and_follow_lifecycle() {
         .await;
         h.mgr.shutdown_all().await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gopls_interactive_command_validates_before_execution_and_applies_edits() {
+    let mut caps = incremental_caps();
+    caps["experimental"] = json!({"interactiveResolveProvider": {"kinds": ["command"]}});
+    caps["executeCommandProvider"] = json!({"commands": ["gopls.implement_interface", "gopls.add_test"]});
+    let h = harness(&[("gopls", caps)]);
+    let (doc, path) = h.open("probe.mk", "type T struct{}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    let s = h.launcher.state("gopls");
+    let server = h.mgr.servers()[0].id;
+    assert_eq!(
+        s.requested("initialize")[0]["capabilities"]["experimental"]["interactiveResolve"],
+        json!({"inputTypes": ["string"]})
+    );
+    let new_file = h.root.join("probe_test.go");
+    let edit = json!({"documentChanges": [{"kind": "create", "uri": uri_of(&new_file)}, {
+        "textDocument": {"uri": uri_of(&path), "version": 1},
+        "edits": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "// generated\n"}]
+    }]});
+    *s.responder.lock() = Some(Arc::new(move |s, method, p| {
+        if method == "command/resolve" {
+            let valid = p["formAnswers"][0]["value"] == "pkg.I";
+            return Some(if valid {
+                json!({"command": p["command"], "arguments": p["arguments"], "formAnswers": p["formAnswers"]})
+            } else {
+                json!({"command": p["command"], "arguments": p["arguments"], "formFields": [{"id": "interface", "description": "Enter interface", "required": true, "type": {"kind": "string"}, "error": if p["formAnswers"].as_array().is_some_and(|a| !a.is_empty()) { "Unknown interface" } else { "" }}]})
+            });
+        }
+        if method == "workspace/executeCommand" {
+            if p["command"] != "gopls.add_test" {
+                assert_eq!(p["formAnswers"], json!([{"id": "interface", "value": "pkg.I"}]));
+            }
+            let reply: Value = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(s.peer().request(
+                    "workspace/applyEdit",
+                    json!({"edit": edit}),
+                    None,
+                ))
+            })
+            .unwrap();
+            assert_eq!(reply, json!({"applied": true}));
+            return Some(Value::Null);
+        }
+        None
+    }));
+    let applied = Arc::new(Mutex::new(Vec::new()));
+    let received = applied.clone();
+    h.mgr.set_apply_edit_hook(Box::new(move |edit| {
+        received.lock().push(edit);
+        true
+    }));
+    let command = Command {
+        title: "Implement".into(),
+        command: "gopls.implement_interface".into(),
+        arguments: vec![json!({"location": 1})],
+    };
+    let token = ide_core::CancellationToken::new;
+    let initial = h.mgr.resolve_command(doc, server, command.clone(), vec![], token()).await.unwrap().unwrap();
+    assert_eq!(initial.form_fields[0].description, "Enter interface");
+    let invalid = h
+        .mgr
+        .resolve_command(
+            doc,
+            server,
+            command.clone(),
+            vec![FormAnswer { id: "interface".into(), value: "bad".into() }],
+            token(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(invalid.form_fields[0].error.as_deref(), Some("Unknown interface"));
+    assert!(applied.lock().is_empty());
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let cancelled = token();
+    cancelled.cancel();
+    let err = h.mgr.resolve_command(doc, server, command.clone(), vec![], cancelled).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    let cancelled = token();
+    cancelled.cancel();
+    let err = h.mgr.execute_action_command(doc, server, command.clone(), vec![], cancelled).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(applied.lock().is_empty());
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let validated = h
+        .mgr
+        .resolve_command(
+            doc,
+            server,
+            command,
+            vec![FormAnswer { id: "interface".into(), value: "pkg.I".into() }],
+            token(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(validated.form_fields.is_empty());
+    h.mgr.execute_action_command(doc, server, validated.command, validated.form_answers, token()).await.unwrap();
+    assert_eq!(applied.lock().len(), 1);
+    let created = h
+        .mgr
+        .execute_action_command(
+            doc,
+            server,
+            Command { title: "Test".into(), command: "gopls.add_test".into(), arguments: vec![] },
+            vec![],
+            token(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created, vec![new_file]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interactive_capability_is_scoped_to_gopls() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("probe.mk", "x\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    assert_eq!(s.requested("initialize")[0]["capabilities"]["experimental"], json!({}));
+    let form = h
+        .mgr
+        .resolve_command(
+            doc,
+            h.mgr.servers()[0].id,
+            Command { title: "Run".into(), command: "mock.run".into(), arguments: vec![json!(1)] },
+            vec![],
+            ide_core::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(form.is_none());
+    assert!(s.requested("command/resolve").is_empty());
 }

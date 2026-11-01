@@ -35,6 +35,48 @@ const ACCESS_OPTIONS: [&str; 2] = [
     "org.eclipse.jdt.core.compiler.problem.discouragedReference",
 ];
 
+/// Keep the source model in protocol settings so jdtls's invisible-project
+/// initialization and configuration use the same roots as workspace builds.
+pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, paths: Option<Vec<String>>) {
+    if cfg.name != SERVER {
+        return;
+    }
+    if let Some(paths) = paths {
+        let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
+        settings["java"]["project"]["sourcePaths"] = json!(paths);
+        cfg.settings = Some(settings);
+    }
+}
+
+pub(crate) fn source_paths_removed(
+    current: &ide_language::LanguageServerConfig,
+    next: &ide_language::LanguageServerConfig,
+) -> bool {
+    current.name == SERVER
+        && crate::handler::all_settings(current).pointer("/java/project/sourcePaths").is_some()
+        && crate::handler::all_settings(next).pointer("/java/project/sourcePaths").is_none()
+}
+
+pub(crate) fn source_trigger(root: &Path, paths: &[Value]) -> Option<PathBuf> {
+    for path in paths.iter().filter_map(Value::as_str) {
+        // Runs can start jdtls without an editor. Invisible-project import still
+        // needs a Java trigger file; discovery is bounded and runs off async workers.
+        let found = ignore::WalkBuilder::new(root.join(path))
+            .standard_filters(false)
+            .max_depth(Some(32))
+            .build()
+            .take(4000)
+            .filter_map(Result::ok)
+            .find(|e| {
+                e.file_type().is_some_and(|t| t.is_file()) && e.path().extension().is_some_and(|ext| ext == "java")
+            });
+        if let Some(entry) = found {
+            return Some(entry.into_path());
+        }
+    }
+    None
+}
+
 fn compiler_defaults(cfg: &ide_language::LanguageServerConfig) -> Value {
     // updateSettings persists project options. Only use it when jdtls redirects
     // generated metadata into its workspace, and never touch an existing .settings.
@@ -517,6 +559,64 @@ impl LspManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn java_config() -> ide_language::LanguageServerConfig {
+        let language: ide_language::LanguageConfig =
+            toml::from_str(include_str!("../../../languages/java.toml")).unwrap();
+        language.language_servers.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn source_settings_preserve_java_defaults_and_library_resolution() {
+        let mut cfg = java_config();
+        configure_source_paths(&mut cfg, Some(vec!["src/main/java".into(), "tests".into()]));
+        let settings = crate::handler::all_settings(&cfg);
+        assert_eq!(settings["java"]["project"]["sourcePaths"], json!(["src/main/java", "tests"]));
+        assert_eq!(settings["java"]["project"]["referencedLibraries"], json!(["lib/**/*.jar"]));
+        assert_eq!(settings["java"]["autobuild"]["enabled"], true);
+        assert!(settings.get("bundles").is_none());
+        assert!(settings.get("settings").is_none(), "didChangeConfiguration takes java settings directly");
+    }
+
+    #[test]
+    fn unmarked_and_managed_source_models_are_not_overridden() {
+        let mut cfg = java_config();
+        let initial = cfg.clone();
+        configure_source_paths(&mut cfg, None);
+        assert_eq!(cfg, initial);
+        assert!(crate::handler::all_settings(&cfg).pointer("/java/project/sourcePaths").is_none());
+        configure_source_paths(&mut cfg, Some(vec!["custom".into()]));
+        assert!(source_paths_removed(&cfg, &initial));
+        assert!(!source_paths_removed(&initial, &cfg));
+        let mut other = initial;
+        other.name = "other".into();
+        let initial = other.clone();
+        configure_source_paths(&mut other, Some(vec!["custom".into()]));
+        assert_eq!(other, initial);
+    }
+
+    #[test]
+    fn explicit_java_protocol_settings_override_defaults_in_either_shape() {
+        for wrapped in [false, true] {
+            let mut cfg = java_config();
+            let settings = json!({"java": {"project": {"referencedLibraries": ["vendor/*.jar"]}}});
+            cfg.settings = Some(if wrapped { json!({"settings": settings}) } else { settings });
+            configure_source_paths(&mut cfg, Some(vec!["custom".into()]));
+            let settings = crate::handler::all_settings(&cfg);
+            assert_eq!(settings["java"]["project"]["referencedLibraries"], json!(["vendor/*.jar"]));
+            assert_eq!(settings["java"]["project"]["sourcePaths"], json!(["custom"]));
+        }
+    }
+
+    #[test]
+    fn run_without_an_editor_discovers_a_trigger_inside_its_source_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/demo/engine")).unwrap();
+        let file = dir.path().join("src/demo/engine/Main.java");
+        std::fs::write(&file, "package demo.engine; public class Main {}").unwrap();
+        assert_eq!(source_trigger(dir.path(), &[json!("generated"), json!("src")]), Some(file));
+        assert_eq!(source_trigger(dir.path(), &[json!("tests")]), None);
+    }
 
     #[tokio::test]
     async fn cancellation_ends_a_pending_wait() {

@@ -609,6 +609,21 @@ fn go_work_members_define_configs_including_deep_and_quoted_directories() {
 }
 
 #[test]
+fn go_work_external_member_has_a_plain_absolute_working_directory() {
+    let dir = project(&[
+        ("workspace/go.work", "go 1.22\nuse ../external\n"),
+        ("external/go.mod", "module example.com/external\ngo 1.22\n"),
+        ("external/main.go", "package main\nfunc main() {}"),
+    ]);
+    let configs = detect(&dir.path().join("workspace"));
+    let run = configs.iter().find(|c| c.kind == "go" && !c.is_test).unwrap();
+    let cwd = run.cwd.as_deref().unwrap();
+    assert_eq!(cwd, dunce::canonicalize(dir.path().join("external")).unwrap());
+    assert!(cwd.is_absolute());
+    assert!(!cwd.to_string_lossy().starts_with(r"\\?\"));
+}
+
+#[test]
 fn go_work_parser_ignores_other_directives_comments_and_malformed_groups() {
     use ide_run::go::work_modules;
     assert_eq!(

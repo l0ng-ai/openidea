@@ -7,6 +7,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import clsx from "clsx";
 import type { AgentCommand, AgentConfigOption, AgentImage } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { nativeDropPoint } from "@/platform/nativeDrop";
+import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
@@ -221,13 +223,12 @@ export function Composer(props: ComposerProps) {
           const p = event.payload;
           if (p.type !== "drop" || !p.paths.length) return;
           const box = boxRef.current?.getBoundingClientRect();
-          const ratio = window.devicePixelRatio || 1;
-          const [x, y] = [p.position.x / ratio, p.position.y / ratio];
+          const { x, y } = nativeDropPoint(p.position);
           if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
           const refs: FileRef[] = [];
           for (const path of p.paths) {
             if (IMAGE_EXTENSIONS.test(path)) {
-              void call(commands.fsReadImage(path)).then((url) => {
+              void invokeLocal<string>("fs_read_image", { path }).then((url) => {
                 const image = imageFromDataUrl(url, basename(path));
                 if (image) addImages([image]);
               });

@@ -129,6 +129,7 @@ impl Target {
 }
 
 struct DocSnap {
+    version: i32,
     path: PathBuf,
     uri: lsp::Uri,
     language: LanguageId,
@@ -168,6 +169,7 @@ pub struct LspManager {
     servers: Mutex<Vec<Arc<Server>>>,
     docs: Mutex<HashMap<DocId, DocState>>,
     apply_edit_hook: RwLock<Option<ApplyEditHook>>,
+    applied_edits: tokio::sync::broadcast::Sender<(ide_core::ServerId, WorkspaceEdit)>,
     config_hook: RwLock<Option<ConfigHook>>,
     prepare_hook: RwLock<Option<Arc<PrepareFn>>>,
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
@@ -175,6 +177,7 @@ pub struct LspManager {
     excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
     shutting_down: AtomicBool,
     execution_allowed: AtomicBool,
+    java_usages_warned: AtomicBool,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
@@ -300,6 +303,7 @@ impl LspManager {
             servers: Mutex::new(Vec::new()),
             docs: Mutex::new(HashMap::new()),
             apply_edit_hook: RwLock::new(None),
+            applied_edits: tokio::sync::broadcast::channel(64).0,
             config_hook: RwLock::new(None),
             prepare_hook: RwLock::new(None),
             servers_hook: RwLock::new(None),
@@ -307,6 +311,7 @@ impl LspManager {
             excludes_hook: RwLock::new(None),
             shutting_down: AtomicBool::new(false),
             execution_allowed: AtomicBool::new(true),
+            java_usages_warned: AtomicBool::new(false),
             shown_messages: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
@@ -513,7 +518,19 @@ impl LspManager {
             }
         };
 
-        let init = self.initialize_params(&server);
+        let mut init = self.initialize_params(&server);
+        if server.name == "jdtls"
+            && init["initializationOptions"].get("triggerFiles").is_none()
+            && let Some(paths) = init
+                .pointer("/initializationOptions/settings/java/project/sourcePaths")
+                .and_then(Value::as_array)
+                .cloned()
+        {
+            let root = server.root.clone();
+            if let Ok(Some(path)) = tokio::task::spawn_blocking(move || jdtls::source_trigger(&root, &paths)).await {
+                init["initializationOptions"]["triggerFiles"] = json!([uri::path_to_uri_string(&path)]);
+            }
+        }
         let result = tokio::time::timeout(INITIALIZE_TIMEOUT, peer.request::<_, Value>("initialize", init, None))
             .await
             .unwrap_or(Err(RpcError::Timeout));
@@ -656,12 +673,26 @@ impl LspManager {
     fn initialize_params(&self, server: &Server) -> Value {
         let root_uri = uri::path_to_uri(&server.root);
         let name = server.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "root".into());
-        let init_options = server
-            .effective_config()
-            .initialization_options
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok())
-            .unwrap_or(Value::Null);
+        let cfg = server.effective_config();
+        let mut init_options =
+            cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or(Value::Null);
+        if server.name == "jdtls" {
+            if !init_options.is_object() {
+                init_options = json!({});
+            }
+            init_options["settings"] = handler::all_settings(&cfg);
+            let triggers: Vec<_> = self
+                .docs
+                .lock()
+                .values()
+                .filter(|d| d.language.as_str() == "java" && d.path.starts_with(&server.root))
+                .map(|d| uri::path_to_uri_string(&d.path))
+                .collect();
+            if !triggers.is_empty() && init_options.get("triggerFiles").is_none() {
+                // Re-import cached invisible projects with the current source model.
+                init_options["triggerFiles"] = json!(triggers);
+            }
+        }
         let mut params = json!({
             "processId": std::process::id(),
             "clientInfo": { "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
@@ -672,6 +703,9 @@ impl LspManager {
             "capabilities": caps::client_capabilities(),
             "trace": "off",
         });
+        if server.name == "gopls" {
+            params["capabilities"]["experimental"]["interactiveResolve"] = json!({ "inputTypes": ["string"] });
+        }
         if !init_options.is_null() {
             params["initializationOptions"] = init_options;
         }
@@ -888,6 +922,7 @@ impl LspManager {
         let docs = self.docs.lock();
         let d = docs.get(&doc).ok_or_else(|| IdeError::not_found(format!("{doc} is not open")))?;
         Ok(DocSnap {
+            version: d.version,
             path: d.path.clone(),
             uri: d.uri.clone(),
             language: d.language.clone(),
@@ -1156,6 +1191,106 @@ impl LspManager {
         cancel: CancellationToken,
     ) -> IdeResult<References> {
         let (snap, targets) = self.doc_targets(doc, "find references", |c| c.has("referencesProvider")).await?;
+        // The extension preserves method identity before JDT collapses references to locations.
+        // Old/custom servers retain the standard protocol, including cancellation and scope widening.
+        if targets.len() == 1
+            && targets[0].server.name == "jdtls"
+            && targets[0].caps().commands().iter().any(|c| c == "openidea.java.usages")
+        {
+            let classified = async {
+                let t = &targets[0];
+                let extension_error = Mutex::new(None);
+                let query = || async {
+                    if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                        return Err(IdeError::cancelled());
+                    }
+                    let params = snap.pos_params(t, pos);
+                    #[derive(serde::Deserialize)]
+                    struct JavaReference {
+                        #[serde(default)]
+                        access: Option<ReferenceAccess>,
+                        location: lsp::Location,
+                        kind: ReferenceKind,
+                    }
+                    let result: IdeResult<Vec<JavaReference>> = self
+                        .call(
+                            t,
+                            "workspace/executeCommand",
+                            json!({
+                                "command": "openidea.java.usages",
+                                "arguments": [params["textDocument"]["uri"], params["position"]["line"],
+                                    params["position"]["character"], include_declaration]
+                            }),
+                            Some(&cancel),
+                            LONG_TIMEOUT,
+                        )
+                        .await;
+                    if let Err(e) = &result {
+                        *extension_error.lock() = Some(e.clone());
+                    }
+                    let rows = result?;
+                    if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                        return Err(IdeError::cancelled());
+                    }
+                    let conv = self.conv(t.enc());
+                    Ok(rows
+                        .into_iter()
+                        .filter_map(|r| {
+                            conv.location(&r.location).map(|location| ClassifiedReference {
+                                location,
+                                kind: r.kind,
+                                access: r.access,
+                            })
+                        })
+                        .collect::<Vec<_>>())
+                };
+                let files = |v: &Vec<ClassifiedReference>| {
+                    v.iter().filter(|r| r.location.uri.is_none()).map(|r| r.location.path.to_path_buf()).collect()
+                };
+                let widened = if project_wide {
+                    self.widened(&snap, t, pos, &cancel, query, files).await?
+                } else {
+                    let first = query().await?;
+                    let empty = first.is_empty();
+                    scope::Widened::only(first, empty, &t.server)
+                };
+                // A changed source also invalidates an earlier answer retained by scope widening.
+                if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                    return Err(IdeError::cancelled());
+                }
+                // Scope widening can retain the first answer after a failed second query.
+                if let Some(e) = extension_error.into_inner() {
+                    return Err(e);
+                }
+                let mut seen = std::collections::HashSet::new();
+                // Prefer the second query's metadata for repeated locations.
+                let classified: Vec<_> = widened
+                    .second
+                    .into_iter()
+                    .flatten()
+                    .chain(widened.first)
+                    .filter(|r| seen.insert(r.location.clone()))
+                    .collect();
+                let locations: Vec<Location> = classified.iter().map(|r| r.location.clone()).collect();
+                self.note_virtual(&t.server, locations.iter().map(|l| l.uri.as_deref()));
+                Ok(References { locations, classified, incomplete: widened.incomplete })
+            }
+            .await;
+            match classified {
+                Ok(references) => return Ok(references),
+                Err(e) => {
+                    if e.kind == ErrorKind::Cancelled
+                        || cancel.is_cancelled()
+                        || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version)
+                    {
+                        return Err(IdeError::cancelled());
+                    }
+                    if !self.java_usages_warned.swap(true, Ordering::Relaxed) {
+                        tracing::warn!("Java usages extension failed; using standard references: {e}");
+                    }
+                }
+            }
+        }
         let requests = targets.iter().map(|t| {
             let (snap, cancel) = (&snap, &cancel);
             async move {
@@ -1418,6 +1553,92 @@ impl LspManager {
         let params = json!({ "command": command.command, "arguments": command.arguments });
         let _: Value = self.call(t, "workspace/executeCommand", params, None, LONG_TIMEOUT).await?;
         Ok(())
+    }
+
+    async fn command_target(&self, doc: DocId, server: ide_core::ServerId, name: &str) -> IdeResult<Target> {
+        let snap = self.snapshot(doc)?;
+        self.ready_targets(&snap.servers, |c| c.commands().iter().any(|c| c == name))
+            .await
+            .into_iter()
+            .find(|t| t.server.id == server)
+            .ok_or_else(|| IdeError::unavailable(format!("no language server provides command `{name}`")))
+    }
+
+    /// Resolve only after explicit invocation; previews must never ask for input.
+    pub async fn resolve_command(
+        &self,
+        doc: DocId,
+        server: ide_core::ServerId,
+        command: Command,
+        answers: Vec<FormAnswer>,
+        cancel: CancellationToken,
+    ) -> IdeResult<Option<CommandForm>> {
+        let t = self.command_target(doc, server, &command.command).await?;
+        let interactive = t.server.name == "gopls"
+            && t.caps()
+                .raw
+                .pointer("/experimental/interactiveResolveProvider/kinds")
+                .and_then(Value::as_array)
+                .is_some_and(|k| k.iter().any(|v| v == "command"));
+        if !interactive {
+            return Ok(None);
+        }
+        let params = json!({ "command": command.command, "arguments": command.arguments, "formAnswers": answers });
+        let response: Value = self.call(&t, "command/resolve", params, Some(&cancel), LONG_TIMEOUT).await?;
+        let parse_error = |e: serde_json::Error| IdeError::internal(format!("invalid command form: {e}"));
+        let fields = response.get("formFields").filter(|v| !v.is_null()).cloned().unwrap_or(json!([]));
+        for field in fields.as_array().into_iter().flatten() {
+            if field.pointer("/type/kind").and_then(Value::as_str) != Some("string") {
+                return Err(IdeError::unavailable("unsupported command input type"));
+            }
+        }
+        Ok(Some(CommandForm {
+            command: Command {
+                title: command.title,
+                command: response
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| IdeError::internal("command form omitted command"))?
+                    .to_owned(),
+                arguments: serde_json::from_value(response.get("arguments").cloned().unwrap_or(json!([])))
+                    .map_err(parse_error)?,
+            },
+            form_fields: serde_json::from_value(fields).map_err(parse_error)?,
+            form_answers: serde_json::from_value(
+                response.get("formAnswers").filter(|v| !v.is_null()).cloned().unwrap_or(json!([])),
+            )
+            .map_err(parse_error)?,
+        }))
+    }
+
+    /// Execute on the originating server and return files from successfully applied edits.
+    pub async fn execute_action_command(
+        &self,
+        doc: DocId,
+        server: ide_core::ServerId,
+        command: Command,
+        answers: Vec<FormAnswer>,
+        cancel: CancellationToken,
+    ) -> IdeResult<Vec<PathBuf>> {
+        let t = self.command_target(doc, server, &command.command).await?;
+        let open_created = t.server.name == "gopls" && command.command == "gopls.add_test";
+        let mut edits = self.applied_edits.subscribe();
+        let mut params = json!({ "command": command.command, "arguments": command.arguments });
+        if !answers.is_empty() {
+            params["formAnswers"] = json!(answers);
+        }
+        let _: Value = self.call(&t, "workspace/executeCommand", params, Some(&cancel), LONG_TIMEOUT).await?;
+        let mut created = Vec::new();
+        while let Ok((origin, edit)) = edits.try_recv() {
+            if open_created && origin == server {
+                for file in edit.files {
+                    if let ide_core::FileEdit::Create { path, .. } = file {
+                        created.push(path.into());
+                    }
+                }
+            }
+        }
+        Ok(created)
     }
 
     pub async fn prepare_rename(&self, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
@@ -2081,6 +2302,7 @@ impl LspManager {
             let without_settings = |c: &LanguageServerConfig| LanguageServerConfig { settings: None, ..c.clone() };
             if let Some(run) = s.running()
                 && without_settings(&next) == without_settings(&current)
+                && !jdtls::source_paths_removed(&current, &next)
             {
                 s.set_effective_config(next);
                 let params = json!({ "settings": handler::all_settings(&s.effective_config()) });

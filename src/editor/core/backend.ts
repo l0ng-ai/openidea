@@ -22,6 +22,9 @@ import {
   type TextChange,
 } from "@/platform/ipc";
 
+import { EditorState } from "@codemirror/state";
+import { customRegions } from "./cm/regions";
+
 export type LanguageInfo = LanguageInfo_Serialize;
 
 export interface DocPatchedEvent {
@@ -129,6 +132,8 @@ const EXT_LANG: Record<string, string> = {
   cmd: "bat",
   sql: "sql",
   xml: "xml",
+  svg: "xml",
+  vue: "vue",
 };
 
 const MEM_LANGUAGES: LanguageInfo[] = [
@@ -240,6 +245,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     blockComment: null,
     indent: { tabSize: 4, insertSpaces: true },
   },
+  ...["xml", "html", "vue", "css"].map((id): LanguageInfo => ({
+    id,
+    name: id.toUpperCase(),
+    extensions: id === "xml" ? ["xml", "svg"] : [id],
+    uiMode: id === "xml" ? "XML" : id === "css" ? "CSS" : id === "vue" ? "Vue" : "HTML",
+    lineComment: null,
+    blockComment: id === "css" ? ["/*", "*/"] : ["<!--", "-->"],
+    indent: { tabSize: 2, insertSpaces: true },
+  })),
   {
     id: "plaintext",
     name: "Plain Text",
@@ -507,8 +521,24 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
     },
     async folding(doc) {
       const d = get(doc);
-      const out: FoldRange[] = [];
-      const seen = new Set<number>();
+      const info = MEM_LANGUAGES.find((language) => language.id === d.language);
+      const state = EditorState.create({
+        doc: d.text,
+        extensions: EditorState.languageData.of(() => [
+          {
+            commentTokens: {
+              line: info?.lineComment ?? undefined,
+              block: info?.blockComment && { open: info.blockComment[0], close: info.blockComment[1] },
+            },
+          },
+        ]),
+      });
+      const out: FoldRange[] = customRegions(state).map((region) => ({
+        start_line: region.startLine - 1,
+        end_line: region.endLine - 1,
+        kind: "region",
+      }));
+      const seen = new Set(out.map((fold) => fold.start_line));
       const stack: number[] = [];
       d.text.split("\n").forEach((line, i) => {
         for (const ch of line) {

@@ -78,7 +78,10 @@ describe("foldsFromRanges", () => {
   });
 
   it("folds a custom region from its start marker through its end marker", () => {
-    const s = EditorState.create({ doc: "class A {\n  //region Fields\n  int a;\n  //endregion\n}\n" });
+    const s = EditorState.create({
+      doc: "class A {\n  //region Fields\n  int a;\n  //endregion\n}\n",
+      extensions: EditorState.languageData.of(() => [{ commentTokens: { line: "//" } }]),
+    });
     const [f] = foldsFromRanges(s, [fold(1, 3)]);
     expect(f).toMatchObject({ from: s.doc.line(2).from + 2, to: s.doc.line(4).to, custom: true });
   });

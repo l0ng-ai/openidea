@@ -145,6 +145,34 @@ pub struct Command {
     pub arguments: Vec<serde_json::Value>,
 }
 
+/// The string form supported by gopls's experimental interactive command protocol.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FormAnswer {
+    pub id: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FormField {
+    pub id: String,
+    pub description: String,
+    pub required: bool,
+    #[serde(default)]
+    pub default: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandForm {
+    pub command: Command,
+    pub form_fields: Vec<FormField>,
+    pub form_answers: Vec<FormAnswer>,
+}
+
 /// One `textDocument/inlineCompletion` suggestion (ghost text at the caret).
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -338,6 +366,10 @@ pub enum ReferencesIncomplete {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct References {
+    /// Semantic classifications supplied by a language extension. Missing entries are unknown.
+    #[serde(default)]
+    #[specta(optional)]
+    pub classified: Vec<ClassifiedReference>,
     pub locations: Vec<Location>,
     pub incomplete: Option<ReferencesIncomplete>,
 }
@@ -354,4 +386,32 @@ pub struct Renamed {
 pub struct CallHierarchy {
     pub items: Vec<HierarchyItem>,
     pub incomplete: Option<ReferencesIncomplete>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ReferenceKind {
+    Getter,
+    Setter,
+    Field,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ReferenceAccess {
+    Read,
+    Write,
+    ReadWrite,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct ClassifiedReference {
+    /// Optional for older Java extensions; missing means unclassified.
+    #[serde(default)]
+    #[specta(optional)]
+    pub access: Option<ReferenceAccess>,
+    pub location: Location,
+    pub kind: ReferenceKind,
 }

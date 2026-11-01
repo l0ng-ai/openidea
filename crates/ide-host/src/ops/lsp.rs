@@ -290,6 +290,58 @@ pub async fn lsp_execute_command(host: &Host, window: &str, doc: DocId, command:
     host.project(window)?.lsp.execute_command(doc, command).await
 }
 
+/// Resolves an interactive command without applying edits or executing it.
+pub async fn lsp_resolve_command(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    server: ServerId,
+    command: Command,
+    answers: Vec<FormAnswer>,
+) -> IdeResult<Option<CommandForm>> {
+    let lsp = host.project(window)?.lsp.clone();
+    let cancel = host.begin_request(request);
+    let result = lsp.resolve_command(doc, server, command, answers, cancel).await;
+    host.end_request(request);
+    result
+}
+
+/// Applies an explicitly invoked action after the interactive answers have been validated.
+pub async fn lsp_execute_code_action(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    action: CodeAction,
+    answers: Vec<FormAnswer>,
+) -> IdeResult<Vec<ide_core::IpcPath>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = async {
+        if cancel.is_cancelled() {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        if let Some(edit) = action.edit {
+            let documents = project.documents.clone();
+            tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
+                .await
+                .map_err(|e| ide_core::IdeError::internal(e.to_string()))??;
+        }
+        match action.command {
+            Some(command) => project
+                .lsp
+                .execute_action_command(doc, action.server, command, answers, cancel)
+                .await
+                .map(|paths| paths.into_iter().map(ide_core::IpcPath::from).collect()),
+            None => Ok(Vec::new()),
+        }
+    }
+    .await;
+    host.end_request(request);
+    result
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_completion", |c| async move {
@@ -374,6 +426,29 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_resend_diagnostics", |c| async move { lsp_resend_diagnostics(&c.host, &c.window) });
     d.add("lsp_restart", |c| async move { lsp_restart(&c.host, &c.window, c.arg("server")?).await });
     d.add("apply_workspace_edit", |c| async move { apply_workspace_edit(&c.host, &c.window, c.arg("edit")?) });
+    d.add("lsp_resolve_command", |c| async move {
+        lsp_resolve_command(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("server")?,
+            c.arg("command")?,
+            c.arg("answers")?,
+        )
+        .await
+    });
+    d.add("lsp_execute_code_action", |c| async move {
+        lsp_execute_code_action(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("action")?,
+            c.arg("answers")?,
+        )
+        .await
+    });
     d.add("lsp_execute_command", |c| async move {
         lsp_execute_command(&c.host, &c.window, c.arg("doc")?, c.arg("command")?).await
     });

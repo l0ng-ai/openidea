@@ -453,6 +453,7 @@ pub struct ChangelistState {
 mod blame;
 pub mod changelists;
 mod cli;
+mod compare;
 mod diff;
 mod history;
 mod ignore;
@@ -464,6 +465,7 @@ mod refs;
 mod remotes;
 mod repo;
 mod roots;
+pub use compare::{CompareResult, CompareScope, RepositoryComparison, WorkingTreeChange};
 pub mod shelf;
 mod status;
 pub use index_writes::is_own_index_write;

@@ -24,6 +24,7 @@ import { selectedNodes } from "./operations";
 import { ProjectView } from "./ProjectView";
 import {
   applyFsChange,
+  dropOutlines,
   initProjectTree,
   reloadAll,
   reloadLoadedDirs,
@@ -106,6 +107,7 @@ export function activate(): () => void {
   syncOpenFiles();
   const unsubEditor = onEditorEvent((e) => {
     if (e.type === "docOpened" || e.type === "docClosed" || e.type === "activeEditorChanged") syncOpenFiles();
+    if (e.type === "docSaved") dropOutlines([e.path]);
   });
   // "All Changed Files": change-list files still on disk (IDEA leaves out unversioned, ignored and deleted ones).
   const syncChanged = () => setChangedFiles(localChangedPaths(useLocalChanges.getState().lists, null, true));

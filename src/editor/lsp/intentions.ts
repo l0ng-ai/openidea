@@ -25,6 +25,7 @@ import { spellingIntentions } from "./spelling";
 import { inspectionsAt } from "./diagnostics";
 import { SPELLING_INSPECTION } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
+import { runInteractiveCodeAction } from "./interactiveCommand";
 import { tx } from "@/platform/i18n";
 
 const codeActionBackoff = featureBackoff();
@@ -152,7 +153,7 @@ export async function applyCodeAction(view: EditorView, action: CodeAction) {
   }
   const before = view.state.doc;
   try {
-    await lspRequest(() => commands.lspApplyCodeAction(doc.doc, action));
+    if (!(await runInteractiveCodeAction(doc.doc, action))) return;
   } catch (e) {
     reportLspError(view, e, true);
     return;
@@ -403,6 +404,7 @@ export async function runKindAction(
   kind: string,
   opts: {
     title?: RegExp;
+    predicate?: (action: CodeAction) => boolean;
     whole?: boolean;
     none: string;
     label: string;
@@ -425,6 +427,7 @@ export async function runKindAction(
   try {
     if (kind) actions = actions.filter((a) => a.kind?.startsWith(kind) ?? false);
     if (opts.title) actions = actions.filter((a) => opts.title!.test(a.title));
+    if (opts.predicate) actions = actions.filter(opts.predicate);
     const enabled = actions.filter((a) => !a.disabledReason);
     if (!enabled.length) {
       if (opts.fallback && (await opts.fallback("empty"))) return;

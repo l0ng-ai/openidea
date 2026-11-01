@@ -1,7 +1,13 @@
 .dialog {
-  max-height: 86vh;
+  max-height: min(86vh, calc(90vh - 24px));
+}
+.dialog > :global([data-dialog-body]) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .root {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -102,7 +108,8 @@
   border-color: var(--accent);
 }
 .results {
-  flex: none;
+  flex: 0 1 242px;
+  min-height: 0;
   height: 242px;
   display: flex;
   flex-direction: column;
@@ -112,6 +119,12 @@
 }
 .results > * {
   flex: 1;
+}
+.outdated .rowText,
+.outdated .rowText *,
+.outdated .rowFile,
+.outdated .rowFile * {
+  color: var(--fg-faint);
 }
 .rowText {
   flex: 1;
@@ -153,7 +166,8 @@
   white-space: nowrap;
 }
 .previewBox {
-  flex: none;
+  flex: 0 1 220px;
+  min-height: 0;
   height: 220px;
   display: flex;
   flex-direction: column;
@@ -161,13 +175,25 @@
 .footer {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  height: 38px;
-  padding: 0 12px;
+  min-height: 38px;
+  padding: 6px 12px;
   border-top: 1px solid var(--border-popup);
 }
+.footer > button,
+.footer > label {
+  flex: none;
+  white-space: nowrap;
+}
 .hint {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--fg-faint);
   font-size: var(--fs-small);
 }

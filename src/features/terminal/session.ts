@@ -11,6 +11,8 @@ import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { editorService, notifications } from "@/workbench/contributions";
 import { fitScheduler, settledResize } from "./fit";
+import { installTerminalDrop } from "./drop";
+import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { splitCommandLine } from "@/platform/commandLine";
@@ -275,16 +277,17 @@ export class TerminalSession {
         if (atBottom !== this.snapshot.follow) this.update({ follow: atBottom });
       }),
     );
+    this.disposables.push(
+      { dispose: installTerminalPaste(this.host, (text) => this.paste(text)) },
+      { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
+    );
     this.host.addEventListener("mousedown", this.onMiddleClick);
   }
 
   private onMiddleClick = (e: MouseEvent) => {
     if (e.button !== 1 || !workflowSettings().terminal.pasteOnMiddleClick) return;
     e.preventDefault();
-    void navigator.clipboard
-      ?.readText()
-      .then((t) => t && this.paste(t))
-      .catch(() => undefined);
+    void pasteTerminalClipboard((text) => this.paste(text));
   };
 
   /** Applies Settings › Tools › Terminal changes to a live session. */
@@ -552,6 +555,7 @@ export class TerminalSession {
   }
 
   paste(text: string) {
+    if (this.disposed) return;
     this.term.paste(text);
   }
 

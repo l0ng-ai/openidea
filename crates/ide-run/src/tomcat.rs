@@ -228,8 +228,7 @@ pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: 
                 .filter(|v| !v.trim().is_empty())
                 .ok_or_else(|| invalid("Choose a WAR file or exploded directory"))?;
             let path = root.join(value);
-            let path = path
-                .canonicalize()
+            let path = dunce::canonicalize(&path)
                 .map_err(|e| invalid(format!("Invalid Tomcat deployment: {} ({e})", path.display())))?;
             if (kind == "war" && (!path.is_file() || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("war"))))
                 || (kind == "directory" && !path.is_dir())
@@ -264,13 +263,14 @@ pub fn script_command(home: &Path, windows: bool, verb: &str) -> (String, Vec<St
 }
 
 pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<()> {
-    let home = root
-        .join(config.extras.params.get("tomcatHome").ok_or_else(|| invalid("Choose a Tomcat installation directory"))?)
-        .canonicalize()?;
+    // Batch scripts and their environment variables require ordinary Windows paths.
+    let home = dunce::canonicalize(root.join(
+        config.extras.params.get("tomcatHome").ok_or_else(|| invalid("Choose a Tomcat installation directory"))?,
+    ))?;
     validate_home(&home)?;
     let base = base_dir(cache, &config.id);
     fs::create_dir_all(&base)?;
-    let base = base.canonicalize()?;
+    let base = dunce::canonicalize(&base)?;
     let doc = deployment(root, &base, config, false)?;
     let context = effective_context(config, &doc);
     let context = context_name(&context)?;
@@ -304,7 +304,7 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     config.env.insert("CATALINA_HOME".into(), home.to_string_lossy().into_owned());
     config.env.insert("CATALINA_BASE".into(), base.to_string_lossy().into_owned());
     if let Some(jre) = config.extras.params.get("jre").filter(|s| !s.trim().is_empty()) {
-        let jre = root.join(jre).canonicalize()?;
+        let jre = dunce::canonicalize(root.join(jre))?;
         config.env.insert("JAVA_HOME".into(), jre.to_string_lossy().into_owned());
         config.env.insert("JRE_HOME".into(), jre.to_string_lossy().into_owned());
     } else if let Some(java) = config.env.get("JAVA_HOME").cloned() {
@@ -432,7 +432,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dest.join("WEB-INF/classes/App.class")).unwrap(), "class2");
         c.extras.params.insert("deployment".into(), "war".into());
         c.extras.params.insert("deploymentPath".into(), "web app.war".into());
-        assert_eq!(deployment(tmp.path(), &base, &c, false).unwrap(), war.canonicalize().unwrap());
+        assert_eq!(deployment(tmp.path(), &base, &c, false).unwrap(), dunce::canonicalize(&war).unwrap());
         fs::create_dir_all(tmp.path().join("WebContent")).unwrap();
         c.extras.params.insert("deployment".into(), "directory".into());
         c.extras.params.insert("deploymentPath".into(), "WebContent".into());
@@ -463,11 +463,22 @@ mod tests {
     #[test]
     fn prepares_isolated_base_and_jdwp_only_for_run() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("Tomcat Home");
+        check_prepared_paths(tmp.path());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn prepares_plain_windows_paths_from_verbatim_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = PathBuf::from(format!(r"\\?\{}", dunce::canonicalize(tmp.path()).unwrap().display()));
+        check_prepared_paths(&root);
+    }
+    fn check_prepared_paths(root: &Path) {
+        let home = root.join("Tomcat Home");
         fs::create_dir_all(home.join("bin")).unwrap();
         fs::create_dir_all(home.join("conf")).unwrap();
-        fs::create_dir_all(tmp.path().join("WebRoot")).unwrap();
+        fs::create_dir_all(root.join("WebRoot")).unwrap();
         fs::write(home.join("bin/catalina.sh"), "").unwrap();
+        fs::write(home.join("bin/catalina.bat"), "").unwrap();
         archive(
             &home.join("lib/catalina.jar"),
             &[("org/apache/catalina/util/ServerInfo.properties", "server.info=Apache Tomcat/10.1")],
@@ -486,17 +497,35 @@ mod tests {
             c.extras.params.insert(k.into(), v.into());
         }
         c.env.insert("JAVA_HOME".into(), "/jdk with spaces".into());
-        prepare(tmp.path(), &tmp.path().join("cache"), &mut c).unwrap();
+        let cache = root.join("cache");
+        prepare(root, &cache, &mut c).unwrap();
         assert_eq!(fs::read_to_string(home.join("conf/server.xml")).unwrap(), server);
         let base = PathBuf::from(&c.env["CATALINA_BASE"]);
-        assert!(base.join("conf/Catalina/localhost/app.xml").is_file());
+        let context = base.join("conf/Catalina/localhost/app.xml");
+        let doc = dunce::canonicalize(root.join("WebRoot")).unwrap();
+        assert_eq!(fs::read_to_string(&context).unwrap(), context_xml(&doc, false));
+        assert_eq!(c.env["CATALINA_HOME"], dunce::canonicalize(&home).unwrap().to_string_lossy());
+        assert_eq!(base, dunce::canonicalize(base_dir(&cache, &c.id)).unwrap());
         assert!(c.env["CATALINA_OPTS"].contains("suspend=n,address=127.0.0.1:0"));
         assert!(c.env["CATALINA_OPTS"].contains("-Xmx256m"));
         assert!(!c.env.get("JAVA_OPTS").is_some_and(|s| s.contains("jdwp")));
         assert_eq!(c.env["JRE_HOME"], "/jdk with spaces");
-        let stop = c.extras.stop_command.unwrap();
+        let stop = c.extras.stop_command.as_ref().unwrap();
         assert!(stop.contains("stop"));
         let script = if cfg!(windows) { "catalina.bat" } else { "catalina.sh" };
         assert!(stop.contains(script));
+
+        fs::create_dir_all(root.join("JDK Home")).unwrap();
+        c.extras.params.insert("jre".into(), "JDK Home".into());
+        prepare(root, &cache, &mut c).unwrap();
+        let jre = dunce::canonicalize(root.join("JDK Home")).unwrap();
+        for key in ["JAVA_HOME", "JRE_HOME"] {
+            assert_eq!(c.env[key], jre.to_string_lossy());
+        }
+        assert!(!c.command.contains(r"\\?\"));
+        assert!(c.args.iter().all(|arg| !arg.contains(r"\\?\")));
+        assert!(!c.extras.stop_command.as_ref().unwrap().contains(r"\\?\"));
+        assert!(c.env.values().all(|value| !value.contains(r"\\?\")));
+        assert!(!fs::read_to_string(context).unwrap().contains(r"\\?\"));
     }
 }

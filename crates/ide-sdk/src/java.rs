@@ -301,8 +301,12 @@ pub fn runtimes(jdks: &[Jdk]) -> Vec<serde_json::Value> {
 
 /// Stable FNV-1a hash of a path, for per-workspace directories.
 fn path_key(p: &Path) -> String {
+    text_key(&p.to_string_lossy())
+}
+
+fn text_key(text: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
-    for b in p.to_string_lossy().as_bytes() {
+    for b in text.as_bytes() {
         h ^= *b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
@@ -340,10 +344,15 @@ pub fn configure_jdtls(
     if !cfg.args.iter().any(|a| a == "-data") {
         // ECJ builds incrementally: classes compiled without (or with another) Lombok
         // agent would be kept, so each agent gets its own workspace and a full build.
-        let key = match agent {
+        let mut key = match agent {
             Some(jar) => format!("{}-{}", path_key(server_root), path_key(jar)),
             None => path_key(server_root),
         };
+        if let Some(paths) = cfg.settings.as_ref().and_then(|s| s.pointer("/java/project/sourcePaths")) {
+            // Invisible projects retain a cached resource tree across restarts.
+            // A different source model needs a clean import, including new folders.
+            key.push_str(&format!("-sources-{}", text_key(&paths.to_string())));
+        }
         let dir = data_dir.join("lsp").join("jdtls").join(key);
         cfg.args.extend(["-data".to_owned(), dir.to_string_lossy().into_owned()]);
     }
@@ -527,6 +536,26 @@ fn parse_java_version(v: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unmanaged_source_models_have_separate_jdtls_workspaces() {
+        let data = tempfile::tempdir().unwrap();
+        let workspace = |paths: Option<serde_json::Value>| {
+            let mut cfg: LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+            if let Some(paths) = paths {
+                cfg.settings = Some(json!({"java": {"project": {"sourcePaths": paths}}}));
+            }
+            configure_jdtls(&mut cfg, Path::new("/project"), data.path(), &[], None, None, 25, &[], None);
+            cfg.args.windows(2).find(|a| a[0] == "-data").unwrap()[1].clone()
+        };
+        let inferred = workspace(None);
+        let source = workspace(Some(json!(["src/main/java"])));
+        let tests = workspace(Some(json!(["src/main/java", "src/test/java"])));
+        assert_ne!(inferred, source);
+        assert_ne!(source, tests);
+        assert_eq!(source, workspace(Some(json!(["src/main/java"]))));
+        assert_eq!(inferred, workspace(None), "build-tool projects retain their existing cache key");
+    }
 
     #[test]
     fn provisioning_runtime_preserves_implicit_project_jdk() {
@@ -902,5 +931,102 @@ mod tests {
         assert_eq!(project_java_version(dir), Some(11));
         std::fs::write(dir.join("build.gradle.kts"), "sourceCompatibility = '1.8'").unwrap();
         assert_eq!(project_java_version(dir), Some(8));
+    }
+}
+
+/// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
+pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
+    let extension = data_dir.join("java-usages-1.1.1.jar");
+    let bytes = include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar");
+    if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
+        clean_usages_bundles(data_dir, &extension);
+        return Some(extension);
+    }
+    // Write then rename: another window must never read a partially written jar.
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    let temporary = data_dir.join(format!("java-usages-{}-{nonce}.tmp", std::process::id()));
+    let result = std::fs::create_dir_all(data_dir)
+        .and_then(|_| std::fs::write(&temporary, bytes))
+        .and_then(|_| std::fs::rename(&temporary, &extension));
+    match result {
+        Ok(()) => {
+            clean_usages_bundles(data_dir, &extension);
+            Some(extension)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&temporary);
+            if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
+                clean_usages_bundles(data_dir, &extension);
+                return Some(extension);
+            }
+            tracing::warn!("Java usages extension unavailable; using standard references: {e}");
+            None
+        }
+    }
+}
+
+fn clean_usages_bundles(data_dir: &Path, current: &Path) {
+    let Ok(entries) = std::fs::read_dir(data_dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some(suffix) = name.strip_prefix("java-usages-") else { continue };
+        let numeric = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
+        let old_jar = suffix.strip_suffix(".jar").is_some_and(|v| {
+            let parts: Vec<_> = v.split('.').collect();
+            parts.len() == 3 && parts.into_iter().all(numeric)
+        }) && path != current;
+        // Preserve recent temporary files: another window may still be installing.
+        let stale_temp = suffix
+            .strip_suffix(".tmp")
+            .and_then(|v| v.split_once('-'))
+            .is_some_and(|(pid, nonce)| numeric(pid) && numeric(nonce))
+            && entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age.as_secs() > 24 * 60 * 60);
+        if old_jar || stale_temp {
+            // A running server can hold an old bundle open on Windows.
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod usages_bundle_tests {
+    #[test]
+    fn cleans_old_bundles_and_abandoned_temporary_files_on_install_and_reuse() {
+        let dir = tempfile::tempdir().unwrap();
+        for reuse in [false, true] {
+            let old = dir.path().join("java-usages-1.0.0.jar");
+            let stale = dir.path().join("java-usages-123-456.tmp");
+            std::fs::write(&old, b"old").unwrap();
+            std::fs::write(&stale, b"partial").unwrap();
+            let times = std::fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 60 * 60));
+            std::fs::File::options().write(true).open(&stale).unwrap().set_times(times).unwrap();
+            for name in ["java-usages-123-789.tmp", "java-usages-custom.jar", "other.jar", "java-usages-not-ours.tmp"] {
+                std::fs::write(dir.path().join(name), b"keep").unwrap();
+            }
+            let jar = super::usages_bundle(dir.path()).unwrap();
+            assert!(jar.exists());
+            assert!(!old.exists(), "reuse={reuse}");
+            assert!(!stale.exists(), "reuse={reuse}");
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 5);
+        }
+    }
+
+    #[test]
+    fn installs_the_exact_bundle_and_reuses_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let jar = super::usages_bundle(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read(&jar).unwrap(),
+            include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar")
+        );
+        assert_eq!(super::usages_bundle(dir.path()), Some(jar));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

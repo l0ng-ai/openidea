@@ -468,6 +468,31 @@ pub async fn remote_invoke(
     Ok(result.to_string())
 }
 
+/// A client OS file belongs to this machine even when its destination is remote.
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_import_local(
+    window: Window,
+    state: State<'_, AppState>,
+    from: std::path::PathBuf,
+    to: String,
+    request: ide_core::RequestId,
+) -> IdeResult<Vec<String>> {
+    let label = AppState::owner_window(window.label());
+    let c = state.remote_dev.get(label).ok_or_else(|| IdeError::unavailable("Remote project is disconnected"))?;
+    c.authorize_command(label, "fs_copy").await?;
+    let cancel = state.host.begin_request(request);
+    let result = async {
+        let fs = ide_ssh::RemoteFs::new(c._session.sftp().await?);
+        let result = ide_remote::import::import_local(&fs, &from, &to, &cancel).await;
+        fs.close().await;
+        result
+    }
+    .await;
+    state.host.end_request(request);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
