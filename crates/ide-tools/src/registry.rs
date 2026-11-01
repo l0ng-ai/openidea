@@ -585,9 +585,9 @@ pub static TOOLS: &[ToolSpec] = &[
         // Return to Maven Central once an official release includes lombok#4059.
         // Source commit, build instructions and checksum: plugins/lombok/README.md.
         method: Method::Bundled {
-            filename: "lombok-1.18.47-openidea.1.jar",
-            version: "1.18.47-openidea.1",
-            bytes: include_bytes!("../../../plugins/lombok/lombok-1.18.47-openidea.1.jar"),
+            filename: "lombok-1.18.48-openidea.1.jar",
+            version: "1.18.48-openidea.1",
+            bytes: include_bytes!("../../../plugins/lombok/lombok-1.18.48-openidea.1.jar"),
         },
         fallback: None,
         version: V,

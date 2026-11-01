@@ -56,9 +56,9 @@ fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads()
             let info = tools.info("lombok", &[]).unwrap();
             let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
             assert_eq!(info.status, ToolStatus::Installed);
-            assert_eq!(info.version.as_deref(), Some("1.18.47-openidea.1"));
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.1"));
             assert_eq!(info.path, Some(path.clone().into()));
-            assert_eq!(path.file_name().unwrap(), "lombok-1.18.47-openidea.1.jar");
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.1.jar");
             assert!(!info.can_install && !info.can_uninstall);
             assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
             assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");

@@ -717,7 +717,7 @@ mod tests {
         configure_jdtls(&mut plain, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], None);
         let data = |c: &LanguageServerConfig| c.args[c.args.iter().position(|a| a == "-data").unwrap() + 1].clone();
         assert_ne!(data(&cfg), data(&plain), "a separate workspace, so everything is rebuilt with the agent");
-        let patched = Path::new("/managed/lombok-1.18.47-openidea.1.jar");
+        let patched = Path::new("/managed/lombok-1.18.48-openidea.1.jar");
         let mut fixed = jdtls();
         configure_jdtls(
             &mut fixed,

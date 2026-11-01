@@ -507,7 +507,7 @@ mod tests {
         let cache = repo.join("org/projectlombok/lombok/1.18.48");
         fs::create_dir_all(&cache).unwrap();
         fs::write(cache.join("lombok-1.18.48.jar"), b"official agent").unwrap();
-        let patched = PathBuf::from("/managed/lombok-1.18.47-openidea.1.jar");
+        let patched = PathBuf::from("/managed/lombok-1.18.48-openidea.1.jar");
         let selected = lombok_agent(tmp.path(), None, Some(patched.clone()), Some(repo.clone()));
         assert_eq!(selected.jar(), Some(patched.as_path()));
         assert_eq!(selected.problem(), None);
