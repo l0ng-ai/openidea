@@ -27,6 +27,7 @@ import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
 import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
+import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft, retryParts, usageLabel, workTime } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
@@ -891,15 +892,12 @@ function MessageEditor({
           <Button size="small" disabled={sending} onClick={onCancel}>
             Cancel
           </Button>
-          <Button
-            size="small"
-            variant="primary"
+          <SubmitButton
+            label="Send"
+            pending={sending}
             disabled={(!text.trim() && images.length === 0) || sending}
             onClick={() => void send()}
-          >
-            {sending && <Spinner size={12} />}
-            <T>Send</T>
-          </Button>
+          />
         </span>
       </div>
     </div>
@@ -1189,14 +1187,13 @@ function SessionComposer({
                 Stop
               </Button>
             )}
-            <Button
-              size="small"
+            <SubmitButton
+              label={busy ? "Queue" : "Send"}
+              pending={sending}
               variant={busy ? "secondary" : "primary"}
               disabled={!canSend(composer) || sending || task.status === "archived"}
               onClick={() => send(false)}
-            >
-              {busy ? "Queue" : "Send"}
-            </Button>
+            />
           </>
         }
       />

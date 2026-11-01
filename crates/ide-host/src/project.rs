@@ -139,6 +139,14 @@ impl Host {
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {
+                    ide_lsp::jdtls::configure_source_paths(
+                        cfg,
+                        ide_workspace::roots::unmanaged_java_source_paths(
+                            root,
+                            server_root,
+                            &effective.project_structure,
+                        ),
+                    );
                     let bundles: Vec<PathBuf> =
                         ide_tools::managed_bundle(&data_dir, "java-debug").into_iter().collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);

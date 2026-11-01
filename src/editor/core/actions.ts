@@ -337,7 +337,7 @@ function showContextInfo(view: EditorView) {
 
 /** Navigate › Custom Folding (⌥⌘.): the file's custom regions; picking one moves the caret to it. */
 function showCustomRegions(view: EditorView) {
-  const regions = customRegions(view.state.doc);
+  const regions = customRegions(view.state);
   if (!regions.length) return void executeAction("editor.showHint", { text: "No custom folding regions in this file" });
   const head = view.state.selection.main.head;
   openPopup({

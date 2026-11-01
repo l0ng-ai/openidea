@@ -2,7 +2,7 @@
 //! comment runs, import runs and `region` / `endregion` marker comments.
 
 use super::grammars::Spec;
-use crate::{FoldKind, FoldRange};
+use crate::{FoldKind, FoldRange, LanguageConfig};
 use tree_sitter::{Language, Node, Tree, TreeCursor};
 
 const PAIRS: &[(&str, &str)] = &[("{", "}"), ("[", "]"), ("(", ")"), ("#{", "}"), ("${", "}"), ("@{", "}")];
@@ -85,7 +85,25 @@ impl KindTable {
     }
 }
 
-pub(crate) fn folding(spec: &Spec, kinds: &KindTable, tree: &Tree, text: &str) -> Vec<FoldRange> {
+#[derive(Default)]
+pub(super) struct CommentTokens {
+    line: Option<String>,
+    block: Option<(String, String)>,
+}
+
+impl From<&LanguageConfig> for CommentTokens {
+    fn from(config: &LanguageConfig) -> Self {
+        Self { line: config.line_comment.clone(), block: config.block_comment.clone() }
+    }
+}
+
+pub(super) fn folding(
+    spec: &Spec,
+    kinds: &KindTable,
+    tree: &Tree,
+    text: &str,
+    tokens: &CommentTokens,
+) -> Vec<FoldRange> {
     let mut out: Vec<FoldRange> = Vec::new();
     let mut comments: Vec<Comment> = Vec::new();
     let mut cursor = tree.walk();
@@ -96,7 +114,7 @@ pub(crate) fn folding(spec: &Spec, kinds: &KindTable, tree: &Tree, text: &str) -
                 start_row: start,
                 end_row: last_content_row(&node, text),
                 own_line: own_line(text, node.start_byte(), node.start_position().column),
-                marker: region_marker(text.get(node.start_byte()..node.end_byte()).unwrap_or_default()),
+                marker: region_marker(text.get(node.start_byte()..node.end_byte()).unwrap_or_default(), tokens),
             });
             return true;
         }
@@ -185,7 +203,7 @@ fn visit(cursor: &mut TreeCursor, mut f: impl FnMut(Node) -> bool) {
 }
 
 pub(crate) fn is_comment(kind: &str) -> bool {
-    kind.contains("comment")
+    kind.contains("comment") || kind == "Comment"
 }
 
 /// Row of the closing token when `node` is delimited by a matching bracket pair.
@@ -220,19 +238,62 @@ fn own_line(text: &str, byte: usize, column: usize) -> bool {
 }
 
 /// `Some(true)` for a region start marker, `Some(false)` for an end marker.
-fn region_marker(comment: &str) -> Option<bool> {
-    let body = comment
-        .trim_start_matches(['/', '*', '#', '-', ';', '%', '!', '<', ' ', '\t'])
-        .trim_start_matches("--")
-        .trim_start();
-    let lower = body.get(..body.len().min(32))?.to_ascii_lowercase();
-    if lower.starts_with("endregion") || lower.starts_with("#endregion") || lower.starts_with("</editor-fold") {
+/// Strip whole configured delimiters, preserving the `<` in editor-fold tags.
+pub(super) fn region_marker(comment: &str, tokens: &CommentTokens) -> Option<bool> {
+    let comment = comment.trim();
+    let body = if let Some((open, close)) = &tokens.block
+        && let Some(body) = comment.strip_prefix(open.as_str())
+    {
+        let body = body.trim_end().strip_suffix(close.as_str())?;
+        if open == "/*" { body.trim_start_matches('*') } else { body }
+    } else if let Some(open) = &tokens.line
+        && let Some(body) = comment.strip_prefix(open.as_str())
+    {
+        match open.as_str() {
+            "//" => body.trim_start_matches('/'),
+            ";" => body.trim_start_matches(';'),
+            _ => body,
+        }
+    } else {
+        return None;
+    };
+    let body = body.trim();
+    if body.contains(['\n', '\r']) {
+        return None;
+    }
+    let lower = body.to_ascii_lowercase();
+    let region = lower.strip_prefix('#').unwrap_or(&lower);
+    let boundary = |tail: &str| !tail.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+    if region.strip_prefix("endregion").is_some_and(boundary)
+        || lower
+            .strip_prefix("</editor-fold")
+            .and_then(|tail| tail.strip_suffix('>'))
+            .is_some_and(|tail| tail.trim().is_empty())
+    {
         Some(false)
-    } else if lower.starts_with("region") || lower.starts_with("#region") || lower.starts_with("<editor-fold") {
+    } else if region.strip_prefix("region").is_some_and(boundary)
+        || lower.strip_prefix("<editor-fold").is_some_and(|tail| boundary(tail) && tail.contains('>'))
+    {
         Some(true)
     } else {
         None
     }
+}
+
+/// Languages without a bundled grammar still support own-line custom markers.
+pub(super) fn custom_folding(text: &str, tokens: &CommentTokens) -> Vec<FoldRange> {
+    let comments: Vec<_> = text
+        .lines()
+        .enumerate()
+        .filter_map(|(row, line)| {
+            let marker = region_marker(line, tokens)?;
+            Some(Comment { start_row: row, end_row: row, own_line: true, marker: Some(marker) })
+        })
+        .collect();
+    let mut out = Vec::new();
+    comment_folds(&comments, &mut out);
+    out.sort_by_key(|f| f.start_line);
+    out
 }
 
 fn comment_folds(comments: &[Comment], out: &mut Vec<FoldRange>) {
