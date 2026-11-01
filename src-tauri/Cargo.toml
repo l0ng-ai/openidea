@@ -111,6 +111,3 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-
-[dev-dependencies]
-tempfile.workspace = true

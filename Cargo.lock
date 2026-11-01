@@ -6579,6 +6579,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "trash",
  "windows",
  "windows-sys 0.61.2",
 ]
