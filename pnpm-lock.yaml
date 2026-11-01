@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
+
 importers:
 
   .:
@@ -42,8 +45,8 @@ importers:
         specifier: ^6.7.6
         version: 6.7.6
       '@codemirror/view':
-        specifier: ^6.43.14
-        version: 6.43.14
+        specifier: git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
+        version: git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@floating-ui/react-dom':
         specifier: ^2.1.9
         version: 2.1.9(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -64,7 +67,7 @@ importers:
         version: 1.4.11
       '@replit/codemirror-vim':
         specifier: 6.4.0
-        version: 6.4.0(@codemirror/commands@6.11.1)(@codemirror/language@6.13.1)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@6.43.14)
+        version: 6.4.0(@codemirror/commands@6.11.1)(@codemirror/language@6.13.1)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e)
       '@tanstack/react-virtual':
         specifier: ^3.14.21
         version: 3.14.21(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -324,8 +327,9 @@ packages:
   '@codemirror/streamparser@6.0.0':
     resolution: {integrity: sha512-JTFPF6xrfjt0mnfGPgzcLiMwYmvIyNaoizp8BYzv8FE8KrT6GBGDZ190rtt+O7Wke3gG/MFHyiY9YGNeimof4w==}
 
-  '@codemirror/view@6.43.14':
-    resolution: {integrity: sha512-hC45YnmJNR1rz42OF57BLoQNFMV12/13drnvibDsR2quNDmldcb4WvYVV81hFQg56i9lcqQMEDqilhX2QDcGQQ==}
+  '@codemirror/view@git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e':
+    resolution: {commit: 986983321b256b981280e102ac8082df9fd6319e, repo: https://code.haverbeke.berlin/codemirror/view.git, type: git}
+    version: 6.43.15
 
   '@csstools/color-helpers@6.1.2':
     resolution: {integrity: sha512-grhRy3OKmniaAEKXMjua5z/EODX0MSqBGjunw8+j/3HQjOnahs2AGhvEOIYVUWcU6ScApbhLhVrQTX8XqrMrow==}
@@ -981,6 +985,7 @@ packages:
 
   '@replit/codemirror-vim@6.4.0':
     resolution: {integrity: sha512-t9UMDNhkmeAkl0uRbiJVotv97bGD6mf4GyJJoEbrjUqa/Pov0s9eL+4AaI0Xto3OGri17i9qwIpT0JbVlVXt8A==}
+    version: 6.4.0
     peerDependencies:
       '@codemirror/commands': 6.x.x
       '@codemirror/language': 6.x.x
@@ -2348,14 +2353,14 @@ snapshots:
     dependencies:
       '@codemirror/language': 6.13.1
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@lezer/common': 1.5.3
 
   '@codemirror/commands@6.11.1':
     dependencies:
       '@codemirror/language': 6.13.1
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@lezer/common': 1.5.3
 
   '@codemirror/lang-angular@0.1.4':
@@ -2395,7 +2400,7 @@ snapshots:
       '@codemirror/lang-javascript': 6.2.5
       '@codemirror/language': 6.13.1
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@lezer/common': 1.5.3
       '@lezer/css': 1.3.9
       '@lezer/html': 1.3.13
@@ -2411,7 +2416,7 @@ snapshots:
       '@codemirror/language': 6.13.1
       '@codemirror/lint': 6.9.7
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@lezer/common': 1.5.3
       '@lezer/javascript': 1.5.6
 
@@ -2421,7 +2426,7 @@ snapshots:
       '@codemirror/lang-html': 6.4.12
       '@codemirror/language': 6.13.1
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@lezer/common': 1.5.3
       '@lezer/highlight': 1.2.5
       '@lezer/lr': 1.4.11
@@ -2445,7 +2450,7 @@ snapshots:
       '@codemirror/lang-html': 6.4.12
       '@codemirror/language': 6.13.1
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@lezer/common': 1.5.3
       '@lezer/highlight': 1.2.5
       '@lezer/lr': 1.4.11
@@ -2456,7 +2461,7 @@ snapshots:
       '@codemirror/lang-html': 6.4.12
       '@codemirror/language': 6.13.1
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@lezer/common': 1.5.3
       '@lezer/markdown': 1.8.0
 
@@ -2519,7 +2524,7 @@ snapshots:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/language': 6.13.1
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@lezer/common': 1.5.3
       '@lezer/xml': 1.0.6
 
@@ -2563,7 +2568,7 @@ snapshots:
     dependencies:
       '@codemirror/state': 6.7.6
       '@codemirror/streamparser': 6.0.0
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@lezer/common': 1.5.3
       '@lezer/highlight': 1.2.5
       '@lezer/lr': 1.4.11
@@ -2576,21 +2581,21 @@ snapshots:
   '@codemirror/lint@6.9.7':
     dependencies:
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       crelt: 1.0.7
 
   '@codemirror/merge@6.12.2':
     dependencies:
       '@codemirror/language': 6.13.1
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@lezer/highlight': 1.2.5
       style-mod: 4.1.4
 
   '@codemirror/search@6.7.2':
     dependencies:
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       crelt: 1.0.7
 
   '@codemirror/state@6.7.6':
@@ -2599,7 +2604,7 @@ snapshots:
 
   '@codemirror/streamparser@6.0.0': {}
 
-  '@codemirror/view@6.43.14':
+  '@codemirror/view@git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e':
     dependencies:
       '@codemirror/state': 6.7.6
       crelt: 1.0.7
@@ -3049,13 +3054,13 @@ snapshots:
 
   '@replit/codemirror-vim-core@0.1.0': {}
 
-  '@replit/codemirror-vim@6.4.0(@codemirror/commands@6.11.1)(@codemirror/language@6.13.1)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@6.43.14)':
+  '@replit/codemirror-vim@6.4.0(@codemirror/commands@6.11.1)(@codemirror/language@6.13.1)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e)':
     dependencies:
       '@codemirror/commands': 6.11.1
       '@codemirror/language': 6.13.1
       '@codemirror/search': 6.7.2
       '@codemirror/state': 6.7.6
-      '@codemirror/view': 6.43.14
+      '@codemirror/view': git+https://code.haverbeke.berlin/codemirror/view.git#986983321b256b981280e102ac8082df9fd6319e
       '@replit/codemirror-vim-core': 0.1.0
 
   '@rolldown/binding-android-arm-eabi@1.2.14':
