@@ -1,0 +1,24 @@
+simple_bullets:
+    - one
+    - two
+    - three
+
+nested_bullets:
+    -
+        name: Alice
+        age: 30
+    -
+        name: Bob
+        age: 25
+
+bullet_with_inline:
+    - key: value
+      another: thing
+    - single: item
+
+mixed_levels:
+    items:
+        - first
+        - second
+    config:
+        enabled: true

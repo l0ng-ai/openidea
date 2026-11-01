@@ -18,6 +18,7 @@ import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
 import { _languageMode } from "@/editor/api";
+import { neonFileKind, type NeonFileKind } from "./neonFileKind";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
@@ -60,6 +61,13 @@ export function uiModeForPath(path: string): string | null | undefined {
 
 const supports = new Map<string, Promise<LanguageSupport | null>>();
 
+const NEON_MODES: Record<NeonFileKind, string> = {
+  config: "NEON",
+  phpstan: "NEON PHPStan",
+  translation: "NEON Translation",
+  icuTranslation: "NEON ICU Translation",
+};
+
 /** Frontend modes that extend or replace the bundled parsers. */
 const OWN_MODES = [
   LanguageDescription.of({
@@ -68,6 +76,13 @@ const OWN_MODES = [
     filename: /^(?:CMakeLists\.txt|.*\.cmake(?:\.in)?)$/,
     load: async () => new LanguageSupport((await import("./cmake")).cmakeLanguage),
   }),
+  ...(Object.entries(NEON_MODES) as [NeonFileKind, string][]).map(([kind, name]) =>
+    LanguageDescription.of({
+      name,
+      extensions: kind === "config" ? ["neon"] : [],
+      load: async () => new LanguageSupport((await import("./neon")).neonLanguage(kind)),
+    }),
+  ),
   LanguageDescription.of({
     name: "Shell",
     load: async () => {
@@ -166,6 +181,14 @@ const batchLanguageDescription = LanguageDescription.of({
 const BUILTIN_MODES: readonly LanguageDescription[] = [...languageData, batchLanguageDescription];
 
 export function findLanguageDescription(uiMode: string | null, path: string): LanguageDescription | null {
+  const found = describeLanguage(uiMode, path);
+  if (found?.name !== "NEON") return found;
+  // One language to the backend; only the highlighting depends on what the file is for.
+  const name = NEON_MODES[neonFileKind(path.slice(path.lastIndexOf("/") + 1))];
+  return OWN_MODES.find((l) => l.name === name)!;
+}
+
+function describeLanguage(uiMode: string | null, path: string): LanguageDescription | null {
   if (uiMode) {
     const contributed = _languageMode(uiMode) ?? OWN_MODES.find((l) => l.name === uiMode);
     if (contributed) return contributed;
@@ -250,7 +273,7 @@ const NO_INDENT_LANGS = new Set(["plaintext", "markdown", "log", "diff", "ignore
 function opensBlock(code: string, language: string | undefined): boolean {
   if (!code) return false;
   if (/[{([]$/.test(code)) return true;
-  if (COLON_INDENT_LANGS.has(language ?? "") && code.endsWith(":")) return true;
+  if ((COLON_INDENT_LANGS.has(language ?? "") || language === "neon") && code.endsWith(":")) return true;
   if (language === "elixir") return /\bdo$|->$/.test(code);
   if (KEYWORD_OPEN_LANGS.has(language ?? "") && !/\bend$/.test(code) && KEYWORD_OPEN.test(code)) return true;
   return false;

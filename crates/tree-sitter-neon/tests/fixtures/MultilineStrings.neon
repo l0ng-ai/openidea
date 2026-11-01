@@ -1,0 +1,15 @@
+double_quoted: """
+    Hello
+    World
+    """
+
+single_quoted: '''
+    No escapes here
+    Just raw text
+    '''
+
+as_value:
+    content: """
+        Line one
+        Line two
+        """

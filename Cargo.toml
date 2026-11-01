@@ -14,6 +14,7 @@ authors = ["OpenIDEA contributors"]
 ide-core = { path = "crates/ide-core" }
 ide-vfs = { path = "crates/ide-vfs" }
 ide-text = { path = "crates/ide-text" }
+tree-sitter-neon = { path = "crates/tree-sitter-neon" }
 ide-language = { path = "crates/ide-language" }
 ide-index = { path = "crates/ide-index" }
 ide-syntax = { path = "crates/ide-syntax" }

@@ -123,6 +123,7 @@ const EXT_LANG: Record<string, string> = {
   html: "html",
   yml: "yaml",
   yaml: "yaml",
+  neon: "neon",
   toml: "toml",
   c: "c",
   cpp: "cpp",
@@ -235,6 +236,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     lineComment: "#",
     blockComment: null,
     indent: { tabSize: 2, insertSpaces: true },
+  },
+  {
+    id: "neon",
+    name: "NEON",
+    extensions: ["neon"],
+    uiMode: "NEON",
+    lineComment: "#",
+    blockComment: null,
+    indent: { tabSize: 4, insertSpaces: true },
   },
   {
     id: "bat",
