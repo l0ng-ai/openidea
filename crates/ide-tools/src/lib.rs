@@ -114,6 +114,20 @@ pub fn tools_dir(app_data: &Path) -> PathBuf {
     app_data.join("tools")
 }
 
+static TOOLS_HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The directory managed tools hang off (`tools/`, `language-server-runtimes/`):
+/// the shared home base on the desktop, the data dir on the remote server. Set
+/// once at startup, before any other thread reads it.
+pub fn set_tools_home(root: PathBuf) {
+    let _ = TOOLS_HOME.set(root);
+}
+
+/// The configured tools home, or `fallback` when none was (tests, embedders).
+pub fn app_root(fallback: &Path) -> PathBuf {
+    TOOLS_HOME.get().cloned().unwrap_or_else(|| fallback.to_path_buf())
+}
+
 /// Where a [`registry::Method::PipTarget`] tool's package lives (`<tools>/<name>/lib`).
 pub fn python_lib_dir(tools_root: &Path, name: &str) -> PathBuf {
     tools_root.join(name).join("lib")

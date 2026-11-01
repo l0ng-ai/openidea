@@ -14,6 +14,9 @@ pub use ide_host::{Host, Project};
 pub struct AppState {
     pub app: AppHandle,
     pub host: Arc<Host>,
+    /// Whether this start found the shared home empty: a migration chosen
+    /// during this run may replace the files the boot itself wrote.
+    pub(crate) fresh_base: bool,
     pub startup: Startup,
     pub recent: RecentProjects,
     /// WASM plugins (`ide-plugin`), shared by all windows.
@@ -62,8 +65,16 @@ impl AppState {
                 syntax.get_or_init(|| Arc::new(Syntax::new()));
             })?;
         }
-        let config_dir = app.path().app_config_dir()?;
-        let data_dir = app.path().app_data_dir()?;
+        // The shared home: every build (installed or dev worktree) reads its
+        // config, data and tools from one base directory. A previous
+        // installation's files are NOT folded in here — the migration dialog
+        // asks first (see `commands::app::migration_*`); this start only
+        // records whether the base was empty, so a migration chosen moments
+        // later knows its own fresh files may be replaced.
+        let base = crate::paths::base();
+        let fresh_base = !crate::paths::config_dir(&base).exists() && !crate::paths::system_dir(&base).exists();
+        let config_dir = crate::paths::config_dir(&base);
+        let data_dir = crate::paths::system_dir(&base);
         std::fs::create_dir_all(&config_dir)?;
         std::fs::create_dir_all(&data_dir)?;
         // Saved git HTTPS credentials (askpass answers them silently).
@@ -89,10 +100,12 @@ impl AppState {
             project_environment: false,
         }));
         Ok(Self {
+            fresh_base,
             recent: RecentProjects::load(&config_dir),
             askpass: start_askpass(&app),
             sink: global_sink,
-            plugins: crate::commands::plugin::create_host(&app, &data_dir)?,
+            // Plugins are user-chosen installs: config side, like IDEA's.
+            plugins: crate::commands::plugin::create_host(&app, &config_dir)?,
             web: ide_web::WebServer::new(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,

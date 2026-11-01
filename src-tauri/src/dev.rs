@@ -1,4 +1,6 @@
 //! Development identity is tied to the compiled worktree, never the launch cwd.
+//! It now only separates single-instance launches and the window-state plugin's
+//! file; every data path comes from the shared home (`crate::paths`).
 
 pub fn configure(mut context: tauri::Context<tauri::Wry>) -> tauri::Context<tauri::Wry> {
     context.config_mut().identifier = identifier(env!("OPENIDEA_WORKTREE_ROOT"));

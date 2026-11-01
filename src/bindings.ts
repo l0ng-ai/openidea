@@ -7,6 +7,24 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
+	appHome: () => __TAURI_INVOKE<AppHome>("app_home"),
+	/**
+	 *  Points the shared home at `path` for the next start, optionally copying the
+	 *  current base over first ("Move existing data"). Needs a restart to apply.
+	 */
+	appHomeSet: (path: string, moveData: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("app_home_set", { path, moveData })),
+	migrationStatus: () => __TAURI_INVOKE<MigrationStatus>("migration_status"),
+	/**
+	 *  The dialog's "Migrate": moves the previous installation's files into the
+	 *  shared home, rewrites old paths in settings and run configurations, and
+	 *  trashes the old directories on full success. The caller restarts.
+	 */
+	migrationApply: () => __TAURI_INVOKE<Migration>("migration_apply"),
+	/**
+	 *  The dialog's "Don't migrate": `remember` also stops asking (the marker
+	 *  lives at its fixed default location, whatever the current base is).
+	 */
+	migrationDecline: (remember: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("migration_decline", { remember })),
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
 	recentProjects: () => __TAURI_INVOKE<RecentProject[]>("recent_projects"),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
@@ -1346,6 +1364,16 @@ export type AgentUsage = {
 	used: number,
 	/**  Size of the context window. */
 	size: number,
+};
+
+/**
+ *  The shared configuration home and how it was chosen
+ *  (Settings › System Settings › Configuration directory).
+ */
+export type AppHome = {
+	base: IpcPath,
+	/**  `OPENIDEA_HOME` is set: it wins, and the settings UI cannot move the base. */
+	envOverride: boolean,
 };
 
 export type AppInfo = {
@@ -4338,6 +4366,24 @@ export type MethodStat = {
 	frame: number,
 	selfWeight: number | null,
 	total: number | null,
+};
+
+/**  Outcome of a legacy migration, for the dialog's result reporting. */
+export type Migration = {
+	moved: number,
+	failed: number,
+};
+
+/**
+ *  What the migration dialog asks about: a previous installation's files
+ *  that have not been moved (or declined with "don't ask again") yet.
+ */
+export type MigrationStatus = {
+	pending: boolean,
+	/**  How many entries a migration would move. */
+	entries: number,
+	/**  The old directories, shown in the dialog. */
+	legacy: IpcPath[],
 };
 
 export type NewAgentTask = {

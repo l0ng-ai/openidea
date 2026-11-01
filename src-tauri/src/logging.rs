@@ -1,6 +1,5 @@
-//! Logging: stdout (as before) plus a daily-rotated file in the app log dir
-//! (`~/Library/Logs/<identifier>` on macOS, `<local data>/<identifier>/logs`
-//! elsewhere — the same place as Tauri's `app_log_dir`).
+//! Logging: stdout (as before) plus a daily-rotated file in the shared home's
+//! `log/` directory (see [`crate::paths`]).
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -19,35 +18,36 @@ const SUFFIX: &str = "log";
 static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 static GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
-pub fn log_dir_for(identifier: &str) -> Option<PathBuf> {
-    if cfg!(target_os = "macos") {
-        dirs::home_dir().map(|h| h.join("Library/Logs").join(identifier))
-    } else {
-        dirs::data_local_dir().map(|d| d.join(identifier).join("logs"))
-    }
+/// The shared home's `log/` directory (see [`crate::paths`]).
+pub fn log_dir(base: &Path) -> PathBuf {
+    base.join("log")
 }
 
 fn filter() -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,openidea_lib=debug".into())
 }
 
-pub fn init(identifier: &str) {
+/// Installs stdout logging plus the daily-rotated file under `base/log`;
+/// file logging is skipped (stdout still works) when the directory cannot
+/// be created or opened.
+pub fn init(base: &Path) {
     let stdout = tracing_subscriber::fmt::layer().with_filter(filter());
-    let file = log_dir_for(identifier).and_then(|dir| {
-        std::fs::create_dir_all(&dir).ok()?;
-        let appender = tracing_appender::rolling::Builder::new()
+    let dir = log_dir(base);
+    let mut file = None;
+    if std::fs::create_dir_all(&dir).is_ok()
+        && let Ok(appender) = tracing_appender::rolling::Builder::new()
             .rotation(tracing_appender::rolling::Rotation::DAILY)
             .filename_prefix(PREFIX)
             .filename_suffix(SUFFIX)
             .max_log_files(7)
             .build(&dir)
-            .ok()?;
+    {
         let (writer, guard) = tracing_appender::non_blocking(appender);
         let _ = GUARD.set(guard);
         log_panics(dir.clone());
         let _ = LOG_DIR.set(dir);
-        Some(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(writer).with_filter(filter()))
-    });
+        file = Some(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(writer).with_filter(filter()));
+    }
     let _ = tracing_subscriber::registry().with(stdout).with(file).try_init();
 }
 
@@ -79,7 +79,8 @@ fn append(dir: &Path, record: &str) -> std::io::Result<()> {
     std::fs::OpenOptions::new().create(true).append(true).open(path)?.write_all(record.as_bytes())
 }
 
-pub fn log_dir() -> Option<&'static Path> {
+/// The directory file logging actually went to, if it is active.
+pub fn active_log_dir() -> Option<&'static Path> {
     LOG_DIR.get().map(PathBuf::as_path)
 }
 
@@ -131,8 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn log_dir_is_per_identifier() {
-        let d = log_dir_for("com.example.x").unwrap();
-        assert!(d.to_string_lossy().contains("com.example.x"));
+    fn log_dir_lives_under_the_shared_home() {
+        assert_eq!(log_dir(Path::new("/home/.openidea")), PathBuf::from("/home/.openidea/log"));
     }
 }

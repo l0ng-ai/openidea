@@ -38,7 +38,7 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
             .await?;
     }
     if config.adapter == ide_dap::kotlin::ADAPTER {
-        let data_dir = host.data_dir.clone();
+        let tools_root = ide_tools::app_root(&host.data_dir);
         let runtime_root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();
         let runtime_settings = settings.clone();
         let runtime = host
@@ -53,7 +53,7 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
                         "Kotlin debugger needs JDK 11 or newer. Choose a newer language server JDK in Settings.",
                     ));
                 }
-                let jdks = ide_sdk::java::jdtls_jdks(11, &data_dir);
+                let jdks = ide_sdk::java::jdtls_jdks(11, &tools_root);
                 ide_sdk::java::jdtls_runtime(&jdks, 11).cloned().ok_or_else(|| {
                     ide_core::IdeError::unavailable(
                         "Kotlin debugger needs JDK 11 or newer. Download or choose a language server JDK in Settings.",

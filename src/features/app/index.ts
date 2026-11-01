@@ -8,6 +8,7 @@ import { appActions, updateActions } from "./appActions";
 import { checkForUpdatesOnStartup } from "./updates";
 import { installCloseGuard } from "./closeGuard";
 import { InvalidateCachesOverlay, registerInvalidateCachesActions } from "./InvalidateCaches";
+import { checkMigrationOnStartup, MigrationOverlay } from "./MigrationDialog";
 import { buildInfo } from "./host";
 import { KeymapReferenceOverlay } from "./KeymapReference";
 import { LightEditStatus } from "./LightEditStatus";
@@ -30,6 +31,7 @@ export function activate(): () => void {
     registerOverlay({ id: "app.about", component: AboutOverlay }),
     registerOverlay({ id: "app.keymapReference", component: KeymapReferenceOverlay }),
     registerOverlay({ id: "app.invalidateCaches", component: InvalidateCachesOverlay }),
+    registerOverlay({ id: "app.migration", component: MigrationOverlay }),
     registerOverlay({ id: "app.newProject", component: NewProjectOverlay }),
     registerStatusItem({
       id: "app.lightEdit",
@@ -49,6 +51,9 @@ export function activate(): () => void {
     registerOverlay({ id: "app.workspace", component: WorkspaceDialogHost }),
     installLightEditAutoClose(),
   ];
+  // The migration prompt precedes everything: it decides which data this
+  // session should have been running on (a migration restarts the app).
+  void checkMigrationOnStartup();
   let disposed = false;
   void buildInfo().then((b) => {
     if (!b?.updates || disposed) return;

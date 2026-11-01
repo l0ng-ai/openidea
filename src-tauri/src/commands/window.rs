@@ -234,7 +234,7 @@ pub struct LogLocation {
 #[tauri::command]
 #[specta::specta]
 pub fn app_log_location() -> IdeResult<LogLocation> {
-    let dir = crate::logging::log_dir().ok_or_else(|| IdeError::unavailable("file logging is not active"))?;
+    let dir = crate::logging::active_log_dir().ok_or_else(|| IdeError::unavailable("file logging is not active"))?;
     Ok(LogLocation { dir: dir.into(), file: crate::logging::latest_log(dir).map(Into::into) })
 }
 

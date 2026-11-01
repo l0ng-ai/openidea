@@ -19,6 +19,128 @@ pub struct AppInfo {
 
 pub use ide_host::ops::project::ProjectInfo;
 
+/// The shared configuration home and how it was chosen
+/// (Settings › System Settings › Configuration directory).
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppHome {
+    pub base: ide_core::IpcPath,
+    /// `OPENIDEA_HOME` is set: it wins, and the settings UI cannot move the base.
+    pub env_override: bool,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn app_home() -> AppHome {
+    AppHome { base: crate::paths::base().into(), env_override: std::env::var_os("OPENIDEA_HOME").is_some() }
+}
+
+/// Points the shared home at `path` for the next start, optionally copying the
+/// current base over first ("Move existing data"). Needs a restart to apply.
+#[tauri::command]
+#[specta::specta]
+pub fn app_home_set(path: String, move_data: bool) -> IdeResult<()> {
+    let new_base = PathBuf::from(path.trim());
+    if !new_base.is_absolute() {
+        return Err(IdeError::invalid("the configuration directory must be an absolute path"));
+    }
+    if std::env::var_os("OPENIDEA_HOME").is_some() {
+        return Err(IdeError::invalid("OPENIDEA_HOME overrides the configuration directory; unset it first"));
+    }
+    let current = crate::paths::base();
+    if new_base == current {
+        return Ok(());
+    }
+    // Copying the base into itself would recurse forever.
+    if new_base.starts_with(&current) {
+        return Err(IdeError::invalid("the new directory cannot be inside the current one"));
+    }
+    let home = dirs::home_dir().ok_or_else(|| IdeError::internal("no home directory"))?;
+    // Copy first, pointer last: a failure anywhere in between leaves the
+    // current base authoritative, so a retry starts from a consistent state.
+    if move_data {
+        crate::paths::copy_tree(&current, &new_base)
+            .map_err(|e| IdeError::internal(format!("cannot copy the current data: {e}")))?;
+    }
+    crate::paths::write_pointer(&home, &new_base)
+        .map_err(|e| IdeError::internal(format!("cannot record the configuration directory: {e}")))?;
+    Ok(())
+}
+
+/// What the migration dialog asks about: a previous installation's files
+/// that have not been moved (or declined with "don't ask again") yet.
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationStatus {
+    pub pending: bool,
+    /// How many entries a migration would move.
+    pub entries: usize,
+    /// The old directories, shown in the dialog.
+    pub legacy: Vec<ide_core::IpcPath>,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn migration_status() -> MigrationStatus {
+    let base = crate::paths::base();
+    let Some(home) = dirs::home_dir() else {
+        return MigrationStatus { pending: false, entries: 0, legacy: Vec::new() };
+    };
+    match crate::paths::legacy_dirs() {
+        Some((legacy_config, legacy_data)) => {
+            let entries = crate::paths::migration_pending(&base, &home, &legacy_config, &legacy_data).unwrap_or(0);
+            let legacy = if legacy_config == legacy_data {
+                vec![legacy_config.into()]
+            } else {
+                vec![legacy_config.into(), legacy_data.into()]
+            };
+            MigrationStatus { pending: entries > 0, entries, legacy }
+        }
+        None => MigrationStatus { pending: false, entries: 0, legacy: Vec::new() },
+    }
+}
+
+/// The dialog's "Migrate": moves the previous installation's files into the
+/// shared home, rewrites old paths in settings and run configurations, and
+/// trashes the old directories on full success. The caller restarts.
+#[tauri::command]
+#[specta::specta]
+pub fn migration_apply(state: State<'_, AppState>) -> crate::paths::Migration {
+    let base = crate::paths::base();
+    let Some((legacy_config, legacy_data)) = crate::paths::legacy_dirs() else {
+        return Default::default();
+    };
+    // A base this start created empty: its own fresh files lose to the
+    // legacy copies. A base with earlier content keeps the skip rule.
+    let result = crate::paths::migrate_legacy(&base, &legacy_config, &legacy_data, state.fresh_base);
+    tracing::info!("migration: {} entries moved into {} ({} failed)", result.moved, base.display(), result.failed);
+    if result.failed == 0 {
+        // Old absolute paths in settings and run configurations keep working.
+        if let Err(e) = crate::paths::rewrite_legacy_paths(&base, &legacy_config, &legacy_data) {
+            tracing::warn!("cannot rewrite legacy paths: {e}");
+        }
+        // Recoverable by design: the trash, not a delete.
+        if let Err(e) = crate::paths::trash_legacy(&legacy_config, &legacy_data) {
+            tracing::warn!("cannot trash the old directories: {e}");
+        }
+    }
+    result
+}
+
+/// The dialog's "Don't migrate": `remember` also stops asking (the marker
+/// lives at its fixed default location, whatever the current base is).
+#[tauri::command]
+#[specta::specta]
+pub fn migration_decline(remember: bool) -> IdeResult<()> {
+    if remember
+        && let Some(home) = dirs::home_dir()
+        && let Err(e) = crate::paths::write_skip_marker(&home)
+    {
+        return Err(IdeError::internal(format!("cannot record the choice: {e}")));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn app_info(state: State<'_, AppState>) -> AppInfo {

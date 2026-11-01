@@ -11,7 +11,8 @@ use std::path::PathBuf;
 
 /// The installer, reporting the executables chosen in the window's settings.
 fn tools(host: &Host, window: &str) -> IdeResult<Tools> {
-    let data = host.data_dir.clone();
+    // Installs land under the shared tools home, not the data dir.
+    let data = ide_tools::app_root(&host.data_dir);
     let (settings, root) = match host.project(window) {
         Ok(project) => (project.settings.effective(), project.root.clone()),
         Err(_) => (host.global_settings.effective(), Default::default()),
@@ -112,7 +113,7 @@ pub async fn jdk_download_releases(
 
 /// Where Download JDK puts JDKs unless told otherwise.
 pub fn jdk_download_location(host: &Host, _window: &str) -> IdeResult<ide_core::IpcPath> {
-    Ok(ide_tools::jdk::jdks_dir(&host.data_dir).into())
+    Ok(ide_tools::jdk::jdks_dir(&ide_tools::app_root(&host.data_dir)).into())
 }
 
 /// Downloads the latest `vendor` JDK of Java `version` into `location` (default:

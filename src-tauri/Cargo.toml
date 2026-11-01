@@ -33,6 +33,7 @@ blake3.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 dirs.workspace = true
+trash.workspace = true
 
 ide-core.workspace = true
 dunce.workspace = true
@@ -69,3 +70,6 @@ ide-tools = { path = "../crates/ide-tools" }
 ide-plugin = { path = "../crates/ide-plugin" }
 ide-docker = { path = "../crates/ide-docker" }
 ide-github = { path = "../crates/ide-github" }
+
+[dev-dependencies]
+tempfile.workspace = true

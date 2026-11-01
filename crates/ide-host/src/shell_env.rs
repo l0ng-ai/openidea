@@ -16,19 +16,23 @@
 
 #[cfg(unix)]
 use std::ffi::{OsStr, OsString};
+#[cfg(unix)]
+use std::path::Path;
 
 #[cfg(unix)]
 /// Returns a refresh to run once the environment is final (it spawns a
-/// thread, and `set_var` must not race with other threads).
-pub fn inherit_login_shell_path(identifier: &str) -> Option<impl FnOnce() + use<>> {
+/// thread, and `set_var` must not race with other threads). `cache_root` is
+/// the shared home's system directory on the desktop: one cache for every
+/// build, where the identifier-keyed OS cache gave each worktree its own.
+pub fn inherit_login_shell_path(cache_root: &Path) -> Option<impl FnOnce() + use<>> {
     use std::time::Duration;
 
     if std::env::var_os("OPENIDEA_SKIP_SHELL_ENV").is_some() {
         return None;
     }
     record_startup_env();
-    let cache = path_cache(identifier);
-    let cached = cache.as_ref().and_then(|c| std::fs::read_to_string(c).ok()).filter(|p| !p.trim().is_empty());
+    let cache = cache_root.join("login-path");
+    let cached = std::fs::read_to_string(&cache).ok().filter(|p| !p.trim().is_empty());
     let refresh = cached.is_some();
     let path = match cached {
         Some(path) => path,
@@ -37,15 +41,15 @@ pub fn inherit_login_shell_path(identifier: &str) -> Option<impl FnOnce() + use<
             let env = read_login_env(&login_shell(), Duration::from_secs(3))?;
             let fresh = login_path(&env)?;
             ide_core::process::set_shell_env(env);
-            if let Some(cache) = &cache {
-                write_cache(cache, &fresh);
-            }
+            write_cache(&cache, &fresh);
             fresh
         }
     };
     // SAFETY: called at startup before any other thread reads the environment.
     unsafe { std::env::set_var("PATH", path.trim()) };
-    let cache = cache.filter(|_| refresh)?;
+    if !refresh {
+        return None;
+    }
     Some(move || {
         std::thread::spawn(move || {
             let Some(env) = read_login_env(&login_shell(), Duration::from_secs(10)) else { return };
@@ -129,6 +133,8 @@ fn login_shell() -> String {
 }
 
 #[cfg(unix)]
+/// The remote server's login-path cache (its own per-identifier location; the
+/// desktop caches under the shared home instead, via `inherit_login_shell_path`).
 fn path_cache(identifier: &str) -> Option<std::path::PathBuf> {
     dirs::cache_dir().map(|d| d.join(identifier).join("login-path"))
 }
@@ -219,7 +225,7 @@ pub(crate) fn read_login_env(shell: &str, timeout: std::time::Duration) -> Optio
 }
 
 #[cfg(not(unix))]
-pub fn inherit_login_shell_path(_identifier: &str) -> Option<fn()> {
+pub fn inherit_login_shell_path(_cache_root: &std::path::Path) -> Option<fn()> {
     None
 }
 

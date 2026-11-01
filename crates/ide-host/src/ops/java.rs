@@ -41,7 +41,7 @@ async fn resolve_launch(
     // Let jdtls finish its build before the external compiler writes Kotlin/Scala classes.
     let mut info = project.lsp.java_launch(&module, test, build, cancel).await?;
     let lsp_ms = started.elapsed().as_millis();
-    let data_dir = host.data_dir.clone();
+    let tools_root = ide_tools::app_root(&host.data_dir);
     let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
         let built = if build && compile::has_non_java_sources(&module) {
@@ -79,7 +79,7 @@ async fn resolve_launch(
         info.shorten_command_line = Some(shorten.as_str().to_owned());
         if info.error_count > 0 {
             let own = ide_sdk::lombok::agent_in_args(settings.languages.java.jdtls_vm_args.split_whitespace());
-            let managed = ide_tools::managed_bundle(&data_dir, "lombok");
+            let managed = ide_tools::managed_bundle(&tools_root, "lombok");
             let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings);
             let root = project.root.clone();
             // Detection may read the project's sources.

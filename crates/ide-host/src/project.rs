@@ -120,6 +120,10 @@ impl Host {
             let settings = settings.clone();
             let root = root.clone();
             let data_dir = self.data_dir.clone();
+            // Two roots fork here: managed tools (bundles, jdtls runtimes) come
+            // from the shared tools home, while the jdtls -data workspace below
+            // stays per-project under the data dir.
+            let tools_root = ide_tools::app_root(&self.data_dir);
             let config_dir = self.config_dir.clone();
             lsp.set_config_hook(Box::new(move |cfg, server_root| {
                 let member = ide_workspace::workspace::Workspace::load(&root).ok().flatten().and_then(|w| {
@@ -135,13 +139,13 @@ impl Host {
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {
                     let bundles: Vec<PathBuf> =
-                        ide_tools::managed_bundle(&data_dir, "java-debug").into_iter().collect();
+                        ide_tools::managed_bundle(&tools_root, "java-debug").into_iter().collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
-                    let jdks = ide_sdk::java::jdtls_jdks(min_java, &data_dir);
+                    let jdks = ide_sdk::java::jdtls_jdks(min_java, &tools_root);
                     let lombok = ide_sdk::lombok::lombok_agent(
                         server_root,
                         ide_sdk::lombok::agent_in_args(cfg.args.iter().map(String::as_str)),
-                        ide_tools::managed_bundle(&data_dir, "lombok"),
+                        ide_tools::managed_bundle(&tools_root, "lombok"),
                         ide_sdk::apply::maven_local_repository(root, &effective),
                     );
                     if let Some(problem) = lombok.problem() {
@@ -172,14 +176,14 @@ impl Host {
         {
             let settings = settings.clone();
             let root = root.clone();
-            let data_dir = self.data_dir.clone();
+            let tools_root = ide_tools::app_root(&self.data_dir);
             let sink = sink.clone();
             lsp.set_prepare_hook(Box::new(move |cfg, _, cancel| {
                 let effective = settings.effective();
                 if cfg.name == "jdtls" {
                     crate::java_runtime::prepare(
                         cfg,
-                        &data_dir,
+                        &tools_root,
                         !effective.languages.java.jdtls_jdk.trim().is_empty()
                             || ide_sdk::apply::jdtls_jdk(&root, &effective).is_err(),
                         &sink,

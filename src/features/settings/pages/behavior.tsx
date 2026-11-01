@@ -6,13 +6,14 @@
  */
 
 import { FontPicker } from "../components/FontPicker";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useId, useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
-import { isTauri } from "@/platform/ipc";
+import { call, commands, isTauri, type AppHome } from "@/platform/ipc";
 import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
-import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
+import { Button, Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
+import { notifications } from "@/workbench/contributions";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
 import { ColorSwatches, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
@@ -343,6 +344,90 @@ function DefaultDirectoryRow() {
   );
 }
 
+/** The shared home of settings, tools and logs (Settings › System Settings).
+ *  Not a staged setting: the pointer file lives outside the base it selects. */
+function ConfigurationDirectoryRow() {
+  const t = useT();
+  const id = useId();
+  const [home, setHome] = useState<AppHome | null>(null);
+  const [path, setPath] = useState("");
+  const [move, setMove] = useState(true);
+  useEffect(() => {
+    if (isTauri())
+      void commands
+        .appHome()
+        .then(setHome)
+        .catch(() => setHome(null));
+  }, []);
+  const browse = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: "Configuration Directory",
+      defaultPath: home?.base || undefined,
+    });
+    const pickedPath = Array.isArray(picked) ? picked[0] : picked;
+    if (pickedPath) setPath(pickedPath);
+  };
+  const apply = async () => {
+    const title = t("Configuration directory");
+    try {
+      await call(commands.appHomeSet(path, move));
+    } catch (e) {
+      notifications().notify({ level: "error", title, body: e instanceof Error ? e.message : String(e) });
+      return;
+    }
+    notifications().notify({
+      level: "info",
+      title,
+      body: t("The new directory is used after a restart."),
+      sticky: true,
+      actions: [{ label: t("Restart"), run: () => void commands.appRestart() }],
+    });
+  };
+  // OPENIDEA_HOME wins over the pointer file: the row turns read-only rather
+  // than offering a change the next start would ignore.
+  const locked = home?.envOverride ?? false;
+  return (
+    <Row
+      label="Configuration directory"
+      htmlFor={id}
+      hint={
+        locked
+          ? "OPENIDEA_HOME is set and takes precedence over this setting."
+          : "Where settings, tools and logs live; shared by every installation of this IDE."
+      }
+    >
+      <Input
+        id={id}
+        className={styles.pathInput}
+        value={path || home?.base || ""}
+        placeholder={home ? undefined : "System default"}
+        readOnly={locked || !isTauri()}
+        onChange={(e) => setPath(e.target.value)}
+      />
+      <IconButton
+        icon="folder-open"
+        size="small"
+        title="Browse…"
+        aria-label="Browse"
+        disabled={locked || !isTauri()}
+        onClick={() => void browse()}
+      />
+      <Checkbox checked={move} disabled={locked} onChange={setMove} label={t("Move existing data")} />
+      <Button
+        size="small"
+        variant="primary"
+        disabled={locked || !isTauri() || !path.trim()}
+        onClick={() => void apply()}
+      >
+        <T>Apply</T>
+      </Button>
+    </Row>
+  );
+}
+
 function IdleSaveRow() {
   const [on, setOn] = useSetting<boolean>("general.saveOnIdle");
   const [seconds, setSeconds] = useSetting<number>("general.idleSeconds");
@@ -572,6 +657,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             component: OpenProjectInRow,
           },
           { kind: "custom", label: "Default directory", component: DefaultDirectoryRow },
+          { kind: "custom", label: "Configuration directory", component: ConfigurationDirectoryRow },
         ],
       },
       {
