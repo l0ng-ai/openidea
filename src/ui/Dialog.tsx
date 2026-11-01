@@ -117,7 +117,7 @@ export interface DialogProps {
   /**
    * `top` places a lightweight modal popup (choosers, Search Everywhere) near
    * the top. Popups (also any dialog without a title) get no window title bar
-   * and are not draggable.
+   * and drag only by a `[data-dialog-drag]` element, such as their title.
    */
   position?: "center" | "top";
   className?: string;
