@@ -3927,6 +3927,10 @@ export type LanguageCodeStyle = LanguageCodeStyle_Serialize | LanguageCodeStyle_
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle_Deserialize = {
+	/**  Java formatter: `default` | `intellij` | `custom` (other languages ignore it). */
+	formatter?: string | null,
+	/**  Eclipse formatter XML; relative paths start at the project root. */
+	formatterPath?: string | null,
 	useTab?: boolean | null,
 	tabSize?: number | null,
 	indent?: number | null,
@@ -3939,6 +3943,10 @@ export type LanguageCodeStyle_Deserialize = {
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle_Serialize = {
+	/**  Java formatter: `default` | `intellij` | `custom` (other languages ignore it). */
+	formatter?: string | null,
+	/**  Eclipse formatter XML; relative paths start at the project root. */
+	formatterPath?: string | null,
 	useTab?: boolean | null,
 	tabSize?: number | null,
 	indent?: number | null,

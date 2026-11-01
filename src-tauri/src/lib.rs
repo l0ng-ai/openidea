@@ -8,6 +8,8 @@ mod commands;
 #[cfg(debug_assertions)]
 mod dev;
 mod events;
+#[cfg(any(target_os = "linux", test))]
+mod linux_window_state;
 mod logging;
 mod menu;
 mod remote_dev;
@@ -68,16 +70,18 @@ pub fn run() {
     // Single instance first: a second launch focuses this one and opens its path argument.
     // Debug builds have a separate identifier per worktree.
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
+    let app = app.plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_dialog::init());
+    #[cfg(target_os = "linux")]
+    let app = app.plugin(linux_window_state::plugin());
+    #[cfg(not(target_os = "linux"))]
+    let app = app.plugin(
+        tauri_plugin_window_state::Builder::default()
+            .with_state_flags(window_state_flags())
+            // One remembered geometry shared by every project's settings window.
+            .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
+            .build(),
+    );
     let app = app
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(window_state_flags())
-                // One remembered geometry shared by every project's settings window.
-                .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
-                .build(),
-        )
         // Inert until an endpoint is configured (see `commands::window::app_check_update`).
         .plugin(tauri_plugin_updater::Builder::new().build());
     // E2E automation bridge (Tauri MCP), debug builds only, localhost only.
@@ -152,6 +156,8 @@ pub fn run() {
         Ok(())
     })
     .on_window_event(|window, event| match event {
+        #[cfg(target_os = "linux")]
+        tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -204,6 +210,7 @@ pub fn run() {
     });
 }
 
+#[cfg(not(target_os = "linux"))]
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     use tauri_plugin_window_state::StateFlags;
     StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN

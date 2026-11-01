@@ -82,6 +82,7 @@ const UNTRANSLATED = new Set<string>([
   // Product names
   "CMake",
   "Prettier",
+  "IntelliJ IDEA",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",

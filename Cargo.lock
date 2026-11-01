@@ -4374,6 +4374,7 @@ dependencies = [
  "ide-jsonrpc",
  "ide-language",
  "ide-text",
+ "ide-vfs",
  "ignore",
  "lsp-types",
  "parking_lot",

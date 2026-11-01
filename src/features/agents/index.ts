@@ -54,6 +54,7 @@ export function activate(): () => void {
       anchor: "right",
       order: 0.5,
       component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
+      headerContent: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsLocationActions)),
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
       useBadge: () => {
         const n = useAgents(
@@ -80,11 +81,10 @@ export function activate(): () => void {
       icon: () => "toolwindow-agents",
       restorable: true,
     }),
-    // A task dragged from the tool window onto the editor opens as a tab (or undocks).
+    // An explicit editor drop sets the placement for subsequent sessions too.
     registerEditorDropHandler({
       accepts: (type) => type === TASK_DRAG,
-      drop: ({ payload }) =>
-        void executeAction(useAgents.getState().docked === payload ? "agents.undockTask" : "agents.openTask", payload),
+      drop: ({ payload }) => void executeAction("agents.openTaskInEditor", payload),
     }),
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({
@@ -95,26 +95,6 @@ export function activate(): () => void {
         paths.length && !paths.some(isVirtualUri)
           ? [{ kind: "action", action: "agents.sendToAgent", arg: menu === "projectView" ? paths : undefined }]
           : [],
-    }),
-    registerMenuGroup({
-      // Session tabs have no path; "Open in Tool Window" docks them beside the task list.
-      id: "agents.tab",
-      menus: ["editorTab"],
-      order: 50,
-      items: (_menu, { paths, input }) => {
-        const task = input?.kind === SESSION_KIND ? (input.data as { task?: string } | undefined)?.task : undefined;
-        return paths.length || !task
-          ? []
-          : [
-              {
-                kind: "action",
-                action: "agents.dockTask",
-                label: "Open in Tool Window",
-                icon: "open-in-tool-window",
-                arg: task,
-              },
-            ];
-      },
     }),
     registerActions([
       ...taskActions,

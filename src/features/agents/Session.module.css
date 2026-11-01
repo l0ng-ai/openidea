@@ -16,6 +16,20 @@
   border-right: 1px solid var(--border);
 }
 
+.conversation[hidden] {
+  display: none;
+}
+.docked {
+  grid-template-columns: minmax(0, 1fr);
+  overflow: hidden;
+}
+.docked .conversation {
+  border-right: 0;
+}
+.docked .changes {
+  width: auto;
+}
+
 /* The conversation hugs its content; spare space stays below the composer
    instead of inside the chat. */
 .streamArea,
@@ -568,6 +582,7 @@
   width: 280px;
 }
 .changesHeader {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -577,11 +592,17 @@
   border-bottom: 1px solid var(--border);
 }
 .changesTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 600;
   color: var(--fg-strong);
 }
 .changesSummary {
   flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 4px 10px;
   color: var(--fg-subtle);
   white-space: pre;
@@ -608,8 +629,11 @@
   gap: 4px;
 }
 .changeName {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .changeDir {
   flex: 1 1 0;
