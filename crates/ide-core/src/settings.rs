@@ -292,6 +292,7 @@ pub struct AppearanceSettings {
     pub editor_antialiasing: String,
     pub show_tool_window_bars: bool,
     pub show_tool_window_names: bool,
+    pub show_tool_window_badges: bool,
     pub widescreen_tool_windows: bool,
     /// Status bar widgets shown (`true`) or hidden (`false`) by the user
     /// (status bar context menu); widgets not listed use their default.
@@ -338,6 +339,7 @@ impl Default for AppearanceSettings {
             editor_antialiasing: "greyscale".into(),
             show_tool_window_bars: true,
             show_tool_window_names: false,
+            show_tool_window_badges: true,
             widescreen_tool_windows: false,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
