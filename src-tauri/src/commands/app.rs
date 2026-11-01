@@ -90,10 +90,14 @@ pub fn app_home_set(path: String) -> IdeResult<()> {
             "the configuration directory must not be inside or contain an existing data directory",
         ));
     }
-    // The pointer records where the data currently lives, so the next start
-    // can offer to migrate it; a new switch also asks again.
-    crate::paths::write_pointer(&resolved.defaults.0, &crate::paths::Layout::Custom(target), Some(&resolved.layout))
-        .map_err(|e| IdeError::internal(e.to_string()))?;
+    // The pointer records where the data actually lives (see `paths::data_home`),
+    // so the next start can offer to migrate it; a new switch also asks again.
+    crate::paths::write_pointer(
+        &resolved.defaults.0,
+        &crate::paths::Layout::Custom(target),
+        Some(&crate::paths::data_home(resolved)),
+    )
+    .map_err(|e| IdeError::internal(e.to_string()))?;
     crate::paths::clear_skip_marker(&resolved.defaults.0);
     Ok(())
 }
@@ -107,13 +111,13 @@ pub fn app_home_reset() -> IdeResult<()> {
         return Err(IdeError::internal("OPENIDEA_HOME is set and takes precedence"));
     }
     // Already on the defaults: nothing to record (an idempotent no-op).
-    let crate::paths::Layout::Custom(base) = &resolved.layout else {
+    if !matches!(resolved.layout, crate::paths::Layout::Custom(_)) {
         return Ok(());
-    };
+    }
     crate::paths::write_pointer(
         &resolved.defaults.0,
         &crate::paths::Layout::Default,
-        Some(&crate::paths::Layout::Custom(base.clone())),
+        Some(&crate::paths::data_home(resolved)),
     )
     .map_err(|e| IdeError::internal(e.to_string()))?;
     crate::paths::clear_skip_marker(&resolved.defaults.0);

@@ -294,6 +294,18 @@ pub fn previous_layout(resolved: &Resolved) -> Option<Layout> {
     }
 }
 
+/// Where a new switch should record the data's home. A declined switch
+/// leaves the pointer's previous line pointing at the data while the app
+/// runs from a fresh, data-less target — the next switch must chain back to
+/// that line, or the data would be stranded behind the declined offer. With
+/// no live pending migration (nothing recorded, or the target already holds
+/// every entry), the current location is the data's home.
+pub fn data_home(resolved: &Resolved) -> Layout {
+    previous_layout(resolved)
+        .filter(|p| migration_pending(p, &resolved.layout, &resolved.defaults).is_some())
+        .unwrap_or_else(|| resolved.layout.clone())
+}
+
 /// The two roots a layout writes: the config and data sides.
 pub fn side_roots(layout: &Layout, defaults: &(PathBuf, PathBuf)) -> (PathBuf, PathBuf) {
     match layout {
@@ -1135,6 +1147,40 @@ mod tests {
 
         write_pointer(&default_config, &Layout::Default, None).unwrap();
         assert_eq!(previous_layout(&resolved), None);
+    }
+
+    #[test]
+    fn data_home_chains_to_where_the_data_lives() {
+        // The declined switch: the app runs from the fresh target X while the
+        // data stayed in P — a new switch must chain to P, not record X.
+        let tmp = TempDir::new().unwrap();
+        let default_config = tmp.path().join("default-config");
+        let defaults = defaults_of(&default_config, &tmp.path().join("default-data"));
+        let p = tmp.path().join("p-base");
+        fs::create_dir_all(p.join("config")).unwrap();
+        file(&p, "config/settings.toml");
+        let x = tmp.path().join("x-base");
+        fs::create_dir_all(&x).unwrap();
+        let resolved = Resolved {
+            layout: Layout::Custom(x.clone()),
+            locations: Locations { config: x.join("config"), data: x.join("system") },
+            defaults: defaults.clone(),
+            home: tmp.path().join("home"),
+        };
+
+        write_pointer(&default_config, &Layout::Custom(x.clone()), Some(&Layout::Custom(p.clone()))).unwrap();
+        assert_eq!(data_home(&resolved), Layout::Custom(p));
+
+        // Once X holds the entries too, P is superseded: the current
+        // location is the data's home even with the line still recorded.
+        file(&x, "config/settings.toml");
+        assert_eq!(data_home(&resolved), Layout::Custom(x.clone()));
+
+        // After a completed migration the pointer drops the previous line:
+        // the current location, again.
+        fs::remove_file(x.join("config/settings.toml")).unwrap();
+        write_pointer(&default_config, &Layout::Custom(x.clone()), None).unwrap();
+        assert_eq!(data_home(&resolved), Layout::Custom(x));
     }
 
     #[test]
