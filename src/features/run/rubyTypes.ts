@@ -40,7 +40,7 @@ const commandField = (name: string) =>
     label: "Launcher",
     mono: true,
     placeholder: name,
-    hint: `Path of ${name} (bundle when run with Bundler); empty uses the interpreter from Settings › Ruby`,
+    hint: "Path of the tool (bundle when run with Bundler); empty uses the interpreter from Settings › Ruby",
   }) as const;
 
 export const rubyScriptType: RunConfigTypeContribution = {
