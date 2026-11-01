@@ -284,6 +284,11 @@ function ToolWindowsGrid() {
         <>
           <BoundToggle k="appearance.showToolWindowBars" label="Show tool window bars" />
           <BoundToggle k="appearance.showToolWindowNames" label="Show tool window names" />
+          <BoundToggle
+            k="appearance.showToolWindowBadges"
+            label="Show tool window badges"
+            hint="Counts on the stripe icons, e.g. changed files or agent tasks needing input"
+          />
         </>
       }
       right={

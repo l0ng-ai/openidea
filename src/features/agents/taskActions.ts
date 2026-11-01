@@ -4,7 +4,7 @@ import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
 import { showError, confirmChecked } from "@/workbench/messages";
 import { isBusy } from "./model";
-import { archiveTask, unarchiveTask, deleteTask, forkTask, openTask, useAgents } from "./store";
+import { archiveTask, unarchiveTask, deleteTask, dockTask, forkTask, openTask, undockTask, useAgents } from "./store";
 
 const canArchive = (task: AgentTask) => !isBusy(task.status) && task.status !== "archived";
 const canFork = (task: AgentTask) => canArchive(task) && !!task.capabilities?.fork;
@@ -69,6 +69,22 @@ export const taskActions: Action[] = [
     },
   },
   {
+    id: "agents.dockTask",
+    title: "Open Agent Task in Tool Window",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      if (typeof arg === "string") dockTask(arg);
+    },
+  },
+  {
+    id: "agents.undockTask",
+    title: "Open Agent Task in Editor",
+    category: "Agents",
+    hidden: true,
+    run: () => undockTask(),
+  },
+  {
     id: "agents.forkTask",
     title: "Copy Agent Task to a New Task",
     category: "Agents",
@@ -115,10 +131,20 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
   const multiple = tasks.length > 1;
   const archived = tasks.filter((task) => task.status === "archived").length;
   const archivable = tasks.filter(canArchive).length;
+  const docked = useAgents.getState().docked;
   return [
     ...(!multiple
       ? ([
           { kind: "action", action: "agents.openTask", label: "Open", arg: task.id },
+          docked === task.id
+            ? { kind: "action", action: "agents.undockTask", label: "Open in Editor", icon: "editor-only" }
+            : {
+                kind: "action",
+                action: "agents.dockTask",
+                label: "Open in Tool Window",
+                icon: "open-in-tool-window",
+                arg: task.id,
+              },
           { kind: "action", action: "terminal.openAt", label: "Open in Terminal", icon: "terminal", arg: task.cwd },
           ...(task.capabilities?.fork && task.status !== "archived"
             ? ([

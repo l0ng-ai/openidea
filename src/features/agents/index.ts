@@ -9,6 +9,7 @@ import { executeAction } from "@/platform/actions";
 import { lazyComponent } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import {
+  registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
   registerSettingsPage,
@@ -17,7 +18,7 @@ import {
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TOOL_WINDOW } from "./model";
+import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
@@ -79,6 +80,12 @@ export function activate(): () => void {
       icon: () => "toolwindow-agents",
       restorable: true,
     }),
+    // A task dragged from the tool window onto the editor opens as a tab (or undocks).
+    registerEditorDropHandler({
+      accepts: (type) => type === TASK_DRAG,
+      drop: ({ payload }) =>
+        void executeAction(useAgents.getState().docked === payload ? "agents.undockTask" : "agents.openTask", payload),
+    }),
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({
       id: "agents.send",
@@ -88,6 +95,26 @@ export function activate(): () => void {
         paths.length && !paths.some(isVirtualUri)
           ? [{ kind: "action", action: "agents.sendToAgent", arg: menu === "projectView" ? paths : undefined }]
           : [],
+    }),
+    registerMenuGroup({
+      // Session tabs have no path; "Open in Tool Window" docks them beside the task list.
+      id: "agents.tab",
+      menus: ["editorTab"],
+      order: 50,
+      items: (_menu, { paths, input }) => {
+        const task = input?.kind === SESSION_KIND ? (input.data as { task?: string } | undefined)?.task : undefined;
+        return paths.length || !task
+          ? []
+          : [
+              {
+                kind: "action",
+                action: "agents.dockTask",
+                label: "Open in Tool Window",
+                icon: "open-in-tool-window",
+                arg: task,
+              },
+            ];
+      },
     }),
     registerActions([
       ...taskActions,

@@ -1434,6 +1434,7 @@ export type AppearanceSettings = {
 	editorAntialiasing?: string,
 	showToolWindowBars?: boolean,
 	showToolWindowNames?: boolean,
+	showToolWindowBadges?: boolean,
 	widescreenToolWindows?: boolean,
 	/**
 	 *  Status bar widgets shown (`true`) or hidden (`false`) by the user

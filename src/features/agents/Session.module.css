@@ -16,6 +16,13 @@
   border-right: 1px solid var(--border);
 }
 
+/* The conversation hugs its content; spare space stays below the composer
+   instead of inside the chat. */
+.streamArea,
+.stream {
+  flex: 0 1 auto;
+}
+
 .header {
   display: flex;
   align-items: center;

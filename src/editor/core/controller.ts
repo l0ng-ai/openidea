@@ -1458,6 +1458,11 @@ export class EditorController implements SlotHost {
     return [...out];
   }
 
+  /** Input of the tab `tabId` in pane `paneId` (dragging a tab between views), null if there is none. */
+  tabInput(paneId: string, tabId: string): EditorInput | null {
+    return useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId)?.input ?? null;
+  }
+
   closePath(path: string): Promise<boolean> {
     return this.removeGuarded((s) => {
       const keys = new Set<string>();
@@ -1682,7 +1687,10 @@ export class EditorController implements SlotHost {
             { kind: "action", action: "project.rename", arg: path, label: "Rename File…" },
             { kind: "separator" },
           ] as MenuItem[])
-        : []),
+        : [
+            // Contributed groups for tabs without a file (e.g. "Open in Tool Window").
+            ...menuGroupItems("editorTab", { paths: [], input: tab.input }),
+          ]),
       { kind: "action", action: "file.settings", arg: "editor.general.editorTabs", label: "Configure Editor Tabs…" },
     ];
   }

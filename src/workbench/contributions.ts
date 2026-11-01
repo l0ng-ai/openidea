@@ -19,6 +19,7 @@ import {
 } from "react";
 import type { FileMatches, SearchQuery, RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
+import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
@@ -501,6 +502,9 @@ export interface OpenEditorTab {
   lastActive: number;
 }
 
+/** MIME of a dragged editor tab: the payload is `{ paneId, tabId }` as JSON. */
+export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
+
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
@@ -518,6 +522,8 @@ export interface EditorService {
   openPaths?(): string[];
   /** Every open tab, files or not, most recently active first (Switcher). */
   openTabs?(): OpenEditorTab[];
+  /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
+  tabInput?(paneId: string, tabId: string): EditorInput | null;
   /** Input of the active tab (any kind), if any. */
   activeInput?(): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
@@ -631,6 +637,40 @@ export const notifications = (): NotificationService =>
 export const maybeEditorService = (): EditorService | undefined => services.editor;
 /** Creates terminal widgets; provided by the terminal feature. */
 export const embeddedTerminal = (): EmbeddedTerminalFactory | undefined => services.embeddedTerminal;
+
+/**
+ * Handles a pointer drag dropped on the editor content: features register handlers for
+ * their own drag types (e.g. an agent task dragged from the tool window) without the
+ * editor depending on them. The editor shows its center drop-zone for accepted types.
+ */
+export interface EditorDropHandler {
+  accepts(type: string): boolean;
+  drop(data: DragData): void;
+}
+
+const editorDropHandlers: EditorDropHandler[] = [];
+
+/** Registers a handler for drags dropped on editor content; returns the unregister. */
+export function registerEditorDropHandler(handler: EditorDropHandler): () => void {
+  editorDropHandlers.push(handler);
+  return () => {
+    const i = editorDropHandlers.indexOf(handler);
+    if (i >= 0) editorDropHandlers.splice(i, 1);
+  };
+}
+
+/** Whether any registered handler takes this drag type. */
+export function acceptsEditorDrop(type: string): boolean {
+  return editorDropHandlers.some((h) => h.accepts(type));
+}
+
+/** Hands a drag dropped on editor content to its registered handler, if any. */
+export function dropOnEditor(data: DragData): boolean {
+  const handler = editorDropHandlers.find((h) => h.accepts(data.type));
+  if (!handler) return false;
+  handler.drop(data);
+  return true;
+}
 
 /** Editor-backed results, recomputed on rerun without reading files from disk. */
 export interface FindResultsSource {
@@ -897,6 +937,8 @@ export interface MenuGroupContext {
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
   line?: number;
+  /** The tab's input, when the menu is for an editor tab without a path. */
+  input?: EditorInput;
 }
 
 export interface MenuGroupContribution {
