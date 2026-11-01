@@ -56,6 +56,8 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "db_console_path",
         "db_export_file",
         "vcs_write_patch",
+        "remote_bootstrap_list",
+        "deploy_test_connection",
     ] {
         assert!(ide_host::trust::restricted_command_allowed(command), "{command}");
         for window in ["main", "welcome"] {
@@ -75,6 +77,15 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "vcs_git_version",
         "docker_compose_op",
         "db_execute",
+        "remote_delete",
+        "remote_mkdir",
+        "remote_rename",
+        "remote_import_local",
+        "remote_bootstrap_exec",
+        "deploy_upload",
+        "deploy_download",
+        "deploy_delete_remote",
+        "deploy_sync",
         "unknown_command",
     ] {
         assert!(!ide_host::trust::restricted_command_allowed(command), "{command}");
@@ -106,6 +117,55 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         .unwrap_err();
         assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
     }
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn welcome_window_browses_selected_ssh_host_without_executing_commands() {
+    use ide_core::remote_settings::{SshAuth, SshConfiguration};
+    use ide_ssh::{FsConnection, SshFiles, SshManager};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let server_root = tmp.path().join("server");
+    std::fs::create_dir_all(server_root.join("projects/demo")).unwrap();
+    std::fs::write(server_root.join("projects/README.md"), "remote file").unwrap();
+    let port = ide_ssh::testing::sshd(server_root, Arc::new(|cmd| panic!("unexpected SSH exec: {cmd}"))).await;
+    let ssh = Arc::new(SshManager::with_files(
+        tmp.path().join("secrets.json"),
+        SshFiles { known_hosts: tmp.path().join("known_hosts"), config: None },
+    ));
+    ssh.set_configs(vec![SshConfiguration {
+        id: "selected-host".into(),
+        host: "127.0.0.1".into(),
+        port: Some(port),
+        user: "dev".into(),
+        auth: SshAuth::Password,
+        ..Default::default()
+    }]);
+    ssh.set_secret("selected-host", Some("secret".into()), false);
+    assert!(ssh.session("selected-host").await.is_err());
+    ssh.trust_host("selected-host").await.unwrap();
+
+    let mut host = host(&tmp.path().join("app"), false);
+    let state = Arc::get_mut(&mut host).unwrap();
+    state.ssh = ssh;
+    state.remote = Arc::new(ide_remote::RemoteService::new(state.ssh.clone(), tmp.path().join("cache")));
+    assert!(host.project("welcome").is_err());
+    host.authorize_command("welcome", "remote_bootstrap_list").unwrap();
+    let connection = FsConnection::Sftp { ssh: "selected-host".into() };
+    let entries = host.remote.list(&connection, "/projects").await.unwrap();
+    assert!(entries.iter().any(|e| e.path == "/projects/demo" && e.is_dir));
+    assert!(entries.iter().any(|e| e.name == "README.md" && !e.is_dir));
+    assert!(host.remote.list(&connection, "/projects/demo").await.unwrap().is_empty());
+    host.authorize_command("welcome", "deploy_test_connection").unwrap();
+    host.remote.test_connection(&connection, "/projects").await.unwrap();
+    let local = tmp.path().join("local-deployment");
+    std::fs::create_dir(&local).unwrap();
+    ide_host::ops::deploy::deploy_test_connection(&host, FsConnection::Local, local.to_str().unwrap().into())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_dir(local).unwrap().count(), 0, "write probe is cleaned up");
+    assert!(host.project("welcome").is_err());
     host.shutdown().await;
 }
 
