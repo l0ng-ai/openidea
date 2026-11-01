@@ -7,7 +7,8 @@ import java.util.*;
 import org.apache.maven.AbstractMavenLifecycleParticipant;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.MavenExecutionException;
-import org.apache.maven.execution.MavenSession;
+import org.apache.maven.execution.*;
+import java.lang.reflect.*;
 import org.apache.maven.model.*;
 import org.apache.maven.project.MavenProject;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
@@ -16,6 +17,8 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 public final class IsolatedOutput extends AbstractMavenLifecycleParticipant {
     private final Map<MavenProject, File> outputs = new LinkedHashMap<>();
     private File staging;
+    private final Map<MavenProject, Map<String, String>> kotlin = new LinkedHashMap<>();
+    private final Set<MavenProject> sources = new HashSet<>();
 
     @Override public void afterProjectsRead(MavenSession session) throws MavenExecutionException {
         String destination = session.getUserProperties().getProperty("openidea.kotlin.staging");
@@ -41,11 +44,65 @@ public final class IsolatedOutput extends AbstractMavenLifecycleParticipant {
                 }
             }
             outputs.put(project, main);
+            Map<String, String> goals = new LinkedHashMap<>();
+            for (Plugin plugin : project.getBuildPlugins()) {
+                if (!isKotlin(plugin)) continue;
+                for (PluginExecution execution : plugin.getExecutions()) {
+                    if ("none".equals(execution.getPhase())) continue;
+                    for (String goal : execution.getGoals())
+                        if ("compile".equals(goal) || "test-compile".equals(goal))
+                            goals.put(execution.getId() + ":" + goal, "skipped");
+                }
+            }
+            kotlin.put(project, goals);
+            if (hasKotlin(project.getBasedir().toPath(), project.getBasedir().toPath(), session.getProjects()))
+                sources.add(project);
         }
+        final ExecutionListener previous = session.getRequest().getExecutionListener();
+        // Preserve Maven's logger and any listener installed by another extension.
+        session.getRequest().setExecutionListener((ExecutionListener) Proxy.newProxyInstance(
+            ExecutionListener.class.getClassLoader(), new Class<?>[] { ExecutionListener.class },
+            (proxy, method, args) -> {
+                if (args != null && args.length == 1 && args[0] instanceof ExecutionEvent) {
+                    ExecutionEvent event = (ExecutionEvent) args[0];
+                    if (Arrays.asList("mojoStarted", "mojoSucceeded", "mojoFailed", "mojoSkipped").contains(method.getName())
+                        && event.getMojoExecution() != null && isKotlin(event.getMojoExecution().getPlugin())) {
+                        String goal = event.getMojoExecution().getGoal();
+                        if ("compile".equals(goal) || "test-compile".equals(goal)) {
+                            String status = method.getName().equals("mojoSucceeded") ? "success" :
+                                method.getName().equals("mojoFailed") ? "failed" : "skipped";
+                            Map<String, String> goals = kotlin.get(event.getProject());
+                            if (goals != null) goals.put(event.getMojoExecution().getExecutionId() + ":" + goal, status);
+                        }
+                    }
+                }
+                if (previous == null) return null;
+                try { return method.invoke(previous, args); }
+                catch (InvocationTargetException e) { throw e.getCause(); }
+            }));
+    }
+
+    private static boolean isKotlin(Plugin plugin) {
+        return "org.jetbrains.kotlin".equals(plugin.getGroupId()) && "kotlin-maven-plugin".equals(plugin.getArtifactId());
+    }
+    private static boolean hasKotlin(Path root, Path directory, List<MavenProject> projects) throws MavenExecutionException {
+        if (!directory.equals(root)) {
+            String name = directory.getFileName().toString();
+            if (Arrays.asList("target", "build", "out", "bin", ".git", "node_modules", ".openidea").contains(name)) return false;
+            for (MavenProject project : projects) if (project.getBasedir().toPath().equals(directory)) return false;
+        }
+        if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) return false;
+        try (DirectoryStream<Path> entries = Files.newDirectoryStream(directory)) {
+            for (Path path : entries) {
+                if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && path.toString().endsWith(".kt")) return true;
+                if (hasKotlin(root, path, projects)) return true;
+            }
+            return false;
+        } catch (IOException e) { throw new MavenExecutionException("Cannot inspect Kotlin sources", e); }
     }
 
     @Override public void afterSessionEnd(MavenSession session) throws MavenExecutionException {
-        if (staging == null || session.getResult().hasExceptions()) return;
+        if (staging == null) return;
         List<String> modules = new ArrayList<>();
         for (Map.Entry<MavenProject, File> entry : outputs.entrySet()) {
             MavenProject project = entry.getKey();
@@ -59,10 +116,15 @@ public final class IsolatedOutput extends AbstractMavenLifecycleParticipant {
                     ",\"optional\":" + dependency.isOptional() + ",\"type\":" + quote(dependency.getType()) +
                     ",\"classifier\":" + quote(dependency.getClassifier()) + "}");
             }
+            List<String> goals = new ArrayList<>();
+            for (Map.Entry<String, String> goal : kotlin.get(project).entrySet())
+                goals.add("{\"execution\":" + quote(goal.getKey()) + ",\"status\":" + quote(goal.getValue()) + "}");
             modules.add("{\"key\":" + quote(project.getGroupId() + ":" + project.getArtifactId() + ":" + project.getVersion()) +
                 ",\"projectUri\":" + quote(project.getBasedir().toURI().toString()) +
                 ",\"output\":" + quote(main.getAbsolutePath()) +
                 ",\"testOutput\":" + quote(project.getBuild().getTestOutputDirectory()) +
+                ",\"hasKotlin\":" + sources.contains(project) +
+                ",\"kotlinGoals\":[" + String.join(",", goals) + "]" +
                 ",\"dependencies\":[" + String.join(",", dependencies) + "]}");
         }
         try {

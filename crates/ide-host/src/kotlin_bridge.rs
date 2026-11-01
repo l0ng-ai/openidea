@@ -122,13 +122,8 @@ impl KotlinBridge {
     }
 
     pub(crate) fn files_changed<'a>(&self, mut paths: impl Iterator<Item = &'a PathBuf>) {
-        if paths.any(|p| {
-            p.extension().is_some_and(|e| e == "kt")
-                || p.file_name().is_some_and(|n| n == "pom.xml")
-                || p.components().any(|c| c.as_os_str() == ".mvn")
-                || p.file_name().is_some_and(|n| n == "mvnw" || n == "mvnw.cmd")
-                || p.extension().is_none()
-        }) {
+        let settings = self.settings.effective();
+        if paths.any(|path| relevant_change(&self.root, path, &settings)) {
             self.schedule();
         }
     }
@@ -152,8 +147,9 @@ impl KotlinBridge {
     async fn run(self: Arc<Self>) {
         let mut diagnostics = BTreeSet::new();
         let mut last_failure = String::new();
-        let mut attached = false;
-        let mut published: Option<PathBuf> = None;
+        let mut initialized = false;
+        // Also retain directories from unacknowledged replacements: JDT may have applied them.
+        let mut published = Vec::new();
         loop {
             tokio::select! {
                 _ = self.lifetime.cancelled() => return,
@@ -166,20 +162,6 @@ impl KotlinBridge {
             if !self.trusted.load(Ordering::Acquire) {
                 continue;
             }
-            // Remove the old model before the debounce/build. A broken save must
-            // never keep presenting the last successful API as current.
-            if attached {
-                if let Err(error) = self.replace(&[], &cancel).await {
-                    if !cancel.is_cancelled() {
-                        tracing::warn!("Kotlin library withdrawal: {error}");
-                    }
-                    continue;
-                }
-                attached = false;
-                if let Some(old) = published.take() {
-                    remove_directory(old).await;
-                }
-            }
             if !debounce(&cancel, &self.lifetime).await {
                 continue;
             }
@@ -188,14 +170,8 @@ impl KotlinBridge {
             let settings = self.settings.effective();
             let has_sources = tokio::task::spawn_blocking(move || {
                 let model = crate::ops::build::load(&root, &cache, &settings);
-                let enabled = model.maven.as_ref().is_some_and(|m| {
-                    !m.projects.is_empty()
-                        && (m.projects.iter().any(|p| {
-                            p.plugins.iter().any(|plugin| {
-                                plugin.group_id == "org.jetbrains.kotlin" && plugin.artifact_id == "kotlin-maven-plugin"
-                            })
-                        }) || kotlin_bridge::has_kotlin(&root))
-                });
+                let enabled =
+                    model.maven.as_ref().is_some_and(|m| !m.projects.is_empty()) && kotlin_bridge::has_kotlin(&root);
                 (model, enabled)
             })
             .await;
@@ -212,7 +188,11 @@ impl KotlinBridge {
                     }
                     continue;
                 }
+                for old in published.drain(..) {
+                    remove_directory(old).await;
+                }
                 self.clear_diagnostics(&mut diagnostics);
+                last_failure.clear();
                 continue;
             }
             if let Some(maven) = &mut model.maven {
@@ -230,12 +210,15 @@ impl KotlinBridge {
                 self.failure("Kotlin bridge bundle is unavailable".into(), &mut diagnostics, &mut last_failure);
                 continue;
             };
-            // Also removes marked entries persisted by an earlier app/server incarnation.
-            if let Err(error) = self.replace(&[], &cancel).await {
-                if !cancel.is_cancelled() {
-                    self.failure(error.message, &mut diagnostics, &mut last_failure);
+            // Clear entries persisted by an earlier incarnation only before our first build.
+            if !initialized {
+                if let Err(error) = self.replace(&[], &cancel).await {
+                    if !cancel.is_cancelled() {
+                        self.failure(error.message, &mut diagnostics, &mut last_failure);
+                    }
+                    continue;
                 }
-                continue;
+                initialized = true;
             }
             let directory = self.cache.join(format!("kotlin-bridge/{}", uuid::Uuid::new_v4()));
             let staging = directory.clone();
@@ -252,16 +235,16 @@ impl KotlinBridge {
                 Ok(Ok(Outcome { success: true, projects, .. })) => {
                     match self.replace(&projects, &cancel).await {
                         Ok(()) => {
-                            attached = true;
-                            published = Some(directory);
+                            for old in published.drain(..) {
+                                remove_directory(old).await;
+                            }
+                            published.push(directory);
                             self.clear_diagnostics(&mut diagnostics);
                             last_failure.clear();
                         }
                         Err(error) => {
-                            // A request cancelled while JDT is applying may still
-                            // have attached entries. Withdraw before deleting files.
-                            attached = true;
-                            published = Some(directory);
+                            // Keep both snapshots until an acknowledged replacement.
+                            published.push(directory);
                             if !cancel.is_cancelled() {
                                 self.failure(error.message, &mut diagnostics, &mut last_failure);
                             }
@@ -294,7 +277,8 @@ impl KotlinBridge {
     }
 
     fn failure(&self, text: String, paths: &mut BTreeSet<PathBuf>, previous: &mut String) {
-        let text = if text.is_empty() { "Maven compilation failed".to_owned() } else { text };
+        let text = if text.is_empty() { "Kotlin compilation failed".to_owned() } else { text };
+        let text = format!("{text}\nJava temporarily uses the last successfully compiled Kotlin API.");
         self.clear_diagnostics(paths);
         let path = self.root.join("pom.xml");
         paths.insert(path.clone());
@@ -323,6 +307,33 @@ impl KotlinBridge {
     }
 }
 
+fn relevant_change(root: &Path, path: &Path, settings: &ide_core::settings::Settings) -> bool {
+    if path.extension().is_some_and(|e| e == "kt")
+        || path.file_name().is_some_and(|n| n == "pom.xml" || n == "mvnw" || n == "mvnw.cmd")
+        || path.components().any(|c| c.as_os_str() == ".mvn")
+    {
+        return true;
+    }
+    if path.extension().is_some() {
+        return false;
+    }
+    let Ok(relative) = path.strip_prefix(root) else { return false };
+    if relative.components().any(|c| {
+        matches!(
+            c.as_os_str().to_str(),
+            Some("target" | "build" | "out" | "bin" | ".git" | "node_modules" | ".openidea")
+        )
+    }) || ide_vfs::ExcludeMatcher::new(&settings.exclude_globs()).is_excluded(relative)
+    {
+        return false;
+    }
+    // Works for deleted directories too; the module POM remains on disk.
+    path.ancestors().take_while(|ancestor| ancestor.starts_with(root)).any(|ancestor| {
+        ancestor.file_name().is_some_and(|name| name == "src")
+            && ancestor.parent().is_some_and(|module| module.join("pom.xml").is_file())
+    })
+}
+
 async fn debounce(cancel: &CancellationToken, lifetime: &CancellationToken) -> bool {
     tokio::select! {
         _ = lifetime.cancelled() => false,
@@ -344,6 +355,33 @@ impl DocumentObserver for KotlinBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_package_directory_does_not_trigger() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pom.xml"), "").unwrap();
+        assert!(!relevant_change(dir.path(), &dir.path().join("target/classes/probe"), &Default::default()));
+    }
+
+    #[test]
+    fn deleted_source_package_triggers_unless_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("module")).unwrap();
+        std::fs::write(dir.path().join("module/pom.xml"), "").unwrap();
+        let path = dir.path().join("module/src/main/kotlin/pkg");
+        let mut settings = ide_core::settings::Settings::default();
+        assert!(relevant_change(dir.path(), &path, &settings));
+        settings.project_structure.excluded.push("module/src/main/kotlin".into());
+        assert!(!relevant_change(dir.path(), &path, &settings));
+        assert!(!relevant_change(dir.path(), &dir.path().join("module/src/build/pkg"), &Default::default()));
+    }
+
+    #[test]
+    fn extensionless_root_file_does_not_trigger() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pom.xml"), "").unwrap();
+        assert!(!relevant_change(dir.path(), &dir.path().join("LICENSE"), &Default::default()));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn burst_saves_cancel_the_pending_debounce() {

@@ -16,17 +16,26 @@ A Java model listener restores the desired snapshot after Maven reimport.
 private editor build via `-Dmaven.ext.class.path=<jar>` and
 `-Dopenidea.kotlin.staging=<absolute-directory>`. It redirects reactor output
 before lifecycle planning and records Maven's resolved dependency closure after
-a successful build. The host uses the project's Maven lifecycle/configuration,
+each session, including failed builds. An execution listener records each module's
+Kotlin compile/test-compile targets as successful, failed or skipped. The host uses
+the project's Maven lifecycle/configuration,
 then publishes only classes whose actual `SourceFile` attribute ends in `.kt`,
 plus Kotlin module metadata. Java output is not bridged. Main/test Kotlin APIs and
 same-reactor consumers are covered; Precise Kotlin
 source navigation, unsaved analysis and refactoring are outside this bridge.
 
-The host debounces saved/source/configuration changes, withdraws stale libraries,
-cancels superseded process groups, and attaches a new immutable version only
-after successful compilation. Compiler failures appear under the
-`kotlin-bridge` Problems source and in a notification. Run/Debug preparation is
-independent of this editor build.
+The host debounces saved/source/configuration changes, cancels superseded process
+groups, and retains the last successful snapshot while rebuilding. Maven runs
+with `--fail-at-end`. A new snapshot is attached only when all Kotlin targets in
+modules containing Kotlin sources succeed, even if javac fails. Java diagnostics
+belong to JDT. Failed or skipped Kotlin targets retain the previous snapshot and
+report errors under `kotlin-bridge` Problems and a notification explaining the
+older API. Old directories are deleted only after JDT acknowledges replacement.
+With no Kotlin sources left, all managed libraries and bridge diagnostics are
+withdrawn, even when the POM still declares the Kotlin plugin. Extensionless
+watcher paths trigger only below a Maven module's `src/`, outside generated and
+user-excluded directories. Run/Debug preparation is independent of this editor
+build.
 
 ## Build
 
@@ -43,7 +52,7 @@ shasum -a 256 plugins/kotlin-bridge/openidea-kotlin-bridge.jar
 ```
 
 Committed jar SHA-256:
-`4bc0549bcfbb4d682156756ff6e378a08c3404eff215aa2fbff3d8c03eec576d`.
+`5c6407a85bd3cfcde0ee68b2f223dd3d1ca0e5165ff76a2249191617496b1fcd`.
 
 The SDK embeds this jar with `include_bytes!`, writes it atomically into the app
 data directory, and includes it in JDT LS initialization bundles.
@@ -59,6 +68,6 @@ Requires Maven on PATH and access to Kotlin 2.0.10 and the fixture's Maven
 plugins (or their existing local cache). The test creates its own projects,
 workspace, bundle copy and JDT process. It checks baseline errors, single/reactor
 resolution, SMS/member completion, binary definition locations, preservation of
-unowned entries, reimport, API changes, rename/delete/compile failure withdrawal
-and repair. Evidence and protocol transcripts are written to a printed temporary
-directory. Only the spawned JDT process is terminated.
+unowned entries, reimport, API changes, publication despite javac failure,
+failed/skipped Kotlin target retention, deletion withdrawal and repair. Evidence
+and protocol transcripts are written to a printed temporary directory. Only the spawned JDT process is terminated.

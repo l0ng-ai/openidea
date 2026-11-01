@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 
 home = pathlib.Path(sys.argv[1]).resolve()
 bundle = pathlib.Path(__file__).resolve().parents[1] / 'openidea-kotlin-bridge.jar'
-work = pathlib.Path(tempfile.mkdtemp(prefix='openidea-kotlin-bridge-')).resolve()
+work = pathlib.Path(tempfile.mkdtemp(prefix='openidea-kotlin-bridge-', dir=os.environ.get('TMPDIR'))).resolve()
 copied_bundle = work/'openidea-kotlin-bridge.jar'
 shutil.copyfile(bundle, copied_bundle)
 bundle = copied_bundle
@@ -92,17 +92,20 @@ def command(snapshot):
     response = request('workspace/executeCommand', {'command':'openidea.kotlin.replace', 'arguments':[snapshot]})
     assert isinstance(response, (int, float)), response
     return response
-def build(directory, revision):
+def build(directory, revision, expected=True):
     staging = work / revision
-    result = subprocess.run(['mvn', '-B', '-Dstyle.color=never', f'-Dmaven.ext.class.path={bundle}', f'-Dopenidea.kotlin.staging={staging}/staging', 'test-compile'], cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(['mvn', '-B', '-fae', '-Dstyle.color=never', f'-Dmaven.ext.class.path={bundle}', f'-Dopenidea.kotlin.staging={staging}/staging', 'test-compile'], cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     (work/f'{revision}.log').write_bytes(result.stdout)
-    assert result.returncode == 0, result.stdout.decode()
-    return json.loads((staging/'modules.json').read_text())
-def library(module, revision, test=False):
+    modules = json.loads((staging/'modules.json').read_text())
+    eligible = all(m['kotlinGoals'] and all(g['status'] == 'success' for g in m['kotlinGoals']) for m in modules if m['hasKotlin'])
+    assert eligible == expected, (modules, result.stdout.decode())
+    evidence[revision + '-build'] = {'exitCode':result.returncode, 'modules':modules, 'eligible':eligible}
+    return modules
+def library(module, revision, test=False, name="Channel"):
     directory = work/'published'/revision
     directory.mkdir(parents=True)
     output = module['testOutput' if test else 'output']
-    for file in pathlib.Path(output).rglob('TestChannel*.class' if test else 'Channel*.class'):
+    for file in pathlib.Path(output).rglob('TestChannel*.class' if test else name+'*.class'):
         destination = directory/file.relative_to(output)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(file, destination)
@@ -171,24 +174,45 @@ try:
     assert all(raw(d) == before[str(d)] for d in [single,lib,app]), 'reimport changed unowned entries'
     # A saved API change must replace the immutable binary directory.
     (single/'src/main/java/probe/Channel.kt').write_text('package probe\nenum class Channel { SMS, EMAIL }\n')
-    command([])
+    state(single, 'single-during-rebuild', True)
     changed = build(single, 'single-changed')[0]
     snapshot[0]['libraries'] = [library(changed, 'single-changed'), library(changed, 'single-test-changed', True)]
     command(snapshot)
     time.sleep(2)
     changed_state = state(single, 'single-new-enum-member', True)
     assert any(label.startswith('EMAIL') for label in changed_state['completion'])
-    # A renamed/deleted/broken source cannot retain the old type library.
-    for label, text in [('renamed', 'package probe\nenum class Renamed { SMS }\n'), ('broken', 'package probe\nenum class Channel { ??? }\n'), ('deleted', None)]:
-        file = single/'src/main/java/probe/Channel.kt'
-        if text is None: file.unlink()
-        else: file.write_text(text)
-        command([])
-        result = subprocess.run(['mvn', '-B', f'-Dmaven.ext.class.path={bundle}', f'-Dopenidea.kotlin.staging={work}/{label}/staging', 'test-compile'], cwd=single, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        (work/f'{label}.log').write_bytes(result.stdout)
-        assert result.returncode != 0, label
-        time.sleep(1)
-        state(single, 'single-'+label, False)
+    # Failed Kotlin compilation keeps both main and test APIs attached.
+    (single/'src/main/java/probe/Channel.kt').write_text('package probe\nenum class Channel { ??? }\n')
+    broken = build(single, 'single-broken', expected=False)[0]
+    assert any(g['status'] == 'failed' for g in broken['kotlinGoals'])
+    state(single, 'single-broken-retains-api', True)
+    state(single, 'single-broken-retains-test-api', True, True)
+    # A javac failure skips test Kotlin targets, so this whole snapshot is retained.
+    (single/'src/main/java/probe/Channel.kt').write_text('package probe\nenum class Delivery { SMS }\n')
+    skipped = build(single, 'single-skipped-test', expected=False)[0]
+    assert any(g['execution'].endswith(':test-compile') and g['status'] == 'skipped' for g in skipped['kotlinGoals'])
+    assert list(pathlib.Path(skipped['output']).rglob('Delivery.class'))
+    state(single, 'single-skipped-test-retains-api', True)
+    # The reactor fixture has no test Kotlin goal. Publish despite downstream javac failure.
+    kt = lib/'src/main/java/probe/Channel.kt'
+    kt.write_text('package probe\nenum class Delivery { SMS }\n')
+    renamed = build(multi, 'multi-renamed')
+    renamed_lib = next(m for m in renamed if 'channel-lib' in m['key'])
+    new_library = library(renamed_lib, 'multi-renamed', name='Delivery')
+    assert not list(pathlib.Path(renamed_lib['output']).rglob('Channel.class'))
+    snapshot[1]['libraries'] = snapshot[2]['libraries'] = [new_library]
+    command(snapshot)
+    state(app, 'multi-renamed', False)
+    kt.unlink()
+    snapshot[1]['libraries'] = snapshot[2]['libraries'] = []
+    command(snapshot)
+    state(app, 'multi-deleted', False)
+    kt.write_text('package probe\nenum class Channel { SMS }\n')
+    restored = next(m for m in build(multi, 'multi-restored') if 'channel-lib' in m['key'])
+    restored_library = library(restored, 'multi-restored')
+    snapshot[1]['libraries'] = snapshot[2]['libraries'] = [restored_library]
+    command(snapshot)
+    state(app, 'multi-restored', True)
     (single/'src/main/java/probe/Channel.kt').write_text('package probe\nenum class Channel { SMS }\n')
     repaired = build(single, 'single-repaired')[0]
     snapshot[0]['libraries'] = [library(repaired, 'single-repaired'), library(repaired, 'single-test-repaired', True)]
@@ -222,6 +246,26 @@ try:
     # Compiler and JDT outputs must not share Kotlin classes.
     assert not list(single.glob('target/classes/**/Channel.class'))
     assert not list(lib.glob('target/classes/**/Channel.class'))
+    # -fae runs independent Kotlin modules and records upstream-skipped targets.
+    fail_reactor = work/'fail-at-end'
+    fail_reactor.mkdir()
+    (fail_reactor/'pom.xml').write_text(prefix + '<groupId>probe</groupId><artifactId>failure-reactor</artifactId><version>1</version><packaging>pom</packaging>' + properties + '<modules><module>broken-java</module><module>independent</module><module>downstream</module></modules></project>')
+    failure_parent = '<parent><groupId>probe</groupId><artifactId>failure-reactor</artifactId><version>1</version></parent>'
+    for name in ['broken-java', 'independent', 'downstream']:
+        module = fail_reactor/name
+        (module/'src/main/java/probe').mkdir(parents=True)
+        dependency = '<dependencies><dependency><groupId>probe</groupId><artifactId>broken-java</artifactId><version>1</version></dependency><dependency><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-stdlib</artifactId><version>2.0.10</version></dependency></dependencies>' if name == 'downstream' else stdlib
+        (module/'pom.xml').write_text(prefix + failure_parent + '<artifactId>' + name + '</artifactId>' + dependency + plugin + '</project>')
+        if name == 'broken-java':
+            (module/'src/main/java/probe/Broken.java').write_text('package probe; public class Broken { Missing value; }')
+        else:
+            (module/'src/main/java/probe/Channel.kt').write_text('package probe\nenum class Channel { SMS }\n')
+    statuses = build(fail_reactor, 'fail-at-end-statuses', expected=False)
+    independent = next(m for m in statuses if ':independent:' in m['key'])
+    downstream = next(m for m in statuses if ':downstream:' in m['key'])
+    assert all(g['status'] == 'success' for g in independent['kotlinGoals']), independent
+    assert all(g['status'] == 'skipped' for g in downstream['kotlinGoals']), downstream
+    assert list(pathlib.Path(independent['output']).rglob('Channel.class'))
     print(json.dumps(evidence, indent=2))
 finally:
     (work/'evidence.json').write_text(json.dumps(evidence, indent=2))

@@ -1,7 +1,7 @@
 //! Private Maven builds for JDT's Kotlin binary libraries. Never use launch outputs.
 
 use crate::BuildModel;
-use crate::compile::{self, BuildEvent, BuildKind, BuildMessage, BuildResult};
+use crate::compile::{self, BuildEvent, BuildKind, BuildMessage};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -15,6 +15,14 @@ struct Module {
     output: PathBuf,
     test_output: Option<PathBuf>,
     dependencies: Vec<Dependency>,
+    has_kotlin: bool,
+    kotlin_goals: Vec<KotlinGoal>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct KotlinGoal {
+    execution: String,
+    status: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -56,7 +64,7 @@ pub fn has_kotlin(root: &Path) -> bool {
             kind.is_dir()
                 && !matches!(
                     entry.file_name().to_str(),
-                    Some("target" | "build" | "node_modules" | ".git" | ".openidea")
+                    Some("target" | "build" | "out" | "bin" | "node_modules" | ".git" | ".openidea")
                 )
                 && has_kotlin(&entry.path())
         }
@@ -79,6 +87,7 @@ pub fn build(
     }
     let mut manifests = Vec::new();
     for (index, step) in plan.steps.iter_mut().enumerate() {
+        step.args.push("--fail-at-end".into());
         let directory = generation.join(format!("reactor-{index}"));
         std::fs::create_dir_all(&directory)?;
         manifests.push(directory.join("modules.json"));
@@ -95,19 +104,31 @@ pub fn build(
         step.args.push(format!("-Dmaven.ext.class.path={}", extension_path.to_string_lossy()));
         step.args.push(format!("-Dopenidea.kotlin.staging={}", directory.join("staging").display()));
     }
-    let BuildResult { success, messages, .. } = compile::run(root, &plan, cancel, &|event| {
-        if let BuildEvent::Output { text, .. } = event {
-            tracing::debug!("kotlin bridge: {}", text.trim_end());
-        }
-    })?;
-    if !success {
-        return Ok(Outcome { projects: Vec::new(), messages, success });
+    let mut messages = Vec::new();
+    // Independent linked reactors must still run after another reactor's javac fails.
+    for step in &plan.steps {
+        let mut reactor = plan.clone();
+        reactor.steps = vec![step.clone()];
+        let result = compile::run(root, &reactor, cancel, &|event| {
+            if let BuildEvent::Output { text, .. } = event {
+                tracing::debug!("kotlin bridge: {}", text.trim_end());
+            }
+        })?;
+        messages.extend(result.messages);
     }
+    // javac diagnostics belong to JDT, including when a Kotlin target was skipped.
+    messages.retain(|message| {
+        message.path.as_ref().is_some_and(|path| PathBuf::from(path.clone()).extension().is_some_and(|e| e == "kt"))
+    });
     let mut modules = Vec::new();
     for manifest in manifests {
         let parsed: Vec<Module> = serde_json::from_slice(&std::fs::read(manifest)?)
             .map_err(|e| IdeError::internal(format!("Kotlin module manifest: {e}")))?;
         modules.extend(parsed);
+    }
+    messages.extend(kotlin_failures(&modules));
+    if messages.iter().any(|message| message.severity == ide_core::Severity::Error) {
+        return Ok(Outcome { projects: Vec::new(), messages, success: false });
     }
     let pending = generation.join("libraries.pending");
     let published = generation.join("libraries");
@@ -130,7 +151,35 @@ pub fn build(
         libraries.insert(module.key.clone(), outputs);
     }
     publish(&pending, &published, cancel)?;
-    Ok(Outcome { projects: consumers(&modules, &libraries), messages, success })
+    Ok(Outcome { projects: consumers(&modules, &libraries), messages, success: true })
+}
+
+fn kotlin_failures(modules: &[Module]) -> Vec<BuildMessage> {
+    let mut messages = Vec::new();
+    for module in modules {
+        if !module.has_kotlin {
+            continue;
+        }
+        if module.kotlin_goals.is_empty() {
+            messages.push(kotlin_failure(module, "compile target was not executed"));
+        }
+        for goal in &module.kotlin_goals {
+            if goal.status != "success" {
+                messages.push(kotlin_failure(module, &format!("{} {}", goal.execution, goal.status)));
+            }
+        }
+    }
+    messages
+}
+
+fn kotlin_failure(module: &Module, reason: &str) -> BuildMessage {
+    BuildMessage {
+        severity: ide_core::Severity::Error,
+        text: format!("Kotlin compilation for {}: {reason}", module.key),
+        path: None,
+        range: None,
+        code: None,
+    }
 }
 
 fn publish(pending: &Path, published: &Path, cancel: &CancellationToken) -> IdeResult<()> {
@@ -297,15 +346,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_kotlin_target_must_succeed_even_when_maven_fails_elsewhere() {
+        let mut modules: Vec<Module> = serde_json::from_str(r#"[
+            {"key":"lib","projectUri":"lib","output":"lib","dependencies":[],"hasKotlin":true,
+             "kotlinGoals":[{"execution":"main:compile","status":"success"},{"execution":"test:test-compile","status":"success"}]},
+            {"key":"java","projectUri":"java","output":"java","dependencies":[],"hasKotlin":false,"kotlinGoals":[]}
+        ]"#).unwrap();
+        assert!(kotlin_failures(&modules).is_empty());
+        for status in ["failed", "skipped"] {
+            modules[0].kotlin_goals[1].status = status.into();
+            let failures = kotlin_failures(&modules);
+            assert_eq!(failures.len(), 1);
+            assert!(failures[0].text.contains(&format!("test:test-compile {status}")));
+        }
+        modules[0].kotlin_goals.clear();
+        assert_eq!(kotlin_failures(&modules).len(), 1);
+        modules[0].has_kotlin = false;
+        assert!(kotlin_failures(&modules).is_empty());
+        assert!(
+            serde_json::from_str::<Vec<Module>>(
+                r#"[{"key":"old","projectUri":"old","output":"old","dependencies":[]}]"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn respects_mavens_resolved_closure_and_scopes() {
         let json = r#"[
-          {"key":"zapp","projectUri":"app","output":"app", "dependencies":[{"key":"mid","scope":"compile","optional":false},{"key":"lib","scope":"compile","optional":false}]},
-          {"key":"mid","projectUri":"mid","output":"mid", "dependencies":[
+          {"key":"zapp","projectUri":"app","output":"app", "hasKotlin":false,"kotlinGoals":[],"dependencies":[{"key":"mid","scope":"compile","optional":false},{"key":"lib","scope":"compile","optional":false}]},
+          {"key":"mid","projectUri":"mid","output":"mid", "hasKotlin":false,"kotlinGoals":[],"dependencies":[
             {"key":"lib","scope":"compile","optional":false},
             {"key":"optional","scope":"compile","optional":true},
             {"key":"test","scope":"test","optional":false},
             {"key":"provided","scope":"provided","optional":false}]},
-          {"key":"lib","projectUri":"lib","output":"lib","dependencies":[]}
+          {"key":"lib","projectUri":"lib","output":"lib","hasKotlin":false,"kotlinGoals":[],"dependencies":[]}
         ]"#;
         let modules: Vec<Module> = serde_json::from_str(json).unwrap();
         let libraries = ["zapp", "lib", "optional", "test", "provided"]
@@ -324,9 +399,9 @@ mod tests {
     #[test]
     fn test_outputs_are_private_unless_maven_resolves_a_test_jar() {
         let modules: Vec<Module> = serde_json::from_str(r#"[
-          {"key":"lib","projectUri":"lib","output":"lib","dependencies":[]},
-          {"key":"app","projectUri":"app","output":"app","dependencies":[{"key":"lib","scope":"compile","type":"jar","classifier":null}]},
-          {"key":"test-app","projectUri":"test-app","output":"app","dependencies":[{"key":"lib","scope":"test","type":"test-jar","classifier":"tests"}]}
+          {"key":"lib","projectUri":"lib","output":"lib","hasKotlin":false,"kotlinGoals":[],"dependencies":[]},
+          {"key":"app","projectUri":"app","output":"app","hasKotlin":false,"kotlinGoals":[],"dependencies":[{"key":"lib","scope":"compile","type":"jar","classifier":null}]},
+          {"key":"test-app","projectUri":"test-app","output":"app","hasKotlin":false,"kotlinGoals":[],"dependencies":[{"key":"lib","scope":"test","type":"test-jar","classifier":"tests"}]}
         ]"#).unwrap();
         let libraries =
             BTreeMap::from([("lib".into(), ModuleLibraries { main: Some("main".into()), test: Some("test".into()) })]);
