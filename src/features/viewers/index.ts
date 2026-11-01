@@ -26,6 +26,7 @@ import {
 } from "./fileKinds";
 import { ImageViewer, toggleChessboard, useImageViewers } from "./ImageViewer";
 import { HexViewer } from "./HexViewer";
+import { registerMarkdownFormat } from "./markdown/format";
 import { registerMarkdownLiveSource } from "./markdown/live";
 import { setMarkdownMode, type MarkdownMode } from "./markdown/modes";
 import { MarkdownLayoutActions } from "./markdown/MarkdownLayoutActions";
@@ -101,6 +102,7 @@ export function activate(): () => void {
       tabActions: MarkdownLayoutActions,
     }),
     registerMarkdownLiveSource(),
+    registerMarkdownFormat(),
     registerActions([...imageActions(), ...markdownActions()]),
   ];
   return () => disposers.reverse().forEach((d) => d());
