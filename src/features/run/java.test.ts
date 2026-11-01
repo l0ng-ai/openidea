@@ -391,6 +391,25 @@ describe("temporary configurations", () => {
     expect(useRun.getState().temporary).toEqual([]);
   });
 
+  it("reuse a configuration of the same main class and module, whatever its id", () => {
+    const own = (module: string) =>
+      cfg({
+        id: `user:${module}`,
+        kind: "spring-boot",
+        name: `Mine ${module}`,
+        args: ["-Xmx1g", "-cp", "${classpath}", "a.Main"],
+        module,
+        detected: false,
+      });
+    useRun.setState({ configs: [own("other"), own("app")] });
+    expect(adoptTemporary(applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java")).name).toBe(
+      "Mine app",
+    );
+    expect(useRun.getState().temporary).toEqual([]);
+    const fresh = adoptTemporary(applicationConfig({ className: "a.Other" }, "app/src/main/java/a/Other.java"));
+    expect(useRun.getState().temporary).toEqual([fresh.id]);
+  });
+
   it("offer Save in the chooser while selected", async () => {
     const app = adoptTemporary(applicationConfig({ className: "a.Main" }, "src/main/java/a/Main.java"));
     const { configs, temporary } = useRun.getState();
