@@ -11,8 +11,8 @@ export interface OsClipboard {
   files(): Promise<string[]>;
   /** Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
   hasFiles(): Promise<boolean>;
-  /** Puts `paths` there, so Explorer can paste them. */
-  setFiles(paths: string[]): Promise<void>;
+  /** True only when the OS accepted the file list; false for unsupported hosts. */
+  setFiles(paths: string[]): Promise<boolean>;
 }
 
 const native: OsClipboard = {
@@ -31,11 +31,12 @@ const native: OsClipboard = {
   },
 
   async setFiles(paths) {
-    if (!isTauri() || !paths.length) return;
+    if (!isTauri() || !paths.length) return false;
     try {
-      await call(commands.clipboardSetFileList(paths));
+      return await call(commands.clipboardSetFileList(paths));
     } catch {
       // The internal clipboard still works; a failed hand-off is not an error.
+      return false;
     }
   },
 };

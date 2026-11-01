@@ -479,9 +479,14 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
 export function copySelection(cut: boolean) {
   const paths = topLevelPaths(selectedNodes().filter((n) => (cut ? mutable(n) : !n.root && !n.group)));
   if (!paths.length) return;
-  setClipboard({ paths, cut });
-  // Hand the files to the OS too, so Explorer can paste them (as IDEA does).
-  void osClipboard().setFiles(paths);
+  // Remote paths are useful as text, but do not name files on the client.
+  const remote = isRemoteWindow();
+  const osWrite = (async () => {
+    if (!remote) return osClipboard().setFiles(paths);
+    await navigator.clipboard.writeText(paths.join("\n"));
+    return true;
+  })().catch(() => false);
+  setClipboard({ paths, cut, remote, osWrite });
 }
 
 /** Files on the OS clipboard, cached: `canPaste` runs while a menu renders. */
@@ -489,7 +494,25 @@ let osHasFiles = false;
 
 /** Keeps Paste enabled for what Explorer copied; called when the window gains focus. */
 export async function refreshOsClipboard() {
-  osHasFiles = await osClipboard().hasFiles();
+  try {
+    await readOsClipboard();
+  } catch {
+    // A busy clipboard is not evidence that the user's copy has changed.
+  }
+}
+
+async function readOsClipboard(): Promise<string[] | null> {
+  const { clipboard } = get();
+  const handedOff = await clipboard?.osWrite;
+  const external = await osClipboard().files();
+  // A newer Copy/Cut owns the state if this read (or its hand-off) was delayed.
+  if (get().clipboard !== clipboard) return null;
+  osHasFiles = external.length > 0;
+  // Our remote text write removes file URLs, so any files were copied later.
+  // A failed write leaves ownership uncertain; retain the remote copy then.
+  if (handedOff && (clipboard?.remote ? external.length > 0 : !sameFiles(external, clipboard?.paths)))
+    setClipboard(null);
+  return external;
 }
 
 export function canPaste(): boolean {
@@ -501,20 +524,23 @@ export function canPaste(): boolean {
  * dialog (IDEA). Files copied in Explorer paste as copies.
  */
 export async function paste(target = targetFolder()) {
-  const { clipboard } = get();
   if (!target || isReadOnlyPath(target)) return;
   let external: string[] = [];
   try {
-    external = await osClipboard().files();
+    const files = await readOsClipboard();
+    if (files === null) return;
+    external = files;
   } catch (e) {
-    if (!clipboard?.paths.length) {
+    if (!get().clipboard?.paths.length) {
       fail("Cannot access the clipboard", e);
       return;
     }
   }
+  const { clipboard } = get();
   // The last copy is the one the user expects to paste, so another app's files
   // win over ours — unless they are the copy we handed to the OS ourselves.
-  if (external.length && !sameFiles(external, clipboard?.paths)) return pasteFromOsClipboard(external, target);
+  if (!clipboard?.remote && external.length && !sameFiles(external, clipboard?.paths))
+    return pasteFromOsClipboard(external, target);
   if (!clipboard?.paths.length) {
     notifications().notify({ level: "info", title: "No files on the clipboard" });
     return;

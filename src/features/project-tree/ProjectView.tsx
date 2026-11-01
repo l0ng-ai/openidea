@@ -654,8 +654,7 @@ export function ProjectView() {
     };
   }, []);
 
-  // Files copied in Explorer keep Paste usable: the OS clipboard can change
-  // while this window is in the background, so re-ask whenever it comes back.
+  // Reconcile external files and expired Copy/Cut state when returning from another app.
   useEffect(() => {
     void refreshOsClipboard();
     const refresh = () => void refreshOsClipboard();
