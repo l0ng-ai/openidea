@@ -12,7 +12,7 @@ pub type IdeResult<T> = Result<T, IdeError>;
 pub struct IdeError {
     pub kind: ErrorKind,
     pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Structured detail for errors the UI acts on; `null` for plain errors.
     #[specta(optional)]
     pub data: Option<ErrorData>,
 }
@@ -112,7 +112,7 @@ mod tests {
         assert!(error.data.is_none());
         assert_eq!(
             serde_json::to_value(error).unwrap(),
-            serde_json::json!({"kind":"unavailable","message":"no server"})
+            serde_json::json!({"kind":"unavailable","message":"no server","data":null})
         );
     }
 }
