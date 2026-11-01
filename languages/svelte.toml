@@ -13,3 +13,11 @@ command = "svelteserver"
 args = ["--stdio"]
 root-markers = ["svelte.config.js", "svelte.config.mjs", "svelte.config.ts", "package.json"]
 install-hint = "npm i -g svelte-language-server"
+
+[[language-servers]]
+name = "oxlint"
+command = "oxlint"
+args = ["--lsp"]
+root-markers = [".oxlintrc.json", ".oxlintrc.jsonc", "oxlint.config.ts", "oxlint.config.mts"]
+require-root-marker = true
+install-hint = "npm i -D oxlint"
