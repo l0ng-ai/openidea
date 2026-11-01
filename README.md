@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/l0ng-ai/openidea/blob/main/README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/l0ng-ai/openidea/releases/latest"><b>Download</b></a>
   &nbsp;·&nbsp;
   <a href="#benchmark">Benchmark</a>
