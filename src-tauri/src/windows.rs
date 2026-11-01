@@ -753,7 +753,9 @@ pub fn open_settings_window(
     (config.width, config.height) = SETTINGS_SIZE;
     (config.min_width, config.min_height) = (Some(SETTINGS_MIN_SIZE.0), Some(SETTINGS_MIN_SIZE.1));
     // The size the settings window had last session (GTK Wayland; see `build_project_window`).
-    if let Some(geometry) = app.try_state::<RememberedGeometry>().and_then(|g| g.get(&label)) {
+    if let Some(geometry) = app.try_state::<RememberedGeometry>().and_then(|g| g.get(&label))
+        && geometry.has_size()
+    {
         (config.width, config.height) = geometry.logical_size(parent.scale_factor().unwrap_or(1.0), SETTINGS_MIN_SIZE);
     }
     config.center = false;
