@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin>
+  <extension point="org.eclipse.jdt.ls.core.delegateCommandHandler">
+    <delegateCommandHandler class="ai.openidea.kotlin.KotlinLibraries">
+      <command id="openidea.kotlin.replace"/>
+    </delegateCommandHandler>
+  </extension>
+</plugin>

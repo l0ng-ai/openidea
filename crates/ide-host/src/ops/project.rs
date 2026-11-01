@@ -177,6 +177,9 @@ pub fn set_settings(
         .any(|k| key == *k || key.starts_with(&format!("{k}.")))
     {
         for project in affected() {
+            if let Some(bridge) = &project.kotlin_bridge {
+                bridge.schedule();
+            }
             let lsp = project.lsp.clone();
             host.runtime.spawn(async move { lsp.reconfigure().await });
         }

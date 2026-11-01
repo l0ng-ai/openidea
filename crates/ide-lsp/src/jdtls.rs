@@ -378,7 +378,8 @@ impl LspManager {
         self.jdtls_command_cancellable(path, command, arguments, &CancellationToken::new()).await
     }
 
-    async fn jdtls_command_cancellable(
+    /// Cancellable delegate commands for project-owned background services.
+    pub async fn jdtls_command_cancellable(
         &self,
         path: &Path,
         command: &str,
