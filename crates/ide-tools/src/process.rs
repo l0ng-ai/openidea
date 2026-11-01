@@ -348,6 +348,89 @@ pub fn progress_event(bytes: u64, size: Option<u64>) -> InstallEvent {
     }
 }
 
+/// Runs a formatter with separate pipes so diagnostics can never become document text.
+pub(crate) fn run_input(
+    cmd: &mut Command,
+    input: &str,
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> IdeResult<String> {
+    use std::io::Write;
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let mut child = own_group(cmd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut stdin = child.stdin.take().unwrap();
+    let input = input.to_owned();
+    // All pipes drain concurrently, including stdin: large documents cannot deadlock or bypass the timeout.
+    enum Pipe {
+        Written(std::io::Result<()>),
+        Read(bool, std::io::Result<Vec<u8>>),
+    }
+    let (tx, rx) = mpsc::channel();
+    let writer = tx.clone();
+    std::thread::spawn(move || {
+        let _ = writer.send(Pipe::Written(stdin.write_all(input.as_bytes())));
+    });
+    for (is_stderr, mut pipe) in [
+        (false, Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>),
+        (true, Box::new(child.stderr.take().unwrap()) as Box<dyn Read + Send>),
+    ] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = tx.send(Pipe::Read(is_stderr, pipe.read_to_end(&mut bytes).map(|_| bytes)));
+        });
+    }
+    drop(tx);
+    let started = Instant::now();
+    let (mut status, mut output, mut errors, mut written) = (None, None, None, None);
+    let result = loop {
+        if cancel.is_cancelled() {
+            break Err(IdeError::cancelled());
+        }
+        if started.elapsed() >= timeout {
+            break Err(IdeError::new(ErrorKind::TimedOut, "Formatting timed out"));
+        }
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(s) => status = s,
+                Err(e) => break Err(e.into()),
+            }
+        }
+        if status.is_some() && output.is_some() && errors.is_some() && written.is_some() {
+            break Ok(());
+        }
+        match rx.recv_timeout(Duration::from_millis(10)) {
+            Ok(Pipe::Written(result)) => written = Some(result),
+            Ok(Pipe::Read(true, result)) => errors = Some(result),
+            Ok(Pipe::Read(false, result)) => output = Some(result),
+            Err(mpsc::RecvTimeoutError::Disconnected) if output.is_some() && errors.is_some() && written.is_some() => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break Err(IdeError::internal("formatter pipe reader failed")),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    };
+    if result.is_err() {
+        kill(&mut child);
+    }
+    result?;
+    let output = output.unwrap()?;
+    let errors = errors.unwrap()?;
+    let status = status.unwrap();
+    if !status.success() {
+        let diagnostics: String = String::from_utf8_lossy(&errors).into_owned();
+        return Err(IdeError::invalid(if diagnostics.trim().is_empty() {
+            format!("Formatter exited with {status}")
+        } else {
+            diagnostics
+        }));
+    }
+    written.unwrap()?;
+    String::from_utf8(output).map_err(|e| IdeError::invalid(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,89 +546,6 @@ mod tests {
         cmd.args(["-c", "echo v1.2.3"]);
         assert_eq!(run_quiet(cmd, Duration::from_secs(5)), Some((true, "v1.2.3\n".into())));
     }
-}
-
-/// Runs a formatter with separate pipes so diagnostics can never become document text.
-pub(crate) fn run_input(
-    cmd: &mut Command,
-    input: &str,
-    timeout: Duration,
-    cancel: &CancellationToken,
-) -> IdeResult<String> {
-    use std::io::Write;
-    if cancel.is_cancelled() {
-        return Err(IdeError::cancelled());
-    }
-    let mut child = own_group(cmd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-    let mut stdin = child.stdin.take().unwrap();
-    let input = input.to_owned();
-    // All pipes drain concurrently, including stdin: large documents cannot deadlock or bypass the timeout.
-    enum Pipe {
-        Written(std::io::Result<()>),
-        Read(bool, std::io::Result<Vec<u8>>),
-    }
-    let (tx, rx) = mpsc::channel();
-    let writer = tx.clone();
-    std::thread::spawn(move || {
-        let _ = writer.send(Pipe::Written(stdin.write_all(input.as_bytes())));
-    });
-    for (is_stderr, mut pipe) in [
-        (false, Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>),
-        (true, Box::new(child.stderr.take().unwrap()) as Box<dyn Read + Send>),
-    ] {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = tx.send(Pipe::Read(is_stderr, pipe.read_to_end(&mut bytes).map(|_| bytes)));
-        });
-    }
-    drop(tx);
-    let started = Instant::now();
-    let (mut status, mut output, mut errors, mut written) = (None, None, None, None);
-    let result = loop {
-        if cancel.is_cancelled() {
-            break Err(IdeError::cancelled());
-        }
-        if started.elapsed() >= timeout {
-            break Err(IdeError::new(ErrorKind::TimedOut, "Formatting timed out"));
-        }
-        if status.is_none() {
-            match child.try_wait() {
-                Ok(s) => status = s,
-                Err(e) => break Err(e.into()),
-            }
-        }
-        if status.is_some() && output.is_some() && errors.is_some() && written.is_some() {
-            break Ok(());
-        }
-        match rx.recv_timeout(Duration::from_millis(10)) {
-            Ok(Pipe::Written(result)) => written = Some(result),
-            Ok(Pipe::Read(true, result)) => errors = Some(result),
-            Ok(Pipe::Read(false, result)) => output = Some(result),
-            Err(mpsc::RecvTimeoutError::Disconnected) if output.is_some() && errors.is_some() && written.is_some() => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break Err(IdeError::internal("formatter pipe reader failed")),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
-    };
-    if result.is_err() {
-        kill(&mut child);
-    }
-    result?;
-    let output = output.unwrap()?;
-    let errors = errors.unwrap()?;
-    let status = status.unwrap();
-    if !status.success() {
-        let diagnostics: String = String::from_utf8_lossy(&errors).into_owned();
-        return Err(IdeError::invalid(if diagnostics.trim().is_empty() {
-            format!("Formatter exited with {status}")
-        } else {
-            diagnostics
-        }));
-    }
-    written.unwrap()?;
-    String::from_utf8(output).map_err(|e| IdeError::invalid(e.to_string()))
 }
 
 #[cfg(all(test, unix))]
