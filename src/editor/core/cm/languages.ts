@@ -69,6 +69,11 @@ const OWN_MODES = [
     load: async () => new LanguageSupport((await import("./cmake")).cmakeLanguage),
   }),
   LanguageDescription.of({
+    name: "AsciiDoc",
+    extensions: ["adoc", "asciidoc"],
+    load: () => import("./asciidoc").then((m) => new LanguageSupport(m.asciidocLanguage)),
+  }),
+  LanguageDescription.of({
     name: "Shell",
     load: async () => {
       const { shell } = await import("@codemirror/legacy-modes/mode/shell");
@@ -245,7 +250,7 @@ const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return)\b/;
 const KEYWORD_OPEN_LANGS = new Set(["elixir", "ruby", "lua"]);
 const KEYWORD_OPEN =
   /\b(?:do(?:\s*\|[^|]*\|)?|then|->)$|^\s*(?:def|defp|defmodule|class|module|function|local\s+function|if|unless|elsif|elseif|else|while|until|for|case|begin|cond|with|receive|try)\b/;
-const NO_INDENT_LANGS = new Set(["plaintext", "markdown", "log", "diff", "ignore", "gitattributes"]);
+const NO_INDENT_LANGS = new Set(["plaintext", "markdown", "asciidoc", "log", "diff", "ignore", "gitattributes"]);
 
 function opensBlock(code: string, language: string | undefined): boolean {
   if (!code) return false;

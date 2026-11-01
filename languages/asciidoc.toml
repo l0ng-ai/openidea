@@ -1,0 +1,5 @@
+id = "asciidoc"
+name = "AsciiDoc"
+extensions = ["adoc", "asciidoc"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "AsciiDoc"
