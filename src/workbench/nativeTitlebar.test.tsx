@@ -49,6 +49,25 @@ function titlebar(height: number) {
 }
 
 describe("native title bar alignment", () => {
+  it("keeps the native startup position until saved settings arrive", () => {
+    useProject.setState({ settings: null });
+    const { bar } = titlebar(40);
+    renderHook(() => useNativeTitlebar(bar));
+    expect(setHeight).not.toHaveBeenCalled();
+    act(() => zoom(110));
+    expect(setHeight).toHaveBeenCalledExactlyOnceWith(44);
+  });
+
+  it("does not resend the same height on resize notifications or effect remounts", () => {
+    zoom(110);
+    const { bar } = titlebar(40);
+    const { rerender } = renderHook(({ bar }) => useNativeTitlebar(bar), { initialProps: { bar } });
+    act(() => resize());
+    rerender({ bar: titlebar(40).bar });
+    act(() => resize());
+    expect(setHeight).toHaveBeenCalledExactlyOnceWith(44);
+  });
+
   it.each([50, 100, 125, 150, 200, 300])("converts CSS height to AppKit points at %s%%", (percent) => {
     zoom(percent);
     const { bar } = titlebar(40);
