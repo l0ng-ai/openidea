@@ -308,16 +308,15 @@ impl KotlinBridge {
 }
 
 fn relevant_change(root: &Path, path: &Path, settings: &ide_core::settings::Settings) -> bool {
-    if path.extension().is_some_and(|e| e == "kt")
+    let input = path.extension().is_some_and(|e| e == "kt")
         || path.file_name().is_some_and(|n| n == "pom.xml" || n == "mvnw" || n == "mvnw.cmd")
-        || path.components().any(|c| c.as_os_str() == ".mvn")
-    {
-        return true;
-    }
-    if path.extension().is_some() {
-        return false;
-    }
-    let Ok(relative) = path.strip_prefix(root) else { return false };
+        || path.components().any(|c| c.as_os_str() == ".mvn");
+    let Ok(relative) = path.strip_prefix(root) else {
+        // Content roots outside the project only contribute Kotlin sources.
+        return path.extension().is_some_and(|e| e == "kt");
+    };
+    // Build outputs and generated sources (e.g. KSP's `.kt` under target/) never trigger,
+    // so a build cannot schedule itself.
     if relative.components().any(|c| {
         matches!(
             c.as_os_str().to_str(),
@@ -325,6 +324,12 @@ fn relevant_change(root: &Path, path: &Path, settings: &ide_core::settings::Sett
         )
     }) || ide_vfs::ExcludeMatcher::new(&settings.exclude_globs()).is_excluded(relative)
     {
+        return false;
+    }
+    if input {
+        return true;
+    }
+    if path.extension().is_some() {
         return false;
     }
     // Works for deleted directories too; the module POM remains on disk.
@@ -361,6 +366,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("pom.xml"), "").unwrap();
         assert!(!relevant_change(dir.path(), &dir.path().join("target/classes/probe"), &Default::default()));
+        let generated = dir.path().join("target/generated-sources/ksp/main/kotlin/Gen.kt");
+        assert!(!relevant_change(dir.path(), &generated, &Default::default()));
+        assert!(relevant_change(dir.path(), &dir.path().join("src/main/kotlin/A.kt"), &Default::default()));
     }
 
     #[test]
