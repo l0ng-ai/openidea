@@ -142,12 +142,15 @@ class StickyScroll {
   };
 
   private schedule() {
-    if (this.scheduled) return;
+    if (this.scheduled || this.view.dom.classList.contains("cm-scrolling")) return;
     this.scheduled = true;
     this.view.requestMeasure({
       key: this,
       read: (view) => {
         this.scheduled = false;
+        // A queued measurement may outlive the start of a scroll burst.
+        // Preserve the painted rows until scrollSettled schedules a fresh pass.
+        if (view.dom.classList.contains("cm-scrolling")) return null;
         const scroller = view.scrollDOM;
         const scrollTop = scroller.scrollTop;
         const docOffset = view.documentTop - scroller.getBoundingClientRect().top + scrollTop;
@@ -177,7 +180,9 @@ class StickyScroll {
         }
         return { lines: headers, gutterWidth, numberWidth, numberLeft, scrollLeft: scroller.scrollLeft };
       },
-      write: ({ lines, gutterWidth, numberWidth, numberLeft, scrollLeft }) => {
+      write: (measured) => {
+        if (!measured) return;
+        const { lines, gutterWidth, numberWidth, numberLeft, scrollLeft } = measured;
         const state = this.view.state;
         const texts = lines.map((n) => (n <= state.doc.lines ? state.doc.line(n).text : ""));
         const tree = syntaxTree(state);

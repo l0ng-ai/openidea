@@ -18,7 +18,9 @@ class ScrollThrottle {
   private active = false;
 
   constructor(private view: EditorView) {
-    view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
+    // Run before bubble listeners, including stickyScroll when it was
+    // installed first, so the very first event is throttled too.
+    view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true, capture: true });
   }
 
   private onScroll = () => {
@@ -37,7 +39,7 @@ class ScrollThrottle {
 
   destroy() {
     clearTimeout(this.timer);
-    this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
+    this.view.scrollDOM.removeEventListener("scroll", this.onScroll, true);
     this.view.dom.classList.remove("cm-scrolling");
   }
 }
