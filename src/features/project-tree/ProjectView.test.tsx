@@ -12,6 +12,35 @@ import { setRefactorBackendForTests } from "./fileRefactor";
 import { ProjectView } from "./ProjectView";
 import { beginNew, canPaste } from "./operations";
 import { initProjectTree, setViewOption, useProjectTree } from "./store";
+import type { OutlineItem } from "@/bindings";
+import { _emitEditorEvent } from "@/editor/api";
+import { loadOutline } from "./store";
+
+const ipc = vi.hoisted(() => ({
+  docOpen: vi.fn(),
+  docClose: vi.fn(),
+  docOutline: vi.fn(),
+}));
+vi.mock("@/bindings", async (orig) => {
+  const real = await orig<typeof import("@/bindings")>();
+  return { ...real, commands: { ...real.commands, ...ipc } };
+});
+
+const ok = <T,>(data: T) => ({ status: "ok" as const, data });
+const item = (name: string, kind: OutlineItem["kind"], line: number, children: OutlineItem[] = []): OutlineItem => {
+  const r = { start: { line, col: 0 }, end: { line, col: 1 } };
+  return { name, kind, detail: null, range: r, selection_range: r, children };
+};
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+};
 
 const ROOT = "/w/acme";
 let fs: MemoryFs;
@@ -316,6 +345,217 @@ describe("ProjectView", () => {
     await waitFor(() => expect(useProjectTree.getState().listings.get("/w/acme/big")?.length).toBe(10_000));
     const rendered = within(tree).getAllByRole("treeitem").length;
     expect(rendered).toBeLessThan(80);
+  });
+});
+
+describe("Show Members", () => {
+  const APP = "/w/acme/src/App.kt";
+
+  const expand = (tree: HTMLElement, label: string, row: (l: string) => HTMLElement) => {
+    fireEvent.mouseDown(row(label));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+  };
+
+  it("shows a file's members and opens the symbol on double click", async () => {
+    ipc.docOpen.mockResolvedValue(ok({ id: 7 }));
+    ipc.docClose.mockResolvedValue(ok(null));
+    ipc.docOutline.mockResolvedValue(
+      ok([item("App", "class", 0, [item("render", "method", 4)]), item("main", "function", 10)]),
+    );
+    const { tree, row, rows } = setup();
+    act(() => useProjectTree.setState({ expanded: new Set([ROOT, "/w/acme/src"]) }));
+    await waitFor(() => expect(rows()).toContain("App.kt"));
+    act(() => setViewOption("showMembers", true));
+    expand(tree, "App.kt", row);
+    await waitFor(() => expect(rows()).toContain("main"));
+    expect(rows()).toEqual(expect.arrayContaining(["App.kt", "App", "main"]));
+
+    // Nested members appear when the member row itself is expanded.
+    const appMember = within(tree)
+      .getAllByRole("treeitem")
+      .find((r) => r.textContent === "App")!;
+    fireEvent.mouseDown(appMember);
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    await waitFor(() => expect(rows()).toContain("render"));
+
+    // Activating a member jumps to its declaration, not the file row.
+    fireEvent.doubleClick(row("main"));
+    const [path, opts] = openFile.mock.calls.at(-1)!;
+    expect(path).toBe(APP);
+    expect(opts).toMatchObject({ focus: true, selection: { line: 10, col: 0 } });
+  });
+
+  it.each([true, false])(
+    "loads restored expanded files when Show Members becomes enabled (initially %s)",
+    async (enabled) => {
+      ipc.docOpen.mockResolvedValue(ok({ id: 7 }));
+      ipc.docClose.mockResolvedValue(ok(null));
+      ipc.docOutline.mockResolvedValue(ok([item("restored", "function", 3)]));
+      localStorage.setItem(`openidea.projectTree.expanded:${ROOT}`, JSON.stringify([ROOT, "/w/acme/src", APP]));
+      initProjectTree(ROOT, "acme");
+      setViewOption("showMembers", enabled);
+      ipc.docOutline.mockClear();
+      const { rows, row, tree } = setup();
+      await waitFor(() => expect(rows()).toContain("App.kt"));
+      if (!enabled) {
+        expect(rows()).not.toContain("Loading…");
+        expect(row("App.kt")).not.toHaveAttribute("aria-expanded");
+        expect(ipc.docOutline).not.toHaveBeenCalled();
+        act(() => setViewOption("showMembers", true));
+      }
+      await waitFor(() => expect(rows()).toContain("restored"));
+      expect(ipc.docOutline).toHaveBeenCalledTimes(1);
+      fireEvent.mouseDown(row("restored"));
+      tree.focus();
+      fireEvent.keyDown(tree, { key: "Enter" });
+      expect(openFile).toHaveBeenLastCalledWith(
+        APP,
+        expect.objectContaining({ focus: true, selection: expect.objectContaining({ line: 3 }) }),
+      );
+      act(() => setViewOption("showMembers", false));
+      expect(rows()).not.toContain("restored");
+      expect(rows()).not.toContain("Loading…");
+      expect(ipc.docOutline).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("honours member single-click options and double-click focus", async () => {
+    ipc.docOpen.mockResolvedValue(ok({ id: 7 }));
+    ipc.docClose.mockResolvedValue(ok(null));
+    ipc.docOutline.mockResolvedValue(ok([item("main", "function", 10)]));
+    const { rows, row } = setup();
+    act(() => {
+      setViewOption("showMembers", true);
+      setViewOption("autoscrollToSource", false);
+      setViewOption("singleClickOpen", false);
+      setViewOption("previewTab", false);
+      useProjectTree.setState({ expanded: new Set([ROOT, "/w/acme/src", APP]) });
+    });
+    await waitFor(() => expect(rows()).toContain("main"));
+    const content = () => row("main").querySelector("[data-project-key]")!;
+    fireEvent.click(content(), { detail: 1 });
+    expect(openFile).not.toHaveBeenCalled();
+    act(() => setViewOption("previewTab", true));
+    fireEvent.click(content(), { detail: 1 });
+    expect(openFile).toHaveBeenLastCalledWith(
+      APP,
+      expect.objectContaining({ preview: true, focus: false, selection: expect.objectContaining({ line: 10 }) }),
+    );
+    act(() => setViewOption("singleClickOpen", true));
+    fireEvent.click(content(), { detail: 1 });
+    expect(openFile).toHaveBeenLastCalledWith(
+      APP,
+      expect.objectContaining({ preview: undefined, focus: false, selection: expect.objectContaining({ line: 10 }) }),
+    );
+    openFile.mockClear();
+    fireEvent.click(content(), { detail: 1, metaKey: true });
+    fireEvent.click(content(), { detail: 2 });
+    expect(openFile).not.toHaveBeenCalled();
+    fireEvent.doubleClick(content());
+    expect(openFile).toHaveBeenCalledTimes(1);
+    expect(openFile).toHaveBeenLastCalledWith(
+      APP,
+      expect.objectContaining({ focus: true, selection: expect.objectContaining({ line: 10 }) }),
+    );
+  });
+
+  it("refreshes once per editor save and defers collapsed or disabled outlines", async () => {
+    ipc.docOpen.mockResolvedValue(ok({ id: 7 }));
+    ipc.docClose.mockResolvedValue(ok(null));
+    ipc.docOutline.mockResolvedValue(ok([item("main", "function", 0)]));
+    const { rows } = setup();
+    act(() => {
+      setViewOption("showMembers", true);
+      useProjectTree.setState({ expanded: new Set([ROOT, "/w/acme/src", APP]) });
+    });
+    await waitFor(() => expect(rows()).toContain("main"));
+    ipc.docOutline.mockClear();
+    ipc.docOutline.mockResolvedValue(ok([item("saved", "function", 5)]));
+    act(() => _emitEditorEvent({ type: "docSaved", doc: 7, path: APP }));
+    await waitFor(() => expect(rows()).toContain("saved"));
+    expect(ipc.docOutline).toHaveBeenCalledTimes(1);
+    act(() => useProjectTree.setState({ expanded: new Set([ROOT, "/w/acme/src"]) }));
+    act(() => _emitEditorEvent({ type: "docSaved", doc: 7, path: APP }));
+    expect(useProjectTree.getState().outlines.has(APP)).toBe(false);
+    expect(ipc.docOutline).toHaveBeenCalledTimes(1);
+    act(() => useProjectTree.setState({ expanded: new Set([ROOT, "/w/acme/src", APP]) }));
+    await waitFor(() => expect(rows()).toContain("saved"));
+    expect(ipc.docOutline).toHaveBeenCalledTimes(2);
+    act(() => setViewOption("showMembers", false));
+    act(() => _emitEditorEvent({ type: "docSaved", doc: 7, path: APP }));
+    expect(useProjectTree.getState().outlines.has(APP)).toBe(false);
+    expect(ipc.docOutline).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([false, true])("discards an outline invalidated during loading (old request fails: %s)", async (fail) => {
+    ipc.docOpen.mockResolvedValue(ok({ id: 7 }));
+    ipc.docClose.mockResolvedValue(ok(null));
+    const old = deferred<ReturnType<typeof ok<OutlineItem[]>>>();
+    const fresh = deferred<ReturnType<typeof ok<OutlineItem[]>>>();
+    ipc.docOutline.mockClear();
+    ipc.docOutline.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+    const { rows } = setup();
+    act(() => {
+      setViewOption("showMembers", true);
+      useProjectTree.setState({ expanded: new Set([ROOT, "/w/acme/src", APP]) });
+    });
+    await waitFor(() => expect(ipc.docOutline).toHaveBeenCalledTimes(1));
+    act(() => _emitEditorEvent({ type: "docSaved", doc: 7, path: APP }));
+    await waitFor(() => expect(ipc.docOutline).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      if (fail) old.reject(new Error("stale failure"));
+      else old.resolve(ok([item("stale", "function", 0)]));
+    });
+    expect(useProjectTree.getState().outlines.has(APP)).toBe(false);
+    // Completing the obsolete request must not remove the new request's dedupe entry.
+    let pending: Promise<void>;
+    act(() => {
+      pending = loadOutline(APP);
+    });
+    expect(ipc.docOutline).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      fresh.resolve(ok([item("fresh", "function", 1)]));
+      await pending;
+    });
+    await waitFor(() => expect(rows()).toContain("fresh"));
+    expect(rows()).not.toContain("stale");
+    expect(ipc.docOutline).toHaveBeenCalledTimes(2);
+  });
+
+  it("collapses a file whose members cannot be read", async () => {
+    ipc.docOpen.mockResolvedValue(ok({ id: 7 }));
+    ipc.docClose.mockResolvedValue(ok(null));
+    ipc.docOutline.mockRejectedValue(new Error("unsupported"));
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    act(() => setViewOption("showMembers", true));
+    const chevron = () => row("README.md").querySelector("[data-tree-toggle]")!;
+    expect(chevron().hasChildNodes()).toBe(true);
+    expand(tree, "README.md", row);
+    await waitFor(() => expect(chevron().hasChildNodes()).toBe(false));
+    expect(rows()).not.toContain("main");
+  });
+
+  it("refreshes members when the file changes on disk", async () => {
+    ipc.docOpen.mockResolvedValue(ok({ id: 7 }));
+    ipc.docClose.mockResolvedValue(ok(null));
+    ipc.docOutline.mockResolvedValue(ok([item("main", "function", 0)]));
+    const { tree, row, rows } = setup();
+    act(() => useProjectTree.setState({ expanded: new Set([ROOT, "/w/acme/src"]) }));
+    await waitFor(() => expect(rows()).toContain("App.kt"));
+    act(() => setViewOption("showMembers", true));
+    expand(tree, "App.kt", row);
+    await waitFor(() => expect(rows()).toContain("main"));
+
+    ipc.docOutline.mockClear();
+    ipc.docOutline.mockResolvedValue(ok([item("main", "function", 0), item("helper", "function", 5)]));
+    // An unrelated change keeps the cached outline.
+    await act(() => fs.createFile("/w/acme/src/New.kt"));
+    expect(ipc.docOutline).not.toHaveBeenCalled();
+    // Modifying the file itself drops the cache and refetches while expanded.
+    await act(async () => void fs.onChange?.({ created: [], modified: [APP], removed: [] }));
+    await waitFor(() => expect(rows()).toContain("helper"));
   });
 });
 

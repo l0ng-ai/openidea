@@ -24,7 +24,7 @@ import {
 } from "@codemirror/language";
 import type { FoldRange } from "@/platform/ipc";
 import { enclosingCodeBlock } from "./caretCommands";
-import { regionMarker, regionNameAt } from "./regions";
+import { regionMarkerAt, regionNameAt } from "./regions";
 
 export interface BackendFold {
   /** Offset where the fold starts (end of the header line). */
@@ -58,7 +58,7 @@ export function foldsFromRanges(state: EditorState, ranges: readonly FoldRange[]
     if (r.start_line + 1 > lines || r.end_line + 1 > lines || r.end_line <= r.start_line) continue;
     const first = state.doc.line(r.start_line + 1);
     const end = state.doc.line(r.end_line + 1);
-    if (regionMarker(first.text)?.start) {
+    if (regionMarkerAt(state, first)?.start) {
       const from = first.from + /^\s*/.exec(first.text)![0].length;
       if (end.to > from) out.push({ from, to: end.to, kind: r.kind, custom: true });
       continue;

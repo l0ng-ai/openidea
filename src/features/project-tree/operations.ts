@@ -12,7 +12,7 @@ import { runFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
 import { beginLocalImport, projectFs } from "./fs";
 import { isCancelled } from "@/platform/ipc";
-import type { ProjectNode } from "./model";
+import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
   isInside,
   isSameOrInside,
@@ -90,6 +90,7 @@ export function topLevelPaths(nodes: ProjectNode[] = selectedNodes()): string[] 
 
 /** Folder that receives new / pasted items: the selected folder or the selected file's parent. */
 export function targetFolder(node: ProjectNode | null = leadNode()): string | null {
+  if (!node && get().lead?.startsWith(MEMBER_PREFIX)) return null;
   const { root } = get();
   if (!root) return null;
   if (!node) return get().members?.[0] ?? (get().members ? null : root);
