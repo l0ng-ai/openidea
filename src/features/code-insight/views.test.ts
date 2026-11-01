@@ -110,9 +110,33 @@ describe("toggleExcludedUsages", () => {
   const u = (line: number) => ({ path: "/a", line, col: 0, endCol: 1, text: "" });
   it("excludes a group unless all of it is excluded already", () => {
     const one = toggleExcludedUsages(new Set(), [u(1)]);
-    expect([...one]).toEqual(["/a:1:0"]);
+    expect([...one]).toEqual(["/a:1:0:1:1"]);
     const both = toggleExcludedUsages(one, [u(1), u(2)]);
-    expect([...both].sort()).toEqual(["/a:1:0", "/a:2:0"]);
+    expect([...both].sort()).toEqual(["/a:1:0:1:1", "/a:2:0:2:1"]);
     expect(toggleExcludedUsages(both, [u(1), u(2)]).size).toBe(0);
   });
+});
+
+it("preserves semantic categories for separate ranges on the same source line", () => {
+  const getter = { path: "/Bean.java", range: { start: { line: 0, col: 12 }, end: { line: 0, col: 19 } } };
+  const setter = { path: "/Bean.java", range: { start: { line: 0, col: 2 }, end: { line: 0, col: 9 } } };
+  const groups = groupUsages([getter, setter], new Map([["/Bean.java", ["b.setName(b.getName())"]]]), [
+    { location: getter, kind: "getter" },
+    { location: setter, kind: "setter" },
+  ]);
+  expect(groups[0]!.usages.map((u) => [u.col, u.kind])).toEqual([
+    [2, "setter"],
+    [12, "getter"],
+  ]);
+});
+
+it("retains nested references sharing a start and their exact multiline range", () => {
+  const inner = { path: "/Bean.java", range: { start: { line: 0, col: 0 }, end: { line: 0, col: 9 } } };
+  const outer = { path: "/Bean.java", range: { start: { line: 0, col: 0 }, end: { line: 1, col: 10 } } };
+  const groups = groupUsages([inner, outer], new Map([["/Bean.java", ["b.value()", ".value(x);"]]]), [
+    { location: inner, kind: "getter" },
+    { location: outer, kind: "setter" },
+  ]);
+  expect(groups[0]!.usages).toHaveLength(2);
+  expect(groups[0]!.usages[1]!.sourceLocation).toEqual(outer);
 });

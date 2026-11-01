@@ -687,9 +687,9 @@ fn detect_go(root: &Path, out: &mut Vec<RunConfig>) {
         let mut seen = HashSet::new();
         for member in crate::go::work_modules(&work) {
             let dir = root.join(member);
-            let dir = dir.canonicalize().unwrap_or(dir);
+            let dir = dunce::canonicalize(&dir).unwrap_or(dir);
             if dir.join("go.mod").is_file() && seen.insert(dir.clone()) {
-                let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+                let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
                 let rel = dir.strip_prefix(&canonical_root).unwrap_or(&dir).to_path_buf();
                 detect_go_module(&dir, (!rel.as_os_str().is_empty()).then_some(rel), out);
             }

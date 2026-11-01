@@ -39,6 +39,7 @@ import { syntaxHighlightField } from "./syntaxHighlight";
 import { indentGuides } from "./indentGuides";
 import { rainbowBrackets } from "./rainbowBrackets";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
+import { scrollThrottle } from "./scrollThrottle";
 import { findExtension } from "./find";
 import { codeLensExtension } from "./codeLens";
 import { caretExtension, fontZoom, methodLinesField, prefsExtension, softWrapActive } from "./prefs";
@@ -364,6 +365,10 @@ export function baseExtensions(o: SetupOptions): Extension {
     compartments.wrap.of(wrapExtension(o.settings, o.ctx.path, o.wrapOverride)),
     compartments.sticky.of(stickyExtension(o.settings)),
     compartments.heavy.of(heavyExtension(o.docLength, o.settings)),
+    // Flag "cm-scrolling" while the wheel is moving; expensive decorations
+    // (sticky header, indent guides, ...) keep their previous paint and
+    // defer re-measuring until scrolling settles.
+    scrollThrottle,
     compartments.prefs.of(
       prefsFor({
         settings: o.settings,

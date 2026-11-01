@@ -1,15 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import type { FileMatches, SearchSummary } from "@/platform/ipc";
 import type { ReplaceRequest } from "../find/replaceFlow";
 
 const replaced: ReplaceRequest[] = [];
 const confirms: unknown[] = [];
+let validation: Promise<void> | null = null;
+let search: ((onFile: (file: FileMatches) => void) => Promise<SearchSummary | null>) | null = null;
+let confirmation: Promise<boolean> | null = null;
 
 vi.mock("../find/windowStore", async (orig) => ({
   ...(await orig<typeof import("../find/windowStore")>()),
   ipcFindDeps: () => ({
-    validate: async () => {},
-    start: async (_id: number, _q: unknown, onFile: (f: unknown) => void) => {
+    validate: async () => {
+      await validation;
+    },
+    start: async (_id: number, _q: unknown, onFile: (f: FileMatches) => void) => {
+      if (search) return search(onFile);
       onFile({
         path: "/p/a.kt",
         relPath: "a.kt",
@@ -44,7 +51,7 @@ vi.mock("@/workbench/messages", async (orig) => ({
   ...(await orig<typeof import("@/workbench/messages")>()),
   confirm: async (opts: unknown) => {
     confirms.push(opts);
-    return true;
+    return confirmation ?? true;
   },
 }));
 
@@ -63,7 +70,22 @@ beforeEach(() => {
   replaced.length = 0;
   confirms.length = 0;
   localStorage.clear();
-  useFindPopup.setState({ pinned: false, maskEnabled: false, preserveCase: false, context: "any", replacement: "" });
+  validation = null;
+  search = null;
+  confirmation = null;
+  useFindPopup.setState({
+    pattern: "",
+    caseSensitive: false,
+    wholeWord: false,
+    isRegex: false,
+    scopeTab: "project",
+    mask: "",
+    pinned: false,
+    maskEnabled: false,
+    preserveCase: false,
+    context: "any",
+    replacement: "",
+  });
 });
 
 afterEach(() => {
@@ -161,5 +183,155 @@ describe("Find in Files popup", () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     expect(useFindPopup.getState().open).toBe(false);
     expect(findHistory("find")[0]).toBe("order");
+  });
+});
+
+describe("outdated popup results", () => {
+  const results = () => screen.getByRole("listbox", { name: "Matches" }).parentElement!;
+  const rowText = () =>
+    within(screen.getByRole("listbox", { name: "Matches" }))
+      .getAllByRole("option")
+      .map((r) => r.textContent);
+
+  it.each([false, true])(
+    "marks retained rows immediately in replace=%s and waits for the first new file",
+    async (replace) => {
+      render(<FindInFilesOverlay />);
+      act(() => showFindPopup(replace, { query: "order" }));
+      await settle();
+      if (replace) fireEvent.change(screen.getByLabelText("Replace with"), { target: { value: "item" } });
+      const oldRows = within(screen.getByRole("listbox", { name: "Matches" })).getAllByRole("option");
+      let validate!: () => void;
+      validation = new Promise<void>((r) => {
+        validate = r;
+      });
+      let onFile!: (file: FileMatches) => void;
+      let finish!: (summary: SearchSummary | null) => void;
+      search = (callback) => {
+        onFile = callback;
+        return new Promise((r) => {
+          finish = r;
+        });
+      };
+      fireEvent.change(field(), { target: { value: "fresh" } });
+      expect(results()).toHaveAttribute("data-stale", "true");
+      expect(screen.getByText("Updating results…")).toBeInTheDocument();
+      expect(within(results()).getAllByRole("option")).toEqual(oldRows);
+      expect(results().querySelector("mark, del, ins")).toBeNull();
+      expect(screen.queryByText("3 matches in 2 files")).not.toBeInTheDocument();
+      await settle();
+      expect(results()).toHaveAttribute("data-stale", "true");
+      expect(rowText()).toHaveLength(3);
+      await act(async () => validate());
+      expect(results()).toHaveAttribute("data-stale", "true");
+      expect(rowText()).toHaveLength(3);
+      if (replace) expect(screen.getByRole("button", { name: "Replace" })).toBeDisabled();
+      await act(async () =>
+        onFile({
+          path: "/p/fresh.kt",
+          relPath: "fresh.kt",
+          matches: [{ line: 0, text: "fresh", ranges: [[0, 5]], textOffset: 0 }],
+        }),
+      );
+      expect(results()).not.toHaveAttribute("data-stale");
+      expect(rowText()).toHaveLength(1);
+      expect(screen.getByText("1 match in 1 file")).toBeInTheDocument();
+      expect(results().querySelector(replace ? "ins" : "mark")).not.toBeNull();
+      if (replace) expect(screen.getByRole("button", { name: "Replace" })).toBeEnabled();
+      await act(async () => finish(null));
+    },
+  );
+
+  it.each(["Replace", "Replace All in This File", "Replace All", "Enter", "All shortcut", "All mnemonic"])(
+    "blocks %s during debounce and validation",
+    async (action) => {
+      render(<FindInFilesOverlay />);
+      act(() => showFindPopup(true, { query: "order" }));
+      await settle();
+      validation = new Promise(() => {});
+      fireEvent.change(field(), { target: { value: "ord" } });
+      const invoke = () => {
+        if (action === "Enter") fireEvent.keyDown(field(), { key: "Enter" });
+        else if (action === "All shortcut") fireEvent.keyDown(field(), { key: "Enter", altKey: true, shiftKey: true });
+        else if (action === "All mnemonic") fireEvent.keyDown(field(), { key: "a", code: "KeyA", altKey: true });
+        else {
+          const button = screen.getByRole("button", { name: action });
+          expect(button).toBeDisabled();
+          fireEvent.click(button);
+        }
+      };
+      invoke();
+      await settle();
+      invoke();
+      await act(async () => {});
+      expect(replaced).toHaveLength(0);
+      expect(confirms).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    { caseSensitive: true },
+    { wholeWord: true },
+    { isRegex: true },
+    { maskEnabled: true, mask: "*.ts" },
+    { scopeTab: "directory" as const, directory: "/other" },
+    { context: "inComments" as const },
+  ])("invalidates when search options change: %j", async (patch) => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(true, { query: "order" }));
+    await settle();
+    act(() => useFindPopup.setState(patch));
+    expect(results()).toHaveAttribute("data-stale", "true");
+    expect(results().querySelector("mark, del, ins")).toBeNull();
+    expect(screen.getByRole("button", { name: "Replace" })).toBeDisabled();
+  });
+
+  it("clears retained rows and the count when the new search finds nothing", async () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(true, { query: "order" }));
+    await settle();
+    let finish!: (summary: SearchSummary | null) => void;
+    search = () =>
+      new Promise((r) => {
+        finish = r;
+      });
+    fireEvent.change(field(), { target: { value: "absent" } });
+    await settle();
+    expect(results()).toHaveAttribute("data-stale", "true");
+    expect(rowText()).toHaveLength(3);
+    const box = results();
+    await act(async () => finish(null));
+    expect(box).not.toHaveAttribute("data-stale");
+    expect(screen.getByText("No matches")).toBeInTheDocument();
+    expect(screen.getByText("Nothing found")).toBeInTheDocument();
+    expect(within(box).queryAllByRole("option")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Replace" })).toBeDisabled();
+  });
+
+  it.each([false, true])("keeps opening an outdated result available in replace=%s", async (replace) => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(replace, { query: "order" }));
+    await settle();
+    fireEvent.change(field(), { target: { value: "absent" } });
+    if (replace) act(() => void runFindPopupCommand("openResult"));
+    else fireEvent.keyDown(field(), { key: "Enter" });
+    expect(useFindPopup.getState().open).toBe(false);
+    expect(replaced).toHaveLength(0);
+  });
+
+  it("rejects Replace All if the query changes while confirmation is open", async () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(true, { query: "order" }));
+    await settle();
+    let confirm!: (ok: boolean) => void;
+    confirmation = new Promise((r) => {
+      confirm = r;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Replace All" }));
+    expect(confirms).toHaveLength(1);
+    fireEvent.change(field(), { target: { value: "ord" } });
+    await settle();
+    await act(async () => confirm(true));
+    expect(replaced).toHaveLength(0);
   });
 });

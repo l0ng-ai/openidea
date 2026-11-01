@@ -44,7 +44,7 @@ import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
-import { showTomcatUpdate } from "./tomcatUpdate";
+import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { runGutter } from "./runGutter";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
 import { clearRuntimeCache } from "./runtimes";
@@ -280,6 +280,8 @@ export function activate(): () => void {
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),
+    listenForApplicationDeactivation(),
+    useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
     registerMenuGroup({
       id: "run.context",
@@ -293,8 +295,8 @@ export function activate(): () => void {
         title: "Update Application",
         category: "Run",
         icon: "refresh",
-        when: "run.tomcatRunning",
-        run: () => showTomcatUpdate(),
+        when: "run.updatableRunning",
+        run: () => showApplicationUpdate(),
       },
       {
         id: "run.run",
@@ -510,10 +512,7 @@ export function activate(): () => void {
     // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
     useRun.subscribe((s) => {
       setContext("run.selectedKind", s.configs.find((c) => c.id === s.selectedId)?.kind ?? "");
-      setContext(
-        "run.tomcatRunning",
-        s.sessions.some((session) => session.config.kind === "tomcat" && session.status === "running"),
-      );
+      setContext("run.updatableRunning", updatableSessions().length > 0);
     }),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;

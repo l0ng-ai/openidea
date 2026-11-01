@@ -394,7 +394,7 @@ function SearchEverywhereDialog() {
       aria-label={tx("Search Everywhere")}
       className={styles.dialog}
     >
-      <div className={styles.header}>
+      <div className={styles.header} data-dialog-drag="">
         <div role="tablist" aria-label={tx("Search scope")} className={styles.tabs} onKeyDown={onTabKey}>
           {TABS.map((t) => (
             <button

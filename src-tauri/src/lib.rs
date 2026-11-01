@@ -3,6 +3,7 @@
 //! This crate is glue only. Each `commands/<domain>.rs` is a thin, typed
 //! adapter from IPC to a backend crate; no domain logic lives here.
 
+mod application_focus;
 mod commands;
 #[cfg(debug_assertions)]
 mod dev;
@@ -145,6 +146,9 @@ pub fn run() {
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
         app.manage(windows);
+        app.manage(application_focus::ApplicationFocus::default());
+        #[cfg(target_os = "macos")]
+        application_focus::observe(app.handle());
         app.manage(menu_state);
         app.manage(remembered_geometry);
         if let Some(paths) = setup_opens.lock().take() {
@@ -156,10 +160,12 @@ pub fn run() {
     })
     .on_window_event(|window, event| match event {
         tauri::WindowEvent::Focused(true) => {
+            application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.focused(window.label());
             }
         }
+        tauri::WindowEvent::Focused(false) => application_focus::changed(window.app_handle(), false),
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
             titlebar::forget(window);

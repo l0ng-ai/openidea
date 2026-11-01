@@ -193,8 +193,12 @@ function FindInFilesDialog() {
   );
   const queryKey = JSON.stringify(query);
 
+  const stale = state.stale || (state.query ? JSON.stringify(state.query) !== queryKey : !!s.pattern);
+  const currentQuery = useRef(queryKey);
   const [rerun, setRerun] = useState(0);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    currentQuery.current = queryKey;
+    session.invalidate();
     const t = setTimeout(() => {
       void session.search(query);
       setIndex(0);
@@ -209,13 +213,13 @@ function FindInFilesDialog() {
   const selected = active >= 0 ? rows[active] : undefined;
   const chosen = useMemo(() => selectedRows(rows, sel), [rows, sel]);
   const fileHighlights = useMemo(() => {
-    if (!selected) return [];
+    if (stale || !selected) return [];
     const f = state.files.find((x) => x.path === selected.path);
     return (f?.matches ?? []).map((m) => ({
       line: m.line,
       ranges: m.ranges.map(([a, b]) => [a + m.textOffset, b + m.textOffset] as [number, number]),
     }));
-  }, [selected, state.files]);
+  }, [stale, selected, state.files]);
 
   const close = () => {
     rememberFindString("find", s.pattern);
@@ -243,8 +247,13 @@ function FindInFilesDialog() {
     openInFindWindow(pinned, describeQuery(pinned, root), s.replace ? s.replacement : null, undefined, s.preserveCase);
   };
 
+  // Check again after a confirmation: its captured rows may have been superseded.
+  const canReplace = () =>
+    !stale && !session.current.stale && currentQuery.current === queryKey && session.current.files === state.files;
+
   /** IDEA asks before Replace All only when the results span more than one file. */
   const confirmReplaceAll = async () => {
+    if (!canReplace()) return;
     const usages = pendingUsages(rows, marks);
     if (!usages.length) return;
     const counts = countUsages(usages);
@@ -278,7 +287,7 @@ function FindInFilesDialog() {
 
   /** Replaces `usages` in the backend, then marks them done (IDEA's Replace / Replace All). */
   const replaceUsages = async (usages: Usage[]): Promise<ReplaceMarks | null> => {
-    if (!usages.length || running) return null;
+    if (!canReplace() || !usages.length || running) return null;
     const run = startReplace(
       { query, replacement: s.replacement, preserveCase: s.preserveCase, targets: replaceTargets(usages) },
       setProgress,
@@ -349,10 +358,18 @@ function FindInFilesDialog() {
     if (done) close();
   };
 
+  const diffPreviewKey = JSON.stringify([
+    selected?.key,
+    queryKey,
+    s.replacement,
+    s.preserveCase,
+    rerun,
+    previewVersion,
+  ]);
   useEffect(() => {
-    if (!previewMode || !s.replace || !selected) return;
+    if (stale || !previewMode || !s.replace || !selected) return;
     let alive = true;
-    const key = selected.key;
+    const key = diffPreviewKey;
     const usages = pendingUsages([selected], marks);
     const t = setTimeout(() => {
       loadReplacePreview(query, s.replacement, s.preserveCase, selected.path, usages).then(
@@ -365,7 +382,7 @@ function FindInFilesDialog() {
       clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewMode, s.replace, selected?.key, s.replacement, s.preserveCase, queryKey, marks, previewVersion]);
+  }, [stale, previewMode, s.replace, diffPreviewKey, marks]);
 
   const moveTo = (next: number, extend: boolean) =>
     setSel((cur) => selectRow(rows, cur, next, extend ? "range" : "single"));
@@ -443,7 +460,7 @@ function FindInFilesDialog() {
     return () => setFindPopupCommandHandler(null);
   }, []);
 
-  const summary = statusText(state);
+  const summary = stale ? (s.pattern ? tx("Updating results…") : "") : statusText(state);
   const maskItems: MenuItem[] = recentMasks().map((m) => ({
     label: m,
     checked: m === s.mask ? true : undefined,
@@ -467,7 +484,7 @@ function FindInFilesDialog() {
     checked: c.value === s.context ? true : undefined,
     run: () => set({ context: c.value }),
   }));
-  const pendingSelected = s.replace ? pendingUsages(chosen, marks).length : 0;
+  const pendingSelected = s.replace && !stale ? pendingUsages(chosen, marks).length : 0;
 
   return (
     <Dialog
@@ -483,10 +500,10 @@ function FindInFilesDialog() {
       className={styles.dialog}
     >
       <div className={styles.root} onKeyDown={onKeyDown}>
-        <header className={styles.header}>
+        <header className={styles.header} data-dialog-drag="">
           <span className={styles.title}>{s.replace ? tx("Replace in Files") : tx("Find in Files")}</span>
           <span className={styles.status} aria-live="polite">
-            {state.status === "searching" || state.status === "validating" ? <Spinner size={12} /> : null}
+            {stale || state.status === "searching" || state.status === "validating" ? <Spinner size={12} /> : null}
             {summary}
           </span>
           <span className={styles.spacer} />
@@ -664,7 +681,11 @@ function FindInFilesDialog() {
             )}
           </div>
         </div>
-        <div className={styles.results}>
+        <div
+          className={clsx(styles.results, stale && styles.outdated)}
+          data-stale={stale || undefined}
+          aria-busy={stale || state.status === "searching"}
+        >
           <List<MatchRow>
             items={rows}
             getKey={(r, i) => `${r.key}:${i}`}
@@ -691,10 +712,10 @@ function FindInFilesDialog() {
                   >
                     <MatchText
                       text={r.text}
-                      ranges={r.ranges}
+                      ranges={stale ? [] : r.ranges}
                       source={{ path: r.path, line: r.line, col: r.textCol }}
                       active={st.active}
-                      replacement={s.replace && state !== "done" ? s.replacement : null}
+                      replacement={!stale && s.replace && state !== "done" ? s.replacement : null}
                       query={query}
                       preserveCase={s.preserveCase}
                     />
@@ -725,9 +746,9 @@ function FindInFilesDialog() {
           )}
         </div>
         <div className={styles.previewBox}>
-          {previewMode && s.replace && selected ? (
+          {!stale && previewMode && s.replace && selected ? (
             <ReplaceDiffPreview
-              lines={diffPreview?.key === selected.key ? diffPreview.lines : null}
+              lines={diffPreview?.key === diffPreviewKey ? diffPreview.lines : null}
               line={selected.line}
             />
           ) : (
@@ -747,7 +768,6 @@ function FindInFilesDialog() {
               <T>↵ Open · ⇧↵ Open to the side · ⌘↵ Open in Find Window</T>
             )}
           </span>
-          <span className={styles.spacer} />
           {s.replace && progress && (
             <span className={styles.hint} aria-live="polite">
               {tx`Replacing… ${progress.done}/${progress.total} files`}
@@ -761,19 +781,19 @@ function FindInFilesDialog() {
           {s.replace && (
             <>
               <Checkbox checked={previewMode} onChange={setPreviewMode} label="Preview" />
-              <Button size="small" variant="secondary" disabled={!selected || busy} onClick={skip}>
+              <Button size="small" variant="secondary" disabled={stale || !selected || busy} onClick={skip}>
                 <T>Skip</T>
               </Button>
-              <Button size="small" disabled={!selected || busy} onClick={() => void replaceSelected()}>
+              <Button size="small" disabled={stale || !selected || busy} onClick={() => void replaceSelected()}>
                 {pendingSelected > 1 ? txt(`Replace ${pendingSelected} Occurrences`) : <T>Replace</T>}
               </Button>
-              <Button size="small" disabled={!selected || busy} onClick={() => void replaceInFile()}>
+              <Button size="small" disabled={stale || !selected || busy} onClick={() => void replaceInFile()}>
                 <T>Replace All in This File</T>
               </Button>
               <Button
                 size="small"
                 title="Replace All (⇧⌥↵, ⌥A)"
-                disabled={!rows.length || busy || state.status === "searching"}
+                disabled={stale || !rows.length || busy || state.status === "searching"}
                 onClick={() => void confirmReplaceAll()}
               >
                 <T>Replace All</T>

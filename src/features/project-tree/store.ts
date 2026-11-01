@@ -4,7 +4,9 @@
  * Kept outside React so actions (keyboard, Find Action, context menu) share it.
  */
 import { create } from "zustand";
-import type { FileEntry } from "@/bindings";
+import { call } from "@/platform/ipc";
+import { commands, type FileEntry, type OutlineItem } from "@/bindings";
+import { withDocument } from "@/editor/lsp/files";
 import { IpcError } from "@/platform/ipc";
 import {
   DEFAULT_TREE_OPTIONS,
@@ -43,6 +45,8 @@ export interface ViewOptions extends TreeOptions {
   singleClickExpand: boolean;
   /** Single click shows files in the preview tab (IDEA's "Enable Preview Tab"). */
   previewTab: boolean;
+  /** Show a file's declarations as expandable rows below it. */
+  showMembers: boolean;
 }
 
 export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
@@ -53,6 +57,7 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   singleClickExpand: false,
   // IDEA's "Enable Preview Tab" is off by default.
   previewTab: false,
+  showMembers: false,
 };
 
 function storedOptions(): ViewOptions {
@@ -82,6 +87,10 @@ export type Editing =
 export interface Clipboard {
   paths: string[];
   cut: boolean;
+  /** Server paths cannot be represented by the client's OS file list. */
+  remote?: boolean;
+  /** Pending OS hand-off, so a read cannot invalidate this copy before its write finishes. */
+  osWrite?: Promise<boolean>;
 }
 
 interface ProjectTreeState {
@@ -104,6 +113,8 @@ interface ProjectTreeState {
   openFiles: readonly string[];
   /** Files with VCS changes (All Changed Files mode). */
   changedFiles: readonly string[];
+  /** Loaded document outlines per file path, for the "Show Members" rows (empty for unsupported files). */
+  outlines: ReadonlyMap<string, readonly OutlineItem[]>;
 }
 
 const OPTIONS_KEY = "openidea.projectTree.options";
@@ -144,6 +155,7 @@ export const useProjectTree = create<ProjectTreeState>(() => ({
   mode: readMode(),
   openFiles: [],
   changedFiles: [],
+  outlines: new Map(),
 }));
 
 function readMode(): ViewMode {
@@ -255,6 +267,7 @@ let persistTimer: ReturnType<typeof setTimeout> | undefined;
 export function initProjectTree(root: string | null, name = "", members: readonly string[] | null = null) {
   generation++;
   inflight.clear();
+  outlineInflight.clear();
   clearTimeout(persistTimer);
   modeExpanded.clear();
   autoExpanded.clear();
@@ -270,6 +283,7 @@ export function initProjectTree(root: string | null, name = "", members: readonl
     clipboard: null,
     revealRequest: null,
     dropTarget: null,
+    outlines: new Map(),
   });
 }
 
@@ -449,6 +463,19 @@ export async function applyFsChange(event: { created: string[]; modified: string
     }
   }
   await Promise.all(plan.reload.map((p) => loadDir(p, true)));
+  // Member rows go stale when the file changes on disk: drop and refetch.
+  if (event.modified.length) dropOutlines(event.modified);
+  if (event.removed.length) {
+    const outlines = new Map(get().outlines);
+    let changed = false;
+    for (const p of event.removed)
+      for (const key of [...outlines.keys()])
+        if (isSameOrInside(key, p)) {
+          outlines.delete(key);
+          changed = true;
+        }
+    if (changed) set({ outlines });
+  }
 }
 
 /** Re-reads the folders among `dirs` the tree has loaded; the rest stay unread. */
@@ -461,6 +488,54 @@ export async function reloadLoadedDirs(dirs: readonly string[]) {
 export async function reloadAll() {
   const { listings } = get();
   await Promise.all([...listings.keys()].map((p) => loadDir(p, true)));
+}
+
+// ---------------------------------------------------------------------------
+// Members ("Show Members")
+
+const outlineInflight = new Map<string, { promise: Promise<void> }>();
+
+/**
+ * Loads a file's outline for its member rows; unsupported files (no language
+ * support, binary, …) cache an empty list so the chevron collapses away.
+ */
+export function loadOutline(path: string, force = false): Promise<void> {
+  const { outlines } = get();
+  if (!force && outlines.has(path)) return Promise.resolve();
+  const running = outlineInflight.get(path);
+  if (running) return running.promise;
+  const gen = generation;
+  const request = { promise: Promise.resolve() };
+  outlineInflight.set(path, request);
+  request.promise = (async () => {
+    try {
+      const items = await withDocument(path, (doc) => call(commands.docOutline(doc)));
+      if (gen !== generation || outlineInflight.get(path) !== request) return;
+      set({ outlines: new Map(get().outlines).set(path, items) });
+    } catch (e) {
+      if (gen !== generation || outlineInflight.get(path) !== request) return;
+      console.warn(`project view: cannot read members of ${path}`, e);
+      set({ outlines: new Map(get().outlines).set(path, []) });
+    } finally {
+      if (outlineInflight.get(path) === request) outlineInflight.delete(path);
+    }
+  })();
+  return request.promise;
+}
+
+/** Drops the cached outlines of `paths`; expanded files are re-read at once. */
+export function dropOutlines(paths: readonly string[]) {
+  const s = get();
+  const touched = [...new Set(paths)].filter((p) => s.outlines.has(p) || outlineInflight.has(p));
+  if (!touched.length) return;
+  const outlines = new Map(s.outlines);
+  for (const p of touched) {
+    outlines.delete(p);
+    outlineInflight.delete(p);
+  }
+  set({ outlines });
+  for (const p of touched)
+    if (s.options.showMembers && [...s.expanded].some((k) => pathOfKey(k) === p)) void loadOutline(p);
 }
 
 // ---------------------------------------------------------------------------

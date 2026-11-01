@@ -239,6 +239,8 @@ const ICONS = {
   hide: "general/hide",
   pin: "general/pin",
   eye: "general/show",
+  "show-read-access": "actions/showReadAccess",
+  "show-write-access": "actions/showWriteAccess",
   lock: "general/locked",
   unlock: "openidea/general/unlocked",
   scratches: "fileTypes/scratches",
