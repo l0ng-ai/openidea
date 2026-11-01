@@ -747,7 +747,6 @@ function FindInFilesDialog() {
               <T>↵ Open · ⇧↵ Open to the side · ⌘↵ Open in Find Window</T>
             )}
           </span>
-          <span className={styles.spacer} />
           {s.replace && progress && (
             <span className={styles.hint} aria-live="polite">
               {tx`Replacing… ${progress.done}/${progress.total} files`}
