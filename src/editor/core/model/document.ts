@@ -36,6 +36,7 @@ import {
   loadSupport,
   loadedSupport,
   commentTokens,
+  uiModeForPath,
 } from "../cm/languages";
 import { foldEffect } from "@codemirror/language";
 import { backendFolds, setBackendFolds } from "../cm/folding";
@@ -683,8 +684,17 @@ export class DocumentManager {
     let p = this.opening.get(path);
     if (!p) {
       p = (async () => {
-        await loadLanguageInfos(this.backend);
-        const info = isVirtualUri(path) ? await this.backend.openVirtual(path) : await this.backend.open(path);
+        const catalog = loadLanguageInfos(this.backend);
+        void catalog
+          .then(() => {
+            const desc = findLanguageDescription(uiModeForPath(path) ?? null, path);
+            if (desc) return loadSupport(desc);
+          })
+          .catch(() => {});
+        const [info] = await Promise.all([
+          isVirtualUri(path) ? this.backend.openVirtual(path) : this.backend.open(path),
+          catalog,
+        ]);
         const raced = this.byPath.get(path);
         if (raced) {
           void this.backend.close(info.id);
