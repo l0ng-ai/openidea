@@ -4,10 +4,13 @@
  */
 import { activeEditor } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
-import { isTauri } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
-import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { call, commands, isTauri } from "@/platform/ipc";
+import { isRemoteWindow } from "@/platform/remote";
+import { maybeEditorService, notifications, projectViewSelection } from "@/workbench/contributions";
+import { promptText } from "./dialogs";
 import { focusedDiffNavigator } from "./diffNavigator";
+import { compareFilesData, displayPath } from "./compareData";
+export { compareFilesData, displayPath } from "./compareData";
 import { openDiff, type DiffData } from "./diffInput";
 import { baseName } from "./model";
 import { tx } from "@/platform/i18n";
@@ -25,20 +28,6 @@ function argPaths(arg: unknown): string[] {
     return ((arg as { paths: unknown[] }).paths ?? []).filter((x): x is string => typeof x === "string");
   const p = argPath(arg);
   return p ? [p] : [];
-}
-
-/** Project-relative path for labels. */
-export function displayPath(path: string, root = useProject.getState().project?.root ?? null): string {
-  return root && path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
-}
-
-/** Diff of two files on disk; both sides are live, editable documents. */
-export function compareFilesData(leftPath: string, rightPath: string): DiffData {
-  return {
-    path: rightPath,
-    left: { type: "file", path: leftPath, label: displayPath(leftPath) },
-    right: { type: "worktree", label: displayPath(rightPath) },
-  };
 }
 
 /** Clipboard ↔ the file (editable) or ↔ the editor selection. */
@@ -121,6 +110,29 @@ async function pickComparison(
 }
 
 const contextPath = (arg: unknown) => argPath(arg) ?? maybeEditorService()?.activePath() ?? undefined;
+
+async function showDirectories(left: string, right: string) {
+  const { showDirectoryComparison } = await import("./DirectoryCompare");
+  showDirectoryComparison(left, right);
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await call(commands.fsEntryKind(path))) === "dir";
+  } catch {
+    return false;
+  }
+}
+
+async function pickDirectory(near: string): Promise<string | null> {
+  if (isRemoteWindow() || !isTauri()) {
+    const picked = await promptText({ title: "Compare With", label: "Directory path", initial: near, mono: true });
+    return picked?.value ?? null;
+  }
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ multiple: false, directory: true, title: tx("Compare With"), defaultPath: near });
+  return (Array.isArray(picked) ? picked[0] : picked) ?? null;
+}
 
 export function registerCompareActions(): () => void {
   return registerActions([
@@ -210,10 +222,18 @@ export function registerCompareActions(): () => void {
       category: "Diff",
       icon: "diff",
       when: "projectOpen",
-      keywords: ["diff", "compare files"],
+      keywords: ["diff", "compare files", "compare folders"],
       run: async ({ arg }) => {
-        const path = contextPath(arg);
+        const path = argPath(arg) ?? projectViewSelection()[0] ?? contextPath(arg);
         if (!path) return info("Open or select a file to compare");
+        const directoryArg = !!arg && typeof arg === "object" && "directory" in arg && arg.directory === true;
+        if (directoryArg || (isTauri() && (await isDirectory(path)))) {
+          const other = await pickDirectory(path);
+          if (!other || other === path) return;
+          if (!(await isDirectory(other))) return info("Select a directory to compare");
+          await showDirectories(path, other);
+          return;
+        }
         const other = await pickComparison(path);
         if (!other) return;
         if (other.type === "file") {
@@ -226,6 +246,20 @@ export function registerCompareActions(): () => void {
             right: { type: "worktree", label: displayPath(path) },
           });
         }
+      },
+    },
+    {
+      id: "diff.compareDirectories",
+      title: "Compare Directories",
+      category: "Diff",
+      icon: "diff",
+      when: "projectOpen",
+      keywords: ["diff", "folders", "compare folders"],
+      run: async ({ arg }) => {
+        const paths = arg === undefined ? projectViewSelection() : argPaths(arg);
+        if (paths.length !== 2 || !(await isDirectory(paths[0]!)) || !(await isDirectory(paths[1]!)))
+          return info("Select two directories to compare");
+        await showDirectories(paths[0]!, paths[1]!);
       },
     },
     {

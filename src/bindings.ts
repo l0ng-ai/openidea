@@ -145,6 +145,7 @@ export const commands = {
 	notebookInterrupt: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("notebook_interrupt", { id })),
 	notebookRestart: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_restart", { id })),
 	fsReadDir: (path: string) => typedError<FileEntry[], IdeError>(__TAURI_INVOKE("fs_read_dir", { path })),
+	fsEntryKind: (path: string) => typedError<EntryKind, IdeError>(__TAURI_INVOKE("fs_entry_kind", { path })),
 	/**  Size and text/binary classification, from the file's head only. */
 	fsProbe: (path: string) => typedError<FileProbe, IdeError>(__TAURI_INVOKE("fs_probe", { path })),
 	/**  Up to `len` bytes from `offset` (capped per call), base64-encoded. */
@@ -167,6 +168,8 @@ export const commands = {
 	/**  Moving to the trash can take a while (large trees): kept off the main thread. */
 	fsDelete: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_delete", { path })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
+	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
+	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
 	/**
 	 *  Reads a text file without opening it as a document (previews, quick
 	 *  definition). Prefers the unsaved buffer when the file is open.
@@ -2511,6 +2514,25 @@ export type Diagnostic = {
 	 */
 	server?: string | null,
 };
+
+export type DirectoryCompareEntry = {
+	path: string,
+	status: DirectoryCompareStatus,
+	leftKind: EntryKind | null,
+	rightKind: EntryKind | null,
+	leftLink?: string | null,
+	rightLink?: string | null,
+};
+
+export type DirectoryCompareProgress = {
+	scanned: number,
+	compared: number,
+	total: number | null,
+	bytesRead: number | null,
+	path: string,
+};
+
+export type DirectoryCompareStatus = "leftOnly" | "rightOnly" | "different" | "equal";
 
 /**  Changes under a folder (Show History on a directory). */
 export type DirectoryHistory = {
