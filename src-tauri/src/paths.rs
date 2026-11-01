@@ -515,7 +515,7 @@ pub fn rewrite(from: &Layout, to: &Layout, defaults: &(PathBuf, PathBuf)) -> std
     let (to_cfg, to_data) = side_roots(to, defaults);
     rules.push((from_cfg.to_string_lossy().into_owned(), to_cfg.to_string_lossy().into_owned()));
     rules.push((from_data.to_string_lossy().into_owned(), to_data.to_string_lossy().into_owned()));
-    rules.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    rules.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
 
     // The files rewritten live in the *target* layout: the global settings,
     // plus the recent projects' run configurations and settings, which may
@@ -1149,7 +1149,7 @@ mod tests {
 
         // Inside or containing the defaults, or the current base: rejected.
         assert!(base_conflicts(&config.join("nested"), &defaults, Some(&current)));
-        assert!(base_conflicts(&tmp.path(), &defaults, Some(&current)));
+        assert!(base_conflicts(tmp.path(), &defaults, Some(&current)));
         assert!(base_conflicts(&current.join("nested"), &defaults, Some(&current)));
         // A fresh sibling directory: fine.
         let elsewhere = tmp.path().join("elsewhere");
