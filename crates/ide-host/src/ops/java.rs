@@ -86,7 +86,7 @@ async fn resolve_launch(
         };
         let mut class_paths: Vec<String> = built.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         for p in std::mem::take(&mut info.class_paths) {
-            if !class_paths.contains(&p) {
+            if !class_paths.iter().any(|q| same_path(q, &p)) {
                 class_paths.push(p);
             }
         }
@@ -131,15 +131,26 @@ async fn resolve_launch(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// Whether two classpath entries name the same directory: jdt.ls reports
+/// portable slash-separated paths while build outputs use the OS separator,
+/// and Windows matches paths case-insensitively.
+fn same_path(a: &str, b: &str) -> bool {
+    let norm = |p: &str| {
+        let p = p.replace('\\', "/");
+        if cfg!(windows) { p.to_lowercase() } else { p }
+    };
+    norm(a) == norm(b)
+}
+
 fn use_snapshot(info: &mut JavaLaunchInfo, built: &[PathBuf], snapshot: &std::path::Path) -> Vec<PathBuf> {
     let mut copies = Vec::new();
     for (index, source) in built.iter().enumerate() {
         let dest = snapshot.join(index.to_string());
-        let original = source.to_string_lossy();
-        info.class_paths.retain(|p| p != original.as_ref());
+        let original = source.to_string_lossy().into_owned();
+        info.class_paths.retain(|p| !same_path(p, &original));
         let mut modular = false;
         for path in &mut info.module_paths {
-            if path == original.as_ref() {
+            if same_path(path, &original) {
                 *path = dest.to_string_lossy().into_owned();
                 modular = true;
             }
@@ -184,6 +195,34 @@ pub(crate) fn register(d: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn same_path_ignores_separators_and_windows_case() {
+        assert!(same_path(r"D:\a\target\classes", "D:/a/target/classes"));
+        assert!(!same_path(r"D:\a\target\classes", "D:/a/target/test-classes"));
+        assert!(same_path("a/b", r"a\b"));
+        #[cfg(windows)]
+        {
+            assert!(same_path(r"D:\A\Target", "d:/a/target"));
+            assert!(!same_path(r"D:\A\Target", "D:/A/target2"));
+        }
+    }
+
+    #[test]
+    fn use_snapshot_replaces_portable_jdt_paths_with_copies() {
+        let mut info = JavaLaunchInfo {
+            class_paths: vec!["D:/proj/app/target/classes".into(), "stdlib.jar".into()],
+            module_paths: vec!["D:/proj/app/target/test-classes".into()],
+            ..Default::default()
+        };
+        let originals =
+            [PathBuf::from(r"D:\proj\app\target\classes"), PathBuf::from(r"D:\proj\app\target\test-classes")];
+        let paths = use_snapshot(&mut info, &originals, Path::new("snapshots/launch-x"));
+        assert_eq!(paths, [Path::new("snapshots/launch-x").join("0")]);
+        assert_eq!(info.class_paths, ["stdlib.jar"]);
+        assert_eq!(info.module_paths, [Path::new("snapshots/launch-x").join("1").to_string_lossy().into_owned()]);
+    }
 
     #[test]
     fn launch_snapshots_survive_jdt_overwrites_and_replace_module_outputs() {
