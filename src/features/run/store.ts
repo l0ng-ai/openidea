@@ -44,6 +44,7 @@ import { typeFor } from "./types";
 import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
+import { gradleDelegation } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
@@ -636,7 +637,11 @@ export async function startRun(
   };
   try {
     let launch = options.launch ?? config;
-    if (isJvmApplication(launch)) {
+    // "Build and run using: Gradle": the module's Gradle build compiles and launches it.
+    const delegated = isJvmApplication(launch) ? await gradleDelegation(launch) : null;
+    if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
+    if (delegated) launch = delegated;
+    else if (isJvmApplication(launch)) {
       const resolved = await resolveJvmApplication(sessionId, launch);
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
       if (!resolved) {

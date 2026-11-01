@@ -12,6 +12,7 @@ import { executeAction } from "@/platform/actions";
 import type { RunConfig } from "@/platform/ipc";
 import { isJvmApplication, JDWP_AGENT, jdwpListeningPort } from "@/platform/javaLaunch";
 import { startRun, useRun } from "./store";
+import { DELEGATED_DEBUG, DELEGATED_MAIN } from "./gradleRun";
 
 const isMavenTestGoal = (a: string) =>
   /^(test|verify|integration-test|surefire:test|failsafe:integration-test)$/.test(a);
@@ -55,6 +56,9 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
     return null;
   }
   if (config.kind === "gradle" || /(^|\/)gradlew?(\.bat)?$/.test(config.command)) {
+    // A delegated Application: its init script adds the agent (port 0) to the JavaExec JVM.
+    if (args.some((a) => a.startsWith(DELEGATED_MAIN)))
+      return args.includes(DELEGATED_DEBUG) ? config : { ...config, args: [...args, DELEGATED_DEBUG] };
     if (!args.some(isGradleJvmTask)) return null;
     return args.includes("--debug-jvm") ? config : { ...config, args: [...args, "--debug-jvm"] };
   }
@@ -74,7 +78,8 @@ export async function debugWithAgent(config: RunConfig): Promise<boolean> {
     const runId = useRun.getState().sessions.find((s) => s.id === sessionId)?.runId ?? null;
     void executeAction("debug.attach", {
       name: config.name,
-      module: config.cwd ?? "",
+      // The application's module (a delegated run's working directory is the Gradle build).
+      module: config.module ?? config.cwd ?? "",
       hostName: "127.0.0.1",
       port,
       process: runId,

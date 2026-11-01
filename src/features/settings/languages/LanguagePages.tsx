@@ -270,9 +270,24 @@ export function JavaPage() {
 
 export function GradlePage() {
   const [distribution, setDistribution] = useSetting<string>("languages.java.gradle.distribution");
+  const [runUsing, setRunUsing] = useSetting<string>("languages.java.gradle.runUsing");
   return (
     <div className={styles.page}>
       <Section>
+        <Row
+          label="Build and run using"
+          hint="Gradle runs a main class as a JavaExec task on its source set's runtime classpath (Gradle's resource processing included). OpenIDEA launches it on the Java language server's classpath."
+        >
+          <Select
+            value={runUsing || "gradle"}
+            onChange={setRunUsing}
+            aria-label="Build and run using"
+            options={[
+              { value: "gradle", label: "Gradle" },
+              { value: "ide", label: "OpenIDEA" },
+            ]}
+          />
+        </Row>
         <SdkRow
           k="languages.java.gradle.jvm"
           label="Gradle JVM"

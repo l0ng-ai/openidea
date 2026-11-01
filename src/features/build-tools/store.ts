@@ -142,6 +142,8 @@ export function pushHistory(tool: BuildTool, line: string) {
 // Model
 
 let generation = 0;
+/** Root whose never-synced Gradle build was imported on open (once per open). */
+let autoImported: string | null = null;
 
 /** Re-reads the build model (and the run configurations) of the open project. */
 export async function loadModel(): Promise<void> {
@@ -167,6 +169,11 @@ export async function loadModel(): Promise<void> {
     ]);
     if (gen !== generation) return;
     useBuild.setState({ model, configs, loading: false, error: null });
+    // Like IDEA, a Gradle build is imported when first opened; later changes wait for Reload.
+    if (model.gradle && model.gradle.syncedAt === null && autoImported !== root) {
+      autoImported = root;
+      void syncTool("gradle");
+    }
   } catch (e) {
     if (gen === generation) useBuild.setState({ loading: false, error: e instanceof Error ? e.message : String(e) });
   }

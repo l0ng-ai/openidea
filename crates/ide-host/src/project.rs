@@ -91,7 +91,8 @@ impl Host {
         let settings = SettingsStore::load(&self.config_dir, Some(&root));
         let detected_roots = Arc::new(RwLock::new(ide_workspace::roots::detect(&root)));
         let excludes = exclude_globs(&root, &settings.effective(), &detected_roots.read());
-        let extra_roots = content_roots(&settings.effective(), &root);
+        let build_cache = self.local_data_dir.join("cache").join(project_key(&root)).join("build");
+        let extra_roots = content_roots(&settings.effective(), &root, &build_cache);
         mark("roots");
 
         // The project's own registry: File Types associations may be project-scoped.
@@ -255,7 +256,7 @@ impl Host {
 
         let kotlin_bridge = crate::kotlin_bridge::KotlinBridge::new(
             root.clone(),
-            self.local_data_dir.join("cache").join(&project_key).join("build"),
+            build_cache.clone(),
             &self.local_data_dir,
             settings.clone(),
             lsp.clone(),
@@ -282,6 +283,7 @@ impl Host {
             let runtime = self.runtime.clone();
             let lsp = lsp.clone();
             let trusted = trusted.clone();
+            let build_cache = build_cache.clone();
             Watcher::start(
                 &root.clone(),
                 excludes.clone(),
@@ -318,7 +320,7 @@ impl Host {
                             // Detected excluded folders (`target`, `build`) leave the index too.
                             let effective = settings.effective();
                             index.set_scope(
-                                index_roots(&root, content_roots(&effective, &root)),
+                                index_roots(&root, content_roots(&effective, &root, &build_cache)),
                                 exclude_globs(&root, &effective, &fresh),
                             );
                             *detected_roots.write() = fresh;
@@ -336,7 +338,7 @@ impl Host {
                         known.iter().any(|r| r == dir) != p.is_file()
                     });
                     if git_dirs {
-                        scan_repositories(&root, &repos, &settings, &sink);
+                        scan_repositories(&root, &repos, &settings, &sink, &build_cache);
                     }
                     let vcs_moved = batch.vcs.iter().any(|p| vcs_path_changed(p));
                     if git_dirs || vcs_moved {
@@ -376,9 +378,10 @@ impl Host {
         mark("watcher");
         {
             let (root, repos, settings, sink) = (root.clone(), repos.clone(), settings.clone(), sink.clone());
+            let build_cache = build_cache.clone();
             std::thread::Builder::new()
                 .name("openidea-vcs-roots".into())
-                .spawn(move || scan_repositories(&root, &repos, &settings, &sink))?;
+                .spawn(move || scan_repositories(&root, &repos, &settings, &sink, &build_cache))?;
         }
         mark("git");
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
@@ -611,11 +614,17 @@ fn light_watcher(
 
 /// Looks for repositories nested below the project (and the one containing it);
 /// emits `VcsChanged` when the set of roots changed.
-fn scan_repositories(root: &Path, repos: &RwLock<Repos>, settings: &SettingsStore, sink: &SharedSink) {
+fn scan_repositories(
+    root: &Path,
+    repos: &RwLock<Repos>,
+    settings: &SettingsStore,
+    sink: &SharedSink,
+    build_cache: &Path,
+) {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| p.file_name().is_some_and(|n| ignored.is_ignored_name(&n.to_string_lossy()));
     let mut roots = vec![root.to_path_buf()];
-    roots.extend(content_roots(&settings.effective(), root));
+    roots.extend(content_roots(&settings.effective(), root, build_cache));
     match Repos::discover_roots(&roots, &skip) {
         Ok(found) => {
             if found.roots() != repos.read().roots() {
@@ -629,7 +638,7 @@ fn scan_repositories(root: &Path, repos: &RwLock<Repos>, settings: &SettingsStor
 
 impl Project {
     pub fn refresh_repositories(&self) {
-        scan_repositories(&self.root, &self.repos, &self.settings, &self.sink);
+        scan_repositories(&self.root, &self.repos, &self.settings, &self.sink, &self.build_cache_dir());
     }
 
     /// The project's git repositories.
@@ -728,7 +737,8 @@ impl Project {
 
     /// Effective source / test / resource / excluded roots (detected + Project Structure marks).
     pub fn roots(&self) -> ProjectRoots {
-        linked_roots(&self.root, &self.settings.effective(), &self.detected_roots.read())
+        let detected = with_gradle_roots(&self.root, &self.build_cache_dir(), &self.detected_roots.read());
+        linked_roots(&self.root, &self.settings.effective(), &detected)
     }
 
     /// Where the Maven / Gradle tool windows cache what the build tools reported.
@@ -795,7 +805,7 @@ impl Project {
 
     /// Project Structure content roots besides the project folder (existing directories).
     pub fn content_roots(&self) -> Vec<PathBuf> {
-        content_roots(&self.settings.effective(), &self.root)
+        content_roots(&self.settings.effective(), &self.root, &self.build_cache_dir())
     }
 
     /// Applies Settings › File Types; open documents whose language changed are
@@ -944,14 +954,15 @@ fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
     ide_index::IndexRoots { include_root: !root.join(ide_workspace::workspace::FILE).is_file(), folders }
 }
 
-/// Workspace members in manifest order, or extra Project Structure directories.
-fn content_roots(settings: &ide_core::settings::Settings, root: &Path) -> Vec<PathBuf> {
+/// Workspace members in manifest order, or extra Project Structure directories and the
+/// Gradle project folders outside the project as of the last sync (`build_cache`).
+fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
         return workspace.projects;
     }
     let mut out: Vec<PathBuf> = Vec::new();
-    for r in &settings.project_structure.content_roots {
-        let p = PathBuf::from(r.trim());
+    let user = settings.project_structure.content_roots.iter().map(|r| PathBuf::from(r.trim()));
+    for p in user.chain(ide_build::gradle_external_roots(root, build_cache)) {
         if p.is_absolute() && p.is_dir() && !p.starts_with(root) && !out.contains(&p) {
             out.push(p);
         }
@@ -992,6 +1003,33 @@ fn content_root_watcher(
 
 pub(crate) fn unlinked_maven_poms(root: &Path, settings: &ide_core::settings::Settings) -> Vec<PathBuf> {
     ide_build::maven::UnlinkedProjects::load(root, &settings.languages.java.maven).poms().map(PathBuf::from).collect()
+}
+
+/// The detected roots with the last Gradle sync's source sets first: Gradle evaluated what
+/// static detection guesses. Folders outside the project keep their absolute path, which
+/// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`).
+fn with_gradle_roots(root: &Path, build_cache: &Path, detected: &[SourceFolder]) -> Vec<SourceFolder> {
+    use ide_build::gradle::ReportedRoot;
+    use ide_workspace::roots::RootKind;
+    let mut out: Vec<SourceFolder> = Vec::new();
+    for (dir, kind) in ide_build::gradle_source_roots(build_cache) {
+        if !dir.is_dir() {
+            continue;
+        }
+        let path = ide_workspace::roots::normalize(&dir.strip_prefix(root).unwrap_or(&dir).to_string_lossy());
+        let kind = match kind {
+            ReportedRoot::Source => RootKind::Source,
+            ReportedRoot::Test => RootKind::Test,
+            ReportedRoot::Resources => RootKind::Resources,
+            ReportedRoot::TestResources => RootKind::TestResources,
+            ReportedRoot::Excluded => RootKind::Excluded,
+        };
+        if !out.iter().any(|f| f.path == path) {
+            out.push(SourceFolder { path, kind, detected_from: Some("Gradle".into()) });
+        }
+    }
+    out.extend(detected.iter().filter(|d| !out.iter().any(|o| o.path == d.path)).cloned().collect::<Vec<_>>());
+    out
 }
 
 fn linked_roots(root: &Path, settings: &ide_core::settings::Settings, detected: &[SourceFolder]) -> ProjectRoots {
@@ -1193,6 +1231,46 @@ mod maven_linkage_tests {
 
 fn vcs_path_changed(path: &Path) -> bool {
     !path.ends_with(".git/index") || !ide_vcs::is_own_index_write(path)
+}
+
+#[cfg(test)]
+mod gradle_roots_tests {
+    use super::*;
+    use ide_workspace::RootKind;
+
+    #[test]
+    fn gradle_sync_roots_win_and_reach_outside_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = dunce::canonicalize(tmp.path()).unwrap();
+        let (root, svc, cache) = (ws.join("p"), ws.join("svc"), ws.join("cache"));
+        for d in [root.join("src/it/java"), svc.join("src/main/java"), svc.join("build")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":", "dir": s(root.clone()), "sourceSets": [
+                { "name": "integrationTest", "test": true, "src": [s(root.join("src/it/java"))], "res": [] } ] },
+            { "path": ":svc", "dir": s(svc.clone()), "buildDir": s(svc.join("build")), "sourceSets": [
+                { "name": "main", "test": false,
+                  "src": [s(svc.join("src/main/java")), s(svc.join("src/main/kotlin"))], "res": [] } ] },
+        ]});
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        let guessed = SourceFolder { path: "src/it/java".into(), kind: RootKind::Source, detected_from: None };
+        let other = SourceFolder { path: "web".into(), kind: RootKind::Source, detected_from: None };
+        let out = with_gradle_roots(&root, &cache, &[guessed, other.clone()]);
+        let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
+        let got: Vec<(String, RootKind)> = out.iter().map(|f| (f.path.clone(), f.kind)).collect();
+        assert_eq!(
+            got,
+            [
+                ("src/it/java".into(), RootKind::Test),
+                (abs(svc.join("src/main/java")), RootKind::Source),
+                (abs(svc.join("build")), RootKind::Excluded),
+                ("web".into(), RootKind::Source),
+            ]
+        );
+    }
 }
 
 #[cfg(test)]

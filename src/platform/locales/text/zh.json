@@ -5494,5 +5494,7 @@
   "Cannot paste image": "无法粘贴图片",
   "Remote server does not support image paste.": "远程服务器不支持粘贴图片。",
   "Clipboard image reading is unavailable.": "无法读取剪贴板图片。",
-  "Image is too large to paste (limit {limit} MB).": "图片过大，无法粘贴（上限 {limit} MB）。"
+  "Image is too large to paste (limit {limit} MB).": "图片过大，无法粘贴（上限 {limit} MB）。",
+  "Build and run using": "构建和运行使用",
+  "Gradle runs a main class as a JavaExec task on its source set's runtime classpath (Gradle's resource processing included). OpenIDEA launches it on the Java language server's classpath.": "Gradle 以 JavaExec 任务在源集的运行时类路径上运行主类（包括 Gradle 的资源处理）。OpenIDEA 在 Java 语言服务器的类路径上启动它。"
 }

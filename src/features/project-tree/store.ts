@@ -301,11 +301,12 @@ function initialExpanded(root: string | null, mode: ViewMode, members = get().me
         r.scope === "scratches" && r.path ? [r.path] : [],
       ),
     );
-  const persisted = mode === "project" ? (readJson<string[]>(expandedKey(root)) ?? []) : [];
-  const roots = members ?? [root];
-  const expanded = new Set(persisted.filter((p) => roots.some((r) => isSameOrInside(p, r))));
-  roots.forEach((r) => expanded.add(r));
-  return expanded;
+  // The tree as the user left it, like IDEA: a collapsed project root stays collapsed, and
+  // nodes outside it (module groups, `includeFlat` modules, contributed roots) stay open.
+  // Keys of nodes that no longer exist are inert. Only a first open expands the roots.
+  const persisted = mode === "project" ? readJson<string[]>(expandedKey(root)) : null;
+  if (persisted) return new Set(persisted);
+  return new Set(members ?? [root]);
 }
 
 function persistExpanded() {

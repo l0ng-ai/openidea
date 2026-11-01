@@ -3434,6 +3434,13 @@ export type GradleProject = {
 	tasks: GradleTask[],
 };
 
+/**  IDEA's "Build and run using" for Gradle builds; IDEA defaults to Gradle. */
+export type GradleRunUsing = 
+/**  A `JavaExec` task on the source set's runtime classpath (`gradleRun.gradle`). */
+"gradle" | 
+/**  The Java language server's classpath, launched by OpenIDEA. */
+"ide";
+
 /**  Build Tools › Gradle. */
 export type GradleSettings = {
 	/**  Empty = Project JDK; otherwise a JDK home. */
@@ -3443,6 +3450,8 @@ export type GradleSettings = {
 	home?: string,
 	/**  Empty = Gradle's default user home. */
 	userHome?: string,
+	/**  IDEA's "Build and run using": who builds and launches an Application main. */
+	runUsing?: GradleRunUsing,
 };
 
 export type GradleTask = {

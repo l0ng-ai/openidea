@@ -6,6 +6,7 @@
  */
 import { call, commands, IpcError, type JavaLaunchInfo, type RunConfig, type RequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { useBuildPresentation } from "@/platform/projectPresentation";
 
 export const CLASSPATH = "${classpath}";
 export const TEST_CLASSPATH = "${testClasspath}";
@@ -72,9 +73,20 @@ export function parseJavaArgs(args: readonly string[]): JavaCommandLine {
 }
 
 /** The configuration with its placeholders and launcher resolved. */
+/**
+ * VM options a launch adds for the console, as IDEA's Spring Boot configurations do: the
+ * console renders ANSI colours, but Spring only detects a terminal, and the process runs on pipes.
+ * Kept out when the configuration sets the property itself.
+ */
+export function consoleVmArgs(config: Pick<RunConfig, "kind" | "args">): string[] {
+  if (config.kind !== "spring-boot") return [];
+  const own = parseJavaArgs(config.args).vmArgs.some((a) => a.startsWith("-Dspring.output.ansi.enabled="));
+  return own ? [] : ["-Dspring.output.ansi.enabled=always"];
+}
+
 export function resolveJavaCommand(config: RunConfig, info: JavaLaunchInfo): RunConfig {
   const cp = info.classPaths.join(info.pathListSeparator);
-  const args: string[] = [];
+  const args: string[] = [...consoleVmArgs(config)];
   if (info.modulePaths.length && !config.args.some((a) => a === "-p" || a === "--module-path"))
     args.push("--module-path", info.modulePaths.join(info.pathListSeparator));
   args.push(...config.args.map((a) => (a === CLASSPATH || a === TEST_CLASSPATH ? cp : a)));
@@ -106,11 +118,19 @@ export function jdwpListeningPort(line: string): number | null {
 }
 
 /**
- * Module directory (relative to the project root, `""` for the root) of a JVM
- * source file: the part before `src/{main,test}/…`, else the working directory
- * of the closest Maven / Gradle configuration.
+ * Module directory (relative to the project root, `""` for the root; absolute for a
+ * module outside it) of a JVM source file. Like IDEA's `ProjectFileIndex.getModuleForFile`:
+ * the innermost Maven / Gradle module folder holding the file, as the build model knows
+ * them (`modules`). Before a model knows a deeper one: the part before
+ * `src/{main,test}/…`, else the working directory of the closest Maven / Gradle configuration.
  */
-export function jvmModuleDir(relPath: string, configs: readonly RunConfig[] = []): string {
+export function jvmModuleDir(
+  relPath: string,
+  configs: readonly RunConfig[] = [],
+  modules: Iterable<string> = useBuildPresentation.getState().modules.keys(),
+): string {
+  const owner = [...modules].filter((d) => d && relPath.startsWith(d + "/")).sort((a, b) => b.length - a.length)[0];
+  if (owner) return owner;
   const m = /^(?:(.*)\/)?src\/(?:main|test|[\w-]+)\/(?:java|kotlin|scala|groovy)\//.exec(relPath);
   if (m) return m[1] ?? "";
   const cwds = configs

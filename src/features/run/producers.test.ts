@@ -309,6 +309,28 @@ describe("single-file producers (scratches)", () => {
     expect(p.config!.args.at(-1)).toBe("demo.Hi");
   });
 
+  it("Java: a main in a Gradle module outside the project runs on the module's classpath", () => {
+    // `includeFlat 'billing'`: the module folder is a sibling of the project folder.
+    const svc = "/work/billing/modules/core";
+    const boot =
+      "package com.example;\nimport org.springframework.boot.SpringApplication;\n@SpringBootApplication\n" +
+      "public class ShopApplication {\n  public static void main(String[] args) {\n" +
+      "    SpringApplication.run(ShopApplication.class, args);\n  }\n}";
+    const gradle = [cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true })];
+    const input = (contentRoots?: string[]) => ({
+      path: `${svc}/src/main/java/com/example/ShopApplication.java`,
+      root: ROOT,
+      configs: gradle,
+      content: boot,
+      line: 4,
+      contentRoots,
+    });
+    expect(produceContext(input(), ALL)!.config!.kind).toBe("java-file");
+    const p = produceContext(input(["/work/billing", svc]), ALL)!;
+    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: svc });
+    expect(p.config!.args).toEqual(["-cp", "${classpath}", "com.example.ShopApplication"]);
+  });
+
   describe("Java / Kotlin mains in a build nested in a folder of repositories", () => {
     // RuoYi-Vue-Plus (Maven) next to plus-ui (npm), opened together.
     const boot =

@@ -885,6 +885,8 @@ export interface ProjectViewRootContribution extends ProjectViewRootEntry {
   order?: number;
   /** Which project view mode lists it besides "Project" ("Scratches and Consoles"). */
   scope?: "scratches";
+  /** Listed above the project folder (IDEA's module group of the build). */
+  beforeProject?: boolean;
 }
 
 export const useProjectViewRoots = create<{ roots: Map<string, ProjectViewRootContribution> }>(() => ({

@@ -12,8 +12,15 @@ import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { notifications, runExecutors } from "@/workbench/contributions";
-import { choiceItems, executeContext, launchProduced, modifyContext, produceResolved } from "./contextRun";
-import { goModulePath, loadGoModules } from "./goModules";
+import {
+  choiceItems,
+  executeContext,
+  launchProduced,
+  modifyContext,
+  produceResolved,
+  projectContext,
+} from "./contextRun";
+import { loadGoModules } from "./goModules";
 import { fileTargets, OPTIMISTIC, produceContextChoices, type ContextInput } from "./producers";
 import { loadConfigs, useRun } from "./store";
 import { targetLanguage, type RunTarget } from "./targets";
@@ -52,14 +59,7 @@ const targetsField = StateField.define<PlacedTarget[]>({
 });
 
 function targetInput(path: string, content: string, line: number): ContextInput {
-  return {
-    path,
-    root: useProject.getState().project?.root ?? null,
-    configs: useRun.getState().configs,
-    content,
-    line,
-    goModule: goModulePath,
-  };
+  return { ...projectContext(), path, content, line };
 }
 
 async function launch(target: RunTarget, path: string, debug: boolean, content: string) {
@@ -197,8 +197,7 @@ export function runGutter(ctx: EditorDocContext): Extension {
   if (!useProject.getState().project?.root || isVirtualUri(path) || !hasGutterTargets(path)) return [];
   if (/\.go$/.test(path))
     void loadGoModules(useProject.getState().project?.root ?? null, useRun.getState().configs).catch(() => {});
-  const detect = (text: string) =>
-    fileTargets({ path, root: useProject.getState().project?.root ?? null, configs: useRun.getState().configs }, text);
+  const detect = (text: string) => fileTargets({ ...projectContext(), path }, text);
 
   const detector = ViewPlugin.fromClass(
     class {

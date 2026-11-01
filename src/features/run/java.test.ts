@@ -140,6 +140,17 @@ describe("application configurations", () => {
     expect(jvmModuleDir("odd/App.java", [cfg({ id: "m", kind: "maven", cwd: "odd" })])).toBe("odd");
   });
 
+  it("takes the innermost module the build model knows, like IDEA's file index", () => {
+    const modules = ["", "/w/billing", "/w/billing/modules/core", "legacy"];
+    // `sourceSets.main.java.srcDirs = ['src']`: no `src/main/java` to guess from.
+    expect(jvmModuleDir("legacy/src/a/App.java", [], modules)).toBe("legacy");
+    expect(jvmModuleDir("/w/billing/modules/core/src/main/java/a/App.java", [], modules)).toBe(
+      "/w/billing/modules/core",
+    );
+    // A module the model does not know yet (before the first sync): the source layout.
+    expect(jvmModuleDir("services/api/src/main/java/a/App.java", [], modules)).toBe("services/api");
+  });
+
   it("adds JDWP to a script explicitly assigned the Kotlin debugger", () => {
     const rc = cfg({ id: "kotlin-script", kind: "shell", command: "./run.sh", debugAdapter: "kotlin-debug-adapter" });
     expect(jdwpLaunch(rc)?.env.JAVA_TOOL_OPTIONS).toContain("-agentlib:jdwp=");

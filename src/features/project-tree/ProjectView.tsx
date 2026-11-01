@@ -127,7 +127,9 @@ function iconFor(
     const kind = folderKind(node, roots, root, build, detected);
     if (kind !== "plain") return folderIconName(kind);
     const rel = root ? (node.path === root ? "" : relativePath(root, node.path)) : null;
-    const module = rel === null ? null : moduleFolderIcon(rel, node.root, build.modules);
+    // Modules outside the project are keyed by their absolute folder.
+    const key = rel !== null && build.modules.has(rel) ? rel : node.path;
+    const module = root ? moduleFolderIcon(key, node.root, build.modules) : null;
     if (module) return module;
     return node.root ? "module" : "folder";
   }

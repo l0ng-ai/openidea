@@ -249,6 +249,8 @@ export interface ExtraRoot {
   children?: readonly ExtraRoot[];
   detail?: string;
   readOnly?: boolean;
+  /** Listed above the project folder (IDEA's module group of the build). */
+  beforeProject?: boolean;
 }
 
 /** Key prefix of group nodes that show no folder ("External Libraries", an SDK). */
@@ -387,13 +389,24 @@ export function withExtraRoots(
       readOnly: true,
     };
     out.byKey.set(key, node);
-    const kids = (extra.children ?? []).map((c) => add(c, key, ro)).filter((n): n is ProjectNode => !!n);
-    out.children.set(key, kids);
+    // Deepest folders first: a module folder nested in a sibling's (`billing/modules/core`
+    // in `billing`) would otherwise already be keyed by the sibling's listing and dropped.
+    const children = extra.children ?? [];
+    const depth = (c: ExtraRoot) => c.path?.split("/").length ?? 0;
+    const built: (ProjectNode | null)[] = [];
+    for (const i of children.map((_, i) => i).sort((a, b) => depth(children[b]!) - depth(children[a]!)))
+      built[i] = add(children[i]!, key, ro);
+    out.children.set(
+      key,
+      built.filter((n): n is ProjectNode => !!n),
+    );
     return node;
   };
+  let before = 0;
   for (const extra of extras) {
     const node = add(extra, null, false);
-    if (node) out.roots.push(node);
+    if (node && extra.beforeProject) out.roots.splice(before++, 0, node);
+    else if (node) out.roots.push(node);
   }
   return out;
 }
