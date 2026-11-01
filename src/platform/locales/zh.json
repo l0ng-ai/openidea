@@ -464,5 +464,8 @@
   "No target location for the mapper XML": "找不到 Mapper XML 的目标位置",
   "Not a MyBatis mapper": "不是 MyBatis Mapper",
   "The XML statement already exists": "XML 语句已存在",
-  "The document changed; retry": "文档已变更，请重试"
+  "The document changed; retry": "文档已变更，请重试",
+  "Copy MyBatis SQL": "复制 MyBatis SQL",
+  "The selection has no MyBatis SQL log to convert": "所选内容中没有可转换的 MyBatis SQL 日志",
+  "Could not copy to the clipboard": "无法写入剪贴板"
 }

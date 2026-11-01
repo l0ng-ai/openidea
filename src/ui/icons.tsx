@@ -659,10 +659,11 @@ export function iconMarkup(name: string, size = 16, className?: string): string 
 /**
  * Gutter icon markup in the 14px gutter column. The plain play glyph fills its canvas, so it is
  * drawn smaller; the other gutter icons (run-all, status badges, inheritance arrows, file types)
- * carry padding or compose several shapes and need the full 14px to look the same size.
+ * carry padding or compose several shapes and need the full 14px to look the same size. The
+ * MyBatis marker sits alone in its own 16px column, so its arrow is drawn larger.
  */
 export function gutterIconMarkup(name: string): string | null {
-  return iconMarkup(name, name === "gutter-run" ? 12 : 14);
+  return iconMarkup(name, name === "gutter-run" ? 12 : name === "gutter-mybatis" ? 16 : 14);
 }
 
 /**
