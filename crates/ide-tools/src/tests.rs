@@ -44,6 +44,61 @@ fn find<'a>(list: &'a [ToolInfo], name: &str) -> &'a ToolInfo {
 }
 
 #[test]
+fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads() {
+    for os in [Os::Mac, Os::Linux, Os::Windows] {
+        for arch in [platform::Arch::Arm64, platform::Arch::X64] {
+            let env = Env::new();
+            let legacy = env.root.join("lombok/bin/lombok.jar");
+            fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            fs::write(&legacy, b"old official agent").unwrap();
+            fs::write(env.root.join("lombok").join(MANIFEST), r#"{"version":"1.18.48"}"#).unwrap();
+            let tools = Tools::with_paths(env.root.clone(), OsString::new(), Platform { os, arch });
+            let info = tools.info("lombok", &[]).unwrap();
+            let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
+            assert_eq!(info.status, ToolStatus::Installed);
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.1"));
+            assert_eq!(info.path, Some(path.clone().into()));
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.1.jar");
+            assert!(!info.can_install && !info.can_uninstall);
+            assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
+            assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");
+        }
+    }
+}
+
+#[test]
+fn bundled_lombok_is_available_offline_and_repairs_missing_or_corrupt_files() {
+    let env = Env::new();
+    let data = env.root.parent().unwrap();
+    let agent = managed_bundle(data, "lombok").unwrap();
+    let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+    assert_eq!(sources::sha256_file(&agent).unwrap(), checksum);
+    for contents in [None, Some(b"incomplete jar".as_slice())] {
+        if let Some(contents) = contents {
+            fs::write(&agent, contents).unwrap();
+        } else {
+            fs::remove_file(&agent).unwrap();
+        }
+        assert_eq!(managed_bundle(data, "lombok"), Some(agent.clone()));
+        assert_eq!(sources::sha256_file(&agent).unwrap(), checksum);
+    }
+    assert_eq!(fs::read_dir(agent.parent().unwrap()).unwrap().count(), 1, "no temporary jars left behind");
+}
+
+#[test]
+fn concurrent_windows_get_the_same_complete_bundled_lombok() {
+    let env = Env::new();
+    let data = env.root.parent().unwrap();
+    std::thread::scope(|scope| {
+        let windows: Vec<_> = (0..8).map(|_| scope.spawn(|| managed_bundle(data, "lombok").unwrap())).collect();
+        let paths: Vec<_> = windows.into_iter().map(|window| window.join().unwrap()).collect();
+        assert!(paths.iter().all(|path| path == &paths[0]));
+        let checksum = include_str!("../../../plugins/lombok/SHA256SUMS").split_whitespace().next().unwrap();
+        assert_eq!(sources::sha256_file(&paths[0]).unwrap(), checksum);
+    });
+}
+
+#[test]
 fn version_parsing() {
     assert_eq!(parse_version("rust-analyzer 1.85.0 (4d91de4e 2025-02-17)").as_deref(), Some("1.85.0"));
     assert_eq!(
