@@ -4,6 +4,7 @@ import { call, commands, isCancelled, isTauri, nextRequestId, type RunConfig, ty
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { activeEditor } from "@/editor/api";
+import type { EditorView } from "@codemirror/view";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
 import { classFileBreakpointReason } from "@/platform/classFiles";
 import { canPlaceBreakpoint } from "./breakpoints/languages";
@@ -39,6 +40,7 @@ import {
 import { focusedDebugView } from "./ui/focusedView";
 import { browseFocusedConsoleHistory } from "./ui/expressionHistory";
 import { expressionAt, valueHint } from "./editor/valueTooltip";
+import { mouseEvaluateTarget } from "./editor/quickEvaluate";
 import { showHint } from "@/editor/lsp/hint";
 import { pausedLineTargets, startInlineSmartStep } from "./editor/smartStep";
 import {
@@ -157,28 +159,29 @@ function cursor(): { path: string; line: number; selection: string } | null {
 }
 
 /** Evaluate's initial text, as in IDEA: the selection, else the expression at the caret. */
-function evaluateSeed(): string {
-  const ed = activeEditor();
-  if (!ed) return "";
-  const { state } = ed.view;
+function evaluateSeed(view: EditorView | undefined = activeEditor()?.view, pos?: number): string {
+  if (!view) return "";
+  const { state } = view;
   const sel = state.selection.main;
-  if (!sel.empty) return state.sliceDoc(sel.from, sel.to);
-  return expressionAt(ed.view, sel.head)?.text ?? "";
+  if (!sel.empty && (pos == null || (sel.from <= pos && pos <= sel.to))) return state.sliceDoc(sel.from, sel.to);
+  return expressionAt(view, pos ?? sel.head)?.text ?? "";
 }
 
-async function quickEvaluate() {
-  const view = activeEditor()?.view;
+async function quickEvaluate(arg?: unknown) {
+  const target = mouseEvaluateTarget(arg);
+  const view = target?.view ?? activeEditor()?.view;
   if (!view) return;
   const sel = view.state.selection.main;
-  const expression = evaluateSeed().trim();
+  const pos = target?.pos ?? sel.from;
+  const expression = evaluateSeed(view, target?.pos).trim();
   if (!expression) return showHint(view, "Nothing to evaluate at the caret");
   const session = activeSession();
   try {
     const value = await evaluate(expression, "hover", session);
     if (!session) return;
-    showHint(view, () => valueHint(expression, value, session.id), { pos: sel.from, timeout: 60_000 });
+    showHint(view, () => valueHint(expression, value, session.id), { pos, timeout: 60_000 });
   } catch (e) {
-    showHint(view, e instanceof Error ? e.message : String(e), { pos: sel.from, tone: "error" });
+    showHint(view, e instanceof Error ? e.message : String(e), { pos, tone: "error" });
   }
 }
 
@@ -677,8 +680,8 @@ export function registerDebugActions(): () => void {
       id: "debug.quickEvaluate",
       title: "Quick Evaluate Expression",
       category: "Debug",
-      when: "debugSessionActive && textEditorActive",
-      run: () => quickEvaluate(),
+      when: "debugSessionPaused && textEditorActive",
+      run: ({ arg }) => quickEvaluate(arg),
     },
     {
       id: "debug.showToolWindow",
