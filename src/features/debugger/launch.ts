@@ -313,6 +313,15 @@ export function launchConfigFor(rc: RunConfig, root: string): LaunchConfig | nul
   if (adapter === "js-debug") return jsDebugLaunch(rc, cwd);
   if (adapter === "delve") return delveLaunch(rc, cwd, root);
   if (adapter === "godot") return godotLaunch(rc, cwd);
+  if (adapter === "netcoredbg" && rc.kind === "dotnet") {
+    if (!rc.params?.targetPath) return null;
+    return {
+      ...base(rc, adapter, cwd),
+      program: rc.params.targetPath,
+      args: parseArgs(rc.params.programArgs?.trim() ? rc.params.programArgs : rc.params.profileArgs || ""),
+      extraJson: JSON.stringify({ justMyCode: workflowSettings().debugger.skipLibraryCode }),
+    };
+  }
   // Adapters without a template (hidden in Edit Configurations): generic arguments.
   return {
     ...base(rc, adapter, cwd),

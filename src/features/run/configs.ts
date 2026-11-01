@@ -67,6 +67,9 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
       return "file-gradle";
     case "maven":
       return "file-maven";
+    case "dotnet":
+    case "dotnet-test":
+      return "file-csharp";
     case "go":
       return "file-go";
     case "node":
@@ -220,7 +223,7 @@ export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []
   for (const t of config.beforeLaunch ?? []) {
     if (t.kind === "run" && (t.target === config.id || !all.some((c) => c.id === t.target)))
       errors.beforeLaunch = "A before launch task runs a missing configuration or this one";
-    else if (t.kind !== "build" && t.kind !== "run" && !(t.target ?? "").trim())
+    else if (t.kind !== "build" && t.kind !== "dotnetBuild" && t.kind !== "run" && !(t.target ?? "").trim())
       errors.beforeLaunch = "A before launch task is incomplete";
   }
   for (const key of Object.keys(config.env)) {

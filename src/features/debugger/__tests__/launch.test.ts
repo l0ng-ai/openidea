@@ -321,3 +321,23 @@ describe("Go build configuration fields", () => {
     });
   });
 });
+
+it("netcoredbg launches the evaluated DLL with resolved profile arguments, env and cwd", () => {
+  const c = rc({
+    kind: "dotnet",
+    command: "dotnet",
+    debugAdapter: "netcoredbg",
+    cwd: "/repo/work",
+    env: { ASPNETCORE_URLS: "http://localhost:5165", DEMO: "override" },
+    params: { targetPath: "/repo/custom/Renamed.dll", programArgs: "--name 'hello world'", profileArgs: "--profile" },
+  });
+  expect(launchConfigFor(c, "/repo")).toMatchObject({
+    adapter: "netcoredbg",
+    program: "/repo/custom/Renamed.dll",
+    args: ["--name", "hello world"],
+    cwd: "/repo/work",
+    env: c.env,
+  });
+  expect(launchConfigFor({ ...c, params: { ...c.params, programArgs: "" } }, "/repo")?.args).toEqual(["--profile"]);
+  expect(launchConfigFor({ ...c, params: {} }, "/repo")).toBeNull();
+});
