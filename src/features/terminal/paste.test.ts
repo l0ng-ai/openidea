@@ -86,8 +86,8 @@ it("passes recovered multiline paths through xterm bracketed paste", async () =>
   }
 });
 
-function image(buffer: () => Promise<ArrayBuffer> = async () => new Uint8Array([1, 2]).buffer): Blob {
-  return { type: "image/png", arrayBuffer: buffer } as Blob;
+function image(buffer: () => Promise<ArrayBuffer> = async () => new Uint8Array([1, 2]).buffer, size = 2): Blob {
+  return { type: "image/png", size, arrayBuffer: buffer } as Blob;
 }
 
 function imageEvent(blob: Blob, text = "") {
@@ -101,6 +101,49 @@ function imageEvent(blob: Blob, text = "") {
 function remoteTarget(current = () => true): RemotePasteTarget {
   return { id: 42 as RemotePasteTarget["id"], supported: true, current };
 }
+
+it.each(["event", "menu"])("rejects oversized %s images before reading or uploading", async (route) => {
+  const read = vi.fn(async () => new ArrayBuffer(0));
+  const blob = image(read, 20 * 1024 * 1024 + 1);
+  const store = vi.spyOn(commands, "termStoreImage");
+  const paste = vi.fn();
+  const host = document.createElement("div");
+  const remove = installTerminalPaste(host, paste, () => remoteTarget());
+  if (route === "event") {
+    const event = imageEvent(blob);
+    host.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  } else {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: async () => "", read: async () => [{ types: ["image/png"], getType: async () => blob }] },
+    });
+    await pasteTerminalClipboard(paste, () => remoteTarget());
+  }
+  await vi.waitFor(() =>
+    expect(notify).toHaveBeenCalledWith({
+      level: "error",
+      title: "Cannot paste image",
+      body: "Error: Image is too large to paste (limit 20 MB).",
+    }),
+  );
+  expect(read).not.toHaveBeenCalled();
+  expect(store).not.toHaveBeenCalled();
+  expect(paste).not.toHaveBeenCalled();
+  remove();
+});
+
+it("allows images at the size limit", async () => {
+  const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/remote/image.png" });
+  const host = document.createElement("div");
+  const paste = vi.fn();
+  const remove = installTerminalPaste(host, paste, () => remoteTarget());
+  host.dispatchEvent(imageEvent(image(undefined, 20 * 1024 * 1024)));
+  await vi.waitFor(() => expect(paste).toHaveBeenCalledWith("'/remote/image.png'"));
+  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(notify).not.toHaveBeenCalled();
+  remove();
+});
 
 it("claims remote image events before xterm and pastes a quoted path only after upload", async () => {
   let finish!: (result: { status: "ok"; data: string }) => void;

@@ -45,22 +45,6 @@ IDEA analyses Python more deeply, so "ready" doesn't mean the same work on
 both sides. Both are measured from the outside, the same way: see
 [`perf/compare`](perf/compare) to run it on your machine and projects.
 
-## Remote terminal image paste
-
-In a remote-project window, pasting a clipboard image into the terminal uploads
-it to the SSH host that owns that terminal. The terminal inserts a quoted remote
-path only after the upload succeeds, without a newline or executing a command.
-No X11 service is needed on the remote host.
-
-Images use a private per-user `terminal-images` directory inside the remote
-server's data directory, with directory permissions `0700` and file permissions
-`0600`. Files are retained for 24 hours; expired images are removed on the next
-upload. Upload failures show an error without inserting a path. Text paste is
-unchanged.
-
-This applies only to remote-project windows, not a manually entered `ssh` command
-in a local terminal. Uploading files dragged onto a remote terminal is not supported.
-
 ## License
 
 [Apache 2.0](LICENSE). Bundled third-party assets are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).

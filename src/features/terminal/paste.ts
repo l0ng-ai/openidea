@@ -11,8 +11,11 @@ export interface RemotePasteTarget {
 
 type Target = () => RemotePasteTarget | null;
 
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+
 async function pasteImage(image: Blob, target: RemotePasteTarget, paste: (text: string) => void) {
   try {
+    if (image.size > MAX_IMAGE_BYTES) throw new Error(tx`Image is too large to paste (limit ${20} MB).`);
     const data = Array.from(new Uint8Array(await image.arrayBuffer()));
     if (!target.current()) return;
     if (!target.supported) throw new Error(tx("Remote server does not support image paste."));
