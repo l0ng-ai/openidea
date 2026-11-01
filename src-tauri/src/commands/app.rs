@@ -106,6 +106,7 @@ pub fn app_home_reset() -> IdeResult<()> {
     if std::env::var_os("OPENIDEA_HOME").is_some() {
         return Err(IdeError::internal("OPENIDEA_HOME is set and takes precedence"));
     }
+    // Already on the defaults: nothing to record (an idempotent no-op).
     let crate::paths::Layout::Custom(base) = &resolved.layout else {
         return Ok(());
     };

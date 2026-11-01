@@ -65,6 +65,8 @@ async function decline(remember: boolean): Promise<void> {
   await call(commands.migrationDecline(remember)).catch(() => undefined);
 }
 
+/** The registered overlay (id `app.migration`): a dialog asking whether to
+ * move the previous location's data after a configuration-directory switch. */
 export function MigrationOverlay() {
   const open = useOpen((s) => s.open);
   const [remember, setRemember] = useState(false);

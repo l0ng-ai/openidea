@@ -127,6 +127,7 @@ pub fn init(identifier: &str) {
     let _ = RESOLVED.set(Resolved { layout, locations, defaults, home });
 }
 
+/// The resolution made by [`init`] at startup; fixed for the process.
 pub fn current() -> &'static Resolved {
     RESOLVED.get().expect("paths::init must run before any paths are read")
 }
@@ -149,9 +150,13 @@ fn resolve(
         let (target, _) = parse_pointer(text);
         if let Some(t) = target {
             if t == "default" {
+                // The sentinel "Reset to default" writes: the platform dirs,
+                // explicitly.
                 return default_layout(defaults);
             }
             let path = expand_tilde(t, home);
+            // A dangling pointer (the target was removed by hand) is not a
+            // choice: fall through to the defaults.
             if path.is_absolute() && path.is_dir() {
                 return custom_layout(path);
             }
@@ -160,10 +165,12 @@ fn resolve(
     default_layout(defaults)
 }
 
+/// The resolved pair for a chosen base: config/ and system/ under it.
 fn custom_layout(base: PathBuf) -> (Layout, Locations) {
     (Layout::Custom(base.clone()), Locations { config: base.join("config"), data: base.join("system") })
 }
 
+/// The resolved pair for the platform defaults: the two dirs as they are.
 fn default_layout(defaults: &(PathBuf, PathBuf)) -> (Layout, Locations) {
     (Layout::Default, Locations { config: defaults.0.clone(), data: defaults.1.clone() })
 }
@@ -197,6 +204,9 @@ pub fn log_dir(layout: &Layout, identifier: &str) -> Option<PathBuf> {
 /// system dir otherwise.
 pub fn login_cache_root(layout: &Layout, locations: &Locations, identifier: &str) -> PathBuf {
     match layout {
+        // No OS cache dir (rare): degrade to the data dir rather than skip
+        // caching — the upstream skip would make every start re-read the
+        // login shell.
         Layout::Default => dirs::cache_dir().map(|d| d.join(identifier)).unwrap_or_else(|| locations.data.clone()),
         Layout::Custom(base) => base.join("system"),
     }
@@ -232,6 +242,8 @@ fn parse_pointer(text: &str) -> (Option<&str>, Option<&str>) {
     (lines.next(), lines.next())
 }
 
+/// The pointer-file spelling of a layout: the literal `default`, or the base's
+/// absolute path — the two forms `resolve` reads back.
 fn layout_str(layout: &Layout) -> String {
     match layout {
         Layout::Default => "default".to_owned(),
@@ -265,6 +277,7 @@ pub fn write_skip_marker(default_config: &Path) -> std::io::Result<()> {
     std::fs::write(marker, b"")
 }
 
+/// Removes the marker: a fresh switch asks again (best-effort).
 pub fn clear_skip_marker(default_config: &Path) {
     let _ = std::fs::remove_file(skip_marker(default_config));
 }
@@ -300,11 +313,9 @@ pub fn agents_dirs(layout: &Layout, defaults: &(PathBuf, PathBuf)) -> (PathBuf, 
 pub fn entry_path(name: &str, target: &str, layout: &Layout, defaults: &(PathBuf, PathBuf)) -> PathBuf {
     match layout {
         Layout::Default => {
-            if DEFAULT_CONFIG_SIDE.contains(&name) {
-                defaults.0.join(name)
-            } else {
-                defaults.1.join(name)
-            }
+            // The default layout has no per-entry target column: the config
+            // side is the four user-editable entries, everything else is data.
+            if DEFAULT_CONFIG_SIDE.contains(&name) { defaults.0.join(name) } else { defaults.1.join(name) }
         }
         Layout::Custom(base) => base.join(target),
     }
@@ -397,6 +408,8 @@ pub fn migrate(from: &Layout, to: &Layout, defaults: &(PathBuf, PathBuf), replac
         }
     }
     for &name in DROPS {
+        // Rebuildable caches drop, not move — and only from the data side,
+        // where the default layout keeps them (a custom base's `system/`).
         let _ = std::fs::remove_dir_all(side_roots(from, defaults).1.join(name));
     }
     result
