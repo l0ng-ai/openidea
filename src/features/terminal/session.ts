@@ -17,6 +17,7 @@ import { ImeCommitGate } from "./imeCommit";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { splitCommandLine } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
@@ -278,7 +279,7 @@ export class TerminalSession {
       }),
     );
     this.disposables.push(
-      { dispose: installTerminalPaste(this.host, (text) => this.paste(text)) },
+      { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.remotePasteTarget) },
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
@@ -287,9 +288,29 @@ export class TerminalSession {
   private onMiddleClick = (e: MouseEvent) => {
     if (e.button !== 1 || !workflowSettings().terminal.pasteOnMiddleClick) return;
     e.preventDefault();
-    void pasteTerminalClipboard((text) => this.paste(text));
+    void this.pasteClipboard();
   };
 
+  private remotePasteTarget = () => {
+    const remote = useRemote.getState().session;
+    const id = this.ptyId;
+    if (!remote || id === null || this.disposed) return null;
+    const generation = this.generation;
+    return {
+      id,
+      supported: remote.commands.includes("term_store_image"),
+      current: () =>
+        !this.disposed &&
+        this.ptyId === id &&
+        this.generation === generation &&
+        useRemote.getState().session === remote,
+    };
+  };
+
+  pasteClipboard() {
+    if (this.remotePasteTarget()) this.focus();
+    return pasteTerminalClipboard((text) => this.paste(text), this.remotePasteTarget);
+  }
   /** Applies Settings › Tools › Terminal changes to a live session. */
   applySettings(t: TerminalSettingsValid) {
     const font = fontFor(t);

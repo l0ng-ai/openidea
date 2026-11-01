@@ -178,6 +178,10 @@ impl TerminalManager {
         let Some(pid) = session.info.pid else { return Ok(false) };
         Ok(foreground_busy(&session, pid))
     }
+    /// Whether a terminal session is still registered.
+    pub fn contains(&self, id: TerminalId) -> bool {
+        self.sessions.lock().contains_key(&id)
+    }
 
     pub fn list(&self) -> Vec<TerminalInfo> {
         let mut out: Vec<TerminalInfo> = self.sessions.lock().values().map(|s| s.info.clone()).collect();

@@ -3,6 +3,21 @@ use crate::Host;
 use ide_core::{IdeResult, TerminalId};
 use ide_terminal::{TerminalInfo, TerminalOptions};
 
+mod images;
+
+const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
+pub async fn store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: String) -> IdeResult<String> {
+    if data.len() > MAX_IMAGE_BYTES {
+        return Err(ide_core::IdeError::invalid("image is too large to paste (limit 20 MB)"));
+    }
+    if !host.terminals.contains(id) {
+        return Err(ide_core::IdeError::invalid("terminal session not found"));
+    }
+    let data_dir = host.data_dir.clone();
+    host.blocking(move || images::store(&data_dir, &data, &mime)).await
+}
+
 pub fn spawn(
     host: &Host,
     window: &str,
@@ -46,4 +61,35 @@ pub fn kill(host: &Host, id: TerminalId) -> IdeResult<()> {
 
 pub fn is_busy(host: &Host, id: TerminalId) -> IdeResult<bool> {
     host.terminals.is_busy(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::HostConfig;
+    use ide_core::{NullSink, error::ErrorKind};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn image_size_limit_is_checked_before_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let host = Host::new(HostConfig {
+            config_dir: root.path().join("config"),
+            data_dir: root.path().join("data"),
+            local_data_dir: root.path().join("data"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(NullSink)),
+            owner: |window| window,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        let id = TerminalId::next();
+        let error = store_image(&host, id, vec![0; MAX_IMAGE_BYTES + 1], "image/png".into()).await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert_eq!(error.message, "image is too large to paste (limit 20 MB)");
+        let error = store_image(&host, id, vec![0; MAX_IMAGE_BYTES], "image/png".into()).await.unwrap_err();
+        assert_eq!(error.message, "terminal session not found");
+        assert!(!host.data_dir.join("terminal-images").exists());
+    }
 }
