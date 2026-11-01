@@ -244,6 +244,7 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
           anchor={bar.children[open]}
           placement="bottom-start"
           offset={2}
+          viewportBottomPadding={40}
           role="presentation"
           autoFocus={false}
           restoreFocus={!persistent}
@@ -276,6 +277,7 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
           anchor={hamburger}
           onClose={close}
           placement="bottom-start"
+          viewportBottomPadding={40}
           role="presentation"
           autoFocus={false}
           className={menuStyles.popup}
