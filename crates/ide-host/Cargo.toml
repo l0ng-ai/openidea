@@ -51,6 +51,7 @@ uuid.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
+ide-ssh = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }
 
 [target.'cfg(windows)'.dependencies]
