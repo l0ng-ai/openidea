@@ -6,7 +6,7 @@
  */
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { fontWeightOf } from "@/platform/editorSettings";
-import { BUNDLED_MONO_FAMILY, fontsLoaded, monoFontFamily, monoStack } from "@/platform/fonts";
+import { BUNDLED_MONO_FAMILY, familyFaces, fontsLoaded, monoFontFamily, monoStack } from "@/platform/fonts";
 import { parseColor, type Rgba } from "@/platform/cssColor";
 
 export { parseColor, type Rgba };
@@ -152,9 +152,7 @@ const NERD_FONT_FALLBACKS = [
   "FiraCode Nerd Font",
   "Hasklug Nerd Font",
   "CaskaydiaCove Nerd Font",
-]
-  .map((f) => `"${f}"`)
-  .join(", ");
+];
 
 export interface TerminalFontSettings {
   useEditorFont: boolean;
@@ -189,7 +187,8 @@ export interface TerminalFont {
  * common installs before the generic family so per-glyph fallback finds them.
  */
 function withNerdFonts(family: string): string {
-  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${NERD_FONT_FALLBACKS}, monospace`;
+  const fallbacks = NERD_FONT_FALLBACKS.flatMap(familyFaces).join(", ");
+  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${fallbacks}, monospace`;
 }
 
 function cssNumber(name: string): number {

@@ -319,14 +319,40 @@ fn terminal_activation_for_project_venv() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/bin/zsh")), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "/bin/zsh"), None);
     fake_venv(tmp.path(), ".venv");
-    let line = terminal_activation(tmp.path(), &s, Some("/bin/zsh")).unwrap();
+    let line = terminal_activation(tmp.path(), &s, "/bin/zsh").unwrap();
     assert!(line.starts_with("source '") && line.ends_with("/activate'"), "{line}");
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/usr/bin/fish")), None, "no activate.fish");
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("docker")), None, "not a shell");
+    assert_eq!(terminal_activation(tmp.path(), &s, "/usr/bin/fish"), None, "no activate.fish");
+    assert_eq!(terminal_activation(tmp.path(), &s, "docker"), None, "not a shell");
     s.languages.python.activate_virtualenv = false;
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/bin/zsh")), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "/bin/zsh"), None);
+}
+
+#[test]
+fn terminal_activation_for_windows_shell_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.python.interpreter = fake_venv(tmp.path(), ".venv with spaces 'quoted'").to_string_lossy().into_owned();
+    let bin = tmp.path().join(".venv with spaces 'quoted'").join(bin_dir());
+    for (shell, script, powershell) in [
+        (r"C:\Program Files\PowerShell\7\pwsh.exe", "Activate.ps1", true),
+        (r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", "Activate.ps1", true),
+        (r"C:\Windows\System32\cmd.exe", "activate.bat", false),
+    ] {
+        assert_eq!(terminal_activation(tmp.path(), &s, shell), None, "missing {script}");
+        let path = bin.join(script);
+        std::fs::write(&path, "").unwrap();
+        let expected = if powershell {
+            format!("& '{}'", path.to_string_lossy().replace('\'', "''"))
+        } else {
+            format!("\"{}\"", path.display())
+        };
+        assert_eq!(terminal_activation(tmp.path(), &s, shell), Some(expected), "{shell}");
+        std::fs::remove_file(path).unwrap();
+    }
+    assert_eq!(terminal_activation(tmp.path(), &s, ""), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "   "), None);
 }
 
 #[test]

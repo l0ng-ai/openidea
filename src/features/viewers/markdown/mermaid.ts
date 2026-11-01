@@ -3,6 +3,7 @@
  * `[data-mermaid]` placeholder holding the source in `pre > code`; this module
  * turns placeholders into SVG. The library is imported on first use only.
  */
+import { fontsLoaded } from "@/platform/fonts";
 import type { Mermaid } from "mermaid";
 import { resolveTokenColor, toRgb } from "@/platform/cssColor";
 import { attachPanZoom } from "../panZoom";
@@ -32,7 +33,9 @@ function loadMermaid(): Promise<Mermaid> {
 export function themeKey(): string {
   const root = document.documentElement;
   const { theme = "", contrast = "", colorTheme = "", pluginTheme = "" } = root.dataset;
-  return `${theme}|${contrast}|${colorTheme}|${pluginTheme}|${root.style.getPropertyValue("--accent")}`;
+  const accent = root.style.getPropertyValue("--accent");
+  const font = getComputedStyle(root).getPropertyValue("--font-ui");
+  return `${theme}|${contrast}|${colorTheme}|${pluginTheme}|${accent}|${font}`;
 }
 
 /** Calls `cb` when the theme attributes (a plugin theme's included) or the accent on the root change. */
@@ -102,6 +105,7 @@ function removeTemp(id: string) {
 
 async function renderOne(source: string, key: string): Promise<Result> {
   const mermaid = await loadMermaid();
+  await fontsLoaded(getComputedStyle(document.documentElement).getPropertyValue("--font-ui").trim(), 16);
   configure(mermaid, key);
   const id = `openidea-mermaid-${++seq}`;
   try {
