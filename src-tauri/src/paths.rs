@@ -168,6 +168,50 @@ fn default_layout(defaults: &(PathBuf, PathBuf)) -> (Layout, Locations) {
     (Layout::Default, Locations { config: defaults.0.clone(), data: defaults.1.clone() })
 }
 
+// The four per-consumer roots below are the only way the shell turns a
+// layout into a directory; every call site goes through them (never through
+// `dirs::*` or Tauri's `app.path()` directly), which is what keeps reads and
+// writes on the resolved location. Pinned by
+// `custom_base_routes_every_consumer_off_the_platform_dirs`.
+
+/// Where installed plugins live: beside the data in the default layout, on
+/// the config side of a custom base (user-chosen installs, like IDEA's).
+pub fn plugins_dir(layout: &Layout, locations: &Locations) -> PathBuf {
+    match layout {
+        Layout::Default => locations.data.clone(),
+        Layout::Custom(_) => locations.config.clone(),
+    }
+}
+
+/// The log dir: the platform's per-identifier log dir in the default layout
+/// (Tauri's `app_log_dir` equivalent), `log/` under a custom base.
+pub fn log_dir(layout: &Layout, identifier: &str) -> Option<PathBuf> {
+    match layout {
+        Layout::Default => crate::logging::log_dir_for(identifier),
+        Layout::Custom(base) => Some(base.join("log")),
+    }
+}
+
+/// The login-shell PATH cache root (the cache file is `<root>/login-path`):
+/// the OS cache dir per identifier in the default layout, a custom base's
+/// system dir otherwise.
+pub fn login_cache_root(layout: &Layout, locations: &Locations, identifier: &str) -> PathBuf {
+    match layout {
+        Layout::Default => dirs::cache_dir().map(|d| d.join(identifier)).unwrap_or_else(|| locations.data.clone()),
+        Layout::Custom(base) => base.join("system"),
+    }
+}
+
+/// The managed-tools home (`tools/` and `language-server-runtimes/` hang off
+/// it): the platform data dir per identifier in the default layout, a custom
+/// base itself otherwise.
+pub fn tools_home(layout: &Layout, identifier: &str) -> Option<PathBuf> {
+    match layout {
+        Layout::Default => dirs::data_dir().map(|d| d.join(identifier)),
+        Layout::Custom(base) => Some(base.clone()),
+    }
+}
+
 /// `~` and `~/rest` expand to `home`; anything else is taken literally.
 fn expand_tilde(input: &str, home: &Path) -> PathBuf {
     let trimmed = input.trim();
@@ -708,6 +752,35 @@ mod tests {
         let (layout, locations) = resolve(Some("/b"), None, &defaults, Path::new("/h"));
         assert_eq!(layout, Layout::Custom(PathBuf::from("/b")));
         assert_eq!(locations, Locations { config: PathBuf::from("/b/config"), data: PathBuf::from("/b/system") });
+    }
+
+    #[test]
+    fn custom_base_routes_every_consumer_off_the_platform_dirs() {
+        // The switch guarantee: after the user chooses a base, nothing reads
+        // the platform dirs — every consumer root hangs off the base.
+        let defaults = defaults_of(Path::new("/platform-config"), Path::new("/platform-data"));
+        let (layout, locations) = resolve(Some("/base"), None, &defaults, Path::new("/h"));
+        assert_eq!(locations.config, PathBuf::from("/base/config"));
+        assert_eq!(locations.data, PathBuf::from("/base/system"));
+        assert_eq!(plugins_dir(&layout, &locations), PathBuf::from("/base/config"));
+        assert_eq!(log_dir(&layout, "id"), Some(PathBuf::from("/base/log")));
+        assert_eq!(login_cache_root(&layout, &locations, "id"), PathBuf::from("/base/system"));
+        assert_eq!(tools_home(&layout, "id"), Some(PathBuf::from("/base")));
+    }
+
+    #[test]
+    fn default_layout_keeps_the_platform_dirs() {
+        // Without a switch, every consumer keeps the platform locations.
+        // `tools_home`, the log dir and the login cache read `dirs::` on the
+        // real machine, so only their identifier suffix is pinned here.
+        let defaults = defaults_of(Path::new("/platform-config"), Path::new("/platform-data"));
+        let (layout, locations) = resolve(None, None, &defaults, Path::new("/h"));
+        assert_eq!(locations.config, PathBuf::from("/platform-config"));
+        assert_eq!(locations.data, PathBuf::from("/platform-data"));
+        assert_eq!(plugins_dir(&layout, &locations), PathBuf::from("/platform-data"));
+        assert!(tools_home(&layout, "id").is_some_and(|d| d.ends_with("id")));
+        assert!(login_cache_root(&layout, &locations, "id").ends_with("id"));
+        assert!(log_dir(&layout, "id").is_some_and(|d| d.ends_with("id")));
     }
 
     #[test]

@@ -56,41 +56,32 @@ pub fn run() {
     let resolved = paths::current();
     let identifier = &context.config().identifier;
 
-    let log_dir = match &resolved.layout {
-        // The platform log dir, as before (~/Library/Logs/<id> on macOS,
-        // the OS local-data dir elsewhere — Tauri's app_log_dir).
-        paths::Layout::Default => logging::log_dir_for(identifier),
-        paths::Layout::Custom(base) => Some(base.join("log")),
-    };
+    // The per-consumer roots (logs, login-shell cache, managed tools) come
+    // from `paths`, never from the platform dirs directly: that is what
+    // keeps every read and write on the resolved location.
+    let log_dir = paths::log_dir(&resolved.layout, identifier);
     logging::init(log_dir.as_deref());
 
-    // The login-shell PATH cache: the OS cache dir per identifier in the
-    // default layout, a custom base's system dir otherwise.
-    let cache_root = match &resolved.layout {
-        paths::Layout::Default => {
-            dirs::cache_dir().map(|d| d.join(identifier)).unwrap_or_else(|| resolved.locations.data.clone())
-        }
-        paths::Layout::Custom(base) => base.join("system"),
-    };
+    let cache_root = paths::login_cache_root(&resolved.layout, &resolved.locations, identifier);
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&cache_root);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
     match &resolved.layout {
+        paths::Layout::Custom(_) => {
+            // Everything hangs off the chosen base; tools stay at its top
+            // level, so pointing a build at another's base shares its tools.
+            let base = paths::tools_home(&resolved.layout, identifier).expect("a custom base has a tools home");
+            ide_tools::set_tools_home(base.clone());
+            ide_tools::extend_process_path(&base);
+            ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&base));
+            ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&base));
+        }
         paths::Layout::Default => {
             // As before: managed tools under the app data dir.
-            if let Some(data) = dirs::data_dir() {
-                let root = data.join(identifier);
+            if let Some(root) = paths::tools_home(&resolved.layout, identifier) {
                 ide_tools::extend_process_path(&root);
                 ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&root));
                 ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&root));
             }
-        }
-        paths::Layout::Custom(base) => {
-            // Everything hangs off the chosen base; tools stay at its top
-            // level, so pointing a build at another's base shares its tools.
-            ide_tools::set_tools_home(base.clone());
-            ide_tools::extend_process_path(base);
-            ide_dap::adapter::set_tools_root(ide_tools::tools_dir(base));
-            ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(base));
         }
     }
     if let Some(refresh) = refresh_shell_path {

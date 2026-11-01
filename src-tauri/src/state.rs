@@ -108,10 +108,7 @@ impl AppState {
             // base, beside the data in the default layout (`crate::paths`).
             plugins: crate::commands::plugin::create_host(
                 &app,
-                match resolved.layout {
-                    crate::paths::Layout::Default => &data_dir,
-                    crate::paths::Layout::Custom(_) => &config_dir,
-                },
+                &crate::paths::plugins_dir(&resolved.layout, &resolved.locations),
                 &host,
             )?,
             web: ide_web::WebServer::new(),
