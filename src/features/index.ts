@@ -35,6 +35,7 @@ import { activate as notebook } from "./notebook";
 import { activate as web } from "./web";
 import { activate as analysis } from "./analysis";
 import { activate as services } from "./services";
+import { activate as mybatis } from "./mybatis";
 import { activate as github } from "./github";
 import { activate as httpClient } from "./http-client";
 import { activate as database } from "./database";
@@ -78,6 +79,7 @@ const features: Array<[string, Activate]> = [
   ["web", web],
   ["analysis", analysis],
   ["services", services],
+  ["mybatis", mybatis],
   ["github", github],
   ["http-client", httpClient],
   ["database", database],
