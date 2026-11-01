@@ -14,6 +14,7 @@ import {
   clearConsole,
   closeSessionTab,
   closeStdin,
+  debugSession,
   failedTests,
   rerunFailed,
   rerunSession,
@@ -31,7 +32,7 @@ import { TestTreeView, formatDuration } from "./TestTreeView";
 import { StackTracePanel, closeStackTrace, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
-import { isJvmKind } from "./configs";
+import { configIcon, isJvmKind } from "./configs";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -39,19 +40,28 @@ function failed(s: RunSession): boolean {
   return s.status === "failed" || (s.status === "finished" && s.exitCode !== 0 && !s.stopped);
 }
 
-function sessionIcon(s: RunSession): string {
+/**
+ * Tab icon, IDEA's three states: the green execution arrow while the process is alive,
+ * the red error badge for a failed exit, and once the process ended the run
+ * configuration's own icon (Services keeps the same model, see services.tsx).
+ */
+export function sessionIcon(s: RunSession): string {
   if (s.status === "running" || s.status === "starting") return s.config.isTest ? "check" : "run";
   if (failed(s)) return "error";
-  return s.config.isTest ? "check" : "run";
+  // Ended (exit or stop): the configuration's own icon — the green arrow stays "still running".
+  return configIcon(s.config);
 }
 
 export function SessionPanel({
   session,
   onRerun,
+  onDebug,
   onStop,
 }: {
   session: RunSession;
   onRerun?: (() => void) | null;
+  /** Override the Debug button (Services: rerun the attached debugger's launch); null disables it. */
+  onDebug?: (() => void) | null;
   onStop?: () => void;
 }) {
   const updating = useApplicationUpdates((s) => s.ids.has(session.id));
@@ -137,6 +147,15 @@ export function SessionPanel({
           shortcut={shortcutLabel("run.rerun")}
           disabled={onRerun === null}
           onClick={onRerun ?? (() => rerunSession(session.id))}
+        />
+        {/* Switch the launch mode: the same configuration started under the debugger. */}
+        <IconButton
+          icon="debug"
+          iconSize={14}
+          title="Debug"
+          shortcut={shortcutLabel("run.debug")}
+          disabled={onDebug === null}
+          onClick={onDebug ?? (() => void debugSession(session.id))}
         />
         {rt.tests && (
           <IconButton

@@ -913,6 +913,16 @@ export function rerunSession(sessionId: string) {
   if (session) void startRun(session.config, sessionId, session.baseConfig);
 }
 
+/**
+ * "Debug": relaunches the session's configuration in debug mode — the same
+ * `run.debugConfig` entry the Services view and the editor context menu use
+ * (`baseConfig` keeps the original configuration for derived launches).
+ */
+export function debugSession(sessionId: string) {
+  const session = getSession(sessionId);
+  if (session) void executeAction("run.debugConfig", session.baseConfig ?? session.config);
+}
+
 /** Paths of the failed tests of a session's last run. */
 export function failedTests(sessionId: string): string[][] {
   const tests = runtimes.get(sessionId)?.tests;

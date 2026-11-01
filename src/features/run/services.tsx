@@ -581,6 +581,7 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
         key={execution.run!.id}
         session={execution.run!}
         onRerun={d ? d.rerun : undefined}
+        onDebug={d ? d.rerun : undefined}
         onStop={d ? () => void stopServiceSessions([execution]) : undefined}
       />
     );
