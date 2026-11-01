@@ -12,6 +12,9 @@
 //! macOS keeps one `public.file-url` item per file on the general
 //! `NSPasteboard`; `NSURL` reads and writes them, so Finder's copies paste here
 //! and ours paste in Finder.
+//! On macOS, [`files`], [`has_files`] and [`set_files`] must run on the main
+//! thread: AppKit and WebKit also access the general pasteboard there, and its
+//! mutable type cache cannot be protected by a mutex in this crate.
 //!
 //! Other platforms (`text/uri-list` on X11) are not wired up: [`files`] is
 //! empty and [`set_files`] fails there.
@@ -265,9 +268,9 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use objc2::ClassType;
     use objc2::rc::{Retained, autoreleasepool};
     use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
+    use objc2::{ClassType, MainThreadMarker};
     use objc2_app_kit::{
         NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardTypeString, NSPasteboardURLReadingFileURLsOnlyKey,
         NSPasteboardWriting,
@@ -280,6 +283,7 @@ mod imp {
     fn read_file_urls<R>(
         f: impl FnOnce(&NSPasteboard, &NSArray<AnyClass>, &NSDictionary<NSPasteboardReadingOptionKey, AnyObject>) -> R,
     ) -> R {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
         autoreleasepool(|_| {
             let board = NSPasteboard::generalPasteboard();
             let classes = NSArray::from_slice(&[NSURL::class()]);
@@ -320,6 +324,7 @@ mod imp {
     }
 
     pub fn set_files(paths: &[PathBuf]) -> bool {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
         autoreleasepool(|_| {
             // Folders get a directory URL (ending in `/`), as Finder writes them.
             let urls: Vec<Retained<NSURL>> = paths

@@ -27,6 +27,12 @@ icon set, copied unmodified (some renamed) from JetBrains' open-source repositor
   `fileTypes/hashiCorp`, Apache-2.0); `makefile` (`expui/makefile` →
   `fileTypes/makefile`, MIT, Copyright (c) 2016 Victor Kropp — full text below).
 
+The read/write usage filter assets (`actions/showReadAccess{,_dark}.svg` and
+`actions/showWriteAccess{,_dark}.svg`) are copied unmodified from
+`platform/icons/src/expui/actions/` at intellij-community commit
+[`e992ff4750b4c36afe2caadfa8b191a8f36fb7a2`](https://github.com/JetBrains/intellij-community/tree/e992ff4750b4c36afe2caadfa8b191a8f36fb7a2/platform/icons/src/expui/actions).
+Their original copyright headers and Apache-2.0 licensing are retained.
+
 - [intellij-rust](https://github.com/intellij-rust/intellij-rust) (MIT):
   `src/main/resources/icons/expui/rustFile{,_dark}.svg` →
   `src/ui/expui/fileTypes/rust{,_dark}.svg`;
