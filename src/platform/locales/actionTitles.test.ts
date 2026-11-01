@@ -1,8 +1,14 @@
 // @vitest-environment node
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { expect, it } from "vitest";
-import zh from "./text/zh.json";
+
+/** Source-text catalogs by file, read from disk so that a new file is always seen. */
+const TEXT_DIR = new URL("./text/", import.meta.url);
+const catalogs = readdirSync(TEXT_DIR)
+  .filter((file) => file.endsWith(".json"))
+  .map((file): [string, Record<string, string>] => [file, JSON.parse(readFileSync(new URL(file, TEXT_DIR), "utf8"))]);
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const config = ts.readConfigFile(`${root}tsconfig.json`, ts.sys.readFile);
@@ -76,14 +82,22 @@ const titles = actionTitles();
 /** Product names shown as they are in every language. */
 const PROPER_NAMES = new Set(["Vim"]);
 
-it("has a Chinese entry for every literal action title, including action factory arguments", () => {
-  // Ensure the helper-argument regression cannot disappear through a scanner change.
-  expect(titles.has("Go to Declaration or Usages")).toBe(true);
-  expect(titles.has("Next Result")).toBe(true);
-  const catalog: Record<string, string> = zh;
-  expect(
-    [...titles]
-      .filter(([title]) => !PROPER_NAMES.has(title) && (!catalog[title] || catalog[title] === title))
-      .map(([title, at]) => `${at}  ${JSON.stringify(title)}`),
-  ).toEqual([]);
-});
+/** Written in another script, so a title equal to its English source was not translated. */
+const OWN_SCRIPT = new Set(["zh.json"]);
+
+it.each(catalogs)(
+  "%s has an entry for every literal action title, including action factory arguments",
+  (file, catalog) => {
+    // Ensure the helper-argument regression cannot disappear through a scanner change.
+    expect(titles.has("Go to Declaration or Usages")).toBe(true);
+    expect(titles.has("Next Result")).toBe(true);
+    expect(
+      [...titles]
+        .filter(
+          ([title]) =>
+            !PROPER_NAMES.has(title) && (!catalog[title] || (OWN_SCRIPT.has(file) && catalog[title] === title)),
+        )
+        .map(([title, at]) => `${at}  ${JSON.stringify(title)}`),
+    ).toEqual([]);
+  },
+);

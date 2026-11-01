@@ -55,6 +55,9 @@
 .label::after {
   content: ":";
 }
+:lang(fr) .label::after {
+  content: "\00a0:";
+}
 .control {
   display: flex;
   align-items: flex-start;

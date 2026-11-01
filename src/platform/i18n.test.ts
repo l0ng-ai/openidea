@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   _resetI18nForTests,
@@ -7,14 +10,13 @@ import {
   registerMessages,
   resolveLocale,
   setLocale,
+  SUPPORTED_LOCALES,
   t,
   tx,
   txTemplate,
   useI18n,
 } from "./i18n";
 import en from "./locales/en.json";
-import zh from "./locales/zh.json";
-import zhText from "./locales/text/zh.json";
 
 afterEach(() => _resetI18nForTests());
 
@@ -44,6 +46,15 @@ describe("formatMessage", () => {
     expect(formatMessage(m, { count: 1 }, "en")).toBe("1 one");
   });
 
+  it("uses CLDR rules of the locale (French zero is singular, `many` falls back to `other`)", () => {
+    const m = "{count, plural, one {# fichier} other {# fichiers}}";
+    expect(formatMessage(m, { count: 0 }, "fr")).toBe("0 fichier");
+    expect(formatMessage(m, { count: 2 }, "fr")).toBe("2 fichiers");
+    expect(formatMessage(m, { count: 1_000_000 }, "fr")).toBe(
+      `${new Intl.NumberFormat("fr").format(1_000_000)} fichiers`,
+    );
+  });
+
   it("supports select and nesting", () => {
     const m = "{os, select, macos {Finder} windows {Explorer} other {Files}}";
     expect(formatMessage(m, { os: "macos" })).toBe("Finder");
@@ -71,7 +82,9 @@ describe("t / locales", () => {
     expect(resolveLocale("zh-CN")).toBe("zh");
     expect(resolveLocale("zh_Hans")).toBe("zh");
     expect(resolveLocale("EN-us")).toBe("en");
-    expect(resolveLocale("fr")).toBe("en");
+    expect(resolveLocale("fr")).toBe("fr");
+    expect(resolveLocale("fr-CA")).toBe("fr");
+    expect(resolveLocale("xx")).toBe("en");
     expect(resolveLocale(undefined)).toBe(resolveLocale(navigator.language));
   });
 
@@ -94,7 +107,7 @@ describe("t / locales", () => {
   });
 
   it("falls back to English for unsupported locales", async () => {
-    await setLocale("de");
+    await setLocale("xx");
     expect(useI18n.getState().locale).toBe("en");
   });
 
@@ -154,6 +167,16 @@ describe("t / locales", () => {
     expect(tx(zh)).toBe("Run 'orders'");
   });
 
+  it("loads the French catalogs", async () => {
+    await setLocale("fr-FR");
+    expect(useI18n.getState().locale).toBe("fr");
+    expect(t("common.cancel")).toBe("Annuler");
+    expect(t("app.keymap.count", { count: 0 })).toBe("0 raccourci");
+    expect(tx("Sync with OS")).toBe("Synchroniser avec le système");
+    expect(tx`Run '${"orders"}'`).toBe("Exécuter 'orders'");
+    expect(txTemplate("ruff is not installed")).toBe("ruff n'est pas installé");
+  });
+
   it("lists keys by prefix", () => {
     const keys = keysWithPrefix("menu.");
     expect(keys).toContain("menu.file.save");
@@ -162,23 +185,50 @@ describe("t / locales", () => {
 });
 
 describe("catalogs", () => {
-  const catalogs: Record<string, Record<string, string>> = { en, zh };
+  type Catalog = Record<string, string>;
+  const LOCALES_DIR = join(dirname(fileURLToPath(import.meta.url)), "locales");
+  /** Catalog files of a folder as `{ locale: catalog }`, read from disk so that a new file is always seen. */
+  const readCatalogs = (dir: string) =>
+    Object.fromEntries(
+      readdirSync(dir)
+        .filter((file) => file.endsWith(".json"))
+        .map((file) => [file.slice(0, -5), JSON.parse(readFileSync(join(dir, file), "utf8")) as Catalog]),
+    );
 
-  it("translate source text into non-empty, different text", () => {
-    for (const [source, text] of Object.entries(zhText as Record<string, string>)) {
-      expect(text.trim(), source).not.toBe("");
-      expect(text, source).not.toBe(source);
-    }
+  const { en: _en, ...translations } = readCatalogs(LOCALES_DIR);
+  const texts = readCatalogs(join(LOCALES_DIR, "text"));
+  const catalogs: Record<string, Catalog> = { en, ...translations };
+  /** Written in another script, so a text equal to its English source was not translated. */
+  const OWN_SCRIPT = new Set(["zh"]);
+  const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
+
+  it("exist for exactly the supported locales", () => {
+    expect(translated.length).toBeGreaterThan(0);
+    expect(Object.keys(translations).sort()).toEqual(translated);
+    expect(Object.keys(texts).sort()).toEqual(translated);
+  });
+
+  it("translate source text into non-empty text", () => {
+    for (const [locale, catalog] of Object.entries(texts))
+      for (const [source, text] of Object.entries(catalog)) expect(text.trim(), `${locale}:${source}`).not.toBe("");
+  });
+
+  it("translate source text into text different from English, in locales with another script", () => {
+    for (const [locale, catalog] of Object.entries(texts))
+      if (OWN_SCRIPT.has(locale))
+        for (const [source, text] of Object.entries(catalog)) expect(text, `${locale}:${source}`).not.toBe(source);
   });
 
   it("keep the placeholders of source-text templates", () => {
     const names = (m: string) => [...m.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort();
-    for (const [source, text] of Object.entries(zhText as Record<string, string>))
-      expect(names(text), source).toEqual(names(source));
+    for (const [locale, catalog] of Object.entries(texts))
+      for (const [source, text] of Object.entries(catalog))
+        expect(names(text), `${locale}:${source}`).toEqual(names(source));
   });
 
   it("have the same keys", () => {
-    expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort());
+    for (const catalog of Object.values(translations))
+      expect(Object.keys(catalog).sort()).toEqual(Object.keys(en).sort());
   });
 
   it("contain only well-formed messages", () => {
@@ -189,9 +239,8 @@ describe("catalogs", () => {
 
   it("use the same parameters across locales", () => {
     const params = (m: string) => [...m.matchAll(/\{\s*([a-z]\w*)\s*[,}]/g)].map((x) => x[1]).sort();
-    for (const key of Object.keys(en))
-      expect(params((zh as Record<string, string>)[key] ?? ""), key).toEqual(
-        params((en as Record<string, string>)[key]!),
-      );
+    for (const [locale, catalog] of Object.entries(translations))
+      for (const key of Object.keys(en))
+        expect(params(catalog[key] ?? ""), `${locale}:${key}`).toEqual(params((en as Record<string, string>)[key]!));
   });
 });
