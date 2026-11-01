@@ -94,6 +94,14 @@ describe("mouse navigation", () => {
     expect(lspGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 9 }, "definition");
   });
 
+  it("opens the definition from a plain middle-button click", async () => {
+    const event = click({ button: 1 });
+    await vi.waitFor(() => expect(openFile).toHaveBeenCalledOnce());
+    expect(lspGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 9 }, "definition");
+    expect(view.state.selection.main.head).toBe(9);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it.each([
     { button: 1, metaKey: true, altKey: true },
     { button: 2, metaKey: true, altKey: true },
