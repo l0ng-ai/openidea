@@ -19,6 +19,7 @@
     "typecheck": "tsrs --noEmit && tsrs -p tsconfig.node.json --noEmit && tsrs -p perf --noEmit && tsrs -p scripts --noEmit",
     "gen:bindings": "cargo test -p openidea --test export_bindings",
     "gen:angular-grammar": "lezer-generator src/editor/core/cm/angular/angular.grammar --typeScript -o src/editor/core/cm/angular/parser.ts",
+    "gen:astro-grammar": "lezer-generator src/editor/core/cm/astro/astro.grammar --typeScript -o src/editor/core/cm/astro/parser.ts",
     "gen:theme-docs": "node scripts/theme/gen-docs.ts",
     "theme:import-intellij": "node scripts/theme/import-intellij-theme.ts",
     "dev:app": "node scripts/tauri.ts dev --config src-tauri/tauri.dev.conf.json",

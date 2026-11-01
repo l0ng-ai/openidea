@@ -10,6 +10,7 @@
     "target",
     "src/bindings.ts",
     "src/editor/core/cm/angular/parser*.ts",
+    "src/editor/core/cm/astro/parser*.ts",
     "docs/plugins/themes.md",
     "pnpm-lock.yaml",
     "**/*.toml",

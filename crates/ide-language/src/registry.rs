@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
+    ("astro", include_str!("../../../languages/astro.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
@@ -517,6 +518,7 @@ mod tests {
         "MsGenny",
         "Vue",
         "Angular Template",
+        "Astro",
     ];
 
     fn reg() -> LanguageRegistry {
@@ -747,6 +749,7 @@ mod tests {
             ("a.less", "less"),
             ("App.vue", "vue"),
             ("App.svelte", "svelte"),
+            ("index.astro", "astro"),
             ("package.json", "json"),
             ("tsconfig.json", "jsonc"),
             ("tsconfig.app.json", "jsonc"),
@@ -806,6 +809,14 @@ mod tests {
         assert!(dbg.args.iter().any(|a| a == "--dap-port"));
         let res = reg.get(&LanguageId::new("godot-resource")).unwrap();
         assert_eq!(res.line_comment.as_deref(), Some(";"));
+    }
+
+    #[test]
+    fn astro_server_reads_the_project_typescript() {
+        let reg = reg();
+        let ls = &reg.get(&LanguageId::new("astro")).unwrap().language_servers[0];
+        let tsdk = ls.initialization_options.as_ref().and_then(|o| o.get("typescript")?.get("tsdk")?.as_str());
+        assert_eq!(tsdk, Some("node_modules/typescript/lib"));
     }
 
     #[test]
