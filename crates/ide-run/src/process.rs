@@ -195,7 +195,9 @@ fn match_console_encoding(
         output_encoding::fix(&program, &inv.args, &env.vars, inherited, encoding, cfg!(windows))
     };
     env.vars.extend(fix.env);
-    if !fix.java_args.is_empty() && !inv.raw_args {
+    let changed = fix.args.is_some() || !fix.java_args.is_empty();
+    if changed && !inv.raw_args {
+        inv.args = fix.args.unwrap_or_else(|| std::mem::take(&mut inv.args));
         inv.args.splice(0..0, fix.java_args);
         let mut display = quote(config.command.trim());
         for a in &inv.args {

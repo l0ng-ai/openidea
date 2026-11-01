@@ -75,6 +75,7 @@ fn encoding_for_code_page(cp: u32) -> Option<&'static encoding_rs::Encoding> {
 const STD_PROPERTIES: &[&str] = &["stdout.encoding", "stderr.encoding", "sun.stdout.encoding", "sun.stderr.encoding"];
 const FILE_ENCODING: &str = "file.encoding";
 const TOOL_OPTIONS: &str = "JAVA_TOOL_OPTIONS";
+const SPRING_BOOT_JVM_ARGS: &str = "-Dspring-boot.run.jvmArguments=";
 
 /// Build tools and launcher scripts that run on (and may fork) JVMs.
 const JVM_TOOLS: &[&str] =
@@ -85,6 +86,7 @@ const JVM_TOOLS: &[&str] =
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct EncodingFix {
     pub java_args: Vec<String>,
+    pub args: Option<Vec<String>>,
     pub env: Vec<(String, String)>,
     /// "Picked up JAVA_TOOL_OPTIONS: …" for a variable set here alone, to drop from the output.
     pub notice: Option<String>,
@@ -194,6 +196,12 @@ fn fix_kind(
             }
         }
         (Kind::Java | Kind::JvmTool, _) => {
+            if let (Kind::JvmTool, Some(args)) = (kind, args)
+                && is_utf8(encoding)
+                && !sets(&tool_options, &[FILE_ENCODING])
+            {
+                out.args = spring_boot_file_encoding(args);
+            }
             if !sets(&tool_options, STD_PROPERTIES) {
                 let added = options(STD_PROPERTIES, encoding).join(" ");
                 let value = match tool_options.trim() {
@@ -212,6 +220,26 @@ fn fix_kind(
         _ => {}
     }
     out
+}
+
+fn spring_boot_file_encoding(args: &[String]) -> Option<Vec<String>> {
+    if !args.iter().any(|a| a == "spring-boot:run" || (a.contains(":spring-boot-maven-plugin:") && a.ends_with(":run")))
+    {
+        return None;
+    }
+    let option = format!("-D{FILE_ENCODING}=UTF-8");
+    let mut out = args.to_vec();
+    match out.iter_mut().rfind(|a| a.starts_with(SPRING_BOOT_JVM_ARGS)) {
+        Some(own) if sets(own, &[FILE_ENCODING]) => return None,
+        Some(own) => {
+            if own.len() > SPRING_BOOT_JVM_ARGS.len() {
+                own.push(' ');
+            }
+            own.push_str(&option);
+        }
+        None => out.push(format!("{SPRING_BOOT_JVM_ARGS}{option}")),
+    }
+    Some(out)
 }
 
 /// `vmArgs` of a launch by java-debug, which decodes the JVM's output as `encoding`
@@ -433,6 +461,27 @@ mod tests {
             );
         }
         assert_eq!(run("python3", &[], &[], "GBK", false).env, [("PYTHONIOENCODING".to_owned(), "GBK".to_owned())]);
+    }
+
+    #[test]
+    fn spring_boot_run_forks_get_a_utf8_default_charset() {
+        let boot = |args: &[&str], env: &[(&str, &str)]| run("mvn.cmd", args, env, "UTF-8", true).args;
+        let utf8 = "-Dspring-boot.run.jvmArguments=-Dfile.encoding=UTF-8";
+        assert_eq!(boot(&["spring-boot:run"], &[]).unwrap(), ["spring-boot:run", utf8]);
+        let plugin = "org.springframework.boot:spring-boot-maven-plugin:3.2.0:run";
+        assert_eq!(boot(&["-pl", "app", plugin], &[]).unwrap(), ["-pl", "app", plugin, utf8]);
+        // The user's VM options are kept; their own `file.encoding` wins.
+        assert_eq!(
+            boot(&["spring-boot:run", "-Dspring-boot.run.jvmArguments=-Xmx1g \"-Da=b c\""], &[]).unwrap(),
+            ["spring-boot:run", "-Dspring-boot.run.jvmArguments=-Xmx1g \"-Da=b c\" -Dfile.encoding=UTF-8"]
+        );
+        assert_eq!(boot(&["spring-boot:run", "-Dspring-boot.run.jvmArguments="], &[]).unwrap()[1], utf8);
+        assert!(boot(&["spring-boot:run", "-Dspring-boot.run.jvmArguments=-Dfile.encoding=GBK"], &[]).is_none());
+        assert!(boot(&["spring-boot:run"], &[(TOOL_OPTIONS, "-Dfile.encoding=GBK")]).is_none());
+        // Other goals and tools, other consoles, and other platforms are left alone.
+        assert!(boot(&["package"], &[]).is_none());
+        assert!(run("mvn", &["spring-boot:run"], &[], "GBK", true).args.is_none());
+        assert!(run("mvn", &["spring-boot:run"], &[], "UTF-8", false).args.is_none());
     }
 
     #[test]
