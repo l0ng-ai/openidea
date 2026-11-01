@@ -5457,5 +5457,17 @@
   "Cannot read Java formatter XML {path}: {error}": "无法读取 Java 格式化 XML {path}：{error}",
   "Java formatter configuration unavailable": "Java 格式化配置不可用",
   "Choose an Eclipse formatter XML file.": "请选择 Eclipse 格式化 XML 文件。",
-  "Not a formatter XML file: {path}": "不是格式化 XML 文件：{path}"
+  "Not a formatter XML file: {path}": "不是格式化 XML 文件：{path}",
+  "CMake profiles": "CMake 配置",
+  "CMake profile actions": "CMake 配置操作",
+  "No CMake profiles. Click + to add one.": "没有 CMake 配置。点击 + 添加。",
+  "Profile settings": "配置设置",
+  "Build type": "构建类型",
+  "Generator": "生成器",
+  "CMake arguments": "CMake 参数",
+  "Build directory": "构建目录",
+  "Build arguments": "构建参数",
+  "CMake default": "CMake 默认",
+  "Quote arguments containing spaces. Build arguments go to cmake --build; use -- before native build tool options.": "包含空格的参数请加引号。构建参数传给 cmake --build；原生构建工具参数前请加 --。",
+  "CMake profile {0}": "CMake 配置 {0}"
 }

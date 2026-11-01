@@ -201,6 +201,15 @@ pub fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<RunConfig
     detect::detect_excluding(root, excluded_poms)
 }
 
+/// Detects configurations with explicit CMake profiles, or legacy discovery when absent.
+pub fn detect_with_profiles(
+    root: &Path,
+    excluded_poms: &[PathBuf],
+    profiles: Option<&[ide_core::settings::CMakeProfile]>,
+) -> Vec<RunConfig> {
+    detect::detect_with_profiles(root, excluded_poms, profiles)
+}
+
 /// Reads `<root>/.openidea/run.toml`; a missing file yields no configs.
 pub fn load_user_configs(root: &Path) -> IdeResult<Vec<RunConfig>> {
     config::load(root)
