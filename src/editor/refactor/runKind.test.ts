@@ -5,11 +5,17 @@ import type { CodeAction } from "@/bindings";
 
 let answer: () => unknown = () => ({ status: "ok", data: [] });
 const lspCodeActions = vi.fn(async () => answer());
-const lspApplyCodeAction = vi.fn(async () => ({ status: "ok", data: null }));
+// applyCodeAction resolves the picked action, then executes it (interactive command support).
+const lspResolveCodeAction = vi.fn(async (_doc: number, action: CodeAction) => ({ status: "ok", data: action }));
+const lspExecuteCodeAction = vi.fn(async () => ({ status: "ok", data: [] }));
 
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();
-  return { ...actual, isTauri: () => true, commands: { ...actual.commands, lspCodeActions, lspApplyCodeAction } };
+  return {
+    ...actual,
+    isTauri: () => true,
+    commands: { ...actual.commands, lspCodeActions, lspResolveCodeAction, lspExecuteCodeAction },
+  };
 });
 const showHint = vi.fn();
 vi.mock("@/editor/lsp/hint", () => ({ showHint }));
@@ -32,7 +38,8 @@ let view: EditorView | null = null;
 afterEach(() => {
   view?.destroy();
   showHint.mockClear();
-  lspApplyCodeAction.mockClear();
+  lspResolveCodeAction.mockClear();
+  lspExecuteCodeAction.mockClear();
 });
 
 function run(fallback: (reason: "notReady" | "error" | "empty") => Promise<boolean>) {
@@ -56,7 +63,7 @@ describe("runKindAction fallback", () => {
     const fallback = vi.fn(async () => true);
     await run(fallback);
     expect(fallback).not.toHaveBeenCalled();
-    expect(lspApplyCodeAction).toHaveBeenCalledOnce();
+    expect(lspExecuteCodeAction).toHaveBeenCalledOnce();
   });
 
   it("falls back when the server is not ready or fails", async () => {
