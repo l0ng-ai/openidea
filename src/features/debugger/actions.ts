@@ -291,7 +291,9 @@ async function startConfig(arg: unknown) {
     await startJavaConfig(config, root, origin ?? config);
     return;
   }
-  const launch = launchConfigFor(config, root);
+  const dotnet = config.kind === "dotnet" && config.debugAdapter === "netcoredbg";
+  const prepared = dotnet ? await call(commands.runDotnetResolve(config, true)) : config;
+  const launch = launchConfigFor(prepared, root);
   if (!launch) {
     notifications().notify({
       group: "run",

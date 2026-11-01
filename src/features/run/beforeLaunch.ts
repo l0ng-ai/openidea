@@ -2,6 +2,7 @@
  * Before launch tasks (IDEA's "Before launch" list): run in order before a
  * configuration starts; the first failure aborts the launch.
  */
+import { dotnetBuildConfig } from "./dotnetTypes";
 import { executeAction, getAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { tx, txTemplate } from "@/platform/i18n";
@@ -14,11 +15,12 @@ import { startRun, useRun } from "./store";
 export const BUILD_ACTION = "build.buildProject";
 const BUILD_STATUS = "build.lastStatus";
 
-export type BeforeLaunchKind = "run" | "build" | "tool" | "command" | "toolWindow";
+export type BeforeLaunchKind = "run" | "build" | "tool" | "command" | "toolWindow" | "dotnetBuild";
 
 export const TASK_LABELS: Record<BeforeLaunchKind, string> = {
   run: "Run Another Configuration",
   build: "Build Project",
+  dotnetBuild: "Build .NET project",
   tool: "Run External Tool",
   command: "Run Shell Command",
   toolWindow: "Activate Tool Window",
@@ -32,6 +34,8 @@ export function taskLabel(task: BeforeLaunchTask, configs: readonly RunConfig[] 
       return `Run '${configs.find((c) => c.id === target)?.name ?? target}'`;
     case "build":
       return "Build Project";
+    case "dotnetBuild":
+      return "Build .NET project";
     case "tool":
       return `External tool '${workflowSettings().externalTools.find((t) => t.id === target)?.name ?? target}'`;
     case "command":
@@ -58,6 +62,8 @@ async function runToEnd(config: RunConfig, chain: readonly string[]): Promise<bo
 async function runTask(task: BeforeLaunchTask, config: RunConfig, chain: readonly string[]): Promise<string | null> {
   const target = task.target ?? "";
   switch (task.kind) {
+    case "dotnetBuild":
+      return (await runToEnd(dotnetBuildConfig(config), chain)) ? null : "Build failed";
     case "build": {
       if (!getAction(BUILD_ACTION)) return "Building is not available";
       if (!(await executeAction(BUILD_ACTION, { activate: false }))) return "A build is already running";

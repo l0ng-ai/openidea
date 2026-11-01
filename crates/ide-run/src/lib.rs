@@ -2,6 +2,7 @@
 
 mod config;
 mod detect;
+pub mod dotnet;
 pub mod envfile;
 pub mod go;
 pub mod gradle_jvm;
