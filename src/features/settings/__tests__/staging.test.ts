@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "@/platform/ipc";
 import { DEFAULT_SSH_CONFIG } from "@/platform/remoteSettings";
+import { SUPPORTED_LOCALES } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { DEFAULT_SETTINGS, getAt, setAt, validateSettings } from "../model/schema";
 import {
@@ -267,7 +268,7 @@ describe("validateSettings", () => {
     expect(validateSettings(undefined)).toEqual(DEFAULT_SETTINGS);
     expect(validateSettings("garbage")).toEqual(DEFAULT_SETTINGS);
     const v = validateSettings({
-      appearance: { theme: "neon", accent: "red", uiFontSize: 400, locale: "fr" },
+      appearance: { theme: "neon", accent: "red", uiFontSize: 400, locale: "xx" },
       editor: { fontSize: "big", tabSize: 2.6, lineHeight: -1, softWrap: "yes", fontFamily: "  " },
       files: { exclude: ["**/a", 3, "", null] },
       keymap: 12,
@@ -291,6 +292,8 @@ describe("validateSettings", () => {
   it("keeps valid values, including dark-hc", () => {
     const v = validateSettings({ appearance: { theme: "dark-hc", accent: "#C9A080", locale: "zh" } });
     expect(v.appearance).toMatchObject({ theme: "dark-hc", accent: "#c9a080", locale: "zh" });
+    for (const locale of SUPPORTED_LOCALES)
+      expect(validateSettings({ appearance: { locale } }).appearance.locale).toBe(locale);
   });
 
   it("reads and writes dotted keys immutably", () => {

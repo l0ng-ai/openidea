@@ -31,7 +31,7 @@ import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
 import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
-import { tx, useT } from "@/platform/i18n";
+import { LOCALES, SUPPORTED_LOCALES, tx, useT } from "@/platform/i18n";
 
 import { BUILTIN_THEMES } from "@/platform/themes";
 
@@ -677,7 +677,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     id: "general.language",
     title: "Language and Region",
     order: 0,
-    keywords: ["locale", "chinese", "中文", "translation"],
+    keywords: ["locale", "translation", ...SUPPORTED_LOCALES.map((locale) => LOCALES[locale].name)],
     sections: [
       {
         options: [
@@ -686,10 +686,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             key: "appearance.locale",
             label: "Language",
             hint: "Language of menus and dialogs; untranslated text stays in English.",
-            options: [
-              { value: "en", label: "English" },
-              { value: "zh", label: "简体中文 (Chinese, Simplified)" },
-            ],
+            options: SUPPORTED_LOCALES.map((locale) => ({ value: locale, label: LOCALES[locale].name })),
           },
         ],
       },
