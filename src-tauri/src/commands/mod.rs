@@ -306,6 +306,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         term::term_default_shell,
         term::term_available_shells,
         run::run_configs,
+        run::run_dotnet_resolve,
         run::run_save_configs,
         run::run_templates,
         run::run_save_templates,

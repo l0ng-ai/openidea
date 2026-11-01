@@ -4,6 +4,7 @@
 //! Detection never fails: unreadable or malformed files simply contribute nothing.
 
 pub(crate) mod cmake;
+mod dotnet;
 
 use crate::RunConfig;
 use serde_json::Value as Json;
@@ -33,6 +34,7 @@ pub(crate) fn detect_with_profiles(
     detect_go(root, &mut out);
     detect_python(root, &mut out);
     cmake::detect(root, profiles, &mut out);
+    dotnet::detect(root, &mut out);
     detect_make(root, &mut out);
     detect_just(root, &mut out);
     detect_godot(root, &mut out);
