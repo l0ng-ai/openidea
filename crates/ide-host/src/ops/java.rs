@@ -1,5 +1,5 @@
 //! Java launch support: classpath / JDK resolution and the java-debug server (jdtls).
-mod cache;
+pub(crate) mod cache;
 
 use crate::Host;
 use crate::rpc::Dispatcher;
@@ -46,6 +46,7 @@ async fn resolve_launch(
         let settings = settings.clone();
         let module = module.clone();
         tokio::task::spawn_blocking(move || {
+            project.java_launch_snapshots.lock().initialize();
             let model = load(&project.root, &project.build_cache_dir(), &settings);
             let non_java = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
             let delegated = build
@@ -65,9 +66,8 @@ async fn resolve_launch(
     tokio::task::spawn_blocking(move || {
         let _external_build = external_build;
         let built = if delegated {
-            let outputs = cache::build(
+            let outputs = project.java_launch_snapshots.lock().build(
                 &project.root,
-                &project.build_cache_dir(),
                 &model,
                 &module,
                 test,

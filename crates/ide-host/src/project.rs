@@ -42,6 +42,8 @@ pub struct Project {
     pub detected_roots: Arc<RwLock<Vec<SourceFolder>>>,
     /// Per-project cache directory (build tool sync results…).
     pub cache_dir: PathBuf,
+    /// Superseded launch snapshots retained until this project session ends.
+    pub(crate) java_launch_snapshots: Mutex<crate::ops::java::cache::Session>,
     /// Database tool window: data sources and their connections.
     pub db: Arc<ide_db::DbManager>,
     /// HTTP Client responses (IDEA's `.idea/httpRequests`), in the app data dir.
@@ -366,6 +368,9 @@ impl Host {
             syntax,
             detected_roots,
             cache_dir: self.data_dir.join("cache").join(&project_key),
+            java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
+                self.data_dir.join("cache").join(&project_key).join("build"),
+            )),
             db,
             http_history,
             agents,
@@ -481,6 +486,9 @@ impl Host {
             syntax,
             detected_roots: Arc::default(),
             cache_dir: self.data_dir.join("cache").join(&project_key),
+            java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
+                self.data_dir.join("cache").join(&project_key).join("build"),
+            )),
             db,
             http_history,
             agents,
