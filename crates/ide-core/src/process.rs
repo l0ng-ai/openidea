@@ -243,12 +243,12 @@ pub fn find_executable(name: &str, search: &OsStr) -> Option<std::path::PathBuf>
 /// (`REG_EXPAND_SZ`) are expanded against the current environment. `None` elsewhere:
 /// there a login shell already supplies the user's whole `PATH`.
 #[cfg(windows)]
+use windows_sys::Win32::System::Registry::HKEY;
+
+#[cfg(windows)]
 pub fn user_path() -> Option<OsString> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_READ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegCloseKey, RegGetValueW,
-        RegOpenKeyExW,
-    };
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, KEY_READ, RegCloseKey, RegOpenKeyExW};
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -259,43 +259,51 @@ pub fn user_path() -> Option<OsString> {
         if RegOpenKeyExW(HKEY_CURRENT_USER, wide("Environment").as_ptr(), 0, KEY_READ, &mut key) != ERROR_SUCCESS {
             return None;
         }
-        let read = || {
-            // Only `Path`; `REG_EXPAND_SZ` is accepted so `%USERPROFILE%\…` entries expand.
-            let mut kind = 0u32;
-            let mut len = 0u32;
-            let name = wide("Path");
-            let status = RegGetValueW(
-                key,
-                std::ptr::null(),
-                name.as_ptr(),
-                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
-                &mut kind,
-                std::ptr::null_mut(),
-                &mut len,
-            );
-            if status != ERROR_SUCCESS || len == 0 {
-                return None;
-            }
-            let mut buf = vec![0u16; (len as usize).div_ceil(2)];
-            let status = RegGetValueW(
-                key,
-                std::ptr::null(),
-                name.as_ptr(),
-                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
-                &mut kind,
-                buf.as_mut_ptr() as *mut _,
-                &mut len,
-            );
-            if status != ERROR_SUCCESS {
-                return None;
-            }
-            let text = String::from_utf16_lossy(&buf);
-            Some(text.trim_end_matches('\0').to_owned())
-        };
-        let value = read();
+        let value = read_registry_string(key, &wide("Path"));
         RegCloseKey(key);
         value.filter(|v| !v.trim().is_empty()).map(OsString::from)
     }
+}
+
+/// The string of value `name` under open `key`: `REG_SZ` as-is, `REG_EXPAND_SZ` expanded
+/// against the current environment. `None` when the value is missing or unreadable.
+///
+/// A `REG_EXPAND_SZ` value's first size query reports the unexpanded size, so a value
+/// that grows when expanded is re-read at the size the failed call reports. And the
+/// terminating NUL can leak into the read buffer with a stray UTF-16 unit behind it —
+/// seen with a `REG_EXPAND_SZ` user `Path`, where it made `env::set_var("PATH", …)`
+/// panic with "strings passed to WinAPI cannot contain NULs" — so the text is cut at
+/// the first NUL, not just stripped of trailing ones.
+#[cfg(windows)]
+fn read_registry_string(key: HKEY, name: &[u16]) -> Option<String> {
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW};
+
+    const FLAGS: u32 = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
+    let mut kind = 0u32;
+    let mut len = 0u32;
+    // SAFETY: `name` is NUL-terminated and the size query writes only `kind` and `len`.
+    let status =
+        unsafe { RegGetValueW(key, std::ptr::null(), name.as_ptr(), FLAGS, &mut kind, std::ptr::null_mut(), &mut len) };
+    if status != ERROR_SUCCESS || len == 0 {
+        return None;
+    }
+    let buf = loop {
+        let mut buf = vec![0u16; len as usize / 2 + 1];
+        // SAFETY: as above; the buffer holds at least the `len` bytes the call may write.
+        let status = unsafe {
+            RegGetValueW(key, std::ptr::null(), name.as_ptr(), FLAGS, &mut kind, buf.as_mut_ptr() as *mut _, &mut len)
+        };
+        if status == ERROR_SUCCESS {
+            break buf;
+        }
+        if status != ERROR_MORE_DATA || len == 0 {
+            return None;
+        }
+    };
+    let text = String::from_utf16_lossy(&buf);
+    let end = text.find('\0').unwrap_or(text.len());
+    Some(text[..end].to_owned())
 }
 
 /// The user's own `PATH` entries; `None` outside Windows (see the Windows impl).
@@ -332,6 +340,69 @@ mod tests {
             let dirs: Vec<_> = std::env::split_paths(&path).collect();
             assert!(!dirs.is_empty(), "user PATH should hold at least one directory");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn registry_strings_expand_and_stay_terminator_free() {
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::System::Registry::{
+            HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ, RegCloseKey, RegCreateKeyExW,
+            RegDeleteTreeW, RegSetValueExW,
+        };
+
+        fn wide(s: &str) -> Vec<u16> {
+            s.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        let name = format!("Software\\ai.l0ng.openidea.registry-read-test-{}", std::process::id());
+        let long = "x".repeat(600);
+        // SAFETY: called from this test thread, which no other thread reads the environment on.
+        unsafe { std::env::set_var("OPENIDEA_TEST_REGVAR", &long) };
+        let mut key: HKEY = std::ptr::null_mut();
+        let opened = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                wide(&name).as_ptr(),
+                0,
+                std::ptr::null(),
+                0,
+                KEY_READ | KEY_WRITE,
+                std::ptr::null(),
+                &mut key,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, ERROR_SUCCESS, "the test key must be creatable under HKCU\\Software");
+        let set = |value: &str, kind: u32, data: &[u16]| {
+            // SAFETY: `key` is open for writing and `data` holds `data.len() * 2` bytes.
+            assert_eq!(
+                unsafe {
+                    RegSetValueExW(
+                        key,
+                        wide(value).as_ptr(),
+                        0,
+                        kind,
+                        data.as_ptr() as *const _,
+                        (data.len() * 2) as u32,
+                    )
+                },
+                ERROR_SUCCESS
+            );
+        };
+        let read = |value: &str| read_registry_string(key, &wide(value));
+        set("Plain", REG_SZ, &wide("plain"));
+        set("Expand", REG_EXPAND_SZ, &wide("%OPENIDEA_TEST_REGVAR%\\bin"));
+        set("ExpandLong", REG_EXPAND_SZ, &wide("%OPENIDEA_TEST_REGVAR%"));
+        let plain = read("Plain");
+        let expand = read("Expand");
+        let expand_long = read("ExpandLong");
+        unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, wide(&name).as_ptr()) };
+        unsafe { RegCloseKey(key) };
+        assert_eq!(plain.as_deref(), Some("plain"));
+        assert_eq!(expand.as_deref(), Some(format!("{long}\\bin")).as_deref());
+        // Longer than its unexpanded form: needs the re-read at the expanded size.
+        assert_eq!(expand_long.as_deref(), Some(long.as_str()));
     }
 
     #[test]
