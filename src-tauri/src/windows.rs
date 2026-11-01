@@ -755,9 +755,13 @@ pub fn open_settings_window(
     }
     windows.set_launch(&label, Launch { settings_page: page, new_projects, ..Default::default() });
     let builder = WebviewWindowBuilder::from_config(app, &config);
-    // AppKit child windows can disappear when dragged to another display's Space.
-    // The settings label already tracks ownership and parent-close cleanup.
-    #[cfg(not(target_os = "macos"))]
+    // Windows: an owned child (WS_POPUP) of a borderless parent gets no DWM
+    // shadow, leaving the frameless settings window flat against its parent.
+    // Ownership is tracked by the `settings-<parent>` label instead
+    // (parent-close cleanup, menu modality), so only Linux keeps the native
+    // parent link. AppKit child windows can disappear when dragged to another
+    // display's Space, so macOS keeps it too.
+    #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
     let window = builder
         .and_then(|b| dev_font_preferences(b).build())

@@ -1,8 +1,10 @@
 /**
  * Settings window ↔ its project window.
  *
- * Settings live in a native child window `settings-<parent>` (see
- * src-tauri/src/windows.rs) that only runs the settings pages. The action
+ * Settings live in a separate window `settings-<parent>` (see
+ * src-tauri/src/windows.rs) that only runs the settings pages (a native
+ * child of the parent on macOS/Linux; top-level on Windows so DWM paints
+ * its shadow). The action
  * registry stays in the project window: it sends the settings window a
  * description of every action (Keymap page, links that run actions) and runs
  * the actions the settings window forwards.
