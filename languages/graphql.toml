@@ -1,5 +1,6 @@
 id = "graphql"
 name = "GraphQL"
+formatter = { tool = "prettier", parser = "graphql", range = true }
 extensions = ["graphql", "graphqls", "gql"]
 line-comment = "#"
 indent = { tab-size = 2, insert-spaces = true }

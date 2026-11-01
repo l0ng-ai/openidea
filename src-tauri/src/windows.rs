@@ -12,7 +12,6 @@
 
 use crate::state::AppState;
 use crate::theme_frame::builtin_frame;
-use crate::window_geometry::{self, RememberedGeometry};
 use ide_core::settings::AppearanceSettings;
 use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
@@ -285,12 +284,10 @@ fn hex_color(hex: &str) -> Option<Color> {
 /// Builds a project window painted in the saved theme's frame colour, so it
 /// doesn't flash the light default before its page (and splash) loads.
 fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<WebviewWindow> {
-    // GTK Wayland drops resizes on a freshly mapped window, so the window-state
-    // plugin cannot restore there; apply the remembered geometry to the config
-    // before the window exists (empty, and thus a no-op, elsewhere).
-    if let Some(geometry) = app.try_state::<RememberedGeometry>().and_then(|g| g.get(&config.label)) {
-        let scale = app.primary_monitor().ok().flatten().map(|m| m.scale_factor()).unwrap_or(1.0);
-        window_geometry::apply(&mut config, geometry, scale);
+    let visible = cfg!(target_os = "macos") && config.visible;
+    let focused = config.focus;
+    if visible {
+        config.visible = false;
     }
     let state = app.try_state::<AppState>();
     let appearance = state.as_ref().map(|s| s.global_settings.effective().appearance);
@@ -301,19 +298,9 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     } else if let Some(a) = &appearance {
         config.background_color = Some(frame_color(a, false));
     }
-    let mut builder = WebviewWindowBuilder::from_config(app, &config)
-        .map(dev_font_preferences)
+    let window = WebviewWindowBuilder::from_config(app, &config)
+        .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
-    // GTK Wayland's first commit carries the configured size plus the CSD margin
-    // (`set_window_geometry(1234, 711)` for a configured 678), and that inflated
-    // value is what the window-state plugin saves — every session grows by the
-    // margin. Re-issuing the configured size once the page has loaded — well
-    // past the first-configure negotiation, where a resize is dropped — snaps
-    // the commit, and with it the save, back to the content basis.
-    if cfg!(target_os = "linux") && window_geometry::is_wayland() {
-        builder = builder.on_page_load(restate_size_once(tauri::LogicalSize::new(config.width, config.height)));
-    }
-    let window = builder.build().map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -323,24 +310,13 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     {
         let _ = window.set_background_color(Some(frame_color(&a, true)));
     }
-    Ok(window)
-}
-
-/// A page-load hook that re-issues `size` once, the first time a page finishes
-/// loading. By then the compositor's first configure has long passed, so the
-/// resize reaches `gtk_window_resize` instead of being dropped mid-negotiation
-/// (a resize right after mapping even shrinks the window by the CSD margin).
-fn restate_size_once(
-    size: tauri::LogicalSize<f64>,
-) -> impl Fn(tauri::WebviewWindow, tauri::webview::PageLoadPayload<'_>) + Send + Sync + 'static {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let armed = AtomicBool::new(true);
-    move |window, payload| {
-        if armed.load(Ordering::Relaxed) && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-            armed.store(false, Ordering::Relaxed);
-            let _ = window.set_size(size);
+    if visible {
+        window.show().map_err(|e| IdeError::internal(format!("cannot show window: {e}")))?;
+        if focused {
+            let _ = window.set_focus();
         }
     }
+    Ok(window)
 }
 
 /// Sets the saved IDE zoom before the page loads; applied later by the frontend,
@@ -779,12 +755,6 @@ pub fn open_settings_window(
     // the title bar in the app theme instead of a system caption that follows the OS theme.
     (config.width, config.height) = SETTINGS_SIZE;
     (config.min_width, config.min_height) = (Some(SETTINGS_MIN_SIZE.0), Some(SETTINGS_MIN_SIZE.1));
-    // The size the settings window had last session (GTK Wayland; see `build_project_window`).
-    if let Some(geometry) = app.try_state::<RememberedGeometry>().and_then(|g| g.get(&label))
-        && geometry.has_size()
-    {
-        (config.width, config.height) = geometry.logical_size(parent.scale_factor().unwrap_or(1.0), SETTINGS_MIN_SIZE);
-    }
     config.center = false;
     config.visible = false;
     config.maximized = false;

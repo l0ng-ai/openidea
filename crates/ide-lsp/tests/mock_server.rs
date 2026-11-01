@@ -252,6 +252,7 @@ fn harness_configured(
         indent: None,
         ui_mode: None,
         framework_ui_modes: Vec::new(),
+        formatter: None,
         tree_sitter: None,
         language_servers: servers
             .iter()
@@ -1248,12 +1249,17 @@ async fn navigation_rename_format_and_decorations() {
     assert!(matches!(&edit.files[0], FileEdit::Edit { edits, .. } if edits.len() == 2));
     assert_eq!(s.requested("textDocument/rename")[0]["newName"], "bar");
 
+    assert!(h.mgr.can_format(doc).await.unwrap());
     s.respond("textDocument/formatting", json!([{ "range": r(0,10,0,11), "newText": "\n}" }]));
-    let edits = h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true }).await.unwrap();
+    let edits =
+        h.mgr.format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false }).await.unwrap();
     assert_eq!(edits[0].range, rng(0, 10, 0, 11));
     assert_eq!(s.requested("textDocument/formatting")[0]["options"], json!({ "tabSize": 2, "insertSpaces": true }));
     assert!(
-        h.mgr.format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true }).await.is_err()
+        h.mgr
+            .format(doc, Some(rng(0, 0, 1, 0)), FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
+            .await
+            .is_err()
     );
 
     s.respond("textDocument/semanticTokens/full", json!({ "data": [0, 3, 3, 0, 1, 1, 0, 3, 0, 0] }));
@@ -1659,7 +1665,10 @@ async fn class_file_opening_routes_sources_and_binary_documents() {
     s.respond("workspace/executeCommand", json!({"org.eclipse.jdt.ls.core.sourcePaths":[sources]}));
     for class in ["Outer", "Outer$Nested", "Outer$1"] {
         let path = h.root.join(format!("target/classes/p/{class}.class"));
-        assert_eq!(h.mgr.java_class_file(&path, None).await.unwrap(), source.to_string_lossy());
+        let resolved = h.mgr.java_class_file(&path, None).await.unwrap();
+        // Compare as paths: the manager joins the relative source path with std::path, so
+        // separators can differ from the literal "p/Outer.java" used to build `source` on Windows.
+        assert_eq!(Path::new(&resolved), source.as_path());
     }
     let path = h.root.join("build/classes/java/main/p/Missing.class");
     let uri = uri_of(&path);
@@ -2733,4 +2742,33 @@ async fn interactive_capability_is_scoped_to_gopls() {
         .unwrap();
     assert!(form.is_none());
     assert!(s.requested("command/resolve").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn formatting_provider_selection_tracks_dynamic_registration() {
+    let h = harness(&[("mock", json!({ "textDocumentSync": 1, "documentRangeFormattingProvider": true }))]);
+    let (doc, _) = h.open("a.mk", "hello\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(!h.mgr.can_format(doc).await.unwrap(), "a range provider alone cannot format the whole document");
+    let peer = h.launcher.state("mock").peer();
+    peer.request::<_, Value>(
+        "client/registerCapability",
+        json!({"registrations": [
+            {"id": "formatter", "method": "textDocument/formatting"}
+        ]}),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(h.mgr.can_format(doc).await.unwrap());
+    peer.request::<_, Value>(
+        "client/unregisterCapability",
+        json!({"unregisterations": [
+            {"id": "formatter", "method": "textDocument/formatting"}
+        ]}),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!h.mgr.can_format(doc).await.unwrap());
 }

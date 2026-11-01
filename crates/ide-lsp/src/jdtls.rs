@@ -189,6 +189,24 @@ pub struct JavaCompileError {
     pub message: String,
 }
 
+/// Holds off JDT writers while an external compiler builds and snapshots launch outputs.
+/// Restores current settings even when preparation fails or is cancelled.
+pub struct JavaExternalBuild {
+    server: Arc<Server>,
+    run: Running,
+    _lock: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for JavaExternalBuild {
+    fn drop(&mut self) {
+        self.server.java_autobuild_suspended.store(false, std::sync::atomic::Ordering::SeqCst);
+        let settings = crate::handler::all_settings(&self.server.effective_config());
+        if let Err(e) = self.run.peer.notify("workspace/didChangeConfiguration", json!({ "settings": settings })) {
+            tracing::debug!("jdtls: restoring autobuild: {e}");
+        }
+    }
+}
+
 /// Error diagnostics sorted by file and position, capped at `limit`, and their total.
 pub fn compile_errors(
     diagnostics: Vec<(PathBuf, lsp_types::Diagnostic)>,
@@ -378,7 +396,8 @@ impl LspManager {
         self.jdtls_command_cancellable(path, command, arguments, &CancellationToken::new()).await
     }
 
-    async fn jdtls_command_cancellable(
+    /// Cancellable delegate commands for project-owned background services.
+    pub async fn jdtls_command_cancellable(
         &self,
         path: &Path,
         command: &str,
@@ -433,9 +452,28 @@ impl LspManager {
             .map_err(|e| crate::rpc_err(&server.name, "java/projectConfigurationsUpdate", e))
     }
 
+    /// Pause autobuild before resolving the launch classpath. That query takes the
+    /// Java project's workspace scheduling rule, draining the interrupted autobuild.
+    /// Keep this guard until Maven outputs have been copied out of JDT's reach.
+    pub async fn java_external_build(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<JavaExternalBuild> {
+        let (server, run) = self.jdtls(path, cancel).await?;
+        let lock = cancellable_wait(cancel, server.java_build_lock.clone().lock_owned()).await?;
+        server.java_autobuild_suspended.store(true, std::sync::atomic::Ordering::SeqCst);
+        let guard = JavaExternalBuild { server, run, _lock: lock };
+        let settings = crate::handler::all_settings(&guard.server.effective_config());
+        guard
+            .run
+            .peer
+            .notify("workspace/didChangeConfiguration", json!({ "settings": settings }))
+            .map_err(|e| crate::rpc_err(SERVER, "workspace/didChangeConfiguration", e))?;
+        Ok(guard)
+    }
+
     /// Incremental build of the jdtls workspace (`java/buildWorkspace`), so
     /// class files are up to date before a launch.
     pub async fn java_build(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<JavaBuildStatus> {
+        let (server, _) = self.jdtls(path, cancel).await?;
+        let _lock = cancellable_wait(cancel, server.java_build_lock.lock()).await?;
         let mut v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT, cancel).await?;
         // The first build can finish the Maven import before ServiceReady is handled.
         let (server, run) = self.jdtls(path, cancel).await?;

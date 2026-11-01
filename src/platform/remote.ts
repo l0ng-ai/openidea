@@ -72,6 +72,12 @@ async function clientSettings<T extends Settings>(settings: T): Promise<T> {
 }
 
 const route: InvokeRoute = (cmd, args, options) => {
+  if (cmd === "open_project" || cmd === "light_edit_open") {
+    return invokeLocal(cmd, args, options).then((result) => {
+      disableRemote();
+      return result;
+    });
+  }
   const destination = remoteRouting(cmd, args, routed);
   if (cmd === "settings_set") {
     const setting = args as { scope: string; key: string; value: string };

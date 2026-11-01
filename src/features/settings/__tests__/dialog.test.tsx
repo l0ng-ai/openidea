@@ -222,6 +222,24 @@ describe("Settings dialog", () => {
     ]);
   });
 
+  it("enables, saves and clears the custom UI fallback font", async () => {
+    const dialog = await openDialog("appearance");
+    const fallback = within(dialog).getByRole("combobox", { name: "UI fallback font" });
+    const custom = within(dialog).getByRole("checkbox", { name: "Use custom font:" });
+    expect(fallback).toBeDisabled();
+    fireEvent.click(custom);
+    expect(fallback).toBeEnabled();
+    fireEvent.change(fallback, { target: { value: "Songti SC" } });
+    expect(settingsSet).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.uiFontFallback", JSON.stringify("Songti SC"));
+    fireEvent.change(fallback, { target: { value: "" } });
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.uiFontFallback", JSON.stringify(""));
+    fireEvent.click(custom);
+    expect(fallback).toBeDisabled();
+  });
+
   it("edits and saves independent custom font weights", async () => {
     const dialog = await openDialog("editor.font");
     for (const [label, value] of [

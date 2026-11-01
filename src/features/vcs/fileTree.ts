@@ -5,15 +5,22 @@ export interface FileTreeNode<F> {
   /** Directory label (`src/app`) or file name. */
   name: string;
   file: F | null;
+  /** An explicit directory entry, including empty directories. */
+  directory?: F;
   children: FileTreeNode<F>[];
   /** Number of files below (1 for a file). */
   count: number;
 }
 
-export function buildFileTree<F>(files: readonly F[], relPath: (f: F) => string): FileTreeNode<F>[] {
+export function buildFileTree<F>(
+  files: readonly F[],
+  relPath: (f: F) => string,
+  isDirectory?: (f: F) => boolean,
+): FileTreeNode<F>[] {
   interface Dir {
     dirs: Map<string, Dir>;
     files: { name: string; file: F; rel: string }[];
+    entry?: F;
   }
   const root: Dir = { dirs: new Map(), files: [] };
   for (const f of files) {
@@ -26,7 +33,11 @@ export function buildFileTree<F>(files: readonly F[], relPath: (f: F) => string)
       if (!next) d.dirs.set(p, (next = { dirs: new Map(), files: [] }));
       d = next;
     }
-    d.files.push({ name, file: f, rel });
+    if (isDirectory?.(f)) {
+      let sub = d.dirs.get(name);
+      if (!sub) d.dirs.set(name, (sub = { dirs: new Map(), files: [] }));
+      sub.entry = f;
+    } else d.files.push({ name, file: f, rel });
   }
 
   const convert = (d: Dir, prefix: string): FileTreeNode<F>[] => {
@@ -35,7 +46,7 @@ export function buildFileTree<F>(files: readonly F[], relPath: (f: F) => string)
       let label = name;
       let path = prefix ? `${prefix}/${name}` : name;
       let cur = sub;
-      while (cur.files.length === 0 && cur.dirs.size === 1) {
+      while (!cur.entry && cur.files.length === 0 && cur.dirs.size === 1) {
         const [n, only] = [...cur.dirs][0]!;
         label += `/${n}`;
         path += `/${n}`;
@@ -46,6 +57,7 @@ export function buildFileTree<F>(files: readonly F[], relPath: (f: F) => string)
         key: `d:${path}`,
         name: label,
         file: null,
+        directory: cur.entry,
         children,
         count: children.reduce((n, c) => n + c.count, 0),
       });

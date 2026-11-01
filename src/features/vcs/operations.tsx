@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ChangedFile, Commit, CompareResult, ResetMode, WorkingTreeChange } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, nextRequestId } from "@/platform/ipc";
-import { Checkbox, Dialog, Icon, Input, Tree, Spinner, fileIconName, T } from "@/ui";
+import { Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { diffInput, openDiff, type DiffData, type DiffSide } from "./diffInput";
 import { openDialog, promptText } from "./dialogs";
@@ -17,10 +17,10 @@ import { runGitOperation, runOp } from "./ops";
 import { reloadLog, useGitLog } from "./logStore";
 import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
-import { DiffEditor } from "./DiffEditor";
-import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
+import { ComparisonTree } from "./ComparisonTree";
+import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
-import { displayPath } from "./compare";
+import { displayPath } from "./compareData";
 
 // ---------------------------------------------------------------------------
 // Operation in progress
@@ -528,8 +528,6 @@ export function ChangesBetweenDialog({
   const [files, setFiles] = useState<ComparisonFile[] | null>(null);
   const [result, setResult] = useState<CompareResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
-  const [expanded, setExpanded] = useState<ReadonlySet<string> | null>(null);
   const [current, setCurrent] = useState<ComparisonFile | null>(null);
   const fromRev = from.rev;
   const toRev = to?.rev ?? null;
@@ -665,52 +663,25 @@ export function ChangesBetweenDialog({
         </div>
       ) : null}
       {files && files.length > 0 ? (
-        <div className={`${styles.comparison} ${input ? styles.comparisonWithDiff : ""}`}>
-          <Tree<FileTreeNode<ComparisonFile>>
-            roots={tree}
-            getKey={(n) => n.key}
-            getLabel={(n) => n.name}
-            getChildren={(n) => (n.file ? undefined : n.children)}
-            isExpandable={(n) => !n.file}
-            expanded={expanded ?? new Set(dirKeys(tree))}
-            onExpandedChange={setExpanded}
-            selected={selected}
-            onSelectionChange={(sel, lead) => {
-              setSelected(sel);
-              if (lead?.file) setCurrent(lead.file);
-            }}
-            onActivate={(n) => n.file && setCurrent(n.file)}
-            aria-label="Changed files"
-            className={styles.comparisonTree}
-            renderNode={(n) => (
-              <span className={styles.fileRow} style={{ flex: 1, padding: 0 }} title={n.file ? n.file.path : n.name}>
-                <Icon name={n.file ? fileIconName(n.name) : "folder"} size={14} />
-                <span
-                  className={styles.fileName}
-                  style={
-                    n.file ? { color: KIND_COLOR[n.file.kind === "untracked" ? "added" : n.file.kind] } : undefined
-                  }
-                >
-                  {n.name}
-                </span>
-                {n.file ? (
-                  <>
-                    <span className={styles.fileDir}>{tx(n.file.kind)}</span>
-                    {n.file.added !== undefined && <span className={styles.compareAdded}>+{n.file.added}</span>}
-                    {n.file.removed !== undefined && <span className={styles.compareRemoved}>−{n.file.removed}</span>}
-                  </>
-                ) : (
-                  <span className={styles.fileDir}>{n.count}</span>
-                )}
-              </span>
-            )}
-          />
-          {input && (
-            <div className={styles.comparisonDiff}>
-              <DiffEditor key={input.key} input={input} />
-            </div>
-          )}
-        </div>
+        <ComparisonTree
+          tree={tree}
+          current={current}
+          onSelect={setCurrent}
+          diffFor={diffFor}
+          getColor={(f) => KIND_COLOR[f.kind === "untracked" ? "added" : f.kind]}
+          ariaLabel="Changed files"
+          renderDetails={(n) =>
+            n.file ? (
+              <>
+                <span className={styles.fileDir}>{tx(n.file.kind)}</span>
+                {n.file.added !== undefined && <span className={styles.compareAdded}>+{n.file.added}</span>}
+                {n.file.removed !== undefined && <span className={styles.compareRemoved}>−{n.file.removed}</span>}
+              </>
+            ) : (
+              <span className={styles.fileDir}>{n.count}</span>
+            )
+          }
+        />
       ) : null}
     </Dialog>
   );

@@ -219,6 +219,9 @@ pub struct CodeActionQuery {
 pub struct FormatOptions {
     pub tab_size: u32,
     pub insert_spaces: bool,
+    #[serde(default)]
+    #[specta(optional)]
+    pub on_save: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
