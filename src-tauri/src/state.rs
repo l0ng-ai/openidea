@@ -5,7 +5,7 @@ use ide_workspace::RecentProjects;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub use ide_host::{Host, Project};
 
