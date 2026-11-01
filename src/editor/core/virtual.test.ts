@@ -28,6 +28,9 @@ const { createMemoryBackend } = await import("./backend");
 const { initialTabsState } = await import("./model/tabs");
 const { serializeSession } = await import("./model/session");
 const { useDocMeta } = await import("./model/document");
+const { registerMenuGroup } = await import("@/workbench/contributions");
+const { registerActions } = await import("@/platform/actions");
+const { resolveMenuItems } = await import("@/ui");
 
 let ctrl: InstanceType<typeof EditorController> | null = null;
 
@@ -85,6 +88,25 @@ describe("virtual editor input", () => {
         .tabMenu(useTabs.getState().activePane, activeTab())
         .some((i) => "label" in i && i.label === "Reveal in Project"),
     ).toBe(false);
+
+    // Pathless tabs still get contributed groups, with the tab's input in the context.
+    const disposeAction = registerActions([{ id: "test.tab", title: "Test Item", run: () => undefined }]);
+    const disposeGroup = registerMenuGroup({
+      id: "test.tab",
+      menus: ["editorTab"],
+      order: 50,
+      items: (_menu, { paths, input }) =>
+        paths.length || input?.kind !== "virtual"
+          ? []
+          : [{ kind: "action", action: "test.tab", label: "Test Item", arg: input.key }],
+    });
+    try {
+      const items = resolveMenuItems(ctrl.tabMenu(useTabs.getState().activePane, activeTab()));
+      expect(items.some((i) => "label" in i && i.label === "Test Item")).toBe(true);
+    } finally {
+      disposeGroup();
+      disposeAction();
+    }
   });
 
   it("does not open a tab when the server has no contents", async () => {

@@ -21,6 +21,12 @@ describe("appearance & behavior settings", () => {
     expect(validateAppearanceExtras({ theme: "system" }).syncWithOs).toBe(true);
   });
 
+  it("defaults Show tool window badges to on and honours the stored value", () => {
+    expect(validateAppearanceExtras({}).showToolWindowBadges).toBe(true);
+    expect(validateAppearanceExtras({ showToolWindowBadges: false }).showToolWindowBadges).toBe(false);
+    expect(validateAppearanceExtras({ showToolWindowBadges: 1 }).showToolWindowBadges).toBe(true);
+  });
+
   it("formats dates with an override pattern and pretty dates", () => {
     const d = new Date(2026, 0, 5, 14, 7);
     expect(formatPattern(d, "dd.MM.yyyy")).toBe("05.01.2026");
