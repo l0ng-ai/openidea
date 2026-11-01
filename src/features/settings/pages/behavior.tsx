@@ -186,42 +186,48 @@ function CustomFontRow() {
   const id = useId();
   const matched = useLabelMatch("Use custom font");
   return (
-    <div className={clsx(styles.fontRow, matched && styles.matched)}>
-      <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
-      <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
-      <label className={clsx(styles.sizeLabel, !on && styles.disabled)} htmlFor={`${id}-fallback`}>
-        <SearchLabel text="Fallback font:" />
-      </label>
-      <FontPicker
-        id={`${id}-fallback`}
-        label="UI fallback font"
-        disabled={!on}
-        value={fallback}
-        onChange={setFallback}
-        allowEmpty
-      />
-      <label className={clsx(styles.sizeLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
-        <SearchLabel text="Size:" />
-      </label>
-      {on ? (
-        <NumberInput
-          id={`${id}-size`}
-          value={size}
-          onChange={setSize}
-          {...LIMITS.uiFontSize}
-          integer
-          aria-label="UI font size"
+    <div className={clsx(styles.fontRow, styles.customFontRow, matched && styles.matched)}>
+      <span className={styles.fontOption}>
+        <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
+        <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
+      </span>
+      <span className={styles.fontOption}>
+        <label className={clsx(!on && styles.disabled)} htmlFor={`${id}-fallback`}>
+          <SearchLabel text="Fallback font:" />
+        </label>
+        <FontPicker
+          id={`${id}-fallback`}
+          label="UI fallback font"
+          disabled={!on}
+          value={fallback}
+          onChange={setFallback}
+          allowEmpty
         />
-      ) : (
-        <Input
-          id={`${id}-size`}
-          className={styles.sizeInput}
-          value={String(size)}
-          disabled
-          aria-label="UI font size"
-          readOnly
-        />
-      )}
+      </span>
+      <span className={styles.fontOption}>
+        <label className={clsx(!on && styles.disabled)} htmlFor={`${id}-size`}>
+          <SearchLabel text="Size:" />
+        </label>
+        {on ? (
+          <NumberInput
+            id={`${id}-size`}
+            value={size}
+            onChange={setSize}
+            {...LIMITS.uiFontSize}
+            integer
+            aria-label="UI font size"
+          />
+        ) : (
+          <Input
+            id={`${id}-size`}
+            className={styles.sizeInput}
+            value={String(size)}
+            disabled
+            aria-label="UI font size"
+            readOnly
+          />
+        )}
+      </span>
     </div>
   );
 }

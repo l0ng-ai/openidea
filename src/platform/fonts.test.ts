@@ -128,6 +128,16 @@ describe("macOS user font resolver", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it("loads a UI fallback through the shared macOS user font resolver", async () => {
+    const { fonts, invoke, registered } = await resolver(false);
+    const family = fonts.uiFontFamily("Inter", "Maple Mono NF CN");
+    expect(family).toBe('"Inter Variable", "Inter", "OpenIDEA User Font 0", "Maple Mono NF CN", system-ui, sans-serif');
+    expect(fonts.monoFontFamily("Inter", "Maple Mono NF CN")).toContain('"OpenIDEA User Font 0"');
+    await fonts.fontsLoaded(family, 13);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("user_font_data", { family: "Maple Mono NF CN" });
+    expect(registered).toHaveLength(3);
+  });
+
   it("detects user fonts that WKWebView exposes only to connected canvases without loading bytes", async () => {
     const { fonts, invoke, canvases } = await resolver("connected");
     expect(fonts.fontAvailable("Maple Mono NF CN")).toBe(true);
