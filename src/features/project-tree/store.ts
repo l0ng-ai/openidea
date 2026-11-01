@@ -87,6 +87,10 @@ export type Editing =
 export interface Clipboard {
   paths: string[];
   cut: boolean;
+  /** Server paths cannot be represented by the client's OS file list. */
+  remote?: boolean;
+  /** Pending OS hand-off, so a read cannot invalidate this copy before its write finishes. */
+  osWrite?: Promise<boolean>;
 }
 
 interface ProjectTreeState {

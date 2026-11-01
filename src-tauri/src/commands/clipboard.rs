@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_file_list() -> IdeResult<Vec<String>> {
-    blocking(|| Ok(ide_clipboard::files().iter().map(|p| slash(p)).collect())).await
+    blocking(|| Ok(ide_clipboard::files()?.iter().map(|p| slash(p)).collect())).await
 }
 
 /// Whether the clipboard holds files: cheap, for the Paste item's enabled state.
