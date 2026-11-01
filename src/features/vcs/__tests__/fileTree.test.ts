@@ -9,4 +9,21 @@ describe("buildFileTree", () => {
     expect(tree[1]!.children.map((c) => c.name)).toEqual(["a.ts", "b.ts"]);
     expect(dirKeys(tree)).toEqual(["d:docs/x/y", "d:src/app"]);
   });
+
+  it("retains explicit empty directories and their entries for subtree operations", () => {
+    const entries = [
+      { path: "empty", dir: true },
+      { path: "src", dir: true },
+      { path: "src/nested", dir: true },
+      { path: "src/nested/a", dir: false },
+    ];
+    const tree = buildFileTree(
+      entries,
+      (e) => e.path,
+      (e) => e.dir,
+    );
+    expect(tree[0]).toMatchObject({ name: "empty", directory: entries[0], children: [], count: 0 });
+    expect(tree[1]).toMatchObject({ name: "src", directory: entries[1] });
+    expect(tree[1]!.children[0]).toMatchObject({ name: "nested", directory: entries[2] });
+  });
 });

@@ -179,6 +179,7 @@ impl Dispatcher {
         })
         .add("cancel_task", |c| async move { Ok(ide_core::task::cancel(c.arg::<TaskId>("id")?)) })
         .add("fs_read_dir", |c| async move { ops::fs::read_dir(&c.host, &c.window, c.arg("path")?) })
+        .add("fs_entry_kind", |c| async move { ops::fs::entry_kind(&c.host, c.arg("path")?).await })
         .add("fs_create_file", |c| async move { ops::fs::create_file(&c.host, &c.window, c.arg("path")?) })
         .add("fs_create_file_bytes", |c| async move {
             ops::fs::create_file_bytes(&c.host, c.arg("path")?, c.arg("data")?).await
@@ -190,6 +191,28 @@ impl Dispatcher {
         })
         .add("fs_delete", |c| async move { ops::fs::delete(&c.host, &c.window, c.arg("path")?).await })
         .add("fs_copy", |c| async move { ops::fs::copy(&c.host, c.arg("from")?, c.arg("to")?).await })
+        .add("fs_copy_merge", |c| async move {
+            ops::fs::copy_merge(
+                &c.host,
+                &c.window,
+                c.arg("sourceRoot")?,
+                c.arg("destinationRoot")?,
+                c.arg("path")?,
+                c.arg("overwrite")?,
+            )
+            .await
+        })
+        .add("fs_compare_directories", |c| async move {
+            ops::fs::compare_directories(
+                &c.host,
+                &c.window,
+                c.arg("left")?,
+                c.arg("right")?,
+                c.arg("request")?,
+                c.sender("onProgress")?,
+            )
+            .await
+        })
         .add("fs_read_text", |c| async move { ops::fs::read_text(&c.host, &c.window, c.arg("path")?).await })
         .add("doc_open", |c| async move { ops::doc::open(&c.host, &c.window, c.arg("path")?).await })
         .add("doc_close", |c| async move { ops::doc::close(&c.host, &c.window, c.arg("doc")?) })

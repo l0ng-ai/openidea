@@ -2,6 +2,7 @@
 
 mod archive;
 mod bytes;
+mod compare;
 mod encoding;
 mod ops;
 mod rules;
@@ -20,6 +21,9 @@ pub use archive::{
     read_archive_entry, split_archive_path,
 };
 pub use bytes::{ByteRange, FileProbe, MAX_RANGE_LEN, base64, image_mime, probe, read_data_url, read_range};
+pub use compare::{
+    DirectoryCompareEntry, DirectoryCompareProgress, DirectoryCompareStatus, compare_directories, copy_merge,
+};
 use encoding::SNIFF_LEN;
 pub use encoding::{
     LARGE_FILE_THRESHOLD, MAX_OPEN_SIZE, READ_ONLY_THRESHOLD, decode_properties_escapes, encode,
