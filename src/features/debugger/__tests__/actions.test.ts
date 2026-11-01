@@ -268,3 +268,23 @@ describe("debugger actions (IDEA parity)", () => {
     expect(useOverlays.getState().evaluate?.expression).toBe("total = order.items\nfor i in x:");
   });
 });
+
+describe("output class breakpoint restrictions", () => {
+  it.each([
+    "debug.toggleBreakpoint",
+    "debug.toggleTemporaryBreakpoint",
+    "debug.toggleMethodBreakpoint",
+    "debug.toggleFieldWatchpoint",
+    "debug.runToCursor",
+    "debug.forceRunToCursor",
+  ])("blocks %s for a source-less output class", async (id) => {
+    paused();
+    const path = "file:///p/target/classes/p/C.class";
+    caret(path, "java", "class C {\n int n;\n void run() {}\n}", 2);
+    await executeAction(id);
+    expect(breakpointsOf(path)).toHaveLength(0);
+    expect(useSpecialBreakpoints.getState().methods).toHaveLength(0);
+    expect(useSpecialBreakpoints.getState().fields).toHaveLength(0);
+    expect(ipc.debugRunTo).not.toHaveBeenCalled();
+  });
+});

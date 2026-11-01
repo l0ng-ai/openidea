@@ -1,7 +1,72 @@
+use super::Channel;
 use crate::Host;
-use ide_core::IdeResult;
+use ide_core::{IdeResult, RequestId};
 use ide_vfs::FileEntry;
 use std::path::PathBuf;
+
+pub async fn entry_kind(host: &Host, path: PathBuf) -> IdeResult<ide_vfs::EntryKind> {
+    host.blocking(move || {
+        let meta = std::fs::metadata(path)?;
+        Ok(if meta.is_dir() { ide_vfs::EntryKind::Dir } else { ide_vfs::EntryKind::File })
+    })
+    .await
+}
+
+pub async fn compare_directories(
+    host: &Host,
+    window: &str,
+    left: PathBuf,
+    right: PathBuf,
+    request: RequestId,
+    on_progress: Channel<ide_vfs::DirectoryCompareProgress>,
+) -> IdeResult<Vec<ide_vfs::DirectoryCompareEntry>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = host
+        .blocking(move || {
+            let last = std::cell::Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
+            ide_vfs::compare_directories(&left, &right, Some(&project.root), &project.exclude_globs(), &cancel, |p| {
+                // Bound IPC traffic even when hashing multi-gigabyte files.
+                if last.get().elapsed() >= std::time::Duration::from_millis(80) || p.total == Some(p.compared) {
+                    let _ = on_progress.send(p);
+                    last.set(std::time::Instant::now());
+                }
+            })
+        })
+        .await;
+    host.end_request(request);
+    result
+}
+
+pub async fn copy_merge(
+    host: &Host,
+    window: &str,
+    source_root: PathBuf,
+    destination_root: PathBuf,
+    path: PathBuf,
+    overwrite: bool,
+) -> IdeResult<()> {
+    if path.as_os_str().is_empty() || path.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return Err(ide_core::IdeError::invalid("expected a relative comparison entry path"));
+    }
+    let project = host.project(window)?;
+    host.blocking(move || {
+        let from = source_root.join(&path);
+        let to = destination_root.join(&path);
+        if overwrite {
+            project.history.record_deletion(&to, DELETE_SNAPSHOT_LIMIT);
+        }
+        ide_vfs::copy_merge(
+            &from,
+            &to,
+            overwrite,
+            Some(&project.root),
+            &project.exclude_globs(),
+            (&source_root, &destination_root),
+        )
+    })
+    .await
+}
 
 /// Files of a deleted folder snapshotted in Local History.
 const DELETE_SNAPSHOT_LIMIT: usize = 2000;

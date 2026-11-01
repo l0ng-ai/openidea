@@ -361,7 +361,17 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     );
   }
 
-  // IDEA: Compare With… (one file) / Compare Files (two files).
+  // Compare selections of the same kind; mixed file/folder selections cannot apply.
+  const compareArg = single?.dir ? { path: single.path, directory: true } : single?.path;
+  if (nodes.length === 2 && nodes.every((n) => n.dir && !n.placeholder))
+    push(
+      delegated(
+        "diff.compareDirectories",
+        nodes.map((n) => n.path),
+        "Compare Directories",
+        { icon: "diff" },
+      ),
+    );
   if (files.length === 2 && nodes.length === 2)
     push(
       delegated(
@@ -371,9 +381,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         { icon: "diff" },
       ),
     );
-  else if (singleFile)
+  else if (single && !single.placeholder)
     push(
-      delegated("diff.compareWith", singleFile.path, "Compare With…", {
+      delegated("diff.compareWith", compareArg, "Compare With…", {
         icon: "diff",
         shortcut: keyLabel("project.compareWith"),
       }),

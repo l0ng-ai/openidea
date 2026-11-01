@@ -642,6 +642,57 @@ fn properties_conversion_uses_displayed_utf16_and_survives_reload() {
 }
 
 #[test]
+fn properties_pasted_escapes_survive_save_and_decode_on_reload() {
+    let pasted = "test.key1=Hello\ntest.key2=\\u4F60\\u597D\ntest.key3=\\u4f60\\u597d\n";
+    let displayed = "test.key1=Hello\ntest.key2=你好\ntest.key3=你好\n";
+    for encoding in ["utf-8", "iso-8859-1", "utf-16le"] {
+        for eol in ["\n", "\r\n"] {
+            let f = fixture();
+            let path = f.root.join("test_zh_CN.properties");
+            let source = pasted.replace('\n', eol);
+            fs::write(&path, ide_vfs::encode(&source, encoding, encoding == "utf-16le").unwrap()).unwrap();
+            let mut defaults = f.docs.file_defaults();
+            defaults.native_to_ascii = true;
+            defaults.properties_fallback = encoding.into();
+            f.docs.set_file_defaults(defaults.clone());
+            let doc = f.docs.open(&path).unwrap();
+            assert_eq!(doc.text, displayed);
+
+            f.docs.replace_all(doc.id, pasted).unwrap();
+            f.docs.save(doc.id).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), source.as_bytes(), "{encoding} {eol:?}");
+            assert_eq!(f.docs.snapshot(doc.id).unwrap().text, pasted);
+            assert!(!f.docs.is_dirty(doc.id).unwrap());
+            f.docs.on_disk_changed(std::slice::from_ref(&path));
+            assert_eq!(f.docs.snapshot(doc.id).unwrap().text, pasted, "own saves do not reload");
+
+            f.docs.close(doc.id);
+            let reopened = f.docs.open(&path).unwrap();
+            assert_eq!(reopened.text, displayed);
+            // An edit followed by its inverse preserves the original escape casing.
+            f.docs.replace_all(reopened.id, pasted).unwrap();
+            f.docs.replace_all(reopened.id, displayed).unwrap();
+            f.docs.save(reopened.id).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), source.as_bytes());
+
+            let external = format!("{source}test.key4=\\uD83D\\uDE00{eol}");
+            fs::write(&path, &external).unwrap();
+            f.docs.on_disk_changed(std::slice::from_ref(&path));
+            assert_eq!(f.docs.snapshot(reopened.id).unwrap().text, format!("{displayed}test.key4=😀\n"));
+            defaults.native_to_ascii = false;
+            f.docs.set_file_defaults(defaults.clone());
+            f.docs.reload_properties();
+            assert_eq!(f.docs.snapshot(reopened.id).unwrap().text, external.replace("\r\n", "\n"));
+            defaults.native_to_ascii = true;
+            f.docs.set_file_defaults(defaults);
+            f.docs.reload_properties();
+            assert_eq!(f.docs.snapshot(reopened.id).unwrap().text, format!("{displayed}test.key4=😀\n"));
+            assert_eq!(fs::read_to_string(&path).unwrap(), external);
+        }
+    }
+}
+
+#[test]
 fn properties_toggle_reloads_only_clean_properties_and_pins_dirty_codec() {
     let f = fixture();
     let paths = ["clean.properties", "dirty.properties", "other.txt"].map(|name| f.root.join(name));
