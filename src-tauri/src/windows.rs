@@ -357,18 +357,35 @@ pub fn create_main_window(app: &AppHandle) -> IdeResult<WebviewWindow> {
 
 /// Creates a new project window; `project` is opened by its frontend on load.
 pub fn create_window(app: &AppHandle, project: Option<PathBuf>) -> IdeResult<WebviewWindow> {
-    create_window_with(app, project, Vec::new())
+    create_window_with(app, project, Vec::new(), false)
 }
 
 /// [`create_window`] that also opens `files` (without `project`: in LightEdit).
-fn create_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) -> IdeResult<WebviewWindow> {
+fn create_window_with(
+    app: &AppHandle,
+    project: Option<PathBuf>,
+    files: Vec<PathBuf>,
+    restoring: bool,
+) -> IdeResult<WebviewWindow> {
     let title = project.as_deref().or(files.first().map(PathBuf::as_path)).and_then(Path::file_name);
     let title = title.map(|n| n.to_string_lossy().into_owned());
     let files = files.into_iter().map(Into::into).collect();
-    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() })
+    create_window_for(app, title, Launch { project: project.map(Into::into), files, ..Default::default() }, restoring)
 }
 
-fn create_window_for(app: &AppHandle, title: Option<String>, launch: Launch) -> IdeResult<WebviewWindow> {
+/// Restoring a saved group preserves its membership and selected tab.
+pub fn create_restored_window(app: &AppHandle, project: PathBuf) -> IdeResult<WebviewWindow> {
+    create_window_with(app, Some(project), Vec::new(), true)
+}
+
+fn create_window_for(
+    app: &AppHandle,
+    title: Option<String>,
+    launch: Launch,
+    _restoring: bool,
+) -> IdeResult<WebviewWindow> {
+    #[cfg(target_os = "macos")]
+    let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
     let windows = app.webview_windows();
     let label = next_label(windows.keys().map(String::as_str));
     let mut config = window_config(app)?;
@@ -388,6 +405,11 @@ fn create_window_for(app: &AppHandle, title: Option<String>, launch: Launch) -> 
     }
     app.state::<WindowsState>().set_launch(&label, launch);
     let window = build_project_window(app, config)?;
+    #[cfg(target_os = "macos")]
+    if let Some(target) = tab_target {
+        crate::window_groups::join(app, target.label(), window.label())?;
+        return Ok(window);
+    }
     focus(&window);
     Ok(window)
 }
@@ -401,7 +423,7 @@ pub fn spawn_window(app: &AppHandle, project: Option<PathBuf>) {
 fn spawn_window_with(app: &AppHandle, project: Option<PathBuf>, files: Vec<PathBuf>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = create_window_with(&app, project, files) {
+        if let Err(e) = create_window_with(&app, project, files, false) {
             tracing::warn!("cannot open window: {}", e.message);
         }
     });
@@ -440,7 +462,7 @@ pub fn open_project_window(
     if !new_window {
         return Ok(OpenOutcome::Current);
     }
-    let window = create_window_with(app, Some(root), files)?;
+    let window = create_window_with(app, Some(root), files, false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -450,7 +472,7 @@ pub fn open_project_window(
 /// detach an editor tab out of its window.
 pub fn open_file_in_new_window(app: &AppHandle, project: Option<PathBuf>, file: PathBuf) -> IdeResult<OpenOutcome> {
     tracing::info!("open_file_in_new_window {} project={:?}", file.display(), project);
-    let window = create_window_with(app, project, vec![file])?;
+    let window = create_window_with(app, project, vec![file], false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
@@ -478,7 +500,7 @@ pub fn open_remote_window(app: &AppHandle, ssh_config: &str, path: &str, new_win
     }
     let title = path.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty() && *n != "~").map(str::to_owned);
     let remote = RemoteLaunch { ssh_config: ssh_config.to_owned(), path: path.to_owned() };
-    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() })?;
+    let window = create_window_for(app, title, Launch { remote: Some(remote), ..Default::default() }, false)?;
     Ok(OpenOutcome::Opened { label: window.label().to_owned() })
 }
 
