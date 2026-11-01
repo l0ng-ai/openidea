@@ -19,6 +19,10 @@ The fixtures are standalone: `rust-app` declares its own `[workspace]` and
 
 ## Setup
 
+`astro-app/` is a small Astro project for mixed-language highlighting and official
+language-server checks. Copy it outside the checkout and run `npm install`;
+see [Astro support](../docs/astro.md) for the opt-in LSP test and prerequisites.
+
 Work on a **copy** so git and edits never touch this repository:
 
 ```sh

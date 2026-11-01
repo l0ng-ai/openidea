@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
+    ("astro", include_str!("../../../languages/astro.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
@@ -373,6 +374,7 @@ mod tests {
     /// `name`s exported by `@codemirror/language-data` or built into `src/editor/core/cm/languages.ts`
     /// (the UI resolves `ui-mode` against these).
     const UI_MODES: &[&str] = &[
+        "Astro",
         "Batch",
         "C",
         "C++",
@@ -538,6 +540,28 @@ mod tests {
         assert_eq!(reg.get(&LanguageId::new("bat")).unwrap().line_comment.as_deref(), Some("@REM"));
         let rust = reg.get(&LanguageId::new("rust")).unwrap();
         assert_eq!(rust.language_servers[0].name, "rust-analyzer");
+    }
+
+    #[test]
+    fn astro_has_its_own_mode_and_server_and_respects_file_associations() {
+        let reg = reg();
+        let astro = reg.get(&LanguageId::new("astro")).unwrap();
+        assert_eq!(astro.name, "Astro");
+        assert_eq!(astro.ui_mode.as_deref(), Some("Astro"));
+        assert_eq!(astro.language_servers.len(), 1);
+        let server = &astro.language_servers[0];
+        assert_eq!((&*server.name, &*server.command), ("astro-language-server", "astro-ls"));
+        assert_eq!(server.args, ["--stdio"]);
+        assert!(server.connect.is_none() && !server.tsserver_project);
+        assert_eq!(reg.detect(Path::new("page.astro"), Some("<!DOCTYPE html>")).as_str(), "astro");
+        let mut ft = FileTypes::default();
+        ft.associations.insert("html".into(), assoc(&["*.astro"], &[], &[]));
+        reg.set_file_types(ft);
+        assert_eq!(detect(&reg, "page.astro"), "html");
+        reg.set_file_types(FileTypes::default());
+        assert_eq!(detect(&reg, "page.astro"), "astro");
+        assert_eq!(detect(&reg, "page.html"), "html");
+        assert_eq!(detect(&reg, "app.ts"), "typescript");
     }
 
     #[test]
@@ -746,6 +770,8 @@ mod tests {
             ("a.scss", "scss"),
             ("a.less", "less"),
             ("App.vue", "vue"),
+            ("Layout.astro", "astro"),
+            ("INDEX.ASTRO", "astro"),
             ("App.svelte", "svelte"),
             ("package.json", "json"),
             ("tsconfig.json", "jsonc"),

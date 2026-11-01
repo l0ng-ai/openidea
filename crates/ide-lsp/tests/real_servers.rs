@@ -346,6 +346,100 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
     }
 }
 
+/// Run on an installed copy of fixtures/astro-app. Exercises the same language
+/// definition, SDK hook, stdio client and synchronization used by the app.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires npm install in OPENIDEA_TEST_ASTRO_PROJECT (a copy of fixtures/astro-app)"]
+async fn astro_language_server_end_to_end() {
+    let root =
+        std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_ASTRO_PROJECT").expect("OPENIDEA_TEST_ASTRO_PROJECT"))
+            .canonicalize()
+            .unwrap();
+    let file = root.join("src/pages/index.astro");
+    let source = std::fs::read_to_string(&file).unwrap().replace("const items = ", "const items=");
+    let registry = LanguageRegistry::load(None).unwrap();
+    assert_eq!(registry.detect(&file, source.lines().next()).as_str(), "astro");
+    let (mgr, events) = manager(&root, registry);
+    mgr.set_config_hook(Box::new({
+        let root = root.clone();
+        move |cfg, server_root| ide_sdk::apply::configure_server(cfg, &root, server_root, &Default::default())
+    }));
+    let doc = DocId::next();
+    mgr.did_open(doc, &file, &LanguageId::new("astro"), 1, &source);
+    let at = |needle: &str, delta: usize| {
+        let prefix = &source[..source.find(needle).unwrap() + delta];
+        Pos::new(
+            prefix.bytes().filter(|b| *b == b'\n').count() as u32,
+            prefix.rsplit('\n').next().unwrap().encode_utf16().count() as u32,
+        )
+    };
+    retry("Astro server ready", Duration::from_secs(30), || {
+        let status = last_status(&events, "astro-language-server");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, message)) = &status {
+            panic!("Astro failed: {message:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+    let pos = at("items.map", 1);
+    let hover = retry("Astro hover", Duration::from_secs(30), || {
+        let mgr = mgr.clone();
+        async move { mgr.hover(doc, pos, Default::default()).await.ok().flatten() }
+    })
+    .await;
+    assert!(hover.contents.value.contains("string[]"), "{}", hover.contents.value);
+    let completions = mgr.completion(doc, at("items.map", 6), Some(".".into()), Default::default()).await.unwrap();
+    assert!(completions.items.iter().any(|item| item.label == "map"));
+    let defs = mgr.goto(doc, pos, GotoKind::Definition).await.unwrap();
+    assert!(defs.iter().any(|loc| loc.path == file && loc.range.start.line == at("const items", 6).line));
+    let refs = mgr.references(doc, pos, true, false, Default::default()).await.unwrap();
+    assert!(refs.locations.iter().filter(|loc| loc.path == file).count() >= 2);
+    let rename = mgr.rename(doc, pos, "entries".into(), Default::default()).await.unwrap();
+    assert!(edited_lines(&rename.edit, &file).len() >= 2);
+    assert!(!mgr.document_symbols(doc).await.unwrap().unwrap().is_empty());
+    assert!(mgr.signature_help(doc, at("items.map(", 10)).await.unwrap().is_some());
+    assert!(!mgr.semantic_tokens(doc).await.unwrap().unwrap().data.is_empty());
+    assert!(mgr.can_format(doc).await.unwrap());
+    let edits = mgr
+        .format(doc, None, ide_lsp::types::FormatOptions { tab_size: 2, insert_spaces: true, on_save: false })
+        .await
+        .unwrap();
+    assert!(!edits.is_empty(), "formatting must fix the deliberately unformatted assignment");
+    let mut formatted = ide_text::Document::new(&source);
+    formatted.apply_edits(&edits).unwrap();
+    assert!(formatted.text().contains("const items = "));
+    assert!(formatted.text().contains("<Layout"));
+    // Unsaved edits travel through didChange; diagnostics must refer to them.
+    let inserted = "const broken: number = \"wrong\";\n";
+    let offset = source.find("const items").unwrap();
+    let changed = format!("{}{}{}", &source[..offset], inserted, &source[offset..]);
+    mgr.did_change(
+        doc,
+        2,
+        &[AppliedChange { range: Range::new(at("const items", 0), at("const items", 0)), text: inserted.into() }],
+        &|| changed.clone(),
+    );
+    retry("Astro type diagnostic", Duration::from_secs(30), || {
+        let found = events.lock().iter().any(|e| {
+            matches!(e, IdeEvent::Diagnostics { path, items, .. }
+            if path == &file && items.iter().any(|d| d.message.contains("not assignable")))
+        });
+        async move { found.then_some(()) }
+    })
+    .await;
+    // Ask the existing code-action pipeline; the server decides which actions
+    // are available (there need not be a quick fix for every diagnostic).
+    mgr.code_actions(doc, Range::new(at("const items", 0), at("const items", 0)), Vec::new()).await.unwrap();
+    mgr.did_close(doc);
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+    assert!(
+        !events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::LanguageServer { name, .. } if name == "vscode-html-language-server"))
+    );
+}
+
 /// Vue Language Server 3 in hybrid mode: its `tsserver/request`s go through the
 /// client to vtsls with `@vue/typescript-plugin` (issue #25). Set
 /// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vue/language-server typescript@6 @vtsls/language-server`.

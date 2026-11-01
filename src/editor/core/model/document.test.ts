@@ -37,6 +37,25 @@ function setup(files: Record<string, string>, settings = {}) {
 afterEach(() => useDocMeta.setState({}, true));
 
 describe("DocumentManager + slots", () => {
+  it("keeps Astro's identity and lazy mode when switching and reopening files", async () => {
+    const { manager } = setup({
+      "/p/index.astro": "---\nconst title = 'Astro';\n---\n<h1>{title}</h1>",
+      "/p/app.ts": "let n = 1;",
+    });
+    for (const [path, id, mode] of [
+      ["/p/index.astro", "astro", "astro"],
+      ["/p/app.ts", "typescript", "typescript"],
+      ["/p/index.astro", "astro", "astro"],
+    ] as const) {
+      const model = await manager.acquire(path);
+      const slot = new EditorSlot(model, "t1", host);
+      expect(model.getMeta().language).toBe(id);
+      expect(slot.currentState().facet(languageFacet)?.name).toBe(mode);
+      slot.dispose();
+      await settle();
+    }
+    manager.stop();
+  });
   it("shares one document between split slots and syncs edits to the backend", async () => {
     const { backend, manager, frame } = setup({ "/p/a.txt": "hello\n" });
     const model = await manager.acquire("/p/a.txt");

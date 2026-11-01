@@ -12,6 +12,7 @@ import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { editorController, useEditorStatus, useGotoLine } from "../controller";
 import { useDocMeta, useOutline } from "../model/document";
+import { languageInfo } from "../cm/languages";
 import { symbolChain } from "./outline";
 import { NavChildrenPopup } from "./NavBarPopup";
 import type { NavSegment } from "./navBar";
@@ -206,6 +207,20 @@ export function CaretStatus() {
       onClick={() => useGotoLine.setState({ open: true })}
     >
       {text}
+    </BarButton>
+  );
+}
+
+export function LanguageStatus() {
+  const meta = useActiveMeta();
+  if (!meta) return null;
+  return (
+    <BarButton
+      aria-label={tx("File Type")}
+      tooltip="File Type"
+      onClick={() => void executeAction("file.settings", "editor.files")}
+    >
+      {languageInfo(meta.language)?.name ?? meta.language}
     </BarButton>
   );
 }

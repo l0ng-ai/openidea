@@ -25,6 +25,9 @@ its search-everything habits — to a native app with a Rust core.
 Editor, code insight, debugger, Git, terminal, database and HTTP clients,
 for 60+ languages. Builds for macOS, Windows and Linux.
 
+[Astro support](docs/astro.md) includes `.astro` syntax highlighting and the
+official Astro Language Server, installable from Settings.
+
 ## Benchmark
 
 Opening [freqtrade](https://github.com/freqtrade/freqtrade) (Python, ~770 files)

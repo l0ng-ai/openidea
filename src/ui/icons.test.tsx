@@ -172,6 +172,7 @@ describe("fileIconName", () => {
     ["main.dart", "file-dart"],
     ["App.vue", "file-vue"],
     ["App.svelte", "file-svelte"],
+    ["Layout.astro", "file-astro"],
     ["styles.scss", "file-scss"],
     ["styles.sass", "file-sass"],
     ["styles.less", "file-less"],

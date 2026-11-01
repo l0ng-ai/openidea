@@ -1,0 +1,13 @@
+{
+  "name": "openidea-astro-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "astro dev", "build": "astro build" },
+  "dependencies": { "astro": "^7.4.4" },
+  "devDependencies": {
+    "@astrojs/language-server": "^2.17.3",
+    "typescript": "~6.0.3",
+    "prettier": "^3.9.10",
+    "prettier-plugin-astro": "^1.1.2"
+  }
+}

@@ -88,7 +88,7 @@ function extensionOf(path: string): string {
 /** Extensions whose code can reference each other's declarations. */
 const FAMILIES: readonly string[][] = [
   ["java", "kt", "kts", "scala", "groovy"],
-  ["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "vue", "svelte"],
+  ["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "vue", "svelte", "astro"],
   ["c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx", "m", "mm"],
   ["py", "pyi"],
   ["rb", "rake"],

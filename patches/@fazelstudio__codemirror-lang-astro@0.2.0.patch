@@ -1,0 +1,176 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 4383c525bfcf0e764024d461392a025ce0b52582..556be13edf1015ed0c449a3a96d938d87f0a8637 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -119,7 +119,7 @@ const jsData = language.defineLanguageFacet({
+   wordChars: "$"
+ });
+ 
+-const jsxParser = langJavascript.javascript({jsx: true}).language.parser.configure({
++const jsxParser = langJavascript.tsxLanguage.parser.configure({
+   props: [language.languageDataProp.add((type) => type.isTop ? jsData : undefined)]
+ });
+ 
+@@ -299,7 +299,7 @@ function maskDocument(text, fm) {
+   if (!fm) return maskExpressions(text)
+   return text.slice(0, fm.from) +
+     "<!--" +
+-    text.slice(fm.from + 4, fm.to - 3) +
++    text.slice(fm.from + 4, fm.to - 3).replace(/[^\r\n]/g, " ") +
+     "-->" +
+     maskExpressions(text.slice(fm.to))
+ }
+@@ -309,7 +309,7 @@ function maskDocument(text, fm) {
+ // -------------------------------------------------------------------
+ 
+ function openTagAttrs(node, input) {
+-  let open = node.getChild("OpenTag");
++  let open = node.parent?.getChild("OpenTag");
+   if (!open) return {}
+   let cur = open.cursor();
+   if (!cur.firstChild()) return {}
+@@ -385,19 +385,6 @@ const htmlWithProps = html.parser.configure({
+   ]
+ });
+ 
+-// A parse whose only job is to produce a finished tree in one step.
+-class DoneParse {
+-  constructor(tree) { this.tree = tree; this.done = false; }
+-  advance() {
+-    if (this.done) return null
+-    this.done = true;
+-    return this.tree
+-  }
+-  get parsedPos() { return this.tree.length }
+-  stopAt() {}
+-  get stoppedAt() { return null }
+-}
+-
+ // Parser that feeds @lezer/html a masked (expression-free and
+ // frontmatter-commented) version of the document, then mounts the
+ // nested parsers over the real regions via parseMixed.
+@@ -426,7 +413,7 @@ const htmlNesting = common.parseMixed((node, input) => {
+     if (t.indexOf("tsx") >= 0) return {parser: langJavascript.tsxLanguage.parser}
+     if (t.indexOf("typescript") >= 0 || t.indexOf("ts") >= 0) return {parser: langJavascript.typescriptLanguage.parser}
+     if (t.indexOf("jsx") >= 0) return {parser: jsxParser}
+-    return {parser: langJavascript.javascriptLanguage.parser}
++    return {parser: langJavascript.typescriptLanguage.parser}
+   } else if (name == "StyleText") {
+     return {parser: langCss.cssLanguage.parser}
+   } else if (name == "TagName" && /^[A-Z]/.test(input.read(node.from, node.to))) {
+@@ -445,9 +432,7 @@ class MaskedHtmlParser extends common.Parser {
+   }
+ 
+   createParse(input, fragments, ranges) {
+-    let from = ranges.length ? ranges[0].from : 0;
+-    let to = ranges.length ? ranges[0].to : input.length;
+-    let text = input.read(from, to);
++    let text = input.read(0, input.length);
+     let fm = findFrontmatter(text);
+     
+     let parser = htmlWithProps;
+@@ -455,12 +440,14 @@ class MaskedHtmlParser extends common.Parser {
+       parser = parser.configure({ props: this.options.props });
+     }
+     
+-    let tree = parser.parse(maskDocument(text, fm));
++    // Keep HTML parsing resumable and reuse unchanged tree fragments too.
++    // Masking preserves positions, including when parsing disjoint ranges.
++    let parse = parser.startParse(maskDocument(text, fm), fragments, ranges);
+     // The masked tree spans the same coordinates as the real input,
+     // so the mixed parse can run against the given (real) input and
+     // mount inner parses over the true expression ranges.  Reusing
+     // the incoming fragments keeps live-edit reparses incremental.
+-    return htmlNesting(new DoneParse(tree), input, fragments, ranges)
++    return htmlNesting(parse, input, fragments, ranges)
+   }
+ 
+   configure(options) {
+diff --git a/dist/index.js b/dist/index.js
+index c680a2c8e7c207bbcfb43fa69c318df9f04c2c3b..a6aa10a1644a3a4286a74799bf329e74cc8e6e43 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -117,7 +117,7 @@ const jsData = defineLanguageFacet({
+   wordChars: "$"
+ });
+ 
+-const jsxParser = javascript({jsx: true}).language.parser.configure({
++const jsxParser = tsxLanguage.parser.configure({
+   props: [languageDataProp.add((type) => type.isTop ? jsData : undefined)]
+ });
+ 
+@@ -297,7 +297,7 @@ function maskDocument(text, fm) {
+   if (!fm) return maskExpressions(text)
+   return text.slice(0, fm.from) +
+     "<!--" +
+-    text.slice(fm.from + 4, fm.to - 3) +
++    text.slice(fm.from + 4, fm.to - 3).replace(/[^\r\n]/g, " ") +
+     "-->" +
+     maskExpressions(text.slice(fm.to))
+ }
+@@ -307,7 +307,7 @@ function maskDocument(text, fm) {
+ // -------------------------------------------------------------------
+ 
+ function openTagAttrs(node, input) {
+-  let open = node.getChild("OpenTag");
++  let open = node.parent?.getChild("OpenTag");
+   if (!open) return {}
+   let cur = open.cursor();
+   if (!cur.firstChild()) return {}
+@@ -383,19 +383,6 @@ const htmlWithProps = parser.configure({
+   ]
+ });
+ 
+-// A parse whose only job is to produce a finished tree in one step.
+-class DoneParse {
+-  constructor(tree) { this.tree = tree; this.done = false; }
+-  advance() {
+-    if (this.done) return null
+-    this.done = true;
+-    return this.tree
+-  }
+-  get parsedPos() { return this.tree.length }
+-  stopAt() {}
+-  get stoppedAt() { return null }
+-}
+-
+ // Parser that feeds @lezer/html a masked (expression-free and
+ // frontmatter-commented) version of the document, then mounts the
+ // nested parsers over the real regions via parseMixed.
+@@ -424,7 +411,7 @@ const htmlNesting = parseMixed((node, input) => {
+     if (t.indexOf("tsx") >= 0) return {parser: tsxLanguage.parser}
+     if (t.indexOf("typescript") >= 0 || t.indexOf("ts") >= 0) return {parser: typescriptLanguage.parser}
+     if (t.indexOf("jsx") >= 0) return {parser: jsxParser}
+-    return {parser: javascriptLanguage.parser}
++    return {parser: typescriptLanguage.parser}
+   } else if (name == "StyleText") {
+     return {parser: cssLanguage.parser}
+   } else if (name == "TagName" && /^[A-Z]/.test(input.read(node.from, node.to))) {
+@@ -443,9 +430,7 @@ class MaskedHtmlParser extends Parser {
+   }
+ 
+   createParse(input, fragments, ranges) {
+-    let from = ranges.length ? ranges[0].from : 0;
+-    let to = ranges.length ? ranges[0].to : input.length;
+-    let text = input.read(from, to);
++    let text = input.read(0, input.length);
+     let fm = findFrontmatter(text);
+     
+     let parser = htmlWithProps;
+@@ -453,12 +438,14 @@ class MaskedHtmlParser extends Parser {
+       parser = parser.configure({ props: this.options.props });
+     }
+     
+-    let tree = parser.parse(maskDocument(text, fm));
++    // Keep HTML parsing resumable and reuse unchanged tree fragments too.
++    // Masking preserves positions, including when parsing disjoint ranges.
++    let parse = parser.startParse(maskDocument(text, fm), fragments, ranges);
+     // The masked tree spans the same coordinates as the real input,
+     // so the mixed parse can run against the given (real) input and
+     // mount inner parses over the true expression ranges.  Reusing
+     // the incoming fragments keeps live-edit reparses incremental.
+-    return htmlNesting(new DoneParse(tree), input, fragments, ranges)
++    return htmlNesting(parse, input, fragments, ranges)
+   }
+ 
+   configure(options) {
