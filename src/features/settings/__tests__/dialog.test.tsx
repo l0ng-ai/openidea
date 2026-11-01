@@ -103,7 +103,7 @@ describe("Settings dialog", () => {
     expect(write[0]).toBe("project");
     expect(JSON.parse(write[2])).toEqual([
       expect.objectContaining({ name: "Debug", buildType: "Debug" }),
-      expect.objectContaining({ name: "Release", buildType: "Release", generator: "Ninja", buildArgs: "-j 8" }),
+      expect.objectContaining({ name: "Release", buildType: "Release", generator: "Ninja", buildArgs: ["-j", "8"] }),
     ]);
   });
 

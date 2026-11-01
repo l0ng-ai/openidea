@@ -90,10 +90,6 @@ pub(super) fn detect(root: &Path, profiles: Option<&[CMakeProfile]>, out: &mut V
     }
 }
 
-fn arguments(value: &str) -> Vec<String> {
-    shlex::split(value).unwrap_or_else(|| vec![value.to_owned()])
-}
-
 fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, multiple: bool, out: &mut Vec<RunConfig>) {
     let dir = if profile.build_dir.trim().is_empty() {
         format!("cmake-build-{}", profile.build_type.to_lowercase())
@@ -112,7 +108,7 @@ fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, multiple: b
     }
     configure.args.push(format!("-DCMAKE_BUILD_TYPE={}", profile.build_type));
     configure.args.push("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON".into());
-    configure.args.extend(arguments(&profile.cmake_args));
+    configure.args.extend_from_slice(&profile.cmake_args);
     configure.extras.params.insert("buildDir".into(), dir.clone());
     out.push(configure);
     let mut all = config(
@@ -122,8 +118,10 @@ fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, multiple: b
         "cmake",
         &["--build", &dir, "--config", &profile.build_type],
     );
-    all.args.extend(arguments(&profile.build_args));
-    before(&mut all, &configure_id);
+    all.args.extend_from_slice(&profile.build_args);
+    if !build.join("CMakeCache.txt").is_file() {
+        before(&mut all, &configure_id);
+    }
     out.push(all);
     let mut test = config(
         format!("{prefix}:test"),
@@ -206,8 +204,10 @@ fn targets(
                 if name.is_empty() {
                     build_config.args.extend(["--config".into(), profile.build_type.clone()]);
                 }
-                build_config.args.extend(arguments(&profile.build_args));
-                before(&mut build_config, &format!("{prefix}:configure"));
+                build_config.args.extend_from_slice(&profile.build_args);
+                if !build.join("CMakeCache.txt").is_file() {
+                    before(&mut build_config, &format!("{prefix}:configure"));
+                }
             }
             out.push(build_config);
             let binary = build.join(artifact);
@@ -294,7 +294,7 @@ mod tests {
             name: "Production".into(),
             build_type: "Release".into(),
             build_dir: "output".into(),
-            build_args: "-j 8 -- verbose=1".into(),
+            build_args: ["-j", "8", "--", "verbose=1"].map(String::from).into(),
             env: [("FOO".into(), "bar".into())].into(),
             ..Default::default()
         };
@@ -311,6 +311,13 @@ mod tests {
         );
         assert_eq!(build.env, profile.env);
         assert_eq!(build.extras.before_launch[0].target, "cmake:profile:0:configure");
+        fs::write(root.path().join("output/CMakeCache.txt"), "CMAKE_GENERATOR:INTERNAL=Ninja\n").unwrap();
+        let mut configured = Vec::new();
+        detect(root.path(), Some(std::slice::from_ref(&profile)), &mut configured);
+        for id in ["cmake:profile:0:build", build.id.as_str()] {
+            let build = configured.iter().find(|c| c.id == id).unwrap();
+            assert!(build.extras.before_launch.is_empty(), "{id} should use CMake's automatic regeneration");
+        }
     }
 
     #[test]

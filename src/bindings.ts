@@ -1643,10 +1643,10 @@ export type CMakeProfile = {
 	name?: string,
 	buildType?: string,
 	generator?: string,
-	cmakeArgs?: string,
+	cmakeArgs?: string[],
 	/**  Empty uses cmake-build-<lowercase build type>. */
 	buildDir?: string,
-	buildArgs?: string,
+	buildArgs?: string[],
 	env?: { [key in string]: string },
 };
 

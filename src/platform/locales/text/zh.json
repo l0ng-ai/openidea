@@ -5452,6 +5452,5 @@
   "Build arguments": "构建参数",
   "CMake default": "CMake 默认",
   "Quote arguments containing spaces. Build arguments go to cmake --build; use -- before native build tool options.": "包含空格的参数请加引号。构建参数传给 cmake --build；原生构建工具参数前请加 --。",
-  "CMake": "CMake",
   "CMake profile {0}": "CMake 配置 {0}"
 }

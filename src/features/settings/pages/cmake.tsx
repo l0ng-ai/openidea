@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import { DEFAULT_CMAKE_PROFILE, type CMakeProfileValid } from "@/platform/cmakeSettings";
+import { formatArgs, parseArgs } from "@/platform/commandLine";
 import { tx } from "@/platform/i18n";
 import { IconButton, Input, T } from "@/ui";
 import { Row, Section } from "../components/Form";
@@ -7,6 +8,22 @@ import { useSetting } from "../components/context";
 import { TableEditor } from "./workflowControls";
 import styles from "./Workflow.module.css";
 import own from "./CMake.module.css";
+
+function ArgumentsInput({ id, value, onChange }: { id: string; value: string[]; onChange: (args: string[]) => void }) {
+  const [text, setText] = useState<string>();
+  return (
+    <Input
+      id={id}
+      className={styles.wide}
+      value={text ?? formatArgs(value)}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(parseArgs(e.target.value));
+      }}
+      onBlur={() => setText(undefined)}
+    />
+  );
+}
 
 export function CMakeProfiles() {
   const [saved, setProfiles] = useSetting<CMakeProfileValid[] | undefined>("cmake.profiles");
@@ -74,20 +91,29 @@ export function CMakeProfiles() {
         <Section title="Profile settings">
           {fields.map(([key, label]) => (
             <Row key={key} label={label} htmlFor={`${id}-${key}`} className={styles.alignedRow}>
-              <Input
-                id={`${id}-${key}`}
-                className={styles.wide}
-                value={current[key]}
-                list={key === "buildType" || key === "generator" ? `${id}-${key}-options` : undefined}
-                placeholder={
-                  key === "buildDir"
-                    ? "cmake-build-" + current.buildType.toLowerCase()
-                    : key === "generator"
-                      ? tx("CMake default")
-                      : undefined
-                }
-                onChange={(e) => update({ [key]: e.target.value })}
-              />
+              {key === "cmakeArgs" || key === "buildArgs" ? (
+                <ArgumentsInput
+                  key={index}
+                  id={`${id}-${key}`}
+                  value={current[key]}
+                  onChange={(args) => update({ [key]: args })}
+                />
+              ) : (
+                <Input
+                  id={`${id}-${key}`}
+                  className={styles.wide}
+                  value={current[key]}
+                  list={key === "buildType" || key === "generator" ? `${id}-${key}-options` : undefined}
+                  placeholder={
+                    key === "buildDir"
+                      ? "cmake-build-" + current.buildType.toLowerCase()
+                      : key === "generator"
+                        ? tx("CMake default")
+                        : undefined
+                  }
+                  onChange={(e) => update({ [key]: e.target.value })}
+                />
+              )}
             </Row>
           ))}
           <datalist id={`${id}-buildType-options`}>

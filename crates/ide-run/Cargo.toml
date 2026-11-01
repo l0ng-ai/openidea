@@ -20,7 +20,6 @@ parking_lot.workspace = true
 tracing.workspace = true
 zip.workspace = true
 quick-xml = "0.42"
-shlex = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -662,9 +662,9 @@ fn cmake_profiles_control_commands_names_and_environment() {
             name: "Production".into(),
             build_type: "Release".into(),
             generator: generator.into(),
-            cmake_args: "-DFEATURE=ON '-DMESSAGE=two words'".into(),
+            cmake_args: ["-DFEATURE=ON", "-DMESSAGE=two words", "-DQUOTE=\"hello world\"", ""].map(String::from).into(),
             build_dir: "output dir".into(),
-            build_args: "-j 8 -- VERBOSE=1".into(),
+            build_args: ["-j", "8", "--", "VERBOSE=1"].map(String::from).into(),
             env: [("MY_ENV".into(), "yes".into())].into(),
         };
         let configs = ide_run::detect_with_profiles(dir.path(), &[], Some(std::slice::from_ref(&profile)));
@@ -678,6 +678,8 @@ fn cmake_profiles_control_commands_names_and_environment() {
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
             "-DFEATURE=ON",
             "-DMESSAGE=two words",
+            "-DQUOTE=\"hello world\"",
+            "",
         ]);
         assert_eq!(configure.args, expected);
         assert_eq!(configure.name, "CMake Configure (output dir)");
@@ -692,4 +694,30 @@ fn cmake_profiles_control_commands_names_and_environment() {
     }
     assert_eq!(ide_run::detect_with_profiles(dir.path(), &[], None), detect(dir.path()));
     assert!(ide_run::detect_with_profiles(dir.path(), &[], Some(&[])).is_empty());
+}
+
+#[test]
+fn cmake_profile_build_configures_only_without_a_cache() {
+    use ide_core::settings::CMakeProfile;
+    let root = project(&[("CMakeLists.txt", "project(app)")]);
+    for dir in ["", "custom output"] {
+        let profile = CMakeProfile { build_dir: dir.into(), generator: "Ninja".into(), ..Default::default() };
+        let build_dir = root.path().join(if dir.is_empty() { "cmake-build-debug" } else { dir });
+        for cached in [false, true] {
+            if cached {
+                fs::create_dir_all(&build_dir).unwrap();
+                // Generator changes are handled by an explicit Configure, not every Build.
+                fs::write(build_dir.join("CMakeCache.txt"), "CMAKE_GENERATOR:INTERNAL=Unix Makefiles\n").unwrap();
+            }
+            let configs = ide_run::detect_with_profiles(root.path(), &[], Some(std::slice::from_ref(&profile)));
+            let build = find(&configs, "cmake:profile:0:build");
+            if cached {
+                assert!(build.extras.before_launch.is_empty());
+            } else {
+                assert_eq!(build.extras.before_launch.len(), 1);
+                assert_eq!(build.extras.before_launch[0].target, "cmake:profile:0:configure");
+            }
+            assert_eq!(find(&configs, "cmake:profile:0:test").extras.before_launch[0].target, build.id);
+        }
+    }
 }
