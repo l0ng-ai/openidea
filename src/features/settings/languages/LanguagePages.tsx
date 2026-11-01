@@ -319,6 +319,7 @@ export function GradlePage() {
 }
 
 export function MavenPage() {
+  const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
   return (
     <div className={styles.page}>
       <Section>
@@ -331,7 +332,7 @@ export function MavenPage() {
           directory
           browseTitle="Select Maven Home Directory"
           aria-label="Maven home path"
-          hint="Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw."
+          hint="Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw. Bypassed while the Maven daemon is enabled."
         />
         <PathInput
           k="languages.java.maven.userSettings"
@@ -347,6 +348,19 @@ export function MavenPage() {
           placeholder="From settings.xml, else ~/.m2/repository"
           title="Select Local Repository"
           hint="Passed as -Dmaven.repo.local."
+        />
+        <Toggle
+          label="Use Maven Daemon (mvnd)"
+          checked={daemon}
+          onChange={setDaemon}
+          hint="Builds, sync and Maven run configurations run through mvnd for speed. It embeds its own Maven (the home and mvnw are bypassed), needs Java 17+ and builds in parallel by default. Falls back to mvn when mvnd is missing or the JDK is too old."
+        />
+        <PathInput
+          k="languages.java.maven.mvndHome"
+          label="Maven Daemon home path"
+          placeholder="MVND_HOME, else auto-detected"
+          title="Select Maven Daemon Home Directory"
+          hint="The mvnd home (or its executable). Empty = $MVND_HOME, else mvnd on PATH."
         />
       </Section>
     </div>

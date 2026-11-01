@@ -217,7 +217,10 @@ pub fn sync_maven(
     for (n, top) in model.projects.iter().filter(|p| !p.aggregated).enumerate() {
         let effective = cache_dir.join(format!("effective-pom-{n}.xml"));
         let _ = std::fs::remove_file(&effective);
-        let mut args: Vec<String> = vec!["-B".into(), "-fae".into(), "-Dstyle.color=never".into()];
+        // `-T1` keeps mvnd serial: its default parallel build interleaves the
+        // `dependency:tree` output of concurrent modules, which the sync parses
+        // as one stream. mvn is serial anyway, so this only pins the daemon.
+        let mut args: Vec<String> = vec!["-B".into(), "-fae".into(), "-Dstyle.color=never".into(), "-T1".into()];
         args.extend(options.maven_options.iter().cloned());
         if options.offline {
             args.push("-o".into());
@@ -419,5 +422,26 @@ mod tests {
         let text = "[INFO] x\n[ERROR] Failed to execute goal\n[ERROR] \n[ERROR] Re-run Maven using -X\n";
         assert_eq!(error_summary(text), "Failed to execute goal");
         assert_eq!(error_summary("one\nlast line\n\n"), "last line");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maven_sync_runs_the_daemon_command_serially() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("p");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("pom.xml"), "<project><groupId>g</groupId><artifactId>a</artifactId></project>")
+            .unwrap();
+        let launcher = tmp.path().join("fake-mvnd");
+        std::fs::write(&launcher, "#!/bin/sh\nprintf '%s\\n' \"$@\" > mvnd-args\n").unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let options =
+            SyncOptions { maven_command: Some(launcher.to_string_lossy().into_owned()), ..Default::default() };
+        sync_maven(&root, &tmp.path().join("cache"), &options, &CancellationToken::new(), &|_| {}).unwrap();
+        let args = std::fs::read_to_string(root.join("mvnd-args")).unwrap();
+        // `-T1` pins the daemon serial so the dependency trees stay parseable.
+        assert!(args.contains("-T1"), "args: {args}");
+        assert!(args.contains("help:effective-pom"), "args: {args}");
     }
 }

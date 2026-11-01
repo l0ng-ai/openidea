@@ -98,8 +98,21 @@ pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, 
 
 /// `mvn` of the configured Maven home (`languages.java.maven.home`): the
 /// executable itself, `<home>/bin/mvn` or `<bin>/mvn`; else of the Maven the project
-/// pins for mise / asdf when it has no Maven wrapper.
+/// pins for mise / asdf when it has no Maven wrapper. With `maven.daemon` on, the
+/// Maven Daemon (`mvnd`) replaces all of that — it embeds its own Maven — unless
+/// it is not installed or the project JDK is older than the Java 17 its daemon
+/// needs, in which case the build stays on mvn (with a logged warning).
 pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
+    if s.languages.java.maven.daemon {
+        match mvnd_command(root, s) {
+            // No project JDK at all lets mvnd pick its own Java, which may still be new enough.
+            Some(mvnd) if project_jdk(root, s).is_none_or(|j| j.major >= 17) => return Some(mvnd),
+            Some(_) => tracing::warn!(
+                "Maven daemon: the project JDK is older than the Java 17 its daemon needs; building with mvn"
+            ),
+            None => tracing::warn!("Maven daemon is enabled but mvnd was not found; building with mvn"),
+        }
+    }
     let name = if cfg!(windows) { "mvn.cmd" } else { "mvn" };
     let Some(p) = setting_path(root, &s.languages.java.maven.home) else {
         if root.join("mvnw").is_file() || root.join("mvnw.cmd").is_file() {
@@ -114,6 +127,41 @@ pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
         tracing::warn!("Maven home {} has no {name}", p.display());
     }
     found
+}
+
+/// The `mvnd` executable when the Maven Daemon is enabled: the configured home
+/// (`languages.java.maven.mvndHome`, the executable itself or `<home>/bin/mvnd`),
+/// else `$MVND_HOME`, else `mvnd` on `PATH`, else the common Homebrew / sdkman
+/// locations. `None` = not found; the caller falls back to `mvn`.
+pub fn mvnd_command(root: &Path, s: &Settings) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "mvnd.cmd" } else { "mvnd" };
+    if let Some(p) = setting_path(root, &s.languages.java.maven.mvnd_home) {
+        let found = [p.clone(), p.join("bin").join(name), p.join(name)].into_iter().find(|c| c.is_file());
+        if found.is_none() {
+            tracing::warn!("Maven Daemon home {} has no {name}", p.display());
+        }
+        return found;
+    }
+    if let Some(home) = std::env::var_os("MVND_HOME").map(PathBuf::from) {
+        let found = [home.join("bin").join(name), home.join(name)].into_iter().find(|c| c.is_file());
+        if found.is_none() {
+            tracing::warn!("MVND_HOME {} has no {name}", home.display());
+        }
+        return found;
+    }
+    if let Some(found) = crate::exec::which(name) {
+        return Some(found);
+    }
+    if let Some(home) = crate::home_dir() {
+        let sdkman = home.join(".sdkman/candidates/mvnd/current");
+        let candidates = [
+            sdkman.join("bin").join(name),
+            PathBuf::from("/opt/homebrew/opt/mvnd").join("bin").join(name),
+            PathBuf::from("/usr/local/opt/mvnd").join("bin").join(name),
+        ];
+        return candidates.into_iter().find(|c| c.is_file());
+    }
+    None
 }
 
 /// Project launcher policy for sync and tool-window tasks.
@@ -709,15 +757,18 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                         c.args.splice(0..0, mvn_options.iter().cloned());
                     }
                 } else if c.kind == "maven"
-                    && matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat")
                     && let Some(mvn) = &mvn
+                    && is_maven_launcher(&c.command)
                 {
-                    // A goal configuration saved from the tool window keeps the
-                    // literal `mvn` / `mvn.cmd` the launcher resolved to; without a
-                    // wrapper it cannot start when Maven lives on a version
-                    // manager's shims or a configured home (#328). Detected configs
-                    // take the Maven options too, but the saved ones already baked
-                    // them into `args`.
+                    // A goal configuration saved from the tool window bakes in the
+                    // launcher that was current then — the literal `mvn` (#328) or
+                    // its resolved absolute path. Matching by file name redirects
+                    // all of those to the settings-resolved launcher on every
+                    // launch: a later Maven home or daemon change takes effect
+                    // without editing each saved config, and one saved while the
+                    // daemon was on heals back to mvn when it is turned off.
+                    // Detected configs take the Maven options too, but the saved
+                    // ones already baked them into `args`.
                     c.command = mvn.to_string_lossy().into_owned();
                 }
             }
@@ -732,6 +783,14 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
 
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Whether `command` names one of the Maven launchers (`mvn`, the `mvnw` wrapper
+/// or `mvnd`), bare or as a full path — the shapes goal configurations saved from
+/// the tool window can carry.
+fn is_maven_launcher(command: &str) -> bool {
+    let name = Path::new(command).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    matches!(name.as_str(), "mvn" | "mvn.cmd" | "mvn.bat" | "mvnw" | "mvnw.cmd" | "mvnd" | "mvnd.cmd")
 }
 
 /// Command typed into a new terminal to activate the project virtualenv

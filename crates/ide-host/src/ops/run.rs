@@ -98,8 +98,11 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         None => project.settings.effective(),
     };
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
+    // Maven re-applies too: a config listed before a settings change (daemon toggle,
+    // Maven home) keeps the launcher that was current then; re-resolving at launch is
+    // what makes the setting take effect without reopening the project.
     let mut config = config;
-    if matches!(config.kind.as_str(), "gradle" | "tomcat") {
+    if matches!(config.kind.as_str(), "gradle" | "tomcat" | "maven") {
         ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
     } else {
         ide_sdk::apply::resolve_run_command(&mut config, root, &settings);

@@ -4354,6 +4354,16 @@ export type MavenSettings = {
 	userSettings?: string,
 	/**  Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`. */
 	localRepository?: string,
+	/**
+	 *  Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
+	 *  its own Maven, so `home` and the project's `mvnw` are bypassed when it is on.
+	 */
+	daemon?: boolean,
+	/**
+	 *  Maven Daemon home (or its `mvnd` executable); empty = `$MVND_HOME`, else
+	 *  `mvnd` on `PATH` / common install dirs. Only used when `daemon` is on.
+	 */
+	mvndHome?: string,
 };
 
 export type MemoryCategory = 

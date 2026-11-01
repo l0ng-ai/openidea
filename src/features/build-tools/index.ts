@@ -42,18 +42,18 @@ export const GRADLE_WHEN = "projectOpen && build.gradle";
 const BUILD_FILE = /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?)$/;
 
 function expandAll(tool: BuildTool) {
-  const { model, configs } = useBuild.getState();
+  const { model } = useBuild.getState();
   if (tool === "maven" && model?.maven) {
     const m = model.maven;
     setExpanded(
       tool,
-      expandableKeys(mavenRoots(m), (n) => mavenChildren(n, m, configs)),
+      expandableKeys(mavenRoots(m), (n) => mavenChildren(n, m)),
     );
   } else if (tool === "gradle" && model?.gradle) {
     const g = model.gradle;
     setExpanded(
       tool,
-      expandableKeys(gradleRoots(g), (n) => gradleChildren(n, g, configs)),
+      expandableKeys(gradleRoots(g), (n) => gradleChildren(n, g)),
     );
   }
 }

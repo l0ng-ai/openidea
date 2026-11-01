@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { GradleModel, MavenModel, MavenProject, RunConfig } from "@/platform/ipc";
+import type { GradleModel, MavenModel, MavenPlugin, MavenProject } from "@/platform/ipc";
 import {
   expandableKeys,
   goalCompletions,
@@ -15,6 +15,7 @@ import {
   parseGoalLine,
   parseTaskLine,
   profilesArg,
+  skippedTestRun,
   splitArgs,
   taskCompletions,
   type BuildNode,
@@ -104,21 +105,7 @@ const maven: MavenModel = {
   syncError: null,
 };
 
-const runConfig = (over: Partial<RunConfig>): RunConfig => ({
-  id: "x",
-  name: "x",
-  kind: "maven",
-  command: "mvn",
-  args: [],
-  cwd: null,
-  env: {},
-  detected: true,
-  isTest: false,
-  debugAdapter: null,
-  ...over,
-});
-
-const children = (n: BuildNode) => mavenChildren(n, maven, []) ?? [];
+const children = (n: BuildNode) => mavenChildren(n, maven) ?? [];
 const labels = (nodes: BuildNode[]) => nodes.map(nodeLabel);
 
 describe("Maven tree", () => {
@@ -158,21 +145,14 @@ describe("Maven tree", () => {
     expect(isRunnable(deps[0]!)).toBe(false);
   });
 
-  it("lists the project's maven run configurations", () => {
-    const configs = [
-      runConfig({ id: "a", name: "core [test]", cwd: "core", detected: false }),
-      runConfig({ id: "b", name: "root", cwd: null }),
-      runConfig({ id: "c", kind: "npm", cwd: "core" }),
-    ];
-    const top = mavenChildren(mavenRoots(maven)[1]!, maven, configs)!;
-    expect(labels(top)).toEqual(["Lifecycle", "Plugins", "Run Configurations", "core", "Demo App"]);
-    expect(labels(mavenChildren(top[2]!, maven, configs)!)).toEqual(["root"]);
-    const runs = mavenChildren(top[3]!, maven, configs)!.find((n) => n.kind === "runConfigs")!;
-    expect(labels(mavenChildren(runs, maven, configs)!)).toEqual(["core [test]"]);
+  it("does not list Run Configurations in the tree (run configs live in Services)", () => {
+    const walk = (nodes: readonly BuildNode[]): string[] =>
+      nodes.flatMap((n) => [nodeLabel(n), ...walk(mavenChildren(n, maven) ?? [])]);
+    expect(walk(mavenRoots(maven))).not.toContain("Run Configurations");
   });
 
   it("expand all opens folders but not dependency subtrees", () => {
-    const keys = expandableKeys(mavenRoots(maven), (n) => mavenChildren(n, maven, []));
+    const keys = expandableKeys(mavenRoots(maven), (n) => mavenChildren(n, maven));
     expect(keys.has("mvn:pom.xml")).toBe(true);
     expect(keys.has("mvn:core/pom.xml:deps")).toBe(true);
     expect([...keys].some((k) => k.includes("deps/"))).toBe(false);
@@ -269,14 +249,13 @@ describe("Gradle tree and runs", () => {
     stale: false,
     syncError: null,
   };
-  const kids = (n: BuildNode) =>
-    gradleChildren(n, gradle, [runConfig({ id: "g", name: "app [run]", kind: "gradle" })]) ?? [];
+  const kids = (n: BuildNode) => gradleChildren(n, gradle) ?? [];
 
   it("nests subprojects and groups tasks, other last", () => {
     const roots = gradleRoots(gradle);
     expect(labels(roots)).toEqual(["gradle-demo"]);
-    expect(labels(kids(roots[0]!))).toEqual(["Tasks", "Run Configurations", "app", "core"]);
-    const app = kids(roots[0]!)[2]!;
+    expect(labels(kids(roots[0]!))).toEqual(["Tasks", "app", "core"]);
+    const app = kids(roots[0]!)[1]!;
     const groups = kids(kids(app)[0]!);
     expect(labels(groups)).toEqual(["application", "build", "verification", "other"]);
     expect(labels(kids(kids(kids(roots[0]!)[0]!)[0]!))).toEqual(["init", "wrapper"]);
@@ -305,5 +284,42 @@ describe("Gradle tree and runs", () => {
     const labelsOf = taskCompletions("ru", gradle).map((c) => c.label);
     expect(labelsOf).toEqual([":app:run"]);
     expect(taskCompletions("clean wr", gradle).map((c) => c.line)).toEqual(["clean wrapper"]);
+  });
+});
+
+describe("skippedTestRun", () => {
+  const phaseNode = (name: string): BuildNode => ({
+    kind: "phase",
+    key: `mvn:p:${name}`,
+    project: project({}),
+    phase: name,
+  });
+  const surefire = {
+    groupId: "org.apache.maven.plugins",
+    artifactId: "maven-surefire-plugin",
+    version: null,
+    prefix: "surefire",
+    goals: ["test"],
+  } satisfies MavenPlugin;
+  const goalNode = (goal: string): BuildNode => ({
+    kind: "goal",
+    key: `mvn:g:${goal}`,
+    project: project({}),
+    plugin: surefire,
+    goal,
+  });
+
+  it("refuses only a pure test-phase selection while Skip Tests is on", () => {
+    expect(skippedTestRun([phaseNode("test")], true)).toBe(true);
+    // multi-module test selection
+    expect(skippedTestRun([phaseNode("test"), phaseNode("test")], true)).toBe(true);
+    // mode off runs normally
+    expect(skippedTestRun([phaseNode("test")], false)).toBe(false);
+    // mixed goals still build something
+    expect(skippedTestRun([phaseNode("clean"), phaseNode("test")], true)).toBe(false);
+    // plugin goals stay runnable
+    expect(skippedTestRun([goalNode("test")], true)).toBe(false);
+    // empty selection
+    expect(skippedTestRun([], true)).toBe(false);
   });
 });

@@ -649,6 +649,12 @@ pub struct MavenSettings {
     pub user_settings: String,
     /// Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`.
     pub local_repository: String,
+    /// Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
+    /// its own Maven, so `home` and the project's `mvnw` are bypassed when it is on.
+    pub daemon: bool,
+    /// Maven Daemon home (or its `mvnd` executable); empty = `$MVND_HOME`, else
+    /// `mvnd` on `PATH` / common install dirs. Only used when `daemon` is on.
+    pub mvnd_home: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -802,6 +808,17 @@ mod maven_linkage_tests {
             MavenSettings { unlinked_projects: vec!["pom.xml".into(), "services/api/pom.xml".into()], ..old };
         let encoded = serde_json::to_string(&settings).unwrap();
         assert!(encoded.contains("unlinkedProjects"));
+        assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
+
+    #[test]
+    fn daemon_settings_round_trip() {
+        // Old settings files predate the daemon fields; `serde(default)` keeps them loadable.
+        let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
+        assert!(!old.daemon && old.mvnd_home.is_empty());
+        let settings = MavenSettings { daemon: true, mvnd_home: "/opt/mvnd".into(), ..old };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert!(encoded.contains("\"daemon\":true") && encoded.contains("mvndHome"));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
     }
 }
