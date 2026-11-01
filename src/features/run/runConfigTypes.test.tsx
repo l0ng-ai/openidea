@@ -16,7 +16,7 @@ import {
 import { typeRows } from "./AddConfigPopup";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { buildRows } from "./ConfigChooser";
-import { memberRows } from "./ConfigForm";
+import { ConfigForm, memberRows } from "./ConfigForm";
 import { compoundChildren, compoundCycle, formatEnv, parseEnv, validateConfig } from "./configs";
 import { contextConfig } from "./context";
 import { EditConfigsOverlay, moveConfig, treeRows } from "./EditConfigsDialog";
@@ -70,6 +70,22 @@ beforeEach(() => {
 afterEach(() => disposeTypes());
 
 describe("configuration types", () => {
+  it.each(["spring-boot", "tomcat"])("edits shared update policies in the %s form", async (kind) => {
+    const type = typeFor(kind)!;
+    const original = newConfigOfType(type, []);
+    const config =
+      kind === "spring-boot" ? withParams(original, { ...original.params, mainClass: "a.Main" }) : original;
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    expect(screen.getByRole("button", { name: "On 'Update' action" }).textContent).toContain("Show chooser");
+    expect(screen.getByRole("button", { name: "On frame deactivation" }).textContent).toContain("Do nothing");
+    fireEvent.click(screen.getByRole("button", { name: "On frame deactivation" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Update resources" }));
+    expect(changed).toHaveBeenCalledWith(
+      expect.objectContaining({ params: expect.objectContaining({ onDeactivation: "resources" }) }),
+    );
+  });
+
   it("are contributed through the registry", () => {
     expect(runConfigTypes().map((t) => t.id)).toEqual(expect.arrayContaining(BUILTIN_TYPES.map((t) => t.id)));
   });
