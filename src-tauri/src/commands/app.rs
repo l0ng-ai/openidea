@@ -119,7 +119,7 @@ pub fn app_home_reset() -> IdeResult<()> {
     // Already on the defaults: nothing to record (an idempotent no-op).
     let crate::paths::Layout::Custom(base) = &resolved.layout else {
         return Ok(());
-    }
+    };
     crate::paths::write_pointer(
         &resolved.defaults.0,
         &crate::paths::Layout::Default,
