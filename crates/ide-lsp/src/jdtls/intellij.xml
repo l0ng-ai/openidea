@@ -10,8 +10,12 @@
   https://www.jetbrains.com/help/idea/code-style-java.html describes the corresponding controls.
   Each option below names its IDEA setting; JDT has no exact equivalent for every rule.
   A formatter profile does not sort/group imports (Organize Imports is a separate action).
-  JDT limitation: NO_SPLIT can join existing parameter/call/chain line breaks even with
-  join_wrapped_lines=false. Column alignment applies where a break survives (e.g. comments).
+  Preserve IDEA KEEP_LINE_BREAKS=true using Wrap where necessary (WRAP_COMPACT) and
+  join_wrapped_lines=false (Never join already wrapped lines). JDT NO_SPLIT joins some
+  manual parameter/call/chain breaks even when joining is disabled. Preserving manual
+  breaks takes priority: wrappable code exceeding 120 columns will also wrap, a known
+  difference from IDEA defaults (DO_NOT_WRAP / WRAP_LONG_LINES=false).
+  Alignment values: 16 = WRAP_COMPACT + INDENT_DEFAULT; 18 = WRAP_COMPACT + INDENT_ON_COLUMN.
   The comment width 999999 approximates WRAP_COMMENTS=false without JDT integer overflow.
   JDT has a shared blank-line preservation limit and different empty-body/Javadoc handling.
 -->
@@ -27,58 +31,58 @@
     <setting id="org.eclipse.jdt.core.formatter.continuation_indentation" value="2"/>
     <!-- IndentOptions.CONTINUATION_INDENT_SIZE = 8 -->
     <setting id="org.eclipse.jdt.core.formatter.continuation_indentation_for_array_initializer" value="2"/>
-    <!-- CodeStyleSettings.RIGHT_MARGIN = 120; WRAP_LONG_LINES = false; wrapping below is disabled -->
+    <!-- CodeStyleSettings.RIGHT_MARGIN = 120; wrap where necessary to preserve manual line breaks (see known difference above) -->
     <setting id="org.eclipse.jdt.core.formatter.lineSplit" value="120"/>
-    <!-- KEEP_LINE_BREAKS = true -->
+    <!-- KEEP_LINE_BREAKS = true; Never join already wrapped lines -->
     <setting id="org.eclipse.jdt.core.formatter.join_wrapped_lines" value="false"/>
     <!-- KEEP_BLANK_LINES_IN_DECLARATIONS / IN_CODE / BEFORE_RBRACE = 2 (JDT has one shared limit) -->
     <setting id="org.eclipse.jdt.core.formatter.number_of_empty_lines_to_preserve" value="2"/>
-    <!-- METHOD_PARAMETERS_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS = true (indent on column, no automatic wrap) -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_parameters_in_method_declaration" value="2"/>
-    <!-- METHOD_PARAMETERS_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS = true (indent on column, no automatic wrap) -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_parameters_in_constructor_declaration" value="2"/>
-    <!-- CALL_PARAMETERS_WRAP / ANNOTATION_PARAMETER_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS_IN_CALLS = false -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_method_invocation" value="0"/>
-    <!-- CALL_PARAMETERS_WRAP / ANNOTATION_PARAMETER_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS_IN_CALLS = false -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_allocation_expression" value="0"/>
-    <!-- CALL_PARAMETERS_WRAP / ANNOTATION_PARAMETER_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS_IN_CALLS = false -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_explicit_constructor_call" value="0"/>
-    <!-- CALL_PARAMETERS_WRAP / ANNOTATION_PARAMETER_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS_IN_CALLS = false -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_enum_constant" value="0"/>
-    <!-- CALL_PARAMETERS_WRAP / ANNOTATION_PARAMETER_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS_IN_CALLS = false -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_annotation" value="0"/>
-    <!-- METHOD_CALL_CHAIN_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_selector_in_method_invocation" value="0"/>
-    <!-- ARRAY_INITIALIZER_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_expressions_in_array_initializer" value="0"/>
-    <!-- ASSIGNMENT_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_assignment" value="0"/>
-    <!-- TERNARY_OPERATION_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_conditional_expression" value="0"/>
-    <!-- EXTENDS_LIST_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_superclass_in_type_declaration" value="0"/>
-    <!-- EXTENDS_LIST_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_superinterfaces_in_type_declaration" value="0"/>
-    <!-- THROWS_LIST_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_throws_clause_in_method_declaration" value="0"/>
-    <!-- THROWS_LIST_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_throws_clause_in_constructor_declaration" value="0"/>
-    <!-- RESOURCE_LIST_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_resources_in_try" value="0"/>
-    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_multiplicative_operator" value="0"/>
-    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_additive_operator" value="0"/>
-    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_string_concatenation" value="0"/>
-    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_shift_operator" value="0"/>
-    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_relational_operator" value="0"/>
-    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_bitwise_operator" value="0"/>
-    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP -->
-    <setting id="org.eclipse.jdt.core.formatter.alignment_for_logical_operator" value="0"/>
+    <!-- METHOD_PARAMETERS_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS = true (indent on column); JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_parameters_in_method_declaration" value="18"/>
+    <!-- METHOD_PARAMETERS_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS = true (indent on column); JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_parameters_in_constructor_declaration" value="18"/>
+    <!-- CALL_PARAMETERS_WRAP / ANNOTATION_PARAMETER_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS_IN_CALLS = false; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_method_invocation" value="16"/>
+    <!-- CALL_PARAMETERS_WRAP / ANNOTATION_PARAMETER_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS_IN_CALLS = false; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_allocation_expression" value="16"/>
+    <!-- CALL_PARAMETERS_WRAP / ANNOTATION_PARAMETER_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS_IN_CALLS = false; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_explicit_constructor_call" value="16"/>
+    <!-- CALL_PARAMETERS_WRAP / ANNOTATION_PARAMETER_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS_IN_CALLS = false; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_enum_constant" value="16"/>
+    <!-- CALL_PARAMETERS_WRAP / ANNOTATION_PARAMETER_WRAP = DO_NOT_WRAP; ALIGN_MULTILINE_PARAMETERS_IN_CALLS = false; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_annotation" value="16"/>
+    <!-- METHOD_CALL_CHAIN_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_selector_in_method_invocation" value="16"/>
+    <!-- ARRAY_INITIALIZER_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_expressions_in_array_initializer" value="16"/>
+    <!-- ASSIGNMENT_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_assignment" value="16"/>
+    <!-- TERNARY_OPERATION_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_conditional_expression" value="16"/>
+    <!-- EXTENDS_LIST_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_superclass_in_type_declaration" value="16"/>
+    <!-- EXTENDS_LIST_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_superinterfaces_in_type_declaration" value="16"/>
+    <!-- THROWS_LIST_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_throws_clause_in_method_declaration" value="16"/>
+    <!-- THROWS_LIST_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_throws_clause_in_constructor_declaration" value="16"/>
+    <!-- RESOURCE_LIST_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_resources_in_try" value="16"/>
+    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_multiplicative_operator" value="16"/>
+    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_additive_operator" value="16"/>
+    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_string_concatenation" value="16"/>
+    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_shift_operator" value="16"/>
+    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_relational_operator" value="16"/>
+    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_bitwise_operator" value="16"/>
+    <!-- BINARY_OPERATION_WRAP = DO_NOT_WRAP; JDT wrap where necessary preserves manual breaks -->
+    <setting id="org.eclipse.jdt.core.formatter.alignment_for_logical_operator" value="16"/>
     <!-- CLASS_BRACE_STYLE / METHOD_BRACE_STYLE / LAMBDA_BRACE_STYLE / BRACE_STYLE = END_OF_LINE; ARRAY_INITIALIZER_LBRACE_ON_NEXT_LINE = false -->
     <setting id="org.eclipse.jdt.core.formatter.brace_position_for_type_declaration" value="end_of_line"/>
     <!-- CLASS_BRACE_STYLE / METHOD_BRACE_STYLE / LAMBDA_BRACE_STYLE / BRACE_STYLE = END_OF_LINE; ARRAY_INITIALIZER_LBRACE_ON_NEXT_LINE = false -->
