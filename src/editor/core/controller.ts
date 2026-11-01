@@ -89,6 +89,7 @@ import { NavigationHistory } from "./model/navHistory";
 import { EditHistory } from "./model/editHistory";
 import { loadSession, restoreTabsState, serializeSession, storeSession, type FileViewState } from "./model/session";
 import { docBackend, type DocBackend } from "./backend";
+import { isClassFile } from "@/platform/classFiles";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import type { Scheduler } from "./sync/DocSync";
@@ -860,9 +861,21 @@ export class EditorController implements SlotHost {
       throw new Error("The project is closing");
   }
 
-  async openFile(path: string, o: OpenOptions = {}) {
+  async openFile(path: string, o: OpenOptions = {}): Promise<void> {
     const generation = this.openingGeneration();
     if (isVirtualUri(path)) return this.openVirtual(path, o);
+    if (isClassFile(path)) {
+      await this.projectTransition;
+      this.checkOpening(generation);
+      try {
+        const target = await call(commands.lspResolveClassFile(path));
+        this.checkOpening(generation);
+        return isVirtualUri(target) ? this.openVirtual(target, o) : this.openFile(target, o);
+      } catch (e) {
+        notifications().notify({ level: "warning", title: "Cannot open library class", body: String(e), group: "lsp" });
+        return;
+      }
+    }
     await this.projectTransition;
     this.checkOpening(generation);
     // Images, binary and huge files open in a contributed viewer unless already open as text.
@@ -901,6 +914,7 @@ export class EditorController implements SlotHost {
   }
 
   async openInput(input: EditorInput, o: OpenOptions = {}) {
+    if (input.path && isClassFile(input.path)) return this.openFile(input.path, o);
     return this.admitInput(input, o, this.openingGeneration());
   }
 

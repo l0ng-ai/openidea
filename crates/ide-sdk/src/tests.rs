@@ -543,12 +543,12 @@ fn build_dependencies_resolve_to_local_jars() {
         std::fs::write(&p, "").unwrap();
         p
     };
-    touch(m2.join("com/google/guava/guava/33.0/guava-33.0.jar"));
-    let guava_src = touch(m2.join("com/google/guava/guava/33.0/guava-33.0-sources.jar"));
+    let guava = touch(m2.join("com/google/guava/guava/33.0/guava-33.0.jar"));
+    touch(m2.join("com/google/guava/guava/33.0/guava-33.0-sources.jar"));
     let junit = touch(m2.join("junit/junit/4.13/junit-4.13.jar"));
     let files = gradle.join("caches/modules-2/files-2.1/org.slf4j/slf4j-api/2.0.9");
-    touch(files.join("a1b2/slf4j-api-2.0.9.jar"));
-    let slf4j_src = touch(files.join("c3d4/slf4j-api-2.0.9-sources.jar"));
+    let slf4j = touch(files.join("a1b2/slf4j-api-2.0.9.jar"));
+    touch(files.join("c3d4/slf4j-api-2.0.9-sources.jar"));
     let dep = |gradle: bool, g: &str, a: &str, v: &str| BuildDependency {
         gradle,
         group: g.into(),
@@ -569,14 +569,14 @@ fn build_dependencies_resolve_to_local_jars() {
     assert_eq!(
         shown,
         [
-            ("Maven: com.google.guava:guava:33.0", "maven", "guava-33.0-sources.jar"),
+            ("Maven: com.google.guava:guava:33.0", "maven", "guava-33.0.jar"),
             ("Maven: junit:junit:4.13", "maven", "junit-4.13.jar"),
-            ("Gradle: org.slf4j:slf4j-api:2.0.9", "gradle", "slf4j-api-2.0.9-sources.jar"),
+            ("Gradle: org.slf4j:slf4j-api:2.0.9", "gradle", "slf4j-api-2.0.9.jar"),
         ]
     );
-    assert_eq!(groups[0].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&guava_src)));
+    assert_eq!(groups[0].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&guava)));
     assert_eq!(groups[1].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&junit)));
-    assert_eq!(groups[2].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&slf4j_src)));
+    assert_eq!(groups[2].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&slf4j)));
     // A Gradle build also finds jars installed in the Maven local repository (`mavenLocal()`).
     let groups = dependency_libraries(&[dep(true, "junit", "junit", "4.13")], Some(&m2), Some(&gradle));
     assert_eq!(groups[0].name, "Gradle: junit:junit:4.13");

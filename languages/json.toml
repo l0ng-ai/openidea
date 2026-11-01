@@ -1,5 +1,6 @@
 id = "json"
 name = "JSON"
+formatter = { tool = "prettier", parser = "json", range = true }
 extensions = ["json", "geojson", "topojson", "webmanifest", "har", "avsc", "jsonl", "ndjson", "json.map"]
 filenames = [".prettierrc", ".watchmanconfig", "composer.lock", ".arcconfig"]
 indent = { tab-size = 2, insert-spaces = true }

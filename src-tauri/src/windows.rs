@@ -284,6 +284,11 @@ fn hex_color(hex: &str) -> Option<Color> {
 /// Builds a project window painted in the saved theme's frame colour, so it
 /// doesn't flash the light default before its page (and splash) loads.
 fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<WebviewWindow> {
+    let visible = cfg!(target_os = "macos") && config.visible;
+    let focused = config.focus;
+    if visible {
+        config.visible = false;
+    }
     let state = app.try_state::<AppState>();
     let appearance = state.as_ref().map(|s| s.global_settings.effective().appearance);
     // A plugin theme replaces the built-in one in either OS mode; the UI records its resolved frame.
@@ -293,6 +298,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     } else if let Some(a) = &appearance {
         config.background_color = Some(frame_color(a, false));
     }
+    #[cfg(target_os = "linux")]
+    let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
         .and_then(|b| dev_font_preferences(b).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
@@ -304,6 +311,16 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         && window.theme().is_ok_and(|t| t == Theme::Dark)
     {
         let _ = window.set_background_color(Some(frame_color(&a, true)));
+    }
+    #[cfg(target_os = "linux")]
+    if show_after_build {
+        window.show().map_err(|e| IdeError::internal(format!("cannot show window: {e}")))?;
+    }
+    if visible {
+        window.show().map_err(|e| IdeError::internal(format!("cannot show window: {e}")))?;
+        if focused {
+            let _ = window.set_focus();
+        }
     }
     Ok(window)
 }
@@ -754,6 +771,8 @@ pub fn open_settings_window(
         config.background_color = Some(color);
     }
     windows.set_launch(&label, Launch { settings_page: page, new_projects, ..Default::default() });
+    #[cfg(target_os = "linux")]
+    crate::linux_window_state::prepare(app, &mut config);
     let builder = WebviewWindowBuilder::from_config(app, &config);
     // AppKit child windows can disappear when dragged to another display's Space.
     // The settings label already tracks ownership and parent-close cleanup.
@@ -821,7 +840,7 @@ fn fit_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri:
 /// may still be on another display with a different scale, so its size is converted with its own
 /// scale and its position is given in physical pixels.
 #[cfg(not(target_os = "macos"))]
-fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
+pub(super) fn place_settings_window(window: &WebviewWindow, parent: &WebviewWindow) -> tauri::Result<()> {
     let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
         return Ok(());
     };

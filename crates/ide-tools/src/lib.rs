@@ -11,6 +11,7 @@
 
 pub mod archive;
 mod bundled;
+pub mod formatter;
 pub mod jdk;
 pub mod platform;
 mod process;
@@ -338,6 +339,9 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
         }
     };
     for l in langs {
+        if let Some(f) = &l.formatter {
+            add(&f.tool, &f.tool, ToolKind::Formatter, None, &l.name);
+        }
         for s in &l.language_servers {
             add(&s.name, &s.command, ToolKind::LanguageServer, s.install_hint.as_ref(), &l.name);
         }

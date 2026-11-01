@@ -407,15 +407,20 @@ function runIfEnabled(id: string): boolean {
 }
 
 /** Run a configured mouse binding; editors prepare the clicked caret and focus first. */
-export function dispatchMouseShortcut(e: MouseEvent, prepare?: () => boolean): boolean {
+export function dispatchMouseShortcut(e: MouseEvent, prepare?: (id: string) => boolean, arg?: unknown): boolean {
   if (suspended > 0) return false;
   const stroke = mouseStrokeOf(e);
   if (!stroke) return false;
   const ids = effectiveBindings()
     .filter(([b]) => b === stroke)
     .map(([, id]) => id);
-  if (!ids.length || (prepare && !prepare())) return false;
-  for (const id of ids.reverse()) if (runIfEnabled(id)) return true;
+  for (const id of ids.reverse()) {
+    const action = getAction(id);
+    if (!action || !isActionKeyEnabled(action)) continue;
+    if (prepare && !prepare(id)) return false;
+    void executeAction(id, arg);
+    return true;
+  }
   return false;
 }
 

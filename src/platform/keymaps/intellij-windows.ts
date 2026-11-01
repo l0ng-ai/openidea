@@ -278,7 +278,7 @@ export const intellijWindows: Record<string, string[]> = {
   "debug.setValue": ["F2"],
   "debug.jumpToSource": ["F4"],
   "debug.evaluate": ["Alt+F8"],
-  "debug.quickEvaluate": ["Ctrl+Alt+F8"],
+  "debug.quickEvaluate": ["Ctrl+Alt+F8", "Alt+Button1"],
   "debug.browseConsoleHistory": ["Ctrl+Alt+E"],
 
   // VCS

@@ -42,6 +42,8 @@ pub struct Project {
     pub detected_roots: Arc<RwLock<Vec<SourceFolder>>>,
     /// Per-project cache directory (build tool sync results…).
     pub cache_dir: PathBuf,
+    /// Superseded launch snapshots retained until this project session ends.
+    pub(crate) java_launch_snapshots: Mutex<crate::ops::java::cache::Session>,
     /// Database tool window: data sources and their connections.
     pub db: Arc<ide_db::DbManager>,
     /// HTTP Client responses (IDEA's `.idea/httpRequests`), in the app data dir.
@@ -50,6 +52,7 @@ pub struct Project {
     pub agents: Arc<ide_agent::AgentManager>,
     /// Native notebooks and owned kernels, scoped to this project incarnation.
     pub notebooks: Arc<crate::notebook::NotebookService>,
+    pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     pub(crate) watcher: Watcher,
     /// Watchers of the Project Structure content roots outside the project folder.
     pub(crate) content_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
@@ -130,6 +133,8 @@ impl Host {
             // jdtls -data workspace below stays per-project under the data dir.
             let tools_root = ide_tools::app_root(&self.data_dir);
             let config_dir = self.config_dir.clone();
+            let sink = sink.clone();
+            let formatter_problem = std::sync::Mutex::new(None);
             lsp.set_config_hook(Box::new(move |cfg, server_root| {
                 let member = ide_workspace::workspace::Workspace::load(&root).ok().flatten().and_then(|w| {
                     w.projects.into_iter().filter(|p| server_root.starts_with(p)).max_by_key(|p| p.components().count())
@@ -143,6 +148,27 @@ impl Host {
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {
+                    let problem = ide_lsp::jdtls::configure_formatter(
+                        cfg,
+                        effective.editor.code_style.languages.get("java"),
+                        root,
+                        &data_dir,
+                        effective.language_servers.get("jdtls"),
+                    )
+                    .err()
+                    .map(|e| e.to_string());
+                    let mut previous = formatter_problem.lock().unwrap();
+                    if problem != *previous {
+                        if let Some(body) = &problem {
+                            sink.emit(IdeEvent::Notify {
+                                level: ide_core::event::NotifyLevel::Warning,
+                                title: "Java formatter configuration unavailable".into(),
+                                body: Some(body.clone()),
+                            });
+                        }
+                        *previous = problem;
+                    }
+                    drop(previous);
                     ide_lsp::jdtls::configure_source_paths(
                         cfg,
                         ide_workspace::roots::unmanaged_java_source_paths(
@@ -154,6 +180,7 @@ impl Host {
                     let bundles: Vec<PathBuf> = ide_tools::managed_bundle(&tools_root, "java-debug")
                         .into_iter()
                         .chain(ide_sdk::java::usages_bundle(&tools_root))
+                        .chain(ide_sdk::java::kotlin_bridge_bundle(&tools_root))
                         .collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
                     let jdks = ide_sdk::java::jdtls_jdks(min_java, &tools_root);
@@ -230,11 +257,22 @@ impl Host {
             trusted: trusted.clone(),
         }));
 
+        let kotlin_bridge = crate::kotlin_bridge::KotlinBridge::new(
+            root.clone(),
+            self.data_dir.join("cache").join(&project_key).join("build"),
+            &self.data_dir,
+            settings.clone(),
+            lsp.clone(),
+            sink.clone(),
+            trusted.clone(),
+        );
+        documents.add_observer(kotlin_bridge.clone());
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
         let watcher = {
+            let kotlin_bridge = kotlin_bridge.clone();
             let repos = repos.clone();
             let settings = settings.clone();
             let index = index.clone();
@@ -255,6 +293,7 @@ impl Host {
                 Box::new(move |batch| {
                     let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
                     index.update(&changed, &batch.removed);
+                    kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&changed);
@@ -334,7 +373,7 @@ impl Host {
         let content_watchers = extra_roots
             .iter()
             .filter_map(|r| {
-                let w = content_root_watcher(r, &excludes, &sink, &index, &documents, &history)?;
+                let w = content_root_watcher(r, &excludes, &sink, &index, &documents, &history, Some(&kotlin_bridge))?;
                 Some((r.clone(), w))
             })
             .collect();
@@ -370,10 +409,14 @@ impl Host {
             syntax,
             detected_roots,
             cache_dir: self.data_dir.join("cache").join(&project_key),
+            java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
+                self.data_dir.join("cache").join(&project_key).join("build"),
+            )),
             db,
             http_history,
             agents,
             notebooks,
+            kotlin_bridge: Some(kotlin_bridge),
             watcher,
             content_watchers: Mutex::new(content_watchers),
             _scratch_watcher: scratch_watcher,
@@ -392,6 +435,9 @@ impl Host {
             }));
         }
         self.insert_project(window, project.clone());
+        if let Some(bridge) = &project.kotlin_bridge {
+            bridge.start(&self.runtime);
+        }
         if let Some(cmd) = post_start {
             self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
         }
@@ -485,10 +531,14 @@ impl Host {
             syntax,
             detected_roots: Arc::default(),
             cache_dir: self.data_dir.join("cache").join(&project_key),
+            java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
+                self.data_dir.join("cache").join(&project_key).join("build"),
+            )),
             db,
             http_history,
             agents,
             notebooks,
+            kotlin_bridge: None,
             watcher,
             content_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: None,
@@ -782,9 +832,15 @@ impl Project {
             if watchers.iter().any(|(p, _)| *p == r) {
                 continue;
             }
-            if let Some(w) =
-                content_root_watcher(&r, &excludes, &self.sink, &self.index, &self.documents, &self.history)
-            {
+            if let Some(w) = content_root_watcher(
+                &r,
+                &excludes,
+                &self.sink,
+                &self.index,
+                &self.documents,
+                &self.history,
+                self.kotlin_bridge.as_ref(),
+            ) {
                 watchers.push((r, w));
             }
         }
@@ -916,7 +972,9 @@ fn content_root_watcher(
     index: &Arc<ProjectIndex>,
     documents: &Arc<Documents>,
     history: &Arc<LocalHistory>,
+    kotlin_bridge: Option<&Arc<crate::kotlin_bridge::KotlinBridge>>,
 ) -> Option<Watcher> {
+    let kotlin_bridge = kotlin_bridge.cloned();
     let (index, documents, history) = (index.clone(), documents.clone(), history.clone());
     Watcher::start(
         dir,
@@ -925,6 +983,9 @@ fn content_root_watcher(
         Box::new(move |batch| {
             let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
             index.update(&changed, &batch.removed);
+            if let Some(bridge) = &kotlin_bridge {
+                bridge.files_changed(changed.iter().chain(&batch.removed));
+            }
             documents.on_disk_changed(&changed);
             record_external_changes(&history, &changed, &batch.removed);
         }),

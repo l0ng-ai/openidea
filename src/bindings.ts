@@ -168,6 +168,7 @@ export const commands = {
 	notebookInterrupt: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("notebook_interrupt", { id })),
 	notebookRestart: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_restart", { id })),
 	fsReadDir: (path: string) => typedError<FileEntry[], IdeError>(__TAURI_INVOKE("fs_read_dir", { path })),
+	fsEntryKind: (path: string) => typedError<EntryKind, IdeError>(__TAURI_INVOKE("fs_entry_kind", { path })),
 	/**  Size and text/binary classification, from the file's head only. */
 	fsProbe: (path: string) => typedError<FileProbe, IdeError>(__TAURI_INVOKE("fs_probe", { path })),
 	/**  Up to `len` bytes from `offset` (capped per call), base64-encoded. */
@@ -190,6 +191,8 @@ export const commands = {
 	/**  Moving to the trash can take a while (large trees): kept off the main thread. */
 	fsDelete: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_delete", { path })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
+	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
+	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
 	/**
 	 *  Reads a text file without opening it as a document (previews, quick
 	 *  definition). Prefers the unsaved buffer when the file is open.
@@ -395,10 +398,11 @@ export const commands = {
 	 */
 	lspImplementations: (request: RequestId, doc: DocId, positions: Pos[]) => typedError<Location[][], IdeError>(__TAURI_INVOKE("lsp_implementations", { request, doc, positions })),
 	/**
-	 *  Contents of a virtual document (library class, decompiled code) that a
-	 *  language server returned a non-`file:` URI for. Cached per project.
+	 *  Contents of a read-only language-server document, including JDT library
+	 *  classes and disk class files. Cached per project.
 	 */
 	lspVirtualDocument: (uri: string) => typedError<VirtualDocument, IdeError>(__TAURI_INVOKE("lsp_virtual_document", { uri })),
+	lspResolveClassFile: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("lsp_resolve_class_file", { path })),
 	/**
 	 *  References of the symbol at `pos`. `project_wide` also searches project files
 	 *  outside the language server's analysis scope; bulk scans over many symbols
@@ -1453,6 +1457,8 @@ export type AppearanceSettings = {
 	/**  Apply `ui_font_family` / `ui_font_size` (otherwise the theme's). */
 	useCustomFont?: boolean,
 	uiFontFamily?: string,
+	/**  Font tried when `ui_font_family` lacks a glyph; empty = none. */
+	uiFontFallback?: string,
 	contrastScrollbars?: boolean,
 	/**  Adjust colours for red-green vision deficiency. */
 	redGreenVision?: boolean,
@@ -2547,6 +2553,25 @@ export type Diagnostic = {
 	server?: string | null,
 };
 
+export type DirectoryCompareEntry = {
+	path: string,
+	status: DirectoryCompareStatus,
+	leftKind: EntryKind | null,
+	rightKind: EntryKind | null,
+	leftLink?: string | null,
+	rightLink?: string | null,
+};
+
+export type DirectoryCompareProgress = {
+	scanned: number,
+	compared: number,
+	total: number | null,
+	bytesRead: number | null,
+	path: string,
+};
+
+export type DirectoryCompareStatus = "leftOnly" | "rightOnly" | "different" | "equal";
+
 /**  Changes under a folder (Show History on a directory). */
 export type DirectoryHistory = {
 	/**  Snapshots of files under the folder and labels, newest first. */
@@ -2985,9 +3010,11 @@ export type EnvReloaded = {
 	shellRead: boolean,
 };
 
+export type ErrorData = { type: "tool"; tool: string; missing: boolean };
+
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  Document version mismatch; the UI must resync the full text. */
-"outOfSync" | "cancelled" | 
+"outOfSync" | "cancelled" | "timedOut" | 
 /**  A required external tool (language server, git, debugger) is unavailable. */
 "unavailable" | "io" | "protocol" | "internal";
 
@@ -3217,6 +3244,7 @@ export type FormField = {
 export type FormatOptions = {
 	tabSize: number,
 	insertSpaces: boolean,
+	onSave?: boolean,
 };
 
 /**  One occurrence of a duplicated code fragment. */
@@ -3553,6 +3581,8 @@ export type HunkRange = {
 export type IdeError = {
 	kind: ErrorKind,
 	message: string,
+	/**  Structured detail for errors the UI acts on; `null` for plain errors. */
+	data?: ErrorData | null,
 };
 
 export type IdeEvent = 
@@ -3908,6 +3938,10 @@ export type LanguageCodeStyle = LanguageCodeStyle_Serialize | LanguageCodeStyle_
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle_Deserialize = {
+	/**  Java formatter: `default` | `intellij` | `custom` (other languages ignore it). */
+	formatter?: string | null,
+	/**  Eclipse formatter XML; relative paths start at the project root. */
+	formatterPath?: string | null,
 	useTab?: boolean | null,
 	tabSize?: number | null,
 	indent?: number | null,
@@ -3920,6 +3954,10 @@ export type LanguageCodeStyle_Deserialize = {
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
 export type LanguageCodeStyle_Serialize = {
+	/**  Java formatter: `default` | `intellij` | `custom` (other languages ignore it). */
+	formatter?: string | null,
+	/**  Eclipse formatter XML; relative paths start at the project root. */
+	formatterPath?: string | null,
 	useTab?: boolean | null,
 	tabSize?: number | null,
 	indent?: number | null,
@@ -4038,6 +4076,7 @@ export type LanguagesSettings = {
 	rust?: RustSettings,
 	go?: GoSettings,
 	typescript?: TypeScriptSettings,
+	prettier?: PrettierSettings,
 	java?: JavaSettings,
 };
 
@@ -4806,6 +4845,15 @@ export type PreparedRequest = {
 	url: string,
 	headers: ([string, string])[],
 	body: string | null,
+};
+
+export type PrettierSettings = {
+	/**  Empty path: project node_modules, managed installation, then PATH. */
+	path?: string,
+	languages?: string[],
+	/**  Prefer Prettier even when a language server offers formatting. */
+	prefer?: boolean,
+	runOnSave?: boolean,
 };
 
 /**  Memory of one row of the breakdown. */
@@ -6223,7 +6271,7 @@ export type ToolInfo = {
 
 export type ToolKind = "languageServer" | "debugger" | 
 /**  Loaded into another tool's process, e.g. a jdtls agent. */
-"plugin";
+"plugin" | "formatter";
 
 export type ToolSettings = {
 	/**  Executable to launch instead of the managed / `PATH` one; empty = auto-detect. */
@@ -6372,7 +6420,7 @@ export type VirtualDocument = {
 	title: string,
 	/**  Origin shown in the tooltip / banner, e.g. the jar path. */
 	description: string | null,
-	/**  Generated by a decompiler / disassembler rather than real sources. */
+	/**  Generated Java from a decompiler, rather than real source or a disassembler stub. */
 	decompiled: boolean,
 };
 

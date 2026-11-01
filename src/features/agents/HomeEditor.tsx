@@ -1,4 +1,5 @@
 /** New Task page: one prompt box with the agent and its settings; where it works under it. */
+import clsx from "clsx";
 import { useEffect, useState } from "react";
 import type { AgentProbe, Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
@@ -7,7 +8,7 @@ import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
 import { Icon, Select, T, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
-import { maybeEditorService } from "@/workbench/contributions";
+import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
@@ -17,7 +18,7 @@ import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
 import { HOME, NO_COMMANDS, refreshProviders, startTask, updateDraft, useAgentCommands, useAgents } from "./store";
 import styles from "./Home.module.css";
 
-export function HomeEditor() {
+export function HomeEditor({ docked = false }: { docked?: boolean; input?: EditorInput }) {
   const tx = useTx();
   const txTemplate = useTxTemplate();
   const draft = useAgents((s) => s.draft);
@@ -86,15 +87,19 @@ export function HomeEditor() {
   const setOption = (id: string, value: string) => updateDraft({ config: { ...draft.config, [id]: value } });
 
   return (
-    <div className={styles.home}>
+    <div className={clsx(styles.home, docked && styles.docked)}>
       <div className={styles.inner}>
-        <h1 className={styles.heading}>
-          <T>What should the agent do?</T>
-        </h1>
+        {!docked && (
+          <h1 className={styles.heading}>
+            <T>What should the agent do?</T>
+          </h1>
+        )}
         <Composer
           id={HOME}
           autoFocus
-          placeholder="Describe a task for the agent. @ references a file, / runs a command"
+          placeholder={
+            docked ? "Describe a task…" : "Describe a task for the agent. @ references a file, / runs a command"
+          }
           root={root}
           projectRoot={root}
           commands={agentCommands}
@@ -131,6 +136,7 @@ export function HomeEditor() {
             <Select
               variant="ghost"
               aria-label={tx("Project")}
+              className={styles.projectPicker}
               value={root}
               options={members.map((path) => ({ value: path, label: basename(path), detail: path }))}
               onChange={(path) => {
@@ -139,12 +145,15 @@ export function HomeEditor() {
               }}
             />
           ) : (
-            <span className={styles.project}>{members.length ? basename(root) : project?.name}</span>
+            <span className={styles.project} title={root}>
+              {members.length ? basename(root) : project?.name}
+            </span>
           )}
           {isGit && (
             <Select
               variant="ghost"
               aria-label="Isolation"
+              className={styles.isolation}
               value={isolation}
               options={[
                 { value: "worktree", label: tx("New worktree"), icon: "branch", detail: tx("away from your changes") },
@@ -160,23 +169,28 @@ export function HomeEditor() {
           )}
           {isolation === "local" && current && (
             <>
-              <span className={styles.note}>
-                <T>on</T>
-              </span>
-              <span className={styles.branch}>
+              {!docked && (
+                <span className={styles.note}>
+                  <T>on</T>
+                </span>
+              )}
+              <span className={styles.branch} title={current}>
                 <Icon name="branch" size={14} />
-                {current}
+                <span className={styles.branchName}>{current}</span>
               </span>
             </>
           )}
           {isolation === "worktree" && branches.length > 0 && (
             <>
-              <span className={styles.note}>
-                <T>from</T>
-              </span>
+              {!docked && (
+                <span className={styles.note}>
+                  <T>from</T>
+                </span>
+              )}
               <Select
                 variant="ghost"
                 aria-label="Base branch"
+                className={styles.basePicker}
                 value={base}
                 options={branches.map((b) => ({ value: b.name, label: b.name }))}
                 onChange={(b) => updateDraft({ base: b === current ? null : b })}
@@ -184,7 +198,7 @@ export function HomeEditor() {
             </>
           )}
         </div>
-        {probe && (
+        {probe && (!docked || probe.error) && (
           <p className={probe.error ? styles.warning : styles.note}>
             {probe.error
               ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
