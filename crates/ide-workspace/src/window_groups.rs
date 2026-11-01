@@ -2,6 +2,29 @@
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 
+/// Platform adapters supply the system's tab preference and active project state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabbingPreference {
+    Always,
+    InFullScreen,
+    Manually,
+}
+
+pub fn should_group_new_project(
+    preference: TabbingPreference,
+    fullscreen: bool,
+    active_project: bool,
+    light_edit: bool,
+) -> bool {
+    active_project
+        && !light_edit
+        && match preference {
+            TabbingPreference::Always => true,
+            TabbingPreference::InFullScreen => fullscreen,
+            TabbingPreference::Manually => false,
+        }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowGroup {
     pub members: Vec<String>,
@@ -37,6 +60,13 @@ impl WindowGroups {
         }
         self.groups.push(WindowGroup { members: unique, selected: selected.to_owned() });
         Ok(())
+    }
+
+    /// Adds a window to the anchor's group without merging unrelated groups.
+    pub fn join(&mut self, anchor: &str, member: &str) -> IdeResult<()> {
+        let mut members = self.group(anchor).map(|g| g.members.clone()).unwrap_or_else(|| vec![anchor.to_owned()]);
+        members.push(member.to_owned());
+        self.merge(members, anchor)
     }
 
     pub fn select(&mut self, caller: &str, target: &str) -> IdeResult<WindowGroup> {
@@ -92,6 +122,45 @@ mod tests {
     use super::*;
     fn members(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| (*s).into()).collect()
+    }
+
+    #[test]
+    fn new_project_grouping_follows_system_preference_and_excludes_light_edit() {
+        for preference in [TabbingPreference::Always, TabbingPreference::InFullScreen, TabbingPreference::Manually] {
+            for fullscreen in [false, true] {
+                for active_project in [false, true] {
+                    for light_edit in [false, true] {
+                        let expected = matches!(
+                            (preference, fullscreen, active_project, light_edit),
+                            (TabbingPreference::Always, _, true, false)
+                                | (TabbingPreference::InFullScreen, true, true, false)
+                        );
+                        assert_eq!(
+                            should_group_new_project(preference, fullscreen, active_project, light_edit),
+                            expected,
+                            "{preference:?}, fullscreen={fullscreen}, active={active_project}, light={light_edit}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn joining_new_windows_preserves_the_active_group_and_other_groups() {
+        let mut groups = WindowGroups::default();
+        groups.merge(members(&["other-a", "other-b"]), "other-b").unwrap();
+        groups.join("a", "b").unwrap();
+        assert_eq!(groups.group("a").unwrap().members, members(&["a", "b"]));
+        let before = groups.select("a", "b").unwrap();
+        assert_eq!(before.selected, "a");
+        groups.join("b", "c").unwrap();
+        let before = groups.select("b", "c").unwrap();
+        assert_eq!(before.selected, "b");
+        assert_eq!(groups.group("c").unwrap().members, members(&["a", "b", "c"]));
+        assert_eq!(groups.group("c").unwrap().selected, "c");
+        assert_eq!(groups.group("other-a").unwrap().members, members(&["other-a", "other-b"]));
+        assert_eq!(groups.group("other-a").unwrap().selected, "other-b");
     }
 
     #[test]
