@@ -327,6 +327,7 @@ export const commands = {
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
 	/**  Paths in an HTML document or stylesheet that name no existing file. */
 	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError>(__TAURI_INVOKE("web_unresolved_references", { doc })),
+	dependencyVersions: (doc: DocId, offset: number | null, request: RequestId) => typedError<DependencyVersions[], IdeError>(__TAURI_INVOKE("dependency_versions", { doc, offset, request })),
 	/**
 	 *  Misspelt words in the comments, string literals and declared names of
 	 *  `doc` that `scope` includes (all of its text for prose). Cancel with
@@ -1640,6 +1641,30 @@ export type ByteRange = {
 	total: number,
 };
 
+export type CMakeProfile = {
+	name?: string,
+	buildType?: string,
+	generator?: string,
+	cmakeArgs?: string[],
+	/**  Empty uses cmake-build-<lowercase build type>. */
+	buildDir?: string,
+	buildArgs?: string[],
+	env?: { [key in string]: string },
+};
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings = CMakeSettings_Serialize | CMakeSettings_Deserialize;
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings_Deserialize = {
+	profiles?: CMakeProfile[] | null,
+};
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings_Serialize = {
+	profiles?: CMakeProfile[] | null,
+};
+
 export type CallHierarchy = {
 	items: HierarchyItem[],
 	incomplete: ReferencesIncomplete | null,
@@ -2443,6 +2468,17 @@ export type DeletedBranch = {
 	upstream: string | null,
 	/**  It was not fully merged: its own commits are now unreachable from any branch. */
 	unmerged: boolean,
+};
+
+export type DependencyUpdate = {
+	latest: string,
+	replacement: string,
+};
+
+export type DependencyVersions = {
+	dependency: ManifestDependency,
+	versions: string[],
+	update: DependencyUpdate | null,
 };
 
 /**  Where a local file is deployed. */
@@ -4266,6 +4302,14 @@ export type MainToolbarSettings = {
 	hidden?: string[],
 };
 
+export type ManifestDependency = {
+	package: string,
+	requirement: string,
+	/**  UTF-16 offsets of the string's contents (quotes excluded). */
+	from: number,
+	to: number,
+};
+
 export type Markup = {
 	/**  `markdown` or `plaintext`. */
 	kind: string,
@@ -5636,6 +5680,7 @@ export type Settings_Deserialize = {
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets?: RunTarget[],
+	cmake?: CMakeSettings_Deserialize,
 };
 
 export type Settings_Serialize = {
@@ -5691,6 +5736,7 @@ export type Settings_Serialize = {
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets: RunTarget[],
+	cmake: CMakeSettings_Serialize,
 };
 
 export type Severity = "error" | "warning" | "info" | "hint";

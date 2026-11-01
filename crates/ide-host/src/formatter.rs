@@ -45,7 +45,7 @@ pub async fn format(
     }
     let config = config.unwrap().clone();
     let custom = ide_sdk::apply::setting_path(&project.root, &prettier.path);
-    let tools = Tools::new(&host.data_dir);
+    let tools = Tools::new(&host.local_data_dir);
     let whole_selection = range.is_some() && !config.range;
     let edits: IdeResult<Vec<TextEdit>> = tokio::task::spawn_blocking(move || {
         let text = ide_text::Document::new(&snap.text);

@@ -82,6 +82,8 @@ const UNTRANSLATED = new Set<string>([
   "dotnet test",
   "netcoredbg (.NET)",
   // Product names
+  "Cargo",
+  "CMake",
   "Prettier",
   "IntelliJ IDEA",
   // Go environment variables and placeholder values

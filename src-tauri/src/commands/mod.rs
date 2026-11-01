@@ -16,6 +16,7 @@ pub mod clipboard;
 pub mod coverage;
 pub mod db;
 pub mod debug;
+pub mod dependencies;
 pub mod deploy;
 pub mod doc;
 pub mod docker;
@@ -190,6 +191,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::fs_resolve_reference,
         nav::path_completions,
         nav::web_unresolved_references,
+        dependencies::dependency_versions,
         spell::spell_check,
         spell::spell_suggest,
         search::search_start,

@@ -12,7 +12,7 @@ import type { Diagnostic, Severity } from "@/bindings";
 import { commands, ideEventsReady, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { publishLocalDiagnostics } from "@/platform/localDiagnostics";
-import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import { intentionsChanged, scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { rangeToOffsets } from "./positions";
 import { lspDoc } from "./lsp";
 import { showHint } from "./hint";
@@ -199,7 +199,10 @@ const diagnosticsSync = ViewPlugin.fromClass(
         if (!path || !this.view.dom.isConnected) return;
         const lint = toLintDiagnostics(this.view.state.doc, diagnosticsFor(path));
         const tr = setDiagnostics(this.view.state, lint);
-        this.view.dispatch({ ...tr, effects: [...[tr.effects ?? []].flat(), setMarks.of(diagnosticMarks(lint))] });
+        this.view.dispatch({
+          ...tr,
+          effects: [...[tr.effects ?? []].flat(), setMarks.of(diagnosticMarks(lint)), intentionsChanged.of(null)],
+        });
       });
     }
     destroy() {

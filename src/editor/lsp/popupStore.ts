@@ -18,6 +18,8 @@ export interface ListPopupItem {
   /** Second line / muted text after the label (code preview). */
   preview?: string;
   icon?: string;
+  /** Inspection fix, independent of the icon chosen for its severity. */
+  quickFix?: boolean;
   /** Symbol badge kind (`ui/icons` `SymbolBadge`) shown instead of an icon. */
   symbol?: string;
   emphasis?: boolean;
