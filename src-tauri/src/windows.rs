@@ -284,6 +284,11 @@ fn hex_color(hex: &str) -> Option<Color> {
 /// Builds a project window painted in the saved theme's frame colour, so it
 /// doesn't flash the light default before its page (and splash) loads.
 fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<WebviewWindow> {
+    let visible = cfg!(target_os = "macos") && config.visible;
+    let focused = config.focus;
+    if visible {
+        config.visible = false;
+    }
     let state = app.try_state::<AppState>();
     let appearance = state.as_ref().map(|s| s.global_settings.effective().appearance);
     // A plugin theme replaces the built-in one in either OS mode; the UI records its resolved frame.
@@ -304,6 +309,12 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         && window.theme().is_ok_and(|t| t == Theme::Dark)
     {
         let _ = window.set_background_color(Some(frame_color(&a, true)));
+    }
+    if visible {
+        window.show().map_err(|e| IdeError::internal(format!("cannot show window: {e}")))?;
+        if focused {
+            let _ = window.set_focus();
+        }
     }
     Ok(window)
 }
