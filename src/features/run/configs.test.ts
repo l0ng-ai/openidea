@@ -6,6 +6,7 @@ import {
   duplicateConfig,
   formatArgs,
   groupConfigs,
+  isJvmKind,
   mergeConfigs,
   newConfig,
   parseArgs,
@@ -276,4 +277,17 @@ describe("categoryOf", () => {
     expect(categoryOf("fake-server")).toBe("Servers");
     dispose();
   });
+});
+
+describe("isJvmKind", () => {
+  it.each([
+    ["spring-boot", true],
+    ["application", true],
+    ["maven", true],
+    ["gradle", true],
+    ["tomcat", true],
+    ["python", false],
+    ["npm", false],
+    ["shell", false],
+  ])("%s → %s", (kind, expected) => expect(isJvmKind(kind)).toBe(expected));
 });

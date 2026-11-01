@@ -30,6 +30,7 @@ import {
 import { TestTreeView, formatDuration } from "./TestTreeView";
 import { StackTracePanel, closeStackTrace, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { showTomcatUpdate } from "./tomcatUpdate";
+import { isJvmKind } from "./configs";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -106,6 +107,7 @@ export function SessionPanel({
           findOpen={findOpen}
           onFindOpenChange={setFindOpen}
           cwd={cwd}
+          mybatisSql={isJvmKind(session.config.kind)}
           onClear={() => clearConsole(session.id)}
           input={
             !testModel && acceptsInput(session)

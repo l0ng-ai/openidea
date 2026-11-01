@@ -25,6 +25,8 @@ import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from
 import { tx } from "@/platform/i18n";
 import { ConsoleFindBar } from "./FindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "./find";
+import { sqlFromMybatisLog } from "@/features/mybatis/sqlLog";
+import { notifications } from "@/workbench/contributions";
 
 const ROW = 20;
 
@@ -158,6 +160,8 @@ export interface ConsoleViewProps {
   onClear?: () => void;
   /** Set while the process accepts input. */
   input?: ConsoleInput;
+  /** The run executes on a JVM: shows the MyBatis SQL conversion item for log selections. */
+  mybatisSql?: boolean;
   /** Controlled find bar (the Run toolbar button); without it ⌘F opens it locally. */
   findOpen?: boolean;
   onFindOpenChange?: (open: boolean) => void;
@@ -173,6 +177,7 @@ export function ConsoleView({
   cwd,
   onClear,
   input,
+  mybatisSql,
   findOpen: controlledFindOpen,
   onFindOpenChange,
   ...aria
@@ -384,6 +389,38 @@ export function ConsoleView({
         disabled: !selection,
         run: () => void navigator.clipboard?.writeText(selection).catch(() => undefined),
       },
+      ...(mybatisSql && selection.includes("==>  Preparing")
+        ? [
+            {
+              label: tx("Copy MyBatis SQL"),
+              icon: "gutter-mybatis",
+              run: () => {
+                const sql = sqlFromMybatisLog(selection);
+                if (!sql) {
+                  notifications().notify({
+                    group: "run",
+                    level: "warning",
+                    key: "mybatis-sql-convert",
+                    title: "MyBatis SQL",
+                    body: tx("The selection has no MyBatis SQL log to convert"),
+                  });
+                  return;
+                }
+                navigator.clipboard
+                  ?.writeText(sql)
+                  .catch(() =>
+                    notifications().notify({
+                      group: "run",
+                      level: "error",
+                      key: "mybatis-sql-copy",
+                      title: "MyBatis SQL",
+                      body: tx("Could not copy to the clipboard"),
+                    }),
+                  );
+              },
+            },
+          ]
+        : []),
       { label: "Copy All", run: () => void navigator.clipboard?.writeText(model.text()).catch(() => undefined) },
       {
         label: "Find…",
