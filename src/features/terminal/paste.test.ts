@@ -124,7 +124,7 @@ it.each(["event", "menu"])("rejects oversized %s images before reading or upload
     expect(notify).toHaveBeenCalledWith({
       level: "error",
       title: "Cannot paste image",
-      body: "Error: Image is too large to paste (limit 20 MB).",
+      body: "Image is too large to paste (limit 20 MB).",
     }),
   );
   expect(read).not.toHaveBeenCalled();

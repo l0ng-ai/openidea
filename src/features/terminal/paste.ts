@@ -23,7 +23,11 @@ async function pasteImage(image: Blob, target: RemotePasteTarget, paste: (text: 
     if (target.current()) paste(`'${path.replaceAll("'", "'\\''")}'`);
   } catch (error) {
     if (target.current())
-      notifications().notify({ level: "error", title: tx("Cannot paste image"), body: String(error) });
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot paste image"),
+        body: error instanceof Error ? error.message : String(error),
+      });
   }
 }
 
@@ -90,6 +94,10 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
     else if (!images) throw new Error(tx("Clipboard image reading is unavailable."));
   } catch (error) {
     if (target?.current())
-      notifications().notify({ level: "error", title: tx("Cannot paste image"), body: String(error) });
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot paste image"),
+        body: error instanceof Error ? error.message : String(error),
+      });
   }
 }
