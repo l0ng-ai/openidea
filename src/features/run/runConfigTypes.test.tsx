@@ -103,6 +103,9 @@ describe("configuration types", () => {
     ["pytest", "pytest.exe", ["tests/test_app.py", "-q"]],
     ["pytest", String.raw`C:\project\.venv\Scripts\PYTEST.EXE`, ["-q"]],
     ["pytest", "PYTHON.EXE", ["-m", "pytest", "tests"]],
+    ["ruby", String.raw`C:\Ruby33\bin\ruby.exe`, ["-Ilib", "bin/app", "--port", "3000"]],
+    ["rake", "bundle", ["exec", "rake", "--trace", "db:migrate"]],
+    ["rspec", "/home/me/.rbenv/versions/3.3.1/bin/rspec", ["--fail-fast", "spec/a_spec.rb:12"]],
     ["npm", String.raw`C:\Program Files\nodejs\NPM.CMD`, ["run", "test", "--", "two words"]],
     ["npm", "pnpm.COM", ["test"]],
     ["application", String.raw`C:\jdk\bin\JAVA.EXE`, ["-cp", "lib/*", "a.Main"]],
@@ -170,6 +173,25 @@ describe("configuration types", () => {
       executable: detected.command,
     });
     expect(godot.paramsFrom!(cfg("x", { command: "cargo" }))).toBeNull();
+  });
+
+  it("ruby types default to Bundler for rake and rspec and mark rspec as tests", () => {
+    expect(newConfigOfType(typeFor("rake")!, [])).toMatchObject({ command: "bundle", args: ["exec", "rake"] });
+    expect(newConfigOfType(typeFor("ruby")!, [])).toMatchObject({ command: "ruby", args: [] });
+    const rspec = newConfigOfType(typeFor("rspec")!, []);
+    expect(rspec).toMatchObject({ command: "bundle", args: ["exec", "rspec"], isTest: true });
+    expect(withParams(rspec, { bundler: "", target: "spec/a_spec.rb", options: "-fd" })).toMatchObject({
+      command: "rspec",
+      args: ["-fd", "spec/a_spec.rb"],
+      isTest: true,
+    });
+    expect(formParams(cfg("r", { kind: "ruby", command: "ruby", args: ["app.rb", "-v"] }))).toEqual({
+      command: "",
+      bundler: "",
+      rubyArgs: "",
+      script: "app.rb",
+      scriptArgs: "-v",
+    });
   });
 
   it("pytest round-trips commandLine / paramsFrom and opens implicit context configs in the form", () => {
