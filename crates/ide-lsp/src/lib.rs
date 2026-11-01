@@ -169,6 +169,7 @@ pub struct LspManager {
     servers: Mutex<Vec<Arc<Server>>>,
     docs: Mutex<HashMap<DocId, DocState>>,
     apply_edit_hook: RwLock<Option<ApplyEditHook>>,
+    applied_edits: tokio::sync::broadcast::Sender<(ide_core::ServerId, WorkspaceEdit)>,
     config_hook: RwLock<Option<ConfigHook>>,
     prepare_hook: RwLock<Option<Arc<PrepareFn>>>,
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
@@ -302,6 +303,7 @@ impl LspManager {
             servers: Mutex::new(Vec::new()),
             docs: Mutex::new(HashMap::new()),
             apply_edit_hook: RwLock::new(None),
+            applied_edits: tokio::sync::broadcast::channel(64).0,
             config_hook: RwLock::new(None),
             prepare_hook: RwLock::new(None),
             servers_hook: RwLock::new(None),
@@ -701,6 +703,9 @@ impl LspManager {
             "capabilities": caps::client_capabilities(),
             "trace": "off",
         });
+        if server.name == "gopls" {
+            params["capabilities"]["experimental"]["interactiveResolve"] = json!({ "inputTypes": ["string"] });
+        }
         if !init_options.is_null() {
             params["initializationOptions"] = init_options;
         }
@@ -1548,6 +1553,92 @@ impl LspManager {
         let params = json!({ "command": command.command, "arguments": command.arguments });
         let _: Value = self.call(t, "workspace/executeCommand", params, None, LONG_TIMEOUT).await?;
         Ok(())
+    }
+
+    async fn command_target(&self, doc: DocId, server: ide_core::ServerId, name: &str) -> IdeResult<Target> {
+        let snap = self.snapshot(doc)?;
+        self.ready_targets(&snap.servers, |c| c.commands().iter().any(|c| c == name))
+            .await
+            .into_iter()
+            .find(|t| t.server.id == server)
+            .ok_or_else(|| IdeError::unavailable(format!("no language server provides command `{name}`")))
+    }
+
+    /// Resolve only after explicit invocation; previews must never ask for input.
+    pub async fn resolve_command(
+        &self,
+        doc: DocId,
+        server: ide_core::ServerId,
+        command: Command,
+        answers: Vec<FormAnswer>,
+        cancel: CancellationToken,
+    ) -> IdeResult<Option<CommandForm>> {
+        let t = self.command_target(doc, server, &command.command).await?;
+        let interactive = t.server.name == "gopls"
+            && t.caps()
+                .raw
+                .pointer("/experimental/interactiveResolveProvider/kinds")
+                .and_then(Value::as_array)
+                .is_some_and(|k| k.iter().any(|v| v == "command"));
+        if !interactive {
+            return Ok(None);
+        }
+        let params = json!({ "command": command.command, "arguments": command.arguments, "formAnswers": answers });
+        let response: Value = self.call(&t, "command/resolve", params, Some(&cancel), LONG_TIMEOUT).await?;
+        let parse_error = |e: serde_json::Error| IdeError::internal(format!("invalid command form: {e}"));
+        let fields = response.get("formFields").filter(|v| !v.is_null()).cloned().unwrap_or(json!([]));
+        for field in fields.as_array().into_iter().flatten() {
+            if field.pointer("/type/kind").and_then(Value::as_str) != Some("string") {
+                return Err(IdeError::unavailable("unsupported command input type"));
+            }
+        }
+        Ok(Some(CommandForm {
+            command: Command {
+                title: command.title,
+                command: response
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| IdeError::internal("command form omitted command"))?
+                    .to_owned(),
+                arguments: serde_json::from_value(response.get("arguments").cloned().unwrap_or(json!([])))
+                    .map_err(parse_error)?,
+            },
+            form_fields: serde_json::from_value(fields).map_err(parse_error)?,
+            form_answers: serde_json::from_value(
+                response.get("formAnswers").filter(|v| !v.is_null()).cloned().unwrap_or(json!([])),
+            )
+            .map_err(parse_error)?,
+        }))
+    }
+
+    /// Execute on the originating server and return files from successfully applied edits.
+    pub async fn execute_action_command(
+        &self,
+        doc: DocId,
+        server: ide_core::ServerId,
+        command: Command,
+        answers: Vec<FormAnswer>,
+        cancel: CancellationToken,
+    ) -> IdeResult<Vec<PathBuf>> {
+        let t = self.command_target(doc, server, &command.command).await?;
+        let open_created = t.server.name == "gopls" && command.command == "gopls.add_test";
+        let mut edits = self.applied_edits.subscribe();
+        let mut params = json!({ "command": command.command, "arguments": command.arguments });
+        if !answers.is_empty() {
+            params["formAnswers"] = json!(answers);
+        }
+        let _: Value = self.call(&t, "workspace/executeCommand", params, Some(&cancel), LONG_TIMEOUT).await?;
+        let mut created = Vec::new();
+        while let Ok((origin, edit)) = edits.try_recv() {
+            if open_created && origin == server {
+                for file in edit.files {
+                    if let ide_core::FileEdit::Create { path, .. } = file {
+                        created.push(path.into());
+                    }
+                }
+            }
+        }
+        Ok(created)
     }
 
     pub async fn prepare_rename(&self, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {

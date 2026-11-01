@@ -424,6 +424,12 @@ export const commands = {
 	 *  follow-up command. Edits the server requests arrive via `workspace/applyEdit`.
 	 */
 	lspExecuteCommand: (doc: DocId, command: Command) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_execute_command", { doc, command })),
+	lspResolveCommand: (request: RequestId, doc: DocId, server: ServerId, command: Command, answers: FormAnswer[]) => typedError<{
+	command: Command,
+	formFields: FormField[],
+	formAnswers: FormAnswer[],
+} | null, IdeError>(__TAURI_INVOKE("lsp_resolve_command", { request, doc, server, command, answers })),
+	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**  Changes of every repository of the project. */
 	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
 	/**  The project's repositories, the primary one first. */
@@ -1846,6 +1852,12 @@ export type CommandDecl = {
 	category?: string | null,
 };
 
+export type CommandForm = {
+	command: Command,
+	formFields: FormField[],
+	formAnswers: FormAnswer[],
+};
+
 export type Commit = {
 	id: string,
 	shortId: string,
@@ -3150,6 +3162,20 @@ export type FoldingSettings = {
 export type FontFamily = {
 	name: string,
 	monospaced: boolean,
+};
+
+/**  The string form supported by gopls's experimental interactive command protocol. */
+export type FormAnswer = {
+	id: string,
+	value: string,
+};
+
+export type FormField = {
+	id: string,
+	description: string,
+	required: boolean,
+	default?: string | null,
+	error?: string | null,
 };
 
 export type FormatOptions = {

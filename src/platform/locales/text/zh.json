@@ -5374,5 +5374,6 @@
   "Skipped content outside Git repositories: {skippedLabel}": "已跳过 Git 仓库之外的内容：{skippedLabel}",
   "in {length} repositories": "在 {length} 个仓库中",
   "No repository in the selection has revision {label}": "所选内容中的仓库均无版本 {label}",
-  "{repoName} has no revision {label}": "{repoName} 没有版本 {label}"
+  "{repoName} has no revision {label}": "{repoName} 没有版本 {label}",
+  "Waiting for language server…": "正在等待语言服务器…"
 }
