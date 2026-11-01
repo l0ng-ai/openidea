@@ -1,4 +1,6 @@
 //! Java launch support: classpath / JDK resolution and the java-debug server (jdtls).
+mod cache;
+
 use crate::Host;
 use crate::rpc::Dispatcher;
 
@@ -45,9 +47,11 @@ async fn resolve_launch(
         let module = module.clone();
         tokio::task::spawn_blocking(move || {
             let model = load(&project.root, &project.build_cache_dir(), &settings);
-            let external = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
-            let delegated = external
-                && model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module));
+            let non_java = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
+            let delegated = build
+                && model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module))
+                && (non_java || cache::has_record(&project.root, &project.build_cache_dir(), &module));
+            let external = non_java || delegated;
             (model, external, delegated)
         })
         .await
@@ -60,20 +64,25 @@ async fn resolve_launch(
     let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
         let _external_build = external_build;
-        let built = if external {
-            compile::build_for_launch(&project.root, &model, &module, test, &cancel)?
-        } else {
-            Vec::new()
-        };
         let built = if delegated {
-            let (snapshot, copies) = snapshot_outputs(&mut info, &built, &cancel)?;
-            project.java_launch_outputs.lock().push(snapshot);
+            let outputs = cache::build(
+                &project.root,
+                &project.build_cache_dir(),
+                &model,
+                &module,
+                test,
+                ide_sdk::apply::maven_local_repository(&project.root, &settings),
+                &cancel,
+            )?;
+            let copies = use_snapshot(&mut info, &outputs.originals, &outputs.snapshot);
             info.build = Some(JavaBuildStatus::Succeeded);
             info.errors.clear();
             info.error_count = 0;
             copies
+        } else if external {
+            compile::build_for_launch(&project.root, &model, &module, test, &cancel)?
         } else {
-            built
+            Vec::new()
         };
         let mut class_paths: Vec<String> = built.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         for p in std::mem::take(&mut info.class_paths) {
@@ -122,19 +131,10 @@ async fn resolve_launch(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-fn snapshot_outputs(
-    info: &mut JavaLaunchInfo,
-    built: &[PathBuf],
-    cancel: &CancellationToken,
-) -> IdeResult<(tempfile::TempDir, Vec<PathBuf>)> {
-    let snapshot = tempfile::Builder::new().prefix("openidea-java-launch-").tempdir()?;
+fn use_snapshot(info: &mut JavaLaunchInfo, built: &[PathBuf], snapshot: &std::path::Path) -> Vec<PathBuf> {
     let mut copies = Vec::new();
     for (index, source) in built.iter().enumerate() {
-        if cancel.is_cancelled() {
-            return Err(IdeError::cancelled());
-        }
-        let dest = snapshot.path().join(index.to_string());
-        ide_vfs::copy(source, &dest)?;
+        let dest = snapshot.join(index.to_string());
         let original = source.to_string_lossy();
         info.class_paths.retain(|p| p != original.as_ref());
         let mut modular = false;
@@ -148,7 +148,7 @@ fn snapshot_outputs(
             copies.push(dest);
         }
     }
-    Ok((snapshot, copies))
+    copies
 }
 
 /// Port of java-debug's DAP server inside the jdtls serving `module` (started on demand).
@@ -199,8 +199,11 @@ mod tests {
             module_paths: vec![lib.to_string_lossy().into_owned()],
             ..Default::default()
         };
-        let (snapshot, paths) =
-            snapshot_outputs(&mut info, &[app.clone(), lib.clone()], &CancellationToken::new()).unwrap();
+        let snapshot = tempfile::tempdir().unwrap();
+        for (i, source) in [&app, &lib].iter().enumerate() {
+            ide_vfs::copy(source, &snapshot.path().join(i.to_string())).unwrap();
+        }
+        let paths = use_snapshot(&mut info, &[app.clone(), lib.clone()], snapshot.path());
         assert_eq!(paths, [snapshot.path().join("0")]);
         assert_eq!(info.class_paths, ["stdlib.jar"]);
         assert_eq!(info.module_paths, [snapshot.path().join("1").to_string_lossy().into_owned()]);
@@ -212,11 +215,5 @@ mod tests {
                 "Maven bytecode"
             );
         }
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        assert_eq!(
-            snapshot_outputs(&mut info, &[app], &cancel).unwrap_err().kind,
-            ide_core::error::ErrorKind::Cancelled
-        );
     }
 }

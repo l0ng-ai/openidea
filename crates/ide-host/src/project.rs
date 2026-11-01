@@ -42,8 +42,6 @@ pub struct Project {
     pub detected_roots: Arc<RwLock<Vec<SourceFolder>>>,
     /// Per-project cache directory (build tool sync results…).
     pub cache_dir: PathBuf,
-    /// Launch snapshots stay alive while any JVM of this project may load classes.
-    pub(crate) java_launch_outputs: Mutex<Vec<tempfile::TempDir>>,
     /// Database tool window: data sources and their connections.
     pub db: Arc<ide_db::DbManager>,
     /// HTTP Client responses (IDEA's `.idea/httpRequests`), in the app data dir.
@@ -368,7 +366,6 @@ impl Host {
             syntax,
             detected_roots,
             cache_dir: self.data_dir.join("cache").join(&project_key),
-            java_launch_outputs: Mutex::new(Vec::new()),
             db,
             http_history,
             agents,
@@ -484,7 +481,6 @@ impl Host {
             syntax,
             detected_roots: Arc::default(),
             cache_dir: self.data_dir.join("cache").join(&project_key),
-            java_launch_outputs: Mutex::new(Vec::new()),
             db,
             http_history,
             agents,
