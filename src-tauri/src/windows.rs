@@ -907,12 +907,131 @@ fn dev_font_preferences(
     builder
 }
 
+/// Rewrites sizes in the saved window-state file before any window restores it.
+///
+/// When a window closes while maximized, the plugin can persist the maximized
+/// size as the "normal" size (a resize event slips past its maximized check
+/// during the restore and DPI transitions), and every launch-maximized-then-close
+/// cycle then stores that larger size again, growing it without bound (#636).
+/// A non-maximized window can never be larger than its monitor's work area, so
+/// clamping each saved size back into it keeps the stored size stable.
+pub fn sanitize_window_state(app: &AppHandle) {
+    let Ok(dir) = app.path().app_config_dir() else { return };
+    let path = dir.join(".window-state.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else { return };
+    let Ok(mut state) = serde_json::from_str::<serde_json::Value>(&raw) else { return };
+    let areas: Vec<(i32, i32, u32, u32)> = match app.available_monitors() {
+        Ok(monitors) => monitors
+            .iter()
+            .map(|m| {
+                let area = m.work_area();
+                (area.position.x, area.position.y, area.size.width, area.size.height)
+            })
+            .collect(),
+        Err(_) => return,
+    };
+    let fallback = app.primary_monitor().ok().flatten().map(|m| (m.work_area().size.width, m.work_area().size.height));
+    if clamp_window_sizes(&mut state, &areas, fallback) {
+        if let Ok(serialized) = serde_json::to_vec_pretty(&state) {
+            let _ = std::fs::write(&path, serialized);
+        }
+    }
+}
+
+/// Clamps every window's saved `width`/`height` into the work area of the monitor
+/// containing its saved position, or `fallback` when that monitor is gone.
+/// Returns whether anything changed.
+fn clamp_window_sizes(
+    state: &mut serde_json::Value,
+    areas: &[(i32, i32, u32, u32)],
+    fallback: Option<(u32, u32)>,
+) -> bool {
+    let Some(fallback) = fallback.or_else(|| areas.first().map(|a| (a.2, a.3))) else {
+        return false;
+    };
+    let Some(entries) = state.as_object_mut() else { return false };
+    let mut changed = false;
+    for entry in entries.values_mut() {
+        let Some(entry) = entry.as_object_mut() else { continue };
+        let (Some(width), Some(height)) = (
+            entry.get("width").and_then(serde_json::Value::as_u64),
+            entry.get("height").and_then(serde_json::Value::as_u64),
+        ) else {
+            continue;
+        };
+        let x = entry.get("x").and_then(serde_json::Value::as_i64).unwrap_or_default() as i32;
+        let y = entry.get("y").and_then(serde_json::Value::as_i64).unwrap_or_default() as i32;
+        let (max_width, max_height) = areas
+            .iter()
+            .find(|(mx, my, mw, mh)| {
+                x >= *mx && y >= *my && (x - *mx) as u64 <= *mw as u64 && (y - *my) as u64 <= *mh as u64
+            })
+            .map(|&(_, _, mw, mh)| (mw, mh))
+            .unwrap_or(fallback);
+        let clamped = (width.min(max_width as u64), height.min(max_height as u64));
+        if clamped != (width, height) {
+            entry.insert("width".into(), clamped.0.into());
+            entry.insert("height".into(), clamped.1.into());
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    fn window_state(x: i64, y: i64, width: u64, height: u64) -> serde_json::Value {
+        serde_json::json!({ "main": { "x": x, "y": y, "width": width, "height": height } })
+    }
+
+    #[test]
+    fn clamp_keeps_sizes_that_fit_the_work_area() {
+        // 2560×1440 monitor at (0, 0); a normal 1234×678 window is untouched.
+        let monitors = [(0, 0, 2560, 1440)];
+        let mut state = window_state(100, 100, 1234, 678);
+        assert!(!clamp_window_sizes(&mut state, &monitors, None));
+        assert_eq!(state, window_state(100, 100, 1234, 678));
+    }
+
+    #[test]
+    fn clamp_pulls_a_corrupted_maximized_size_back_into_the_work_area() {
+        // The launch-maximized-then-close loop grows the saved size without bound.
+        let monitors = [(0, 0, 2560, 1440)];
+        let mut state = window_state(0, 0, 22444, 12000);
+        assert!(clamp_window_sizes(&mut state, &monitors, None));
+        assert_eq!(state["main"]["width"], 2560);
+        assert_eq!(state["main"]["height"], 1440);
+    }
+
+    #[test]
+    fn clamp_uses_the_monitor_at_the_saved_position() {
+        // A window saved on the 1920×1080 secondary display keeps that display's work area.
+        let monitors = [(0, 0, 2560, 1440), (2560, 0, 1920, 1080)];
+        let mut state = window_state(3000, 50, 5000, 3000);
+        assert!(clamp_window_sizes(&mut state, &monitors, None));
+        assert_eq!(state["main"]["width"], 1920);
+        assert_eq!(state["main"]["height"], 1080);
+    }
+
+    #[test]
+    fn clamp_falls_back_to_the_primary_monitor_when_the_saved_one_is_gone() {
+        let mut state = window_state(9000, 9000, 5000, 3000);
+        assert!(clamp_window_sizes(&mut state, &[(0, 0, 2560, 1440)], Some((1280, 720))));
+        assert_eq!(state["main"]["width"], 1280);
+        assert_eq!(state["main"]["height"], 720);
+    }
+
+    #[test]
+    fn clamp_ignores_entries_without_a_saved_size() {
+        let mut state = serde_json::json!({ "settings": { "x": 10, "y": 10 } });
+        assert!(!clamp_window_sizes(&mut state, &[(0, 0, 2560, 1440)], None));
+        assert_eq!(state["settings"]["width"], serde_json::Value::Null);
     }
 
     #[test]

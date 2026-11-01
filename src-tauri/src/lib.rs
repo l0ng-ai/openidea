@@ -148,6 +148,7 @@ pub fn run() {
             windows::open_paths_at_launch(app.handle(), paths);
         }
         app.on_menu_event(on_menu_event);
+        windows::sanitize_window_state(app.handle());
         windows::create_main_window(app.handle())?;
         Ok(())
     })
