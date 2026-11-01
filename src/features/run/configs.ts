@@ -43,6 +43,26 @@ const KIND_LABELS: Record<string, string> = {
 
 export const KIND_OPTIONS = Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }));
 
+/**
+ * Whether the run kind executes on a JVM (its console can carry MyBatis logs).
+ * `shortcut: the list is hardcoded — registered types don't declare a language.`
+ */
+export function isJvmKind(kind: string): boolean {
+  return [
+    "spring-boot",
+    "application",
+    "native",
+    "java-file",
+    "kotlin",
+    "kotlinc",
+    "scala-cli",
+    "remote-jvm",
+    "maven",
+    "gradle",
+    "tomcat",
+  ].includes(kind);
+}
+
 export function kindLabel(kind: string): string {
   const type = useRunConfigTypes.getState().types.get(kind);
   // A grouped type ("Tomcat Server › Local") is named by its group outside the Add menu.
