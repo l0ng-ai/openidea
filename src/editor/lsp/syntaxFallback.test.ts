@@ -30,6 +30,13 @@ vi.mock("@/platform/ipc", async (orig) => {
   return { ...actual, isTauri: () => true, commands: { ...actual.commands, ...cmd } };
 });
 
+const executeAction = vi.hoisted(() => vi.fn());
+vi.mock("@/platform/actions", async (orig) => {
+  const actual = await orig<typeof import("@/platform/actions")>();
+  executeAction.mockImplementation(actual.executeAction);
+  return { ...actual, executeAction };
+});
+
 const openFile = vi.fn(async () => {});
 const { provideEditorService } = await import("@/workbench/contributions");
 provideEditorService({ openFile } as never);
@@ -486,6 +493,34 @@ describe("rename wiring", () => {
       expect(view.state.doc.toString()).toBe("mesage = 'hello'\nprint(mesage)");
       expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("Cannot rename safely");
     });
+  });
+
+  it("renames the file itself when no server covers it (a plain text file)", async () => {
+    cmd.lspPrepareRename.mockReturnValueOnce(
+      Promise.resolve({
+        status: "error",
+        error: { kind: "unavailable", message: "no running language server supports rename" } as IdeError,
+      }),
+    );
+    cmd.syntaxSupport.mockReturnValueOnce(ok({ tree: false, locals: false }));
+    executeAction.mockResolvedValueOnce(true);
+    const view = editor("# notes", "markdown", 2);
+    await startRename(view);
+    expect(executeAction).toHaveBeenCalledWith("project.rename");
+    expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+  });
+
+  it("keeps the hint when a server runs but lacks rename (no file fallback)", async () => {
+    cmd.lspPrepareRename.mockReturnValueOnce(
+      Promise.resolve({
+        status: "error",
+        error: { kind: "unavailable", message: "jdtls doesn't support rename" } as IdeError,
+      }),
+    );
+    const view = editor("class A {}", "java", 6);
+    await startRename(view);
+    expect(executeAction).not.toHaveBeenCalledWith("project.rename");
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("jdtls doesn't support rename");
   });
 
   it("respects a server refusal over valid code, but falls back over broken code", async () => {

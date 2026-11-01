@@ -42,7 +42,7 @@ export interface EditorDocContext {
   /**
    * A read-only virtual document (library class contents from a language
    * server); `path` is then its URI, not a file: skip file-based features
-   * (VCS, local history, TODO scanning, breakpoints…).
+   * (VCS, local history, TODO scanning…). JDT class documents support breakpoints.
    */
   virtual?: boolean;
 }

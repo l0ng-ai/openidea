@@ -8,7 +8,7 @@
 //! result is cached until the manifests (or the relevant settings) change.
 //!
 //! Archives are listed as browsable roots (`<archive>!`, see `ide_vfs`): the
-//! JDK's `src.zip` and the Maven / Gradle dependency jars (sources jars preferred).
+//! JDK's `src.zip` and the Maven / Gradle dependency jars (source attachments resolved by JDT).
 
 use crate::exe;
 use crate::exec::{query, query_in, which};
@@ -248,7 +248,7 @@ fn gradle_user_home() -> Option<PathBuf> {
 }
 
 /// One `Maven: g:a:v` / `Gradle: g:a:v` group per dependency whose jar is in a
-/// local repository, its root being the jar (the `-sources.jar` when downloaded).
+/// local repository, its root being the binary jar so Java classes open through JDT's source provider.
 pub(crate) fn dependency_libraries(
     deps: &[BuildDependency],
     maven_repo: Option<&Path>,
@@ -286,7 +286,7 @@ pub(crate) fn maven_jar(repo: &Path, d: &BuildDependency) -> Option<PathBuf> {
         return None;
     }
     let dir = repo.join(d.group.replace('.', "/")).join(&d.artifact).join(&d.version);
-    ["-sources.jar", ".jar"]
+    [".jar", "-sources.jar"]
         .iter()
         .map(|suffix| dir.join(format!("{}-{}{suffix}", d.artifact, d.version)))
         .find(|p| p.is_file())
@@ -300,7 +300,7 @@ pub(crate) fn gradle_jar(home: &Path, d: &BuildDependency) -> Option<PathBuf> {
     let dir = home.join("caches/modules-2/files-2.1").join(&d.group).join(&d.artifact).join(&d.version);
     let mut hashes: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).collect();
     hashes.sort();
-    ["-sources.jar", ".jar"].iter().find_map(|suffix| {
+    [".jar", "-sources.jar"].iter().find_map(|suffix| {
         let file = format!("{}-{}{suffix}", d.artifact, d.version);
         hashes.iter().map(|h| h.join(&file)).find(|p| p.is_file())
     })

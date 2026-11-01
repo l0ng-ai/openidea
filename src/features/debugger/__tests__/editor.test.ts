@@ -53,6 +53,32 @@ describe("breakpoint gutter", () => {
   });
 });
 
+describe("output class gutter", () => {
+  it("disables ordinary, temporary and logging breakpoints and explains why", () => {
+    loadBreakpoints("/proj");
+    const path = "file:///proj/target/classes/C.class";
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "class C {}",
+        extensions: [
+          lineNumbers(),
+          breakpointGutter({ ...ctx, path, language: "java", readOnly: true, virtual: true }),
+        ],
+      }),
+      parent: document.body,
+    });
+    views.push(view);
+    const cell = view.dom.querySelector(".cm-lineNumbers .cm-gutterElement")!;
+    cell.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(cell.closest(".cm-gutters")?.getAttribute("title")).toMatch(/output classes without source code/);
+    for (const modifier of [{}, { altKey: true }, { shiftKey: true }]) {
+      cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, ...modifier }));
+      cell.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, ...modifier }));
+    }
+    expect(breakpointsOf(path)).toHaveLength(0);
+  });
+});
+
 describe("breakpoint look", () => {
   it("shows the verified icon only while a session has bound it", () => {
     const b = { id: "1", line: 0, enabled: true, condition: null, logMessage: null, hitCondition: null };

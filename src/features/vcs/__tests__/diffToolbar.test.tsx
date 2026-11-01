@@ -66,6 +66,21 @@ beforeEach(() => {
 });
 
 describe("Diff toolbar", () => {
+  it("shows a binary notice for disk comparisons instead of identical empty text", async () => {
+    probe.mockResolvedValue({ status: "ok", data: { size: 3, binary: true, tooLarge: false } });
+    const binaryInput = {
+      ...input,
+      data: { path: "/p/right.bin", left: { type: "file", path: "/p/left.bin" }, right: { type: "worktree" } },
+    } as EditorInput;
+    render(<DiffEditor input={binaryInput} />);
+    expect(await screen.findByText("Binary files cannot be shown as text")).toBeInTheDocument();
+    expect(screen.queryByText("Contents are identical")).toBeNull();
+    expect(screen.queryByRole("region", { name: /left.bin/ })).toBeNull();
+    probe.mockResolvedValue({ status: "ok", data: { size: 3, binary: false, tooLarge: false } });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.queryByText("Binary files cannot be shown as text")).toBeNull());
+  });
+
   it("puts Jump to Source right after Next Difference, in the navigation group", async () => {
     render(<DiffEditor input={input} />);
     await screen.findByRole("button", { name: "Jump to Source" });

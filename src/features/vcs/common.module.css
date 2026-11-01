@@ -310,6 +310,17 @@
   color: var(--fg-subtle);
   overflow-wrap: anywhere;
 }
+.compareToolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 14px;
+}
+.compareToolbar > input {
+  flex: 1;
+  min-width: 140px;
+}
 .compareAdded {
   color: var(--vcs-added);
   font-variant-numeric: tabular-nums;

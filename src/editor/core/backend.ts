@@ -36,7 +36,7 @@ export interface DocPatchedEvent {
 
 export interface DocBackend {
   open(path: string): Promise<DocumentInfo>;
-  /** Opens the read-only virtual document behind a non-`file:` URI (library class contents). */
+  /** Opens a read-only language-server document (library or disk class contents). */
   openVirtual(uri: string): Promise<DocumentInfo>;
   close(doc: DocId): Promise<void>;
   edit(doc: DocId, baseVersion: number, changes: TextChange[]): Promise<number>;

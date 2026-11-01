@@ -46,6 +46,11 @@ export function unavailableText(e: unknown, fallback = "No language server avail
   return e instanceof IpcError && e.kind === "unavailable" && LACKS_FEATURE.test(e.message) ? e.message : fallback;
 }
 
+/** True when `unavailable` means no server is running for the file, rather than a running server lacking the feature. */
+export function isNoServer(e: unknown): boolean {
+  return e instanceof IpcError && e.kind === "unavailable" && !LACKS_FEATURE.test(e.message);
+}
+
 // Ids are shared by every window of the backend and outlive a reload there (a cancel that
 // arrives before its request began is remembered), so each page starts at a random point.
 let nextId = 1 + Math.floor(Math.random() * 0x7000_0000);
