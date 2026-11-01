@@ -60,6 +60,7 @@ export function pickServices(
   });
 }
 
+/** A checkbox list of the kind's configurations; OK returns the picked set, Cancel/Escape null. */
 function ImportDialog(props: {
   kind: string;
   configs: readonly RunConfig[];

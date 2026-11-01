@@ -162,12 +162,14 @@ export function readHidden(location: string | null): Record<string, string[]> {
   }
 }
 
+/** The current project's hidden ids, from memory or persisted storage. */
 function currentHidden(): Record<string, string[]> {
   const s = useHiddenConfigs.getState();
   const location = projectLocation(useProject.getState().project?.root);
   return s.location === location ? s.hidden : readHidden(location);
 }
 
+/** Persists the hidden ids (per project; in memory only when storage fails). */
 function saveHidden(hidden: Record<string, string[]>) {
   const location = projectLocation(useProject.getState().project?.root);
   useHiddenConfigs.setState({ location, hidden });
@@ -189,10 +191,12 @@ function hideConfig(kind: string, id: string) {
 /** "Add Service" on a type group: pick which of the kind's configurations show. */
 async function pickForKind(kind: string) {
   const configs = useRun.getState().configs.filter((c) => c.kind === kind);
+  // Nothing to choose from: just add the type, as before the picker existed.
   if (configs.length <= 1) {
     addType(kind);
     return;
   }
+  // The picker starts from what is shown now; cancelling changes nothing.
   const hidden = new Set(currentHidden()[kind] ?? []);
   const picked = await pickServices(kind, configs, new Set(configs.filter((c) => !hidden.has(c.id)).map((c) => c.id)));
   if (!picked) return;
@@ -496,6 +500,7 @@ function menu(item: ServiceTreeItem): MenuItem[] {
     run: a.run,
   }));
   const r = resolve(item);
+  // A type group: its batch actions, Add Service and, for added types, Remove from Services.
   if (!r.config && r.kind) {
     const kind = r.kind;
     items.push(
@@ -510,6 +515,7 @@ function menu(item: ServiceTreeItem): MenuItem[] {
     if (currentTypes().includes(kind))
       items.push({ label: "Remove from Services", icon: "close", run: () => removeType(kind) });
   }
+  // A configuration: its console, edit and, unlike the group, hide this one service.
   if (r.config) {
     const config = r.config;
     const session = r.session?.run;
@@ -664,6 +670,7 @@ function addMenu(): MenuItem[] {
       icon: configIcon({ kind: members[0]!, isTest: false }),
       submenu: members.map(item),
     }));
+  // The project's own types first, then a separator, then the rest (grouped the same way).
   const submenu: MenuItem[] = [
     ...grouped(kinds.filter((k) => used.includes(k))),
     ...(used.some((k) => kinds.includes(k)) && kinds.some((k) => !used.includes(k))
