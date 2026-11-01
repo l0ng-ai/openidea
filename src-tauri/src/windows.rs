@@ -309,7 +309,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     // margin. Re-issuing the configured size once the page has loaded — well
     // past the first-configure negotiation, where a resize is dropped — snaps
     // the commit, and with it the save, back to the content basis.
-    if window_geometry::is_wayland() {
+    if cfg!(target_os = "linux") && window_geometry::is_wayland() {
         builder = builder.on_page_load(restate_size_once(tauri::LogicalSize::new(config.width, config.height)));
     }
     let window = builder.build().map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
