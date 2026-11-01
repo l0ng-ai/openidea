@@ -301,9 +301,18 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     } else if let Some(a) = &appearance {
         config.background_color = Some(frame_color(a, false));
     }
-    let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| b.build())
+    let mut builder = WebviewWindowBuilder::from_config(app, &config)
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
+    // GTK Wayland's first commit carries the configured size plus the CSD margin
+    // (`set_window_geometry(1234, 711)` for a configured 678), and that inflated
+    // value is what the window-state plugin saves — every session grows by the
+    // margin. Re-issuing the configured size once the page has loaded — well
+    // past the first-configure negotiation, where a resize is dropped — snaps
+    // the commit, and with it the save, back to the content basis.
+    if window_geometry::is_wayland() {
+        builder = builder.on_page_load(restate_size_once(tauri::LogicalSize::new(config.width, config.height)));
+    }
+    let window = builder.build().map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -314,6 +323,23 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         let _ = window.set_background_color(Some(frame_color(&a, true)));
     }
     Ok(window)
+}
+
+/// A page-load hook that re-issues `size` once, the first time a page finishes
+/// loading. By then the compositor's first configure has long passed, so the
+/// resize reaches `gtk_window_resize` instead of being dropped mid-negotiation
+/// (a resize right after mapping even shrinks the window by the CSD margin).
+fn restate_size_once(
+    size: tauri::LogicalSize<f64>,
+) -> impl Fn(tauri::WebviewWindow, tauri::webview::PageLoadPayload<'_>) + Send + Sync + 'static {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let armed = AtomicBool::new(true);
+    move |window, payload| {
+        if armed.load(Ordering::Relaxed) && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+            armed.store(false, Ordering::Relaxed);
+            let _ = window.set_size(size);
+        }
+    }
 }
 
 /// Sets the saved IDE zoom before the page loads; applied later by the frontend,
