@@ -551,6 +551,7 @@ export const commands = {
 	 *  to start the shell takes tens of milliseconds, a frozen UI if run there.
 	 */
 	termSpawn: (options: TerminalOptions, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("term_spawn", { options, onOutput })),
+	termStoreImage: (id: TerminalId, data: number[], mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
 	termWrite: (id: TerminalId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("term_write", { id, data })),
 	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
 	termKill: (id: TerminalId) => typedError<null, IdeError>(__TAURI_INVOKE("term_kill", { id })),

@@ -3,6 +3,16 @@ use crate::Host;
 use ide_core::{IdeResult, TerminalId};
 use ide_terminal::{TerminalInfo, TerminalOptions};
 
+mod images;
+
+pub async fn store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: String) -> IdeResult<String> {
+    if !host.terminals.contains(id) {
+        return Err(ide_core::IdeError::invalid("terminal session not found"));
+    }
+    let data_dir = host.data_dir.clone();
+    host.blocking(move || images::store(&data_dir, &data, &mime)).await
+}
+
 pub fn spawn(
     host: &Host,
     window: &str,

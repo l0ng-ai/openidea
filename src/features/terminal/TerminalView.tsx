@@ -31,7 +31,6 @@ import {
   type PaneLayout,
   type TerminalTab,
 } from "./store";
-import { pasteTerminalClipboard } from "./paste";
 import { TerminalFindBar } from "./FindBar";
 import styles from "./Terminal.module.css";
 
@@ -103,7 +102,7 @@ function paneMenu(e: MouseEvent, key: string) {
     {
       label: "Paste",
       shortcut: mac ? "⌘V" : "Ctrl+Shift+V",
-      run: () => void pasteTerminalClipboard((text) => session.paste(text)),
+      run: () => void session.pasteClipboard(),
     },
     { label: "Select All", run: () => session.term.selectAll() },
     { kind: "separator" },
