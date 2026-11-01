@@ -1,15 +1,19 @@
 //! File › Invalidate Caches… and restarting the IDE.
 
+use crate::state::AppState;
 use crate::windows::WindowsState;
 use ide_core::IdeResult;
 use ide_workspace::caches::{self, InvalidateCachesOptions};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 /// Schedules the invalidation for the next start (`None` cancels a pending one).
 #[tauri::command]
 #[specta::specta]
-pub fn caches_schedule_invalidation(app: AppHandle, options: Option<InvalidateCachesOptions>) -> IdeResult<()> {
-    let data_dir = app.path().app_data_dir().map_err(|e| ide_core::IdeError::internal(e.to_string()))?;
+pub fn caches_schedule_invalidation(
+    state: State<'_, AppState>,
+    options: Option<InvalidateCachesOptions>,
+) -> IdeResult<()> {
+    let data_dir = state.data_dir.clone();
     match options {
         Some(o) => caches::schedule(&data_dir, &o),
         None => {

@@ -12,7 +12,8 @@ use std::path::PathBuf;
 /// The installer, reporting the executables chosen in the window's settings.
 fn tools(host: &Host, window: &str) -> IdeResult<Tools> {
     host.require_trust(window)?;
-    let data = host.data_dir.clone();
+    // Installs land under the tools home (a custom base, else the data dir).
+    let data = ide_tools::app_root(&host.data_dir);
     let (settings, root) = match host.project(window) {
         Ok(project) => (project.settings.effective(), project.root.clone()),
         Err(_) => (host.global_settings.effective(), Default::default()),

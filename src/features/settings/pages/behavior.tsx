@@ -6,15 +6,16 @@
  */
 
 import { FontPicker } from "../components/FontPicker";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useId, useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
 import { usePlatform } from "@/platform/platformInfo";
-import { isTauri } from "@/platform/ipc";
+import { call, commands, isTauri, type AppHome } from "@/platform/ipc";
 import { ZOOM_LIMITS } from "@/platform/zoom";
 import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
-import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
+import { Button, Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
+import { notifications } from "@/workbench/contributions";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
 import { ColorSwatches, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
@@ -368,6 +369,114 @@ function DefaultDirectoryRow() {
   );
 }
 
+/**
+ * Where config and data live: the platform dirs by default, one chosen base
+ * otherwise. Changing or resetting takes effect on the next start, when the
+ * migration dialog asks whether to move the existing data (no data is
+ * copied here — the dialog owns the move).
+ */
+function ConfigurationDirectoryRow() {
+  const t = useT();
+  const id = useId();
+  const [home, setHome] = useState<AppHome | null>(null);
+  const [path, setPath] = useState("");
+  useEffect(() => {
+    if (isTauri())
+      void commands
+        .appHome()
+        .then(setHome)
+        .catch(() => setHome(null));
+  }, []);
+  const browse = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: "Configuration Directory",
+      defaultPath: home?.base || home?.configDir || undefined,
+    });
+    const pickedPath = Array.isArray(picked) ? picked[0] : picked;
+    if (pickedPath) setPath(pickedPath);
+  };
+  const notifyAndRestart = () =>
+    notifications().notify({
+      level: "info",
+      title: t("Configuration directory"),
+      body: t("The new directory is used after a restart."),
+      sticky: true,
+      actions: [{ label: t("Restart"), run: () => void commands.appRestart() }],
+    });
+  const apply = async () => {
+    try {
+      await call(commands.appHomeSet(path.trim()));
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: t("Configuration directory"),
+        body: e instanceof Error ? e.message : String(e),
+      });
+      return;
+    }
+    notifyAndRestart();
+  };
+  const reset = async () => {
+    try {
+      await call(commands.appHomeReset());
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: t("Configuration directory"),
+        body: e instanceof Error ? e.message : String(e),
+      });
+      return;
+    }
+    notifyAndRestart();
+  };
+  // OPENIDEA_HOME wins over the pointer file: the row turns read-only rather
+  // than offering a change the next start would ignore.
+  const locked = home?.envOverride ?? false;
+  const hint = locked
+    ? "OPENIDEA_HOME is set and takes precedence over this setting."
+    : home?.base
+      ? "Settings and data live under this directory."
+      : home && home.dataDir !== home.configDir
+        ? tx`Data directory: ${home.dataDir}`
+        : undefined;
+  return (
+    <Row label="Configuration directory" htmlFor={id} hint={hint}>
+      <Input
+        id={id}
+        className={styles.pathInput}
+        value={path || home?.base || home?.configDir || ""}
+        placeholder={home ? undefined : "System default"}
+        readOnly={locked || !isTauri()}
+        onChange={(e) => setPath(e.target.value)}
+      />
+      <IconButton
+        icon="folder-open"
+        size="small"
+        title="Browse…"
+        aria-label="Browse"
+        disabled={locked || !isTauri()}
+        onClick={() => void browse()}
+      />
+      <Button
+        size="small"
+        variant="primary"
+        disabled={locked || !isTauri() || !path.trim()}
+        onClick={() => void apply()}
+      >
+        <T>Apply</T>
+      </Button>
+      {home?.base && (
+        <Button size="small" disabled={locked} onClick={() => void reset()}>
+          <T>Reset to default</T>
+        </Button>
+      )}
+    </Row>
+  );
+}
+
 function IdleSaveRow() {
   const [on, setOn] = useSetting<boolean>("general.saveOnIdle");
   const [seconds, setSeconds] = useSetting<number>("general.idleSeconds");
@@ -603,6 +712,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             component: OpenProjectInRow,
           },
           { kind: "custom", label: "Default directory", component: DefaultDirectoryRow },
+          { kind: "custom", label: "Configuration directory", component: ConfigurationDirectoryRow },
         ],
       },
       {

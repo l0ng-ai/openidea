@@ -30,6 +30,182 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     }
 }
 
+/// The directories the app currently uses, for the Configuration directory
+/// settings row (Settings › System Settings).
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppHome {
+    pub config_dir: ide_core::IpcPath,
+    pub data_dir: ide_core::IpcPath,
+    /// The custom base itself, when one is set (config/ and system/ under it).
+    pub base: Option<ide_core::IpcPath>,
+    pub env_override: bool,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn app_home() -> AppHome {
+    let resolved = crate::paths::current();
+    let base = match &resolved.layout {
+        crate::paths::Layout::Custom(base) => Some(base.clone().into()),
+        crate::paths::Layout::Default => None,
+    };
+    AppHome {
+        config_dir: resolved.locations.config.clone().into(),
+        data_dir: resolved.locations.data.clone().into(),
+        base,
+        env_override: std::env::var_os("OPENIDEA_HOME").is_some(),
+    }
+}
+
+/// Records a switch to `path` (Settings › Configuration directory). The new
+/// directory takes effect on the next start, when the migration dialog asks
+/// whether to move the existing data.
+#[tauri::command]
+#[specta::specta]
+pub fn app_home_set(path: String) -> IdeResult<()> {
+    let resolved = crate::paths::current();
+    if std::env::var_os("OPENIDEA_HOME").is_some() {
+        return Err(IdeError::internal("OPENIDEA_HOME is set and takes precedence"));
+    }
+    let target = PathBuf::from(path.trim());
+    if !target.is_absolute() {
+        return Err(IdeError::internal("the configuration directory must be an absolute path"));
+    }
+    if let crate::paths::Layout::Custom(base) = &resolved.layout
+        && base == &target
+    {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&target).map_err(|e| IdeError::internal(e.to_string()))?;
+    let current = match &resolved.layout {
+        crate::paths::Layout::Custom(base) => Some(base.as_path()),
+        crate::paths::Layout::Default => None,
+    };
+    if crate::paths::base_conflicts(&target, &resolved.defaults, current) {
+        return Err(IdeError::internal(
+            "the configuration directory must not be inside or contain an existing data directory",
+        ));
+    }
+    // The pointer records where the data currently lives, so the next start
+    // can offer to migrate it; a new switch also asks again.
+    crate::paths::write_pointer(&resolved.defaults.0, &crate::paths::Layout::Custom(target), Some(&resolved.layout))
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    crate::paths::clear_skip_marker(&resolved.defaults.0);
+    Ok(())
+}
+
+/// Records a switch back to the platform defaults; mirrors `app_home_set`.
+#[tauri::command]
+#[specta::specta]
+pub fn app_home_reset() -> IdeResult<()> {
+    let resolved = crate::paths::current();
+    if std::env::var_os("OPENIDEA_HOME").is_some() {
+        return Err(IdeError::internal("OPENIDEA_HOME is set and takes precedence"));
+    }
+    let crate::paths::Layout::Custom(base) = &resolved.layout else {
+        return Ok(());
+    };
+    crate::paths::write_pointer(
+        &resolved.defaults.0,
+        &crate::paths::Layout::Default,
+        Some(&crate::paths::Layout::Custom(base.clone())),
+    )
+    .map_err(|e| IdeError::internal(e.to_string()))?;
+    crate::paths::clear_skip_marker(&resolved.defaults.0);
+    Ok(())
+}
+
+/// What a migration would do, for the startup dialog: move `entries` from
+/// the previous location into the resolved one.
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationStatus {
+    pub pending: bool,
+    pub entries: usize,
+    pub from: Vec<ide_core::IpcPath>,
+    pub to: Vec<ide_core::IpcPath>,
+}
+
+/// The directories a layout writes (the two sides, or one when the platform
+/// keeps them together).
+fn side_dirs(layout: &crate::paths::Layout, defaults: &(PathBuf, PathBuf)) -> Vec<ide_core::IpcPath> {
+    let (config, data) = crate::paths::side_roots(layout, defaults);
+    let mut dirs = vec![config];
+    if data != dirs[0] {
+        dirs.push(data);
+    }
+    dirs.into_iter().map(Into::into).collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn migration_status() -> MigrationStatus {
+    let resolved = crate::paths::current();
+    let from = crate::paths::previous_layout(resolved);
+    let entries = from
+        .as_ref()
+        .map(|f| crate::paths::migration_pending(f, &resolved.layout, &resolved.defaults).unwrap_or(0))
+        .unwrap_or(0);
+    MigrationStatus {
+        pending: entries > 0,
+        entries,
+        from: from.as_ref().map(|f| side_dirs(f, &resolved.defaults)).unwrap_or_default(),
+        to: side_dirs(&resolved.layout, &resolved.defaults),
+    }
+}
+
+/// Moves the previous location's data into the resolved one (after a
+/// switch): migrate, rewrite stored paths, move the previous directories to
+/// the trash, and drop the pointer's previous line so the dialog stays gone.
+/// With any failed entry the previous location is kept and asked about again
+/// on the next start.
+#[tauri::command]
+#[specta::specta]
+pub fn migration_apply(state: State<'_, AppState>) -> crate::paths::Migration {
+    let resolved = crate::paths::current();
+    let Some(from) = crate::paths::previous_layout(resolved) else {
+        return crate::paths::Migration::default();
+    };
+    let to = &resolved.layout;
+    let result = crate::paths::migrate(&from, to, &resolved.defaults, state.fresh_target);
+    if result.failed == 0 {
+        if let Err(e) = crate::paths::rewrite(&from, to, &resolved.defaults) {
+            tracing::warn!("migration: rewriting stored paths failed: {e}");
+        }
+        if let Err(e) = crate::paths::trash(&from, &resolved.defaults) {
+            tracing::warn!("migration: moving the previous directories to the trash failed: {e}");
+        }
+        // The trash may have taken the pointer file with it (it sits inside
+        // the default config dir): drop it when the target is the defaults,
+        // else rewrite it so the new base stays authoritative.
+        match to {
+            crate::paths::Layout::Default => crate::paths::remove_pointer(&resolved.defaults.0),
+            crate::paths::Layout::Custom(base) => {
+                let _ = crate::paths::write_pointer(
+                    &resolved.defaults.0,
+                    &crate::paths::Layout::Custom(base.clone()),
+                    None,
+                );
+            }
+        }
+    }
+    tracing::info!("migration: {} entries moved into the resolved location ({} failed)", result.moved, result.failed);
+    result
+}
+
+/// The dialog's "Don't migrate"; `remember` records "don't ask again" until
+/// the next switch.
+#[tauri::command]
+#[specta::specta]
+pub fn migration_decline(remember: bool) -> IdeResult<()> {
+    let resolved = crate::paths::current();
+    if remember {
+        crate::paths::write_skip_marker(&resolved.defaults.0).map_err(|e| IdeError::internal(e.to_string()))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn recent_projects(state: State<'_, AppState>) -> Vec<RecentProject> {

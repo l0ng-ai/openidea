@@ -14,6 +14,9 @@ pub use ide_host::{Host, Project};
 pub struct AppState {
     pub app: AppHandle,
     pub host: Arc<Host>,
+    /// Whether this start found the resolved location without app data: a
+    /// migration chosen during this run may replace the files the boot wrote.
+    pub(crate) fresh_target: bool,
     pub startup: Startup,
     pub recent: RecentProjects,
     /// WASM plugins (`ide-plugin`), shared by all windows.
@@ -62,8 +65,16 @@ impl AppState {
                 syntax.get_or_init(|| Arc::new(Syntax::new()));
             })?;
         }
-        let config_dir = app.path().app_config_dir()?;
-        let data_dir = app.path().app_data_dir()?;
+        // The resolved location: the platform dirs by default, a user-chosen
+        // base's config/ and system/ otherwise (`crate::paths`). A previous
+        // location's files are NOT folded in here — the migration dialog
+        // asks first (see `commands::app::migration_*`); this start only
+        // records whether the location had no app data, so a migration
+        // chosen moments later knows its own fresh files may be replaced.
+        let resolved = crate::paths::current();
+        let fresh_target = !crate::paths::layout_has_data(&resolved.layout, &resolved.defaults);
+        let config_dir = resolved.locations.config.clone();
+        let data_dir = resolved.locations.data.clone();
         std::fs::create_dir_all(&config_dir)?;
         std::fs::create_dir_all(&data_dir)?;
         // Saved git HTTPS credentials (askpass answers them silently).
@@ -89,10 +100,20 @@ impl AppState {
             project_environment: false,
         }));
         Ok(Self {
+            fresh_target,
             recent: RecentProjects::load(&config_dir),
             askpass: start_askpass(&app),
             sink: global_sink,
-            plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
+            // Plugins are user-chosen installs: on the config side of a custom
+            // base, beside the data in the default layout (`crate::paths`).
+            plugins: crate::commands::plugin::create_host(
+                &app,
+                match resolved.layout {
+                    crate::paths::Layout::Default => &data_dir,
+                    crate::paths::Layout::Custom(_) => &config_dir,
+                },
+                &host,
+            )?,
             web: ide_web::WebServer::new(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,

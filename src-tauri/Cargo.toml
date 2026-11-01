@@ -33,6 +33,7 @@ blake3.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 dirs.workspace = true
+trash.workspace = true
 
 ide-core.workspace = true
 dunce.workspace = true
@@ -77,3 +78,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSNotification", "NSOperation", "NSString"] }
 # Used only by the debug font-restriction override; Cargo dependency cfg cannot test debug_assertions.
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration", "WKPreferences"] }
+
+[dev-dependencies]
+tempfile.workspace = true

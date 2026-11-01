@@ -65,6 +65,17 @@ OPENIDEA_TEST_PYTHON_SECOND=/second/env/bin/python \
 cargo test -p ide-notebook --test kernel_runtime -- --ignored --test-threads=1
 ```
 
+## Configuration directory
+
+Settings, data, managed tools and logs live in the platform's standard
+directories (Tauri's `app_config_dir` / `app_data_dir`). To keep everything in
+one place of your choosing, open **Settings › System Settings › Configuration
+directory** and pick a base directory — config/ and system/ are created under
+it, and on the next start a dialog offers to move the existing data there
+(old paths in settings are rewritten and the old directories go to the
+trash). "Reset to default" moves everything back the same way. The
+`OPENIDEA_HOME` environment variable does the same and takes precedence.
+
 ## License
 
 [Apache 2.0](LICENSE). Bundled third-party assets are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
