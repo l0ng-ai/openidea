@@ -51,19 +51,26 @@ describe("macOS user font resolver", () => {
     vi.resetModules();
   });
 
-  async function resolver(available: boolean | "symbols", os = "macos") {
+  async function resolver(available: boolean | "symbols" | "connected", os = "macos") {
     vi.resetModules();
     const invoke = vi.fn();
     vi.doMock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke }));
     vi.doMock("./platformInfo", () => ({ guessOs: () => os }));
-    const ctx = {
-      font: "",
-      measureText(text: string) {
-        const covered = available === true || (available === "symbols" && text.includes("\uF418"));
-        return { width: covered && this.font.includes('"') ? 200 : 100 };
-      },
-    };
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(ctx as unknown as CanvasRenderingContext2D);
+    const canvases: HTMLCanvasElement[] = [];
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+      const isConnected = () => this.isConnected;
+      canvases.push(this);
+      return {
+        font: "",
+        measureText(this: { font: string }, text: string) {
+          const covered =
+            available === true ||
+            (available === "symbols" && text.includes("\uF418")) ||
+            (available === "connected" && isConnected());
+          return { width: covered && this.font.includes('"') ? 200 : 100 };
+        },
+      } as unknown as CanvasRenderingContext2D;
+    });
     const registered: { family: string; descriptors: unknown }[] = [];
     vi.stubGlobal(
       "FontFace",
@@ -93,7 +100,7 @@ describe("macOS user font resolver", () => {
     new DataView(bundle.buffer).setUint32(0, header.length, true);
     bundle.set(header, 4);
     invoke.mockResolvedValue(bundle.buffer);
-    return { fonts: await import("./fonts"), invoke, registered, load };
+    return { fonts: await import("./fonts"), invoke, registered, load, canvases };
   }
 
   it("loads an unavailable family once across primary, fallback and UI, including regular/bold/italic", async () => {
@@ -117,6 +124,28 @@ describe("macOS user font resolver", () => {
     expect(fonts.uiFontFamily("Menlo")).toBe('"Menlo", system-ui, sans-serif');
     fonts.monoFontFamily("Maple Mono NF CN");
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("detects user fonts that WKWebView exposes only to connected canvases without loading bytes", async () => {
+    const { fonts, invoke, canvases } = await resolver("connected");
+    expect(fonts.fontAvailable("Maple Mono NF CN")).toBe(true);
+    expect(fonts.familyFaces("Maple Mono NF CN")).toEqual(['"Maple Mono NF CN"']);
+    expect(fonts.familyFaces("JetBrainsMono Nerd Font Mono")).toEqual(['"JetBrainsMono Nerd Font Mono"']);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(canvases.length).toBeGreaterThan(0);
+    expect(canvases.every((canvas) => canvas.hidden && !canvas.isConnected)).toBe(true);
+  });
+
+  it("removes the probe when a font is unavailable or canvas measurement fails", async () => {
+    const { fonts, canvases } = await resolver(false);
+    expect(fonts.fontAvailable("Unavailable")).toBe(false);
+    expect(canvases.every((canvas) => !canvas.isConnected)).toBe(true);
+    const remove = vi.spyOn(HTMLCanvasElement.prototype, "remove");
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => {
+      throw new Error("Canvas unavailable");
+    });
+    expect(fonts.fontAvailable("Maple Mono NF CN")).toBe(true);
+    expect(remove).toHaveBeenCalledOnce();
   });
 
   it("does not read a locally available symbol-only Nerd fallback", async () => {

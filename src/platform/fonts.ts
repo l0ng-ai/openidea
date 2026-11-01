@@ -31,10 +31,20 @@ const familyName = (family: string) => family.trim().replace(/^"(.*)"$/, "$1");
 // reflow automatically and canvas consumers await the same promise below.
 const userFonts = new Map<string, { alias: string; loaded: Promise<void> }>();
 
+/** WKWebView needs a connected canvas to resolve user fonts. Remove it in finally after probing. */
+export function createFontProbeCanvas(): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.hidden = true;
+  (document.body ?? document.documentElement).append(canvas);
+  return canvas;
+}
+
 /** A pure local-name probe; FontFaceSet.check also returns true for unknown families. */
 export function fontAvailable(name: string): boolean {
+  let canvas: HTMLCanvasElement | undefined;
   try {
-    const ctx = document.createElement("canvas").getContext("2d");
+    canvas = createFontProbeCanvas();
+    const ctx = canvas.getContext("2d");
     if (!ctx) return true;
     // Symbol-only Nerd fonts and CJK faces may have no Latin glyphs.
     return ["mmmmmmmmmmlli1WQ@", "\uF418\uE725\u{F0001}", "汉字かな한글"].some((sample) =>
@@ -48,6 +58,8 @@ export function fontAvailable(name: string): boolean {
     );
   } catch {
     return true;
+  } finally {
+    canvas?.remove();
   }
 }
 

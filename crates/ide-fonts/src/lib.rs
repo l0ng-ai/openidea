@@ -86,6 +86,7 @@ pub fn parse_fc_list(output: &str) -> Vec<(String, bool)> {
 /// Binary font bundle: little-endian u32 JSON-header length, a face metadata
 /// array, then raw font bytes. Paths never cross IPC; only CoreText-enumerated
 /// files under user font directories can be read, selected by family name.
+/// Includes only the nearest regular/bold faces and their optional italics.
 pub fn user_font_data(family: &str) -> std::io::Result<Vec<u8>> {
     #[cfg(target_os = "macos")]
     {
@@ -115,6 +116,25 @@ fn user_font_path(path: &std::path::Path, roots: &[std::path::PathBuf]) -> Optio
 }
 
 #[cfg(any(target_os = "macos", test))]
+fn family_faces<'a>(family: &str, entries: &'a [UserFace]) -> Vec<&'a UserFace> {
+    let mut selected: Vec<&UserFace> = Vec::new();
+    for italic in [false, true] {
+        for weight in [400u16, 700] {
+            let closest = entries
+                .iter()
+                .filter(|e| e.family.eq_ignore_ascii_case(family.trim()) && e.italic == italic)
+                .min_by_key(|e| (e.weight.abs_diff(weight), e.weight, &e.path));
+            if let Some(face) = closest
+                && !selected.iter().any(|f| std::ptr::eq(*f, face))
+            {
+                selected.push(face);
+            }
+        }
+    }
+    selected
+}
+
+#[cfg(any(target_os = "macos", test))]
 fn bundle_family(family: &str, entries: &[UserFace]) -> std::io::Result<Vec<u8>> {
     #[derive(Serialize)]
     struct Face {
@@ -126,7 +146,8 @@ fn bundle_family(family: &str, entries: &[UserFace]) -> std::io::Result<Vec<u8>>
     let mut faces = Vec::new();
     let mut data = Vec::new();
     let mut files = BTreeMap::new();
-    for entry in entries.iter().filter(|e| e.family.eq_ignore_ascii_case(family.trim())) {
+    // Bound large CJK families to regular/bold and their nearest italic faces.
+    for entry in family_faces(family, entries) {
         // Reject a file replaced by a symlink after enumeration.
         if entry.path.canonicalize()? != entry.path {
             return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Font file changed"));
@@ -339,6 +360,46 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
+    fn selects_only_regular_bold_and_matching_italics_from_dense_families() {
+        let entries: Vec<_> = [false, true]
+            .into_iter()
+            .flat_map(|italic| {
+                (100..=900).step_by(100).map(move |weight| UserFace {
+                    family: "CJK".into(),
+                    path: format!("{weight}-{italic}.ttf").into(),
+                    weight,
+                    italic,
+                })
+            })
+            .collect();
+        let selected = family_faces(" cjk ", &entries);
+        assert_eq!(
+            selected.iter().map(|f| (f.weight, f.italic)).collect::<Vec<_>>(),
+            [(400, false), (700, false), (400, true), (700, true),]
+        );
+        assert!(family_faces("unknown", &entries).is_empty());
+    }
+
+    #[test]
+    fn selects_nearest_available_weights_once_with_optional_italics() {
+        let entries: Vec<_> = [(300, false), (500, false), (800, false), (500, true)]
+            .into_iter()
+            .map(|(weight, italic)| UserFace {
+                family: "Sparse".into(),
+                path: format!("{weight}-{italic}.ttf").into(),
+                weight,
+                italic,
+            })
+            .collect();
+        let selected = family_faces("Sparse", &entries);
+        assert_eq!(
+            selected.iter().map(|f| (f.weight, f.italic)).collect::<Vec<_>>(),
+            [(300, false), (800, false), (500, true),]
+        );
+        assert_eq!(family_faces("Sparse", &entries[..1]).len(), 1);
+    }
+
+    #[test]
     fn bundle_only_reads_enumerated_family_faces() {
         let root = std::env::current_dir().unwrap().join(format!("../../.font-bundle-test-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -350,18 +411,31 @@ mod tests {
         let entries = [
             UserFace { family: "Test Nerd Font".into(), path: regular.clone(), weight: 400, italic: false },
             UserFace { family: "Test Nerd Font".into(), path: bold, weight: 700, italic: false },
+            // A non-selected face is never opened, even if its file has disappeared.
+            UserFace { family: "Test Nerd Font".into(), path: root.join("thin.ttf"), weight: 100, italic: false },
         ];
         let result = bundle_family("test nerd font", &entries).unwrap();
         let len = u32::from_le_bytes(result[..4].try_into().unwrap()) as usize;
         let faces: serde_json::Value = serde_json::from_slice(&result[4..4 + len]).unwrap();
         assert_eq!(faces[0]["weight"], 400);
         assert_eq!(faces[1]["weight"], 700);
+        assert_eq!(faces.as_array().unwrap().len(), 2);
         assert_eq!(&result[4 + len..], &[1, 2, 3, 4, 5]);
         // Existing files are not inputs: neither paths nor unenumerated families grant access.
         assert!(bundle_family(regular.to_str().unwrap(), &entries).is_err());
         assert!(bundle_family("Unenumerated", &entries).is_err());
         assert!(user_font_path(&regular, &[]).is_none());
         assert!(user_font_path(&regular, std::slice::from_ref(&root)).is_some());
+        // Multiple selected descriptors in a collection still transfer the file only once.
+        let shared = [
+            UserFace { family: "Collection".into(), path: regular.clone(), weight: 400, italic: false },
+            UserFace { family: "Collection".into(), path: regular, weight: 700, italic: false },
+        ];
+        let result = bundle_family("Collection", &shared).unwrap();
+        let len = u32::from_le_bytes(result[..4].try_into().unwrap()) as usize;
+        let faces: serde_json::Value = serde_json::from_slice(&result[4..4 + len]).unwrap();
+        assert_eq!(faces[0]["offset"], faces[1]["offset"]);
+        assert_eq!(&result[4 + len..], &[1, 2, 3]);
         #[cfg(unix)]
         {
             let link = root.join("outside.ttf");

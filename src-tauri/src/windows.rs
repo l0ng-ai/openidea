@@ -876,10 +876,10 @@ fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
 
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
 /// private selector and environment override are absent from release builds.
+#[cfg(all(debug_assertions, target_os = "macos"))]
 fn dev_font_preferences(
     builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
 ) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
-    #[cfg(all(debug_assertions, target_os = "macos"))]
     if std::env::var("OPENIDEA_DEV_DISALLOW_USER_FONTS").as_deref() == Ok("1") {
         use objc2::{MainThreadMarker, msg_send, sel};
         use objc2_foundation::NSObjectProtocol;
@@ -897,6 +897,13 @@ fn dev_font_preferences(
         }
         tracing::warn!("WKPreferences user-font development selector unavailable");
     }
+    builder
+}
+
+#[cfg(not(all(debug_assertions, target_os = "macos")))]
+fn dev_font_preferences(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
     builder
 }
 
