@@ -1418,6 +1418,8 @@ export type AppearanceSettings = {
 	/**  Apply `ui_font_family` / `ui_font_size` (otherwise the theme's). */
 	useCustomFont?: boolean,
 	uiFontFamily?: string,
+	/**  Font tried when `ui_font_family` lacks a glyph; empty = none. */
+	uiFontFallback?: string,
 	contrastScrollbars?: boolean,
 	/**  Adjust colours for red-green vision deficiency. */
 	redGreenVision?: boolean,

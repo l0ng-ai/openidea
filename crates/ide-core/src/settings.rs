@@ -276,6 +276,8 @@ pub struct AppearanceSettings {
     /// Apply `ui_font_family` / `ui_font_size` (otherwise the theme's).
     pub use_custom_font: bool,
     pub ui_font_family: String,
+    /// Font tried when `ui_font_family` lacks a glyph; empty = none.
+    pub ui_font_fallback: String,
     pub contrast_scrollbars: bool,
     /// Adjust colours for red-green vision deficiency.
     pub red_green_vision: bool,
@@ -326,6 +328,7 @@ impl Default for AppearanceSettings {
             zoom: 100,
             use_custom_font: false,
             ui_font_family: "Inter".into(),
+            ui_font_fallback: String::new(),
             contrast_scrollbars: false,
             red_green_vision: false,
             different_tool_window_background: false,

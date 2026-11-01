@@ -36,11 +36,13 @@ it("escapes CSS special characters without turning a family into a list", () => 
 
 describe("uiFontFamily", () => {
   it.each([
-    ["Inter", '"Inter Variable", "Inter", system-ui, sans-serif'],
-    ["JetBrains Mono", '"JetBrains Mono Variable", "JetBrains Mono", system-ui, sans-serif'],
-    [' "PingFang SC" ', '"PingFang SC", system-ui, sans-serif'],
-  ])("%j", (family, expected) => {
-    expect(uiFontFamily(family)).toBe(expected);
+    ["Inter", "", '"Inter Variable", "Inter", system-ui, sans-serif'],
+    ["JetBrains Mono", "", '"JetBrains Mono Variable", "JetBrains Mono", system-ui, sans-serif'],
+    [' "PingFang SC" ', "", '"PingFang SC", system-ui, sans-serif'],
+    ["Inter", "思源黑体", '"Inter Variable", "Inter", "思源黑体", system-ui, sans-serif'],
+    ["Inter", " ", '"Inter Variable", "Inter", system-ui, sans-serif'],
+  ])("%j + %j", (family, fallback, expected) => {
+    expect(uiFontFamily(family, fallback)).toBe(expected);
   });
 });
 

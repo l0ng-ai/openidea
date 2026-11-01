@@ -27,6 +27,12 @@ describe("appearance & behavior settings", () => {
     expect(validateAppearanceExtras({ showToolWindowBadges: 1 }).showToolWindowBadges).toBe(true);
   });
 
+  it("keeps the UI fallback font empty by default and trims a stored one", () => {
+    expect(validateAppearanceExtras({}).uiFontFallback).toBe("");
+    expect(validateAppearanceExtras({ uiFontFallback: " 思源黑体 " }).uiFontFallback).toBe("思源黑体");
+    expect(validateAppearanceExtras({ uiFontFallback: 5 }).uiFontFallback).toBe("");
+  });
+
   it("formats dates with an override pattern and pretty dates", () => {
     const d = new Date(2026, 0, 5, 14, 7);
     expect(formatPattern(d, "dd.MM.yyyy")).toBe("05.01.2026");

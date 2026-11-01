@@ -181,6 +181,7 @@ function ZoomRow() {
 function CustomFontRow() {
   const [on, setOn] = useSetting<boolean>("appearance.useCustomFont");
   const [family, setFamily] = useSetting<string>("appearance.uiFontFamily");
+  const [fallback, setFallback] = useSetting<string>("appearance.uiFontFallback");
   const [size, setSize] = useSetting<number>("appearance.uiFontSize");
   const id = useId();
   const matched = useLabelMatch("Use custom font");
@@ -188,6 +189,17 @@ function CustomFontRow() {
     <div className={clsx(styles.fontRow, matched && styles.matched)}>
       <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
       <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
+      <label className={clsx(styles.sizeLabel, !on && styles.disabled)} htmlFor={`${id}-fallback`}>
+        <SearchLabel text="Fallback font:" />
+      </label>
+      <FontPicker
+        id={`${id}-fallback`}
+        label="UI fallback font"
+        disabled={!on}
+        value={fallback}
+        onChange={setFallback}
+        allowEmpty
+      />
       <label className={clsx(styles.sizeLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
         <SearchLabel text="Size:" />
       </label>
@@ -531,7 +543,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Use custom font",
-            keywords: ["UI font size", "Size", "font family"],
+            keywords: ["UI font size", "Size", "font family", "fallback font"],
             component: CustomFontRow,
           },
           { kind: "toggle", key: "appearance.contrastScrollbars", label: "Use contrast scrollbars" },
