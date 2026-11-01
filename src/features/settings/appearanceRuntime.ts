@@ -33,7 +33,7 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
     if (size === DEFAULT_SETTINGS.appearance.uiFontSize) root.style.removeProperty(name);
     else root.style.setProperty(name, `${size + delta}px`);
   }
-  if (a.useCustomFont) root.style.setProperty("--font-ui", uiFontFamily(a.uiFontFamily));
+  if (a.useCustomFont) root.style.setProperty("--font-ui", uiFontFamily(a.uiFontFamily, a.uiFontFallback));
   else root.style.removeProperty("--font-ui");
 
   flag(root, "compact", a.compactMode);
