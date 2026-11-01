@@ -4,9 +4,10 @@ The app-owned OSGi command `openidea.java.usages` returns `{location, kind, acce
 `kind` retains field/getter/setter/unknown identity for compatibility. Optional
 `access` is read/write/readWrite/unknown. Missing access metadata is unknown;
 old servers and ordinary LSP locations remain visible under either filter.
-An absent command uses standard LSP references. An advertised command error on the initial query is
-reported. A failed second, widened query follows the existing scope policy and
-retains the first result; it does not trigger a standard-LSP fallback. Cancellation and source-document version checks remain in the Rust bridge.
+An absent or failing extension command uses standard LSP references, without access
+classification or toolbar controls. This includes errors during scope widening.
+The Rust bridge logs the failure once per project session. Cancelled requests and
+changed source documents remain cancelled and do not start a fallback search.
 No global `includeAccessors` preference is changed.
 
 ## Search plan and access semantics
@@ -71,58 +72,43 @@ export PATH=/path/to/jdk25/bin:$PATH
 python3 plugins/java-usages/build.py /path/to/jdtls
 ```
 
-## Real server and browser verification
+## Manual upgrades
+
+Rebuilding on a JDT LS upgrade is manual. Updating JDT LS or compiling the app does
+not rebuild this jar. A maintainer must:
+
+1. Obtain the intended JDT LS distribution and verify its provenance and plugin hashes.
+   Update `build-dependencies.sha256` for the reviewed distribution.
+2. Review the internal APIs listed below. Check `ReferencesHandler.class` against
+   the native-plan fingerprint; update the guarded plan only after reviewing changes.
+3. Bump the bundle version in `MANIFEST.MF` and the installed filename in
+   `crates/ide-sdk/src/java.rs` so OSGi does not reuse the old cached bundle.
+4. Run `build.py` with that distribution and JDK 25 as shown above. Build twice and
+   compare hashes, then run both real-server harnesses and the desktop checks below.
+5. Commit the reviewed source, dependency inventory, version changes and rebuilt jar
+   together. Test the current and newly supported JDT LS versions before release.
+
+## Real server verification
 
 ```sh
 python3 plugins/java-usages/tests/verify.py /path/to/jdtls /path/to/lombok.jar
 python3 plugins/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write.json
 OPENIDEA_USAGES_INDEX_STRESS=1 python3 plugins/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write-indexed.json
-pnpm exec vite --port 1451 --strictPort
-OPENIDEA_TEST_URL=http://localhost:1451 node plugins/java-usages/tests/browser.mjs /tmp/read-write.json /tmp
 ```
 
-The first harness verifies legacy category coverage, standard-reference inclusion,
-boolean/fluent/prefix/chain naming, overloads, inheritance and includeAccessors=false.
-The second runs actual JDT LS/Lombok and checks structural read/write cases, interface
-and inherited calls, nested same-line calls, method references, receiver/array
-reads and a real `$/cancelRequest` response (`-32800`). The browser replays that actual response into real Chromium components,
-checks counts, mutual toggle behavior, viewport placement, Find transfer and
-persistence. It is not a native Tauri/backend end-to-end test. Start a fresh Vite
-server to avoid stale HMR module instances in dynamic imports.
+The harnesses select the JDT LS configuration for the current platform. The first
+verifies category coverage, standard-reference inclusion, boolean/fluent/prefix/chain
+naming, overloads, inheritance and includeAccessors=false. The second checks
+structural read/write cases, interface and inherited calls, nested same-line calls,
+method references, receiver/array reads and a real cancellation response (`-32800`).
 
-## Reproducible performance comparison
-
-```sh
-python3 plugins/java-usages/tests/performance/prepare.py /path/to/jdtls /tmp/usages-bench
-python3 plugins/java-usages/tests/performance/measure.py /path/to/jdtls /path/to/lombok.jar /tmp/usages-bench
-python3 plugins/java-usages/tests/performance/compare.py /tmp/usages-bench > /tmp/usages-summary.json
-```
-
-This is a historical extension-versus-extension comparison, not a no-feature
-baseline. It requires the earlier fork implementation, which is not an ancestor
-of upstream main. Fetch that fixed object before `prepare.py` in a clean clone:
-
-```sh
-git fetch https://github.com/NingYuanLin/openidea.git 0dad7de27ffd680efd7467f2f6f3f60c693b7a0e
-```
-
-Requires that git object, JDK javac and JDT's ASM jar. `prepare.py` builds test-only instrumented variants and an agent
-counting actual SearchEngine calls. Production jars contain no counter code.
-`measure.py` first verifies counts, then runs three fresh JVMs per implementation
-in alternating order, sequentially. Each case has one first-touch query, five
-warmups and thirty measured queries. Only the first field query follows a fresh
-workspace import; other first-touch queries share that JVM, so they are not cold
-server measurements. Warm samples total 90 per case. Avoid builds/other workloads
-while measuring. Full legacy locations, kinds and ranges must match; newly added
-access metadata is verified separately. A forced-fingerprint-mismatch variant
-checks fallback coverage. The 150-use fixture includes 600–750-result fields,
-builder unknowns, explicit/fluent Accessors, method selection, declarations,
-includeAccessors=false and library references.
+Use the actual desktop app to check read/write toggles, mutual toggle behavior,
+Find transfer, persistence and unfiltered non-Java counts with the same fixture.
 
 ## Review and manual reproduction
 
 See [the English reproduction guide](tests/REPRODUCE.md) for a small Java/Lombok
-fixture, before/after behavior and a clearly labeled browser preview workflow.
+fixture, before/after behavior and desktop verification steps.
 
 ## Internal API compatibility
 
@@ -139,12 +125,9 @@ This is an app-owned JDT LS extension, not a standard LSP feature. It uses:
 - Public JDT model/DOM APIs for exact target identity and source-expression context.
 
 The fingerprint protects native target discovery, not all binary compatibility.
-A server update that breaks linkage or command execution can still fail visibly.
-The initial advertised-command error is surfaced. The existing scope-expansion
-policy retains the first result if the second query fails, so that recovery is
-not a completeness guarantee; absence of an `incomplete` hint is not proof that
-the failed second query completed.
-Rebuild and run the real-server tests when changing the server distribution.
+A server update that breaks linkage or command execution falls back to standard
+references in the Rust bridge. Results remain visible without classification.
+Rebuild and run the real-server and desktop tests when changing the distribution.
 The current read/write implementation was tested on JDT LS 1.63.0.202610191322
 with Lombok 1.18.48 and Java 25. It is not certified for every milestone.
 

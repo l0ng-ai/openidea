@@ -41,7 +41,7 @@ import {
 } from "./usages";
 import styles from "./UsagesView.module.css";
 
-import { UsageAccessFilter, filterUsageAccess, useUsageAccessOptions } from "./UsageAccessFilter";
+import { UsageAccessFilter, filterUsageAccess, supportsUsageAccess, useUsageAccessOptions } from "./UsageAccessFilter";
 
 type Node =
   | { kind: "summary"; key: string }
@@ -218,7 +218,7 @@ export function UsagesView() {
             <T>Found usages</T>
           </span>
           <span className={styles.count}>
-            {accessOptions.read && accessOptions.write
+            {!supportsUsageAccess(allUsages) || (accessOptions.read && accessOptions.write)
               ? total
               : `${files.reduce((n, f) => n + (f.kind === "file" ? f.group.usages.length : 0), 0)} / ${total}`}{" "}
             {tx(total === 1 ? "result" : "results")}

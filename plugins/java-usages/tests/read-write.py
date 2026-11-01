@@ -4,6 +4,7 @@ import hashlib
 import zipfile
 import json
 import pathlib
+import platform
 import queue
 import subprocess
 import sys
@@ -16,7 +17,12 @@ bundle = pathlib.Path(__file__).resolve().parents[1] / 'openidea-java-usages.jar
 work = pathlib.Path(tempfile.mkdtemp(prefix='openidea-usages-'))
 config = work / 'config'
 config.mkdir()
-(config / 'config.ini').write_bytes((home / 'config_linux/config.ini').read_bytes())
+system, machine = platform.system(), platform.machine().lower()
+config_name = {'Windows': 'config_win', 'Darwin': 'config_mac'}.get(system, 'config_linux')
+config_names = ([config_name + '_arm'] if machine in ('arm64', 'aarch64') else []) + [config_name]
+config_source = next(home / name / 'config.ini' for name in config_names
+                     if (home / name / 'config.ini').is_file())
+(config / 'config.ini').write_bytes(config_source.read_bytes())
 project = work / 'project'
 project.mkdir()
 (project / 'src').mkdir()

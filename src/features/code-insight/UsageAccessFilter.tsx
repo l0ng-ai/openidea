@@ -43,9 +43,11 @@ export function filterUsageAccess(items: readonly Usage[], options: UsageAccessO
   });
 }
 
+export const supportsUsageAccess = (items: readonly Usage[]) => items.some((u) => u.access && u.access !== "unknown");
+
 export function UsageAccessFilter({ items }: { items: readonly Usage[] }) {
   const options = useUsageAccessOptions();
-  if (!items.some((u) => u.access && u.access !== "unknown")) return null;
+  if (!supportsUsageAccess(items)) return null;
   return (
     <div className={styles.toolbar} role="toolbar" aria-label="Usage access filters">
       <IconButton

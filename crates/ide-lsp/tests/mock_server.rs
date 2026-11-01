@@ -27,6 +27,7 @@ struct MockState {
     /// uri → text as reconstructed by the mock from didOpen/didChange.
     docs: Mutex<HashMap<String, String>>,
     responses: Mutex<HashMap<String, Value>>,
+    errors: Mutex<HashMap<String, (i64, String)>>,
     /// Computes a response from the request and the open documents (before `responses`).
     responder: Mutex<Option<Responder>>,
     peer: Mutex<Option<Peer>>,
@@ -122,6 +123,9 @@ impl Handler for MockHandler {
             "initialize" => Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } })),
             "shutdown" => Ok(Value::Null),
             _ => {
+                if let Some(error) = s.errors.lock().get(method).cloned() {
+                    return Err(error);
+                }
                 let responder = s.responder.lock().clone();
                 if let Some(v) = responder.and_then(|f| f(s, method, &params)) {
                     return Ok(v);
@@ -2083,6 +2087,100 @@ async fn classified_java_references_widen_without_losing_metadata() {
             Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_java_command_falls_back_to_unclassified_native_references() {
+    for project_wide in [false, true] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+        let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+        let s = h.launcher.state("jdtls");
+        s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "NoSuchMethodError".into()));
+        *s.responder.lock() = Some(open_files_only(Vec::new()));
+        let (doc, path) = h.open("a.java", "int target;");
+        h.wait_status("jdtls", ServerStatus::Ready).await;
+        eventually(|| s.docs.lock().len() == 1).await;
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, project_wide, Default::default()).await.unwrap();
+        assert_eq!(refs.locations.len(), 1);
+        assert_eq!(refs.locations[0].path, path);
+        assert!(refs.classified.is_empty());
+        assert_eq!(s.requested("workspace/executeCommand").len(), 1);
+        assert_eq!(s.requested("textDocument/references").len(), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_widened_java_command_retries_with_native_references() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let native = open_files_only(Vec::new());
+    *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+        if method == "workspace/executeCommand" {
+            // The initial query succeeds, but the next extension query fails.
+            s.errors.lock().insert(method.into(), (-32603, "reflection failed".into()));
+            return Some(Value::Array(
+                s.docs
+                    .lock()
+                    .iter()
+                    .flat_map(|(uri, text)| {
+                        occurrences(uri, text)
+                            .into_iter()
+                            .map(|location| json!({"location": location, "kind": "field", "access": "read"}))
+                    })
+                    .collect(),
+            ));
+        }
+        native(s, method, params)
+    }));
+    std::fs::write(h.root.join("b.java"), "target++;").unwrap();
+    grep_candidates(&h);
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 2);
+    assert!(refs.classified.is_empty());
+    assert_eq!(s.requested("workspace/executeCommand").len(), 2);
+    assert_eq!(s.requested("textDocument/references").len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn superseded_java_command_does_not_fall_back() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let mgr = Arc::downgrade(&h.mgr);
+    *s.responder.lock() = Some(Arc::new(move |_, method, _| {
+        if method != "workspace/executeCommand" {
+            return None;
+        }
+        mgr.upgrade().unwrap().did_change(doc, 2, &[change(rng(0, 0, 0, 0), " ")], &|| unreachable!());
+        // Invalid extension response after the source version changed.
+        Some(json!({"failed": true}))
+    }));
+    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(s.requested("textDocument/references").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelled_java_command_does_not_fall_back() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32800, "cancelled".into()));
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(s.requested("textDocument/references").is_empty());
 }
 
 /// What each search widened with candidate files reports for the symbol at the start of `doc`.

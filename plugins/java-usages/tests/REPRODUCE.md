@@ -65,7 +65,7 @@ visible in either mode. English tooltips are "Show read accesses" and "Show writ
 accesses"; the icons are vendored JetBrains resources, not a claim of complete UI
 parity.
 
-## Automated server evidence and Browser preview
+## Automated server evidence and desktop checks
 
 The harness creates an Eclipse project with the same fixture, loads the actual
 Lombok agent and extension, imports it in JDT LS, asserts semantic results and
@@ -74,15 +74,15 @@ checks cancellation. No Maven download is needed for this harness.
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH
 python3 plugins/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write.json
-pnpm exec vite --port 1451 --strictPort
-# In another terminal, from this checkout:
-OPENIDEA_TEST_URL=http://localhost:1451 node plugins/java-usages/tests/browser.mjs /tmp/read-write.json /tmp
 ```
 
-The browser script uses `/usr/bin/chromium`; adjust its executable path for your
-machine. Screenshots are **Browser preview: real frontend, replayed actual JDT LS
-response**. They do not exercise the native Tauri bridge or macOS WebKit. Native
-macOS acceptance remains pending; do not present these images as desktop captures.
+Then launch the desktop app with `pnpm tauri dev` and open the same Java/Lombok
+fixture. Check Read only, Write only, both toggles and Open in Find Window. The
+chosen mode and exact source ranges must survive transfer. Select a Java access
+mode, then run a non-Java search: it must show a plain count and no access toolbar.
+Repeat Java usages in a project with a marked source root. Confirm import and
+indexing have completed before comparing results.
+
 For a desktop before/after demonstration use separate builds of the base and PR
 with this same fixture, settings and import completion state.
 

@@ -939,6 +939,7 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
     let extension = data_dir.join("java-usages-1.1.1.jar");
     let bytes = include_bytes!("../../../plugins/java-usages/openidea-java-usages.jar");
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
+        clean_usages_bundles(data_dir, &extension);
         return Some(extension);
     }
     // Write then rename: another window must never read a partially written jar.
@@ -948,10 +949,14 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
         .and_then(|_| std::fs::write(&temporary, bytes))
         .and_then(|_| std::fs::rename(&temporary, &extension));
     match result {
-        Ok(()) => Some(extension),
+        Ok(()) => {
+            clean_usages_bundles(data_dir, &extension);
+            Some(extension)
+        }
         Err(e) => {
             let _ = std::fs::remove_file(&temporary);
             if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
+                clean_usages_bundles(data_dir, &extension);
                 return Some(extension);
             }
             tracing::warn!("Java usages extension unavailable; using standard references: {e}");
@@ -960,8 +965,59 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
     }
 }
 
+fn clean_usages_bundles(data_dir: &Path, current: &Path) {
+    let Ok(entries) = std::fs::read_dir(data_dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some(suffix) = name.strip_prefix("java-usages-") else { continue };
+        let numeric = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
+        let old_jar = suffix.strip_suffix(".jar").is_some_and(|v| {
+            let parts: Vec<_> = v.split('.').collect();
+            parts.len() == 3 && parts.into_iter().all(numeric)
+        }) && path != current;
+        // Preserve recent temporary files: another window may still be installing.
+        let stale_temp = suffix
+            .strip_suffix(".tmp")
+            .and_then(|v| v.split_once('-'))
+            .is_some_and(|(pid, nonce)| numeric(pid) && numeric(nonce))
+            && entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age.as_secs() > 24 * 60 * 60);
+        if old_jar || stale_temp {
+            // A running server can hold an old bundle open on Windows.
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod usages_bundle_tests {
+    #[test]
+    fn cleans_old_bundles_and_abandoned_temporary_files_on_install_and_reuse() {
+        let dir = tempfile::tempdir().unwrap();
+        for reuse in [false, true] {
+            let old = dir.path().join("java-usages-1.0.0.jar");
+            let stale = dir.path().join("java-usages-123-456.tmp");
+            std::fs::write(&old, b"old").unwrap();
+            std::fs::write(&stale, b"partial").unwrap();
+            let times = std::fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 60 * 60));
+            std::fs::File::options().write(true).open(&stale).unwrap().set_times(times).unwrap();
+            for name in ["java-usages-123-789.tmp", "java-usages-custom.jar", "other.jar", "java-usages-not-ours.tmp"] {
+                std::fs::write(dir.path().join(name), b"keep").unwrap();
+            }
+            let jar = super::usages_bundle(dir.path()).unwrap();
+            assert!(jar.exists());
+            assert!(!old.exists(), "reuse={reuse}");
+            assert!(!stale.exists(), "reuse={reuse}");
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 5);
+        }
+    }
+
     #[test]
     fn installs_the_exact_bundle_and_reuses_it() {
         let dir = tempfile::tempdir().unwrap();
