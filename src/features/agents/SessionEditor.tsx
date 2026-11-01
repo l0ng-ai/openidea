@@ -70,6 +70,10 @@ import styles from "./Session.module.css";
 
 export function SessionEditor({ input }: { input: EditorInput }) {
   const id = (input.data as { task: string }).task;
+  return <TaskSession key={id} id={id} />;
+}
+
+function TaskSession({ id }: { id: string }) {
   const task = useAgents((s) => s.tasks.get(id));
   // The tool window bar above already shows the title of a docked conversation.
   const docked = useAgents((s) => s.docked === id);
@@ -380,11 +384,29 @@ interface StreamProps {
 function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
-  const stick = useRef(true);
+  const key = entriesKey(task.id, subagent?.id ?? null);
+  const positions = useAgents.getState().scrollPositions;
+  const position = useRef(positions.get(key) ?? { top: 0, stick: true });
+  const restored = useRef(false);
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
+    if (!el || entries === null) return;
+    if (position.current.stick) el.scrollTop = el.scrollHeight;
+    else if (!restored.current) el.scrollTop = position.current.top;
+    restored.current = true;
   });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      if (position.current.stick) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
+    };
+  }, [key, positions]);
   const waiting = entries?.some((e) => e.type === "permission" && !e.chosen);
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
@@ -399,7 +421,8 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         tabIndex={-1}
         onScroll={(e) => {
           const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          position.current = { top: el.scrollTop, stick: el.scrollHeight - el.scrollTop - el.clientHeight < 40 };
+          positions.set(key, position.current);
         }}
         // Copy, plus Quote for a selection: replies to it in the composer.
         onContextMenu={(e) => {

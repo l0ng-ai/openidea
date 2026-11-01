@@ -3,8 +3,15 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
 }
-.view > * {
+.content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.content > * {
   flex: 1;
   min-height: 0;
 }
@@ -132,7 +139,7 @@
 
 /* A conversation docked in the tool window, above the task list. */
 .docked {
-  flex: 3 1 0;
+  flex: 1 1 0;
   min-height: 0;
   min-width: 0;
   display: flex;
@@ -167,4 +174,24 @@
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--border);
+}
+
+/* Keep the conversation usable in a short bottom tool window; the tree scrolls. */
+.docked + .tasks {
+  flex: 0 0 20%;
+  max-height: 160px;
+}
+
+/* A wide bottom window has room beside the conversation, preserving message height. */
+@container (min-width: 600px) {
+  .content {
+    flex-direction: row;
+  }
+  .docked + .tasks {
+    flex: 0 0 220px;
+    max-width: 30%;
+    max-height: none;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
 }

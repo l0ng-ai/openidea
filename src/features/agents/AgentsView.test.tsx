@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { AgentTask } from "@/bindings";
+import * as actions from "@/platform/actions";
 import { registerActions } from "@/platform/actions";
 import { EDITOR_TAB_MIME, type EditorInput } from "@/workbench/contributions";
 import { confirmChecked, showError } from "@/workbench/messages";
@@ -93,6 +94,7 @@ const context = (id: string) => {
 let dispose: () => void;
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.spyOn(actions, "executeAction");
   editor.active = undefined;
   editor.tabInput = undefined;
   vi.mocked(confirmChecked).mockResolvedValue({ checked: false });
@@ -107,6 +109,7 @@ beforeEach(() => {
 afterEach(() => {
   dispose();
   hideContextMenu();
+  vi.restoreAllMocks();
 });
 
 function setup() {
@@ -162,6 +165,7 @@ describe("Agents docked view", () => {
     expect(screen.getByRole("button", { name: "Open in Editor" })).toBeTruthy();
     expect(openTask).not.toHaveBeenCalled();
     select("two");
+    expect(actions.executeAction).toHaveBeenCalledWith("agents.dockTask", "two");
     expect(dockTask).toHaveBeenCalledWith("two");
     expect(openTask).not.toHaveBeenCalled();
   });
@@ -317,6 +321,7 @@ describe("Agents drag & drop", () => {
       act(() => session.move(10, 10));
       expect(view.className).toContain(styles.dropTarget);
       act(() => session.drop(10, 10));
+      expect(actions.executeAction).toHaveBeenCalledWith("agents.dockTask", "one");
       expect(dockTask).toHaveBeenCalledWith("one");
       expect(view.className).not.toContain(styles.dropTarget);
     } finally {

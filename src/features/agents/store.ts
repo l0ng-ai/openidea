@@ -54,6 +54,8 @@ interface AgentsState {
   /** Entries of the tasks (and subagents) opened in this window, by `entriesKey`. */
   entries: Map<string, AgentEntry[]>;
   changes: Map<string, AgentChange[]>;
+  /** Scroll position and follow-output preference by conversation, shared by both hosts. */
+  scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
   draft: Draft;
   composers: Map<string, ComposerDraft>;
@@ -104,6 +106,7 @@ export const useAgents = create<AgentsState>(() => ({
   history: load<string[]>(HISTORY_KEY, []),
   focus: null,
   docked: null,
+  scrollPositions: new Map(),
 }));
 
 export function updateDraft(patch: Partial<Draft>) {
@@ -207,6 +210,7 @@ export function disconnect() {
     entries: new Map(),
     changes: new Map(),
     docked: null,
+    scrollPositions: new Map(),
   });
 }
 
@@ -367,12 +371,6 @@ export function undockTask() {
   if (!docked) return;
   useAgents.setState({ docked: null });
   openTask(docked);
-}
-
-/** A task dragged from the tool window onto the editor: undock it if docked, otherwise open a tab. */
-export function openDroppedTask(task: string) {
-  if (useAgents.getState().docked === task) undockTask();
-  else openTask(task);
 }
 
 /** Opens the New Task page; `prompt` pre-fills it. */

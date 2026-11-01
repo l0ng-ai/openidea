@@ -21,7 +21,7 @@ import { AgentsStatus } from "./AgentsStatus";
 import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
-import { connect, disconnect, openDroppedTask, openHome, useAgents } from "./store";
+import { connect, disconnect, openHome, useAgents } from "./store";
 import { taskActions } from "./taskActions";
 
 /** Settings › Tools › Agents (also used by the Settings window). */
@@ -83,7 +83,8 @@ export function activate(): () => void {
     // A task dragged from the tool window onto the editor opens as a tab (or undocks).
     registerEditorDropHandler({
       accepts: (type) => type === TASK_DRAG,
-      drop: ({ payload }) => openDroppedTask(payload),
+      drop: ({ payload }) =>
+        void executeAction(useAgents.getState().docked === payload ? "agents.undockTask" : "agents.openTask", payload),
     }),
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({

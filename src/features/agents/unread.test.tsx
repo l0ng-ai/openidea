@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { AgentEntry, AgentEvent, AgentTask } from "@/bindings";
-import { useContributions } from "@/workbench/contributions";
+import { dropOnEditor, useContributions } from "@/workbench/contributions";
 import { AgentsView } from "./AgentsView";
 import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
-import { connect, disconnect, dockTask, markVisible, openDroppedTask, undockTask, useAgents } from "./store";
+import * as actions from "@/platform/actions";
+import { TASK_DRAG } from "./model";
+import { connect, disconnect, dockTask, markVisible, undockTask, useAgents } from "./store";
 
 const backend = vi.hoisted(() => ({
   channel: null as { onmessage: (event: AgentEvent) => void } | null,
@@ -246,7 +248,10 @@ describe("docking a conversation in the tool window", () => {
   });
 
   it("drops a dragged task into the editor: undocking when docked, opening a tab otherwise", () => {
-    act(() => openDroppedTask("two"));
+    const dispose = activate();
+    const execute = vi.spyOn(actions, "executeAction");
+    act(() => dropOnEditor({ type: TASK_DRAG, payload: "two" }));
+    expect(execute).toHaveBeenCalledWith("agents.openTask", "two");
     expect(useAgents.getState().docked).toBeNull();
     expect(backend.openInput).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "agent-session", key: "agent:two" }),
@@ -254,12 +259,14 @@ describe("docking a conversation in the tool window", () => {
     );
     backend.openInput.mockClear();
     act(() => dockTask("one"));
-    act(() => openDroppedTask("one"));
+    act(() => dropOnEditor({ type: TASK_DRAG, payload: "one" }));
+    expect(execute).toHaveBeenCalledWith("agents.undockTask", "one");
     expect(useAgents.getState().docked).toBeNull();
     expect(backend.openInput).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "agent-session", key: "agent:one" }),
       { focus: true },
     );
+    dispose();
   });
 
   it("drops the dock when the project changes", async () => {
