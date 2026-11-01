@@ -24,6 +24,9 @@ export interface CustomColorScheme {
 export type CustomColorSchemes = Record<string, CustomColorScheme>;
 
 export interface LanguageCodeStyle {
+  /** Java formatter; relative XML paths start at the project root. */
+  formatter?: "default" | "intellij" | "custom";
+  formatterPath?: string;
   useTab?: boolean;
   tabSize?: number;
   indent?: number;

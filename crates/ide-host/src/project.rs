@@ -129,6 +129,8 @@ impl Host {
             let root = root.clone();
             let data_dir = self.data_dir.clone();
             let config_dir = self.config_dir.clone();
+            let sink = sink.clone();
+            let formatter_problem = std::sync::Mutex::new(None);
             lsp.set_config_hook(Box::new(move |cfg, server_root| {
                 let member = ide_workspace::workspace::Workspace::load(&root).ok().flatten().and_then(|w| {
                     w.projects.into_iter().filter(|p| server_root.starts_with(p)).max_by_key(|p| p.components().count())
@@ -142,6 +144,27 @@ impl Host {
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {
+                    let problem = ide_lsp::jdtls::configure_formatter(
+                        cfg,
+                        effective.editor.code_style.languages.get("java"),
+                        root,
+                        &data_dir,
+                        effective.language_servers.get("jdtls"),
+                    )
+                    .err()
+                    .map(|e| e.to_string());
+                    let mut previous = formatter_problem.lock().unwrap();
+                    if problem != *previous {
+                        if let Some(body) = &problem {
+                            sink.emit(IdeEvent::Notify {
+                                level: ide_core::event::NotifyLevel::Warning,
+                                title: "Java formatter configuration unavailable".into(),
+                                body: Some(body.clone()),
+                            });
+                        }
+                        *previous = problem;
+                    }
+                    drop(previous);
                     ide_lsp::jdtls::configure_source_paths(
                         cfg,
                         ide_workspace::roots::unmanaged_java_source_paths(
