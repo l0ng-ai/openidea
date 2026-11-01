@@ -285,6 +285,14 @@ fn texts(e: &Element, path: &str, item: &str) -> Vec<String> {
     e.list(path, item).iter().map(|m| m.text.trim().to_owned()).filter(|m| !m.is_empty()).collect()
 }
 
+/// Child modules of a project or profile: `<modules>` (model 4.0.0) plus `<subprojects>`,
+/// which Maven 4 (model 4.1.0) uses instead.
+fn module_names(e: &Element) -> Vec<String> {
+    let mut names = texts(e, "modules", "module");
+    names.extend(texts(e, "subprojects", "subproject"));
+    names
+}
+
 fn read_build(e: &Element, plugins: &mut Vec<RawPlugin>, managed: &mut Vec<RawPlugin>) {
     plugins.extend(e.list("build/plugins", "plugin").into_iter().filter_map(read_plugin));
     managed.extend(e.list("build/pluginManagement/plugins", "plugin").into_iter().filter_map(read_plugin));
@@ -308,7 +316,7 @@ fn read_raw(project: &Element) -> RawPom {
         name: project.text_of("name"),
         parent,
         properties: read_properties(project.child("properties")),
-        modules: texts(project, "modules", "module"),
+        modules: module_names(project),
         deps: project.list("dependencies", "dependency").into_iter().filter_map(read_dep).collect(),
         managed: project
             .list("dependencyManagement/dependencies", "dependency")
@@ -329,7 +337,7 @@ fn read_raw(project: &Element) -> RawPom {
         let mut profile = RawProfile {
             id: p.text_of("id").unwrap_or_else(|| "default".into()),
             active_by_default: p.at("activation/activeByDefault").is_some_and(|a| a.text.trim() == "true"),
-            modules: texts(p, "modules", "module"),
+            modules: module_names(p),
             properties: read_properties(p.child("properties")),
             deps: p.list("dependencies", "dependency").into_iter().filter_map(read_dep).collect(),
             ..RawProfile::default()
@@ -1275,6 +1283,26 @@ mod tests {
         <profile><id>extra</id><modules><module>extra</module></modules></profile>
       </profiles>
     </project>"#;
+
+    #[test]
+    fn maven_4_subprojects_are_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            r#"<project xmlns="http://maven.apache.org/POM/4.1.0"><modelVersion>4.1.0</modelVersion>
+              <groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>
+              <subprojects><subproject>core</subproject></subprojects>
+              <profiles><profile><id>extra</id><subprojects><subproject>extra</subproject></subprojects></profile></profiles>
+            </project>"#,
+        );
+        write(root, "core/pom.xml", "<project><artifactId>core</artifactId></project>");
+        write(root, "extra/pom.xml", "<project><artifactId>extra</artifactId></project>");
+        let model = load_with_repo(root, None);
+        assert_eq!(model.projects[0].modules, ["core/pom.xml"]);
+        assert!(model.projects.iter().any(|p| p.pom == "core/pom.xml" && p.aggregated));
+    }
 
     #[test]
     fn multi_module_parent_properties_and_managed_versions() {
