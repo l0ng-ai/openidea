@@ -15,6 +15,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("cpp", include_str!("../../../languages/cpp.toml")),
     ("csharp", include_str!("../../../languages/csharp.toml")),
     ("css", include_str!("../../../languages/css.toml")),
+    ("d", include_str!("../../../languages/d.toml")),
     ("dart", include_str!("../../../languages/dart.toml")),
     ("diff", include_str!("../../../languages/diff.toml")),
     ("dockerfile", include_str!("../../../languages/dockerfile.toml")),
