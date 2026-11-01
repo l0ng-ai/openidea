@@ -872,7 +872,7 @@ const EXT_ICONS = table({
   "file-swift": "swift swiftinterface",
   "file-go": "go",
   "file-rust": "rs",
-  "file-ruby": "rb rake gemspec ru rbi jbuilder podspec",
+  "file-ruby": "rb rake gemspec ru rbi jbuilder podspec erb rhtml",
   "file-lua": "lua luau rockspec",
   "file-zig": "zig zon",
   "file-gdscript": "gd",

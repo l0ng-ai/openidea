@@ -54,6 +54,7 @@ const JAVA_MANIFESTS: &[&str] =
 const NODE_MANIFESTS: &[&str] = &["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"];
 const CARGO_MANIFESTS: &[&str] = &["Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"];
 const GO_MANIFESTS: &[&str] = &["go.mod", "go.sum", "go.work"];
+const RUBY_MANIFESTS: &[&str] = &["Gemfile", "Gemfile.lock", ".ruby-version", ".tool-versions", "mise.toml"];
 
 /// A Maven / Gradle dependency of the project, from the build model.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -70,7 +71,7 @@ pub struct BuildDependency {
 /// `dependencies` (from the build model) are listed when their jars are in the local repositories.
 pub fn project_libraries(root: &Path, settings: &Settings, dependencies: &[BuildDependency]) -> Vec<LibraryGroup> {
     type Detect = fn(&Path, &Settings) -> Vec<LibraryGroup>;
-    let detectors: [Detect; 5] = [python_groups, jdk_groups, node_groups, rust_groups, go_groups];
+    let detectors: [Detect; 6] = [python_groups, jdk_groups, node_groups, rust_groups, go_groups, ruby_groups];
     std::thread::scope(|s| {
         let handles: Vec<_> = detectors.iter().map(|d| s.spawn(move || d(root, settings))).collect();
         let deps = s.spawn(|| dependency_groups(root, settings, dependencies));
@@ -191,6 +192,24 @@ pub(crate) fn named_roots(roots: Vec<(String, PathBuf)>) -> Vec<LibraryRoot> {
         .filter(|(_, p)| p.is_dir() && seen.insert(dunce::canonicalize(p).unwrap_or_else(|_| p.clone())))
         .map(|(name, p)| LibraryRoot { name, path: p.into() })
         .collect()
+}
+
+// ------------------------------------------------------------------ ruby
+
+fn ruby_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
+    let Some(files) = manifests(root, RUBY_MANIFESTS) else { return Vec::new() };
+    if !root.join("Gemfile").is_file() && !root.join(".ruby-version").is_file() {
+        return Vec::new();
+    }
+    let Some(ruby) = crate::apply::ruby_interpreter(root, s) else { return Vec::new() };
+    cached(root, "ruby", ruby.display().to_string(), &files, || {
+        let name = crate::ruby::ruby_sdk(&ruby, "system").map(|s| s.name).unwrap_or_else(|| "Ruby".into());
+        let (stdlib, gems) = crate::ruby::library_roots(&ruby, Some(root));
+        let mut out = Vec::new();
+        out.extend(group(name, "ruby", named_roots(stdlib)));
+        out.extend(group("Gems", "gems", named_roots(gems)));
+        out
+    })
 }
 
 // ------------------------------------------------------------------ jdk

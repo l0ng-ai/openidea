@@ -4081,6 +4081,7 @@ export type LanguagesSettings = {
 	typescript?: TypeScriptSettings,
 	prettier?: PrettierSettings,
 	java?: JavaSettings,
+	ruby?: RubySettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -4506,6 +4507,11 @@ export type NodeAt = {
 	node: SyntaxNode,
 	/**  Parent first, the root last. */
 	ancestors: SyntaxNode[],
+};
+
+export type RubySettings = {
+	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
+	interpreter?: string,
 };
 
 export type NodeSettings = {
@@ -5516,7 +5522,7 @@ export type SdkKind = "python" | "node" |
 /**  JDK homes. */
 "jdk" | 
 /**  Maven homes. */
-"maven";
+"maven" | "ruby";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and

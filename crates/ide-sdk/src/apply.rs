@@ -36,6 +36,12 @@ pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
         .or_else(|| pinned::pinned_python(root))
 }
 
+/// The project Ruby: the configured one, else the `.ruby-version` / mise / asdf
+/// install, else `ruby` on PATH.
+pub fn ruby_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
+    setting_path(root, &s.languages.ruby.interpreter).or_else(|| crate::ruby::project_ruby(root))
+}
+
 /// The configured `node` executable's directory, else the `bin` of the Node.js the
 /// project pins for mise / asdf.
 pub(crate) fn node_dir(root: &Path, s: &Settings) -> Option<PathBuf> {
@@ -612,6 +618,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let jdk = project_jdk(root, s);
     let mvn = maven_command(root, s);
     let mvn_options = maven_options(root, s);
+    let ruby = ruby_interpreter(root, s);
 
     for c in configs.iter_mut() {
         resolve_run_command(c, root, s);
@@ -695,6 +702,26 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     .unwrap_or_default();
                 for (key, value) in gradle_env(root, s, defaults) {
                     c.env.entry(key).or_insert(value);
+                }
+            }
+            "ruby" | "rake" | "rspec" => {
+                if let Some(ruby) = &ruby
+                    && let Some(bin) = crate::ruby::bin_dir_of(ruby)
+                {
+                    // `ruby`, `bundle`, `rake`, `rspec` of the chosen interpreter when installed
+                    // alongside it; the rest (a project `bin/rspec` binstub) stays as is.
+                    let name = Path::new(&c.command).file_name().map(|n| n.to_string_lossy().into_owned());
+                    if let Some(name) = name
+                        && matches!(name.as_str(), "ruby" | "bundle" | "rake" | "rspec" | "gem" | "irb")
+                        && !c.command.contains('/')
+                        && !c.command.contains('\\')
+                    {
+                        let exe = bin.join(exe(&name));
+                        if exe.is_file() {
+                            c.command = exe.to_string_lossy().into_owned();
+                        }
+                    }
+                    path_dirs.push(bin);
                 }
             }
             "maven" | "tomcat" => {

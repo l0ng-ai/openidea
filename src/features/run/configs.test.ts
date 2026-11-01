@@ -152,6 +152,8 @@ describe("context configuration", () => {
     cfg({ id: "pytest", kind: "pytest", command: "uv", args: ["run", "pytest"], isTest: true }),
     cfg({ id: "python:module:app", kind: "python", command: ".venv/bin/python", args: ["-m", "app"] }),
     cfg({ id: "gradle:test", kind: "gradle", command: "./gradlew", args: ["test"], isTest: true }),
+    cfg({ id: "rspec", kind: "rspec", command: "bundle", args: ["exec", "rspec"], isTest: true }),
+    cfg({ id: "rake:test", kind: "rake", command: "bundle", args: ["exec", "rake", "test"], isTest: true }),
   ];
 
   it("classifies files", () => {
@@ -160,6 +162,9 @@ describe("context configuration", () => {
     expect(fileRole("tests/test_api.py")).toBe("test");
     expect(fileRole("src/test/kotlin/OrderControllerTest.kt")).toBe("test");
     expect(fileRole("tests/integration.rs")).toBe("test");
+    expect(fileRole("spec/models/user_spec.rb")).toBe("test");
+    expect(fileRole("test/user_test.rb")).toBe("test");
+    expect(fileRole("lib/tasks/gen.rb")).toBe("script");
     expect(fileRole("src/main.rs")).toBe("main");
     expect(fileRole("cmd/main.go", "package main\nfunc main() {}")).toBe("main");
     expect(fileRole("tools/gen.py")).toBe("script");
@@ -179,6 +184,20 @@ describe("context configuration", () => {
     });
     expect(c.id).toBe("context:npm:web:test:web/src/cart.test.ts");
     expect(contextConfig("src/a.spec.js", configs)!.args).toEqual(["run", "test", "--", "src/a.spec.js"]);
+  });
+
+  it("narrows rspec and rake test runs to the file", () => {
+    expect(contextConfig("spec/models/user_spec.rb", configs)!.args).toEqual([
+      "exec",
+      "rspec",
+      "spec/models/user_spec.rb",
+    ]);
+    expect(contextConfig("test/user_test.rb", configs)!.args).toEqual([
+      "exec",
+      "rake",
+      "test",
+      "TEST=test/user_test.rb",
+    ]);
   });
 
   it("narrows go, cargo, pytest and gradle runs", () => {

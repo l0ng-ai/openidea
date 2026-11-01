@@ -20,6 +20,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("dockerfile", include_str!("../../../languages/dockerfile.toml")),
     ("dotenv", include_str!("../../../languages/dotenv.toml")),
     ("elixir", include_str!("../../../languages/elixir.toml")),
+    ("erb", include_str!("../../../languages/erb.toml")),
     ("erlang", include_str!("../../../languages/erlang.toml")),
     ("fsharp", include_str!("../../../languages/fsharp.toml")),
     ("gitattributes", include_str!("../../../languages/gitattributes.toml")),
@@ -517,6 +518,7 @@ mod tests {
         "MsGenny",
         "Vue",
         "Angular Template",
+        "ERB",
     ];
 
     fn reg() -> LanguageRegistry {
@@ -723,6 +725,7 @@ mod tests {
             ("AppDelegate.m", "objective-c"),
             ("a.rb", "ruby"),
             ("Gemfile", "ruby"),
+            ("show.html.erb", "erb"),
             ("index.php", "php"),
             ("init.lua", "lua"),
             ("main.dart", "dart"),
