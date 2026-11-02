@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
+    ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
@@ -15,6 +16,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("cpp", include_str!("../../../languages/cpp.toml")),
     ("csharp", include_str!("../../../languages/csharp.toml")),
     ("css", include_str!("../../../languages/css.toml")),
+    ("d", include_str!("../../../languages/d.toml")),
     ("dart", include_str!("../../../languages/dart.toml")),
     ("diff", include_str!("../../../languages/diff.toml")),
     ("dockerfile", include_str!("../../../languages/dockerfile.toml")),
@@ -374,6 +376,7 @@ mod tests {
     /// `name`s exported by `@codemirror/language-data` or built into `src/editor/core/cm/languages.ts`
     /// (the UI resolves `ui-mode` against these).
     const UI_MODES: &[&str] = &[
+        "AsciiDoc",
         "Batch",
         "C",
         "C++",
@@ -534,6 +537,12 @@ mod tests {
         let reg = reg();
         assert_eq!(detect(&reg, "src/main.rs"), "rust");
         assert_eq!(detect(&reg, "a/b.TS"), "typescript");
+        for path in ["guide.adoc", "guide.asciidoc", "GUIDE.ADOC"] {
+            assert_eq!(detect(&reg, path), "asciidoc");
+        }
+        let asciidoc = reg.get(&LanguageId::new("asciidoc")).unwrap();
+        assert_eq!(asciidoc.ui_mode.as_deref(), Some("AsciiDoc"));
+        assert_eq!(asciidoc.line_comment.as_deref(), Some("//"));
         assert_eq!(reg.detect(Path::new("script"), Some("#!/usr/bin/env python3")).as_str(), "python");
         assert_eq!(detect(&reg, "README"), "plaintext");
         assert_eq!(detect(&reg, "unknown.zzz"), "plaintext");
