@@ -194,6 +194,62 @@ async fn ty_python_end_to_end() {
     .await;
 }
 
+/// Ruff next to basedpyright in a project configured for Ruff: its lint
+/// diagnostics, the only formatter and the only Organize Imports and Fix All.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires ruff and basedpyright on PATH"]
+async fn ruff_next_to_basedpyright_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(root.join("pyproject.toml"), "[tool.ruff.lint]\nselect = [\"F\", \"I\"]\n").unwrap();
+    let path = root.join("example.py");
+    let source = "import sys\nimport os\n\nx  =  os.getcwd( )\n";
+    std::fs::write(&path, source).unwrap();
+    let mut python = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("python")).unwrap();
+    python.language_servers.retain(|server| matches!(server.name.as_str(), "basedpyright" | "ruff"));
+    assert_eq!(python.language_servers.len(), 2);
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![python]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("python"), 1, source);
+    for name in ["basedpyright", "ruff"] {
+        retry(name, Duration::from_secs(60), || {
+            let status = last_status(&events, name);
+            if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+                panic!("{name} failed: {msg:?}");
+            }
+            async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+        })
+        .await;
+    }
+    // F401 (`sys` unused) and I001 (unsorted imports).
+    let codes = retry("ruff diagnostics", Duration::from_secs(30), || {
+        let codes: Option<Vec<String>> = events.lock().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { source, items, .. } if source == "ruff" && !items.is_empty() => {
+                Some(items.iter().filter_map(|d| d.code.clone()).collect())
+            }
+            _ => None,
+        });
+        async move { codes }
+    })
+    .await;
+    assert!(codes.iter().any(|c| c == "F401") && codes.iter().any(|c| c == "I001"), "{codes:?}");
+
+    let options = ide_lsp::types::FormatOptions { tab_size: 4, insert_spaces: true, on_save: false };
+    let edits = mgr.format(doc, None, options).await.unwrap();
+    assert!(!edits.is_empty() && edits.iter().all(|e| e.range.start.line == 3), "{edits:?}");
+
+    let whole = Range::new(Pos::new(0, 0), Pos::new(4, 0));
+    for kind in ["source.organizeImports", "source.fixAll"] {
+        let actions = mgr.code_actions(doc, whole, vec![kind.into()]).await.unwrap();
+        let kinds: Vec<&str> = actions.iter().filter_map(|a| a.kind.as_deref()).collect();
+        assert_eq!(kinds, [format!("{kind}.ruff")], "{actions:?}");
+        let action = mgr.resolve_code_action(doc, actions[0].clone()).await.unwrap();
+        let edit = action.edit.expect("an edit");
+        assert!(!edited_lines(&edit, &path).is_empty(), "{edit:?}");
+    }
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires rust-analyzer"]
 async fn rust_analyzer_end_to_end() {
@@ -412,7 +468,7 @@ fn edited_lines(edit: &ide_core::WorkspaceEdit, path: &Path) -> Vec<u32> {
         .files
         .iter()
         .filter_map(|f| match f {
-            ide_core::FileEdit::Edit { path: p, edits } if p.to_path_buf() == path => {
+            ide_core::FileEdit::Edit { path: p, edits, .. } if p.to_path_buf() == path => {
                 Some(edits.iter().map(|e| e.range.start.line))
             }
             _ => None,

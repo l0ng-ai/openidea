@@ -141,6 +141,15 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     ],
   },
   {
+    id: "go-mod",
+    name: "Go Module",
+    icon: "file-gomod",
+    extension: "mod",
+    nameStyle: "asis",
+    defaultName: "go",
+    kinds: [{ id: "module", label: "Module", body: "module $PROJECT_NAME$\n\ngo 1.20\n" }],
+  },
+  {
     id: "java",
     name: "Java Class",
     icon: "class",

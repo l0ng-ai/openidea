@@ -13,8 +13,5 @@ specta.workspace = true
 tracing.workspace = true
 which = "8"
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 [dev-dependencies]
 tempfile.workspace = true

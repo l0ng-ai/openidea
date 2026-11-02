@@ -280,6 +280,15 @@ export function activateGroup(group: string) {
   if (id) selectTab(id);
 }
 
+/** `tabs` with tab `id` moved to insertion `index`, an index into `tabs` before the move. */
+export function reorderTabs<T extends { id: string }>(tabs: readonly T[], id: string, index: number): T[] {
+  const from = tabs.findIndex((t) => t.id === id);
+  if (from < 0) return [...tabs];
+  const rest = tabs.filter((t) => t.id !== id);
+  rest.splice(Math.max(0, Math.min(index > from ? index - 1 : index, rest.length)), 0, tabs[from]!);
+  return rest;
+}
+
 export function renameTab(id: string, name: string) {
   const trimmed = name.trim();
   useTerminals.setState((s) => ({
