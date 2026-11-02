@@ -3232,7 +3232,8 @@ export type FoldingSettings = {
 
 /**
  *  One installed family. `monospaced` is the font system's own flag (fixed
- *  pitch; on Linux also fontconfig's dual-width CJK monospace).
+ *  pitch; on Linux also fontconfig's dual-width CJK monospace, on Windows
+ *  also PANOSE proportion 9).
  */
 export type FontFamily = {
 	name: string,
