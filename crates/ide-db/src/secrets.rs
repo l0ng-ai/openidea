@@ -17,12 +17,11 @@ pub fn ssh_key(id: &str) -> String {
     format!("{id}#ssh")
 }
 
-/// The key of `key` of project `project` in the shared file.
 fn file_key(project: &str, key: &str) -> String {
     format!("{project}|{key}")
 }
 
-/// Older versions' plaintext file: project root → credential key → secret.
+/// Older versions' file: project root → credential key → secret.
 fn legacy(value: serde_json::Value) -> Option<BTreeMap<String, String>> {
     let all: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_value(value).ok()?;
     Some(

@@ -1,7 +1,5 @@
 //! Saved passwords against the real OS credential store (Windows Credential
-//! Manager, macOS Keychain, Secret Service). Ignored by default: it needs a
-//! credential store and may show a system prompt. `cargo test -p ide-ssh --test
-//! os_credential_store -- --ignored`
+//! Manager, macOS Keychain, Secret Service).
 
 use ide_ssh::secrets::SecretFile;
 

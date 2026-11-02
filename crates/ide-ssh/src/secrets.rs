@@ -46,7 +46,6 @@ impl SecretFile {
         Self::with_legacy(path, |v| serde_json::from_value(v).ok())
     }
 
-    /// `legacy` reads an older version's file at `path`.
     pub fn with_legacy(path: PathBuf, legacy: Legacy) -> Self {
         Self { path, legacy }
     }
@@ -197,7 +196,7 @@ pub mod testing {
     use std::path::{Path, PathBuf};
 
     /// Makes an in-memory credential store the default, so that tests never touch
-    /// the user's keychain. Done on first use with `testing`.
+    /// the user's keychain.
     pub fn use_memory_store() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| keyring_core::set_default_store(keyring_core::sample::Store::new().expect("memory store")));
