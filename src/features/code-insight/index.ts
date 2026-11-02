@@ -22,6 +22,7 @@ import { resetHierarchy, showHierarchy } from "./hierarchy";
 import { installServerEvents } from "./servers";
 import { goConstraintExcluded } from "./goConstraints";
 import { ServerStatus } from "./ServerStatus";
+import { installWorkspaceEditUndo } from "./workspaceUndo";
 
 const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
 
@@ -60,6 +61,7 @@ export function activate(): () => void {
     installProblemsEvents(),
     installProblemDecorations(),
     installServerEvents(),
+    installWorkspaceEditUndo(),
     registerToolWindow({
       id: "problems",
       title: "Problems",
