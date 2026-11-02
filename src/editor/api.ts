@@ -433,7 +433,7 @@ export function _emitEditorEvent(e: EditorEvent) {
 // --- save participants ----------------------------------------------------------
 
 /**
- * Runs before a document is written (format on save, organise imports…).
+ * Runs before a modified document is written (format on save, organise imports…).
  * Participants may edit the document through `handle.view` (normal
  * transactions); editor/core waits for them, then trims whitespace / adds the
  * final newline per settings, flushes the edit pipeline and saves. `handle`
