@@ -152,6 +152,8 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("pytest", "uv", &["run", "pytest", "-x"]),
         run("npm", "npm", &["run", "dev"]),
         run("shell", "python3", &["x.py"]),
+        run("django-test", "uv", &["run", "python", "manage.py", "test"]),
+        run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].command, "/opt/py/bin/python3");
@@ -161,6 +163,11 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[2].args, ["-m", "pytest", "-x"]);
     assert_eq!(configs[3].command, "pnpm");
     assert_eq!(configs[4].command, "python3", "shell configs are left alone");
+    // Django tests run on the selected interpreter, like `manage.py runserver`.
+    assert_eq!(configs[5].command, "/opt/py/bin/python3");
+    assert_eq!(configs[5].args, ["manage.py", "test"]);
+    assert_eq!(configs[6].command, "/opt/py/bin/python3");
+    assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
 }
 
 fn fake_jdk(dir: &Path) {
@@ -254,10 +261,10 @@ fn language_server_settings_disable_add_and_override() {
     let mut s = Settings::default();
     s.language_servers.insert("pylsp".into(), LanguageServerSettings { enabled: false, ..Default::default() });
     s.language_servers.insert(
-        "ruff".into(),
+        "pylyzer".into(),
         LanguageServerSettings {
-            command: "ruff".into(),
-            args: Some(vec!["server".into()]),
+            command: "pylyzer".into(),
+            args: Some(vec!["--server".into()]),
             languages: vec!["python".into()],
             root_markers: vec!["pyproject.toml".into()],
             ..Default::default()
@@ -265,17 +272,42 @@ fn language_server_settings_disable_add_and_override() {
     );
     let defined = [server("basedpyright"), server("pylsp")];
     let names = |v: Vec<LanguageServerConfig>| v.into_iter().map(|c| c.name).collect::<Vec<_>>();
-    assert_eq!(names(language_servers("python", &defined, &s)), ["basedpyright", "ruff"]);
+    assert_eq!(names(language_servers("python", &defined, &s)), ["basedpyright", "pylyzer"]);
     assert_eq!(names(language_servers("rust", &[server("rust-analyzer")], &s)), ["rust-analyzer"]);
 
     // Listed with the tools even while disabled.
     let mut langs = ide_language::LanguageRegistry::load(None).unwrap().all();
     with_custom_servers(&mut langs, &s);
     let python = langs.iter().find(|l| l.id.as_str() == "python").unwrap();
+    let mut pylyzer = python.language_servers.iter().find(|c| c.name == "pylyzer").unwrap().clone();
+    assert_eq!(pylyzer.root_markers, ["pyproject.toml"]);
+    server_launch_overrides(&mut pylyzer, &s);
+    assert_eq!((pylyzer.command.as_str(), pylyzer.args.as_slice()), ("pylyzer", &["--server".to_string()][..]));
+
+    // A hand-defined server named like a built-in one only overrides how it
+    // launches: languages and root markers stay the built-in definition's.
+    s.language_servers.insert(
+        "ruff".into(),
+        LanguageServerSettings {
+            command: "/opt/ruff".into(),
+            args: Some(vec!["server".into(), "--preview".into()]),
+            languages: vec!["python".into()],
+            root_markers: vec!["pyproject.toml".into()],
+            ..Default::default()
+        },
+    );
+    let mut langs = ide_language::LanguageRegistry::load(None).unwrap().all();
+    with_custom_servers(&mut langs, &s);
+    let python = langs.iter().find(|l| l.id.as_str() == "python").unwrap();
+    assert_eq!(python.language_servers.iter().filter(|c| c.name == "ruff").count(), 1);
     let mut ruff = python.language_servers.iter().find(|c| c.name == "ruff").unwrap().clone();
-    assert_eq!(ruff.root_markers, ["pyproject.toml"]);
+    assert_eq!(ruff.root_markers, ["ruff.toml", ".ruff.toml", "pyproject.toml#tool.ruff"]);
+    assert!(ruff.require_root_marker);
     server_launch_overrides(&mut ruff, &s);
-    assert_eq!((ruff.command.as_str(), ruff.args.as_slice()), ("ruff", &["server".to_string()][..]));
+    assert_eq!(
+        (ruff.command.as_str(), ruff.args.as_slice()),
+        ("/opt/ruff", &["server".to_string(), "--preview".to_string()][..])
+    );
 
     s.language_servers.insert(
         "rust-analyzer".into(),
