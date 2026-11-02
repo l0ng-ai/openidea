@@ -492,6 +492,7 @@ export const VCS_PAGES: PageSpec[] = [
             keywords: ["Test", "git version"],
             component: GitExecutableRow,
           },
+          { kind: "toggle", key: "vcs.git.inlineBlame", label: "Show inline blame for the current line" },
         ],
       },
       {

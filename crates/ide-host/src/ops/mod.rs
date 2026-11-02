@@ -22,6 +22,7 @@ pub mod notebook;
 pub mod project;
 mod python;
 pub mod refactor;
+pub mod routes;
 pub mod run;
 pub mod sdk;
 pub mod search;

@@ -135,6 +135,28 @@ pub static TOOLS: &[ToolSpec] = &[
         homepage: "https://prettier.io",
     },
     ToolSpec {
+        name: "oxfmt",
+        display: "oxfmt",
+        kind: Formatter,
+        commands: &["oxfmt"],
+        method: Method::Npm { packages: &["oxfmt"] },
+        fallback: None,
+        version: ver("oxfmt"),
+        needs: NODE,
+        homepage: "https://oxc.rs/docs/guide/usage/formatter",
+    },
+    ToolSpec {
+        name: "oxlint",
+        display: "oxlint",
+        kind: LanguageServer,
+        commands: &["oxlint"],
+        method: Method::Npm { packages: &["oxlint"] },
+        fallback: None,
+        version: ver("oxlint"),
+        needs: NODE,
+        homepage: "https://oxc.rs/docs/guide/usage/linter",
+    },
+    ToolSpec {
         name: "rust-analyzer",
         display: "rust-analyzer",
         kind: LanguageServer,
@@ -209,6 +231,17 @@ pub static TOOLS: &[ToolSpec] = &[
         fallback: None,
         version: ver("ty"),
         homepage: "https://docs.astral.sh/ty/",
+        needs: &[],
+    },
+    ToolSpec {
+        name: "ruff",
+        display: "Ruff",
+        kind: LanguageServer,
+        commands: &["ruff"],
+        method: Method::PipVenv { package: "ruff" },
+        fallback: None,
+        version: ver("ruff"),
+        homepage: "https://docs.astral.sh/ruff/",
         needs: &[],
     },
     ToolSpec {
@@ -614,15 +647,25 @@ pub static TOOLS: &[ToolSpec] = &[
         method: Method::Release {
             source: ReleaseSource::GitHub { repo: "Kotlin/kotlin-lsp" },
             assets: &[
+                // Current releases (kotlin-server-*): the CLI distribution is a
+                // .sit on macOS, .tar.gz on Linux and .win.zip on Windows. x64 ships as the
+                // un-suffixed archive, aarch64 as `-aarch64`; the un-suffixed one
+                // comes first in the release notes, which is what the x64 pattern
+                // matches first. Without a matching rule the installer used to fall
+                // through to a loose `kotlin-*.zip` pattern and POSIX picked the
+                // Windows archive (#723).
+                rule(Mac, Arm64, "kotlin-server-*-aarch64.sit"),
+                rule(Mac, X64, "kotlin-server-*.sit"),
+                rule(Linux, Arm64, "kotlin-server-*-aarch64.tar.gz"),
+                rule(Linux, X64, "kotlin-server-*.tar.gz"),
+                rule(Windows, X64, "kotlin-server-*.win.zip"),
+                rule(Windows, Arm64, "kotlin-server-*-aarch64.win.zip"),
+                // Old releases named the archives kotlin-lsp-*.
                 rule(Mac, Arm64, "kotlin-lsp-*-mac-aarch64.zip"),
                 rule(Mac, X64, "kotlin-lsp-*-mac-x64.zip"),
                 rule(Linux, X64, "kotlin-lsp-*-linux-x64.zip"),
                 rule(Linux, Arm64, "kotlin-lsp-*-linux-aarch64.zip"),
                 rule(Windows, X64, "kotlin-lsp-*-win-x64.zip"),
-                // Older releases ship one platform-independent archive.
-                any_arch(Mac, "kotlin-*.zip"),
-                any_arch(Linux, "kotlin-*.zip"),
-                any_arch(Windows, "kotlin-*.zip"),
             ],
             locate: &["kotlin-lsp", "kotlin-lsp.sh", "kotlin-lsp.cmd"],
         },
@@ -955,12 +998,8 @@ mod tests {
                 known.insert((d.adapter.clone(), d.command.clone()));
             }
         }
-        for l in &langs {
-            if let Some(f) = &l.formatter {
-                known.insert((f.tool.clone(), f.tool.clone()));
-            }
-        }
-        for t in TOOLS.iter().filter(|t| t.kind != Plugin) {
+        // The host selects the formatter of each file (Prettier or oxfmt).
+        for t in TOOLS.iter().filter(|t| !matches!(t.kind, Plugin | Formatter)) {
             assert!(
                 known.contains(&(t.name.to_string(), t.commands[0].to_string())),
                 "{} / {} is not referenced by languages/*.toml",
@@ -987,5 +1026,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The v263 kotlin-server-* release notes: the CLI distribution archives plus
+    /// the VS Code extension and checksums; each platform must pick its native
+    /// distribution and the aarch64 archive must never be picked on x64.
+    #[test]
+    fn kotlin_lsp_picks_the_native_archive_for_each_platform() {
+        use crate::platform::{Platform, select_asset};
+        let names = [
+            "kotlin-server-0.0.27-mac-amd64.vsix",
+            "kotlin-server-0.0.27-mac-amd64.vsix.sha256",
+            "kotlin-server-0.0.27-mac-aarch64.vsix",
+            "kotlin-server-0.0.27-mac-aarch64.vsix.sha256",
+            "kotlin-server-0.0.27-linux-amd64.vsix",
+            "kotlin-server-0.0.27-linux-amd64.vsix.sha256",
+            "kotlin-server-0.0.27-linux-aarch64.vsix",
+            "kotlin-server-0.0.27-linux-aarch64.vsix.sha256",
+            "kotlin-server-0.0.27-win-amd64.vsix",
+            "kotlin-server-0.0.27-win-amd64.vsix.sha256",
+            "kotlin-server-0.0.27-win-aarch64.vsix",
+            "kotlin-server-0.0.27-win-aarch64.vsix.sha256",
+            "kotlin-server-263.7084.0.sit",
+            "kotlin-server-263.7084.0.sit.sha256",
+            "kotlin-server-263.7084.0-aarch64.sit",
+            "kotlin-server-263.7084.0-aarch64.sit.sha256",
+            "kotlin-server-263.7084.0.tar.gz",
+            "kotlin-server-263.7084.0.tar.gz.sha256",
+            "kotlin-server-263.7084.0-aarch64.tar.gz",
+            "kotlin-server-263.7084.0-aarch64.tar.gz.sha256",
+            "kotlin-server-263.7084.0.win.zip",
+            "kotlin-server-263.7084.0.win.zip.sha256",
+            "kotlin-server-263.7084.0-aarch64.win.zip",
+            "kotlin-server-263.7084.0-aarch64.win.zip.sha256",
+        ];
+        let rules = find("kotlin-lsp").unwrap().asset_rules();
+        let mac_arm = Platform { os: Mac, arch: Arm64 };
+        assert_eq!(select_asset(&names, rules, mac_arm), Some("kotlin-server-263.7084.0-aarch64.sit"));
+        let mac_x64 = Platform { os: Mac, arch: X64 };
+        assert_eq!(select_asset(&names, rules, mac_x64), Some("kotlin-server-263.7084.0.sit"));
+        let linux_x64 = Platform { os: Linux, arch: X64 };
+        assert_eq!(select_asset(&names, rules, linux_x64), Some("kotlin-server-263.7084.0.tar.gz"));
+        let linux_arm = Platform { os: Linux, arch: Arm64 };
+        assert_eq!(select_asset(&names, rules, linux_arm), Some("kotlin-server-263.7084.0-aarch64.tar.gz"));
+        let win_x64 = Platform { os: Windows, arch: X64 };
+        assert_eq!(select_asset(&names, rules, win_x64), Some("kotlin-server-263.7084.0.win.zip"));
+        let win_arm = Platform { os: Windows, arch: Arm64 };
+        assert_eq!(select_asset(&names, rules, win_arm), Some("kotlin-server-263.7084.0-aarch64.win.zip"));
     }
 }

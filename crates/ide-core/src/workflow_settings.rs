@@ -41,6 +41,8 @@ impl Default for VcsSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GitSettings {
+    /// Show blame after the current editor line.
+    pub inline_blame: bool,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
     /// Default of Update Project: `merge` | `rebase`.
@@ -71,6 +73,7 @@ pub struct GitSettings {
 impl Default for GitSettings {
     fn default() -> Self {
         Self {
+            inline_blame: false,
             executable: String::new(),
             update_method: "merge".into(),
             auto_update_on_push_rejected: false,

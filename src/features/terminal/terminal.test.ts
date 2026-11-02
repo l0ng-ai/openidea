@@ -8,6 +8,7 @@ import {
   layoutPanes,
   nextTabName,
   removeFromLayout,
+  reorderTabs,
   splitLayout,
   tabFullTitle,
   tabTitle,
@@ -95,6 +96,14 @@ describe("terminal links", () => {
     expect(resolvePath("../b.ts", "/p/web")).toBe("/p/b.ts");
     expect(resolvePath("/abs/c.ts", "/p")).toBe("/abs/c.ts");
     expect(resolvePath("~/d.ts", "/p", "/Users/me")).toBe("/Users/me/d.ts");
+  });
+
+  it("resolves paths against a Windows cwd (#705)", () => {
+    expect(resolvePath("a/main.php", "C:\\Users\\me\\proj")).toBe("C:/Users/me/proj/a/main.php");
+    expect(resolvePath("a\\main.php", "C:/Users/me/proj")).toBe("C:/Users/me/proj/a/main.php");
+    expect(resolvePath("C:\\abs\\d.ts", "C:/p")).toBe("C:/abs/d.ts");
+    expect(resolvePath("~/e.ts", "C:/p", "C:\\Users\\me")).toBe("C:/Users/me/e.ts");
+    expect(resolvePath("../f.ts", "C:/p/web")).toBe("C:/p/f.ts");
   });
 });
 
@@ -220,6 +229,21 @@ describe("tab names", () => {
     expect(nextTabName(["Local", "Local (2)"])).toBe("Local (3)");
     expect(nextTabName(["Local"], "api")).toBe("api");
   });
+});
+
+describe("tab order", () => {
+  const ids = (tabs: { id: string }[]) => tabs.map((t) => t.id).join("");
+  const tabs = [{ id: "a" }, { id: "b" }, { id: "c" }];
+
+  it("moves a dragged tab to the insertion index", () => {
+    expect(ids(reorderTabs(tabs, "a", 3))).toBe("bca");
+    expect(ids(reorderTabs(tabs, "a", 2))).toBe("bac");
+    expect(ids(reorderTabs(tabs, "c", 0))).toBe("cab");
+    expect(ids(reorderTabs(tabs, "b", 1))).toBe("abc");
+    expect(ids(reorderTabs(tabs, "b", 2))).toBe("abc");
+  });
+
+  it("ignores unknown tabs", () => expect(ids(reorderTabs(tabs, "x", 0))).toBe("abc"));
 });
 
 describe("terminal find", () => {

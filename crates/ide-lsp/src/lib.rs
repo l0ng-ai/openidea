@@ -8,6 +8,7 @@
 
 mod angular;
 mod caps;
+mod clang_tidy;
 mod convert;
 mod external_project;
 mod file_ops;
@@ -178,6 +179,7 @@ pub struct LspManager {
     shutting_down: AtomicBool,
     execution_allowed: AtomicBool,
     java_usages_warned: AtomicBool,
+    configuration_cache: Arc<Mutex<jdtls::configuration::ConfigurationCache>>,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
@@ -312,6 +314,7 @@ impl LspManager {
             shutting_down: AtomicBool::new(false),
             execution_allowed: AtomicBool::new(true),
             java_usages_warned: AtomicBool::new(false),
+            configuration_cache: Arc::new(Mutex::new(Default::default())),
             shown_messages: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
@@ -472,13 +475,16 @@ impl LspManager {
             if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
-            me.launcher.launch_cancellable(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)), &cancel)
+            me.launcher.launch_resolved(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)), &cancel)
         })
         .await
         .unwrap_or_else(|e| Err(LaunchError::Failed(e.to_string())));
 
         let peer = match launched {
-            Ok(peer) => peer,
+            Ok((peer, binary)) => {
+                *server.resolved_binary.write() = binary;
+                peer
+            }
             Err(LaunchError::Missing) => {
                 let cfg = server.effective_config();
                 let message =
@@ -587,6 +593,7 @@ impl LspManager {
                 }
             }
         }
+        self.check_clang_tidy(&server).await;
         server.refresh_busy_status(&self.sink);
         server.announce_ready(generation);
         self.spawn_supervisor(server, generation, peer);
@@ -810,6 +817,12 @@ impl LspManager {
         }
         for s in &servers {
             self.ensure_started(s);
+            if s.running().is_some()
+                && let Some(me) = self.me.upgrade()
+            {
+                let server = s.clone();
+                self.runtime.spawn(async move { me.check_clang_tidy(&server).await });
+            }
         }
     }
 
@@ -1111,6 +1124,15 @@ impl LspManager {
     }
 
     pub async fn goto(&self, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
+        if matches!(kind, GotoKind::Definition) {
+            let snap = self.snapshot(doc)?;
+            if let Some(result) =
+                self.configuration_navigation(&snap, pos, false, false, &CancellationToken::new()).await?
+                && !result.locations.is_empty()
+            {
+                return Ok(result.locations);
+            }
+        }
         let (method, cap, feature) = goto_method(kind);
         let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
         self.goto_in(&snap, &targets, method, pos, None).await
@@ -1190,6 +1212,36 @@ impl LspManager {
         project_wide: bool,
         cancel: CancellationToken,
     ) -> IdeResult<References> {
+        let snap = self.snapshot(doc)?;
+        // Scoped probes back code lenses and bulk analysis. Keep their native cost;
+        // configuration indexing is reserved for explicit, project-wide usages.
+        let configuration = if project_wide || snap.language.as_str() != "java" {
+            self.configuration_navigation(&snap, pos, true, include_declaration, &cancel).await?
+        } else {
+            None
+        };
+        if snap.language.as_str() != "java"
+            && let Some(result) = configuration
+        {
+            return Ok(result);
+        }
+        let mut result = self.native_references(doc, pos, include_declaration, project_wide, cancel).await?;
+        if let Some(configuration) = configuration {
+            result.locations.extend(configuration.locations);
+            result.incomplete = result.incomplete.or(configuration.incomplete);
+            convert::dedup_locations(&mut result.locations);
+        }
+        Ok(result)
+    }
+
+    async fn native_references(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        include_declaration: bool,
+        project_wide: bool,
+        cancel: CancellationToken,
+    ) -> IdeResult<References> {
         let (snap, targets) = self.doc_targets(doc, "find references", |c| c.has("referencesProvider")).await?;
         // The extension preserves method identity before JDT collapses references to locations.
         // Old/custom servers retain the standard protocol, including cancellation and scope widening.
@@ -1201,7 +1253,7 @@ impl LspManager {
                 let t = &targets[0];
                 let extension_error = Mutex::new(None);
                 let query = || async {
-                    if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                    if cancel.is_cancelled() || self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
                         return Err(IdeError::cancelled());
                     }
                     let params = snap.pos_params(t, pos);
@@ -1229,7 +1281,7 @@ impl LspManager {
                         *extension_error.lock() = Some(e.clone());
                     }
                     let rows = result?;
-                    if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                    if cancel.is_cancelled() || self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
                         return Err(IdeError::cancelled());
                     }
                     let conv = self.conv(t.enc());
@@ -1255,7 +1307,7 @@ impl LspManager {
                     scope::Widened::only(first, empty, &t.server)
                 };
                 // A changed source also invalidates an earlier answer retained by scope widening.
-                if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                if cancel.is_cancelled() || self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
                     return Err(IdeError::cancelled());
                 }
                 // Scope widening can retain the first answer after a failed second query.
@@ -1281,7 +1333,7 @@ impl LspManager {
                 Err(e) => {
                     if e.kind == ErrorKind::Cancelled
                         || cancel.is_cancelled()
-                        || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version)
+                        || self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version)
                     {
                         return Err(IdeError::cancelled());
                     }

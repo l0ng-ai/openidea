@@ -23,6 +23,7 @@ import { registerHistoryActions, trackOperationContext } from "./historyActions"
 import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
+import { inlineBlame } from "./inlineBlame";
 import { BranchWidget, useBranchesPopup } from "./BranchWidget";
 import { showConflictsDialog } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
@@ -212,7 +213,7 @@ export function activate(): () => void {
     registerEditorContribution({
       id: "vcs.changeMarkers",
       order: 60,
-      extensions: (ctx) => [changeMarkers(ctx), blameSlot()],
+      extensions: (ctx) => [changeMarkers(ctx), blameSlot(), inlineBlame(ctx)],
     }),
     registerMenuGroup({
       id: "vcs.gutter",
