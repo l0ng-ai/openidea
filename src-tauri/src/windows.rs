@@ -393,6 +393,11 @@ fn create_window_for(
     if let Some(title) = title {
         config.title = title;
     }
+    #[cfg(target_os = "macos")]
+    if tab_target.is_some() || _restoring {
+        config.visible = false;
+        config.focus = false;
+    }
     // Cascade from the window the user is looking at; window-state overrides
     // this with the remembered geometry when it has one for the label.
     if let Some(anchor) = target_window(app)
@@ -404,13 +409,24 @@ fn create_window_for(
         config.center = false;
     }
     app.state::<WindowsState>().set_launch(&label, launch);
+    #[cfg(target_os = "macos")]
+    crate::macos::set_grouped_window_restore(&label, tab_target.is_some() || _restoring);
     let window = build_project_window(app, config)?;
     #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {
-        crate::window_groups::join(app, target.label(), window.label())?;
+        if let Err(error) = crate::window_groups::join(app, target.label(), window.label()) {
+            app.state::<WindowsState>().groups.lock().detach(window.label());
+            if let Err(cleanup_error) = window.destroy() {
+                tracing::error!(?cleanup_error, "Cannot destroy failed project tab");
+            }
+            crate::window_groups::changed(app);
+            return Err(error);
+        }
         return Ok(window);
     }
-    focus(&window);
+    if !cfg!(target_os = "macos") || !_restoring {
+        focus(&window);
+    }
     Ok(window)
 }
 

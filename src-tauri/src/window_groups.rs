@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager};
+
+#[cfg(not(target_os = "macos"))]
+use tauri::WebviewWindow;
 
 #[derive(Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -43,21 +46,17 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
         .collect()
 }
 
-fn changed(app: &AppHandle) {
+pub(crate) fn changed(app: &AppHandle) {
     app.state::<AppState>().sink.emit(IdeEvent::WindowGroupsChanged);
 }
 
+#[cfg(not(target_os = "macos"))]
 fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
     let fullscreen = from.is_fullscreen().map_err(err)?;
     if fullscreen {
-        #[cfg(target_os = "macos")]
-        crate::macos::transfer_fullscreen(from, to).map_err(err)?;
-        #[cfg(not(target_os = "macos"))]
-        {
-            from.set_fullscreen(false).map_err(err)?;
-            to.set_fullscreen(true).map_err(err)?;
-        }
+        from.set_fullscreen(false).map_err(err)?;
+        to.set_fullscreen(true).map_err(err)?;
         return Ok(());
     }
     to.set_fullscreen(false).map_err(err)?;
@@ -76,9 +75,13 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
 }
 
 pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
+    #[cfg(not(target_os = "macos"))]
     let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
     let state = app.state::<WindowsState>();
     let previous = state.groups.lock().select(caller, target)?;
+    #[cfg(target_os = "macos")]
+    let result = crate::macos::select_project_tab(app, &previous.members, target);
+    #[cfg(not(target_os = "macos"))]
     let result = (|| {
         if previous.selected != target
             && let Some(from) = app.get_webview_window(&previous.selected)
@@ -99,6 +102,7 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     })();
     if result.is_err() {
         let _ = state.groups.lock().select(caller, &previous.selected);
+        #[cfg(not(target_os = "macos"))]
         for member in &previous.members {
             if let Some(window) = app.get_webview_window(member) {
                 if member == &previous.selected {
@@ -129,7 +133,7 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
     if members.len() < 2 || !members.iter().any(|label| label == caller) {
         return Err(IdeError::invalid("Open at least two project windows to create a window group"));
     }
-    // Native fullscreen puts each window in a separate Space; leave it before grouping.
+    #[cfg(not(target_os = "macos"))]
     for label in &members {
         if let Some(window) = app.get_webview_window(label) {
             window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
@@ -141,6 +145,12 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
 
 pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
+    #[cfg(target_os = "macos")]
+    let grouped = state.groups.lock().group(caller).is_some();
+    #[cfg(target_os = "macos")]
+    if grouped && let Some(window) = app.get_webview_window(caller) {
+        crate::macos::detach_project_tab(&window)?;
+    }
     let next = state.groups.lock().detach(caller);
     if let Some(next) = next {
         if let Some(window) = app.get_webview_window(&next) {

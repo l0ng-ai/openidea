@@ -183,7 +183,14 @@ mod tests {
         groups.merge(members(&["a", "b", "c", "d", "a"]), "a").unwrap();
         assert_eq!(groups.groups().len(), 1);
         assert!(groups.reorder("a", members(&["a", "a", "c", "d"])).is_err());
+        assert!(groups.reorder("a", members(&["a", "b", "c"])).is_err());
+        assert!(groups.reorder("a", members(&["a", "b", "c", "outside"])).is_err());
+        assert_eq!(groups.group("a").unwrap().members, members(&["a", "b", "c", "d"]));
         groups.reorder("a", members(&["d", "c", "b", "a"])).unwrap();
         assert_eq!(groups.group("a").unwrap().members[0], "d");
+        assert_eq!(groups.group("a").unwrap().selected, "a");
+        groups.reorder("d", members(&["b", "d", "a", "c"])).unwrap();
+        assert_eq!(groups.group("a").unwrap().members, members(&["b", "d", "a", "c"]));
+        assert_eq!(groups.group("a").unwrap().selected, "a");
     }
 }

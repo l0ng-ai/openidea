@@ -84,6 +84,15 @@ pub fn run() {
     let app = app.plugin(
         tauri_plugin_window_state::Builder::default()
             .with_state_flags(window_state_flags())
+            .with_filter(|label| {
+                #[cfg(target_os = "macos")]
+                return macos::restore_independent_window(label);
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = label;
+                    true
+                }
+            })
             // One remembered geometry shared by every project's settings window.
             .map_label(|l| if windows::is_settings_window(l) { "settings" } else { l })
             .build(),
@@ -176,7 +185,6 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 titlebar::forget(window);
-                macos::forget_fullscreen(window.label());
             }
             window_groups::destroyed(window.app_handle(), window.label());
             if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {

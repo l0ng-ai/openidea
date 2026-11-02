@@ -1,4 +1,9 @@
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
+        && std::env::var("PROFILE").as_deref() == Ok("debug")
+    {
+        println!("cargo:rustc-link-arg=-Wl,-no_compact_unwind");
+    }
     let root =
         dunce::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).expect("worktree root");
     println!("cargo:rustc-env=OPENIDEA_WORKTREE_ROOT={}", root.display());

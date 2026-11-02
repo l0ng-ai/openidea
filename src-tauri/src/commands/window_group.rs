@@ -1,4 +1,6 @@
-use crate::{window_groups as groups, windows::WindowsState};
+use crate::window_groups as groups;
+#[cfg(not(target_os = "macos"))]
+use crate::windows::WindowsState;
 use ide_core::{IdeError, IdeResult};
 use tauri::{Manager, WebviewWindow};
 
@@ -44,8 +46,13 @@ pub fn window_group_close(window: WebviewWindow, label: String) -> IdeResult<()>
 #[tauri::command]
 #[specta::specta]
 pub async fn window_group_reorder(window: WebviewWindow, labels: Vec<String>) -> IdeResult<()> {
-    window.state::<WindowsState>().groups.lock().reorder(window.label(), labels)?;
-    groups::select(window.app_handle(), window.label(), window.label())?;
+    #[cfg(target_os = "macos")]
+    crate::macos::reorder_project_tabs(window.app_handle(), window.label(), labels)?;
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.state::<WindowsState>().groups.lock().reorder(window.label(), labels)?;
+        groups::select(window.app_handle(), window.label(), window.label())?;
+    }
     groups::persist(window.app_handle()).await
 }
 

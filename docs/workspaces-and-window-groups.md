@@ -30,9 +30,11 @@ Open two project windows, then use **Window → Merge All Project Windows**. The
 
 Use the tab's close button to close that project, or **Move Tab to New Window** to detach the current tab. Closing uses the existing unsaved-changes guard. Quit visits project windows in sequence so a hidden project's prompt is visible. Groups restore when **Reopen last project** is enabled.
 
-The grouping model lives in `ide-workspace`, independently of project ownership. The desktop adapter keeps each member's WebView and backend services alive, presents the selected window at the group's position/size, and hides its peers. This is an application-drawn tab strip, not the macOS native tab strip. Its persistence is application-local in `window-groups.json`. Language servers, terminals, editor buffers and settings remain independent between group members.
+The grouping model lives in `ide-workspace`, independently of project ownership. The desktop adapter keeps each member's WebView and backend services alive. On macOS, members share a native window tab group; when the native tab strip is visible, reordering either strip synchronizes the other without changing the selected project. Native order is read after AppKit updates its windows, and only complete permutations of the existing group are accepted. Windows/Linux present the selected window at the group's position/size and hide its peers. Persistence is application-local in `window-groups.json`. Language servers, terminals, editor buffers and settings remain independent between group members.
 
 ## Validation
+
+Manual macOS runtime validation confirmed application-tab reordering and native-tab order/selection synchronization in windowed and fullscreen modes. Native AppKit interactions are not covered by the model tests; restart persistence remains a separate regression check for this change.
 
 Automated coverage includes workspace manifest validation and persistence, missing members, independent language-server initialization roots, cross-root search/repositories/run directories, document preservation after unlinking, window-group membership/order, dialog failures and tab keyboard controls.
 
