@@ -253,9 +253,6 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
               onChange={() => {}}
               disabled={busy}
             />
-            <span className={styles.pluginHint} title={tx("Only Git is currently supported")}>
-              <T>More via plugins…</T>
-            </span>
           </div>
 
           <div className={styles.fieldRow}>

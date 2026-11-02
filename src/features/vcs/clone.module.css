@@ -72,11 +72,6 @@
 .versionSelect {
   width: 138px;
 }
-.pluginHint {
-  color: var(--link);
-  white-space: nowrap;
-  opacity: 0.72;
-}
 .comboField {
   min-width: 0;
   height: var(--h-field, 28px);
