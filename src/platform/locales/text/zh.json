@@ -718,6 +718,7 @@
   "Encoding of the output of processes started from Run configurations.": "从运行配置启动的进程的输出编码。",
   "Enhanced for loop": "增强型 for 循环",
   "Ensure every saved file ends with a line break": "确保每个已保存的文件都以换行符结尾",
+  "Enter a positive number of commits": "请输入正整数提交数",
   "Enter a tag, branch or commit hash:": "输入标签、分支或提交哈希：",
   "Enter the name of new tag:": "输入新标签的名称：",
   "Enum": "枚举",

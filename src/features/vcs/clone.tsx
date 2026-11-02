@@ -335,7 +335,11 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
               </div>
             )}
             {error && <div className={styles.error}>{error}</div>}
-            {!busy && !error && url.trim() && invalid && <div className={styles.hint}>{invalid}</div>}
+            {!busy && !error && url.trim() && invalid && (
+              <div className={styles.hint}>
+                <T>{invalid}</T>
+              </div>
+            )}
           </div>
         </form>
       </div>
