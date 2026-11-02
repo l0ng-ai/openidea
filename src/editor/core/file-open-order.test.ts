@@ -180,6 +180,32 @@ describe("file open order", () => {
     expect(state.doc.lineAt(state.selection.main.head).number).toBe(2);
   });
 
+  it.each([false, true])("keeps a pending navigation selection after a plain open (same file: %s)", async (same) => {
+    const backend = createMemoryBackend({ "/p/a.ts": "a\nsecond", "/p/b.ts": "b" });
+    const started = deferred();
+    const response = deferred();
+    const open = backend.open.bind(backend);
+    backend.open = async (path) => {
+      if (path === "/p/a.ts") {
+        started.resolve();
+        await response.promise;
+      }
+      return open(path);
+    };
+    ctrl = new EditorController(backend);
+    ctrl.start();
+    const navigation = ctrl.openFile("/p/a.ts", { selection: { line: 1, col: 2 } });
+    await started.promise;
+    const plain = ctrl.openFile(same ? "/p/a.ts" : "/p/b.ts", { focus: false });
+    if (!same) await plain;
+    response.resolve();
+    await Promise.all([navigation, plain]);
+    const slot = ctrl.slotFor(tabFor("/p/a.ts")!.id)!;
+    expect(slot.caret()).toMatchObject({ line: 1, col: 2 });
+    expect(slot.wantsFocus).toBe(false);
+    expect(activePath()).toBe(same ? "/p/a.ts" : "/p/b.ts");
+  });
+
   it.each([true, false])("keeps a delayed open in its origin pane (explicit: %s)", async (explicit) => {
     const { started, response } = delayProvider();
     const controller = setup();

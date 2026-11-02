@@ -232,6 +232,7 @@ export class EditorController implements SlotHost {
   private projectGeneration = 0;
   private admissionGeneration = 0;
   private openSequence = 0;
+  private selectionRequests = new Map<string, number>();
   private activationGeneration = 0;
   private admitting = false;
   private closeRequests = 0;
@@ -363,6 +364,7 @@ export class EditorController implements SlotHost {
     this.preparedDocuments.clear();
     for (const slot of this.slots.values()) slot.dispose();
     this.slots.clear();
+    this.selectionRequests.clear();
     this.manager.stop();
     useTabs.setState(initialTabsState(), true);
     void this.releaseDocuments(documents.values()).catch((e) => this.documentError(e));
@@ -377,6 +379,7 @@ export class EditorController implements SlotHost {
   private onTabsChanged(prev: TabsState, next: TabsState) {
     const live = new Set<string>();
     for (const p of Object.values(next.panes)) for (const t of p.tabs) live.add(t.id);
+    for (const id of this.selectionRequests.keys()) if (!live.has(id)) this.selectionRequests.delete(id);
     for (const [id, slot] of this.slots) {
       if (!live.has(id)) {
         this.slots.delete(id);
@@ -1017,6 +1020,8 @@ export class EditorController implements SlotHost {
         tabId = r.tabId;
         if (tabs.sortAlphabetically) s = sortTabs(s, paneId, (t) => tabSortKey(t.input));
       }
+      if (o.selection)
+        this.selectionRequests.set(tabId, Math.max(generation.sequence, this.selectionRequests.get(tabId) ?? 0));
       this.admitting = true;
       try {
         resolution?.admit();
@@ -1052,7 +1057,11 @@ export class EditorController implements SlotHost {
       }
       const slot = await this.ensureSlot(tabId);
       if (!slot) return;
-      if (o.selection && canFocus()) {
+      if (
+        o.selection &&
+        this.selectionRequests.get(tabId) === generation.sequence &&
+        generation.activation === this.activationGeneration
+      ) {
         const state = slot.currentState();
         const toOffset = (line: number, col: number) => {
           const l = state.doc.line(Math.min(Math.max(1, line + 1), state.doc.lines));
