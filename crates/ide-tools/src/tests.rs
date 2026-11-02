@@ -157,6 +157,7 @@ fn interchangeable_servers_list_their_alternatives() {
     assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
     // A regular server after a fallback starts no group with it.
     assert!(find(&list, "angular-language-server").alternatives.is_empty());
+    assert!(find(&list, "ruff").alternatives.is_empty());
     assert!(find(&list, "rust-analyzer").alternatives.is_empty());
 }
 

@@ -56,14 +56,16 @@ pub async fn copy_merge(
         if overwrite {
             project.history.record_deletion(&to, DELETE_SNAPSHOT_LIMIT);
         }
-        ide_vfs::copy_merge(
-            &from,
-            &to,
-            overwrite,
-            Some(&project.root),
-            &project.exclude_globs(),
-            (&source_root, &destination_root),
-        )
+        project.with_disk_sync(|| {
+            ide_vfs::copy_merge(
+                &from,
+                &to,
+                overwrite,
+                Some(&project.root),
+                &project.exclude_globs(),
+                (&source_root, &destination_root),
+            )
+        })
     })
     .await
 }

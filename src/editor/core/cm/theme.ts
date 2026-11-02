@@ -105,7 +105,7 @@ export const openideaTheme = EditorView.theme({
     boxShadow: "inset 0 1px 0 var(--border-method-separator, var(--border))",
   },
   "&.cm-openidea-hideGutter-run .cm-openidea-gutter-run, &.cm-openidea-hideGutter-bookmarks .cm-openidea-bookmarks": {
-    display: "none",
+    display: "none !important",
   },
   // Inheritance markers share one gutter: each group hides its own icons.
   "&.cm-openidea-hideGutter-inheritors :is(.cm-openidea-lineMarker-implemented, .cm-openidea-lineMarker-overridden), &.cm-openidea-hideGutter-supers :is(.cm-openidea-lineMarker-implementing, .cm-openidea-lineMarker-overriding)":
@@ -283,6 +283,8 @@ export const openideaTheme = EditorView.theme({
     cursor: "pointer",
   },
   ".cm-openidea-overviewMark-thin": { left: "4px", width: "4px", minHeight: "2px" },
+  // The scrollbar thumb wins over the marks under it (cm/lanes.ts, #752).
+  ".cm-openidea-overview-onThumb .cm-openidea-overviewMark": { pointerEvents: "none" },
   ".cm-openidea-overviewCaret": {
     position: "absolute",
     left: "2px",

@@ -215,9 +215,14 @@ impl Dispatcher {
         })
         .add("fs_read_text", |c| async move { ops::fs::read_text(&c.host, &c.window, c.arg("path")?).await })
         .add("doc_open", |c| async move { ops::doc::open(&c.host, &c.window, c.arg("path")?).await })
-        .add("doc_close", |c| async move { ops::doc::close(&c.host, &c.window, c.arg("doc")?) })
+        .add("doc_close", |c| async move {
+            ops::doc::blocking(move || ops::doc::close(&c.host, &c.window, c.arg("doc")?)).await
+        })
         .add("doc_edit", |c| async move {
-            ops::doc::edit(&c.host, &c.window, c.arg("doc")?, c.arg("baseVersion")?, c.arg("changes")?)
+            ops::doc::blocking(move || {
+                ops::doc::edit(&c.host, &c.window, c.arg("doc")?, c.arg("baseVersion")?, c.arg("changes")?)
+            })
+            .await
         })
         .add("doc_save", |c| async move { ops::doc::save(&c.host, &c.window, c.arg("doc")?).await })
         .add("doc_save_all", |c| async move { ops::doc::save_all(&c.host, &c.window).await })
@@ -230,6 +235,9 @@ impl Dispatcher {
         .add("term_spawn", |c| async move {
             let on_output = c.channel("onOutput")?;
             ops::term::spawn(&c.host, &c.window, c.arg("options")?, on_output)
+        })
+        .add("term_store_image", |c| async move {
+            ops::term::store_image(&c.host, c.arg("id")?, c.arg("data")?, c.arg("mime")?).await
         })
         .add("term_write", |c| async move { ops::term::write(&c.host, c.arg("id")?, &c.arg::<String>("data")?) })
         .add("term_resize", |c| async move { ops::term::resize(&c.host, c.arg("id")?, c.arg("cols")?, c.arg("rows")?) })

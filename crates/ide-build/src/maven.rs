@@ -11,7 +11,9 @@ use crate::xml::{self, Element};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// Phases shown under "Lifecycle" (IDEA's default list).
 pub const LIFECYCLE: &[&str] =
@@ -285,6 +287,14 @@ fn texts(e: &Element, path: &str, item: &str) -> Vec<String> {
     e.list(path, item).iter().map(|m| m.text.trim().to_owned()).filter(|m| !m.is_empty()).collect()
 }
 
+/// Child modules of a project or profile: `<modules>` (model 4.0.0) plus `<subprojects>`,
+/// which Maven 4 (model 4.1.0) uses instead.
+fn module_names(e: &Element) -> Vec<String> {
+    let mut names = texts(e, "modules", "module");
+    names.extend(texts(e, "subprojects", "subproject"));
+    names
+}
+
 fn read_build(e: &Element, plugins: &mut Vec<RawPlugin>, managed: &mut Vec<RawPlugin>) {
     plugins.extend(e.list("build/plugins", "plugin").into_iter().filter_map(read_plugin));
     managed.extend(e.list("build/pluginManagement/plugins", "plugin").into_iter().filter_map(read_plugin));
@@ -308,7 +318,7 @@ fn read_raw(project: &Element) -> RawPom {
         name: project.text_of("name"),
         parent,
         properties: read_properties(project.child("properties")),
-        modules: texts(project, "modules", "module"),
+        modules: module_names(project),
         deps: project.list("dependencies", "dependency").into_iter().filter_map(read_dep).collect(),
         managed: project
             .list("dependencyManagement/dependencies", "dependency")
@@ -329,7 +339,7 @@ fn read_raw(project: &Element) -> RawPom {
         let mut profile = RawProfile {
             id: p.text_of("id").unwrap_or_else(|| "default".into()),
             active_by_default: p.at("activation/activeByDefault").is_some_and(|a| a.text.trim() == "true"),
-            modules: texts(p, "modules", "module"),
+            modules: module_names(p),
             properties: read_properties(p.child("properties")),
             deps: p.list("dependencies", "dependency").into_iter().filter_map(read_dep).collect(),
             ..RawProfile::default()
@@ -448,13 +458,20 @@ struct Resolver {
 /// `~/.m2/repository`, or `<localRepository>` from `~/.m2/settings.xml`.
 pub(crate) fn default_local_repo() -> Option<PathBuf> {
     let m2 = dirs::home_dir()?.join(".m2");
-    if let Some(settings) = std::fs::read_to_string(m2.join("settings.xml")).ok().and_then(|t| xml::parse(&t))
-        && let Some(repo) = settings.text_of("localRepository")
-    {
-        let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
-        return Some(PathBuf::from(repo.replace("${user.home}", &home)));
+    local_repository_of(&m2.join("settings.xml")).or(Some(m2.join("repository")))
+}
+
+/// `<localRepository>` of a settings file, when it names one: the repository a build
+/// with `-s <file>` resolves into, which is not necessarily the user's default.
+pub fn local_repository_of(settings: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(settings).ok()?;
+    let root = xml::parse(&text)?;
+    let repo = root.text_of("localRepository")?.trim().to_owned();
+    if repo.is_empty() {
+        return None;
     }
-    Some(m2.join("repository"))
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
+    Some(PathBuf::from(repo.replace("${user.home}", &home)))
 }
 
 impl Resolver {
@@ -680,7 +697,76 @@ pub fn goal_prefix(artifact_id: &str) -> String {
     artifact_id.strip_suffix("-plugin").unwrap_or(artifact_id).to_owned()
 }
 
-/// Goals of well-known plugins (their plugin descriptors are not read).
+/// Goals of every plugin jar read so far, by the path of that jar.
+static DESCRIPTOR: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+
+/// `<goal>` names of the plugin descriptor inside its jar (`META-INF/maven/plugin.xml`),
+/// which is where Maven itself takes the list `plugin:help` prints. Empty when the jar
+/// is not in the local repository yet.
+fn descriptor_goals(repo: &Path, group_id: &str, artifact_id: &str, version: &str) -> Vec<String> {
+    // Keyed by the jar itself, not by its coordinates: a repository can be replaced
+    // between runs, and a test's empty repository must not answer for another's.
+    // One `push` per group segment: the layout is `<repo>/<group as directories>/…` on
+    // every platform, Windows' separator included.
+    let mut dir = repo.to_path_buf();
+    dir.extend(group_id.split('.'));
+    dir.push(artifact_id);
+    dir.push(version);
+    let Some(jar) = plugin_jar(&dir, artifact_id, version) else { return Vec::new() };
+    let key = jar.to_string_lossy().into_owned();
+    let cache = DESCRIPTOR.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return cached.clone();
+    }
+    // A failed read is not remembered: the jar may be half written by Maven right now.
+    let Some(goals) = read_descriptor(&jar) else { return Vec::new() };
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, goals.clone());
+    goals
+}
+
+/// The plugin's jar in its version directory: `<artifactId>-<version>.jar`, or — for a
+/// SNAPSHOT installed from a repository, whose file name carries a timestamp — the newest
+/// `<artifactId>-*.jar` that is neither sources nor javadoc.
+fn plugin_jar(dir: &Path, artifact_id: &str, version: &str) -> Option<PathBuf> {
+    let exact = dir.join(format!("{artifact_id}-{version}.jar"));
+    if exact.is_file() {
+        return Some(exact);
+    }
+    let prefix = format!("{artifact_id}-");
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !name.starts_with(&prefix) || !name.ends_with(".jar") || name.ends_with("-sources.jar") {
+            continue;
+        }
+        if name.ends_with("-javadoc.jar") {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else { continue };
+        if best.as_ref().is_none_or(|(at, _)| modified > *at) {
+            best = Some((modified, path));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+fn read_descriptor(jar: &Path) -> Option<Vec<String>> {
+    let file = std::fs::File::open(jar).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut entry = archive.by_name("META-INF/maven/plugin.xml").ok()?;
+    let mut text = String::new();
+    entry.read_to_string(&mut text).ok()?;
+    let root = xml::parse(&text)?;
+    let mut goals: Vec<String> =
+        root.list("mojos", "mojo").iter().filter_map(|m| m.text_of("goal")).map(|g| g.trim().to_owned()).collect();
+    goals.retain(|g| !g.is_empty());
+    goals.sort();
+    goals.dedup();
+    Some(goals)
+}
+
+/// Goals of well-known plugins, for a jar that is not in the local repository yet.
 fn known_goals(artifact_id: &str) -> &'static [&'static str] {
     match artifact_id {
         "maven-clean-plugin" => &["clean", "help"],
@@ -832,9 +918,27 @@ fn lifecycle_plugins(packaging: &str) -> &'static [&'static str] {
     }
 }
 
-/// A plugin as shown in the tree: execution goals plus the plugin's known goals, sorted.
-pub(crate) fn plugin(group_id: &str, artifact_id: &str, version: Option<String>, goals: &[String]) -> MavenPlugin {
+/// A plugin as shown in the tree: the goals its jar declares, the ones known by name for
+/// the common plugins, and the ones the project binds in `<executions>`, sorted. IDEA lists
+/// a plugin's goals the same way, which is why a plugin outside the table (checkstyle, say)
+/// still shows every goal it offers instead of only the bound one.
+pub(crate) fn plugin(
+    group_id: &str,
+    artifact_id: &str,
+    version: Option<String>,
+    goals: &[String],
+    local_repo: Option<&Path>,
+) -> MavenPlugin {
     let mut all: Vec<String> = known_goals(artifact_id).iter().map(|g| (*g).to_owned()).collect();
+    let repo = local_repo.map(Path::to_path_buf).or_else(default_local_repo);
+    // An unresolved `${…}` version names no jar: the table and the bound goals stand in.
+    if let (Some(repo), Some(version)) = (repo.as_deref(), version.as_deref().filter(|v| !v.contains("${"))) {
+        for g in descriptor_goals(repo, group_id, artifact_id, version) {
+            if !all.contains(&g) {
+                all.push(g);
+            }
+        }
+    }
     for g in goals {
         if !all.contains(g) {
             all.push(g.clone());
@@ -999,7 +1103,7 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
                     .or_else(|| ctx.managed_plugins.iter().find(|m| m.key() == p.key()).and_then(|m| m.version.clone()))
                     .map(|v| i(&v))
                     .filter(|v| !v.contains("${"));
-                plugin(&i(&p.group_id), &i(&p.artifact_id), version, &p.goals)
+                plugin(&i(&p.group_id), &i(&p.artifact_id), version, &p.goals, resolver.local_repo.as_deref())
             })
             .collect();
 
@@ -1111,6 +1215,16 @@ pub fn build_files(root: &Path, model: &MavenModel) -> Vec<PathBuf> {
 /// Projects and their plugins / dependencies from `mvn help:effective-pom` output
 /// (`<project>` or `<projects>`), keyed `groupId:artifactId`.
 pub fn parse_effective_pom(text: &str) -> Vec<(String, Vec<MavenPlugin>, Vec<MavenDependency>)> {
+    parse_effective_pom_in(text, None)
+}
+
+/// The same, with the local repository the project actually builds against (a
+/// `-Dmaven.repo.local` of the build, say): the plugin goals come from jars there,
+/// rather than from the user's default one.
+pub fn parse_effective_pom_in(
+    text: &str,
+    local_repo: Option<&Path>,
+) -> Vec<(String, Vec<MavenPlugin>, Vec<MavenDependency>)> {
     let Some(root) = xml::parse(text) else { return Vec::new() };
     let projects: Vec<&Element> =
         if root.name == "projects" { root.children_named("project").collect() } else { vec![&root] };
@@ -1122,7 +1236,7 @@ pub fn parse_effective_pom(text: &str) -> Vec<(String, Vec<MavenPlugin>, Vec<Mav
             let plugins = raw
                 .plugins
                 .iter()
-                .map(|pl| plugin(&pl.group_id, &pl.artifact_id, pl.version.clone(), &pl.goals))
+                .map(|pl| plugin(&pl.group_id, &pl.artifact_id, pl.version.clone(), &pl.goals, local_repo))
                 .collect();
             let deps = raw
                 .deps
@@ -1253,6 +1367,107 @@ pub fn parse_dependency_tree(output: &str) -> Vec<(String, Vec<MavenDependency>)
 mod tests {
     use super::*;
 
+    /// A plugin jar in `repo` whose descriptor declares `goals`.
+    fn write_plugin_jar(repo: &Path, group: &str, artifact: &str, version: &str, goals: &[&str]) {
+        let dir = repo.join(group.replace('.', "/")).join(artifact).join(version);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mojos: String = goals.iter().map(|g| format!("<mojo><goal>{g}</goal></mojo>")).collect();
+        let descriptor = format!("<plugin><mojos>{mojos}</mojos></plugin>");
+        let file = std::fs::File::create(dir.join(format!("{artifact}-{version}.jar"))).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("META-INF/maven/plugin.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, descriptor.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn a_plugin_lists_the_goals_its_jar_declares() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        write_plugin_jar(
+            repo,
+            "org.apache.maven.plugins",
+            "maven-checkstyle-plugin",
+            "3.3.1",
+            &["checkstyle", "checkstyle-aggregate", "help", "check"],
+        );
+        let p = plugin(
+            "org.apache.maven.plugins",
+            "maven-checkstyle-plugin",
+            Some("3.3.1".into()),
+            &["check".to_owned()],
+            Some(repo),
+        );
+        assert_eq!(p.goals, ["check", "checkstyle", "checkstyle-aggregate", "help"], "every goal the plugin offers");
+        assert_eq!(p.prefix, "checkstyle");
+    }
+
+    #[test]
+    fn a_settings_file_names_the_repository_to_read_goals_from() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join("settings.xml");
+        std::fs::write(
+            &settings,
+            "<settings><localRepository>${user.home}/repo-from-settings</localRepository></settings>",
+        )
+        .unwrap();
+        let repo = local_repository_of(&settings).unwrap();
+        assert!(repo.ends_with("repo-from-settings"), "{}", repo.display());
+        assert!(!repo.to_string_lossy().contains("${user.home}"));
+        // A settings file that names none leaves Maven's default alone.
+        let plain = tmp.path().join("plain.xml");
+        std::fs::write(&plain, "<settings><offline>true</offline></settings>").unwrap();
+        assert!(local_repository_of(&plain).is_none());
+        assert!(local_repository_of(&tmp.path().join("missing.xml")).is_none());
+    }
+
+    #[test]
+    fn effective_pom_goals_come_from_the_local_repository_it_is_given() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugin_jar(tmp.path(), "org.apache.maven.plugins", "maven-demo-plugin", "1.0", &["run", "help"]);
+        let text = "<project><groupId>g</groupId><artifactId>a</artifactId><build><plugins>\
+            <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-demo-plugin</artifactId>\
+            <version>1.0</version><executions><execution><goals><goal>run</goal></goals></execution></executions>\
+            </plugin></plugins></build></project>";
+        let with_repo = parse_effective_pom_in(text, Some(tmp.path()));
+        assert_eq!(with_repo[0].1[0].goals, ["help", "run"], "the jar's own goals come first");
+        // Without that repository the plugin is unknown: only what the project binds.
+        assert_eq!(parse_effective_pom(text)[0].1[0].goals, ["run"]);
+    }
+
+    #[test]
+    fn a_snapshot_plugin_is_found_by_its_timestamped_jar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("g/p/maven-demo-plugin/1.0-SNAPSHOT");
+        std::fs::create_dir_all(&dir).unwrap();
+        let descriptor = "<plugin><mojos><mojo><goal>run</goal></mojo></mojos></plugin>";
+        let file = std::fs::File::create(dir.join("maven-demo-plugin-1.0-20240101.120000-3.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("META-INF/maven/plugin.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, descriptor.as_bytes()).unwrap();
+        zip.finish().unwrap();
+        // A sibling sources jar must not win.
+        std::fs::File::create(dir.join("maven-demo-plugin-1.0-20240101.120000-3-sources.jar")).unwrap();
+        let p = plugin("g.p", "maven-demo-plugin", Some("1.0-SNAPSHOT".into()), &[], Some(tmp.path()));
+        assert_eq!(p.goals, ["run"]);
+    }
+
+    #[test]
+    fn a_plugin_without_its_jar_keeps_the_table_and_the_bound_goals() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = plugin(
+            "org.apache.maven.plugins",
+            "maven-checkstyle-plugin",
+            Some("3.3.1".into()),
+            &["check".to_owned()],
+            Some(tmp.path()),
+        );
+        assert_eq!(p.goals, ["check"], "nothing beyond what the project binds");
+        let known =
+            plugin("org.apache.maven.plugins", "maven-compiler-plugin", Some("3.13.0".into()), &[], Some(tmp.path()));
+        assert_eq!(known.goals, ["compile", "help", "testCompile"], "the common plugins keep their table");
+    }
+
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -1275,6 +1490,26 @@ mod tests {
         <profile><id>extra</id><modules><module>extra</module></modules></profile>
       </profiles>
     </project>"#;
+
+    #[test]
+    fn maven_4_subprojects_are_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            r#"<project xmlns="http://maven.apache.org/POM/4.1.0"><modelVersion>4.1.0</modelVersion>
+              <groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>
+              <subprojects><subproject>core</subproject></subprojects>
+              <profiles><profile><id>extra</id><subprojects><subproject>extra</subproject></subprojects></profile></profiles>
+            </project>"#,
+        );
+        write(root, "core/pom.xml", "<project><artifactId>core</artifactId></project>");
+        write(root, "extra/pom.xml", "<project><artifactId>extra</artifactId></project>");
+        let model = load_with_repo(root, None);
+        assert_eq!(model.projects[0].modules, ["core/pom.xml"]);
+        assert!(model.projects.iter().any(|p| p.pom == "core/pom.xml" && p.aggregated));
+    }
 
     #[test]
     fn multi_module_parent_properties_and_managed_versions() {
