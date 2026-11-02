@@ -3,7 +3,7 @@
  * project has that build system, like IDEA. The model is re-read when build
  * files change; running goals / tasks goes through the run feature's actions.
  */
-import { openEditorPaths } from "@/editor/api";
+import { onEditorEvent } from "@/editor/api";
 import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { onIdeEvent, type BuildModel, type BuildTool } from "@/platform/ipc";
@@ -26,7 +26,9 @@ import {
   unlinkProjects,
   cancelSync,
   loadModel,
+  changedOutsideIde,
   noteExternalBuildChange,
+  noteIdeSave,
   openAnalyzer,
   resetBuild,
   setExpanded,
@@ -160,13 +162,15 @@ export function activate(): () => void {
       resetBuild();
       if (s.project) void loadModel();
     }),
+    onEditorEvent((e) => {
+      if (e.type === "docSaved" && BUILD_FILE.test(e.path)) noteIdeSave(e.path);
+    }),
     onIdeEvent("fsChanged", (e) => {
       const changed = [...e.created, ...e.modified, ...e.removed].filter((p) => BUILD_FILE.test(p));
       if (!changed.length) return;
-      // shortcut: a file open in a tab counts as edited in the IDE even if a tool rewrote it;
-      // telling saves apart needs the backend to tag its own writes.
-      const open = new Set(openEditorPaths());
-      if (changed.some((p) => !open.has(p))) noteExternalBuildChange();
+      // Changes the IDE's own saves didn't make came from outside (a VCS update, another tool),
+      // also for a build file open in a tab.
+      if (changedOutsideIde(changed)) noteExternalBuildChange();
       scheduleLoad();
     }),
     onIdeEvent("projectRootsChanged", scheduleLoad),

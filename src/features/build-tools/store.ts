@@ -153,6 +153,31 @@ export function noteExternalBuildChange() {
   externalChange = true;
 }
 
+/** How long after the IDE saves a build file its file-system events still count as that save. */
+const IDE_SAVE_WINDOW_MS = 5000;
+/** Build files the IDE saved, with when: their file-system events are edits made in the IDE. */
+const savedByIde = new Map<string, number>();
+
+/** The IDE saved `path` (an editor save, not a tool rewriting it). */
+export function noteIdeSave(path: string, now = Date.now()) {
+  savedByIde.set(path, now);
+}
+
+/**
+ * Whether any of the changed build files was written by something other than the IDE's own
+ * save: a VCS update or a tool, also when the file is open in an editor tab.
+ */
+export function changedOutsideIde(paths: readonly string[], now = Date.now()): boolean {
+  let external = false;
+  for (const path of paths) {
+    const at = savedByIde.get(path);
+    if (at !== undefined && now - at <= IDE_SAVE_WINDOW_MS) continue;
+    savedByIde.delete(path);
+    external = true;
+  }
+  return external;
+}
+
 /** Re-reads the build model (and the run configurations) of the open project. */
 export async function loadModel(): Promise<void> {
   const root = useProject.getState().project?.root ?? null;

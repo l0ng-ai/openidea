@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type { BuildModel, MavenModel, ProjectInfo } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { loadModel, noteExternalBuildChange, useBuild } from "./store";
+import { changedOutsideIde, loadModel, noteExternalBuildChange, noteIdeSave, useBuild } from "./store";
 
 const mocks = vi.hoisted(() => ({ model: vi.fn(), sync: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
@@ -54,4 +54,15 @@ it("leaves an up-to-date build alone after an external change", async () => {
   noteExternalBuildChange();
   await loadModel();
   expect(mocks.sync).not.toHaveBeenCalled();
+});
+
+it("tells the IDE's own saves of a build file apart from changes made outside it", () => {
+  noteIdeSave("/p/pom.xml", 1000);
+  expect(changedOutsideIde(["/p/pom.xml"], 2000)).toBe(false);
+  // A tool rewrites the same file later, while it is still open in a tab.
+  expect(changedOutsideIde(["/p/pom.xml"], 10_000)).toBe(true);
+  // Never saved by the IDE: a VCS update.
+  expect(changedOutsideIde(["/p/core/pom.xml"], 2000)).toBe(true);
+  noteIdeSave("/p/pom.xml", 20_000);
+  expect(changedOutsideIde(["/p/pom.xml", "/p/core/pom.xml"], 20_500)).toBe(true);
 });
