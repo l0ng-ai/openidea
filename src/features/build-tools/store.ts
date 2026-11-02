@@ -142,6 +142,41 @@ export function pushHistory(tool: BuildTool, line: string) {
 // Model
 
 let generation = 0;
+let externalChange = false;
+
+/**
+ * A build file changed outside the editor (VCS update, another tool): the next model load
+ * reloads a build it finds stale, IDEA's default "Reload after external changes". Edits in
+ * the editor only show "Load … Changes".
+ */
+export function noteExternalBuildChange() {
+  externalChange = true;
+}
+
+/** How long after the IDE saves a build file its file-system events still count as that save. */
+const IDE_SAVE_WINDOW_MS = 5000;
+/** Build files the IDE saved, with when: their file-system events are edits made in the IDE. */
+const savedByIde = new Map<string, number>();
+
+/** The IDE saved `path` (an editor save, not a tool rewriting it). */
+export function noteIdeSave(path: string, now = Date.now()) {
+  savedByIde.set(path, now);
+}
+
+/**
+ * Whether any of the changed build files was written by something other than the IDE's own
+ * save: a VCS update or a tool, also when the file is open in an editor tab.
+ */
+export function changedOutsideIde(paths: readonly string[], now = Date.now()): boolean {
+  let external = false;
+  for (const path of paths) {
+    const at = savedByIde.get(path);
+    if (at !== undefined && now - at <= IDE_SAVE_WINDOW_MS) continue;
+    savedByIde.delete(path);
+    external = true;
+  }
+  return external;
+}
 
 /** Re-reads the build model (and the run configurations) of the open project. */
 export async function loadModel(): Promise<void> {
@@ -167,6 +202,11 @@ export async function loadModel(): Promise<void> {
     ]);
     if (gen !== generation) return;
     useBuild.setState({ model, configs, loading: false, error: null });
+    if (externalChange) {
+      externalChange = false;
+      const maven = model.maven;
+      if (maven?.stale && maven.syncedAt !== null && !useBuild.getState().syncing.maven) void syncTool("maven");
+    }
   } catch (e) {
     if (gen === generation) useBuild.setState({ loading: false, error: e instanceof Error ? e.message : String(e) });
   }

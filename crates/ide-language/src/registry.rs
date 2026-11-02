@@ -605,6 +605,32 @@ mod tests {
     }
 
     #[test]
+    fn ruff_serves_python_files_only_below_its_config() {
+        let reg = reg();
+        let cfg = reg.get(&LanguageId::new("python")).unwrap();
+        let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
+        // After the fallbacks: hover, rename and symbols stay with the type checker.
+        assert_eq!(names, ["basedpyright", "pyright", "ty", "ruff"]);
+        let ruff = cfg.language_servers.iter().find(|s| s.name == "ruff").unwrap();
+        assert_eq!((ruff.command.as_str(), ruff.args.as_slice()), ("ruff", ["server".to_string()].as_slice()));
+        assert!(ruff.require_root_marker && !ruff.fallback);
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["lint", "dot", "pyproject", "plain"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("lint/ruff.toml"), "").unwrap();
+        std::fs::write(root.join("dot/.ruff.toml"), "").unwrap();
+        std::fs::write(root.join("pyproject/pyproject.toml"), "[tool.ruff]\nline-length = 100\n").unwrap();
+        std::fs::write(root.join("plain/pyproject.toml"), "[project]\nname = \"plain\"\n").unwrap();
+        let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &ruff.root_markers);
+        for dir in ["lint", "dot", "pyproject"] {
+            assert_eq!(served(&format!("{dir}/pkg/main.py")), Some(root.join(dir)), "{dir}");
+        }
+        assert_eq!(served("plain/main.py"), None);
+    }
+
+    #[test]
     fn html_of_angular_projects_is_an_angular_template() {
         let reg = reg();
         let tmp = tempfile::tempdir().unwrap();

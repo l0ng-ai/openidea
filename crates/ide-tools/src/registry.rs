@@ -234,6 +234,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "ruff",
+        display: "Ruff",
+        kind: LanguageServer,
+        commands: &["ruff"],
+        method: Method::PipVenv { package: "ruff" },
+        fallback: None,
+        version: ver("ruff"),
+        homepage: "https://docs.astral.sh/ruff/",
+        needs: &[],
+    },
+    ToolSpec {
         name: "bash-language-server",
         display: "Bash Language Server",
         kind: LanguageServer,
