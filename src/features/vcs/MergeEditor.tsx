@@ -16,6 +16,7 @@ import { blameSlot, toggleAnnotations } from "./blame";
 import { languageFor, viewerBase } from "./cm";
 import { confirmDialog } from "./dialogs";
 import { initialResult, mergeTitles, resolutionText, type Resolution, type ResultConflict } from "./conflicts";
+import { syncScrollTargets } from "./mergeScroll";
 import { baseName } from "./model";
 import { errorMessage, readWorkingText, runOp, writeFileText } from "./ops";
 import { refreshNow } from "./store";
@@ -221,19 +222,29 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     oursView.current = ours;
     theirsView.current = theirs;
     // Scroll the three panes together (by scroll ratio), like IDEA's merge view.
+    // A pane without a scroll range would read as ratio 0 and yank every pane
+    // to the top; and setting a pane's scrollTop fires its own scroll event
+    // after this handler returns, so the flag must hold until the next
+    // animation frame — resetting it synchronously let the panes echo each
+    // other and fight over the ratio (issue #790).
     const views = [ours, result, theirs];
     let syncing = false;
     const onScroll = (from: EditorView) => () => {
       if (syncing) return;
+      const targets = syncScrollTargets(
+        from.scrollDOM,
+        views.filter((v) => v !== from).map((v) => v.scrollDOM),
+      );
+      if (!targets) return;
       syncing = true;
-      const s = from.scrollDOM;
-      const ratio = s.scrollTop / Math.max(1, s.scrollHeight - s.clientHeight);
-      for (const other of views) {
-        if (other === from) continue;
-        const o = other.scrollDOM;
-        o.scrollTop = ratio * Math.max(0, o.scrollHeight - o.clientHeight);
-      }
-      syncing = false;
+      views
+        .filter((v) => v !== from)
+        .forEach((v, i) => {
+          v.scrollDOM.scrollTop = targets[i]!;
+        });
+      requestAnimationFrame(() => {
+        syncing = false;
+      });
     };
     const offs = views.map((v) => {
       const h = onScroll(v);
