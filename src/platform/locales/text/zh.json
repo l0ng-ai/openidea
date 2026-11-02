@@ -5498,7 +5498,7 @@
   "Remote server does not support image paste.": "远程服务器不支持粘贴图片。",
   "Clipboard image reading is unavailable.": "无法读取剪贴板图片。",
   "Image is too large to paste (limit {limit} MB).": "图片过大，无法粘贴（上限 {limit} MB）。",
-  "Show inline blame for the current line": "显示当前行的内联 Git 追溯信息",
+  "Show inline blame for the current line": "为当前行显示内联 Git Blame",
   "You, now · Uncommitted changes": "你，刚刚 · 未提交的更改",
   "now": "刚刚"
 }
