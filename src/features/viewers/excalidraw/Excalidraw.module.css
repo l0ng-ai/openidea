@@ -1,0 +1,82 @@
+.root {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  position: relative;
+}
+
+.editor {
+  display: none;
+}
+
+.canvasPane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-editor, var(--bg-app));
+}
+
+.canvasHost {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.errorBanner {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+
+.errorTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+}
+
+.errorDetail {
+  max-width: 520px;
+  padding: 8px 12px;
+  color: var(--status-error, #e03131);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.errorHint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.resetBtn {
+  padding: 5px 12px;
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.resetBtn:hover {
+  background: var(--bg-hover);
+}

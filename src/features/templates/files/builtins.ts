@@ -256,6 +256,20 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     kinds: [{ id: "md", label: "Markdown file", body: "# $NAME$\n\n$END$\n" }],
   },
   {
+    id: "excalidraw",
+    name: "Excalidraw Diagram",
+    icon: "file-excalidraw",
+    extension: "excalidraw",
+    nameStyle: "asis",
+    kinds: [
+      {
+        id: "excalidraw",
+        label: "Excalidraw diagram",
+        body: '{\n  "type": "excalidraw",\n  "version": 2,\n  "source": "https://excalidraw.com",\n  "elements": [\n    $END$\n  ],\n  "appState": {\n    "gridSize": 20,\n    "gridStep": 5,\n    "gridModeEnabled": false,\n    "viewBackgroundColor": "#ffffff"\n  },\n  "files": {}\n}\n',
+      },
+    ],
+  },
+  {
     // IDEA's "Stylesheet": one dialog, the kind picks the language.
     id: "stylesheet",
     name: "Stylesheet",

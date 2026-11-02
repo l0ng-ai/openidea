@@ -117,6 +117,8 @@ describe("fileIconName", () => {
     ["pyproject.toml", "file-pyproject"],
     ["Pipfile", "file-pipenv"],
     ["notebook.ipynb", "file-jupyter"],
+    ["diagram.excalidraw", "file-excalidraw"],
+    ["architecture.excalidraw.json", "file-excalidraw"],
     ["index.js", "file-js"],
     ["App.jsx", "file-jsx"],
     ["api.ts", "file-ts"],

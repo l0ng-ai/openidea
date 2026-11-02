@@ -44,4 +44,59 @@ if (typeof window !== "undefined") {
   Range.prototype.getClientRects ??= () => Object.assign([], { item: () => null }) as unknown as DOMRectList;
   Range.prototype.getBoundingClientRect ??= () => new DOMRect();
   Element.prototype.scrollTo ??= function () {} as Element["scrollTo"];
+
+  // jsdom has no 2D canvas implementation; provide a minimal stub so libraries like
+  // @excalidraw/excalidraw can probe canvas capabilities and measure text at import/test time.
+  if (typeof HTMLCanvasElement !== "undefined") {
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
+      return {
+        canvas: this,
+        filter: "none",
+        font: "16px sans-serif",
+        fillStyle: "#000",
+        strokeStyle: "#000",
+        lineWidth: 1,
+        save() {},
+        restore() {},
+        scale() {},
+        rotate() {},
+        translate() {},
+        transform() {},
+        setTransform() {},
+        resetTransform() {},
+        clearRect() {},
+        fillRect() {},
+        strokeRect() {},
+        beginPath() {},
+        closePath() {},
+        moveTo() {},
+        lineTo() {},
+        bezierCurveTo() {},
+        quadraticCurveTo() {},
+        arc() {},
+        arcTo() {},
+        rect() {},
+        fill() {},
+        stroke() {},
+        clip() {},
+        fillText() {},
+        strokeText() {},
+        drawImage() {},
+        createLinearGradient: () => ({ addColorStop() {} }),
+        createRadialGradient: () => ({ addColorStop() {} }),
+        createPattern: () => null,
+        getImageData: () => ({ data: new Uint8ClampedArray(0), width: 0, height: 0 }),
+        putImageData() {},
+        setLineDash() {},
+        getLineDash: () => [],
+        measureText: (text: string) => ({
+          width: text.length * 8,
+          actualBoundingBoxAscent: 12,
+          actualBoundingBoxDescent: 4,
+          fontBoundingBoxAscent: 14,
+          fontBoundingBoxDescent: 4,
+        }),
+      } as unknown as RenderingContext;
+    } as typeof HTMLCanvasElement.prototype.getContext;
+  }
 }

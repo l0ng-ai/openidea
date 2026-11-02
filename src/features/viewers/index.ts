@@ -20,12 +20,14 @@ import {
   IMAGE_KIND,
   binaryInput,
   imageInput,
+  isExcalidrawPath,
   isImagePath,
   isMarkdownPath,
   wantsHexView,
 } from "./fileKinds";
 import { ImageViewer, toggleChessboard, useImageViewers } from "./ImageViewer";
 import { HexViewer } from "./HexViewer";
+import { registerExcalidrawLiveSource } from "./excalidraw/live";
 import { registerMarkdownLiveSource } from "./markdown/live";
 import { setMarkdownMode, type MarkdownMode } from "./markdown/modes";
 import { MarkdownLayoutActions } from "./markdown/MarkdownLayoutActions";
@@ -106,7 +108,13 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor)),
       tabActions: MarkdownLayoutActions,
     }),
+    registerTextEditorWrapper({
+      id: "viewers.excalidraw",
+      matches: isExcalidrawPath,
+      component: lazyComponent(() => import("./excalidraw/ExcalidrawEditor").then((m) => m.ExcalidrawEditor)),
+    }),
     registerMarkdownLiveSource(),
+    registerExcalidrawLiveSource(),
     registerActions([...imageActions(), ...markdownActions()]),
   ];
   return () => disposers.reverse().forEach((d) => d());
