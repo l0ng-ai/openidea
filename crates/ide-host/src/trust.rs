@@ -135,9 +135,7 @@ impl crate::Host {
                     for request in requests {
                         self.cancel_request(request);
                     }
-                    for session in self.debugger.sessions(Some(&window)) {
-                        let _ = self.debugger.stop(session.id).await;
-                    }
+                    self.debugger.stop_key(&window).await;
                 }
             }
             project.lsp.reconfigure().await;
