@@ -49,7 +49,7 @@ pub struct Launch {
     /// Settings windows: edit the global layer only ("Settings for New Projects").
     pub new_projects: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comparison: Option<ComparisonLaunch>,
+    pub comparison: Option<Box<ComparisonLaunch>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -801,7 +801,7 @@ pub fn open_comparison_window(app: &AppHandle, parent: &WebviewWindow, compariso
     let windows = app.state::<WindowsState>();
     let id = windows.comparison_id.fetch_add(1, Ordering::Relaxed);
     let label = format!("{COMPARISON_PREFIX}{parent}-{id}");
-    windows.set_launch(&label, Launch { comparison: Some(comparison), ..Default::default() });
+    windows.set_launch(&label, Launch { comparison: Some(Box::new(comparison)), ..Default::default() });
     let mut config = window_config(app)?;
     config.label = label.clone();
     config.title = "Compare with Local".into();
