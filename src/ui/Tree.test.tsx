@@ -466,3 +466,27 @@ describe("Tree scroll following", () => {
     expect(scrollTo).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Tree detail", () => {
+  it("renderDetail replaces the plain getDetail with rich content", () => {
+    setup({
+      getDetail: (n) => (n.id === "README.md" ? "plain" : undefined),
+      renderDetail: (n) => (n.id === "README.md" ? <span data-testid="sync">67</span> : undefined),
+    });
+    const row = screen.getByRole("treeitem", { name: /README\.md/ });
+    expect(row.querySelector("[data-testid=sync]")).not.toBeNull();
+    expect(row).not.toHaveTextContent("plain");
+  });
+
+  it("falls back to getDetail where renderDetail returns undefined", () => {
+    setup({
+      defaultExpanded: ["src"],
+      getDetail: () => "path",
+      renderDetail: (n) => (n.id === "README.md" ? <span>rich</span> : undefined),
+    });
+    expect(screen.getByRole("treeitem", { name: /README\.md/ })).toHaveTextContent("rich");
+    const util = screen.getByRole("treeitem", { name: /util\.ts/ });
+    expect(util).toHaveTextContent("path");
+    expect(util).not.toHaveTextContent("rich");
+  });
+});

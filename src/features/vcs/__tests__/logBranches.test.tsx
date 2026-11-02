@@ -16,6 +16,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import { BranchesPanel } from "../GitLog";
+import widgetStyles from "../BranchWidget.module.css";
 import { emptyFilters, useGitLog } from "../logStore";
 import { useVcs } from "../store";
 
@@ -95,6 +96,25 @@ describe("Git Log branches pane", () => {
     act(() => useGitLog.setState({ filters: { ...emptyFilters(), branches: ["feature"] } }));
     expect(screen.getByText("feature").closest("[data-row]")).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("main").closest("[data-row]")).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("shows the sync markers like the Branches popup (icon + count)", () => {
+    useVcs.setState({
+      branches: [
+        b("main", { current: true, upstream: "origin/main", behind: 67, ahead: 2 }),
+        b("feature", { upstream: "origin/feature", behind: 3 }),
+      ],
+    });
+    render(<BranchesPanel />);
+    const incoming = screen.getByTitle("67 incoming commits");
+    expect(incoming).toHaveClass(widgetStyles.syncSmall!, widgetStyles.incoming!);
+    expect(incoming).toHaveTextContent("67");
+    const outgoing = screen.getByTitle("2 outgoing commits");
+    expect(outgoing).toHaveClass(widgetStyles.syncSmall!, widgetStyles.outgoing!);
+    // A non-current branch shows its markers too, without the current tag.
+    const feature = screen.getByTitle("3 incoming commits");
+    expect(feature).toHaveClass(widgetStyles.syncSmall!, widgetStyles.incoming!);
+    expect(feature.closest("[data-row]")).not.toHaveTextContent("current");
   });
 
   it("copies the selected branch name", async () => {
