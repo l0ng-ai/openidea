@@ -13,7 +13,10 @@
 //!   they fork get them too (`spring-boot:run`, Surefire, `bootRun`, test workers).
 //!   Each JVM then reports "Picked up JAVA_TOOL_OPTIONS: …" on stderr (which a build tool
 //!   may copy to its stdout); that line is hidden again ([`NoticeFilter`]). `file.encoding` is left alone there: it would change
-//!   how a build reads sources that declare no encoding.
+//!   how a build reads sources that declare no encoding. The application JVMs a build
+//!   forks get `file.encoding=UTF-8` for a UTF-8 console instead, through the build's own
+//!   options: `-Dspring-boot.run.jvmArguments` for Maven `spring-boot:run`, an init script
+//!   ([`GRADLE_FILE_ENCODING_SCRIPT`]) for Gradle `JavaExec` tasks (`bootRun`, `run`).
 //! - Python: `PYTHONIOENCODING`.
 
 use std::collections::BTreeMap;
@@ -78,15 +81,34 @@ const TOOL_OPTIONS: &str = "JAVA_TOOL_OPTIONS";
 const SPRING_BOOT_JVM_ARGS: &str = "-Dspring-boot.run.jvmArguments=";
 
 /// Build tools and launcher scripts that run on (and may fork) JVMs.
-const JVM_TOOLS: &[&str] =
-    &["mvn", "mvnw", "mvnd", "gradle", "gradlew", "sbt", "ant", "kotlin", "kotlinc", "groovy", "scala", "jbang"];
+const JVM_TOOLS: &[&str] = &["sbt", "ant", "kotlin", "kotlinc", "groovy", "scala", "jbang"];
+const MAVEN: &[&str] = &["mvn", "mvnw", "mvnd"];
+const GRADLE: &[&str] = &["gradle", "gradlew"];
+
+/// Gradle init script giving the `JavaExec` tasks (`bootRun`, `run`, custom ones) a UTF-8
+/// default charset, unless the task or the build already sets `file.encoding`. Checked when
+/// the task runs, after the build script configured it; Gradle's own JVM and the compiler's
+/// source encoding are untouched.
+pub const GRADLE_FILE_ENCODING_SCRIPT: &str = "\
+// Written by OpenIDEA: a UTF-8 default charset for applications run by Gradle, as the Run console decodes UTF-8.
+allprojects {
+    tasks.withType(JavaExec).configureEach {
+        doFirst { task ->
+            if (!task.allJvmArgs.any { it.startsWith('-Dfile.encoding=') }) task.jvmArgs('-Dfile.encoding=UTF-8')
+        }
+    }
+}
+";
 
 /// What a launch needs: `-D` options to put first on a `java` command line,
 /// environment variables to set, and the notice line its JVMs print because of them.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct EncodingFix {
     pub java_args: Vec<String>,
+    /// The build tool's arguments, rewritten to pass options to the JVM it forks.
     pub args: Option<Vec<String>>,
+    /// Gradle: pass [`GRADLE_FILE_ENCODING_SCRIPT`] with `--init-script`.
+    pub gradle_init_script: bool,
     pub env: Vec<(String, String)>,
     /// "Picked up JAVA_TOOL_OPTIONS: …" for a variable set here alone, to drop from the output.
     pub notice: Option<String>,
@@ -118,6 +140,8 @@ fn options(properties: &[&str], encoding: &str) -> Vec<String> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Java,
+    Maven,
+    Gradle,
     JvmTool,
     Python,
     Other,
@@ -127,6 +151,10 @@ fn kind(program: &str) -> Kind {
     let name = program_name(program);
     if name == "java" || name == "javaw" {
         Kind::Java
+    } else if MAVEN.contains(&name.as_str()) {
+        Kind::Maven
+    } else if GRADLE.contains(&name.as_str()) {
+        Kind::Gradle
     } else if JVM_TOOLS.contains(&name.as_str()) {
         Kind::JvmTool
     } else if is_python(&name) {
@@ -195,12 +223,16 @@ fn fix_kind(
                 out.java_args.push(format!("-D{FILE_ENCODING}=UTF-8"));
             }
         }
-        (Kind::Java | Kind::JvmTool, _) => {
-            if let (Kind::JvmTool, Some(args)) = (kind, args)
+        (Kind::Java | Kind::Maven | Kind::Gradle | Kind::JvmTool, _) => {
+            if let Some(args) = args
                 && is_utf8(encoding)
                 && !sets(&tool_options, &[FILE_ENCODING])
             {
-                out.args = spring_boot_file_encoding(args);
+                match kind {
+                    Kind::Maven => out.args = spring_boot_file_encoding(args),
+                    Kind::Gradle => out.gradle_init_script = true,
+                    _ => {}
+                }
             }
             if !sets(&tool_options, STD_PROPERTIES) {
                 let added = options(STD_PROPERTIES, encoding).join(" ");
@@ -482,6 +514,42 @@ mod tests {
         assert!(boot(&["package"], &[]).is_none());
         assert!(run("mvn", &["spring-boot:run"], &[], "GBK", true).args.is_none());
         assert!(run("mvn", &["spring-boot:run"], &[], "UTF-8", false).args.is_none());
+    }
+
+    #[test]
+    fn forked_application_jvms_get_a_utf8_default_charset() {
+        // Reported: a Spring Boot app run by the build on Chinese Windows (JDK 8–17, GBK default).
+        for (tool, args) in [
+            ("C:\\p\\gradlew.bat", &["bootRun"][..]),
+            ("gradle", &[":app:run"]),
+            ("mvnw.cmd", &["spring-boot:run"]),
+            ("mvnd", &["org.springframework.boot:spring-boot-maven-plugin:2.7.18:run"]),
+        ] {
+            let f = run(tool, args, &[], "UTF-8", true);
+            let gradle = tool.contains("gradle");
+            assert_eq!(f.gradle_init_script, gradle, "{tool}");
+            assert_eq!(f.args.is_some(), !gradle, "{tool}");
+            // The build tool's own JVM keeps its default charset.
+            assert!(!tool_env(&f).unwrap().contains("file.encoding"), "{tool}");
+            // The user's choice, a GBK console and other platforms are left alone.
+            let own = run(tool, args, &[(TOOL_OPTIONS, "-Dfile.encoding=GBK")], "UTF-8", true);
+            assert!(!own.gradle_init_script && own.args.is_none(), "{tool}");
+            let gbk = run(tool, args, &[], "GBK", true);
+            assert!(!gbk.gradle_init_script && gbk.args.is_none(), "{tool}");
+            assert_eq!(run(tool, args, &[], "UTF-8", false), EncodingFix::default(), "{tool}");
+        }
+        // Shell command lines can't take arguments; other JVM tools fork no application.
+        assert!(!fix_command_line("gradlew bootRun", &BTreeMap::new(), |_| None, "UTF-8", true).gradle_init_script);
+        let sbt = run("sbt", &["run"], &[], "UTF-8", true);
+        assert!(!sbt.gradle_init_script && sbt.args.is_none());
+    }
+
+    #[test]
+    fn gradle_script_respects_the_builds_own_file_encoding() {
+        let s = GRADLE_FILE_ENCODING_SCRIPT;
+        assert!(s.contains("tasks.withType(JavaExec).configureEach"), "{s}");
+        assert!(s.contains("allJvmArgs.any { it.startsWith('-Dfile.encoding=') }"), "{s}");
+        assert!(!s.contains("withType(Test)") && !s.contains("JavaCompile"), "{s}");
     }
 
     #[test]

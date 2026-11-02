@@ -195,10 +195,21 @@ fn match_console_encoding(
         output_encoding::fix(&program, &inv.args, &env.vars, inherited, encoding, cfg!(windows))
     };
     env.vars.extend(fix.env);
-    let changed = fix.args.is_some() || !fix.java_args.is_empty();
+    let mut prepend = fix.java_args;
+    if fix.gradle_init_script {
+        match crate::gradle_jvm::write_script(
+            &crate::gradle_jvm::default_dir(),
+            "file-encoding",
+            output_encoding::GRADLE_FILE_ENCODING_SCRIPT,
+        ) {
+            Ok(script) => prepend.extend(["--init-script".to_owned(), script.to_string_lossy().into_owned()]),
+            Err(e) => tracing::warn!("cannot write the Gradle file.encoding init script: {e}"),
+        }
+    }
+    let changed = fix.args.is_some() || !prepend.is_empty();
     if changed && !inv.raw_args {
         inv.args = fix.args.unwrap_or_else(|| std::mem::take(&mut inv.args));
-        inv.args.splice(0..0, fix.java_args);
+        inv.args.splice(0..0, prepend);
         let mut display = quote(config.command.trim());
         for a in &inv.args {
             display.push(' ');
