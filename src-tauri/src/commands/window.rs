@@ -87,6 +87,16 @@ pub async fn window_open_settings(
     windows::open_settings_window(&app, &window, page, new_projects, background)
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_comparison(
+    app: AppHandle,
+    window: WebviewWindow,
+    comparison: windows::ComparisonLaunch,
+) -> IdeResult<()> {
+    windows::open_comparison_window(&app, &window, comparison)
+}
+
 /// Focuses the next / previous window (⌘` / ⇧⌘`).
 #[tauri::command]
 #[specta::specta]

@@ -8,7 +8,7 @@ use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
 use ide_workspace::{DocumentInfo, HistoryEntry};
 use std::path::PathBuf;
-use tauri::{State, Window};
+use tauri::{Manager, State, Window};
 
 /// Opens a document. Async: reading and decoding a large file must not block
 /// the main thread (synchronous commands run on it).
@@ -35,7 +35,13 @@ pub fn doc_edit(
     base_version: u32,
     changes: ChangeSet,
 ) -> IdeResult<u32> {
-    ide_host::ops::doc::edit(&state.host, window.label(), doc, base_version, changes)
+    let peers = crate::events::document_edit_peers(window.app_handle(), window.label());
+    let mirrored = (!peers.is_empty()).then(|| changes.changes.clone());
+    let version = ide_host::ops::doc::edit(&state.host, window.label(), doc, base_version, changes)?;
+    if let Some(changes) = mirrored {
+        crate::events::emit_document_edit(window.app_handle(), peers, doc, base_version, version, changes);
+    }
+    Ok(version)
 }
 
 #[tauri::command]

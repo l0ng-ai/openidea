@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::utils::config::{Color, WindowConfig};
 use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow, WebviewWindowBuilder};
 
@@ -28,6 +28,7 @@ pub const LAUNCH_EVENT: &str = "openidea://launch";
 const MAIN: &str = "main";
 const PREFIX: &str = "project-";
 const SETTINGS_PREFIX: &str = "settings-";
+const COMPARISON_PREFIX: &str = "comparison-";
 const CASCADE: f64 = 28.0;
 const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
@@ -47,6 +48,28 @@ pub struct Launch {
     pub settings_page: Option<String>,
     /// Settings windows: edit the global layer only ("Settings for New Projects").
     pub new_projects: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ComparisonLaunch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ComparisonRevision {
+    pub rev: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ComparisonScope {
+    pub paths: Vec<ide_core::IpcPath>,
+    pub repositories: Option<Vec<ide_core::IpcPath>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ComparisonLaunch {
+    pub from: ComparisonRevision,
+    pub to: Option<ComparisonRevision>,
+    pub scope: Option<ComparisonScope>,
+    pub repo: Option<ide_core::IpcPath>,
 }
 
 /// A project folder on the host of an SSH configuration.
@@ -69,6 +92,7 @@ pub struct WindowsState {
     quitting: AtomicBool,
     /// Relaunch once the quit completes (after installing an update).
     restart: AtomicBool,
+    comparison_id: AtomicU64,
 }
 
 impl WindowsState {
@@ -136,20 +160,33 @@ pub fn is_settings_window(label: &str) -> bool {
     settings_parent(label).is_some()
 }
 
+pub fn auxiliary_parent(label: &str) -> Option<&str> {
+    settings_parent(label).or_else(|| comparison_parent(label))
+}
+
+pub fn comparison_parent(label: &str) -> Option<&str> {
+    let (parent, id) = label.strip_prefix(COMPARISON_PREFIX)?.rsplit_once('-')?;
+    (!parent.is_empty() && id.parse::<u64>().is_ok()).then_some(parent)
+}
+
 pub fn settings_label(parent: &str) -> String {
     format!("{SETTINGS_PREFIX}{parent}")
 }
 
-/// Closes `parent`'s settings window: it shows (and would apply to) the project the parent is leaving.
-pub fn close_settings_window(app: &AppHandle, parent: &str) {
-    if let Some(w) = app.get_webview_window(&settings_label(parent)) {
-        let _ = w.close();
+/// Closes auxiliary windows after the parent's leave-project guard has authorized it.
+pub fn close_auxiliary_windows(app: &AppHandle, parent: &str) {
+    for (label, window) in app.webview_windows() {
+        if settings_parent(&label) == Some(parent) {
+            let _ = window.close();
+        } else if comparison_parent(&label) == Some(parent) {
+            let _ = window.destroy();
+        }
     }
 }
 
-/// Project windows (everything but settings windows), for counting and cycling.
+/// Project windows, excluding auxiliary windows, for counting and cycling.
 pub fn project_window_labels(app: &AppHandle) -> Vec<String> {
-    sorted_labels(app.webview_windows().keys().map(String::as_str).filter(|l| !is_settings_window(l)))
+    sorted_labels(app.webview_windows().keys().map(String::as_str).filter(|l| auxiliary_parent(l).is_none()))
 }
 
 /// Sort key: `main` first, then `project-<n>` by n, then anything else.
@@ -226,7 +263,7 @@ pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
 /// The window whose open project is `root` (already canonical).
 pub fn find_project_window(app: &AppHandle, root: &Path) -> Option<WebviewWindow> {
     let state = app.try_state::<AppState>()?;
-    app.webview_windows().into_iter().filter(|(label, _)| !is_settings_window(label)).find_map(|(label, w)| {
+    app.webview_windows().into_iter().filter(|(label, _)| auxiliary_parent(label).is_none()).find_map(|(label, w)| {
         let project = state.project(&label).ok()?;
         (project.root == root && !project.light).then_some(w)
     })
@@ -754,6 +791,45 @@ pub fn cycle(app: &AppHandle, current: &str, forward: bool) {
     }
 }
 
+/// A top-level comparison window shares its owner's project but keeps native window chrome.
+pub fn open_comparison_window(app: &AppHandle, parent: &WebviewWindow, comparison: ComparisonLaunch) -> IdeResult<()> {
+    let parent = auxiliary_parent(parent.label()).unwrap_or(parent.label());
+    let state = app.state::<AppState>();
+    if state.project(parent).is_err() && state.remote_dev.get(parent).is_none() {
+        return Err(IdeError::not_found("no project is open"));
+    }
+    let windows = app.state::<WindowsState>();
+    let id = windows.comparison_id.fetch_add(1, Ordering::Relaxed);
+    let label = format!("{COMPARISON_PREFIX}{parent}-{id}");
+    windows.set_launch(&label, Launch { comparison: Some(comparison), ..Default::default() });
+    let mut config = window_config(app)?;
+    config.label = label.clone();
+    config.title = "Compare with Local".into();
+    (config.width, config.height) = (1100.0, 720.0);
+    (config.min_width, config.min_height) = (Some(640.0), Some(360.0));
+    config.decorations = true;
+    config.title_bar_style = tauri::TitleBarStyle::Visible;
+    config.hidden_title = false;
+    config.resizable = true;
+    config.maximized = false;
+    config.fullscreen = false;
+    config.drag_drop_enabled = false;
+    config.x = None;
+    config.y = None;
+    config.center = true;
+    config.visible = false;
+    #[cfg(target_os = "linux")]
+    crate::linux_window_state::prepare(app, &mut config);
+    let window =
+        WebviewWindowBuilder::from_config(app, &config).and_then(|b| dev_font_preferences(b).build()).map_err(|e| {
+            windows.forget(&label);
+            IdeError::internal(format!("cannot create comparison window: {e}"))
+        })?;
+    apply_zoom(app, &window);
+    focus(&window);
+    Ok(())
+}
+
 /// Opens (or focuses) the settings window of `parent` showing `page`: a
 /// separate window centred over its parent, sized like IDEA's Settings.
 pub fn open_settings_window(
@@ -764,7 +840,7 @@ pub fn open_settings_window(
     background: Option<String>,
 ) -> IdeResult<()> {
     // Asked from a settings window itself: navigate it.
-    let parent_label = settings_parent(parent.label()).unwrap_or(parent.label()).to_owned();
+    let parent_label = auxiliary_parent(parent.label()).unwrap_or(parent.label()).to_owned();
     let label = settings_label(&parent_label);
     let windows = app.state::<WindowsState>();
     if let Some(existing) = app.get_webview_window(&label) {

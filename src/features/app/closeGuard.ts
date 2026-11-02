@@ -12,6 +12,12 @@ import { t } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
 import { maybeEditorService, notifications, type EditorCloseSession } from "@/workbench/contributions";
 import { ask, type Ask } from "@/workbench/messages";
+import {
+  closeComparisonWindows,
+  comparisonWindowParent,
+  COMPARISON_CLOSED,
+  type ComparisonCloseResult,
+} from "@/platform/comparisonWindow";
 
 /** Document ids the backend reports dirty in this window. */
 const dirtyDocs = new Set<number>();
@@ -108,6 +114,10 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   closing = true;
   try {
     const ctx = await commands.windowCloseContext();
+    if (!(await closeComparisonWindows())) {
+      if (ctx.quitting) await commands.appCancelQuit();
+      return false;
+    }
     const s = useProject.getState();
     // Closing the last project (or LightEdit) window closes its project and shows the welcome
     // screen (to open another one); closing the welcome screen, or quitting, closes the window.
@@ -137,7 +147,8 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
 }
 
 /** Unsaved changes before this window opens another project in place or closes it. */
-export function confirmLeave(deps: CloseDeps = defaultDeps): Promise<boolean> {
+export async function confirmLeave(deps: CloseDeps = defaultDeps): Promise<boolean> {
+  if (!(await closeComparisonWindows())) return false;
   const s = useProject.getState();
   return decideClose(
     { quitting: false, windows: 2, confirmExit: false, dirty: dirtyCount(), project: s.project?.name ?? null },
@@ -173,11 +184,25 @@ export function installCloseGuard(deps: CloseDeps = defaultDeps): () => void {
   let disposed = false;
   if (isTauri()) {
     void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      const offComparison = await getCurrentWindow().listen<ComparisonCloseResult>(COMPARISON_CLOSED, ({ payload }) => {
+        if (
+          !payload.closed ||
+          comparisonWindowParent(payload.label) !== getCurrentWindow().label ||
+          !Array.isArray(payload.documents)
+        )
+          return;
+        const own = new Set(maybeEditorService()?.dirtyDocumentIds?.() ?? []);
+        for (const doc of payload.documents) if (!own.has(doc)) dirtyDocs.delete(doc);
+      });
       const off = await getCurrentWindow().onCloseRequested(async (event) => {
         if (!(await onCloseRequested(deps))) event.preventDefault();
       });
-      if (disposed) off();
-      else unlisten = off;
+      const stop = () => {
+        off();
+        offComparison();
+      };
+      if (disposed) stop();
+      else unlisten = stop;
     });
   }
   return () => {

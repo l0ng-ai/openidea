@@ -368,6 +368,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_open_remote,
         window::window_new,
         window::window_open_settings,
+        window::window_open_comparison,
         window::window_cycle,
         window::window_toggle_fullscreen,
         window::window_set_titlebar_height,

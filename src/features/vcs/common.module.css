@@ -290,6 +290,36 @@
 .comparisonDialog .comparison {
   flex: 1 1 auto;
 }
+.comparisonWindow {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-dialog, var(--bg-elev));
+}
+.comparisonWindowBody {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.comparisonWindowBody[hidden] {
+  display: none;
+}
+.comparisonWindowBody > .comparisonWindow {
+  flex: 1;
+}
+.comparisonWindowBody > .comparison {
+  flex: 1 1 auto;
+}
+.comparisonWindowFooter {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  gap: 12px;
+  padding: 12px 16px;
+}
 .comparison {
   display: flex;
   height: min(520px, 65vh);

@@ -468,8 +468,37 @@ pub async fn remote_invoke(
             }
         }
     }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DocumentEdit {
+        doc: ide_core::DocId,
+        base_version: u32,
+        changes: ide_core::ChangeSet,
+    }
+    let mirrored = if cmd == "doc_edit" {
+        let peers = crate::events::document_edit_peers(window.app_handle(), window.label());
+        if peers.is_empty() {
+            None
+        } else {
+            serde_json::from_value::<DocumentEdit>(args.clone()).ok().map(|edit| (peers, edit))
+        }
+    } else {
+        None
+    };
     let call = Invoke { window: label, cmd, args };
     let result: Value = c.peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
+    if let (Some((peers, edit)), Some(version)) =
+        (mirrored, result.as_u64().and_then(|version| u32::try_from(version).ok()))
+    {
+        crate::events::emit_document_edit(
+            window.app_handle(),
+            peers,
+            edit.doc,
+            edit.base_version,
+            version,
+            edit.changes.changes,
+        );
+    }
     Ok(result.to_string())
 }
 

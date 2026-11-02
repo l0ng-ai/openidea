@@ -178,17 +178,17 @@ pub fn run() {
                 titlebar::forget(window);
                 macos::forget_fullscreen(window.label());
             }
-            window_groups::destroyed(window.app_handle(), window.label());
-            if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {
-                let _ = settings.destroy();
-            }
-            if let Some(state) = window.try_state::<AppState>() {
-                state.close_project(window.label());
+            if windows::auxiliary_parent(window.label()).is_none() {
+                window_groups::destroyed(window.app_handle(), window.label());
+                windows::close_auxiliary_windows(window.app_handle(), window.label());
+                if let Some(state) = window.try_state::<AppState>() {
+                    state.close_project(window.label());
+                }
             }
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.forget(window.label());
             }
-            if !windows::is_settings_window(window.label()) {
+            if windows::auxiliary_parent(window.label()).is_none() {
                 windows::continue_quit(window.app_handle(), Some(window.label()));
             }
         }
@@ -232,14 +232,19 @@ fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
     match windows::target_window(app) {
         Some(w) => {
+            if windows::comparison_parent(w.label()).is_some() && route.action == "editor.closeTab" {
+                let _ = w.close();
+                return;
+            }
             // Settings is modal for its project window: only app-level items get through, to the parent.
-            let label = match windows::settings_parent(w.label()) {
+            let label = match windows::auxiliary_parent(w.label()) {
                 Some(parent)
                     if matches!(route.action.as_str(), "app.quit" | "file.settings" | "file.newProjectsSettings") =>
                 {
                     parent
                 }
-                Some(_) => return,
+                Some(_) if windows::is_settings_window(w.label()) => return,
+                Some(_) => w.label(),
                 None => w.label(),
             };
             if let Err(e) = app.emit_to(label, menu::MENU_EVENT, &route) {

@@ -35,7 +35,7 @@ pub fn new_project_tab_target(app: &AppHandle, launch: &Launch) -> IdeResult<Opt
         .cloned()
         .or_else(|| app.state::<WindowsState>().last_focused().and_then(|label| windows.get(&label).cloned()));
     let active = active.and_then(|w| {
-        let label = crate::windows::settings_parent(w.label()).unwrap_or(w.label());
+        let label = crate::windows::auxiliary_parent(w.label()).unwrap_or(w.label());
         windows.get(label).cloned()
     });
     let active = active.filter(|w| {

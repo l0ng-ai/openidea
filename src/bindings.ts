@@ -734,6 +734,7 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	windowOpenComparison: (comparison: ComparisonLaunch) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_comparison", { comparison })),
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
@@ -754,6 +755,7 @@ export const commands = {
 	settingsPage: string | null,
 	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
 	newProjects: boolean,
+	comparison?: ComparisonLaunch | null,
 } | null>("window_take_launch"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
@@ -1955,6 +1957,23 @@ export type CompareScope = {
 	/**  Selected content outside registered repositories; workspace parents expand to their skipped children. */
 	skippedPaths: IpcPath[],
 	singleFile: boolean,
+};
+
+export type ComparisonLaunch = {
+	from: ComparisonRevision,
+	to: ComparisonRevision | null,
+	scope: ComparisonScope | null,
+	repo: IpcPath | null,
+};
+
+export type ComparisonRevision = {
+	rev: string,
+	label: string,
+};
+
+export type ComparisonScope = {
+	paths: IpcPath[],
+	repositories: IpcPath[] | null,
 };
 
 export type CompletionItem = {
@@ -4088,21 +4107,7 @@ export type LanguagesSettings = {
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
-export type Launch = {
-	/**  Project folder to open. */
-	project: IpcPath | null,
-	/**
-	 *  Files to open in the editor: in `project` once it is open, else in this
-	 *  window's project or (without one) in LightEdit.
-	 */
-	files: IpcPath[],
-	/**  Remote project to open (Remote Development). */
-	remote: RemoteLaunch | null,
-	/**  Settings windows: the page to show. */
-	settingsPage: string | null,
-	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
-	newProjects: boolean,
-};
+export type Launch = Launch_Serialize | Launch_Deserialize;
 
 export type LaunchConfig = {
 	name: string,
@@ -4123,6 +4128,42 @@ export type LaunchConfig = {
 	 *  (`dlv --headless`, `debugpy --listen`).
 	 */
 	extraJson: string | null,
+};
+
+/**  What a freshly opened window should do once its frontend is up. */
+export type Launch_Deserialize = {
+	/**  Project folder to open. */
+	project: IpcPath | null,
+	/**
+	 *  Files to open in the editor: in `project` once it is open, else in this
+	 *  window's project or (without one) in LightEdit.
+	 */
+	files: IpcPath[],
+	/**  Remote project to open (Remote Development). */
+	remote: RemoteLaunch | null,
+	/**  Settings windows: the page to show. */
+	settingsPage: string | null,
+	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
+	newProjects: boolean,
+	comparison?: ComparisonLaunch | null,
+};
+
+/**  What a freshly opened window should do once its frontend is up. */
+export type Launch_Serialize = {
+	/**  Project folder to open. */
+	project: IpcPath | null,
+	/**
+	 *  Files to open in the editor: in `project` once it is open, else in this
+	 *  window's project or (without one) in LightEdit.
+	 */
+	files: IpcPath[],
+	/**  Remote project to open (Remote Development). */
+	remote: RemoteLaunch | null,
+	/**  Settings windows: the page to show. */
+	settingsPage: string | null,
+	/**  Settings windows: edit the global layer only ("Settings for New Projects"). */
+	newProjects: boolean,
+	comparison?: ComparisonLaunch | null,
 };
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
