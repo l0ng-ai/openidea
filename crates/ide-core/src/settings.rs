@@ -104,6 +104,11 @@ pub struct AgentSettings {
     #[serde(deserialize_with = "agent_defaults")]
     #[specta(type = BTreeMap<String, BTreeMap<String, String>>)]
     pub defaults: BTreeMap<String, BTreeMap<String, String>>,
+    /// MCP servers passed to coding agents in `session/new`, `session/load` and `session/fork`,
+    /// keyed by server name (`[agents.mcpServers.<name>]`).
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = BTreeMap<String, AgentMcpServer>)]
+    pub mcp_servers: BTreeMap<String, AgentMcpServer>,
 }
 
 impl Default for AgentSettings {
@@ -121,6 +126,58 @@ impl Default for AgentSettings {
             send_with: SendKey::Enter,
             while_running: WhileRunning::Queue,
             defaults: BTreeMap::new(),
+            mcp_servers: BTreeMap::new(),
+        }
+    }
+}
+
+/// Transport of an MCP server configured in Settings › Agents › MCP Servers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+    Http,
+    Sse,
+}
+
+/// An MCP server passed to coding agents in `session/new`, `session/load` and `session/fork`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentMcpServer {
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = McpTransport)]
+    pub transport: McpTransport,
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Agent provider ids this server is enabled for (e.g. `["claude", "codex"]`);
+    /// empty means enabled for all agents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
+}
+
+impl Default for AgentMcpServer {
+    fn default() -> Self {
+        Self {
+            transport: McpTransport::Stdio,
+            enabled: true,
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            url: None,
+            headers: BTreeMap::new(),
+            agents: Vec::new(),
         }
     }
 }

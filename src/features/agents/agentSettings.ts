@@ -18,6 +18,7 @@ export const AGENT_SETTINGS_DEFAULTS: ResolvedAgentSettings = {
   sendWith: "enter",
   whileRunning: "queue",
   defaults: {},
+  mcpServers: {},
 };
 
 export function resolveAgentSettings(s: AgentSettings | null | undefined): ResolvedAgentSettings {

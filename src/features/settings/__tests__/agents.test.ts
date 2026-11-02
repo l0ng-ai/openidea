@@ -16,6 +16,7 @@ describe("agent chat settings", () => {
       sendWith: "enter",
       whileRunning: "queue",
       defaults: {},
+      mcpServers: {},
     });
     const stored = validateSettings({ agents: { showUsageLimits: false, showCost: true, showWorkTime: "no" } }).agents;
     expect(stored).toMatchObject({

@@ -10,6 +10,7 @@
 mod acp;
 mod config;
 mod conversation;
+pub mod mcp;
 mod model;
 mod native;
 mod provider;
@@ -91,6 +92,9 @@ type Connector = Arc<
         + Sync,
 >;
 
+/// Returns the configured MCP servers (User and Workspace) for this project.
+pub type McpServersFn = dyn Fn() -> Vec<McpServer> + Send + Sync;
+
 struct Shared {
     paths: AgentPaths,
     runtime: tokio::runtime::Handle,
@@ -104,6 +108,7 @@ struct Shared {
     command_fetches: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
     idle_release_ms: AtomicU64,
+    mcp_servers_hook: RwLock<Option<Arc<McpServersFn>>>,
 }
 
 /// What an agent offered in its last session, for the New Task page.
@@ -129,6 +134,13 @@ impl Shared {
         if let Some(sink) = sink {
             sink(event);
         }
+    }
+
+    fn mcp_servers_for_session(&self, provider: &str, init: &acp::Negotiated) -> Vec<Value> {
+        let mut servers = mcp_servers_for(init.mcp_stdio(), &self.paths.project_root);
+        let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
+        servers.extend(mcp::acp_mcp_servers(&configured, provider, init));
+        servers
     }
 
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
@@ -351,7 +363,7 @@ struct Live {
     embedded: bool,
     /// `session/load`: the process can be stopped between turns and the session reloaded.
     resumable: bool,
-    mcp_stdio: bool,
+    init: acp::Negotiated,
 }
 
 struct Task {
@@ -421,6 +433,7 @@ impl AgentManager {
             probes: Mutex::new(HashMap::new()),
             command_fetches: Mutex::new(HashMap::new()),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
+            mcp_servers_hook: RwLock::new(None),
         });
         let mut tasks = HashMap::new();
         for file in std::fs::read_dir(&shared.paths.store_dir).into_iter().flatten().flatten() {
@@ -506,6 +519,11 @@ impl AgentManager {
         *self.shared.providers.write() = specs;
         self.shared.probes.lock().clear();
         self.shared.emit(AgentEvent::Providers);
+    }
+
+    /// Provides the user and workspace MCP servers configured in settings.
+    pub fn set_mcp_servers_hook(&self, hook: Box<McpServersFn>) {
+        *self.shared.mcp_servers_hook.write() = Some(Arc::from(hook));
     }
 
     /// The slash commands to complete for `provider`, in `task`'s directory or (without one)
@@ -809,10 +827,16 @@ impl AgentManager {
             return Err(IdeError::invalid("this agent can't copy a conversation from there"));
         }
         let cwd = source.state.lock().task.cwd.0.clone();
+        let provider_id = source.state.lock().task.provider.clone();
+        let mcp_servers = source.shared.mcp_servers_for_session(&provider_id, &live.init);
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
             .peer
-            .request("session/fork", json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": mcp_servers_for(live.mcp_stdio, &source.shared.paths.project_root) }), None)
+            .request(
+                "session/fork",
+                json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": mcp_servers }),
+                None,
+            )
             .await
             .map_err(|e| IdeError::internal(source.describe(e)))?;
         let session = reply
@@ -1569,16 +1593,17 @@ impl Task {
         let init = peer.initialize(&client_info()).await.map_err(|e| self.describe(e))?;
         let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
-        let mcp_stdio = init.mcp_stdio();
         let (capabilities, embedded) = capabilities_of(&init);
+        let mcp_servers = self.shared.mcp_servers_for_session(&provider_id, &init);
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
 
         let mut session = None;
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
-            let loaded: Result<Value, RpcError> =
-                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": mcp_servers_for(mcp_stdio, &self.shared.paths.project_root) }), None).await;
+            let loaded: Result<Value, RpcError> = peer
+                .request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": mcp_servers }), None)
+                .await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
             match loaded {
@@ -1591,11 +1616,7 @@ impl Task {
             Some(s) => s,
             None => {
                 let v: Value = peer
-                    .request(
-                        "session/new",
-                        json!({ "cwd": cwd_s, "mcpServers": mcp_servers_for(mcp_stdio, &self.shared.paths.project_root) }),
-                        None,
-                    )
+                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": mcp_servers }), None)
                     .await
                     .map_err(|e| self.sign_in_error(&e, Some(&sign_in_message)).unwrap_or_else(|| self.describe(e)))?;
                 let id = v.get("sessionId").and_then(Value::as_str).ok_or("the agent returned no session")?.to_owned();
@@ -1687,7 +1708,7 @@ impl Task {
         self.persist();
         self.emit_task();
         let live =
-            Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load, mcp_stdio };
+            Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load, init };
         *self.live.lock() = Some(live.clone());
         Ok(live)
     }
