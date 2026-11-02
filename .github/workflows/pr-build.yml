@@ -1,6 +1,6 @@
 name: PR build
-# Debug app binaries for pull requests, downloadable from the run's
-# "Artifacts" section. release.yml builds the signed installers on tags only.
+# Debug and release app binaries for pull requests, downloadable from the
+# run's "Artifacts" section. Signed installers stay in release.yml (tags only).
 on:
   pull_request:
     branches: [main]
@@ -39,9 +39,16 @@ jobs:
       # beforeBuildCommand (pnpm build) produces the frontendDist tauri-build embeds.
       - run: pnpm install --frozen-lockfile
       - run: pnpm tauri build --debug --no-bundle
+      - run: pnpm tauri build --no-bundle
       - uses: actions/upload-artifact@v4
         with:
           name: openidea-${{ matrix.os }}-debug
           path: target/debug/openidea*
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openidea-${{ matrix.os }}-release
+          path: target/release/openidea*
           retention-days: 7
           if-no-files-found: error
