@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 const lines = (...l: string[]) => l.map((x) => `${x}\n`).join("");
 const pad = (a: string[], b: string[]) => [...a, "p1", "p2", ...b];

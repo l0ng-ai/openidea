@@ -4,11 +4,15 @@ import { expect, test as base, type Page } from "@playwright/test";
 export const PROJECT = "acme-api";
 
 export const test = base.extend<{ workbench: Page }>({
+  // Every spec presses ⌘-shortcuts; CodeMirror picks Mod-key bindings from navigator.platform, not the user agent,
+  // so without this they silently become Ctrl on the Linux CI.
+  page: async ({ page }, provide) => {
+    await page.addInitScript(() => Object.defineProperty(Navigator.prototype, "platform", { get: () => "MacIntel" }));
+    await provide(page);
+  },
   workbench: async ({ page }, provide) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    // CodeMirror picks Mod-key bindings from navigator.platform, not the user agent.
-    await page.addInitScript(() => Object.defineProperty(Navigator.prototype, "platform", { get: () => "MacIntel" }));
     await page.goto("/");
     await expect(page.getByRole("tree", { name: "Project" })).toBeVisible();
     await expect(page.getByRole("treeitem", { name: /acme-api/ })).toBeVisible();
