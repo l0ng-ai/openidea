@@ -8,7 +8,7 @@ import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@
 import type { EditorDocContext } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
-import type { RunConfig } from "@/platform/ipc";
+import { call, commands, type RunConfig } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
@@ -115,7 +115,7 @@ export function scriptEntries(text: string): ScriptEntry[] {
         throw BROKEN;
       }
     }
-    const m = /^(?:-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null)/.exec(text.slice(i, i + 12));
+    const m = /^(?:-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null)/.exec(text.slice(i));
     if (!m) throw BROKEN;
     i += m[0].length;
   };
@@ -181,10 +181,14 @@ function safeParse(text: string): PackageJson | null {
   }
 }
 
-/** The package manager `package.json` itself declares (`"packageManager": "pnpm@…"`), else npm. */
-function declaredPackageManager(pkg: PackageJson | null): string {
+/** Same precedence as backend detection for a package: declaration, then lockfile. */
+export function scriptPackageManager(pkg: PackageJson | null, files: readonly string[]): string {
   const pm = typeof pkg?.packageManager === "string" ? pkg.packageManager.split("@")[0] : "";
-  return pm === "pnpm" || pm === "yarn" || pm === "bun" ? pm : "npm";
+  if (pm === "pnpm" || pm === "yarn" || pm === "bun" || pm === "npm") return pm;
+  if (files.includes("pnpm-lock.yaml")) return "pnpm";
+  if (files.includes("yarn.lock")) return "yarn";
+  if (files.includes("bun.lock") || files.includes("bun.lockb")) return "bun";
+  return "npm";
 }
 
 const normCwd = (cwd: string | null) => (cwd ?? "").replace(/^\.\/?/, "").replace(/\/+$/, "");
@@ -193,7 +197,7 @@ const normCwd = (cwd: string | null) => (cwd ?? "").replace(/^\.\/?/, "").replac
 export function scriptConfigIds(name: string, pkgName: string | null, dir: string): string[] {
   const ids = new Set([`npm:${name}`]);
   if (pkgName) ids.add(`npm:${pkgName}:${name}`);
-  if (dir) ids.add(`npm:${dir.split("/").pop()!}:${name}`);
+  if (dir) ids.add(`npm:${dir}:${name}`);
   return [...ids];
 }
 
@@ -220,7 +224,7 @@ export function scriptConfigFor(
 const isTestScript = (name: string) =>
   name === "test" || name === "vitest" || name === "jest" || name.startsWith("test:");
 
-async function menuItems(entry: ScriptEntry, path: string, content: string): Promise<MenuItem[]> {
+export async function scriptMenuItems(entry: ScriptEntry, path: string, content: string): Promise<MenuItem[]> {
   const root = useProject.getState().project?.root ?? null;
   const rel = root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
   const dir = rel.endsWith("/package.json") ? rel.slice(0, -"/package.json".length) : "";
@@ -237,7 +241,29 @@ async function menuItems(entry: ScriptEntry, path: string, content: string): Pro
     dir,
     typeof pkg?.name === "string" ? pkg.name : null,
   );
-  const pm = matched?.command ?? declaredPackageManager(pkg);
+  // Reuse detection for sibling scripts, including a workspace's inherited manager.
+  const sibling = useRun
+    .getState()
+    .configs.find(
+      (c) =>
+        c.kind === "npm" && c.detected && normCwd(c.cwd) === dir && ["npm", "pnpm", "yarn", "bun"].includes(c.command),
+    );
+  let pm = matched?.command ?? sibling?.command;
+  if (!pm) {
+    // Workspace detection uses the root package's manager, even for a member's first script.
+    const rootPkg =
+      root && dir
+        ? await call(commands.fsReadText(`${root}/package.json`))
+            .then(safeParse)
+            .catch(() => null)
+        : null;
+    const packageDir = rootPkg ? `${root}/` : path.slice(0, -"package.json".length);
+    const files = await call(commands.fsReadDir(packageDir)).catch(() => []);
+    pm = scriptPackageManager(
+      rootPkg ?? pkg,
+      files.filter((f) => f.kind === "file" || f.targetKind === "file").map((f) => f.name),
+    );
+  }
   const label = matched?.name ?? `${pm} run ${entry.name}`;
   const config = matched ?? {
     id: `context:npm:${dir || "root"}:${entry.name}`,
@@ -286,19 +312,28 @@ const entriesField = StateField.define<Placed[]>({
 });
 
 class ScriptMarker extends GutterMarker {
-  constructor(readonly entry: ScriptEntry) {
+  constructor(
+    readonly entry: ScriptEntry,
+    readonly path: string,
+  ) {
     super();
   }
   override eq(other: GutterMarker): boolean {
     return other instanceof ScriptMarker && other.entry.name === this.entry.name;
   }
-  override toDOM(): Node {
-    const el = document.createElement("div");
+  override toDOM(view: EditorView): Node {
+    const el = document.createElement("button");
+    el.type = "button";
     el.className = styles.runMarker ?? "";
-    el.title = `Run '${this.entry.name}'`;
-    el.setAttribute("role", "button");
+    el.title = tx`Run '${this.entry.name}'`;
     el.setAttribute("aria-label", el.title);
     el.innerHTML = gutterIconMarkup("gutter-run") ?? "";
+    el.addEventListener("click", () => {
+      const rect = el.getBoundingClientRect();
+      void scriptMenuItems(this.entry, this.path, view.state.doc.toString()).then((items) =>
+        showContextMenu({ x: rect.left, y: rect.bottom + 2 }, items),
+      );
+    });
     return el;
   }
 }
@@ -340,20 +375,15 @@ export function npmGutter(ctx: EditorDocContext): Extension {
       class: `${styles.runGutter} cm-openidea-gutter-run`,
       markers: (view) =>
         RangeSet.of(
-          view.state.field(entriesField).map((e) => new ScriptMarker(e).range(e.pos)),
+          view.state.field(entriesField).map((e) => new ScriptMarker(e, path).range(e.pos)),
           true,
         ),
-      initialSpacer: () => new ScriptMarker({ name: "", line: 0 }),
+      initialSpacer: () => new ScriptMarker({ name: "", line: 0 }, path),
       domEventHandlers: {
         mousedown: (view, block, event) => {
           const entry = view.state.field(entriesField).find((e) => e.pos === block.from);
           if (!entry || (event as MouseEvent).button !== 0) return false;
-          const el = (event.target as HTMLElement).closest?.(`.${styles.runMarker}`) ?? (event.target as HTMLElement);
-          const rect = el.getBoundingClientRect();
           event.preventDefault();
-          void menuItems(entry, path, view.state.doc.toString()).then((items) =>
-            showContextMenu({ x: rect.left, y: rect.bottom + 2 }, items),
-          );
           return true;
         },
       },

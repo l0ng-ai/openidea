@@ -1,6 +1,17 @@
-import { describe, expect, it } from "vitest";
-import type { RunConfig } from "@/platform/ipc";
-import { scriptConfigFor, scriptConfigIds, scriptEntries } from "./npmGutter";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EditorView } from "@codemirror/view";
+import { commands, type RunConfig } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import {
+  npmGutter,
+  scriptConfigFor,
+  scriptConfigIds,
+  scriptEntries,
+  scriptMenuItems,
+  scriptPackageManager,
+} from "./npmGutter";
+import * as ui from "@/ui";
+import * as store from "./store";
 
 function cfg(over: Partial<RunConfig>): RunConfig {
   return {
@@ -107,6 +118,152 @@ describe("scriptEntries", () => {
   it("skips a BOM", () => {
     expect(scriptEntries('﻿{\n  "scripts": {\n    "dev": "vite"\n  }\n}\n')).toEqual([{ name: "dev", line: 2 }]);
   });
+
+  it("tracks CRLF lines after non-ASCII and astral characters", () => {
+    const text = [
+      "{",
+      '  "description": "中文 🚀 café",',
+      '  "scripts": {',
+      '    "构建🚀": "echo 完成",',
+      '    "test": "echo ok"',
+      "  }",
+      "}",
+    ].join("\r\n");
+    expect(scriptEntries(text)).toEqual([
+      { name: "构建🚀", line: 3 },
+      { name: "test", line: 4 },
+    ]);
+  });
+
+  it("decodes escaped unicode and backslashes in keys and values", () => {
+    const text = String.raw`{"scripts":{"\u6784\u5efa\ud83d\ude80":"echo \"ok\" \\path","say\\hi":"echo ok"}}`;
+    expect(scriptEntries(text)).toEqual([
+      { name: "构建🚀", line: 0 },
+      { name: "say\\hi", line: 0 },
+    ]);
+  });
+
+  it("produces no entries for scripts nested in an object or array", () => {
+    expect(scriptEntries('{"config":{"scripts":{"nested":"echo no"}}}')).toEqual([]);
+    expect(scriptEntries('{"config":[{"scripts":{"nested":"echo no"}}]}')).toEqual([]);
+  });
+
+  it("skips long numeric metadata before scripts", () => {
+    expect(scriptEntries('{"metadata":1234567890123456,"scripts":{"dev":"echo ok"}}')).toEqual([
+      { name: "dev", line: 0 },
+    ]);
+  });
+});
+
+describe("scriptPackageManager", () => {
+  it.each(["npm", "pnpm", "yarn", "bun"])("prefers the declared %s over lockfiles", (pm) => {
+    expect(scriptPackageManager({ packageManager: `${pm}@1.0.0` }, ["pnpm-lock.yaml", "yarn.lock", "bun.lock"])).toBe(
+      pm,
+    );
+  });
+
+  it.each([
+    ["pnpm-lock.yaml", "pnpm"],
+    ["yarn.lock", "yarn"],
+    ["bun.lock", "bun"],
+    ["bun.lockb", "bun"],
+    ["package-lock.json", "npm"],
+  ])("uses %s when no manager is declared", (file, pm) => {
+    expect(scriptPackageManager({}, [file])).toBe(pm);
+    expect(scriptPackageManager({ packageManager: "unknown@1" }, [file])).toBe(pm);
+  });
+
+  it("uses backend lockfile precedence and defaults to npm", () => {
+    expect(scriptPackageManager(null, ["bun.lock", "yarn.lock", "pnpm-lock.yaml"])).toBe("pnpm");
+    expect(scriptPackageManager(null, ["bun.lock", "yarn.lock"])).toBe("yarn");
+    expect(scriptPackageManager(null, [])).toBe("npm");
+  });
+});
+
+describe("scriptMenuItems", () => {
+  beforeEach(() => {
+    vi.spyOn(store, "loadConfigs").mockResolvedValue();
+    useProject.setState({ project: { root: "/project" } as never });
+    store.useRun.setState({ configs: [] });
+    vi.spyOn(commands, "fsReadDir").mockResolvedValue({
+      status: "ok",
+      data: [{ name: "pnpm-lock.yaml", path: "/project/pnpm-lock.yaml", kind: "file" } as never],
+    });
+    vi.spyOn(commands, "fsReadText").mockRejectedValue(new Error("not found"));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useProject.setState({ project: null });
+    store.useRun.setState({ configs: [] });
+  });
+
+  it("uses the package lockfile for an undetected script", async () => {
+    const items = await scriptMenuItems({ name: "new", line: 0 }, "/project/package.json", "{}");
+    expect(items).toMatchObject([{ label: "Run 'pnpm run new'" }, { label: "Debug 'pnpm run new'" }]);
+    expect(commands.fsReadDir).toHaveBeenCalledWith("/project/");
+  });
+
+  it("inherits the backend's workspace manager from a sibling script", async () => {
+    store.useRun.setState({ configs: [cfg({ command: "yarn", cwd: "packages/web" })] });
+    const items = await scriptMenuItems(
+      { name: "new", line: 0 },
+      "/project/packages/web/package.json",
+      '{"packageManager":"pnpm@9"}',
+    );
+    expect(items).toMatchObject([{ label: "Run 'yarn run new'" }, { label: "Debug 'yarn run new'" }]);
+    expect(commands.fsReadDir).not.toHaveBeenCalled();
+  });
+
+  it("does not inherit an unrelated package's manager or a custom executable", async () => {
+    store.useRun.setState({
+      configs: [cfg({ command: "yarn", cwd: "other" }), cfg({ command: "echo", cwd: null })],
+    });
+    const items = await scriptMenuItems({ name: "new", line: 0 }, "/project/package.json", "{}");
+    expect(items).toMatchObject([{ label: "Run 'pnpm run new'" }, { label: "Debug 'pnpm run new'" }]);
+  });
+
+  it("uses root detection for a workspace member's first script", async () => {
+    vi.mocked(commands.fsReadText).mockResolvedValue({ status: "ok", data: '{"packageManager":"yarn@4"}' });
+    const items = await scriptMenuItems({ name: "new", line: 0 }, "/project/packages/web/package.json", "{}");
+    expect(items).toMatchObject([{ label: "Run 'yarn run new'" }, { label: "Debug 'yarn run new'" }]);
+    expect(commands.fsReadDir).toHaveBeenCalledWith("/project/");
+  });
+
+  it("uses local detection for a polyglot package without a root manifest", async () => {
+    const items = await scriptMenuItems({ name: "new", line: 0 }, "/project/web/package.json", "{}");
+    expect(items).toMatchObject([{ label: "Run 'pnpm run new'" }, { label: "Debug 'pnpm run new'" }]);
+    expect(commands.fsReadDir).toHaveBeenCalledWith("/project/web/");
+  });
+
+  it("preserves a matching user configuration", async () => {
+    store.useRun.setState({ configs: [cfg({ id: "npm:new", name: "Custom new", command: "custom" })] });
+    const items = await scriptMenuItems({ name: "new", line: 0 }, "/project/package.json", "{}");
+    expect(items).toMatchObject([{ label: "Run 'Custom new'" }, { label: "Debug 'Custom new'" }]);
+    expect(commands.fsReadDir).not.toHaveBeenCalled();
+  });
+
+  it("renders a native button and opens its menu on keyboard-style activation after Unicode text", async () => {
+    const show = vi.spyOn(ui, "showContextMenu").mockImplementation(() => {});
+    const text = '{\r\n  "description": "中文 🚀",\r\n  "scripts": {\r\n    "dev": "echo ok"\r\n  }\r\n}';
+    const view = new EditorView({
+      doc: text,
+      parent: document.body,
+      extensions: npmGutter({ doc: 1, path: "/project/package.json", language: "json", uiMode: null, readOnly: false }),
+    });
+    try {
+      await vi.waitFor(() => expect(view.dom.querySelector("button[aria-label=\"Run 'dev'\"]")).not.toBeNull());
+      expect(view.state.doc.line(4).from).toBe(text.replaceAll("\r\n", "\n").indexOf('    "dev"'));
+      view.dom.querySelector<HTMLButtonElement>("button[aria-label=\"Run 'dev'\"]")!.click();
+      await vi.waitFor(() =>
+        expect(show).toHaveBeenCalledWith(expect.anything(), [
+          expect.objectContaining({ label: "Run 'pnpm run dev'" }),
+          expect.objectContaining({ label: "Debug 'pnpm run dev'" }),
+        ]),
+      );
+    } finally {
+      view.destroy();
+    }
+  });
 });
 
 describe("scriptConfigFor", () => {
@@ -133,6 +290,11 @@ describe("scriptConfigFor", () => {
     expect(scriptConfigFor([custom], "dev", "web", null)).toBe(custom);
   });
 
+  it("matches an unnamed nested member's overridden config by its full relative directory", () => {
+    const custom = cfg({ id: "npm:packages/web:dev", command: "custom", cwd: "packages/web" });
+    expect(scriptConfigFor([custom], "dev", "packages/web", null)).toBe(custom);
+  });
+
   it("prefers an id match over an args match", () => {
     const byArgs = cfg({ id: "user-cfg", args: ["run", "dev"], cwd: null });
     expect(scriptConfigFor([byArgs, root], "dev", "", null)).toBe(root);
@@ -144,6 +306,6 @@ describe("scriptConfigFor", () => {
 
   it("derives the backend configuration ids", () => {
     expect(scriptConfigIds("dev", null, "")).toEqual(["npm:dev"]);
-    expect(scriptConfigIds("dev", "web", "packages/web")).toEqual(["npm:dev", "npm:web:dev"]);
+    expect(scriptConfigIds("dev", "web", "packages/web")).toEqual(["npm:dev", "npm:web:dev", "npm:packages/web:dev"]);
   });
 });
