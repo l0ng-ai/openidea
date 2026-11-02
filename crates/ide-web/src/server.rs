@@ -388,7 +388,7 @@ mod tests {
         std::fs::write(root.join("index.html"), "<h1>hi</h1>").unwrap();
         std::fs::write(dir.path().join("secret.txt"), "SECRET").unwrap();
         let outside_file = symlink(&dir.path().join("secret.txt"), &root.join("leak")).is_ok();
-        let outside_dir = symlink(&dir.path(), &root.join("rootlink")).is_ok();
+        let outside_dir = symlink(dir.path(), &root.join("rootlink")).is_ok();
         let inside = symlink(&root.join("index.html"), &root.join("copy.html")).is_ok();
         if !(outside_file && outside_dir && inside) {
             eprintln!("skipped: this account cannot create symlinks");
