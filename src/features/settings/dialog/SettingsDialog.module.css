@@ -206,6 +206,14 @@
 /* Linux draws no shadow for a frameless window (Wayland/KDE give undecorated
    windows no CSD), so mark its edge in CSS instead. */
 .windowEdge {
+  position: relative;
+}
+.windowEdge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
   box-shadow: inset 0 0 0 1px var(--border-window);
 }
 .windowBody {
