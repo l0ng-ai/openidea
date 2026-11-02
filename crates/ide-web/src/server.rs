@@ -173,7 +173,8 @@ async fn read_head(sock: &mut TcpStream) -> std::io::Result<Option<Request>> {
 }
 
 enum Response {
-    File { path: PathBuf, len: u64 },
+    /// `path` is the resolved file to open; `mime` comes from the requested name.
+    File { path: PathBuf, len: u64, mime: &'static str },
     Redirect(String),
     Error(u16, &'static str),
 }
@@ -191,9 +192,9 @@ async fn serve(mut sock: TcpStream, shared: &Shared, port: u16) -> std::io::Resu
     };
     let mut out = String::new();
     match &response {
-        Response::File { path, len } => {
+        Response::File { len, mime, .. } => {
             out.push_str("HTTP/1.1 200 OK\r\n");
-            out.push_str(&format!("Content-Type: {}\r\nContent-Length: {len}\r\n", content_type(path)));
+            out.push_str(&format!("Content-Type: {mime}\r\nContent-Length: {len}\r\n"));
         }
         Response::Redirect(to) => {
             out.push_str(&format!("HTTP/1.1 301 Moved Permanently\r\nLocation: {to}\r\nContent-Length: 0\r\n"));
@@ -233,7 +234,9 @@ async fn resolve(shared: &Shared, target: &str) -> Response {
         return NOT_FOUND;
     }
     let Some(key) = segments.next().and_then(dec) else { return NOT_FOUND };
-    let Some(mut file) = shared.roots.read().get(&key).cloned() else { return NOT_FOUND };
+    let Some(root) = shared.roots.read().get(&key).cloned() else { return NOT_FOUND };
+    let Ok(real_root) = tokio::fs::canonicalize(&root).await else { return NOT_FOUND };
+    let mut file = root;
     let mut trailing_slash = true;
     for seg in segments {
         trailing_slash = seg.is_empty();
@@ -245,19 +248,29 @@ async fn resolve(shared: &Shared, target: &str) -> Response {
             _ => return NOT_FOUND,
         }
     }
-    let Ok(meta) = tokio::fs::metadata(&file).await else { return NOT_FOUND };
+    let Some(real) = confined(&real_root, &file).await else { return NOT_FOUND };
+    let Ok(meta) = tokio::fs::metadata(&real).await else { return NOT_FOUND };
     if meta.is_dir() {
         // Relative URLs in an index page resolve against the directory.
         if !trailing_slash {
             return Response::Redirect(format!("{path}/"));
         }
-        file.push("index.html");
-        return match tokio::fs::metadata(&file).await {
-            Ok(m) if m.is_file() => Response::File { path: file, len: m.len() },
+        let index = file.join("index.html");
+        let Some(real_index) = confined(&real_root, &index).await else { return NOT_FOUND };
+        return match tokio::fs::metadata(&real_index).await {
+            Ok(m) if m.is_file() => Response::File { path: real_index, len: m.len(), mime: content_type(&index) },
             _ => NOT_FOUND,
         };
     }
-    Response::File { path: file, len: meta.len() }
+    Response::File { path: real, len: meta.len(), mime: content_type(&file) }
+}
+
+/// `path` with every symlink resolved, if it still lies inside `real_root` (already
+/// canonical). Rejecting `..` segments is not enough: a project can commit symlinks
+/// that point anywhere on disk.
+async fn confined(real_root: &Path, path: &Path) -> Option<PathBuf> {
+    let real = tokio::fs::canonicalize(path).await.ok()?;
+    real.starts_with(real_root).then_some(real)
 }
 
 fn dec(s: &str) -> Option<String> {
@@ -338,6 +351,45 @@ mod tests {
         let other = url.replacen(&server.shared.token, "0123", 1);
         assert!(get(&other, None).await.starts_with("HTTP/1.1 404"));
         assert!(get(&url, Some("evil.example:80")).await.starts_with("HTTP/1.1 403"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinks_cannot_escape_the_served_root() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join("site/escape")).unwrap();
+        std::fs::create_dir_all(root.join("site/assets")).unwrap();
+        std::fs::write(root.join("site/index.html"), "<h1>hi</h1>").unwrap();
+        std::fs::write(root.join("site/assets/app.js"), "export {}").unwrap();
+        std::fs::write(root.join("site/raw"), "<p>raw</p>").unwrap();
+        std::fs::write(dir.path().join("secret.txt"), "outside").unwrap();
+        symlink("index.html", root.join("site/inside.html")).unwrap();
+        symlink("assets", root.join("site/lib")).unwrap();
+        symlink("raw", root.join("site/raw.html")).unwrap();
+        symlink("../../secret.txt", root.join("site/leak.txt")).unwrap();
+        symlink("../..", root.join("site/up")).unwrap();
+        symlink("/", root.join("site/fsroot")).unwrap();
+        symlink("../../../secret.txt", root.join("site/escape/index.html")).unwrap();
+
+        let server = WebServer::new();
+        let url = server.url_for(Some(&root), &root.join("site/index.html")).await.unwrap();
+        let base = url.trim_end_matches("index.html");
+        let page = get(&format!("{base}inside.html"), None).await;
+        assert!(page.starts_with("HTTP/1.1 200") && page.ends_with("<h1>hi</h1>"), "{page}");
+        let page = get(&format!("{base}lib/app.js"), None).await;
+        assert!(page.starts_with("HTTP/1.1 200") && page.contains("text/javascript"), "{page}");
+        // The type follows the requested name, not the link target.
+        let page = get(&format!("{base}raw.html"), None).await;
+        assert!(page.contains("text/html") && page.ends_with("<p>raw</p>"), "{page}");
+
+        let secret = dir.path().join("secret.txt");
+        let via_fsroot = format!("fsroot{}", secret.display());
+        for escape in ["leak.txt", "up/secret.txt", via_fsroot.as_str(), "escape/"] {
+            let page = get(&format!("{base}{escape}"), None).await;
+            assert!(page.starts_with("HTTP/1.1 404"), "{escape}: {page}");
+        }
     }
 
     #[tokio::test]
