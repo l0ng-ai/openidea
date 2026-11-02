@@ -185,8 +185,10 @@ pub fn plan(root: &Path, model: &BuildModel, kind: BuildKind, file: Option<&Path
         None => None,
     };
     let dir = module_dir.clone().unwrap_or_else(|| root.to_path_buf());
+    // A folder of sibling projects has no build file itself; its Maven projects are built one by one.
     let system = detect_dir(&dir, model, root)
         .or_else(|| if model.gradle.is_some() { Some(BuildSystem::Gradle) } else { None })
+        .or_else(|| model.maven.as_ref().filter(|m| !m.projects.is_empty()).map(|_| BuildSystem::Maven))
         .ok_or_else(|| IdeError::not_found("no supported build system (Maven, Gradle, Cargo, Go, TypeScript) found"))?;
     let module = module_dir.as_deref().filter(|d| *d != root);
     let title = match module {
@@ -812,6 +814,17 @@ mod tests {
         assert_eq!(
             (p.steps[0].program.as_str(), p.steps[0].args.as_slice()),
             ("pnpm", &["run".to_owned(), "build".to_owned()][..])
+        );
+
+        let siblings = tmp.path().join("siblings");
+        write(&siblings, "core/pom.xml", "<project><artifactId>core</artifactId></project>");
+        write(&siblings, "system/pom.xml", "<project><artifactId>system</artifactId></project>");
+        let model = crate::load(&siblings, &tmp.path().join("cache3"), None);
+        let p = plan(&siblings, &model, BuildKind::Build, None).unwrap();
+        assert_eq!(p.system, BuildSystem::Maven);
+        assert_eq!(
+            p.steps.iter().map(|s| s.cwd.clone()).collect::<Vec<_>>(),
+            [siblings.join("core"), siblings.join("system")]
         );
 
         let none = tmp.path().join("none");
