@@ -5515,5 +5515,7 @@
   "App labels, modules or dotted test paths; empty runs every test": "应用标签、模块或以点分隔的测试路径；留空则运行全部测试",
   "Settings module": "设置模块",
   "Passed as --settings; empty keeps DJANGO_SETTINGS_MODULE or the default in manage.py": "作为 --settings 传入；留空则沿用 DJANGO_SETTINGS_MODULE 或 manage.py 中的默认值",
-  "e.g. --keepdb --parallel": "例如 --keepdb --parallel"
+  "e.g. --keepdb --parallel": "例如 --keepdb --parallel",
+  "select files in a git repository to shelve": "请选择 Git 仓库中的文件以搁置更改",
+  "select files from a single git repository to shelve": "请一次只选择同一个 Git 仓库中的文件以搁置更改"
 }
