@@ -24,6 +24,11 @@ export function buildPresentation(model: BuildModel): BuildPresentation {
   return { modules, spring };
 }
 
+/** A Maven / Gradle module folder below the project root: IDEA shows its name in bold. */
+export function isModuleFolder(rel: string, root: boolean, modules: BuildPresentation["modules"]): boolean {
+  return !root && rel !== "" && modules.has(rel);
+}
+
 export function moduleFolderIcon(rel: string, root: boolean, modules: BuildPresentation["modules"]): string | null {
   const tool = modules.get(rel);
   return tool ? `${tool}-${root ? "project" : "module"}` : null;
