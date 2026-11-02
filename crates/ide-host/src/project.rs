@@ -594,6 +594,12 @@ impl Host {
                 weak.upgrade().map(|p| p.exclude_globs()).unwrap_or_default()
             }));
         }
+        {
+            let weak = Arc::downgrade(&project);
+            project.agents.set_security_hook(Arc::new(move || {
+                weak.upgrade().map(|p| p.settings.effective().agent_security).unwrap_or_default()
+            }));
+        }
         self.insert_project(window, project.clone());
         project.lsp.prewarm_java_configuration();
         if let Some(bridge) = &project.kotlin_bridge {

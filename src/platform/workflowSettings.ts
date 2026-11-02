@@ -148,6 +148,11 @@ export interface ExternalToolValid {
   openConsole: boolean;
 }
 
+export interface AgentSecurityValid {
+  allowedCommands: string[];
+  blockedCommands: string[];
+}
+
 export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
   console: ConsoleSettingsValid;
@@ -156,6 +161,7 @@ export interface WorkflowSettings extends RemoteSettings {
   terminal: TerminalSettingsValid;
   actionsOnSave: ActionsOnSaveValid;
   externalTools: ExternalToolValid[];
+  agentSecurity: AgentSecurityValid;
 }
 
 export const WORKFLOW_LIMITS = {
@@ -289,6 +295,10 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   },
   actionsOnSave: { optimizeImports: false, cleanup: false },
   externalTools: [],
+  agentSecurity: {
+    allowedCommands: [],
+    blockedCommands: ["rm -rf *", "rm -rf /", "mkfs*", "dd *", ":(){ :|:& };:", "shutdown*", "reboot*"],
+  },
   ...DEFAULT_REMOTE,
 };
 
@@ -491,6 +501,15 @@ export function validateExternalTools(raw: unknown): ExternalToolValid[] {
   return out;
 }
 
+export function validateAgentSecurity(raw: unknown): AgentSecurityValid {
+  const v = obj(raw);
+  const d = DEFAULT_WORKFLOW.agentSecurity;
+  return {
+    allowedCommands: strings(v.allowedCommands, d.allowedCommands),
+    blockedCommands: strings(v.blockedCommands, d.blockedCommands),
+  };
+}
+
 export function validateWorkflow(raw: unknown): WorkflowSettings {
   const root = obj(raw);
   return {
@@ -501,6 +520,7 @@ export function validateWorkflow(raw: unknown): WorkflowSettings {
     terminal: validateTerminal(root.terminal),
     actionsOnSave: validateActionsOnSave(root.actionsOnSave),
     externalTools: validateExternalTools(root.externalTools),
+    agentSecurity: validateAgentSecurity(root.agentSecurity),
     ...validateRemote(root),
   };
 }

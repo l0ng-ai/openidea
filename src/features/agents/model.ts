@@ -13,6 +13,8 @@ export const REGISTRY_PAGE = "agents.list";
 export const AGENTS_GROUP = "Agents";
 /** Settings › Agents › External MCP Servers: User and Workspace MCP configurations. */
 export const MCP_PAGE = "agents.mcpServers";
+/** Settings › Agents › Command Execution Policy. */
+export const POLICY_PAGE = "agents.policy";
 
 export const sessionKey = (task: string) => `agent:${task}`;
 

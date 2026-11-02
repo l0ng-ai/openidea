@@ -1861,6 +1861,14 @@ export type AgentRetry = {
 	error: string | null,
 };
 
+/**  Tools › Agents: Command Execution Policy (whitelist and blacklist patterns). */
+export type AgentSecuritySettings = {
+	/**  Commands or patterns (`git status*`, `pwd`) automatically approved without prompting. */
+	allowedCommands?: string[],
+	/**  Commands or patterns (`rm -rf *`, `mkfs*`) automatically rejected. */
+	blockedCommands?: string[],
+};
+
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
 export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
 
@@ -8296,6 +8304,8 @@ export type Settings_Deserialize = {
 	agents?: AgentSettings_Deserialize,
 	/**  Agents › MCP Server (global only). */
 	mcpServer?: McpServerSettings,
+	/**  Tools › Agents: Command Execution Policy. */
+	agentSecurity?: AgentSecuritySettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -8358,6 +8368,8 @@ export type Settings_Serialize = {
 	agents: AgentSettings_Serialize,
 	/**  Agents › MCP Server (global only). */
 	mcpServer: McpServerSettings,
+	/**  Tools › Agents: Command Execution Policy. */
+	agentSecurity: AgentSecuritySettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },
 };
