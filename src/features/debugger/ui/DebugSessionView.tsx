@@ -257,7 +257,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         kind: "watch",
         name: w,
         variable: r?.result ?? null,
-        error: frame == null ? "Not suspended" : (r?.error ?? null),
+        error: frame == null ? tx("Not suspended") : (r?.error ?? null),
       });
     }
     if (frame != null && scopeData.frame === frame) {

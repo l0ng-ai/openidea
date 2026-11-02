@@ -135,9 +135,7 @@ impl crate::Host {
                     for request in requests {
                         self.cancel_request(request);
                     }
-                    for session in self.debugger.sessions(Some(&window)) {
-                        let _ = self.debugger.stop(session.id).await;
-                    }
+                    self.debugger.stop_key(&window).await;
                 }
             }
             project.lsp.reconfigure().await;
@@ -228,6 +226,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "index_status"
             | "jvm_file_presentations"
             | "deploy_coverage"
+            | "deploy_test_connection"
             | "find_files"
             | "find_symbols"
             | "mark_recent"
@@ -249,6 +248,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "remote_current"
             | "remote_disconnect"
             | "remote_connect"
+            | "remote_bootstrap_list"
             | "remote_list"
             | "remote_open"
             | "remote_of"

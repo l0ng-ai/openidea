@@ -21,6 +21,7 @@ import { findOutputLinks, type OutputLink } from "./links";
 import { openTarget, openUrl } from "./navigate";
 import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
+import { useConsoleSelection } from "./useConsoleSelection";
 import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { ConsoleFindBar } from "./FindBar";
@@ -219,7 +220,9 @@ export function ConsoleView({
     });
   const programmatic = useRef(false);
 
+  const { rangeExtractor, selecting } = useConsoleSelection(scrollRef, () => onFollowChange(false));
   const virtualizer = useVirtualizer({
+    rangeExtractor,
     count,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW,
@@ -255,6 +258,7 @@ export function ConsoleView({
     const el = scrollRef.current;
     if (!el || programmatic.current) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW;
+    if (atBottom && selecting) return;
     if (atBottom !== follow) onFollowChange(atBottom);
   };
 
@@ -581,6 +585,7 @@ export function ConsoleView({
                 <Line line={line} marks={marksByLine.get(row.index)} length={line.text.length} cwd={cwd} />
                 {row.fold && foldButton(row.fold, true)}
                 {inputInline && item.index === rows.length - 1 && pendingInput}
+                {"\n"}
               </div>
             );
           })}

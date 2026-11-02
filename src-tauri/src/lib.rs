@@ -11,6 +11,8 @@ mod events;
 #[cfg(any(target_os = "linux", test))]
 mod linux_window_state;
 mod logging;
+#[cfg(target_os = "macos")]
+mod macos;
 mod menu;
 pub mod paths;
 mod remote_dev;
@@ -20,6 +22,8 @@ mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
 mod window_groups;
+#[cfg(any(windows, test))]
+mod window_work_area;
 mod windows;
 
 use parking_lot::Mutex;
@@ -98,6 +102,9 @@ pub fn run() {
     // Single instance first: a second launch focuses this one and opens its path argument.
     // Debug builds have a separate identifier per worktree.
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
+    // Install before window-state restores maximized geometry during window creation.
+    #[cfg(windows)]
+    let app = app.plugin(window_work_area::init());
     let app = app.plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_dialog::init());
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
@@ -195,7 +202,10 @@ pub fn run() {
         tauri::WindowEvent::Focused(false) => application_focus::changed(window.app_handle(), false),
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
-            titlebar::forget(window);
+            {
+                titlebar::forget(window);
+                macos::forget_fullscreen(window.label());
+            }
             window_groups::destroyed(window.app_handle(), window.label());
             if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {
                 let _ = settings.destroy();

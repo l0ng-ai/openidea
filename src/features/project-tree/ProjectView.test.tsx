@@ -172,6 +172,9 @@ describe("ProjectView", () => {
     act(() => setViewOption("previewTab", true));
     fireEvent.click(content, { detail: 1 });
     expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview: true, focus: false });
+    openFile.mockClear();
+    fireEvent.click(content, { detail: 3 });
+    expect(openFile).not.toHaveBeenCalled();
     act(() => setViewOption("previewTab", false));
   });
 
@@ -205,6 +208,32 @@ describe("ProjectView", () => {
     click(1, { shiftKey: true });
     expect(rows()).toContain("App.kt");
     act(() => setViewOption("singleClickExpand", false));
+  });
+
+  it("toggles folders once for each rapid double-click pair", async () => {
+    const { row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    act(() => setViewOption("singleClickExpand", true));
+    const content = () => row("src").querySelector("[data-project-path]")!;
+    const click = (detail: number) => {
+      fireEvent.mouseDown(row("src"), { detail });
+      fireEvent.click(content(), { detail });
+    };
+    click(1);
+    click(2);
+    fireEvent.doubleClick(content(), { detail: 2 });
+    await waitFor(() => expect(rows()).toContain("App.kt"));
+    click(3);
+    click(4);
+    fireEvent.doubleClick(content(), { detail: 4 });
+    expect(rows()).not.toContain("App.kt");
+
+    act(() => setViewOption("singleClickExpand", false));
+    click(5);
+    click(6);
+    expect(rows()).not.toContain("App.kt");
+    fireEvent.doubleClick(content(), { detail: 6 });
+    await waitFor(() => expect(rows()).toContain("App.kt"));
   });
 
   it("cancels a new file when its name field loses focus", async () => {

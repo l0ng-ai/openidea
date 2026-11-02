@@ -5,7 +5,7 @@ import { basename, dirname, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { tx } from "@/platform/i18n";
 import { Button, Dialog, Icon, IconButton, Input, T } from "@/ui";
-import { openProjectInWindow } from "./windows";
+import { openProjectWithPolicy } from "./windows";
 import styles from "./WorkspaceDialog.module.css";
 
 const useWorkspaceDialog = create<{ mode: "create" | "manage" | null }>(() => ({ mode: null }));
@@ -53,7 +53,7 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
       const included = adding.trim() ? [...new Set([...projects, adding.trim()])] : projects;
       if (mode === "create") {
         const root = await call(commands.workspaceCreate(path.trim(), name.trim(), included));
-        await openProjectInWindow(root, !!project);
+        await openProjectWithPolicy(root);
       } else {
         const updated = await call(commands.workspaceUpdate(name.trim(), included));
         useProject.setState({ project: updated, settings: updated.settings });

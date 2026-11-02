@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { call, commands, type DebugSessionId, type Variable } from "@/platform/ipc";
 import { Icon, Tree, acquirePopup, showContextMenu, type MenuItem, type TreeHandle } from "@/ui";
 import { activeEditor } from "@/editor/api";
+import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
 import { addFieldWatchpoint } from "../breakpoints/special";
 import { methodAt } from "../breakpoints/symbols";
@@ -205,7 +206,7 @@ export function VariablesView({
           seen.set(v.name, n);
           return fromVariable(`${node.key}/${v.name}${n > 1 ? `#${n}` : ""}`, v, node.reference);
         });
-        if (!list.length) list = [message(`${node.key}/\u0000empty`, "No variables")];
+        if (!list.length) list = [message(`${node.key}/\u0000empty`, tx("No variables"))];
       } catch (e) {
         list = [message(`${node.key}/\u0000error`, e instanceof Error ? e.message : String(e))];
       } finally {
@@ -380,7 +381,7 @@ function VarEditRow({
         autoFocus
         spellCheck={false}
         autoComplete="off"
-        aria-label={`New value of ${node.name}`}
+        aria-label={tx`New value of ${node.name}`}
         aria-invalid={!!error || undefined}
         title={error ?? undefined}
         onFocus={(e) => e.currentTarget.select()}

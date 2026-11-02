@@ -16,6 +16,7 @@ specta.workspace = true
 sys-locale.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
+semver = "1.0.28"
 parking_lot.workspace = true
 blake3.workspace = true
 tracing.workspace = true

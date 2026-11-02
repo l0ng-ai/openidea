@@ -7,7 +7,7 @@ import { useTasks } from "@/workbench/tasks";
 import { MemoryToolsBackend, sampleTools, setToolsBackend } from "../backend";
 import { cancelInstall, installTool, refreshTools, uninstallTool, useTools } from "../store";
 import { filterTools, LanguageServersPage } from "../LanguageServersPage";
-import { installMissingServerPrompts, missingKey, promptInstall } from "../missing";
+import { installMissingServerPrompts, installServerWarningPrompts, missingKey, promptInstall } from "../missing";
 import { resetTestForm, stagedFor, TestSettingsForm } from "./settingsForm";
 
 type Note = Parameters<NotificationService["notify"]>[0];
@@ -270,6 +270,52 @@ describe("tools.install action", () => {
       expect(opened).toEqual(["languages.servers"]);
     } finally {
       disposers.reverse().forEach((d) => d());
+    }
+  });
+});
+
+describe("language server capability warning", () => {
+  const event = {
+    type: "languageServerWarning",
+    name: "clangd",
+    message:
+      "Apple's clangd does not run clang-tidy, so checks from .clang-tidy are not shown. Install clangd (LLVM) to get them.",
+    installTool: "clangd",
+  } as const;
+
+  it("offers a managed replacement for system clangd once and restarts it after installation", async () => {
+    backend.tools.push({
+      ...sampleTools()[0]!,
+      name: "clangd",
+      displayName: "clangd",
+      command: "clangd",
+      status: "onPath",
+      path: "/usr/bin/clangd",
+      languages: ["C", "C++", "Objective-C", "Objective-C++"],
+    });
+    const off = installServerWarningPrompts();
+    try {
+      emitLocalIdeEvent(event);
+      emitLocalIdeEvent(event);
+      await waitFor(() => expect(notes).toHaveLength(1));
+      expect(notes[0]).toMatchObject({ title: "clangd", level: "warning", sticky: true, body: event.message });
+      expect(notes[0]!.actions!.map((a) => a.label)).toEqual(["Install", "Language Servers…"]);
+      notes[0]!.actions![0]!.run();
+      await waitFor(() => expect(backend.restarted).toEqual(["clangd"]));
+      expect(notes.at(-1)).toMatchObject({ title: "clangd installed", key: notes[0]!.key });
+    } finally {
+      off();
+    }
+  });
+
+  it("keeps the Settings action when the tool cannot be installed", async () => {
+    const off = installServerWarningPrompts();
+    try {
+      emitLocalIdeEvent(event);
+      await waitFor(() => expect(notes).toHaveLength(1));
+      expect(notes[0]!.actions!.map((a) => a.label)).toEqual(["Language Servers…"]);
+    } finally {
+      off();
     }
   });
 });

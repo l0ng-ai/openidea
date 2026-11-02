@@ -284,6 +284,8 @@ export const openideaTheme = EditorView.theme({
     cursor: "pointer",
   },
   ".cm-openidea-overviewMark-thin": { left: "4px", width: "4px", minHeight: "2px" },
+  // The scrollbar thumb wins over the marks under it (cm/lanes.ts, #752).
+  ".cm-openidea-overview-onThumb .cm-openidea-overviewMark": { pointerEvents: "none" },
   ".cm-openidea-overviewCaret": {
     position: "absolute",
     left: "2px",

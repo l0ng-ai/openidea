@@ -70,10 +70,11 @@ function MoreActions() {
 
 type Tab = "variables" | "console";
 
+// Routed through `tx`: the statuses have catalog entries, a bare return would stay English.
 function statusText(s: DebugSession): string {
-  if (s.status === "terminated") return s.exitCode != null ? `Finished · exit code ${s.exitCode}` : "Finished";
-  if (s.status === "starting") return "Starting…";
-  return s.status === "paused" ? "Suspended" : "Running";
+  if (s.status === "terminated") return s.exitCode != null ? tx`Finished · exit code ${s.exitCode}` : tx("Finished");
+  if (s.status === "starting") return tx("Starting…");
+  return s.status === "paused" ? tx("Suspended") : tx("Running");
 }
 
 /** Sessions the Debug tool window shows: Services-owned sessions live in the Services window. */

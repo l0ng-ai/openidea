@@ -82,3 +82,10 @@ objc2-web-kit = { version = "0.3", default-features = false, features = ["std", 
 
 [dev-dependencies]
 tempfile.workspace = true
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

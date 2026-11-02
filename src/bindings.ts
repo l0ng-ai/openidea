@@ -350,6 +350,7 @@ export const commands = {
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
 	/**  Paths in an HTML document or stylesheet that name no existing file. */
 	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError>(__TAURI_INVOKE("web_unresolved_references", { doc })),
+	dependencyVersions: (doc: DocId, offset: number | null, request: RequestId) => typedError<DependencyVersions[], IdeError>(__TAURI_INVOKE("dependency_versions", { doc, offset, request })),
 	/**
 	 *  Misspelt words in the comments, string literals and declared names of
 	 *  `doc` that `scope` includes (all of its text for prose). Cancel with
@@ -573,6 +574,7 @@ export const commands = {
 	 *  to start the shell takes tens of milliseconds, a frozen UI if run there.
 	 */
 	termSpawn: (options: TerminalOptions, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("term_spawn", { options, onOutput })),
+	termStoreImage: (id: TerminalId, data: number[], mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
 	termWrite: (id: TerminalId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("term_write", { id, data })),
 	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
 	termKill: (id: TerminalId) => typedError<null, IdeError>(__TAURI_INVOKE("term_kill", { id })),
@@ -587,6 +589,7 @@ export const commands = {
 	termAvailableShells: () => __TAURI_INVOKE<string[]>("term_available_shells"),
 	/**  Detected configs followed by user-defined ones (user ids win on conflict). */
 	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
+	runDotnetResolve: (config: RunConfig_Deserialize, debug: boolean) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_dotnet_resolve", { config, debug })),
 	runSaveConfigs: (configs: RunConfig_Deserialize[], removedDetectedIds: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_configs", { configs, removedDetectedIds })),
 	/**  Configuration templates: per-type defaults applied to new configurations. */
 	runTemplates: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_templates")),
@@ -1674,6 +1677,30 @@ export type ByteRange = {
 	total: number,
 };
 
+export type CMakeProfile = {
+	name?: string,
+	buildType?: string,
+	generator?: string,
+	cmakeArgs?: string[],
+	/**  Empty uses cmake-build-<lowercase build type>. */
+	buildDir?: string,
+	buildArgs?: string[],
+	env?: { [key in string]: string },
+};
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings = CMakeSettings_Serialize | CMakeSettings_Deserialize;
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings_Deserialize = {
+	profiles?: CMakeProfile[] | null,
+};
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings_Serialize = {
+	profiles?: CMakeProfile[] | null,
+};
+
 export type CallHierarchy = {
 	items: HierarchyItem[],
 	incomplete: ReferencesIncomplete | null,
@@ -2477,6 +2504,17 @@ export type DeletedBranch = {
 	upstream: string | null,
 	/**  It was not fully merged: its own commits are now unreachable from any branch. */
 	unmerged: boolean,
+};
+
+export type DependencyUpdate = {
+	latest: string,
+	replacement: string,
+};
+
+export type DependencyVersions = {
+	dependency: ManifestDependency,
+	versions: string[],
+	update: DependencyUpdate | null,
 };
 
 /**  Where a local file is deployed. */
@@ -3347,6 +3385,8 @@ export type GitOperation =
 { op: "interactiveRebase"; base: string | null; entries: RebaseEntry[] };
 
 export type GitSettings = {
+	/**  Show blame after the current editor line. */
+	inlineBlame?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
 	/**  Default of Update Project: `merge` | `rebase`. */
@@ -3616,6 +3656,8 @@ cancellable: boolean } |
 { type: "indexState"; indexing: boolean; files: number; symbols: number } | 
 /**  Git status / branch information should be refreshed. */
 { type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; status: ServerStatus; message: string | null } | 
+/**  A running server lacks a capability; the UI offers the managed tool as a replacement. */
+{ type: "languageServerWarning"; name: string; message: string; installTool: string } | 
 /**
  *  A stopped language server left the project's list (disabled in settings, or a
  *  fallback that a preferred server took over from again).
@@ -4298,6 +4340,14 @@ export type MainToolbarSettings = {
 	right?: string[],
 	/**  Widgets the user removed. */
 	hidden?: string[],
+};
+
+export type ManifestDependency = {
+	package: string,
+	requirement: string,
+	/**  UTF-16 offsets of the string's contents (quotes excluded). */
+	from: number,
+	to: number,
 };
 
 export type Markup = {
@@ -5697,6 +5747,7 @@ export type Settings_Deserialize = {
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets?: RunTarget[],
+	cmake?: CMakeSettings_Deserialize,
 };
 
 export type Settings_Serialize = {
@@ -5752,6 +5803,7 @@ export type Settings_Serialize = {
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets: RunTarget[],
+	cmake: CMakeSettings_Serialize,
 };
 
 export type Severity = "error" | "warning" | "info" | "hint";

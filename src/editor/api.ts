@@ -21,6 +21,7 @@ import {
   Annotation,
   Compartment,
   Facet,
+  StateEffect,
   type EditorState,
   type Extension,
   type RangeSet,
@@ -30,6 +31,9 @@ import { GutterMarker, ViewPlugin, type EditorView } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
+
+/** Documents above this size (UTF-16 units) skip per-line decorations. */
+export const HEAVY_LIMIT = 8_000_000;
 
 export interface EditorDocContext {
   doc: number;
@@ -332,12 +336,23 @@ export function contributedAt<T>(state: EditorState, key: string, pos: number): 
   return state.languageDataAt<T>(key, pos)[0];
 }
 
-/** A context action a feature offers at the caret, listed by Show Context Actions (⌥↵) before the language server's. */
+/** A context action a feature offers at the caret, listed by Show Context Actions (⌥↵). */
 export interface ContributedIntention {
   id: string;
   label: string;
   icon?: string;
+  quickFix?: boolean;
   run: () => void | Promise<void>;
+}
+
+/** A background provider has new context actions for the current document. */
+export const intentionsChanged = StateEffect.define<null>();
+
+/** Local fixes of a diagnostic range (hover link and Apply Quick Fix). */
+export const quickFixProviders = Facet.define<(view: EditorView, from: number, to: number) => ContributedIntention[]>();
+
+export function contributedQuickFixes(view: EditorView, from: number, to: number): ContributedIntention[] {
+  return view.state.facet(quickFixProviders).flatMap((provider) => provider(view, from, to));
 }
 
 /** Providers of `ContributedIntention`s for the caret of `view` (cheap and synchronous: also drives the light bulb). */

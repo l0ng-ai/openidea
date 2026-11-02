@@ -18,10 +18,6 @@ export function hotSwapSessions(): DebugSession[] {
   return Object.values(useDebug.getState().sessions).filter((s) => isLive(s) && !!s.caps?.hotCodeReplace);
 }
 
-function plural(n: number, word: string) {
-  return `${n} ${word}${n === 1 ? "" : "es"}`;
-}
-
 /** Message for the reload result (IDEA wording). */
 export function hotSwapMessage(
   changed: number,
@@ -29,7 +25,9 @@ export function hotSwapMessage(
 ): { level: "info" | "error"; title: string; body?: string } {
   if (errors.length) return { level: "error", title: "Hot Swap failed", body: errors.join("\n") };
   if (changed === 0) return { level: "info", title: "Loaded classes are up to date. Nothing to reload." };
-  return { level: "info", title: tx`${plural(changed, "class")} reloaded` };
+  // One catalog entry per variant: an interpolated plural ("2 classes") could never
+  // match a `{class}` template, which rendered "已重新加载 2 classes" (mixed).
+  return { level: "info", title: changed === 1 ? tx("1 class reloaded") : tx`${changed} classes reloaded` };
 }
 
 /** Compiles (unless `build` is false) and reloads changed classes into every Java debug session. */

@@ -222,6 +222,19 @@ pub fn tools_home(layout: &Layout, identifier: &str) -> Option<PathBuf> {
     }
 }
 
+/// Machine-local data (caches that must not roam — upstream's
+/// `app_local_data_dir`): the OS local data dir per identifier in the default
+/// layout, the custom base's `system/` (its data side) otherwise.
+pub fn local_data_dir(layout: &Layout, defaults: &(PathBuf, PathBuf)) -> PathBuf {
+    match layout {
+        Layout::Default => {
+            let identifier = defaults.1.file_name().map(PathBuf::from).unwrap_or_default();
+            dirs::data_local_dir().map(|d| d.join(identifier)).unwrap_or_else(|| defaults.1.clone())
+        }
+        Layout::Custom(base) => base.join("system"),
+    }
+}
+
 /// `~` and `~/rest` expand to `home`; anything else is taken literally.
 fn expand_tilde(input: &str, home: &Path) -> PathBuf {
     let trimmed = input.trim();

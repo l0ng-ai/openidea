@@ -48,6 +48,11 @@ struct CachedMavenProject {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct MavenCache {
+    /// Bumped whenever what the cache holds stops matching what the model would be
+    /// built as now (plugin goals read from a descriptor, say): an older cache is
+    /// dropped instead of shadowing the model.
+    #[serde(default)]
+    version: u32,
     hash: String,
     at_ms: f64,
     error: Option<String>,
@@ -66,6 +71,7 @@ struct GradleCache {
 }
 
 const MAVEN_CACHE: &str = "maven.json";
+const MAVEN_CACHE_VERSION: u32 = 1;
 
 /// `dependency:tree` of a plugin version whose `-Dverbose` lists the occurrences Maven
 /// omitted (conflicts, duplicates): verbose output was dropped in 3.0 and is back since 3.2.
@@ -121,6 +127,9 @@ fn now_ms() -> f64 {
 /// Merges the cached effective build into `model`.
 pub fn apply_maven_cache(root: &Path, cache_dir: &Path, model: &mut MavenModel) {
     let Some(cache) = read_cache::<MavenCache>(cache_dir, MAVEN_CACHE) else { return };
+    if cache.version != MAVEN_CACHE_VERSION {
+        return; // built by an older IDE: what it holds no longer matches the model
+    }
     model.synced_at = Some(cache.at_ms);
     model.sync_error = cache.error;
     let changed = cache.hash != hash_files(&maven::build_files(root, model));
@@ -211,8 +220,31 @@ pub fn sync_maven(
     let mut model = maven::load(root);
     maven::UnlinkedProjects::from_model(&model, &options.maven_settings).filter(&mut model);
     std::fs::create_dir_all(cache_dir)?;
-    let mut cache =
-        MavenCache { hash: hash_files(&maven::build_files(root, &model)), verbose: true, ..MavenCache::default() };
+    let mut cache = MavenCache {
+        version: MAVEN_CACHE_VERSION,
+        hash: hash_files(&maven::build_files(root, &model)),
+        verbose: true,
+        ..MavenCache::default()
+    };
+    // Where the build resolves its jars, and therefore where the plugin goals are read
+    // from: `-Dmaven.repo.local=` first, then `<localRepository>` of the `-s` settings,
+    // then the user's default repository (which `plugin()` resolves itself).
+    let local_repo: Option<PathBuf> =
+        options.maven_options.iter().find_map(|a| a.strip_prefix("-Dmaven.repo.local=")).map(PathBuf::from).or_else(
+            || {
+                let mut args = options.maven_options.iter();
+                while let Some(arg) = args.next() {
+                    let path = match arg.as_str() {
+                        "-s" | "--settings" => args.next().map(String::as_str),
+                        _ => arg.strip_prefix("-s=").or_else(|| arg.strip_prefix("--settings=")),
+                    };
+                    if let Some(path) = path {
+                        return maven::local_repository_of(Path::new(path));
+                    }
+                }
+                None
+            },
+        );
     let mut errors: Vec<String> = Vec::new();
     for (n, top) in model.projects.iter().filter(|p| !p.aggregated).enumerate() {
         let effective = cache_dir.join(format!("effective-pom-{n}.xml"));
@@ -244,8 +276,9 @@ pub fn sync_maven(
                 });
             }
         })?;
-        let effective_projects =
-            std::fs::read_to_string(&effective).map(|t| maven::parse_effective_pom(&t)).unwrap_or_default();
+        let effective_projects = std::fs::read_to_string(&effective)
+            .map(|t| maven::parse_effective_pom_in(&t, local_repo.as_deref()))
+            .unwrap_or_default();
         let trees = maven::parse_dependency_tree(&out.text);
         for (key, plugins, deps) in effective_projects {
             let dependencies = trees.iter().find(|(k, _)| *k == key).map(|(_, t)| t.clone()).unwrap_or(deps);
@@ -335,6 +368,7 @@ mod tests {
         let mut model = maven::load_with_repo(&root, None);
         assert!(model.synced_at.is_none());
         let cache = MavenCache {
+            version: MAVEN_CACHE_VERSION,
             hash: hash_files(&maven::build_files(&root, &model)),
             at_ms: 5.0,
             error: None,
@@ -346,6 +380,7 @@ mod tests {
                     "maven-clean-plugin",
                     Some("3.2.0".into()),
                     &[],
+                    None,
                 )],
                 dependencies: vec![MavenDependency { artifact_id: "dep".into(), ..MavenDependency::default() }],
             }],
@@ -369,6 +404,41 @@ mod tests {
         assert!(model.stale);
         // The POM changed: the stale effective dependencies must not hide the new one (#249).
         assert_eq!(model.projects[0].dependencies[0].artifact_id, "fresh");
+    }
+
+    #[test]
+    fn a_cache_from_an_older_ide_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("p");
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("pom.xml"), "<project><groupId>g</groupId><artifactId>a</artifactId></project>")
+            .unwrap();
+        let mut model = maven::load_with_repo(&root, None);
+        let cache = MavenCache {
+            // What an older build wrote: no plugin descriptors were read back then, so
+            // its goal lists would shadow the ones the model now knows.
+            version: 0,
+            hash: hash_files(&maven::build_files(&root, &model)),
+            at_ms: 5.0,
+            error: None,
+            verbose: true,
+            projects: vec![CachedMavenProject {
+                key: "g:a".into(),
+                plugins: vec![maven::plugin(
+                    "org.apache.maven.plugins",
+                    "maven-clean-plugin",
+                    Some("3.2.0".into()),
+                    &[],
+                    None,
+                )],
+                dependencies: vec![MavenDependency { artifact_id: "cached".into(), ..MavenDependency::default() }],
+            }],
+        };
+        write_cache(&cache_dir, MAVEN_CACHE, &cache).unwrap();
+        apply_maven_cache(&root, &cache_dir, &mut model);
+        assert!(model.synced_at.is_none(), "the cache is dropped, the model stays unsynced");
+        assert!(model.projects[0].dependencies.iter().all(|d| d.artifact_id != "cached"));
     }
 
     #[test]

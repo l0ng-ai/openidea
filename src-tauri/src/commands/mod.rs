@@ -16,6 +16,7 @@ pub mod clipboard;
 pub mod coverage;
 pub mod db;
 pub mod debug;
+pub mod dependencies;
 pub mod deploy;
 pub mod doc;
 pub mod docker;
@@ -196,6 +197,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::fs_resolve_reference,
         nav::path_completions,
         nav::web_unresolved_references,
+        dependencies::dependency_versions,
         spell::spell_check,
         spell::spell_suggest,
         search::search_start,
@@ -302,6 +304,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_changelists_save,
         vcs::vcs_write_patch,
         term::term_spawn,
+        term::term_store_image,
         term::term_write,
         term::term_resize,
         term::term_kill,
@@ -309,6 +312,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         term::term_default_shell,
         term::term_available_shells,
         run::run_configs,
+        run::run_dotnet_resolve,
         run::run_save_configs,
         run::run_templates,
         run::run_save_templates,

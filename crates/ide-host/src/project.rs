@@ -112,7 +112,7 @@ impl Host {
         let project_key = project_key(&root);
         let index = ProjectIndex::open(
             &root,
-            &self.data_dir.join("index").join(&project_key),
+            &self.local_data_dir.join("index").join(&project_key),
             index_roots(&root, extra_roots.clone()),
             excludes.clone(),
             languages.clone(),
@@ -127,11 +127,11 @@ impl Host {
         {
             let settings = settings.clone();
             let root = root.clone();
-            let data_dir = self.data_dir.clone();
             // Two roots fork here: managed tools (bundles, jdtls runtimes) come
             // from the tools home (a custom base, else the data dir), while the
-            // jdtls -data workspace below stays per-project under the data dir.
+            // jdtls -data workspace below uses the machine-local data dir.
             let tools_root = ide_tools::app_root(&self.data_dir);
+            let data_dir = self.local_data_dir.clone();
             let config_dir = self.config_dir.clone();
             let sink = sink.clone();
             let formatter_problem = std::sync::Mutex::new(None);
@@ -259,8 +259,8 @@ impl Host {
 
         let kotlin_bridge = crate::kotlin_bridge::KotlinBridge::new(
             root.clone(),
-            self.data_dir.join("cache").join(&project_key).join("build"),
-            &self.data_dir,
+            self.local_data_dir.join("cache").join(&project_key).join("build"),
+            &self.local_data_dir,
             settings.clone(),
             lsp.clone(),
             sink.clone(),
@@ -389,7 +389,7 @@ impl Host {
 
         let (db, http_history, agents) = self.project_services(&root, &project_key);
         let notebooks = crate::notebook::NotebookService::new(
-            self.data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
+            self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
         );
         ide_agent::registry::maintain(crate::ops::agent::registry_paths(self));
@@ -408,9 +408,9 @@ impl Host {
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
             detected_roots,
-            cache_dir: self.data_dir.join("cache").join(&project_key),
+            cache_dir: self.local_data_dir.join("cache").join(&project_key),
             java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
-                self.data_dir.join("cache").join(&project_key).join("build"),
+                self.local_data_dir.join("cache").join(&project_key).join("build"),
             )),
             db,
             http_history,
@@ -513,11 +513,11 @@ impl Host {
         let project_key = project_key(&dir);
         let (db, http_history, agents) = self.project_services(&dir, &project_key);
         let notebooks = crate::notebook::NotebookService::new(
-            self.data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
+            self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
         );
         let project = Arc::new(Project {
-            trusted: Arc::new(AtomicBool::new(true)),
+            trusted: Arc::new(AtomicBool::new(false)),
             sink,
             languages,
             settings,
@@ -530,9 +530,9 @@ impl Host {
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
             detected_roots: Arc::default(),
-            cache_dir: self.data_dir.join("cache").join(&project_key),
+            cache_dir: self.local_data_dir.join("cache").join(&project_key),
             java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
-                self.data_dir.join("cache").join(&project_key).join("build"),
+                self.local_data_dir.join("cache").join(&project_key).join("build"),
             )),
             db,
             http_history,

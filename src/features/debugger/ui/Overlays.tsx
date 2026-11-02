@@ -13,7 +13,7 @@ import {
   updateBreakpoint,
   useBreakpoints,
 } from "../breakpoints/store";
-import { activeSession, addWatch, evaluate, isLive, startSession, useDebug } from "../state";
+import { activeSession, addWatch, evaluate, isLive, startSession, useDebug, resumeExecution } from "../state";
 import {
   addMethodBreakpoint,
   removeAllSpecial,
@@ -261,7 +261,7 @@ function BreakpointFields({
 }
 
 function specialTitle(b: SpecialBreakpoint): string {
-  return b.kind === "method" ? b.name || "(no method)" : b.label;
+  return b.kind === "method" ? b.name || tx("(no method)") : b.label;
 }
 
 /** Properties popover of a method breakpoint / field watchpoint (right-click on its gutter icon). */
@@ -489,7 +489,9 @@ function BreakpointsDialog() {
                     {basename(r.path)}:{r.bp.line + 1}
                   </span>
                   <span className={styles.bpDir}>{relativePath(root, r.path)}</span>
-                  {isConditional(r.bp) && <span className={styles.bpCond}>{suspends(r.bp) ? "if" : "log"}</span>}
+                  {isConditional(r.bp) && (
+                    <span className={styles.bpCond}>{suspends(r.bp) ? tx("if") : tx("log")}</span>
+                  )}
                   {r.bp.temporary && (
                     <span className={styles.bpCond}>
                       <T>temp</T>
@@ -536,7 +538,7 @@ function ExceptionBreakpoints({ open }: { open: boolean }) {
             key={g.adapter}
             className={styles.exceptionGroup}
             role="group"
-            aria-label={`${g.adapter} exception filters`}
+            aria-label={tx`${g.adapter} exception filters`}
           >
             {groups.length > 1 && <div className={styles.exceptionAdapter}>{g.adapter}</div>}
             {g.filters.map((f) => (
@@ -982,7 +984,9 @@ function SmartStepChooser() {
   const pick = (targetId: number) => {
     if (!state) return;
     close();
-    void call(commands.debugStepInTarget(state.session, state.thread, targetId)).catch((e) =>
+    void resumeExecution(state.session, () =>
+      call(commands.debugStepInTarget(state.session, state.thread, targetId)),
+    ).catch((e) =>
       notifications().notify({ group: "run", level: "error", title: "Smart Step Into failed", body: errorText(e) }),
     );
   };

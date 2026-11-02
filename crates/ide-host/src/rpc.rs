@@ -231,6 +231,9 @@ impl Dispatcher {
             let on_output = c.channel("onOutput")?;
             ops::term::spawn(&c.host, &c.window, c.arg("options")?, on_output)
         })
+        .add("term_store_image", |c| async move {
+            ops::term::store_image(&c.host, c.arg("id")?, c.arg("data")?, c.arg("mime")?).await
+        })
         .add("term_write", |c| async move { ops::term::write(&c.host, c.arg("id")?, &c.arg::<String>("data")?) })
         .add("term_resize", |c| async move { ops::term::resize(&c.host, c.arg("id")?, c.arg("cols")?, c.arg("rows")?) })
         .add("term_kill", |c| async move { ops::term::kill(&c.host, c.arg("id")?) })

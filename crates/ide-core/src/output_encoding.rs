@@ -215,13 +215,21 @@ fn fix_kind(
 }
 
 /// `vmArgs` of a launch by java-debug, which decodes the JVM's output as `encoding`
-/// (its launch attribute, UTF-8 when unset) and sets `file.encoding` itself.
-pub fn java_debug_vm_args(vm_args: &str, encoding: Option<&str>, windows: bool) -> Option<String> {
+/// (its launch attribute, UTF-8 when unset). java-debug sets `file.encoding` only
+/// when that attribute is nonblank; use the same defaults and user overrides as [`fix`].
+pub fn java_debug_vm_args(
+    vm_args: &str,
+    vars: &BTreeMap<String, String>,
+    inherited: impl Fn(&str) -> Option<String>,
+    encoding: Option<&str>,
+    windows: bool,
+) -> Option<String> {
     let encoding = encoding.map(str::trim).filter(|e| !e.is_empty()).unwrap_or("UTF-8");
-    if (!windows && is_utf8(encoding)) || sets(vm_args, STD_PROPERTIES) {
+    let added = fix_kind(Kind::Java, Some(&[vm_args.to_owned()]), vars, inherited, encoding, windows).java_args;
+    if added.is_empty() {
         return None;
     }
-    let added = options(STD_PROPERTIES, encoding).join(" ");
+    let added = added.join(" ");
     Some(match vm_args.trim() {
         "" => added,
         own => format!("{own} {added}"),
@@ -446,12 +454,53 @@ mod tests {
 
     #[test]
     fn java_debug_launches_write_what_java_debug_decodes() {
-        assert_eq!(java_debug_vm_args("", None, true).as_deref(), Some(TOOL_UTF8));
-        assert_eq!(java_debug_vm_args("-Xmx1g", Some(""), true), Some(format!("-Xmx1g {TOOL_UTF8}")));
-        assert_eq!(java_debug_vm_args("", Some("GBK"), true).unwrap().split(' ').next(), Some("-Dstdout.encoding=GBK"));
-        assert_eq!(java_debug_vm_args("-Dstdout.encoding=GBK", None, true), None);
-        assert_eq!(java_debug_vm_args("-Xmx1g", None, false), None);
-        assert!(java_debug_vm_args("", Some("GBK"), false).is_some());
+        let debug =
+            |args: &str, encoding, windows| java_debug_vm_args(args, &BTreeMap::new(), |_| None, encoding, windows);
+        for encoding in [None, Some(""), Some("  "), Some("UTF-8"), Some("utf8")] {
+            let streams = encoding.filter(|e| !e.trim().is_empty()).unwrap_or("UTF-8");
+            let utf8 = format!("{} -Dfile.encoding=UTF-8", options(STD_PROPERTIES, streams).join(" "));
+            assert_eq!(debug("", encoding, true), Some(utf8.clone()));
+            assert_eq!(debug("-Xmx1g", encoding, true), Some(format!("-Xmx1g {utf8}")));
+            assert_eq!(debug("-Xmx1g", encoding, false), None);
+        }
+        for windows in [true, false] {
+            assert_eq!(debug("", Some("GBK"), windows), Some(options(STD_PROPERTIES, "GBK").join(" ")));
+        }
+    }
+
+    #[test]
+    fn java_debug_preserves_user_options_independently() {
+        let debug = |args: &str| java_debug_vm_args(args, &BTreeMap::new(), |_| None, None, true);
+        assert_eq!(debug("-Dfile.encoding=GBK"), Some(format!("-Dfile.encoding=GBK {TOOL_UTF8}")));
+        for property in STD_PROPERTIES {
+            let args = format!("-D{property}=GBK");
+            assert_eq!(debug(&args), Some(format!("{args} -Dfile.encoding=UTF-8")));
+            assert_eq!(debug(&format!("{args} -Dfile.encoding=GBK")), None);
+        }
+        for key in ["JDK_JAVA_OPTIONS", TOOL_OPTIONS] {
+            for (own, expected) in [
+                ("-Dfile.encoding=GBK", Some(TOOL_UTF8.to_owned())),
+                ("-Dstdout.encoding=GBK", Some("-Dfile.encoding=UTF-8".to_owned())),
+                ("-Dstdout.encoding=GBK -Dfile.encoding=GBK", None),
+            ] {
+                assert_eq!(java_debug_vm_args("", &vars(&[(key, own)]), |_| None, None, true), expected);
+                assert_eq!(
+                    java_debug_vm_args("", &BTreeMap::new(), |k| (k == key).then(|| own.to_owned()), None, true),
+                    expected
+                );
+            }
+            // A launch environment value overrides the inherited one, as in Run.
+            assert_eq!(
+                java_debug_vm_args(
+                    "",
+                    &vars(&[(key, "")]),
+                    |k| (k == key).then(|| "-Dfile.encoding=GBK".into()),
+                    None,
+                    true
+                ),
+                Some(format!("{TOOL_UTF8} -Dfile.encoding=UTF-8"))
+            );
+        }
     }
 
     fn filtered(chunks: &[&str]) -> String {

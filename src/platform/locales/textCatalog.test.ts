@@ -74,12 +74,27 @@ const UNCHECKED_FILES = new Set([
   "src/features/templates/postfix/model.ts",
 ]);
 
-/** Entries for text the code assembles from parts, which no literal spells out. */
-const BUILT_AT_RUNTIME = new Set<string>([]);
+/**
+ * Entries for text the code assembles from parts, which no literal spells out.
+ * `services/store.ts` derives the success/failure titles of streaming tasks from the
+ * running task's title (the `…` stripped, and `" failed"` appended to it).
+ */
+const BUILT_AT_RUNTIME = new Set<string>([
+  "Pulling {name}",
+  "Pulling {name} failed",
+  "Pruning {name}",
+  "Pruning {name} failed",
+  "Compose {op} {name}",
+  "Compose {op} {name} failed",
+]);
 
 /** Text that stays as written in every locale: names, code, formats, shortcuts. */
 const UNTRANSLATED = new Set<string>([
+  "dotnet test",
+  "netcoredbg (.NET)",
   // Product names
+  "Cargo",
+  "CMake",
   "Prettier",
   "IntelliJ IDEA",
   // Go environment variables and placeholder values
@@ -214,8 +229,8 @@ const UNTRANSLATED = new Set<string>([
   "NAME=value; OTHER=value",
   "node_modules/typescript",
   "PascalCase",
+  "pylyzer --server",
   "pyproject.toml, .git",
-  "ruff server",
   "run pytest",
   "snake_case",
   "tests",
@@ -486,6 +501,21 @@ function scanTypeScript(): Scan {
   return { translated, literals, untranslatable, spliced };
 }
 
+/** Read strings without letting a Rust character literal open a string match. */
+function backendLiterals(source: string): string[] {
+  const out: string[] = [];
+  for (const m of source.matchAll(/'(?:\\.|[^'\\\r\n])'|"((?:[^"\\]|\\.)*)"/g)) {
+    if (m[1] !== undefined) out.push(m[1]);
+  }
+  return out;
+}
+
+it("reads backend messages after quote character literals", () => {
+  expect(
+    backendLiterals(`let quote = '"'; let message = "Select a .NET project"; let detail = "Expected 'x'";`),
+  ).toEqual(["Select a .NET project", "Expected 'x'"]);
+});
+
 /** String literals of the Rust crates and language definitions (backend messages). */
 function scanBackend(literals: Set<string>) {
   const files = [
@@ -494,7 +524,7 @@ function scanBackend(literals: Set<string>) {
     ...walk(`${ROOT}languages`, (p) => p.endsWith(".toml")),
   ];
   for (const file of files)
-    for (const m of readFileSync(file, "utf8").matchAll(/"((?:[^"\\]|\\.)*)"/g)) literals.add(shape(m[1]!));
+    for (const literal of backendLiterals(readFileSync(file, "utf8"))) literals.add(shape(literal));
 }
 
 /** Text that needs no translation: no words, a path / glob / option, or listed in `UNTRANSLATED`. */
