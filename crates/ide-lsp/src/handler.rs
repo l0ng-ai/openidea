@@ -11,9 +11,18 @@ use ide_jsonrpc::{Handler, codes};
 use lsp_types as lsp;
 use serde_json::{Value, json};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 /// Progress token standing for `angular/projectLoadingStart` … `Finish`.
 const ANGULAR_LOADING: &str = "angular/projectLoading";
+
+/// How often a running progress token's silence is checked.
+const PROGRESS_SWEEP: Duration = Duration::from_secs(15);
+/// A token that reports nothing this long is stuck: jdtls's `Importing Maven project(s)`
+/// waits minutes on one repository that never answers (`DefaultMetadataResolver` awaits its
+/// whole batch), and a task frozen at one percent is not progress. Closing it leaves the
+/// server reading ready while the work it started keeps running.
+const PROGRESS_STALE: Duration = Duration::from_secs(180);
 
 pub struct ClientHandler {
     mgr: Weak<LspManager>,
@@ -48,12 +57,13 @@ impl ClientHandler {
             other => other.to_string(),
         };
         let value = &params["value"];
+        let kind = value.get("kind").and_then(Value::as_str);
         let message = value.get("message").and_then(Value::as_str).map(str::to_owned);
         let fraction = value.get("percentage").and_then(Value::as_f64).map(|p| (p / 100.0).clamp(0.0, 1.0) as f32);
         let cancellable = value.get("cancellable").and_then(Value::as_bool);
         let event = {
             let mut progress = self.server.progress.lock();
-            match value.get("kind").and_then(Value::as_str) {
+            match kind {
                 Some("begin") => {
                     let title = value
                         .get("title")
@@ -64,11 +74,21 @@ impl ClientHandler {
                     let task = TaskId::next();
                     let cancel = (cancellable == Some(true)).then(|| self.cancel_handle(task, &params["token"]));
                     let cancellable = cancel.is_some();
-                    progress.insert(token, Progress { task, title: title.clone(), message: message.clone(), cancel });
+                    progress.insert(
+                        token.clone(),
+                        Progress {
+                            task,
+                            title: title.clone(),
+                            message: message.clone(),
+                            cancel,
+                            last: tokio::time::Instant::now(),
+                        },
+                    );
                     IdeEvent::Task { id: task, title, message, fraction, done: false, cancellable }
                 }
                 Some("report") => {
                     let Some(p) = progress.get_mut(&token) else { return };
+                    p.last = tokio::time::Instant::now();
                     if message.is_some() {
                         p.message = message;
                     }
@@ -107,6 +127,70 @@ impl ClientHandler {
         self.server.refresh_busy_status(mgr.sink());
         if ended {
             self.server.progress_ended();
+        } else if kind == Some("begin") {
+            self.watch_progress(mgr, token);
+        }
+    }
+
+    /// A task that reports nothing for [`PROGRESS_STALE`] is dead: the work behind it is
+    /// blocked on something that never answers, and a bar frozen at one percent is not
+    /// progress. Closing it clears the status bar and leaves the server reading ready while
+    /// that work keeps running, the way IDEA's background tasks never hold the IDE.
+    fn watch_progress(&self, mgr: &LspManager, token: String) {
+        let (weak, server, generation) = (self.mgr.clone(), self.server.clone(), self.generation);
+        // The notification runs on a reader thread, not inside a runtime.
+        mgr.runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(PROGRESS_SWEEP).await;
+                let Some(mgr) = weak.upgrade() else { return };
+                if server.running_gen(generation).is_none() || !server.has_progress(&token) {
+                    return; // the instance is gone, or the task ended normally
+                }
+                if server.progress_silent(&token, PROGRESS_STALE) {
+                    tracing::warn!(
+                        "{}: progress '{token}' reported nothing for {} s; closing its task",
+                        server.name,
+                        PROGRESS_STALE.as_secs()
+                    );
+                    ClientHandler::new(Arc::downgrade(&mgr), server.clone(), generation).close_progress(&mgr, &token);
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Ends the task of `token` without the server's `end`, and says so: a task that
+    /// disappears on its own is otherwise a puzzle.
+    fn close_progress(&self, mgr: &LspManager, token: &str) {
+        let (event, title) = {
+            let mut progress = self.server.progress.lock();
+            let Some(p) = progress.remove(token) else { return };
+            (
+                IdeEvent::Task {
+                    id: p.task,
+                    title: p.title.clone(),
+                    message: p.message,
+                    fraction: None,
+                    done: true,
+                    cancellable: false,
+                },
+                p.title,
+            )
+        };
+        mgr.sink().emit(event);
+        self.server.refresh_busy_status(mgr.sink());
+        self.server.progress_ended();
+        let text = format!(
+            "'{title}' reported nothing for {} s; its task was closed. Work blocked on something \
+             that never answers — a Maven repository, a stopped process — no longer holds the IDE.",
+            PROGRESS_STALE.as_secs()
+        );
+        if mgr.first_message(&self.server.name, &text) {
+            mgr.sink().emit(IdeEvent::Notify {
+                level: NotifyLevel::Warning,
+                title: self.server.name.clone(),
+                body: Some(text),
+            });
         }
     }
 
