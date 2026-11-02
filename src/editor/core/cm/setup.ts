@@ -28,7 +28,7 @@ import type { EditorConfigProps } from "@/bindings";
 import type { EditorSettings } from "@/platform/ipc";
 import { editorPrefs, lineCommentStyleFor, type EditorExtras } from "@/platform/editorSettings";
 import { BUNDLED_MONO_FAMILY, monoFontFamily } from "@/platform/fonts";
-import { editorContributions, type EditorDocContext } from "@/editor/api";
+import { editorContributions, HEAVY_LIMIT, type EditorDocContext } from "@/editor/api";
 import { distractionFreeWidth, isDistractionFree } from "@/workbench/distractionFree";
 import { openideaHighlightStyle } from "./highlight";
 import { openideaTheme } from "./theme";
@@ -78,8 +78,7 @@ export function prefsOf(settings: EditorSettings | undefined): EditorExtras {
   return editorPrefs({ editor: settings });
 }
 
-/** Documents above this size (UTF-16 units) skip per-line decorations. */
-export const HEAVY_LIMIT = 8_000_000;
+export { HEAVY_LIMIT } from "@/editor/api";
 
 export interface EffectiveIndent {
   tabSize: number;
