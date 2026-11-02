@@ -371,6 +371,18 @@ export function registerDeploymentActions(): () => void {
       },
     },
     {
+      id: "deployment.syncWithDefault",
+      title: "Sync with Deployed to Default Server",
+      description: "Compare local files with the default deployment server and synchronize them",
+      category: CATEGORY,
+      when,
+      keywords: ["deploy", "sftp", "compare", "synchronize", "remote", "diff"],
+      run: withTargets(async (paths) => {
+        const server = await defaultServer("Sync with Deployed to", paths);
+        if (server) await openSync(server, paths);
+      }),
+    },
+    {
       id: "deployment.deleteFromServer",
       title: "Delete from Server",
       description: "Delete the remote copies of the selected files and folders on the default server",

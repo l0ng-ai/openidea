@@ -1,4 +1,5 @@
 /** Pure helpers of the deployment feature: target paths, sync defaults, reports, remote paths. */
+import { tx } from "@/platform/i18n";
 import type { SyncAction, SyncEntry, SyncStatus, TransferReport } from "@/platform/ipc";
 import type { DeploymentServerValid, DeploymentSettingsValid, SshAuthValid } from "@/platform/remoteSettings";
 
@@ -86,6 +87,24 @@ export function resolveServer(settings: DeploymentSettingsValid, id: string | nu
 }
 
 export const serverLabel = (s: Pick<DeploymentServerValid, "id" | "name">) => s.name.trim() || s.id;
+
+/** Transfer entries of the Deployment menu: named after the default server, choosers when there are several. */
+export function transferMenuEntries(settings: DeploymentSettingsValid): { action: string; label?: string }[] {
+  const target = resolveServer(settings, null);
+  const name = target && serverLabel(target);
+  const named = target
+    ? [
+        { action: "deployment.uploadToDefault", label: tx`Upload to ${name}` },
+        { action: "deployment.downloadFromDefault", label: tx`Download from ${name}` },
+        { action: "deployment.syncWithDefault", label: tx`Sync with Deployed to ${name}…` },
+      ]
+    : [];
+  const choosers =
+    settings.servers.length > 1 || !target
+      ? [{ action: "deployment.uploadTo" }, { action: "deployment.downloadFrom" }, { action: "deployment.syncWith" }]
+      : [];
+  return [...named, ...choosers];
+}
 
 export interface ReportSummary {
   level: "info" | "warning" | "error";

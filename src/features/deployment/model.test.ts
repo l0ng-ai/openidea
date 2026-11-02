@@ -12,6 +12,7 @@ import {
   resolveServer,
   sshRemedy,
   summarizeReport,
+  transferMenuEntries,
   syncChoices,
   syncSteps,
   targetPaths,
@@ -100,6 +101,16 @@ describe("servers and reports", () => {
     expect(resolveServer({ ...DEFAULT_DEPLOYMENT, servers: [a, b], defaultServer: "" }, null)).toBeNull();
     expect(resolveServer({ ...DEFAULT_DEPLOYMENT, servers: [a], defaultServer: "" }, null)?.id).toBe("a");
     expect(resolveServer({ ...DEFAULT_DEPLOYMENT, servers: [a, b], defaultServer: "b" }, "a")?.id).toBe("a");
+  });
+
+  it("names the menu's transfers after the default server", () => {
+    const actions = (servers: (typeof a)[], defaultServer: string) =>
+      transferMenuEntries({ ...DEFAULT_DEPLOYMENT, servers, defaultServer }).map((e) => e.label ?? e.action);
+    const named = ["Upload to Staging", "Download from Staging", "Sync with Deployed to Staging…"];
+    const choosers = ["deployment.uploadTo", "deployment.downloadFrom", "deployment.syncWith"];
+    expect(actions([a], "")).toEqual(named);
+    expect(actions([a, b], "a")).toEqual([...named, ...choosers]);
+    expect(actions([a, b], "")).toEqual(choosers);
   });
 
   it("summarizes transfer reports", () => {
