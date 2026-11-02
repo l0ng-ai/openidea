@@ -25,6 +25,25 @@ pub fn posix(rel: &Path) -> String {
         .join("/")
 }
 
+/// The folder of a mapping's local path: relative to the project (a leading `/` is the
+/// project root too), or absolute inside it as IntelliJ's deployment settings write it.
+fn local_folder(local: &str, project_root: &Path) -> PathBuf {
+    let path = Path::new(local);
+    if path.is_absolute() {
+        if let Ok(rel) = path.strip_prefix(project_root) {
+            return project_root.join(rel);
+        }
+        // The same folder spelled differently (symlink, letter case).
+        if let (Ok(path), Ok(root)) = (path.canonicalize(), project_root.canonicalize())
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            return project_root.join(rel);
+        }
+    }
+    let rel = local.trim_matches('/');
+    if rel.is_empty() { project_root.to_path_buf() } else { project_root.join(rel) }
+}
+
 impl Mappings {
     /// `remote_root` is the server root resolved on the host (its login
     /// directory when the setting is empty). A server without mappings maps the
@@ -34,10 +53,10 @@ impl Mappings {
             .mappings
             .iter()
             .map(|m| {
-                let local = m.local.trim().trim_matches('/');
-                let local = if local.is_empty() { project_root.to_path_buf() } else { project_root.join(local) };
+                let local = local_folder(m.local.trim(), project_root);
                 // Relative to the server root, with or without a leading `/`.
                 let deployment = m.deployment.trim().trim_start_matches("./").trim_matches('/');
+                let deployment = if deployment == "." { "" } else { deployment };
                 let remote = if deployment.is_empty() { remote_root.to_owned() } else { join(remote_root, deployment) };
                 (local, remote.trim_end_matches('/').to_owned(), m.web.trim().trim_matches('/').to_owned())
             })
@@ -201,6 +220,25 @@ mod tests {
         let m = Mappings::new(&server(vec![]), Path::new("/p"), "/srv/app");
         assert_eq!(m.remote(Path::new("/p/a/b.txt")).as_deref(), Some("/srv/app/a/b.txt"));
         assert_eq!(m.local("/srv/app"), Some(PathBuf::from("/p")));
+    }
+
+    #[test]
+    fn local_paths_may_be_absolute_inside_the_project() {
+        let root = Path::new("/p");
+        let m = Mappings::new(&server(vec![("/p", "/", ""), ("/p/static/", "cdn", "")]), root, "/mnt/deploy");
+        assert_eq!(m.remote(Path::new("/p/src/a.py")).as_deref(), Some("/mnt/deploy/src/a.py"));
+        assert_eq!(m.remote(Path::new("/p/static/x.css")).as_deref(), Some("/mnt/deploy/cdn/x.css"));
+        assert_eq!(m.local("/mnt/deploy/cdn/x.css"), Some(PathBuf::from("/p/static/x.css")));
+        // A leading `/` that is not the project stays project-relative.
+        let m = Mappings::new(&server(vec![("/static/", "", "")]), root, "/mnt/deploy");
+        assert_eq!(m.remote(Path::new("/p/static/x.css")).as_deref(), Some("/mnt/deploy/x.css"));
+    }
+
+    #[test]
+    fn deployment_dot_is_the_server_root() {
+        let m = Mappings::new(&server(vec![("", ".", "")]), Path::new("/p"), "/mnt/deploy");
+        assert_eq!(m.remote(Path::new("/p/a.txt")).as_deref(), Some("/mnt/deploy/a.txt"));
+        assert_eq!(m.local("/mnt/deploy/a.txt"), Some(PathBuf::from("/p/a.txt")));
     }
 
     #[test]

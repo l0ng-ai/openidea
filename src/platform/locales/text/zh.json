@@ -4234,7 +4234,7 @@
   "Use as Default": "设为默认",
   "Mappings actions": "映射操作",
   "No mappings: nothing is deployed": "没有映射：不会部署任何内容",
-  "Local paths are relative to the project root (empty: the whole project); deployment paths are relative to the server's root path.": "本地路径相对于项目根目录（为空表示整个项目）；部署路径相对于服务器的根路径。",
+  "Local paths are relative to the project root or absolute inside it (empty: the whole project); deployment paths are relative to the server's root path.": "本地路径相对于项目根目录，或为项目内的绝对路径（为空表示整个项目）；部署路径相对于服务器的根路径。",
   "No excluded paths": "没有排除的路径",
   "Excluded remote paths": "排除的远程路径",
   "Remote paths that are never uploaded to, downloaded from or deleted.": "这些远程路径永远不会被上传、下载或删除。",

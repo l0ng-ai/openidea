@@ -142,14 +142,20 @@ describe("remote paths", () => {
     const mappings = [
       { local: "", deployment: "", web: "" },
       { local: "public", deployment: "htdocs", web: "" },
-      { local: "shared", deployment: "/opt/shared", web: "" },
+      { local: `${ROOT}/shared/`, deployment: "/opt/shared", web: "" },
     ];
     const map = (p: string) => localPathForRemote(p, "/var/www", mappings, ROOT);
     expect(map("/var/www/index.php")).toBe(`${ROOT}/index.php`);
     expect(map("/var/www/htdocs/css/a.css")).toBe(`${ROOT}/public/css/a.css`);
     expect(map("/var/www/htdocs")).toBe(`${ROOT}/public`);
-    expect(map("/opt/shared/lib")).toBe(`${ROOT}/shared/lib`);
+    expect(map("/var/www/opt/shared/lib")).toBe(`${ROOT}/shared/lib`);
+    expect(map("/opt/shared/lib")).toBeNull();
     expect(map("/var/wwwx/a")).toBeNull();
     expect(map("/etc/passwd")).toBeNull();
+  });
+
+  it.each(["/", ".", "./", ""])("treats the deployment path %j as the server root", (deployment) => {
+    const mappings = [{ local: ROOT, deployment, web: "" }];
+    expect(localPathForRemote("/mnt/deploy/src/a.txt", "/mnt/deploy", mappings, ROOT)).toBe(`${ROOT}/src/a.txt`);
   });
 });

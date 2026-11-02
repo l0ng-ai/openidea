@@ -142,14 +142,16 @@ export function localPathForRemote(
 ): string | null {
   let best: { len: number; local: string } | null = null;
   for (const m of mappings) {
-    const deployed = m.deployment.startsWith("/")
-      ? m.deployment.replace(/\/+$/, "") || "/"
-      : joinRemote(root, m.deployment);
+    // Relative to the server root, with or without a leading `/` (as `ide-remote` resolves it).
+    const relative = m.deployment.trim().replace(/^(\.\/)+/, "");
+    const deployed = relative === "." ? root : joinRemote(root, relative);
     const within =
       remotePath === deployed || remotePath.startsWith(deployed === "/" ? "/" : `${deployed}/`) ? deployed : null;
     if (within === null || (best && best.len >= deployed.length)) continue;
     const rest = remotePath.slice(deployed.length).replace(/^\/+/, "");
-    const base = joinRemote(projectRoot, m.local);
+    const local = m.local.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+    const absolute = local === projectRoot || local.startsWith(`${projectRoot}/`);
+    const base = absolute ? local : joinRemote(projectRoot, local);
     best = { len: deployed.length, local: joinRemote(base, rest) };
   }
   return best?.local ?? null;

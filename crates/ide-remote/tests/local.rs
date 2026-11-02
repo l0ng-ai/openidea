@@ -112,6 +112,30 @@ async fn local_deployment_and_browser_share_all_paths() {
     assert!(!remote_file.exists());
 }
 
+/// #877: the mapping as IntelliJ shows it, an absolute local path and `/` on the server.
+#[tokio::test]
+async fn absolute_local_mapping_uploads_like_intellij() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    let target = tmp.path().join("target");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(root.join("src/a.txt"), "content").unwrap();
+    let mut settings = settings(&target);
+    let mapping = &mut settings.deployment.servers[0].mappings[0];
+    mapping.local = root.to_string_lossy().into_owned();
+    mapping.deployment = "/".into();
+    settings.deployment.servers[0].excluded_paths.clear();
+    let file = root.join("src/a.txt");
+    assert_eq!(ide_remote::coverage(&settings, &root, std::slice::from_ref(&file))[0].paths.len(), 1);
+    let report = service(tmp.path())
+        .upload(&settings, &root, Some("local"), &[file], CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!((report.files, report.skipped), (1, 0), "{report:?}");
+    assert_eq!(std::fs::read_to_string(target.join("src/a.txt")).unwrap(), "content");
+}
+
 #[tokio::test]
 async fn self_upload_download_and_aliases_never_destroy_content() {
     let tmp = tempfile::tempdir().unwrap();

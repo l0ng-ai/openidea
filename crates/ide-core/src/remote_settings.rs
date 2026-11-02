@@ -132,7 +132,7 @@ pub struct DeploymentServer {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DeploymentMapping {
-    /// Project-relative folder; empty = the project root.
+    /// Project-relative folder, or absolute inside the project; empty = the project root.
     pub local: String,
     /// Remote folder, relative to the server root (a leading `/` is the root too).
     pub deployment: String,

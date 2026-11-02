@@ -89,7 +89,9 @@ async function pickServer(title: string, paths: string[]): Promise<DeploymentSer
   if (!coverage) return null;
   const servers = configured.filter((server) => coverage.some((c) => c.server === server.id && c.paths.length));
   if (!servers.length) {
-    notifyNoCoverage();
+    // One server: say why, as an explicit upload to it would.
+    if (configured.length === 1) notifyNoCoverage(configured[0], coverage[0]?.skipped);
+    else notifyNoCoverage();
     return null;
   }
   const labels = servers.map(serverLabel);
