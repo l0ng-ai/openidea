@@ -23,7 +23,7 @@ export interface Band {
 }
 
 /** Pixel [top, bottom] of a chunk's range in `view`; an empty range is the boundary it sits on. */
-function extent(view: EditorView, from: number, to: number): [number, number] {
+export function extent(view: EditorView, from: number, to: number): [number, number] {
   const len = view.state.doc.length;
   if (from > len) {
     const end = view.lineBlockAt(len).bottom;
@@ -345,6 +345,6 @@ export class UnalignedPanes {
 }
 
 /** Offset of the document's top within the pane's scrolled content. */
-function docOffset(view: EditorView): number {
+export function docOffset(view: EditorView): number {
   return view.documentTop - view.scrollDOM.getBoundingClientRect().top + view.scrollDOM.scrollTop;
 }

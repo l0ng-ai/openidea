@@ -8,13 +8,17 @@ import { keymap } from "@codemirror/view";
 import { unifiedMergeView } from "@codemirror/merge";
 import type { MergeSides } from "@/bindings";
 import { embeddedEditorExtensions } from "@/editor/api";
+import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { shortcutLabel } from "@/platform/keymap";
 import { Button, IconButton, showContextMenu, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { blameSlot, toggleAnnotations } from "./blame";
 import { languageFor, viewerBase } from "./cm";
 import { confirmDialog } from "./dialogs";
+import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
+import { syncMergeScroll } from "./mergeScroll";
 import { initialResult, mergeTitles, resolutionText, type Resolution, type ResultConflict } from "./conflicts";
 import { baseName } from "./model";
 import { errorMessage, readWorkingText, runOp, writeFileText } from "./ops";
@@ -220,28 +224,10 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     setLeft(result.state.field(conflictField).conflicts.length);
     oursView.current = ours;
     theirsView.current = theirs;
-    // Scroll the three panes together (by scroll ratio), like IDEA's merge view.
-    const views = [ours, result, theirs];
-    let syncing = false;
-    const onScroll = (from: EditorView) => () => {
-      if (syncing) return;
-      syncing = true;
-      const s = from.scrollDOM;
-      const ratio = s.scrollTop / Math.max(1, s.scrollHeight - s.clientHeight);
-      for (const other of views) {
-        if (other === from) continue;
-        const o = other.scrollDOM;
-        o.scrollTop = ratio * Math.max(0, o.scrollHeight - o.clientHeight);
-      }
-      syncing = false;
-    };
-    const offs = views.map((v) => {
-      const h = onScroll(v);
-      v.scrollDOM.addEventListener("scroll", h, { passive: true });
-      return () => v.scrollDOM.removeEventListener("scroll", h);
-    });
+    // Scroll the three panes together, lined up through their changes.
+    const stopSync = syncMergeScroll({ ours, result, theirs });
     return () => {
-      offs.forEach((off) => off());
+      stopSync();
       ours.destroy();
       theirs.destroy();
       result.destroy();
@@ -313,17 +299,31 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     }
   };
 
-  // IDEA's merge view: F7 / Shift+F7 jump between conflicts; each side pane can
-  // annotate its version with Git Blame from the context menu.
-  // Each side pane blames on the branch it belongs to, so lines that only exist on
-  // the other branch show their real history instead of "Not Committed Yet".
+  // Next / Previous Difference (F7 / Shift+F7 by default) jump between conflicts through
+  // the keymap, as in the diff viewer.
+  // `goto` reads only refs, so the first render's one stays valid.
+  const [nav] = useState<DiffNavigator>(() => ({
+    next: () => goto(1),
+    prev: () => goto(-1),
+    jumpToSource: () => void editorService().openFile(path, { focus: true }),
+    applyChange: () => false,
+    file: () => {},
+    showSettings: () => {},
+  }));
+  useEffect(
+    () => () => {
+      if (focusedDiffNavigator() === nav) {
+        setFocusedDiffNavigator(null);
+        setContext("diffEditorFocus", false);
+      }
+    },
+    [nav],
+  );
+
+  // Each side pane can annotate its version with Git Blame from the context menu, on
+  // the branch it belongs to, so lines that only exist on the other branch show their
+  // real history instead of "Not Committed Yet".
   const otherRev = state?.sides.commit ?? "HEAD";
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "F7") {
-      e.preventDefault();
-      goto(e.shiftKey ? -1 : 1);
-    }
-  };
 
   const sideMenu = (e: React.MouseEvent, viewRef: { current: EditorView | null }, text: string, revision?: string) => {
     const view = viewRef.current;
@@ -358,10 +358,34 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     );
 
   return (
-    <div className={styles.root} onKeyDown={onKeyDown}>
+    <div
+      className={styles.root}
+      onFocusCapture={() => {
+        setFocusedDiffNavigator(nav);
+        setContext("diffEditorFocus", true);
+      }}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedDiffNavigator() === nav) {
+          setFocusedDiffNavigator(null);
+          setContext("diffEditorFocus", false);
+        }
+      }}
+    >
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Merge")}>
-        <IconButton icon="arrow-up" title="Previous Conflict" size="small" onClick={() => goto(-1)} />
-        <IconButton icon="arrow-down" title="Next Conflict" size="small" onClick={() => goto(1)} />
+        <IconButton
+          icon="arrow-up"
+          title="Previous Conflict"
+          shortcut={shortcutLabel("diff.prevDifference")}
+          size="small"
+          onClick={() => goto(-1)}
+        />
+        <IconButton
+          icon="arrow-down"
+          title="Next Conflict"
+          shortcut={shortcutLabel("diff.nextDifference")}
+          size="small"
+          onClick={() => goto(1)}
+        />
         <span className={styles.sep} />
         <Button size="small" onClick={() => acceptAll("ours")}>
           <T>Accept All Yours</T>
