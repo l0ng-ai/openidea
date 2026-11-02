@@ -595,7 +595,7 @@ mod tests {
         let root = tmp.path();
         std::fs::create_dir_all(root.join("apps/web/src")).unwrap();
         std::fs::write(root.join("apps/web/.oxlintrc.json"), "{}").unwrap();
-        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte"] {
+        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte", "astro"] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let oxlint = cfg.language_servers.iter().find(|s| s.name == "oxlint").unwrap();
             assert_eq!((oxlint.command.as_str(), oxlint.args.as_slice()), ("oxlint", ["--lsp".to_string()].as_slice()));
