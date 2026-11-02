@@ -4080,12 +4080,12 @@ dependencies = [
  "dirs 6.0.0",
  "dunce",
  "ide-core",
- "libc",
  "serde",
  "serde_json",
  "specta",
  "tempfile",
  "tracing",
+ "zip",
 ]
 
 [[package]]
@@ -4103,6 +4103,7 @@ version = "0.1.33"
 dependencies = [
  "dunce",
  "encoding_rs",
+ "libc",
  "serde",
  "serde_json",
  "specta",
@@ -4176,7 +4177,6 @@ name = "ide-docker"
 version = "0.1.33"
 dependencies = [
  "ide-core",
- "libc",
  "serde",
  "serde_json",
  "specta",
@@ -4203,7 +4203,6 @@ version = "0.1.33"
 dependencies = [
  "ide-core",
  "ide-vcs",
- "libc",
  "serde",
  "serde_json",
  "specta",
