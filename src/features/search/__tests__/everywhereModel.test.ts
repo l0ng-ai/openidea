@@ -250,7 +250,7 @@ describe("items and rows", () => {
   it("sectionsFor picks sources per tab and empty query", () => {
     expect(sectionsFor("all", true)).toEqual(["recent", "recentActions"]);
     expect(sectionsFor("classes", true)).toEqual([]);
-    expect(sectionsFor("all", false)).toEqual(["classes", "files", "symbols", "actions", "text"]);
+    expect(sectionsFor("all", false)).toEqual(["classes", "files", "symbols", "endpoints", "actions", "text"]);
     expect(sectionsFor("text", false)).toEqual(["text"]);
   });
 });

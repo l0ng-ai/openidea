@@ -1,6 +1,7 @@
 //! Tree-sitter driven structure: outline, folding, symbol tags, selection ranges, highlighting.
 
 mod cache;
+mod configuration;
 mod folding;
 mod grammars;
 mod highlight;
@@ -12,6 +13,7 @@ mod web;
 
 use crate::{FoldRange, LanguageConfig, LanguageRegistry, SymbolTag};
 pub use cache::{MAX_CACHED_TREES, SyntaxCache, SyntaxCacheStats};
+pub use configuration::ConfigurationKey;
 use grammars::{SPECS, Spec};
 pub use highlight::{SyntaxHighlightKind, SyntaxHighlights};
 use ide_core::{LanguageId, OutlineItem, Pos, Range};
