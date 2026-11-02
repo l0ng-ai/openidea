@@ -3,31 +3,74 @@ import { call, commands, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
 
-export interface RemotePasteTarget {
+export interface TerminalPasteTarget {
   id: TerminalId;
   supported: boolean;
+  remote: boolean;
+  shell: string;
   current: () => boolean;
 }
 
-type Target = () => RemotePasteTarget | null;
+type Target = () => TerminalPasteTarget | null;
 
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
 
-async function pasteImage(image: Blob, target: RemotePasteTarget, paste: (text: string) => void) {
+function pathsText(paths: readonly string[], target: TerminalPasteTarget): string {
+  const shell = target.shell.toLowerCase().replace(/\.exe$/, "");
+  return paths
+    .map((path) => {
+      if (shell === "cmd") {
+        if (/[%!"\r\n]/.test(path))
+          throw new Error(tx("Cannot paste this path safely in cmd.exe. Use PowerShell or a POSIX shell."));
+        return `"${path}"`;
+      }
+      if (shell === "powershell" || shell === "pwsh") return `'${path.replaceAll("'", "''")}'`;
+      return `'${path.replaceAll("'", "'\\''")}'`;
+    })
+    .join(" ");
+}
+
+function isMedia(type: string): boolean {
+  return /^(image|audio|video)\//.test(type);
+}
+
+function pasteError(error: unknown, target: TerminalPasteTarget | null | undefined) {
+  if (target?.current())
+    notifications().notify({
+      level: "error",
+      title: tx("Cannot paste clipboard media"),
+      body: error instanceof Error ? error.message : String(error),
+    });
+}
+
+function filePaths(transfer: DataTransfer): string[] {
+  const paths: string[] = [];
+  for (const line of transfer.getData("text/uri-list").split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    try {
+      const url = new URL(line);
+      if (url.protocol !== "file:") continue;
+      let path = decodeURIComponent(url.pathname);
+      if (url.hostname && url.hostname !== "localhost") path = `//${url.hostname}${path}`;
+      else if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+      paths.push(path);
+    } catch {
+      continue;
+    }
+  }
+  return paths;
+}
+
+async function pasteMedia(media: Blob, target: TerminalPasteTarget, paste: (text: string) => void) {
   try {
-    if (image.size > MAX_IMAGE_BYTES) throw new Error(tx`Image is too large to paste (limit ${20} MB).`);
-    const data = Array.from(new Uint8Array(await image.arrayBuffer()));
+    if (media.size > MAX_MEDIA_BYTES) throw new Error(tx`Clipboard media is too large to paste (limit ${20} MB).`);
+    const data = Array.from(new Uint8Array(await media.arrayBuffer()));
     if (!target.current()) return;
     if (!target.supported) throw new Error(tx("Remote server does not support image paste."));
-    const path = await call(commands.termStoreImage(target.id, data, image.type));
-    if (target.current()) paste(`'${path.replaceAll("'", "'\\''")}'`);
+    const path = await call(commands.termStoreImage(target.id, data, media.type));
+    if (target.current()) paste(pathsText([path], target));
   } catch (error) {
-    if (target.current())
-      notifications().notify({
-        level: "error",
-        title: tx("Cannot paste image"),
-        body: error instanceof Error ? error.message : String(error),
-      });
+    pasteError(error, target);
   }
 }
 
@@ -36,12 +79,29 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
   const onPaste = (event: ClipboardEvent) => {
     const transfer = event.clipboardData;
     const target = getTarget?.();
-    if (!event.defaultPrevented && target && transfer && !transfer.getData("text/plain")) {
-      const image = Array.from(transfer.files).find((file) => file.type.startsWith("image/"));
-      if (image) {
+    if (!event.defaultPrevented && target && transfer) {
+      const media = Array.from(transfer.files).find((file) => isMedia(file.type));
+      const files =
+        transfer.files.length ||
+        Array.from(transfer.types).some((type) => type === "Files" || type === "text/uri-list");
+      if ((!target.remote && files) || (media && !transfer.getData("text/plain"))) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        void pasteImage(image, { ...target, current: () => alive && target.current() }, paste);
+        const captured = { ...target, current: () => alive && target.current() };
+        void (async () => {
+          if (!captured.remote) {
+            const paths = filePaths(transfer);
+            const text = paths.length
+              ? pathsText(paths, captured)
+              : await readClipboardText(transfer, (paths) => pathsText(paths, captured));
+            if (!captured.current()) return;
+            if (text) {
+              paste(text);
+              return;
+            }
+          }
+          if (media) await pasteMedia(media, captured, paste);
+        })().catch((error) => pasteError(error, captured));
         return;
       }
     }
@@ -68,7 +128,9 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
             (error: unknown) => ({ error }),
           )
         : null;
-    const text = target ? ((await navigator.clipboard?.readText().catch(() => "")) ?? "") : await readClipboardText();
+    const text = target?.remote
+      ? ((await navigator.clipboard?.readText().catch(() => "")) ?? "")
+      : await readClipboardText(undefined, target ? (paths) => pathsText(paths, target) : undefined);
     if (target && !target.current()) return;
     if (text) {
       paste(text);
@@ -80,24 +142,19 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
       if ("error" in result) throw result.error;
       if (!target.current()) return;
       for (const item of result.items) {
-        const mime = item.types.find((type) => type.startsWith("image/"));
+        const mime = item.types.find(isMedia);
         if (mime) {
           const image = await item.getType(mime);
-          if (target.current()) await pasteImage(image, target, paste);
+          if (target.current()) await pasteMedia(image, target, paste);
           return;
         }
       }
     }
-    const paths = await readClipboardText();
+    const paths = await readClipboardText(undefined, target.remote ? undefined : (paths) => pathsText(paths, target));
     if (!target.current()) return;
     if (paths) paste(paths);
     else if (!images) throw new Error(tx("Clipboard image reading is unavailable."));
   } catch (error) {
-    if (target?.current())
-      notifications().notify({
-        level: "error",
-        title: tx("Cannot paste image"),
-        body: error instanceof Error ? error.message : String(error),
-      });
+    pasteError(error, target);
   }
 }
