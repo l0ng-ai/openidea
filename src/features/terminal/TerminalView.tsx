@@ -42,7 +42,10 @@ import { TerminalFindBar } from "./FindBar";
 import styles from "./Terminal.module.css";
 
 const TAB_PREFIX = "openidea-terminal";
-/** Drag type of terminal tabs: every group's strip takes them. */
+/**
+ * Drag type of terminal tabs: dragging one reorders its group's strip or moves
+ * it to another group's, like IDEA's terminal tabs.
+ */
 const TAB_MIME = "application/x-openidea-terminal-tab";
 
 /** Full title when the label is trimmed, then the working directory. */

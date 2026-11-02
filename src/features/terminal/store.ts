@@ -400,21 +400,21 @@ export function unsplit(group: string) {
   });
 }
 
-/** Drag & drop: moves tab `id` to `index` in `group`'s strip (which may be its own). */
+/**
+ * Drag & drop: moves tab `id` to insertion `index` of `group`'s strip. Within
+ * its own group that reorders it; into another it also becomes the selected tab.
+ */
 export function moveTab(id: string, group: string, index: number) {
   useTerminals.setState((s) => {
     const tab = s.tabs.find((t) => t.id === id);
-    const strip = groupTabs(s.tabs, group);
-    if (!tab || !layoutGroups(s.layout).includes(group) || (tab.group === group && strip.length === 1)) return s;
-    const from = strip.indexOf(tab);
+    if (!tab || !layoutGroups(s.layout).includes(group)) return s;
+    const others = (tabs: readonly TerminalTab[]) => tabs.filter((t) => t.group !== group);
+    if (tab.group === group) return { tabs: [...others(s.tabs), ...reorderTabs(groupTabs(s.tabs, group), id, index)] };
     const rest = withoutTab(s, id);
-    const target = groupTabs(rest.tabs, group);
-    target.splice(Math.max(0, Math.min(from >= 0 && index > from ? index - 1 : index, target.length)), 0, {
-      ...tab,
-      group,
-    });
+    const strip = groupTabs(rest.tabs, group);
+    strip.splice(Math.max(0, Math.min(index, strip.length)), 0, { ...tab, group });
     return {
-      tabs: [...rest.tabs.filter((t) => t.group !== group), ...target],
+      tabs: [...others(rest.tabs), ...strip],
       layout: rest.layout,
       selected: { ...rest.selected, [group]: id },
       activeTab: id,
