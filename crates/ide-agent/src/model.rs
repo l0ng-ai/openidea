@@ -416,3 +416,77 @@ pub enum AgentEvent {
     /// The installed or configured agent providers changed.
     Providers,
 }
+
+/// Where an MCP server configuration comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpScope {
+    User,
+    Workspace,
+    Plugin,
+    Builtin,
+}
+
+/// How the agent connects to an MCP server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpTransport {
+    Stdio,
+    Http,
+    Sse,
+}
+
+/// A named environment variable or HTTP header for an MCP server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpKeyValue {
+    pub name: String,
+    pub value: String,
+}
+
+/// One discovered or configured Model Context Protocol (MCP) server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServer {
+    pub id: String,
+    pub name: String,
+    pub scope: McpScope,
+    pub transport: McpTransport,
+    pub enabled: bool,
+    /// Subtitle shown in the UI (e.g. `~/.copilot/mcp-config.json` or `Plugin: azure`).
+    pub source_label: String,
+    pub config_path: Option<IpcPath>,
+    pub plugin_name: Option<String>,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env: Vec<McpKeyValue>,
+    pub url: Option<String>,
+    pub headers: Vec<McpKeyValue>,
+}
+
+/// Payload for creating or updating a user or workspace MCP server.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    pub scope: McpScope,
+    pub transport: McpTransport,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<McpKeyValue>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<McpKeyValue>,
+}
+
+fn default_true() -> bool {
+    true
+}

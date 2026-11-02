@@ -136,6 +136,11 @@ impl Negotiated {
         self.capabilities.pointer(&format!("/promptCapabilities/{name}")).and_then(Value::as_bool) == Some(true)
     }
 
+    /// `mcpCapabilities.<name>` (`http`, `sse`).
+    pub fn mcp(&self, name: &str) -> bool {
+        self.capabilities.pointer(&format!("/mcpCapabilities/{name}")).and_then(Value::as_bool) == Some(true)
+    }
+
     /// `sessionCapabilities.<name>` (`fork`, `resume`, `close`, `list`, `delete`).
     pub fn session(&self, name: &str) -> bool {
         self.capabilities.pointer(&format!("/sessionCapabilities/{name}")).is_some_and(|v| !v.is_null())
