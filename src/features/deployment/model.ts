@@ -1,6 +1,6 @@
 /** Pure helpers of the deployment feature: target paths, sync defaults, reports, remote paths. */
 import { tx } from "@/platform/i18n";
-import type { SyncAction, SyncEntry, SyncStatus, TransferReport } from "@/platform/ipc";
+import type { ResolvedMapping, SyncAction, SyncEntry, SyncStatus, TransferReport } from "@/platform/ipc";
 import type { DeploymentServerValid, DeploymentSettingsValid, SshAuthValid } from "@/platform/remoteSettings";
 
 /** Which part had focus last: the project view's selection or the editor's file is the target. */
@@ -148,30 +148,17 @@ export function remoteName(path: string): string {
   return trimmed.slice(trimmed.lastIndexOf("/") + 1) || "/";
 }
 
-/**
- * The local project path a remote path is deployed from, through the server's
- * mappings (the most specific deployment path wins); null when not mapped.
- * `root` is the server's root path as resolved on the host.
- */
-export function localPathForRemote(
-  remotePath: string,
-  root: string,
-  mappings: DeploymentServerValid["mappings"],
-  projectRoot: string,
-): string | null {
+/** The most specific backend-resolved mapping of a remote path; null when unmapped. */
+export function localPathForRemote(remotePath: string, mappings: readonly ResolvedMapping[]): string | null {
   let best: { len: number; local: string } | null = null;
   for (const m of mappings) {
-    // Relative to the server root, with or without a leading `/` (as `ide-remote` resolves it).
-    const relative = m.deployment.trim().replace(/^(\.\/)+/, "");
-    const deployed = relative === "." ? root : joinRemote(root, relative);
+    const deployed = m.deployment;
     const within =
       remotePath === deployed || remotePath.startsWith(deployed === "/" ? "/" : `${deployed}/`) ? deployed : null;
     if (within === null || (best && best.len >= deployed.length)) continue;
     const rest = remotePath.slice(deployed.length).replace(/^\/+/, "");
-    const local = m.local.trim().replace(/\\/g, "/").replace(/\/+$/, "");
-    const absolute = local === projectRoot || local.startsWith(`${projectRoot}/`);
-    const base = absolute ? local : joinRemote(projectRoot, local);
-    best = { len: deployed.length, local: joinRemote(base, rest) };
+    if (rest.split("/").some((part) => part === "." || part === "..")) return null;
+    best = { len: deployed.length, local: joinRemote(m.local, rest) };
   }
   return best?.local ?? null;
 }

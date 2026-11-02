@@ -151,11 +151,11 @@ describe("remote paths", () => {
 
   it("maps remote paths back to project paths through the most specific mapping", () => {
     const mappings = [
-      { local: "", deployment: "", web: "" },
-      { local: "public", deployment: "htdocs", web: "" },
-      { local: `${ROOT}/shared/`, deployment: "/opt/shared", web: "" },
+      { local: ROOT, deployment: "/var/www" },
+      { local: `${ROOT}/public`, deployment: "/var/www/htdocs" },
+      { local: `${ROOT}/shared`, deployment: "/var/www/opt/shared" },
     ];
-    const map = (p: string) => localPathForRemote(p, "/var/www", mappings, ROOT);
+    const map = (p: string) => localPathForRemote(p, mappings);
     expect(map("/var/www/index.php")).toBe(`${ROOT}/index.php`);
     expect(map("/var/www/htdocs/css/a.css")).toBe(`${ROOT}/public/css/a.css`);
     expect(map("/var/www/htdocs")).toBe(`${ROOT}/public`);
@@ -165,8 +165,11 @@ describe("remote paths", () => {
     expect(map("/etc/passwd")).toBeNull();
   });
 
-  it.each(["/", ".", "./", ""])("treats the deployment path %j as the server root", (deployment) => {
-    const mappings = [{ local: ROOT, deployment, web: "" }];
-    expect(localPathForRemote("/mnt/deploy/src/a.txt", "/mnt/deploy", mappings, ROOT)).toBe(`${ROOT}/src/a.txt`);
+  it("uses the backend folder for aliases and does not invent mappings", () => {
+    const mappings = [{ local: `${ROOT}/src`, deployment: "/mnt/deploy" }];
+    expect(localPathForRemote("/mnt/deploy/a.txt", mappings)).toBe(`${ROOT}/src/a.txt`);
+    expect(localPathForRemote("/mnt/deploy/a.txt", [])).toBeNull();
+    expect(localPathForRemote("/mnt/deploy/../a.txt", mappings)).toBeNull();
+    expect(localPathForRemote("/a.txt", [{ local: ROOT, deployment: "/" }])).toBe(`${ROOT}/a.txt`);
   });
 });

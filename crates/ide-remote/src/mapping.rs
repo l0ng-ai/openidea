@@ -1,8 +1,11 @@
 //! Local ↔ remote paths of a deployment server's mappings, and excluded names.
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use ide_core::IpcPath;
 use ide_core::remote_settings::{DeploymentServer, DeploymentSettings};
 use ide_ssh::sftp::join;
+use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::path::{Component, Path, PathBuf};
 
 /// A server's mappings resolved against the project and the server root.
@@ -12,6 +15,13 @@ pub struct Mappings {
     /// (absolute local folder, absolute remote folder, web path), longest local first.
     entries: Vec<(PathBuf, String, String)>,
     web_url: String,
+}
+
+/// A mapping resolved by the backend for the Remote Host browser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ResolvedMapping {
+    pub local: IpcPath,
+    pub deployment: String,
 }
 
 /// `a/b` (POSIX) of a relative path.
@@ -27,20 +37,24 @@ pub fn posix(rel: &Path) -> String {
 
 /// The folder of a mapping's local path: relative to the project (a leading `/` is the
 /// project root too), or absolute inside it as IntelliJ's deployment settings write it.
-fn local_folder(local: &str, project_root: &Path) -> PathBuf {
+/// An existing outside absolute path is skipped unless its project-relative folder exists.
+fn local_folder(local: &str, project_root: &Path) -> Option<PathBuf> {
     let path = Path::new(local);
-    if let Ok(rel) = path.strip_prefix(project_root) {
-        return project_root.join(rel);
+    if path.is_absolute()
+        && let Ok(rel) = path.strip_prefix(project_root)
+    {
+        return Some(project_root.join(rel));
     }
     // The same folder spelled differently (symlink, letter case).
     if path.is_absolute()
         && let (Ok(path), Ok(root)) = (path.canonicalize(), project_root.canonicalize())
         && let Ok(rel) = path.strip_prefix(root)
     {
-        return project_root.join(rel);
+        return Some(project_root.join(rel));
     }
     let rel = local.trim_matches('/');
-    if rel.is_empty() { project_root.to_path_buf() } else { project_root.join(rel) }
+    let relative = project_root.join(rel);
+    if !path.is_absolute() || relative.is_dir() || !path.exists() { Some(relative) } else { None }
 }
 
 impl Mappings {
@@ -51,16 +65,16 @@ impl Mappings {
         let mut entries: Vec<(PathBuf, String, String)> = server
             .mappings
             .iter()
-            .map(|m| {
-                let local = local_folder(m.local.trim(), project_root);
+            .filter_map(|m| {
+                let local = local_folder(m.local.trim(), project_root)?;
                 // Relative to the server root, with or without a leading `/`.
                 let deployment = m.deployment.trim().trim_start_matches("./").trim_matches('/');
                 let deployment = if deployment == "." { "" } else { deployment };
                 let remote = if deployment.is_empty() { remote_root.to_owned() } else { join(remote_root, deployment) };
-                (local, remote.trim_end_matches('/').to_owned(), m.web.trim().trim_matches('/').to_owned())
+                Some((local, remote.trim_end_matches('/').to_owned(), m.web.trim().trim_matches('/').to_owned()))
             })
             .collect();
-        if entries.is_empty() {
+        if server.mappings.is_empty() {
             entries.push((project_root.to_path_buf(), remote_root.trim_end_matches('/').to_owned(), String::new()));
         }
         entries.sort_by_key(|(l, _, _)| std::cmp::Reverse(l.components().count()));
@@ -69,6 +83,16 @@ impl Mappings {
             entries,
             web_url: server.web_url.trim().trim_end_matches('/').to_owned(),
         }
+    }
+
+    pub fn resolved(&self) -> Vec<ResolvedMapping> {
+        self.entries
+            .iter()
+            .map(|(local, remote, _)| ResolvedMapping {
+                local: local.clone().into(),
+                deployment: if remote.is_empty() { "/".into() } else { remote.clone() },
+            })
+            .collect()
     }
 
     pub fn project_root(&self) -> &Path {
@@ -231,6 +255,63 @@ mod tests {
         // A leading `/` that is not the project stays project-relative.
         let m = Mappings::new(&server(vec![("/static/", "", "")]), root, "/mnt/deploy");
         assert_eq!(m.remote(Path::new("/p/static/x.css")).as_deref(), Some("/mnt/deploy/x.css"));
+    }
+
+    #[test]
+    fn existing_outside_absolute_mapping_does_not_cover_nested_project_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let nested = root.join(outside.strip_prefix("/").unwrap()).join("a.txt");
+        std::fs::create_dir_all(nested.parent().unwrap().parent().unwrap()).unwrap();
+        // A nested project file at the outside path's spelling is not a mapping folder.
+        std::fs::write(nested.parent().unwrap(), "nested").unwrap();
+        let m = Mappings::new(&server(vec![(outside.to_str().unwrap(), "/", "")]), &root, "/srv");
+        assert_eq!(local_folder(outside.to_str().unwrap(), &root), None);
+        assert_eq!(m.remote(&root.join("a.txt")), None);
+        assert_eq!(m.remote(&outside.join("a.txt")), None);
+        assert_eq!(m.remote(nested.parent().unwrap()), None);
+        assert_eq!(m.remote(&nested), None);
+        assert_eq!(m.local("/srv/a.txt"), None);
+        assert!(m.resolved().is_empty());
+    }
+
+    #[test]
+    fn local_folder_resolution_prefers_inside_then_existing_relative_then_missing_absolute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let inside = root.join("src");
+        std::fs::create_dir_all(&inside).unwrap();
+        assert_eq!(local_folder(inside.to_str().unwrap(), &root), Some(inside));
+        assert_eq!(local_folder("/", &root), Some(root.clone()));
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let relative = root.join(outside.strip_prefix("/").unwrap());
+        std::fs::create_dir_all(&relative).unwrap();
+        assert_eq!(local_folder(outside.to_str().unwrap(), &root), Some(relative.clone()));
+        let nested = relative.join("a.txt");
+        std::fs::write(&nested, "nested project file").unwrap();
+        let m = Mappings::new(&server(vec![(outside.to_str().unwrap(), "/", "")]), &root, "/srv");
+        assert_eq!(m.remote(&nested).as_deref(), Some("/srv/a.txt"));
+        assert_eq!(m.local("/srv/a.txt"), Some(nested));
+        let missing = tmp.path().join("missing");
+        assert_eq!(local_folder(missing.to_str().unwrap(), &root), Some(root.join(missing.strip_prefix("/").unwrap())));
+        assert_eq!(local_folder("/src/", &root), Some(root.join("src")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_symlink_inside_project_resolves_to_the_project_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(root.join("src"), &alias).unwrap();
+        let m = Mappings::new(&server(vec![(alias.to_str().unwrap(), ".", "")]), &root, "/srv");
+        assert_eq!(m.local("/srv/a.txt"), Some(root.join("src/a.txt")));
+        assert_eq!(m.resolved()[0].local.to_path_buf(), root.join("src"));
     }
 
     #[test]

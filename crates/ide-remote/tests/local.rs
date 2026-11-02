@@ -286,3 +286,36 @@ async fn coverage_matches_transfers_without_connecting() {
     assert_eq!(ide_remote::coverage(&settings, &root, &[root.join("assets/b.txt")])[0].paths.len(), 1);
     assert!(ide_remote::coverage(&settings, &root, &[root.join("../outside")])[0].paths.is_empty());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_mappings_resolve_symlinks_and_download_to_the_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    let target = tmp.path().join("mounted");
+    let alias = tmp.path().join("project-link");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+    std::fs::write(target.join("a.txt"), "from the server").unwrap();
+    let mut settings = settings(&target);
+    settings.deployment.servers[0].mappings = vec![DeploymentMapping {
+        local: alias.to_string_lossy().into_owned(),
+        deployment: ".".into(),
+        ..Default::default()
+    }];
+    let service = service(tmp.path());
+    let resolved = service.server_info(&settings, Some(&root), "local").await.unwrap();
+    assert_eq!(resolved.root, target.to_string_lossy());
+    assert_eq!(resolved.mappings.len(), 1);
+    assert_eq!(resolved.mappings[0].local.to_path_buf(), root);
+    assert_eq!(resolved.mappings[0].deployment, resolved.root);
+    let local = resolved.mappings[0].local.to_path_buf().join("a.txt");
+    let report = service
+        .download(&settings, &root, None, std::slice::from_ref(&local), CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!(report.files, 1);
+    assert!(report.errors.is_empty());
+    assert_eq!(std::fs::read_to_string(local).unwrap(), "from the server");
+}
