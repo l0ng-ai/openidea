@@ -35,6 +35,7 @@ async fn storage_requires_a_registered_terminal() {
                 rows: 24,
                 shell_integration: false,
             },
+            "main".into(),
             Arc::new(NullSink),
             Box::new(|_| {}),
         )

@@ -96,7 +96,9 @@ pub struct LanguageServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Files whose presence marks a workspace root, e.g. `Cargo.toml`.
+    /// Files whose presence marks a workspace root, e.g. `Cargo.toml`;
+    /// `file#table` requires the TOML file to contain that dotted table, e.g.
+    /// `pyproject.toml#tool.ruff`.
     #[serde(default)]
     pub root_markers: Vec<String>,
     /// Serve only files below a root marker, not the whole project: a framework's
