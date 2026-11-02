@@ -99,8 +99,7 @@ pub async fn db_set_manual_commit(
     manual: bool,
 ) -> IdeResult<()> {
     let db = state.project(window.label())?.db.clone();
-    db.set_manual_commit(&id, manual).await;
-    Ok(())
+    db.set_manual_commit(&id, manual).await
 }
 
 /// Commits or rolls back the open transaction of a manual-commit data source.
