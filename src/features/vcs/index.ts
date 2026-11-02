@@ -194,7 +194,7 @@ export function activate(): () => void {
     }),
     registerEditorKind({
       kind: DIFF_KIND,
-      component: lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor)),
+      component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
       title: (input) => diffTitle(input.data as DiffData),
       icon: () => "diff",
     }),

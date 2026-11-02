@@ -35,6 +35,7 @@ import { editorService } from "@/workbench/contributions";
 import {
   aggregateCheck,
   buildChangeTree,
+  changeGroupPaths,
   checkOf,
   filesOf,
   ignoreTargets,
@@ -165,11 +166,7 @@ const bottomLeft = (el: HTMLElement) => {
 /** Opens a file's diff; F7 continues through the other files of its group, in tree order. */
 function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
   if (n.type !== "file" || !n.path) return;
-  const group = roots.find((g) => g.files.some((f) => f.path === n.files[0]?.path)) ?? null;
-  const paths: string[] = [];
-  const walk = (ns: readonly ChangeNode[]) =>
-    ns.forEach((x) => (x.type === "file" ? x.path && paths.push(x.path) : walk(x.children ?? [])));
-  walk(group ? [group] : [n]);
+  const paths = changeGroupPaths(roots, n.path);
   const items = paths.map((p) => workingDiffData(p));
   void openDiff(withChain(items, Math.max(0, paths.indexOf(n.path))), { preview: true });
 }
