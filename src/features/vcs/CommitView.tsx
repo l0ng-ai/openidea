@@ -32,6 +32,7 @@ import {
   T,
 } from "@/ui";
 import { editorService } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   aggregateCheck,
   buildChangeTree,
@@ -346,16 +347,17 @@ function ChangesPanel() {
 }
 
 /**
- * The Git window's Local Changes tab: the tree above, a diff preview of the
- * selected file below (like IDEA's; off via View Options › Show Diff Preview).
+ * The Git window's Local Changes tab: a diff preview beside the tree when
+ * bottom-docked, below it when side-docked (off via View Options › Show Diff Preview).
  */
 export function LocalChangesView() {
   const preview = useCommit((s) => s.diffPreview);
   const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
+  const anchor = useToolWindowLayout((s) => s.placements.git?.anchor ?? "bottom");
   const tree = <ChangesTree mode="local" />;
   if (!preview) return tree;
   return (
-    <SplitGroup orientation="vertical" className={styles.split}>
+    <SplitGroup orientation={anchor === "bottom" ? "horizontal" : "vertical"} className={styles.split}>
       <SplitPanel defaultSize="50%" minSize="20%">
         {tree}
       </SplitPanel>
