@@ -308,8 +308,13 @@ fn jdtls_jdk_setting() {
     s.languages.java.jdtls_jdk = "jdk17/bin".into();
     assert_eq!(jdtls_jdk(tmp.path(), &s).unwrap().map(|j| j.major), Some(17));
     // A chosen path that is not a JDK is an error, not a silent fallback.
-    s.languages.java.jdtls_jdk = "missing".into();
+    std::fs::create_dir(tmp.path().join("not-a-jdk")).unwrap();
+    s.languages.java.jdtls_jdk = "not-a-jdk".into();
     assert!(jdtls_jdk(tmp.path(), &s).unwrap_err().contains("is not a JDK home"));
+    // A JDK removed after it was chosen (a version manager upgraded it) says so.
+    s.languages.java.jdtls_jdk = "jdk17.0.1".into();
+    let err = jdtls_jdk(tmp.path(), &s).unwrap_err();
+    assert!(err.contains("jdk17.0.1 does not exist") && err.contains("Languages & Frameworks › Java"), "{err}");
 }
 
 #[test]
