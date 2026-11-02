@@ -281,7 +281,7 @@ pub async fn vcs_add_to_ignore(
             }
         }
         apply_git_executable(&project.settings.effective());
-        let result = ide_vcs::add_to_ignore(&paths, destination);
+        let result = project.with_disk_sync(|| ide_vcs::add_to_ignore(&paths, destination));
         // Exclude may live outside a worktree's watched directory. Refresh filters and UI explicitly.
         project.watcher.reload_ignore_rules();
         for (_, watcher) in project.content_watchers.lock().iter() {
@@ -322,7 +322,7 @@ pub async fn vcs_commit(
     // Commit hooks may run for a long time.
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo_at(repo.as_deref(), |r| {
+        project.with_repo_recorded(repo.as_deref(), None, |r| {
             r.commit_with(&message, &options, &|path| project.vcs_encoding(path, None))
         })
     })
@@ -729,7 +729,7 @@ pub async fn vcs_add_worktree(
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo_at(repo.as_deref(), |r| r.add_worktree(&path, &commitish, new_branch.as_deref()))
+        project.with_repo_recorded(repo.as_deref(), None, |r| r.add_worktree(&path, &commitish, new_branch.as_deref()))
     })
     .await
 }
@@ -846,7 +846,7 @@ pub async fn vcs_apply_patch(
 ) -> IdeResult<ApplyOutcome> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.apply_patch(&patch))).await
+    blocking(move || project.with_repo_recorded(repo.as_deref(), None, |r| r.apply_patch(&patch))).await
 }
 
 /// Shelve Changes: saves the changes of `paths` as a patch on the shelf and reverts them.
@@ -922,13 +922,20 @@ pub fn vcs_changelists_save(host: &Host, window: &str, changelists: ChangelistSt
 }
 
 /// Create Patch › Save to file.
-pub async fn vcs_write_patch(_host: &Host, _window: &str, path: PathBuf, patch: String) -> IdeResult<()> {
+pub async fn vcs_write_patch(host: &Host, window: &str, path: PathBuf, patch: String) -> IdeResult<()> {
+    let project = host.project(window).ok();
     blocking(move || {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+        let write = || {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&path, patch)?;
+            Ok(())
+        };
+        match project {
+            Some(project) => project.with_disk_sync(write),
+            None => write(),
         }
-        std::fs::write(&path, patch)?;
-        Ok(())
     })
     .await
 }
