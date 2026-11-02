@@ -36,8 +36,6 @@ export interface PopupProps {
   anchor: PopupAnchor;
   placement?: Placement;
   offset?: number;
-  /** Additional room below the popup for fixed UI such as the workbench status bar. */
-  viewportBottomPadding?: number;
   children: ReactNode;
   className?: string;
   style?: CSSProperties;
@@ -77,7 +75,6 @@ function PopupInner({
   anchor,
   placement = "bottom-start",
   offset = 4,
-  viewportBottomPadding = 6,
   children,
   className,
   style,
@@ -95,17 +92,17 @@ function PopupInner({
   const middleware = useMemo(
     () => [
       offsetMw(offset),
-      flip({ padding: { top: 6, right: 6, bottom: viewportBottomPadding, left: 6 } }),
-      shift({ padding: { top: 6, right: 6, bottom: viewportBottomPadding, left: 6 } }),
+      flip({ padding: 6 }),
+      shift({ padding: 6 }),
       sizeMw({
-        padding: { top: 6, right: 6, bottom: viewportBottomPadding, left: 6 },
+        padding: 6,
         apply({ rects, elements, availableHeight }) {
           elements.floating.style.maxHeight = `${Math.max(120, availableHeight)}px`;
           if (matchWidth) elements.floating.style.minWidth = `${rects.reference.width}px`;
         },
       }),
     ],
-    [offset, matchWidth, viewportBottomPadding],
+    [offset, matchWidth],
   );
   const { refs, floatingStyles, isPositioned } = useFloating({
     placement,
