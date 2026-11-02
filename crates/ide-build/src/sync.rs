@@ -226,6 +226,25 @@ pub fn sync_maven(
         verbose: true,
         ..MavenCache::default()
     };
+    // Where the build resolves its jars, and therefore where the plugin goals are read
+    // from: `-Dmaven.repo.local=` first, then `<localRepository>` of the `-s` settings,
+    // then the user's default repository (which `plugin()` resolves itself).
+    let local_repo: Option<PathBuf> =
+        options.maven_options.iter().find_map(|a| a.strip_prefix("-Dmaven.repo.local=")).map(PathBuf::from).or_else(
+            || {
+                let mut args = options.maven_options.iter();
+                while let Some(arg) = args.next() {
+                    let path = match arg.as_str() {
+                        "-s" | "--settings" => args.next().map(String::as_str),
+                        _ => arg.strip_prefix("-s=").or_else(|| arg.strip_prefix("--settings=")),
+                    };
+                    if let Some(path) = path {
+                        return maven::local_repository_of(Path::new(path));
+                    }
+                }
+                None
+            },
+        );
     let mut errors: Vec<String> = Vec::new();
     for (n, top) in model.projects.iter().filter(|p| !p.aggregated).enumerate() {
         let effective = cache_dir.join(format!("effective-pom-{n}.xml"));
@@ -254,8 +273,9 @@ pub fn sync_maven(
                 });
             }
         })?;
-        let effective_projects =
-            std::fs::read_to_string(&effective).map(|t| maven::parse_effective_pom(&t)).unwrap_or_default();
+        let effective_projects = std::fs::read_to_string(&effective)
+            .map(|t| maven::parse_effective_pom_in(&t, local_repo.as_deref()))
+            .unwrap_or_default();
         let trees = maven::parse_dependency_tree(&out.text);
         for (key, plugins, deps) in effective_projects {
             let dependencies = trees.iter().find(|(k, _)| *k == key).map(|(_, t)| t.clone()).unwrap_or(deps);
