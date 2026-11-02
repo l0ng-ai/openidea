@@ -79,6 +79,7 @@ pub struct Server {
     pub config: LanguageServerConfig,
     /// `config` with the settings hook applied, as the current instance was launched.
     effective: Mutex<Option<LanguageServerConfig>>,
+    pub resolved_binary: RwLock<Option<PathBuf>>,
     languages: Mutex<Vec<LanguageId>>,
     state: Mutex<State>,
     /// Fired when the instance being started is abandoned (stop / restart while starting).
@@ -114,6 +115,7 @@ impl Server {
             root,
             config,
             effective: Mutex::new(None),
+            resolved_binary: RwLock::new(None),
             languages: Mutex::new(vec![language]),
             state: Mutex::new(State { generation: 0, conn: Conn::Idle }),
             start_cancel: Mutex::new(CancellationToken::new()),
