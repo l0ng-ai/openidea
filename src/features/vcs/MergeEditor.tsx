@@ -6,12 +6,14 @@ import { history, historyKeymap, undoDepth } from "@codemirror/commands";
 import { unifiedMergeView } from "@codemirror/merge";
 import type { MergeSides } from "@/bindings";
 import { embeddedEditorExtensions } from "@/editor/api";
+import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { copyText } from "@/ui/selectableText";
 import { Button, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
-import { blameSlot } from "./blame";
+import { blameSlot, toggleAnnotations } from "./blame";
 import { languageFor, viewerBase } from "./cm";
 import { confirmDialog } from "./dialogs";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
@@ -26,15 +28,29 @@ import {
   syncSide,
   type MergeControls,
 } from "./mergeGutters";
-import { showCompareMenu, showResultMenu, showSettingsMenu, showSideMenu } from "./mergeMenus";
+import { COMPARISONS, showCompareMenu, showResultMenu, showSettingsMenu, showSideMenu } from "./mergeMenus";
+import { openDiff } from "./diffInput";
+import {
+  clearFocusedMergeEditor,
+  refreshMergeActions,
+  setFocusedMergeEditor,
+  type MergeActionHost,
+  type MergeCommand,
+} from "./mergeActions";
 import {
   applyNonConflicting,
   applyTo,
+  canApply,
+  changesIn,
+  changesInSide,
+  resolveSimple,
+  revertResolved,
   mergeField,
   mergeHistory,
   startMerge,
   summarize,
   unresolved,
+  type MergeAction,
   type MergeSide,
   type MergeSummary,
 } from "./mergeModel";
@@ -88,6 +104,13 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const [summary, setSummary] = useState<MergeSummary>(NOTHING_LEFT);
   const [autoApply, setAutoApply] = useState(readAutoApply);
   const [resolved, setResolved] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const paneRef = useRef<MergeSide | "result">("result");
+  const [actionHost] = useState<MergeActionHost>(() => ({
+    enabled: () => false,
+    run: () => {},
+    autoApply: () => false,
+  }));
   const oursRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const theirsRef = useRef<HTMLDivElement>(null);
@@ -135,17 +158,22 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     if (!state || lang === null || !oursRef.current || !resultRef.current || !theirsRef.current) return;
     // Like IntelliJ, the result starts as the base, with every change waiting to be decided.
     const start = startMerge(state.ours, state.base ?? "", state.theirs);
-    const run = (spec: TransactionSpec | null) => spec && result.dispatch(spec);
+    const change = (index: number, action: MergeAction) => {
+      setFocusedMergeEditor(actionHost);
+      void executeAction("merge.change", { indexes: [index], action });
+    };
     const controls: MergeControls = {
-      accept: (index, side, resolve) => run(applyTo(result.state, [index], { type: "accept", side, resolve })),
-      ignore: (index, side, resolve) =>
-        run(applyTo(result.state, [index], { type: "ignore", side: resolve ? null : side })),
-      resolveAutomatically: (index) => run(applyTo(result.state, [index], { type: "auto", side: "base" })),
+      accept: (index, side, resolve) => change(index, { type: "accept", side, resolve }),
+      ignore: (index, side, resolve) => change(index, { type: "ignore", side: resolve ? null : side }),
+      resolveAutomatically: (index) => change(index, { type: "auto", side: "base" }),
     };
     const side = (which: MergeSide): Extension[] => [
       viewerBase({ readOnly: true }),
       lang,
       blameSlot(),
+      EditorView.updateListener.of((u) => {
+        if (u.selectionSet) refreshMergeActions(actionHost);
+      }),
       state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
       sideControls(which, controls),
       mergeTheme,
@@ -167,6 +195,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         resultControls(controls),
         mergeTheme,
         EditorView.updateListener.of((u) => {
+          if (u.selectionSet || mergeChanged(u)) refreshMergeActions(actionHost);
           if (!mergeChanged(u)) return;
           const changes = u.state.field(mergeField);
           ours.dispatch({ effects: syncSide.of(changes) });
@@ -197,7 +226,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       oursView.current = null;
       theirsView.current = null;
     };
-  }, [state, lang, path]);
+  }, [state, lang, path, actionHost]);
 
   /** Puts the caret at a change and brings it into view. */
   const moveTo = (view: EditorView, at: number) =>
@@ -311,7 +340,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     jumpToSource: () => void editorService().openFile(path, { focus: true }),
     applyChange: () => false,
     file: () => {},
-    showSettings: () => {},
+    showSettings: () => void actionHost.run("settings"),
   }));
   useEffect(
     () => () => {
@@ -329,39 +358,206 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     if (on) command((s) => applyNonConflicting(s, "base"), true);
   };
 
-  const compare = (e: React.MouseEvent) => {
-    const v = resultView.current;
-    if (!state || !v) return;
-    showCompareMenu(e, path, {
-      yours: { text: state.ours, label: txt(titles.yours) },
-      base: { text: state.base ?? "", label: tx("Base") },
-      result: { text: v.state.doc.toString(), label: tx("Result") },
-      theirs: { text: state.theirs, label: txt(titles.theirs) },
-    });
+  const activePane = () => {
+    const which = paneRef.current;
+    return (which === "left" ? oursView : which === "right" ? theirsView : resultView).current;
   };
 
-  // Each side is annotated with Git Blame on the branch it belongs to.
-  const otherRev = state?.sides.commit ?? "HEAD";
-  const sidePane = (e: React.MouseEvent, which: MergeSide) => {
-    const view = (which === "left" ? oursView : theirsView).current;
+  const selectionDecision = (id: MergeCommand) => {
+    const view = activePane();
     const result = resultView.current;
-    if (!view || !result || !state) return;
-    // Yours is the current branch, except in a rebase, where it is the commit being replayed.
-    const isHead = which === "left" ? !state.sides.reversed : state.sides.reversed;
-    const revision = isHead ? "HEAD" : otherRev;
-    showSideMenu(
-      e,
-      { which, view, path, text: which === "left" ? state.ours : state.theirs, revision },
-      result,
-      command,
-    );
+    if (!view || !result) return null;
+    const { from, to } = view.state.selection.main;
+    const side = paneRef.current;
+    const indexes =
+      side === "result"
+        ? changesIn(result.state, from, to)
+        : changesInSide(result.state, side, view.state.doc, from, to);
+    let action: MergeAction;
+    if (id === "resolveAutomatically") action = { type: "auto", side: "base" };
+    else if (id === "ignore") action = { type: "ignore", side: side === "result" ? null : side };
+    else if (id === "resolveUsingYours" || id === "resolveUsingTheirs")
+      action = { type: "accept", side: id === "resolveUsingYours" ? "left" : "right", resolve: true };
+    else if (id === "accept" && side !== "result") action = { type: "accept", side, resolve: false };
+    else return null;
+    return { indexes, action };
+  };
+
+  const enabled = (id: MergeCommand) => {
+    if (id === "reload" || id === "cancel") return !resolved;
+    const v = resultView.current;
+    if (!v || error || resolved) return false;
+    const available = summarize(v.state);
+    switch (id) {
+      case "applyLeft":
+        return available.left;
+      case "applyAll":
+        return available.all;
+      case "applyRight":
+        return available.right;
+      case "resolveSimple":
+        return available.simple;
+      case "revert":
+        return available.revert;
+      case "accept":
+      case "resolveUsingYours":
+      case "resolveUsingTheirs":
+      case "ignore":
+      case "resolveAutomatically": {
+        const decision = selectionDecision(id);
+        return !!decision?.indexes.some((i) => canApply(v.state.doc, v.state.field(mergeField)[i]!, decision.action));
+      }
+      case "annotate":
+        return paneRef.current !== "result";
+      case "cut":
+        return paneRef.current === "result" && !v.state.selection.main.empty;
+      case "copy":
+        return !!activePane() && !activePane()!.state.selection.main.empty;
+      case "paste":
+        return paneRef.current === "result";
+      default:
+        return true;
+    }
+  };
+
+  const menuPosition = (name: "compare" | "settings") => {
+    const button = rootRef.current?.querySelector(`[data-merge-menu="${name}"]`);
+    const rect = (button ?? rootRef.current)?.getBoundingClientRect();
+    return { clientX: rect?.left ?? 0, clientY: rect?.bottom ?? 0 };
+  };
+
+  const runAction = async (id: MergeCommand, arg?: unknown) => {
+    switch (id) {
+      case "applyLeft":
+        return command((s) => applyNonConflicting(s, "left"), true);
+      case "applyAll":
+        return command((s) => applyNonConflicting(s, "base"), true);
+      case "applyRight":
+        return command((s) => applyNonConflicting(s, "right"), true);
+      case "resolveSimple":
+        return command(resolveSimple, true);
+      case "revert":
+        return command(revertResolved, true);
+      case "acceptYours":
+        return acceptSide("left");
+      case "acceptTheirs":
+        return acceptSide("right");
+      case "apply":
+        return apply();
+      case "cancel":
+        return cancel();
+      case "reload":
+        return load();
+      case "compare":
+        return showCompareMenu(menuPosition("compare"));
+      case "settings":
+        return showSettingsMenu(menuPosition("settings"));
+      case "autoApply":
+        return setAutoApplyNonConflicting(!autoApply);
+      case "accept":
+      case "resolveUsingYours":
+      case "resolveUsingTheirs":
+      case "ignore":
+      case "resolveAutomatically": {
+        const decision = selectionDecision(id);
+        if (decision) command((s) => applyTo(s, decision.indexes, decision.action));
+        return;
+      }
+      case "change": {
+        const change = arg as { indexes: number[]; action: MergeAction } | undefined;
+        if (change) command((s) => applyTo(s, change.indexes, change.action));
+        return;
+      }
+      case "annotate": {
+        const which = paneRef.current;
+        const view = activePane();
+        if (!state || !view || which === "result") return;
+        const isHead = which === "left" ? !state.sides.reversed : state.sides.reversed;
+        await toggleAnnotations(
+          view,
+          path,
+          which === "left" ? state.ours : state.theirs,
+          isHead ? "HEAD" : (state.sides.commit ?? "HEAD"),
+        );
+        return;
+      }
+      case "cut":
+      case "copy":
+      case "paste":
+      case "selectAll": {
+        const view = activePane();
+        if (!view) return;
+        const { from, to } = view.state.selection.main;
+        if (id === "selectAll") view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+        else if (id === "paste") {
+          const text = await navigator.clipboard?.readText().catch(() => undefined);
+          if (text !== undefined) view.dispatch({ ...view.state.replaceSelection(text), userEvent: "input.paste" });
+        } else {
+          await copyText(view.state.sliceDoc(from, to));
+          if (id === "cut") view.dispatch({ changes: { from, to }, userEvent: "delete.cut" });
+        }
+        return;
+      }
+      default: {
+        const v = resultView.current;
+        if (!state || !v || !(id in COMPARISONS)) return;
+        const versions = {
+          yours: { text: state.ours, label: txt(titles.yours) },
+          base: { text: state.base ?? "", label: tx("Base") },
+          result: { text: v.state.doc.toString(), label: tx("Result") },
+          theirs: { text: state.theirs, label: txt(titles.theirs) },
+        };
+        const [a, b] = COMPARISONS[id as keyof typeof COMPARISONS];
+        await openDiff({ path, left: { type: "text", ...versions[a] }, right: { type: "text", ...versions[b] } });
+      }
+    }
+  };
+
+  useEffect(() => {
+    Object.assign(actionHost, { enabled, run: runAction, autoApply: () => autoApply });
+    refreshMergeActions(actionHost);
+  });
+
+  useEffect(() => {
+    // Popup focus belongs to the editor that opened it; a real focus change releases it.
+    const onFocus = (e: FocusEvent) => {
+      const target = e.target as Element | null;
+      if (!rootRef.current?.contains(target) && !target?.closest("[data-popup], [role=dialog]"))
+        clearFocusedMergeEditor(actionHost);
+    };
+    document.addEventListener("focusin", onFocus);
+    return () => {
+      document.removeEventListener("focusin", onFocus);
+      clearFocusedMergeEditor(actionHost);
+    };
+  }, [actionHost]);
+
+  const focusProps = {
+    onFocusCapture: (e: React.FocusEvent<HTMLDivElement>) => {
+      const target = e.target as Node;
+      if (oursRef.current?.contains(target)) paneRef.current = "left";
+      else if (theirsRef.current?.contains(target)) paneRef.current = "right";
+      else if (resultRef.current?.contains(target)) paneRef.current = "result";
+      setFocusedMergeEditor(actionHost);
+      setFocusedDiffNavigator(nav);
+      setContext("diffEditorFocus", true);
+    },
+    onBlurCapture: (e: React.FocusEvent<HTMLDivElement>) => {
+      const target = e.relatedTarget as Element | null;
+      if (e.currentTarget.contains(target) || target?.closest("[data-popup], [role=dialog]")) return;
+      clearFocusedMergeEditor(actionHost);
+      if (focusedDiffNavigator() === nav) {
+        setFocusedDiffNavigator(null);
+        setContext("diffEditorFocus", false);
+      }
+    },
   };
 
   if (error)
     return (
-      <div className={styles.message}>
+      <div ref={rootRef} className={styles.message} {...focusProps}>
         {error}
-        <Button onClick={() => void load()}>
+        <Button onClick={() => void executeAction("merge.reload")}>
           <T>Retry</T>
         </Button>
       </div>
@@ -377,27 +573,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     );
 
   return (
-    <div
-      className={styles.root}
-      onFocusCapture={() => {
-        setFocusedDiffNavigator(nav);
-        setContext("diffEditorFocus", true);
-      }}
-      onBlurCapture={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedDiffNavigator() === nav) {
-          setFocusedDiffNavigator(null);
-          setContext("diffEditorFocus", false);
-        }
-      }}
-    >
-      <MergeToolbar
-        summary={summary}
-        goto={goto}
-        run={command}
-        onCompare={compare}
-        onReload={() => void load()}
-        onSettings={(e) => showSettingsMenu(e, autoApply, setAutoApplyNonConflicting)}
-      />
+    <div ref={rootRef} className={styles.root} {...focusProps}>
+      <MergeToolbar summary={summary} />
       <div className={styles.labels}>
         <span>{txt(titles.yours)}</span>
         <span>
@@ -416,28 +593,24 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           className={styles.pane}
           aria-label={tx("Your version")}
           role="region"
-          onContextMenu={(e) => sidePane(e, "left")}
+          onContextMenu={(e) => oursView.current && showSideMenu(e, oursView.current, "left")}
         />
         <div
           ref={resultRef}
           className={styles.pane}
           aria-label={tx("Result")}
           role="region"
-          onContextMenu={(e) => resultView.current && showResultMenu(e, resultView.current, command)}
+          onContextMenu={(e) => resultView.current && showResultMenu(e, resultView.current)}
         />
         <div
           ref={theirsRef}
           className={styles.pane}
           aria-label={tx("Their version")}
           role="region"
-          onContextMenu={(e) => sidePane(e, "right")}
+          onContextMenu={(e) => theirsView.current && showSideMenu(e, theirsView.current, "right")}
         />
       </div>
-      <MergeFooter
-        onAccept={(side) => void acceptSide(side)}
-        onCancel={() => void cancel()}
-        onApply={() => void apply()}
-      />
+      <MergeFooter />
     </div>
   );
 }

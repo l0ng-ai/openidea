@@ -5538,5 +5538,8 @@
   "Discard Changes": "放弃更改",
   "The result was changed. Discard the changes and take this version as it is?": "结果已被修改。要放弃这些更改并原样采用此版本吗？",
   "Cancel Merge": "取消合并",
-  "Exit without applying the changes made in the result?": "不应用对结果所做的更改并退出吗？"
+  "Exit without applying the changes made in the result?": "不应用对结果所做的更改并退出吗？",
+  "Apply Merge Result": "应用合并结果",
+  "Merge Settings": "合并设置",
+  "Resolve Merge Change": "解决合并更改"
 }

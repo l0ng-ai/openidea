@@ -34,6 +34,7 @@ import { installHunkPopup } from "./HunkPopup";
 import { LOCAL_HISTORY_KIND } from "./localHistoryKind";
 import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
+import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
 import { installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
@@ -179,6 +180,7 @@ export function activate(): () => void {
     installChangelists(),
     trackOperationContext(),
     registerCompareActions(),
+    registerMergeActions(),
     trackTitleItem(),
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),

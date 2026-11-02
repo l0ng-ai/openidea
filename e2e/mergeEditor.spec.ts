@@ -275,3 +275,71 @@ test("applies the non-conflicting changes on opening when asked to, and that is 
   await page.keyboard.press("Meta+Z");
   expect(await text(result(page))).toContain("\nC\n");
 });
+
+test("Find Action runs merge commands with the editor context and clears it on external focus", async ({ page }) => {
+  await mountMerge(page);
+  await result(page).locator(".cm-content").click();
+  await page.keyboard.press("Meta+Shift+A");
+  const query = page.getByRole("combobox", { name: "Search query" });
+  await query.fill("Resolve Simple Conflicts");
+  await expect(page.locator("#se-results")).toContainText("Resolve Simple Conflicts");
+  await query.press("Enter");
+  await expect(status(page)).toHaveText("1 change left, 1 conflict");
+  await expect(query).toHaveCount(0);
+  await page.keyboard.press("Meta+Shift+A");
+  await query.fill("Revert Conflict Resolution");
+  await expect(page.locator("#se-results")).toContainText("Revert Conflict Resolution");
+  await query.press("Enter");
+  await expect(status(page)).toHaveText("3 changes left, 2 conflicts");
+  expect((await text(result(page))).trimEnd()).toBe(BASE.trimEnd());
+
+  await page.evaluate(() => {
+    const button = document.createElement("button");
+    button.id = "outside-merge";
+    document.body.append(button);
+    button.focus();
+  });
+  expect(
+    await page.evaluate(async () => {
+      const path = "/src/platform/actions.ts";
+      return (await import(path)).executeAction("merge.resolveSimple");
+    }),
+  ).toBe(false);
+  await expect(status(page)).toHaveText("3 changes left, 2 conflicts");
+});
+
+test("merge actions follow the focused instance and survive a context menu", async ({ page }) => {
+  await mountMerge(page);
+  await page.evaluate(async () => {
+    const reactPath = "/node_modules/.vite/deps/react.js";
+    const domPath = "/node_modules/.vite/deps/react-dom_client.js";
+    const editorPath = "/src/features/vcs/MergeEditor.tsx";
+    const { createElement } = (await import(reactPath)).default;
+    const dom = await import(domPath);
+    const { createRoot } = dom.default ?? dom;
+    const { MergeEditor } = await import(editorPath);
+    const first = document.getElementById("merge-host")!;
+    first.style.right = "50%";
+    const second = document.createElement("div");
+    second.id = "merge-second";
+    second.style.cssText = "position:fixed;inset:0 0 0 50%;z-index:500;display:flex;background:white";
+    document.body.append(second);
+    createRoot(second).render(
+      createElement(MergeEditor, {
+        input: { key: "merge:second.ts", data: { path: "/project/second.ts" } },
+      }),
+    );
+  });
+  const second = page.locator("#merge-second");
+  await expect(second.getByRole("region", { name: "Result" }).locator(".cm-content")).toBeVisible();
+  await page.locator("#merge-host").getByRole("button", { name: "Resolve Simple Conflicts" }).click();
+  await expect(status(page)).toHaveText("1 change left, 1 conflict");
+  await expect(second.locator("[class*=status]").first()).toHaveText("3 changes left, 2 conflicts");
+  await second
+    .getByRole("region", { name: "Result" })
+    .locator(".cm-line", { hasText: "same" })
+    .click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Ignore", exact: true }).click();
+  await expect(second.locator("[class*=status]").first()).toHaveText("2 changes left, 1 conflict");
+  await expect(status(page)).toHaveText("1 change left, 1 conflict");
+});
