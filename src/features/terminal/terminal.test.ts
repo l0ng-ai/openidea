@@ -5,7 +5,7 @@ import { matchCounter } from "./FindBar";
 import { buildSearchDecorations } from "./theme";
 import { findTerminalLinks, resolvePath, trimUrl } from "./links";
 import {
-  layoutPanes,
+  layoutGroups,
   nextTabName,
   removeFromLayout,
   splitLayout,
@@ -257,7 +257,7 @@ describe("split layout", () => {
       children: ["a", { id: "g2", orientation: "horizontal", children: ["b", "c"] }],
     });
     l = splitLayout(l, "a", "d", "vertical", "g3");
-    expect(layoutPanes(l)).toEqual(["a", "d", "b", "c"]);
+    expect(layoutGroups(l)).toEqual(["a", "d", "b", "c"]);
   });
 
   it("collapses single-child splits on removal", () => {
@@ -371,7 +371,7 @@ describe("terminalFont", () => {
 });
 
 describe("terminal tab titles", () => {
-  const tab: TerminalTab = { id: "t1", name: "Local", customName: null, panes: ["s1"], layout: "s1", activePane: "s1" };
+  const tab: TerminalTab = { id: "t1", name: "Local", customName: null, session: "s1", group: "g1" };
   const snap = (appTitle: string | null, commandRunning = true): Record<string, SessionSnapshot> => ({
     s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p", follow: true },
   });

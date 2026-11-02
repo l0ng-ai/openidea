@@ -1,6 +1,6 @@
 /**
  * Integrated terminal: xterm.js sessions on backend PTYs in the bottom
- * "Terminal" tool window (tabs, splits, links, IDEA-style shortcuts).
+ * "Terminal" tool window (tabs, split tab groups, links, IDEA-style shortcuts).
  */
 import { registerActions } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
@@ -38,6 +38,16 @@ async function openNewTab(dir?: string) {
   const rt = await loadTerminalRuntime();
   if (dir) rt.newTabAt(dir);
   else rt.newTab(rt.startDirectory(cwd));
+  toolWindowService().show(WINDOW, true);
+  focusActiveSoon();
+}
+
+/** Split Right / Split Down of tab `arg` (from its context menu), else of the active tab. */
+async function split(arg: unknown, orientation: "horizontal" | "vertical") {
+  const rt = await loadTerminalRuntime();
+  const id = typeof arg === "string" && arg ? arg : rt.useTerminals.getState().activeTab;
+  if (!id) return openNewTab();
+  rt.splitTab(id, orientation);
   toolWindowService().show(WINDOW, true);
   focusActiveSoon();
 }
@@ -117,12 +127,7 @@ export function activate(): () => void {
         category: "Terminal",
         icon: "split",
         when: "projectOpen",
-        run: async () => {
-          const rt = await loadTerminalRuntime();
-          if (!rt.useTerminals.getState().activeTab) return openNewTab();
-          rt.splitActive("horizontal");
-          focusActiveSoon();
-        },
+        run: ({ arg }) => split(arg, "horizontal"),
       },
       {
         id: "terminal.splitDown",
@@ -130,12 +135,7 @@ export function activate(): () => void {
         category: "Terminal",
         icon: "split-horizontal",
         when: "projectOpen",
-        run: async () => {
-          const rt = await loadTerminalRuntime();
-          if (!rt.useTerminals.getState().activeTab) return openNewTab();
-          rt.splitActive("vertical");
-          focusActiveSoon();
-        },
+        run: ({ arg }) => split(arg, "vertical"),
       },
       {
         id: "terminal.find",
@@ -167,7 +167,7 @@ export function activate(): () => void {
           const rt = terminalRuntime();
           const s = rt?.activeSession();
           if (!rt || !s) return;
-          void rt.requestClosePane(s.key).then((closed) => {
+          void rt.requestCloseSession(s.key).then((closed) => {
             if (!closed) return;
             if (rt.useTerminals.getState().tabs.length === 0) toolWindowService().hide(WINDOW);
             else focusActiveSoon();
