@@ -105,7 +105,7 @@ export const openideaTheme = EditorView.theme({
     boxShadow: "inset 0 1px 0 var(--border-method-separator, var(--border))",
   },
   "&.cm-openidea-hideGutter-run .cm-openidea-gutter-run, &.cm-openidea-hideGutter-bookmarks .cm-openidea-bookmarks": {
-    display: "none",
+    display: "none !important",
   },
   // Inheritance markers share one gutter: each group hides its own icons.
   "&.cm-openidea-hideGutter-inheritors :is(.cm-openidea-lineMarker-implemented, .cm-openidea-lineMarker-overridden), &.cm-openidea-hideGutter-supers :is(.cm-openidea-lineMarker-implementing, .cm-openidea-lineMarker-overriding)":
