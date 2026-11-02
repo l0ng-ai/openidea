@@ -1050,7 +1050,8 @@ mod tests {
         let cfg = run(Some(&jdk(21, "/jdk21")), 25);
         assert!(!cfg.env.contains_key("JAVA_HOME"));
         let err = cfg.launch_error.unwrap();
-        assert!(err.contains("/jdk21") && err.contains("JDK 25 or newer"), "{err}");
+        let jdk21 = fixtures.path().join("jdk21");
+        assert!(err.contains(&*jdk21.to_string_lossy()) && err.contains("JDK 25 or newer"), "{err}");
         assert!(err.contains(SERVER_JDK_SETTING), "both messages point at the same setting: {err}");
     }
 
