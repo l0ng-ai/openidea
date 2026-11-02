@@ -1389,6 +1389,16 @@ impl DebugManager {
         })
     }
 
+    /// Stops every session `key` started: the window that opened the project is closing.
+    pub async fn stop_key(&self, key: &str) {
+        let ids: Vec<DebugSessionId> = self.sessions(Some(key)).into_iter().map(|s| s.id).collect();
+        for id in ids {
+            if let Err(e) = self.stop(id).await {
+                tracing::debug!("debug session {id:?} did not stop: {e}");
+            }
+        }
+    }
+
     /// Stops a session and its child sessions.
     pub async fn stop(&self, s: DebugSessionId) -> IdeResult<()> {
         let session = self.session(s)?;
