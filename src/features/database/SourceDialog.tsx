@@ -106,7 +106,7 @@ const blankSsh = (): DbSsh => ({
   user: "",
   auth: "openSsh",
   keyFile: "",
-  saveSecret: true,
+  saveSecret: false,
 });
 
 const blankOptions = (): DbOptions => ({
@@ -151,7 +151,7 @@ function blank(): DataSource {
     user: "",
     file: null,
     ssl: "prefer",
-    savePassword: true,
+    savePassword: false,
     readOnly: false,
     color: null,
     comment: "",

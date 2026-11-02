@@ -1064,3 +1064,43 @@ impl DbManager {
         pool.transaction(&statements).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ide_ssh::secrets::testing::files_containing;
+    use std::path::Path;
+
+    fn manager(dir: &Path) -> DbManager {
+        let data = dir.join("data");
+        let ssh = Arc::new(SshManager::new(data.join("ssh-passwords.json")));
+        DbManager::new(dir.join("project"), data.join("db-passwords.json"), data.join("db-history.json"), ssh)
+    }
+
+    #[tokio::test]
+    async fn saved_passwords_stay_off_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        manager(tmp.path()).set_password("s1", Some("hunter2-db".into()), true).await.unwrap();
+        manager(tmp.path()).set_ssh_secret("s1", Some("hunter2-tunnel".into()), true).await.unwrap();
+        assert_eq!(files_containing(tmp.path(), "hunter2-db"), Vec::<PathBuf>::new());
+        assert_eq!(files_containing(tmp.path(), "hunter2-tunnel"), Vec::<PathBuf>::new());
+        let reopened = manager(tmp.path());
+        assert_eq!(reopened.secret("s1".into(), true).await.as_deref(), Some("hunter2-db"));
+        assert_eq!(reopened.secret(secrets::ssh_key("s1"), true).await.as_deref(), Some("hunter2-tunnel"));
+    }
+
+    #[tokio::test]
+    async fn moves_plaintext_passwords_of_older_versions_off_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project").to_string_lossy().into_owned();
+        let legacy = serde_json::json!({ project: { "s1": "old-db-pw" }, "/other": { "s2": "other-pw" } });
+        std::fs::create_dir_all(tmp.path().join("data")).unwrap();
+        std::fs::write(tmp.path().join("data/db-passwords.json"), legacy.to_string()).unwrap();
+        let m = manager(tmp.path());
+        assert_eq!(m.secret("s1".into(), true).await.as_deref(), Some("old-db-pw"));
+        assert_eq!(files_containing(tmp.path(), "old-db-pw"), Vec::<PathBuf>::new());
+        assert_eq!(files_containing(tmp.path(), "other-pw"), Vec::<PathBuf>::new());
+        let other = SecretStore::new(tmp.path().join("data/db-passwords.json"), Path::new("/other"));
+        assert_eq!(other.get("s2").as_deref(), Some("other-pw"));
+    }
+}
