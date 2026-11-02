@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { setLocale } from "@/platform/i18n";
 import { MergeRebaseWidget } from "../MergeRebaseWidget";
 import { useVcs } from "../store";
 
@@ -26,5 +27,17 @@ describe("MergeRebaseWidget", () => {
     render(<MergeRebaseWidget />);
     expect(screen.getByLabelText("Continue Rebase")).toBeTruthy();
     expect(screen.getByLabelText("Abort Rebase")).toBeTruthy();
+  });
+
+  it("translates operation button labels", async () => {
+    await setLocale("zh");
+    try {
+      useVcs.setState({ branch: { head: "x", operation: "rebase" } as never });
+      render(<MergeRebaseWidget />);
+      expect(screen.getByLabelText("继续变基")).toHaveAttribute("title", "继续变基");
+      expect(screen.getByLabelText("中止变基")).toHaveAttribute("title", "中止变基");
+    } finally {
+      await setLocale("en");
+    }
   });
 });

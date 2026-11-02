@@ -43,7 +43,7 @@ export function MergeRebaseWidget() {
       )}
       {op && op !== "merge" && !conflicts && (
         <Button
-          label={controlLabel(op, "continue")}
+          label={tx(controlLabel(op, "continue"))}
           icon="resolve-continue"
           tone="go"
           disabled={busy}
@@ -52,7 +52,7 @@ export function MergeRebaseWidget() {
       )}
       {op && (
         <Button
-          label={controlLabel(op, "abort")}
+          label={tx(controlLabel(op, "abort"))}
           icon="vcs-abort"
           tone="abort"
           disabled={busy}

@@ -1,5 +1,5 @@
 import { Text } from "@codemirror/state";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { markerDiagnostics } from "../conflictMarkers";
 
 const doc = (s: string) => Text.of(s.split("\n"));
@@ -20,6 +20,19 @@ describe("markerDiagnostics", () => {
   it("includes the base marker of a diff3 conflict", () => {
     const text = "<<<<<<< a\nx\n||||||| base\nb\n=======\ny\n>>>>>>> c\n";
     expect(markerDiagnostics(doc(text))).toHaveLength(4);
+  });
+
+  it("uses UTF-16 columns and excludes CRLF terminators", () => {
+    const found = markerDiagnostics(doc("😀\r\n<<<<<<< ours 😀\r\nx\r\n=======\r\ny\r\n>>>>>>> theirs\r\n"));
+    expect(found[0]!.range).toEqual({ start: { line: 1, col: 0 }, end: { line: 1, col: 15 } });
+    expect(found[1]!.range).toEqual({ start: { line: 3, col: 0 }, end: { line: 3, col: 7 } });
+  });
+
+  it("skips oversized documents without flattening their text", () => {
+    const large = doc("x".repeat(2_000_001));
+    const flatten = vi.spyOn(large, "toString");
+    expect(markerDiagnostics(large)).toEqual([]);
+    expect(flatten).not.toHaveBeenCalled();
   });
 
   it("reports nothing for text without conflicts, or a block that was never closed", () => {
