@@ -174,7 +174,11 @@ async fn read_head(sock: &mut TcpStream) -> std::io::Result<Option<Request>> {
 
 enum Response {
     /// `path` is the resolved file to open; `mime` comes from the requested name.
-    File { path: PathBuf, len: u64, mime: &'static str },
+    File {
+        path: PathBuf,
+        len: u64,
+        mime: &'static str,
+    },
     Redirect(String),
     Error(u16, &'static str),
 }
