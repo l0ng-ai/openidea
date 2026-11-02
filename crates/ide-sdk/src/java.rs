@@ -367,6 +367,15 @@ pub fn configure_jdtls(
         cfg.args.push(format!("--jvm-arg=-javaagent:{}", jar.to_string_lossy()));
     }
     crate::jdtls::add_default_vm_args(&mut cfg.args);
+    // jdtls resolves Maven dependencies through its own HTTP client, and a JVM reads none
+    // of the `HTTP_PROXY` / `HTTPS_PROXY` it inherits: pass the same proxy as system
+    // properties. One the user set in their own JVM arguments wins.
+    for arg in ide_core::proxy_settings::proxy().jvm_args() {
+        let key = arg.split('=').next().unwrap_or(arg.as_str());
+        if !cfg.args.iter().any(|a| a.contains(key)) {
+            cfg.args.push(format!("--jvm-arg={arg}"));
+        }
+    }
     let managed = language_server_runtimes_dir(data_dir);
     let managed = dunce::canonicalize(&managed).unwrap_or(managed);
     let project_jdks: Vec<_> = project_jdk
