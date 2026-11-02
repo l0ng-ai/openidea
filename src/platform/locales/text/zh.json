@@ -4852,7 +4852,6 @@
   "Python Interpreter: {label}": "Python 解释器：{label}",
   "Connection settings for SQL Server.": "SQL Server 的连接设置。",
   "ClickHouse settings sent with each HTTP request. connect_timeout is in seconds.": "每个 HTTP 请求附带的 ClickHouse 设置。connect_timeout 的单位为秒。",
-  "ClickHouse": "ClickHouse",
   "Microsoft SQL Server": "微软 SQL Server",
   "Add to .gitignore": "添加到 .gitignore",
   "Add to .git/info/exclude": "添加到 .git/info/exclude",
