@@ -8,6 +8,7 @@ import {
   layoutPanes,
   nextTabName,
   removeFromLayout,
+  reorderTabs,
   splitLayout,
   tabFullTitle,
   tabTitle,
@@ -228,6 +229,21 @@ describe("tab names", () => {
     expect(nextTabName(["Local", "Local (2)"])).toBe("Local (3)");
     expect(nextTabName(["Local"], "api")).toBe("api");
   });
+});
+
+describe("tab order", () => {
+  const ids = (tabs: { id: string }[]) => tabs.map((t) => t.id).join("");
+  const tabs = [{ id: "a" }, { id: "b" }, { id: "c" }];
+
+  it("moves a dragged tab to the insertion index", () => {
+    expect(ids(reorderTabs(tabs, "a", 3))).toBe("bca");
+    expect(ids(reorderTabs(tabs, "a", 2))).toBe("bac");
+    expect(ids(reorderTabs(tabs, "c", 0))).toBe("cab");
+    expect(ids(reorderTabs(tabs, "b", 1))).toBe("abc");
+    expect(ids(reorderTabs(tabs, "b", 2))).toBe("abc");
+  });
+
+  it("ignores unknown tabs", () => expect(ids(reorderTabs(tabs, "x", 0))).toBe("abc"));
 });
 
 describe("terminal find", () => {

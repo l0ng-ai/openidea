@@ -1,12 +1,17 @@
 //! Thin wrapper around the `git` executable used for every mutating operation.
 
+use ide_core::process::{own_group, terminate_tree};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// How long a cancelled git's process group (remote helpers, `ssh`, credential helpers) gets
+/// to exit on `SIGTERM` before `SIGKILL`: git removes its `index.lock` on `SIGTERM`.
+const KILL_GRACE: Duration = Duration::from_millis(20);
 
 /// Explicit git executable from Settings › Version Control › Git (`None` = auto-detect).
 static CONFIGURED: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
@@ -361,11 +366,7 @@ pub(crate) fn run_cancellable_raw(root: &Path, args: &[&str], cancel: &Cancellat
     }
     let mut cmd = command(root)?;
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    own_group(&mut cmd);
     let mut session = CommandSession::start(&mut cmd);
     let mut child = cmd.spawn().map_err(spawn_error)?;
     let capture = |mut pipe: Box<dyn Read + Send>| {
@@ -378,8 +379,7 @@ pub(crate) fn run_cancellable_raw(root: &Path, args: &[&str], cancel: &Cancellat
     let stderr = capture(Box::new(child.stderr.take().expect("piped stderr")));
     let status = loop {
         if cancel.is_cancelled() {
-            kill(&mut child);
-            let _ = child.wait();
+            terminate_tree(&mut child, KILL_GRACE);
             let _ = stdout.join();
             let _ = stderr.join();
             return Err(IdeError::cancelled());
@@ -504,11 +504,7 @@ pub(crate) fn run_streaming_env(
         cmd.env(k, v);
     }
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    own_group(&mut cmd);
     tracing::debug!(?args, "git (streaming)");
     let mut session = CommandSession::start(&mut cmd);
     let mut child = cmd.spawn().map_err(spawn_error)?;
@@ -529,8 +525,7 @@ pub(crate) fn run_streaming_env(
     let mut open = readers.len();
     while open > 0 {
         if cancel.is_cancelled() {
-            kill(&mut child);
-            let _ = child.wait();
+            terminate_tree(&mut child, KILL_GRACE);
             for r in readers {
                 let _ = r.join();
             }
@@ -559,8 +554,7 @@ pub(crate) fn run_streaming_env(
             break status;
         }
         if cancel.is_cancelled() {
-            kill(&mut child);
-            let _ = child.wait();
+            terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::cancelled());
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -642,22 +636,6 @@ fn spawn_reader(
         flush(&mut pending);
         let _ = tx.send(Event::Closed);
     })
-}
-
-fn kill(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        let pid = child.id() as libc::pid_t;
-        // SAFETY: plain syscall; the child was spawned as leader of its own process group.
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-        }
-    }
-    let _ = child.kill();
 }
 
 #[cfg(test)]
