@@ -17,7 +17,13 @@ import {
   type RunId,
   type TestCaseReport,
 } from "@/platform/ipc";
-import { findJavaModule, isJvmApplication, parseJavaArgs, prepareJavaLaunch } from "@/platform/javaLaunch";
+import {
+  consoleVmArgs,
+  findJavaModule,
+  isJvmApplication,
+  parseJavaArgs,
+  prepareJavaLaunch,
+} from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -721,7 +727,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     say(`No main class in '${config.name}': expected java [options] -cp \${classpath} <main class> [args]\n`, "stderr");
     return null;
   }
-  if (!parsed.classpath) return config;
+  if (!parsed.classpath) return { ...config, args: [...consoleVmArgs(config), ...config.args] };
   const rt = runtime(sessionId)!;
   const request = { id: nextRequestId(), controller: new AbortController() };
   rt.resolveRequest = request;
