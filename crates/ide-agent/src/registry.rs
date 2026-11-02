@@ -172,6 +172,18 @@ fn parse(text: &str) -> IdeResult<Vec<Entry>> {
             if let Some(name) = provider::builtin_name(&e.id) {
                 e.name = name.to_owned();
             }
+            if e.id == "copilot" {
+                // Use `@github/copilot-language-server --acp` (`CLIProxyAgent`, matching
+                // JetBrains IntelliJ Air) so Copilot reuses the IDE's OAuth session in
+                // `~/.config/github-copilot/apps.json` and supports `authenticate("github_oauth")`.
+                e.distribution.binary.clear();
+                e.distribution.uvx = None;
+                e.distribution.npx = Some(Package {
+                    package: "@github/copilot-language-server@latest".into(),
+                    args: vec!["--acp".into()],
+                    env: BTreeMap::new(),
+                });
+            }
             e
         })
         .collect())
@@ -242,8 +254,12 @@ fn choose<'a>(entry: &'a Entry, platform: Platform, on_path: &dyn Fn(&str) -> bo
 }
 
 /// Registry ids that map to a shorter built-in provider id (`<config>/agents/<id>.toml`).
-const BUILTIN_ALIASES: &[(&str, &str)] =
-    &[("github-copilot-cli", "copilot"), ("qwen-code", "qwen"), ("mistral-vibe", "vibe")];
+const BUILTIN_ALIASES: &[(&str, &str)] = &[
+    ("github-copilot-cli", "copilot"),
+    ("github-copilot", "copilot"),
+    ("qwen-code", "qwen"),
+    ("mistral-vibe", "vibe"),
+];
 
 fn canonical_id(id: &str) -> &str {
     BUILTIN_ALIASES.iter().find_map(|&(alias, canonical)| (alias == id).then_some(canonical)).unwrap_or(id)
@@ -995,6 +1011,7 @@ mod tests {
         assert_eq!(spec.name, "GitHub Copilot");
         assert_eq!(spec.login_hint, "Run `copilot` in a terminal and sign in.");
         assert_eq!(spec.source, AgentSource::Registry { version: "1.0.104".into(), update: None });
+        assert_eq!(entries[0].distribution.npx.as_ref().unwrap().package, "@github/copilot-language-server@latest");
 
         let mut providers = vec![provider::describe(&spec)];
         mark_updates(&p, &mut providers);
