@@ -910,7 +910,7 @@ pub(crate) fn rake_tasks(src: &str) -> Vec<String> {
             r.split(['"', '\'']).next().map(|n| (n.to_owned(), ()))?
         } else {
             let n: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-            (!n.is_empty() && rest[n.len()..].starts_with(':')).then(|| (n, ()))?
+            (!n.is_empty() && rest[n.len()..].starts_with(':')).then_some((n, ()))?
         };
         (!name.is_empty()).then_some(name)
     };
@@ -920,19 +920,19 @@ pub(crate) fn rake_tasks(src: &str) -> Vec<String> {
             continue;
         }
         let opens = line.ends_with(" do") || line.contains(" do |") || line.contains(" do ") && !line.contains(" end");
-        if let Some(rest) = line.strip_prefix("namespace ") {
-            if let Some(ns) = name_of(rest) {
-                namespaces.push(ns);
-                depth.push(true);
-                continue;
-            }
+        if let Some(rest) = line.strip_prefix("namespace ")
+            && let Some(ns) = name_of(rest)
+        {
+            namespaces.push(ns);
+            depth.push(true);
+            continue;
         }
-        if let Some(rest) = line.strip_prefix("task ").or_else(|| line.strip_prefix("task(")) {
-            if let Some(name) = name_of(rest) {
-                let full = namespaces.iter().chain([&name]).cloned().collect::<Vec<_>>().join(":");
-                if !tasks.contains(&full) {
-                    tasks.push(full);
-                }
+        if let Some(rest) = line.strip_prefix("task ").or_else(|| line.strip_prefix("task("))
+            && let Some(name) = name_of(rest)
+        {
+            let full = namespaces.iter().chain([&name]).cloned().collect::<Vec<_>>().join(":");
+            if !tasks.contains(&full) {
+                tasks.push(full);
             }
         }
         if line.contains("Rake::TestTask.new") || line.contains("RSpec::Core::RakeTask.new") {
@@ -946,10 +946,8 @@ pub(crate) fn rake_tasks(src: &str) -> Vec<String> {
         if opens && !line.starts_with("namespace ") {
             depth.push(false);
         }
-        if line == "end" || line.starts_with("end ") || line.starts_with("end#") {
-            if depth.pop() == Some(true) {
-                namespaces.pop();
-            }
+        if (line == "end" || line.starts_with("end ") || line.starts_with("end#")) && depth.pop() == Some(true) {
+            namespaces.pop();
         }
     }
     tasks

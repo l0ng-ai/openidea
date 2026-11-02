@@ -130,7 +130,7 @@ export const rspecType: RunConfigTypeContribution = {
       key: "target",
       label: "Target",
       mono: true,
-      placeholder: "spec",
+      placeholder: "e.g. spec",
       hint: "Directory, file or file:line; empty runs the whole suite",
     },
     { key: "options", label: "RSpec options", mono: true, placeholder: "e.g. --format documentation --fail-fast" },

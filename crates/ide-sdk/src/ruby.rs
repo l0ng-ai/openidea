@@ -140,9 +140,11 @@ pub fn bin_dir_of(ruby: &Path) -> Option<PathBuf> {
     ruby.parent().map(Path::to_path_buf)
 }
 
+type NamedRoots = Vec<(String, PathBuf)>;
+
 /// Standard-library / site directories (`ruby/3.3.0`) and the gems Bundler resolves
 /// for `root` (`rails-7.1.3`), each as `(name, path)`.
-pub fn library_roots(ruby: &Path, root: Option<&Path>) -> (Vec<(String, PathBuf)>, Vec<(String, PathBuf)>) {
+pub fn library_roots(ruby: &Path, root: Option<&Path>) -> (NamedRoots, NamedRoots) {
     const PATHS: &str = "require 'rbconfig'; puts RbConfig::CONFIG['rubylibdir'], RbConfig::CONFIG['sitelibdir'], RbConfig::CONFIG['vendorlibdir']";
     let mut stdlib = Vec::new();
     let mut gems = Vec::new();
@@ -167,7 +169,7 @@ pub fn library_roots(ruby: &Path, root: Option<&Path>) -> (Vec<(String, PathBuf)
         };
         for line in text.unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()) {
             let path = PathBuf::from(line);
-            if path.is_dir() && !path.starts_with(root) {
+            if path.is_dir() && path != root {
                 gems.push((file_name(&path), path));
             }
         }
@@ -178,6 +180,33 @@ pub fn library_roots(ruby: &Path, root: Option<&Path>) -> (Vec<(String, PathBuf)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn includes_bundled_gems_installed_inside_the_project() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let gem = root.join("vendor/bundle/ruby/4.0.0/gems/rake-13.4.0");
+        let external = dir.path().join("gems/rspec-3.13.2");
+        let bin = dir.path().join("bin");
+        for path in [&gem, &external, &bin] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(root.join("Gemfile"), "gem 'rake'\ngem 'rspec'\n").unwrap();
+        for (name, output) in [
+            ("ruby", String::new()),
+            ("bundle", format!("{}\n{}\n{}", gem.display(), external.display(), root.display())),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{output}'\n")).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let (_, gems) = library_roots(&bin.join("ruby"), Some(&root));
+        assert_eq!(gems, vec![("rake-13.4.0".into(), gem), ("rspec-3.13.2".into(), external)]);
+    }
 
     #[test]
     fn parses_ruby_version_output() {

@@ -4509,11 +4509,6 @@ export type NodeAt = {
 	ancestors: SyntaxNode[],
 };
 
-export type RubySettings = {
-	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
-	interpreter?: string,
-};
-
 export type NodeSettings = {
 	/**  `node` executable; empty = the one on `PATH`. */
 	interpreter?: string,
@@ -5313,6 +5308,11 @@ export type RevisionChange = {
 };
 
 export type RootKind = "source" | "test" | "resources" | "testResources" | "excluded";
+
+export type RubySettings = {
+	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
+	interpreter?: string,
+};
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
 
