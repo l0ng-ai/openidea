@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IpcError, type RunConfig } from "@/platform/ipc";
-import { findJavaModule, prepareJavaLaunch } from "@/platform/javaLaunch";
+import { javaModule, prepareJavaLaunch } from "@/platform/javaLaunch";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { provideNotificationService } from "@/workbench/contributions";
 import { applicationConfig } from "./application";
@@ -20,7 +20,7 @@ const ipc = vi.hoisted(() => {
     ),
     fsReadText: vi.fn(() => ok("package a;\npublic class Main {}")),
     runConfigs: vi.fn(() => ok([])),
-    runSaveConfigs: vi.fn(() => ok(null)),
+    runSaveConfigs: vi.fn((_user: RunConfig[], _removed: string[]) => ok(null)),
     runStart: vi.fn(() => ok({ id: 1, pty: false })),
     javaResolveLaunch: vi.fn(() =>
       ok({
@@ -60,9 +60,10 @@ const config: RunConfig = {
   isTest: false,
   debugAdapter: "java-debug",
 };
+const notify = vi.fn();
 beforeEach(() => {
   vi.clearAllMocks();
-  provideNotificationService({ notify: vi.fn() });
+  provideNotificationService({ notify });
 });
 afterEach(() => {
   resetRuns();
@@ -88,13 +89,30 @@ it("finds the source module for an old saved configuration without a module", as
 });
 
 it("keeps an explicitly stored root module", async () => {
-  expect(await findJavaModule({ ...config, module: "", cwd: "sibling" })).toBe("");
+  expect(await javaModule({ ...config, module: "", cwd: "sibling" })).toBe("");
   expect(ipc.findFiles).not.toHaveBeenCalled();
 });
 
 it("stores the source module when a manually created application is saved", async () => {
   await saveUserConfigs([{ ...config, cwd: "sibling" }]);
   expect(ipc.runSaveConfigs).toHaveBeenCalledWith([expect.objectContaining({ module: "app", cwd: "sibling" })], []);
+});
+
+it("asks for the module when the main class is not a source file of this project", async () => {
+  // The class comes from a dependency: no source file can name the module, and a wrong
+  // guess would resolve the wrong classpath, so the configuration is saved without one.
+  ipc.findFiles.mockResolvedValueOnce({ status: "ok", data: [] });
+  await saveUserConfigs([{ ...config, name: "knowbase-gateway", cwd: "gateway" }]);
+  const saved = ipc.runSaveConfigs.mock.calls[0]![0];
+  expect(saved[0]).not.toHaveProperty("module");
+  expect(notify).toHaveBeenCalledWith(
+    expect.objectContaining({ level: "warning", title: "Module not set for 'knowbase-gateway'" }),
+  );
+});
+
+it("stores the module of a detected configuration from its own source", async () => {
+  await saveUserConfigs([{ ...config, detected: true, cwd: "sibling" }]);
+  expect(ipc.runSaveConfigs).toHaveBeenCalledWith([expect.objectContaining({ module: "app" })], []);
 });
 
 it("stores the module at context creation and forgets it when the main class changes", () => {
@@ -106,7 +124,7 @@ it("stores the module at context creation and forgets it when the main class cha
 
 it("does not substitute the working directory when sources are missing or ambiguous", async () => {
   ipc.findFiles.mockResolvedValueOnce({ status: "ok", data: [] });
-  expect(await findJavaModule({ ...config, cwd: "sibling" })).toBeNull();
+  expect(await javaModule({ ...config, cwd: "sibling" })).toBeUndefined();
   ipc.findFiles.mockResolvedValueOnce({
     status: "ok",
     data: [
@@ -114,7 +132,7 @@ it("does not substitute the working directory when sources are missing or ambigu
       { path: "/p/other/src/main/java/a/Main.java", relPath: "other/src/main/java/a/Main.java" },
     ],
   });
-  expect(await findJavaModule(config)).toBeNull();
+  expect(await javaModule(config)).toBeUndefined();
 });
 
 it.each([

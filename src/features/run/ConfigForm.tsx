@@ -3,10 +3,10 @@
  * common ones, the options added through "Modify options" (⌥M) and the
  * Before launch list.
  */
-import { parseJavaArgs } from "@/platform/javaLaunch";
-import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
-import type { BeforeLaunchTask, RunConfig } from "@/platform/ipc";
+import { call, commands, isTauri, type BeforeLaunchTask, type BuildModel, type RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import {
@@ -176,6 +176,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const toolWindows = useContributions((s) => s.toolWindows);
   const tx = useTx();
   const txTemplate = useTxTemplate();
+  const [buildModel, setBuildModel] = useState<BuildModel | null>(null);
   const [shown, setShown] = useState<ReadonlySet<OptionId>>(() => new Set());
   const [argsText, setArgsText] = useState<string | null>(null);
   const [envText, setEnvText] = useState<string | null>(null);
@@ -191,6 +192,36 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
     setLastRequest(modifyRequest);
     setModifyOpen(true);
   }
+
+  const moduleOptions = useMemo<SelectOption[]>(() => {
+    const byDir = new Map<string, SelectOption>();
+    // `Select` translates the labels; the detail tells the two same-named modules apart.
+    for (const p of buildModel?.maven?.projects ?? [])
+      byDir.set(p.dir, { value: p.dir, label: p.dir || "Project root", detail: p.artifactId });
+    for (const p of buildModel?.gradle?.projects ?? [])
+      byDir.set(p.dir, { value: p.dir, label: p.dir || "Project root", detail: p.path });
+    const options = [...byDir.values()];
+    if (!byDir.has("")) options.unshift({ value: "", label: "Project root" });
+    // A module named by hand (not in the build model) stays selectable instead of vanishing.
+    if (config.module != null && !byDir.has(config.module))
+      options.push({ value: config.module, label: config.module });
+    return options;
+  }, [buildModel, config.module]);
+
+  // The classpath module is a build-system concept: offer the project's Maven / Gradle modules.
+  const javaApplication = isJvmApplication(config);
+  useEffect(() => {
+    if (!javaApplication || !isTauri()) return;
+    let live = true;
+    void call(commands.buildModel())
+      .then((model) => {
+        if (live) setBuildModel(model);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [javaApplication]);
 
   const compound = config.kind === COMPOUND;
   // Compound and debug-only types (Remote JVM Debug) start no process of their own.
@@ -453,6 +484,19 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                 value={config.cwd ?? ""}
                 placeholder="Project root"
                 onChange={(e) => update({ cwd: e.target.value.trim() ? e.target.value : null })}
+              />
+            </Field>
+          )}
+          {javaApplication && (
+            <Field label="Module" hint="Maven or Gradle module supplying the classpath">
+              <Select
+                aria-label="Module"
+                searchable
+                // Unset (derived from the main class) is not the same choice as the project root.
+                value={config.module ?? null}
+                placeholder="Derive from the main class"
+                options={moduleOptions}
+                onChange={(value) => update({ module: value })}
               />
             </Field>
           )}

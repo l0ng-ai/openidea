@@ -17,7 +17,7 @@ import {
   type RunId,
   type TestCaseReport,
 } from "@/platform/ipc";
-import { findJavaModule, isJvmApplication, parseJavaArgs, prepareJavaLaunch } from "@/platform/javaLaunch";
+import { isJvmApplication, javaModule, parseJavaArgs, prepareJavaLaunch } from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -323,9 +323,23 @@ export async function deleteConfig(id: string): Promise<void> {
 /** Persists user configurations and reloads the merged list. */
 export async function saveUserConfigs(user: RunConfig[], removedDetectedIds: string[] = []): Promise<void> {
   user = await Promise.all(
-    user.map(async (config) =>
-      isJvmApplication(config) && config.module == null ? { ...config, module: await findJavaModule(config) } : config,
-    ),
+    user.map(async (config) => {
+      if (!isJvmApplication(config) || config.module != null) return config;
+      const module = await javaModule(config);
+      if (module === undefined) {
+        // Asking now beats failing at launch, where the configuration only reports that
+        // it cannot determine a module for a main class the user never moved.
+        notifications().notify({
+          group: "run",
+          level: "warning",
+          key: `run.module-unknown:${config.id}`,
+          title: `Module not set for '${config.name}'`,
+          body: "Its classpath module cannot be derived: the main class is not a source file of this project, or several modules declare it. Choose one in the configuration's Module field.",
+        });
+        return config;
+      }
+      return { ...config, module };
+    }),
   );
   await call(
     commands.runSaveConfigs(
