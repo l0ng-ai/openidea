@@ -28,6 +28,48 @@ function unwrap(c: RunConfig, name: string): { command: string; bundler: string;
   return null;
 }
 
+/**
+ * Index of the first operand in `args` (the script, spec target or Rake task): the
+ * first argument that is not an option, nor the value of the option before it. A
+ * token after an option without `=` is that option's value when the option is known
+ * to take one (`-I lib`, `--format documentation`) or, with `operand`, when the token
+ * does not look like an operand (`--foo bar spec/a_spec.rb`); `--` ends the options.
+ */
+function operandIndex(
+  args: readonly string[],
+  valueOptions: ReadonlySet<string>,
+  operand: (a: string) => boolean = () => true,
+): number {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--") return i + 1 < args.length ? i + 1 : -1;
+    if (a.startsWith("-")) continue;
+    const prev = i > 0 ? args[i - 1]! : "";
+    const value = prev.startsWith("-") && !prev.includes("=") && (valueOptions.has(prev) || !operand(a));
+    if (!value) return i;
+  }
+  return -1;
+}
+
+const RUBY_VALUE_OPTIONS = new Set(
+  "-I -r -C -E -e -F --encoding --external-encoding --internal-encoding --enable --disable --dump".split(" "),
+);
+const RSPEC_VALUE_OPTIONS = new Set(
+  (
+    "-I -r --require -O --options -P --pattern --exclude-pattern --default-path -o --out --deprecation-out " +
+    "-f --format -e --example -E --example-matches -t --tag --seed --order"
+  ).split(" "),
+);
+const RAKE_VALUE_OPTIONS = new Set(
+  (
+    "-f --rakefile -I --libdir -r --require -R --rakelibdir -j --jobs -C --directory " +
+    "-e --execute -E --execute-continue -p --execute-print"
+  ).split(" "),
+);
+
+const looksLikeScript = (a: string) => /[\\/]|\.rb$/.test(a);
+const looksLikeSpecTarget = (a: string) => /[\\/]|\.rb(:\d+|\[[\d:]+\])?$|^(spec|\.)$/.test(a);
+
 const bundlerField = {
   key: "bundler",
   label: "Run with Bundler (bundle exec)",
@@ -72,7 +114,7 @@ export const rubyScriptType: RunConfigTypeContribution = {
     if (c.kind !== "ruby") return null;
     const u = unwrap(c, "ruby");
     if (!u) return null;
-    const at = u.rest.findIndex((a) => !a.startsWith("-"));
+    const at = operandIndex(u.rest, RUBY_VALUE_OPTIONS, looksLikeScript);
     if (at < 0) return null;
     return {
       command: u.command,
@@ -113,8 +155,8 @@ export const rakeType: RunConfigTypeContribution = {
     if (c.kind !== "rake") return null;
     const u = unwrap(c, "rake");
     if (!u) return null;
-    const options = u.rest.filter((a) => a.startsWith("-"));
-    const task = u.rest.filter((a) => !a.startsWith("-"));
+    const at = operandIndex(u.rest, RAKE_VALUE_OPTIONS);
+    const [options, task] = at < 0 ? [u.rest, []] : [u.rest.slice(0, at), u.rest.slice(at)];
     return { command: u.command, bundler: u.bundler, options: formatArgs(options), task: formatArgs(task) };
   },
 };
@@ -145,8 +187,8 @@ export const rspecType: RunConfigTypeContribution = {
     if (c.kind !== "rspec") return null;
     const u = unwrap(c, "rspec");
     if (!u) return null;
-    const options = u.rest.filter((a) => a.startsWith("-"));
-    const target = u.rest.filter((a) => !a.startsWith("-"));
+    const at = operandIndex(u.rest, RSPEC_VALUE_OPTIONS, looksLikeSpecTarget);
+    const [options, target] = at < 0 ? [u.rest, []] : [u.rest.slice(0, at), u.rest.slice(at)];
     return { command: u.command, bundler: u.bundler, options: formatArgs(options), target: formatArgs(target) };
   },
 };

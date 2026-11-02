@@ -106,6 +106,9 @@ describe("configuration types", () => {
     ["ruby", String.raw`C:\Ruby33\bin\ruby.exe`, ["-Ilib", "bin/app", "--port", "3000"]],
     ["rake", "bundle", ["exec", "rake", "--trace", "db:migrate"]],
     ["rspec", "/home/me/.rbenv/versions/3.3.1/bin/rspec", ["--fail-fast", "spec/a_spec.rb:12"]],
+    ["rspec", "bundle", ["exec", "rspec", "--format", "documentation", "--fail-fast", "spec/foo_spec.rb"]],
+    ["ruby", "ruby", ["-I", "lib", "-w", "bin/app", "--port", "3000"]],
+    ["rake", "bundle", ["exec", "rake", "-f", "lib/tasks.rake", "--trace", "db:migrate"]],
     ["npm", String.raw`C:\Program Files\nodejs\NPM.CMD`, ["run", "test", "--", "two words"]],
     ["npm", "pnpm.COM", ["test"]],
     ["application", String.raw`C:\jdk\bin\JAVA.EXE`, ["-cp", "lib/*", "a.Main"]],
@@ -192,6 +195,54 @@ describe("configuration types", () => {
       script: "app.rb",
       scriptArgs: "-v",
     });
+  });
+
+  it("ruby types keep option values with their options and the argument order as written", () => {
+    const ruby = (args: string[]) => formParams(cfg("r", { kind: "ruby", command: "ruby", args }));
+    expect(ruby(["-I", "lib", "-w", "bin/app", "--port", "3000"])).toEqual({
+      command: "",
+      bundler: "",
+      rubyArgs: "-I lib -w",
+      script: "bin/app",
+      scriptArgs: "--port 3000",
+    });
+    expect(ruby(["-W0", "--", "-weird.rb", "x"])).toMatchObject({
+      rubyArgs: "-W0 --",
+      script: "-weird.rb",
+      scriptArgs: "x",
+    });
+    expect(ruby(["-e", "puts 1"])).toBeNull();
+    expect(ruby(["-v"])).toBeNull();
+
+    const rspec = (args: string[]) =>
+      formParams(cfg("s", { kind: "rspec", command: "bundle", args: ["exec", "rspec", ...args] }));
+    expect(rspec(["--format", "documentation", "--fail-fast", "spec/foo_spec.rb"])).toEqual({
+      command: "",
+      bundler: "true",
+      options: "--format documentation --fail-fast",
+      target: "spec/foo_spec.rb",
+    });
+    expect(rspec(["--tag", "~slow", "-fd", "spec/a_spec.rb:12", "spec/b_spec.rb"])).toMatchObject({
+      options: "--tag ~slow -fd",
+      target: "spec/a_spec.rb:12 spec/b_spec.rb",
+    });
+    expect(rspec(["--format", "documentation"])).toMatchObject({ options: "--format documentation", target: "" });
+    expect(rspec(["--new-option", "value", "spec"])).toMatchObject({ options: "--new-option value", target: "spec" });
+    expect(rspec([])).toMatchObject({ options: "", target: "" });
+
+    const rake = (args: string[]) =>
+      formParams(cfg("k", { kind: "rake", command: "bundle", args: ["exec", "rake", ...args] }));
+    expect(rake(["-f", "lib/tasks.rake", "--trace", "db:migrate"])).toEqual({
+      command: "",
+      bundler: "true",
+      options: "-f lib/tasks.rake --trace",
+      task: "db:migrate",
+    });
+    expect(rake(["--trace", "test", "TEST=test/a_test.rb"])).toMatchObject({
+      options: "--trace",
+      task: "test TEST=test/a_test.rb",
+    });
+    expect(rake(["-T"])).toMatchObject({ options: "-T", task: "" });
   });
 
   it("pytest round-trips commandLine / paramsFrom and opens implicit context configs in the form", () => {
