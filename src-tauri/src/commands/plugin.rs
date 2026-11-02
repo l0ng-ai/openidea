@@ -5,7 +5,8 @@
 use crate::state::AppState;
 use ide_core::{IdeError, IdeResult};
 use ide_plugin::{
-    ActiveTheme, CatalogPlugin, Invocation, Limits, PluginEvent, PluginHost, PluginInfo, PluginsSnapshot,
+    ActiveTheme, CatalogPlugin, Invocation, Limits, PluginEndpointTable, PluginEvent, PluginHost, PluginInfo,
+    PluginsSnapshot,
 };
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -148,6 +149,29 @@ pub async fn plugin_run_command(
         }),
     };
     blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
+}
+
+/// Runs endpoint provider `index` of `plugin_id` (`[[contributes.endpoints]]`) for
+/// this window's project: `None` when the provider does not apply to it (no marker).
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_endpoints(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    index: u32,
+) -> IdeResult<Option<PluginEndpointTable>> {
+    let host = state.plugins.clone();
+    let project = state.project(window.label()).ok();
+    let invocation = Invocation {
+        client: Some(window.label().to_owned()),
+        workspace_root: project.as_ref().map(|p| p.root.clone()),
+        buffer_text: project.map(|p| {
+            let documents = p.documents.clone();
+            Arc::new(move |path: &Path| documents.text_of(path)) as ide_plugin::BufferText
+        }),
+    };
+    blocking(move || host.endpoints(&plugin_id, index as usize, invocation)).await
 }
 
 /// The UI reports the focused editor's file (`active-file` for plugins).

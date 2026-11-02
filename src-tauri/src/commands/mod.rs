@@ -415,6 +415,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_uninstall,
         plugin::plugin_reload,
         plugin::plugin_run_command,
+        plugin::plugin_endpoints,
         plugin::plugin_set_active_file,
         plugin::plugin_set_theme,
         plugin::plugin_set_theme_frame,

@@ -861,6 +861,16 @@ export const commands = {
 	pluginReload: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_reload", { id })),
 	/**  Runs a plugin command in the context of this window's project. */
 	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg })),
+	/**
+	 *  Runs endpoint provider `index` of `plugin_id` (`[[contributes.endpoints]]`) for
+	 *  this window's project: `None` when the provider does not apply to it (no marker).
+	 */
+	pluginEndpoints: (pluginId: string, index: number) => typedError<{
+	endpoints: PluginEndpoint[],
+	diagnostics?: PluginEndpointDiagnostic[],
+	/**  Files read; a change to one re-runs the provider. */
+	files?: string[],
+} | null, IdeError>(__TAURI_INVOKE("plugin_endpoints", { pluginId, index })),
 	/**  The UI reports the focused editor's file (`active-file` for plugins). */
 	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
@@ -3001,6 +3011,31 @@ export type EncodingSettings = {
 	utf8Bom?: string,
 };
 
+/**
+ *  A provider of the Endpoints tool window: the IDE runs `command` with the
+ *  project root as its argument and expects a JSON endpoint table back.
+ */
+export type EndpointDecl = {
+	/**  Framework name shown in the window's Framework filter (`Rails`). */
+	framework: string,
+	/**  Endpoint type shown in the Type filter; default `HTTP`. */
+	type?: string,
+	/**  The plugin command to run (`run-command(command, Some(root))`). */
+	command: string,
+	/**
+	 *  Project-relative files or directories; the provider applies when one
+	 *  exists (`config/routes.rb`). Empty: applies to every project.
+	 */
+	markers?: string[],
+	/**
+	 *  Project-relative glob patterns (`*`, `**`, `?`) of the files whose change
+	 *  re-runs the command, besides the files the table reports.
+	 */
+	watch?: string[],
+	/**  Row icon (`ui/icons` name); default `web`. */
+	icon?: string | null,
+};
+
 export type EntryKind = "file" | "dir" | "symlink";
 
 /**  What Reload Environment changed. */
@@ -4670,6 +4705,38 @@ export type Permission =
 /**  `insert-text`, `replace-selection`. */
 "editor-write";
 
+export type PluginEndpoint = {
+	/**  `GET`, `POST`, …, `ANY`. */
+	method: string,
+	path: string,
+	/**  Short handler (`photos#show`). */
+	target: string,
+	/**  Handler class, the row's right column (`PhotosController`). */
+	targetClass?: string,
+	/**  Route / URL helper name. */
+	name?: string | null,
+	/**  Declaring file (absolute after parsing) and 1-based line. */
+	file: string,
+	line: number,
+	/**  Default: the method against `http://localhost` + path. */
+	request?: PluginRequest | null,
+	/**  Extra rows of the Documentation tab. */
+	docs?: ([string, string])[],
+};
+
+export type PluginEndpointDiagnostic = {
+	file: string,
+	line: number,
+	message: string,
+};
+
+export type PluginEndpointTable = {
+	endpoints: PluginEndpoint[],
+	diagnostics?: PluginEndpointDiagnostic[],
+	/**  Files read; a change to one re-runs the provider. */
+	files?: string[],
+};
+
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
 /**  Plugins, their status or their commands changed: re-fetch `plugin_list`. */
@@ -4695,12 +4762,27 @@ export type PluginInfo = {
 	commands: CommandDecl[],
 	languages: PluginLanguage[],
 	themes: PluginTheme[],
+	/**  Endpoint providers declared in the manifest (`plugin_endpoints` runs them). */
+	endpoints: EndpointDecl[],
 };
 
 export type PluginLanguage = {
 	id: string,
 	name: string,
 	extensions: string[],
+};
+
+/**  The `.http` request to generate for an endpoint. */
+export type PluginRequest = {
+	method: string,
+	url: string,
+	headers?: PluginRequestHeader[],
+	body?: string | null,
+};
+
+export type PluginRequestHeader = {
+	name: string,
+	value: string,
 };
 
 export type PluginSource = 

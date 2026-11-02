@@ -1,6 +1,6 @@
 //! UI-facing types and the event stream.
 
-use crate::manifest::{CommandDecl, Permission};
+use crate::manifest::{CommandDecl, EndpointDecl, Permission};
 use crate::theme::{ThemeDef, ThemeKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -75,6 +75,8 @@ pub struct PluginInfo {
     pub commands: Vec<CommandDecl>,
     pub languages: Vec<PluginLanguage>,
     pub themes: Vec<PluginTheme>,
+    /// Endpoint providers declared in the manifest (`plugin_endpoints` runs them).
+    pub endpoints: Vec<EndpointDecl>,
 }
 
 /// A plugin package available for installation from a local catalog
