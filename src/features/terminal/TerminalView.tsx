@@ -31,11 +31,9 @@ import {
   requestCloseSession,
   requestCloseTab,
   selectTab,
-  splitTab,
   tabFullTitle,
   tabTitle,
   topRightGroup,
-  unsplit,
   useTerminals,
   type GroupLayout,
   type TerminalTab,
@@ -121,7 +119,14 @@ function paneMenu(e: MouseEvent, key: string) {
     { kind: "separator" },
     { kind: "action", action: "terminal.splitRight" },
     { kind: "action", action: "terminal.splitDown" },
-    { label: "Close Session", icon: "close", run: () => void requestCloseSession(key) },
+    {
+      label: "Close Session",
+      icon: "close",
+      run: () =>
+        void requestCloseSession(key).then((closed) => {
+          if (closed) requestAnimationFrame(() => activeSession()?.focus());
+        }),
+    },
   ];
   if (exited)
     items.splice(
@@ -323,10 +328,7 @@ function GroupTabs({ group }: { group: string }) {
   const onClose = async (id: string) => {
     if (!(await requestCloseTab(id))) return;
     if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
-  };
-
-  const splitAndMove = (id: string, orientation: "horizontal" | "vertical") => {
-    if (splitTab(id, orientation, true)) focusActiveTab(focusRaf);
+    else focusActiveTab(focusRaf);
   };
 
   const tabMenu = (id: string, e: MouseEvent) => {
@@ -342,25 +344,16 @@ function GroupTabs({ group }: { group: string }) {
         disabled: !others,
         run: async () => {
           for (const t of tabs.filter((x) => x.id !== id)) if (!(await requestCloseTab(t.id))) return;
+          focusActiveTab(focusRaf);
         },
       },
       { kind: "separator" },
       // IDEA's tool window splits: each part gets its own tabs.
       { kind: "action", action: "terminal.splitRight", arg: id },
-      ...(others ? [{ label: "Split and Move Right", run: () => splitAndMove(id, "horizontal") }] : []),
+      ...(others ? [{ kind: "action" as const, action: "terminal.splitAndMoveRight", arg: id }] : []),
       { kind: "action", action: "terminal.splitDown", arg: id },
-      ...(others ? [{ label: "Split and Move Down", run: () => splitAndMove(id, "vertical") }] : []),
-      ...(split
-        ? [
-            {
-              label: "Unsplit",
-              run: () => {
-                unsplit(group);
-                focusActiveTab(focusRaf);
-              },
-            },
-          ]
-        : []),
+      ...(others ? [{ kind: "action" as const, action: "terminal.splitAndMoveDown", arg: id }] : []),
+      ...(split ? [{ kind: "action" as const, action: "terminal.unsplit", arg: group }] : []),
     ]);
   };
 

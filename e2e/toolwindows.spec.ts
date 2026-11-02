@@ -57,6 +57,20 @@ test("Split Right gives the Terminal a tab group with its own header; Unsplit me
   await expect(terminal.locator("header")).toHaveCount(1);
 });
 
+test("closing the last tab of a terminal group focuses its neighbour", async ({ workbench: page }) => {
+  const terminal = page.getByRole("region", { name: "Terminal" });
+  const strips = terminal.getByRole("tablist", { name: "Terminal sessions" });
+  await page.keyboard.press("Alt+F12");
+  await strips.getByRole("tab", { name: "Local" }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: /^Split Right/ }).click();
+  await expect(strips).toHaveCount(2);
+  await strips.nth(1).getByRole("button", { name: "Close Tab", exact: true }).click();
+  await expect(strips).toHaveCount(1);
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+  await page.keyboard.press("Meta+t");
+  await expect(strips.getByRole("tab")).toHaveCount(2);
+});
+
 test("⌘⇧F12 hides all tool windows and restores them", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+6");
   await expect(page.getByRole("region", { name: "Problems" })).toBeVisible();

@@ -43,11 +43,11 @@ async function openNewTab(dir?: string) {
 }
 
 /** Split Right / Split Down of tab `arg` (from its context menu), else of the active tab. */
-async function split(arg: unknown, orientation: "horizontal" | "vertical") {
+async function split(arg: unknown, orientation: "horizontal" | "vertical", move = false) {
   const rt = await loadTerminalRuntime();
   const id = typeof arg === "string" && arg ? arg : rt.useTerminals.getState().activeTab;
-  if (!id) return openNewTab();
-  rt.splitTab(id, orientation);
+  if (!id) return move ? undefined : openNewTab();
+  rt.splitTab(id, orientation, move);
   toolWindowService().show(WINDOW, true);
   focusActiveSoon();
 }
@@ -136,6 +136,35 @@ export function activate(): () => void {
         icon: "split-horizontal",
         when: "projectOpen",
         run: ({ arg }) => split(arg, "vertical"),
+      },
+      {
+        id: "terminal.splitAndMoveRight",
+        title: "Split and Move Right",
+        category: "Terminal",
+        when: "projectOpen",
+        run: ({ arg }) => split(arg, "horizontal", true),
+      },
+      {
+        id: "terminal.splitAndMoveDown",
+        title: "Split and Move Down",
+        category: "Terminal",
+        when: "projectOpen",
+        run: ({ arg }) => split(arg, "vertical", true),
+      },
+      {
+        id: "terminal.unsplit",
+        title: "Unsplit",
+        category: "Terminal",
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const rt = await loadTerminalRuntime();
+          const { tabs, activeTab } = rt.useTerminals.getState();
+          const group = typeof arg === "string" ? arg : tabs.find((t) => t.id === activeTab)?.group;
+          if (!group) return;
+          rt.unsplit(group);
+          toolWindowService().show(WINDOW, true);
+          focusActiveSoon();
+        },
       },
       {
         id: "terminal.find",

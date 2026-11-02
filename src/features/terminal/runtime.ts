@@ -11,6 +11,7 @@ export {
   sessionFromElement,
   splitTab,
   startDirectory,
+  unsplit,
   useTerminals,
 } from "./store";
 export { TerminalTabs, TerminalView } from "./TerminalView";
