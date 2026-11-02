@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 dunce.workspace = true
 ide-core.workspace = true
+zip.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
