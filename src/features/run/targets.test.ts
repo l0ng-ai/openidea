@@ -89,6 +89,24 @@ describe("detectRunTargets", () => {
     ]);
   });
 
+  it("python: unittest TestCase subclasses in tests.py (Django's default test module)", () => {
+    const src = [
+      "from django.test import TestCase",
+      "class QuestionTests(TestCase):",
+      "    def test_recent(self):",
+      "        pass",
+      "class Helper(Mixin):",
+      "    def test_no(self): pass",
+    ].join("\n");
+    expect(pick(detectRunTargets(src, "polls/tests.py", true))).toEqual([
+      [1, "suite", "QuestionTests"],
+      [2, "test", "QuestionTests/test_recent"],
+    ]);
+    expect(pick(detectRunTargets(src, "polls/models.py", true))).toEqual([]);
+    // Outside Django projects `tests.py` is a script: no test targets.
+    expect(pick(detectRunTargets(src, "polls/tests.py"))).toEqual([]);
+  });
+
   it("go and jvm", () => {
     expect(
       pick(detectRunTargets("package x\n\nfunc TestAdd(t *testing.T) {}\nfunc helper() {}", "pkg/add_test.go")),
@@ -159,6 +177,27 @@ describe("targetConfig", () => {
     ]);
     expect(first("class TestC:\n    def test_a(self): pass", "tests/test_c.py").args).toEqual([
       "tests/test_c.py::TestC::test_a",
+    ]);
+    // pytest also collects TestCase subclasses.
+    expect(first("class QTests(TestCase):\n    def test_a(self): pass", "app/test_q.py").args).toEqual([
+      "app/test_q.py::QTests::test_a",
+    ]);
+    const django = [cfg({ id: "django:test", kind: "django-test", command: "python3", args: ["manage.py", "test"] })];
+    const test = detectRunTargets("class QTests(TestCase):\n    def test_a(self): pass", "polls/tests.py", true)[1]!;
+    expect(targetConfig(test, "polls/tests.py", django)!.args).toEqual([
+      "manage.py",
+      "test",
+      "polls.tests.QTests.test_a",
+    ]);
+    // A module-level function or a plain class: unittest's loader would call it, so no Django run.
+    const fn = detectRunTargets("def test_top():\n    pass", "polls/tests.py", true)[0]!;
+    expect(targetConfig(fn, "polls/tests.py", django)).toBeNull();
+    // Relative to the working directory, where manage.py is.
+    const nested = [{ ...django[0]!, cwd: "backend" }];
+    expect(targetConfig(test, "backend/polls/tests/test_q.py", nested)!.args).toEqual([
+      "manage.py",
+      "test",
+      "polls.tests.test_q.QTests.test_a",
     ]);
     expect(first("func TestAdd(t *testing.T) {}", "pkg/add_test.go").args).toEqual([
       "test",
