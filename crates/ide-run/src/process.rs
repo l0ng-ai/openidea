@@ -240,15 +240,21 @@ fn shell_invocation(command: &str, windows: bool, comspec: Option<String>) -> In
 }
 
 /// The program to spawn: relative paths like `./gradlew` or `.venv/bin/python`
-/// against the run directory; a bare name through the configuration's search path
-/// (on Windows also `PATHEXT`: `kotlinc` → `kotlinc.bat`), so launchers installed
-/// outside the app's own `PATH` (`mvn` in a version manager's shims) still start.
+/// against the run directory; a bare name in the run directory itself (a wrapper
+/// script like `gradlew.bat` ships with the project but is not on the search path);
+/// otherwise through the configuration's search path (on Windows also `PATHEXT`:
+/// `kotlinc` → `kotlinc.bat`), so launchers installed outside the app's own `PATH`
+/// (`mvn` in a version manager's shims) still start.
 fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool) -> PathBuf {
     let path = Path::new(command);
     if path.is_relative() && path.components().count() > 1 {
         return cwd.join(path);
     }
     if path.components().count() == 1 && path.is_relative() {
+        let in_dir = cwd.join(path);
+        if in_dir.is_file() {
+            return in_dir;
+        }
         let search = crate::wrap::search_path(config);
         let pathext = std::env::var("PATHEXT").ok();
         if let Some(found) = crate::which::find_executable_in(command, &search, windows, pathext.as_deref()) {
@@ -1157,5 +1163,39 @@ mod tests {
         // Relative paths resolve against the run directory on every platform.
         assert_eq!(resolve_program("./gradlew", cwd, &config, true), cwd.join("./gradlew"));
         assert_eq!(resolve_program(".venv/bin/python", cwd, &config, false), cwd.join(".venv/bin/python"));
+    }
+
+    #[test]
+    fn resolves_bare_names_in_the_run_directory_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("gradlew.bat"), "@echo off\n").unwrap();
+        std::fs::write(bin.join("gradle.bat"), "@echo off\n").unwrap();
+        std::fs::write(dir.path().join("gradlew.bat"), "@echo off\n").unwrap();
+        std::fs::write(dir.path().join("gradlew"), "#!/bin/sh\n").unwrap();
+        let cwd = dir.path();
+        let path = std::env::join_paths([&bin]).unwrap().to_string_lossy().into_owned();
+        let config = RunConfig {
+            id: "c".into(),
+            name: "c".into(),
+            kind: "gradle".into(),
+            command: String::new(),
+            args: Vec::new(),
+            cwd: None,
+            env: BTreeMap::from([("Path".to_owned(), path)]),
+            detected: false,
+            is_test: false,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: Default::default(),
+        };
+        // A wrapper script ships in the project but not on the search path: the run
+        // directory wins over the search path (like the platform shell), on both
+        // platforms (issue #739: `command not found: gradlew.bat` on Windows).
+        assert_eq!(resolve_program("gradlew.bat", cwd, &config, true), cwd.join("gradlew.bat"));
+        assert_eq!(resolve_program("gradlew", cwd, &config, false), cwd.join("gradlew"));
+        // Not in the run directory: still found through the search path.
+        assert_eq!(resolve_program("gradle.bat", cwd, &config, true), bin.join("gradle.bat"));
     }
 }
