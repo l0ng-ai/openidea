@@ -82,6 +82,8 @@ describe("t / locales", () => {
     expect(resolveLocale("zh-CN")).toBe("zh");
     expect(resolveLocale("zh_Hans")).toBe("zh");
     expect(resolveLocale("ko-KR")).toBe("ko");
+    expect(resolveLocale("pt-BR")).toBe("pt");
+    expect(resolveLocale("pt_PT")).toBe("pt");
     expect(resolveLocale("EN-us")).toBe("en");
     expect(resolveLocale("fr")).toBe("fr");
     expect(resolveLocale("fr-CA")).toBe("fr");
@@ -105,6 +107,9 @@ describe("t / locales", () => {
     );
     await setLocale("zh-CN");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 个快捷键");
+    await setLocale("pt-BR");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 atalho");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 atalhos");
   });
 
   it("switches to Korean", async () => {
@@ -173,6 +178,14 @@ describe("t / locales", () => {
     expect(tx`Drop ${"stash@{0}"}? This cannot be undone.`).toBe("是否丢弃 stash@{0}？此操作无法撤消。");
     await setLocale("en");
     expect(tx(zh)).toBe("Run 'orders'");
+  });
+
+  it("loads the Portuguese catalogs", async () => {
+    await setLocale("pt-BR");
+    expect(useI18n.getState().locale).toBe("pt");
+    expect(t("common.cancel")).toBe("Cancelar");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 atalho");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 atalhos");
   });
 
   it("loads the French catalogs", async () => {
