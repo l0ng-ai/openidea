@@ -242,7 +242,61 @@ describe("configuration types", () => {
       options: "--trace",
       task: "test TEST=test/a_test.rb",
     });
-    expect(rake(["-T"])).toMatchObject({ options: "-T", task: "" });
+    expect(rake(["-T"])).toMatchObject({ options: "-T", task: "" });  
+  });
+  
+  it("Django tests round-trip commandLine / paramsFrom and always report to the test tree", () => {
+    const django = typeFor("django-test")!;
+    expect(django.debugAdapter).toBe("debugpy");
+    expect(newConfigOfType(django, [])).toMatchObject({
+      kind: "django-test",
+      command: "python3",
+      args: ["manage.py", "test"],
+      env: {},
+      isTest: true,
+      debugAdapter: "debugpy",
+    });
+    // No settings module: neither `--settings` nor DJANGO_SETTINGS_MODULE, manage.py's default applies.
+    expect(django.commandLine({ command: "python3", settings: " " })).toEqual({
+      command: "python3",
+      args: ["manage.py", "test"],
+    });
+
+    const cases: Array<{ command: string; args: string[]; params: Record<string, string> }> = [
+      {
+        command: ".venv/bin/python",
+        args: ["manage.py", "test"],
+        params: { command: ".venv/bin/python", runnerArgs: "", target: "", settings: "", options: "" },
+      },
+      {
+        command: "uv",
+        args: ["run", "python", "manage.py", "test", "polls", "blog.tests.PostTests", "--settings", "mysite.test"],
+        params: {
+          command: "uv",
+          runnerArgs: "run python",
+          target: "polls blog.tests.PostTests",
+          settings: "mysite.test",
+          options: "",
+        },
+      },
+      {
+        command: "python3",
+        args: ["manage.py", "test", "--keepdb", "--parallel", "4"],
+        params: { command: "python3", runnerArgs: "", target: "", settings: "", options: "--keepdb --parallel 4" },
+      },
+    ];
+    for (const { command, args, params } of cases) {
+      const c = cfg("django:test", { kind: "django-test", command, args, detected: true });
+      expect(django.paramsFrom!(c)).toEqual(params);
+      expect(formParams(c)).toEqual(params);
+      expect(django.commandLine(params)).toEqual({ command, args });
+    }
+    // Saved from the form, a plain command line becomes a test configuration.
+    expect(withParams(cfg("d", { kind: "django-test" }), cases[1]!.params).isTest).toBe(true);
+    // Not `manage.py test`: edited as a plain command.
+    expect(
+      django.paramsFrom!(cfg("d", { kind: "django-test", command: "python3", args: ["manage.py", "check"] })),
+    ).toBeNull();
   });
 
   it("pytest round-trips commandLine / paramsFrom and opens implicit context configs in the form", () => {

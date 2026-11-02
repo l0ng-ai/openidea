@@ -891,6 +891,19 @@ fn detect_python(root: &Path, out: &mut Vec<RunConfig>) {
     if uses_pytest(root) || env.has_tool(root, "pytest") {
         out.push(py_config("pytest".into(), "pytest".into(), "pytest", env.tool(root, "pytest"), &[]).test());
     }
+    // After pytest: a project set up for pytest (pytest-django) keeps it as the default test runner.
+    if root.join("manage.py").is_file() {
+        out.push(
+            py_config(
+                "django:test".into(),
+                "manage.py test".into(),
+                "django-test",
+                env.python(),
+                &["manage.py", "test"],
+            )
+            .test(),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------- ruby

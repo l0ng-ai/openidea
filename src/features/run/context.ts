@@ -4,17 +4,20 @@
  * direct interpreter invocation for main files. Best effort, IDEA-style.
  */
 import type { RunConfig } from "@/platform/ipc";
+import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { goTestParts } from "./goArguments";
 import { isWindows } from "./jvmTypes";
 
 export type FileRole = "test" | "main" | "script" | null;
 
-export function fileRole(relPath: string, content?: string, windows = isWindows()): FileRole {
+/** `django`: a Django project, whose default test module is `tests.py` (elsewhere a script). */
+export function fileRole(relPath: string, content?: string, windows = isWindows(), django = false): FileRole {
   const name = relPath.split("/").pop() ?? relPath;
   if (
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(name) ||
     /(^|\/)__tests__\//.test(relPath) ||
     /^test_.*\.py$|_test\.py$/.test(name) ||
+    (django && name === "tests.py") ||
     /_test\.go$/.test(name) ||
     /_(spec|test)\.rb$/.test(name) ||
     /(Test|Tests|Spec|IT)\.(kt|java|scala|groovy)$/.test(name) ||
@@ -36,7 +39,7 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 /** Kinds whose test configs can run a file of this extension. */
 function testKinds(relPath: string): string[] {
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun"];
-  if (/\.py$/.test(relPath)) return ["pytest", "python"];
+  if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
   if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake"];
   if (/_test\.rb$/.test(relPath)) return ["rake", "rspec"];
   if (/\.go$/.test(relPath)) return ["go"];
@@ -64,7 +67,8 @@ function closest(configs: RunConfig[], relPath: string): RunConfig | undefined {
   return allClosest(configs, relPath)[0];
 }
 
-function relToCwd(relPath: string, config: RunConfig): string {
+/** `relPath` relative to the working directory of `config`. */
+export function relToCwd(relPath: string, config: RunConfig): string {
   const cwd = (config.kind === "go" ? (config.params?.module ?? config.cwd ?? "") : (config.cwd ?? ""))
     .replace(/^\.\/?/, "")
     .replace(/\/+$/, "");
@@ -167,6 +171,9 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
       const task = base.args.at(-1) ?? "";
       const key = /(^|:)spec$/.test(task) ? "SPEC" : /(^|:)test$/.test(task) ? "TEST" : null;
       return key ? derived(base, relPath, { args: [...base.args, `${key}=${file}`] }) : base;
+    case "django-test": {
+      const tests = djangoTestsOf(base, [djangoLabel(file)]);
+      return tests ? derived(base, relPath, tests) : null;
     }
     case "go": {
       const dir = dirOf(file);
@@ -260,7 +267,7 @@ export function contextConfig(
   content?: string,
   windows = isWindows(),
 ): RunConfig | null {
-  const role = fileRole(relPath, content, windows);
+  const role = fileRole(relPath, content, windows, hasDjangoTests(configs));
   if (role === "test") return testConfigFor(relPath, configs);
   if (role === "main") return mainConfigFor(relPath, configs) ?? scriptConfigFor(relPath, configs, windows);
   if (role === "script") return scriptConfigFor(relPath, configs, windows);

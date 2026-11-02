@@ -17,6 +17,7 @@ import { formatArgs } from "./configs";
 import { goGenerateConfig } from "./goGenerate";
 import { goTestParts } from "./goArguments";
 import { contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
+import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { isWindows } from "./jvmTypes";
 import { detectRunTargets, targetConfig, targetLanguage, type RunTarget } from "./targets";
 import { tx } from "@/platform/i18n";
@@ -590,7 +591,7 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     }
     if (/\.t?scn$/i.test(rel)) return godotScene(rel, configs);
     // Project-aware: test files through the project's test runner, Cargo / Go / Gradle / Maven mains.
-    const role = fileRole(rel, input.content);
+    const role = fileRole(rel, input.content, undefined, hasDjangoTests(configs));
     if (role === "test") {
       const found = testConfigFor(rel, configs);
       const test = found && goTestNamed(found, input);
@@ -823,7 +824,7 @@ export function fileTargets(input: Pick<ContextInput, "path" | "root" | "configs
       (t) => t.kind === "main" && (!t.className || /\.(java|kt)$/.test(input.path)),
     );
   }
-  return detectRunTargets(content, s.rel);
+  return detectRunTargets(content, s.rel, hasDjangoTests(input.configs));
 }
 
 function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget): Produced | null {
@@ -969,10 +970,19 @@ export function produceDirectory(input: ContextInput): Produced | null {
   }
   const js = closest(["npm", "bun", "deno"]);
   const py = closest(["pytest"]);
+  const django = closest(["django-test"]);
   const go = closest(["go"]);
   const cargo = closest(["cargo"]);
   if (cargo && /(^|\/)tests$/.test(rel) && !js && !py) return make(cargo, "All Tests", [...cargo.args, "--tests"]);
   if (py && (!js || /(^|\/)tests?$/.test(rel))) return make(py, testsIn, [...py.args, relToCwd(py)]);
+  // Django runs a test package by its dotted label (`polls/tests` → `polls.tests`).
+  if (django && !js && relToCwd(django)) {
+    const tests = djangoTestsOf(django, [djangoLabel(relToCwd(django))]);
+    if (tests) {
+      const produced = make(django, testsIn, tests.args);
+      return { ...produced, config: { ...produced.config!, ...tests } };
+    }
+  }
   if (js) {
     const dir = relToCwd(js);
     if (js.kind === "deno") return make(js, testsIn, [...js.args, dir]);

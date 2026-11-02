@@ -24,6 +24,7 @@ import { goBuildType, goTestType } from "./goTypes";
 
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
+import { djangoTestType } from "./djangoTypes";
 
 export const COMPOUND = "compound";
 
@@ -402,6 +403,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   rubyScriptType,
   rakeType,
   rspecType,
+  djangoTestType,
   dotnetProjectType,
   dotnetTestType,
   goBuildType,
@@ -455,7 +457,7 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(config.kind === "dotnet" && config.beforeLaunch === undefined
       ? { beforeLaunch: [{ kind: "dotnetBuild", target: "" }] }
       : {}),
-    ...(config.kind === "dotnet-test" || config.kind === "rspec" ? { isTest: true } : {}),
+    ...(config.kind === "dotnet-test" || config.kind === "django-test" || config.kind === "rspec" ? { isTest: true } : {}),
     params: params.goKind ? { ...params, programArgv: JSON.stringify(parseArgs(params.programArgs ?? "")) } : params,
     ...(config.kind === "go-test" && !config.id.startsWith("template:") ? { kind: "go" } : {}),
     ...(params.goKind ? { isTest: params.goKind === "test" } : {}),

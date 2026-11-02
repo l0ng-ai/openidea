@@ -160,6 +160,9 @@ describe("context configuration", () => {
     expect(fileRole("src/a.test.ts")).toBe("test");
     expect(fileRole("pkg/x_test.go")).toBe("test");
     expect(fileRole("tests/test_api.py")).toBe("test");
+    // Django's default test module (pattern `test*.py`); a script outside Django projects.
+    expect(fileRole("polls/tests.py", undefined, false, true)).toBe("test");
+    expect(fileRole("polls/tests.py")).toBe("script");
     expect(fileRole("src/test/kotlin/OrderControllerTest.kt")).toBe("test");
     expect(fileRole("tests/integration.rs")).toBe("test");
     expect(fileRole("spec/models/user_spec.rb")).toBe("test");
@@ -204,6 +207,27 @@ describe("context configuration", () => {
     expect(contextConfig("internal/calc/calc_test.go", configs)!.args).toEqual(["test", "./internal/calc"]);
     expect(contextConfig("tests/api.rs", configs)!.args).toEqual(["test", "--test", "api"]);
     expect(contextConfig("tests/test_math.py", configs)!.args).toEqual(["run", "pytest", "tests/test_math.py"]);
+    // `tests.py` is a test module in Django projects only.
+    expect(contextConfig("polls/tests.py", configs)).toMatchObject({
+      kind: "python",
+      isTest: false,
+      command: ".venv/bin/python",
+      args: ["polls/tests.py"],
+    });
+    const django = cfg({
+      id: "django:test",
+      kind: "django-test",
+      command: "uv",
+      args: ["run", "python", "manage.py", "test"],
+      isTest: true,
+    });
+    expect(contextConfig("polls/tests.py", [django])!.args).toEqual([
+      "run",
+      "python",
+      "manage.py",
+      "test",
+      "polls.tests",
+    ]);
     expect(contextConfig("src/test/kotlin/OrderControllerTest.kt", configs)!.args).toEqual([
       "test",
       "--tests",
