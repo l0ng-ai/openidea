@@ -10,6 +10,23 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 rustup target list --installed | grep -qx wasm32-wasip2 || rustup target add wasm32-wasip2
 
+# Plugins with C sources (tree-sitter grammars) need a WASI sysroot and a clang
+# that targets wasm32: wasi-sdk, or Homebrew's wasi-libc + llvm. Set
+# WASI_SYSROOT (and CC_wasm32_wasip2) yourself to use another one.
+if [ -z "${WASI_SYSROOT:-}" ]; then
+  for candidate in "${WASI_SDK_PATH:-}/share/wasi-sysroot" /opt/homebrew/opt/wasi-libc/share/wasi-sysroot /usr/local/opt/wasi-libc/share/wasi-sysroot /opt/wasi-sdk/share/wasi-sysroot; do
+    if [ -d "$candidate/include" ]; then export WASI_SYSROOT="$candidate"; break; fi
+  done
+fi
+if [ -n "${WASI_SYSROOT:-}" ]; then
+  export CFLAGS_wasm32_wasip2="${CFLAGS_wasm32_wasip2:---sysroot=$WASI_SYSROOT}"
+  if [ -z "${CC_wasm32_wasip2:-}" ]; then
+    for cc in "${WASI_SDK_PATH:-}/bin/clang" /opt/homebrew/opt/llvm/bin/clang /usr/local/opt/llvm/bin/clang clang; do
+      if command -v "$cc" >/dev/null 2>&1 && "$cc" --print-targets 2>/dev/null | grep -q wasm32; then export CC_wasm32_wasip2="$cc"; break; fi
+    done
+  fi
+fi
+
 build() {
   local dir="$1"
   local name

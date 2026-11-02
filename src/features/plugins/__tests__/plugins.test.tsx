@@ -52,6 +52,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     commands: [],
     languages: [],
     themes: [],
+    endpoints: [],
     ...partial,
   };
 }

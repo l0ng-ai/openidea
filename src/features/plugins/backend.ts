@@ -105,6 +105,7 @@ function samplePlugins(): PluginInfo[] {
     error: null,
     languages: [],
     themes: [],
+    endpoints: [],
     commands: [],
     permissions: [],
   };
@@ -134,6 +135,7 @@ function samplePlugins(): PluginInfo[] {
       status: "static",
       hasCode: false,
       themes: SAMPLE_THEMES.map(({ id, name, kind }) => ({ id, name, kind })),
+      endpoints: [],
     },
     {
       ...base,

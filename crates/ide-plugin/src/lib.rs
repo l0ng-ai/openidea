@@ -14,14 +14,19 @@
 //! Sources: `<plugins_dir>/<id>/` (installed) and `<project>/.openidea/plugins/*/`
 //! (dev plugins, loaded by [`PluginHost::sync_project`]).
 
+mod endpoints;
 mod manifest;
 mod runtime;
 mod sandbox;
 mod theme;
 mod types;
 
+pub use endpoints::{
+    PluginEndpoint, PluginEndpointDiagnostic, PluginEndpointTable, PluginRequest, PluginRequestHeader,
+};
 pub use manifest::{
-    API_VERSION, CommandDecl, Contributions, FileDecl, MANIFEST_FILE, Permission, PluginManifest, ThemeDecl,
+    API_VERSION, CommandDecl, Contributions, EndpointDecl, FileDecl, MANIFEST_FILE, Permission, PluginManifest,
+    ThemeDecl,
 };
 pub use sandbox::resolve_in_root;
 pub use theme::{ThemeDef, ThemeKind};
@@ -653,7 +658,29 @@ impl PluginHost {
                 .iter()
                 .map(|t| PluginTheme { id: t.id.clone(), name: t.name.clone(), kind: t.kind })
                 .collect(),
+            endpoints: m.contributes.endpoints.clone(),
         }
+    }
+
+    /// Runs endpoint provider `index` of plugin `id` for the invocation's project:
+    /// `None` when none of the provider's markers exists there, else the table the
+    /// plugin's command returned (JSON, see [`endpoints`]).
+    pub fn endpoints(&self, id: &str, index: usize, invocation: Invocation) -> IdeResult<Option<PluginEndpointTable>> {
+        let plugin = self.get(id)?;
+        let decl = plugin
+            .manifest
+            .contributes
+            .endpoints
+            .get(index)
+            .cloned()
+            .ok_or_else(|| IdeError::not_found(format!("plugin {id:?} has no endpoint provider #{index}")))?;
+        let Some(root) = invocation.workspace_root.clone() else { return Ok(None) };
+        if !endpoints::applies(&decl, &root) {
+            return Ok(None);
+        }
+        let arg = root.to_string_lossy().into_owned();
+        let json = self.run_command(id, &decl.command, Some(&arg), invocation)?.unwrap_or_default();
+        endpoints::parse_table(&json, &root).map(Some).map_err(|e| IdeError::internal(format!("plugin {id:?}: {e}")))
     }
 }
 

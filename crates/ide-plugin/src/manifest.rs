@@ -65,6 +65,40 @@ pub struct Contributions {
     pub languages: Vec<FileDecl>,
     #[serde(default)]
     pub themes: Vec<ThemeDecl>,
+    /// Endpoint providers of the Endpoints tool window (see `endpoints.rs`).
+    #[serde(default)]
+    pub endpoints: Vec<EndpointDecl>,
+}
+
+/// A provider of the Endpoints tool window: the IDE runs `command` with the
+/// project root as its argument and expects a JSON endpoint table back.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EndpointDecl {
+    /// Framework name shown in the window's Framework filter (`Rails`).
+    pub framework: String,
+    /// Endpoint type shown in the Type filter; default `HTTP`.
+    #[serde(default = "default_endpoint_type")]
+    #[specta(optional)]
+    pub r#type: String,
+    /// The plugin command to run (`run-command(command, Some(root))`).
+    pub command: String,
+    /// Project-relative files or directories; the provider applies when one
+    /// exists (`config/routes.rb`). Empty: applies to every project.
+    #[serde(default)]
+    pub markers: Vec<String>,
+    /// Project-relative glob patterns (`*`, `**`, `?`) of the files whose change
+    /// re-runs the command, besides the files the table reports.
+    #[serde(default)]
+    pub watch: Vec<String>,
+    /// Row icon (`ui/icons` name); default `web`.
+    #[serde(default)]
+    #[specta(optional)]
+    pub icon: Option<String>,
+}
+
+fn default_endpoint_type() -> String {
+    "HTTP".to_owned()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

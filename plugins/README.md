@@ -3,8 +3,9 @@
 OpenIDEA plugins are sandboxed **WebAssembly components** (wasmtime, component
 model, WASI preview 2), in the style of Zed extensions. A plugin can register
 commands (they become IDE actions you can search for and bind to keys), read
-project files, insert text into the editor, show notifications and contribute
-themes and languages. Plugins that only contribute themes or languages need no
+project files, insert text into the editor, show notifications, contribute
+themes and languages, and provide the Endpoints tool window with a framework's
+routes. Plugins that only contribute themes or languages need no
 code at all.
 
 ```
@@ -199,7 +200,58 @@ root marker is in a directory above the file, up to the project folder, applies
 (see [`languages/html.toml`](../languages/html.toml), Angular templates).
 Markers are matched like a language server's `root-markers`.
 
-## 5. Installing and developing
+## 5. Endpoints
+
+A plugin can feed the **Endpoints** tool window (IntelliJ's Endpoints: the
+project's HTTP routes with an HTTP Client request per row). It declares a
+provider and a command that produces the table:
+
+```toml
+permissions = ["project-read"]          # the command reads the project's files
+
+[[contributes.endpoints]]
+framework = "Rails"                     # Framework filter entry
+type = "HTTP"                           # Type filter entry (default)
+command = "endpoints"                   # run-command(command, Some(<project root>))
+markers = ["config/routes.rb"]          # applies when one exists (empty: always)
+watch = ["config/routes.rb", "config/routes/*.rb"]   # re-run when these change
+icon = "web"                            # row icon (ui/icons name), optional
+```
+
+When the project has one of the `markers`, the IDE runs `command` with the
+project root as its argument (also when the project opens and whenever a
+watched file or a file of the last table is saved or changes). The command
+returns the table as JSON:
+
+```json
+{
+  "endpoints": [{
+    "method": "GET", "path": "/photos/:id", "target": "photos#show",
+    "targetClass": "PhotosController", "name": "photo",
+    "file": "config/routes.rb", "line": 12,
+    "request": { "method": "GET", "url": "http://localhost:3000/photos/{{id}}",
+                 "headers": [{ "name": "Accept", "value": "application/json" }], "body": null },
+    "docs": [["Helper", "photo_path / photo_url"]]
+  }],
+  "diagnostics": [{ "file": "config/routes.rb", "line": 40, "message": "`draw :x`: not found" }],
+  "files": ["config/routes.rb"]
+}
+```
+
+`method`, `path`, `target`, `file` and `line` (1-based) are required; `file`
+may be project-relative. `targetClass` is the row's right column, `request`
+the `.http` request to generate (default: the method against `http://localhost`
++ path), `docs` extra rows of the Documentation tab, `diagnostics` what could
+not be read (shown behind a warning icon), `files` the files read. Lines of
+`file` that declare endpoints get a gutter icon in the editor. The types are in
+`crates/ide-plugin/src/endpoints.rs`.
+
+A plugin whose Rust crate compiles C sources (a tree-sitter grammar, say)
+needs a WASI sysroot for them: `build.sh` finds wasi-sdk (`WASI_SDK_PATH`) or
+Homebrew's `wasi-libc` + `llvm` (`brew install wasi-libc llvm`); set
+`WASI_SYSROOT` and `CC_wasm32_wasip2` for another toolchain.
+
+## 6. Installing and developing
 
 - **Install:** Settings › Plugins › _Install Plugin from Disk…_ (or the action
   _Install Plugin from Disk…_) and pick the package folder. The manifest and the
@@ -211,7 +263,7 @@ Markers are matched like a language server's `root-markers`.
 - Commands appear in Search Everywhere › Actions under their category, and can
   be bound in Settings › Keymap like any other action.
 
-## 6. Testing
+## 7. Testing
 
 The host's integration tests (`crates/ide-plugin/tests/host.rs`) load the
 checked-in `hello` and test-fixture components; rebuild them after changing the

@@ -1,0 +1,286 @@
+.view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.body {
+  flex: 1;
+  min-height: 0;
+}
+.body > * {
+  height: 100%;
+}
+.panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.panel > * {
+  flex: 1;
+  min-height: 0;
+}
+.spacer {
+  flex: 1;
+}
+
+/* Module ▾  Type ▾  Framework ▾ … 👁 */
+.filterBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 0 6px 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.filterButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  padding: 0 4px 0 6px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.filterButton:hover {
+  background: var(--bg-hover);
+}
+.filterActive {
+  color: var(--accent, var(--info));
+}
+.filterChevron {
+  color: var(--fg-muted);
+}
+
+/* 🔍 Search endpoints */
+.searchBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.searchIcon {
+  flex: none;
+  color: var(--fg-muted);
+}
+.search {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Module / file rows. */
+.groupRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.groupIcon {
+  flex: none;
+  color: var(--fg-muted);
+}
+.groupName {
+  color: var(--fg-emphasis);
+}
+.count {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  margin-left: 4px;
+}
+
+/* `/photos/:id [GET]` … PhotosController */
+.endpoint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+}
+.endpointIcon {
+  flex: none;
+  color: var(--fg-muted);
+}
+.path {
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+.verb {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+.get {
+  color: var(--info);
+}
+.post {
+  color: var(--success, var(--info));
+}
+.put {
+  color: var(--warning);
+}
+.delete {
+  color: var(--danger);
+}
+.controller {
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+
+/* Details pane. */
+.details {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+.detailTabs {
+  flex: none;
+  border: 0;
+  background: none;
+  border-bottom: 1px solid var(--border);
+}
+.detailEmpty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+.httpTab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.request {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code, var(--fs-ui));
+  background: var(--bg-editor);
+}
+.requestLine {
+  display: flex;
+  align-items: center;
+  min-height: 22px;
+  white-space: pre;
+}
+.requestMain {
+  background: var(--bg-tree-hover, color-mix(in srgb, var(--fg-strong) 4%, transparent));
+}
+.requestGutter {
+  flex: none;
+  width: 34px;
+  display: flex;
+  justify-content: center;
+}
+.requestText {
+  flex: 1;
+  min-width: 0;
+  padding-right: 8px;
+  color: var(--fg-muted);
+}
+.requestMain .requestText {
+  color: var(--fg);
+}
+.detailButtons {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* Documentation tab. */
+.docs {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 12px;
+}
+.docList {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+}
+.docRow {
+  display: contents;
+}
+.docRow dt {
+  color: var(--fg-muted);
+}
+.docRow dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--link, var(--info));
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
+  color: var(--fg-muted);
+}
+
+/* Diagnostics at the bottom. */
+.diagnostics {
+  flex: none;
+  max-height: 30%;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  padding: 4px 0;
+}
+.diagnostic {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 8px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-small);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.diagnostic:hover {
+  background: var(--bg-hover);
+}
+.diagnosticIcon {
+  flex: none;
+  color: var(--warning);
+}
