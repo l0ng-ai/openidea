@@ -58,6 +58,43 @@ pub struct Settings {
     pub deployment: DeploymentSettings,
     /// Build, Execution, Deployment › Run Targets.
     pub run_targets: Vec<RunTarget>,
+    pub cmake: CMakeSettings,
+}
+
+/// Absent profiles retain automatic discovery for existing projects.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CMakeSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub profiles: Option<Vec<CMakeProfile>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CMakeProfile {
+    pub name: String,
+    pub build_type: String,
+    pub generator: String,
+    pub cmake_args: Vec<String>,
+    /// Empty uses cmake-build-<lowercase build type>.
+    pub build_dir: String,
+    pub build_args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+}
+
+impl Default for CMakeProfile {
+    fn default() -> Self {
+        Self {
+            name: "Debug".into(),
+            build_type: "Debug".into(),
+            generator: String::new(),
+            cmake_args: Vec::new(),
+            build_dir: String::new(),
+            build_args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -154,6 +191,7 @@ impl Default for Settings {
             ssh: SshSettings::default(),
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
+            cmake: CMakeSettings::default(),
         }
     }
 }
@@ -764,6 +802,24 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmake_profile_argument_arrays_round_trip() {
+        let mut settings = Settings::default();
+        assert!(settings.cmake.profiles.is_none());
+        assert!(CMakeProfile::default().cmake_args.is_empty());
+        assert!(CMakeProfile::default().build_args.is_empty());
+        let profile = CMakeProfile {
+            cmake_args: ["-DMESSAGE=two words", "-DQUOTE=\"hello\"", ""].map(String::from).into(),
+            build_args: ["-j", "8", "--", "LABEL=it's a build"].map(String::from).into(),
+            ..Default::default()
+        };
+        settings.cmake.profiles = Some(vec![profile.clone()]);
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["cmake"]["profiles"][0]["cmakeArgs"], serde_json::json!(profile.cmake_args));
+        assert_eq!(value["cmake"]["profiles"][0]["buildArgs"], serde_json::json!(profile.build_args));
+        assert_eq!(serde_json::from_value::<Settings>(value).unwrap(), settings);
+    }
 
     #[test]
     fn ui_font_fallback_defaults_empty_and_round_trips() {

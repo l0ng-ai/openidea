@@ -249,6 +249,10 @@ pub fn launch_directly(cfg: &mut LanguageServerConfig) {
         }),
     };
     let Some((java, jdk)) = jdk.filter(|(java, _)| java.is_file()) else { return };
+    if !ide_core::java_runtime::supports_java_bundles(&jdk.home) {
+        cfg.launch_error = Some(crate::java::server_jdk_incomplete_message(&jdk, crate::java::jdtls_min_java(cfg)));
+        return;
+    }
     cfg.args = java_args(&install, jdk.major, &cfg.args);
     cfg.command = java.to_string_lossy().into_owned();
 }
@@ -465,7 +469,12 @@ mod tests {
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let jdk = dir.path().join("jdk-25");
         std::fs::create_dir_all(jdk.join("bin")).unwrap();
-        std::fs::write(jdk.join("release"), "JAVA_VERSION=\"25.0.1\"\n").unwrap();
+        std::fs::write(
+            jdk.join("release"),
+            "JAVA_VERSION=\"25.0.1\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+        )
+        .unwrap();
+        std::fs::write(jdk.join("bin/javac"), "").unwrap();
         std::fs::write(jdk.join("bin/java"), "").unwrap();
 
         let cfg = |command: &str| -> LanguageServerConfig {
@@ -485,6 +494,15 @@ mod tests {
         let jar = direct.args.iter().position(|a| a == "-jar").unwrap();
         assert!(direct.args[jar + 1].ends_with("org.eclipse.equinox.launcher_1.7.0.jar"));
         assert_eq!(direct.args[jar + 2..], strings(&["-data", "/ws"]));
+
+        let jre = dir.path().join("jre-25");
+        std::fs::create_dir_all(jre.join("bin")).unwrap();
+        std::fs::write(jre.join("bin/java"), "").unwrap();
+        std::fs::write(jre.join("release"), "JAVA_VERSION=\"25\"\nIMAGE_TYPE=\"JRE\"\n").unwrap();
+        let mut overridden = cfg("jdtls");
+        overridden.args.push(format!("--java-executable={}", jre.join("bin/java").display()));
+        launch_directly(&mut overridden);
+        assert!(overridden.launch_error.unwrap().contains("jdk.jdi"));
 
         // Someone's own wrapper, or no usable JDK: the command is kept.
         std::fs::write(home.join("bin/my-jdtls"), "#!/bin/sh\n").unwrap();

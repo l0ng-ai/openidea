@@ -10,6 +10,17 @@ use tauri::{State, Window};
 
 #[tauri::command]
 #[specta::specta]
+pub async fn run_dotnet_resolve(
+    window: Window,
+    state: State<'_, AppState>,
+    config: RunConfig,
+    debug: bool,
+) -> IdeResult<RunConfig> {
+    ide_host::ops::run::run_dotnet_resolve(&state.host, window.label(), config, debug).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn run_application_build(
     window: Window,
     state: State<'_, AppState>,

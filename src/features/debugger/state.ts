@@ -644,6 +644,7 @@ export function selectSession(id: DebugSessionId) {
 
 export async function selectThread(id: DebugSessionId, threadId: number) {
   patch(id, { selectedThread: threadId, frames: [], selectedFrame: null });
+  updateExecutionPoint();
   await loadFrames(id, threadId, true);
 }
 
@@ -652,7 +653,7 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
   updateExecutionPoint();
   const s = useDebug.getState().sessions[id];
   const frame = s?.frames.find((f) => f.id === frameId);
-  if (reveal && frame?.path) {
+  if (reveal && useDebug.getState().active === id && frame?.path) {
     void maybeEditorService()?.openFile(frame.path, {
       selection: { line: frame.line, col: frame.column },
       focus: false,
@@ -662,6 +663,7 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
 }
 
 async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean) {
+  const before = useDebug.getState().sessions[id];
   let frames: StackFrame[] = [];
   try {
     frames = await call(commands.debugStackTrace(id, threadId));
@@ -669,7 +671,7 @@ async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean)
     console.warn("stackTrace failed", e);
   }
   const s = useDebug.getState().sessions[id];
-  if (!s || s.status !== "paused" || s.selectedThread !== threadId) return;
+  if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
   patch(id, { frames });
   const top = frames.find((f) => f.path && f.presentationHint !== "label") ?? frames[0];
   if (top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
@@ -707,19 +709,21 @@ async function loadThreads(id: DebugSessionId) {
 
 /** Locals of `frameId` (first non-expensive scope) for inline values. */
 async function loadLocals(id: DebugSessionId, frameId: number) {
-  const values: Record<string, string> = {};
+  const frames = useDebug.getState().sessions[id]?.frames;
+  const values: Record<string, string> = Object.create(null);
   try {
     const scopes = await call(commands.debugScopes(id, frameId));
     const scope = scopes.find((sc) => !sc.expensive);
     if (scope) {
       const vars = await call(commands.debugVariables(id, scope.variablesReference));
-      for (const v of vars) if (v.name && !(v.name in values)) values[v.name] = v.value;
+      for (const v of vars) if (v.name && !Object.hasOwn(values, v.name)) values[v.name] = v.value;
     }
   } catch {
     // No inline values.
   }
   const s = useDebug.getState().sessions[id];
-  if (useDebug.getState().active !== id || s?.selectedFrame !== frameId) return;
+  if (useDebug.getState().active !== id || s?.status !== "paused" || s.selectedFrame !== frameId || s.frames !== frames)
+    return;
   useExecutionPoint.setState({ values });
 }
 
@@ -729,6 +733,7 @@ export async function showExecutionPoint(id: DebugSessionId) {
   if (!s || s.status !== "paused" || s.stoppedThread == null) return;
   if (s.selectedThread !== s.stoppedThread) {
     patch(id, { selectedThread: s.stoppedThread, frames: [], selectedFrame: null });
+    updateExecutionPoint();
     await loadFrames(id, s.stoppedThread, false);
   }
   const cur = useDebug.getState().sessions[id];
@@ -755,6 +760,32 @@ export function updateExecutionPoint() {
   const cur = useExecutionPoint.getState();
   if (cur.path === frame.path && cur.line === frame.line && cur.top === top) return;
   useExecutionPoint.setState({ path: frame.path, line: frame.line, top, values: {} });
+}
+
+/** Invalidate suspended data before sending a command that resumes execution. */
+export async function resumeExecution(id: DebugSessionId, request: () => Promise<unknown>) {
+  const before = useDebug.getState().sessions[id];
+  if (!before || before.status !== "paused") return;
+  const frames: StackFrame[] = [];
+  patch(id, { status: "running", frames, selectedFrame: null, stoppedThread: null });
+  updateExecutionPoint();
+  try {
+    await request();
+  } catch (e) {
+    const current = useDebug.getState().sessions[id];
+    // A stop/continue/termination received during the request owns the newer state.
+    if (current?.status === "running" && current.frames === frames) {
+      patch(id, {
+        status: before.status,
+        frames: before.frames,
+        selectedFrame: before.selectedFrame,
+        stoppedThread: before.stoppedThread,
+      });
+      updateExecutionPoint();
+      if (before.selectedFrame != null) void loadLocals(id, before.selectedFrame);
+    }
+    throw e;
+  }
 }
 
 // --- watches -------------------------------------------------------------------
@@ -862,6 +893,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       });
       useDebug.setState((st) => ({ active: id, stopSeq: st.stopSeq + 1 }));
       publishContext();
+      updateExecutionPoint();
       void loadThreads(id);
       void loadFrames(id, event.threadId, true);
       const dbg = workflowSettings().debugger;
@@ -876,6 +908,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
     case "continued": {
       const cur = useDebug.getState().sessions[id]!;
       if (cur.status === "terminated") break;
+      if (!event.allThreadsContinued && event.threadId !== (cur.selectedThread ?? cur.stoppedThread)) break;
       patch(id, {
         status: "running",
         frames: [],

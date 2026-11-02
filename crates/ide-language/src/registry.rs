@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
+    ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
     ("astro", include_str!("../../../languages/astro.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
@@ -16,6 +17,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("cpp", include_str!("../../../languages/cpp.toml")),
     ("csharp", include_str!("../../../languages/csharp.toml")),
     ("css", include_str!("../../../languages/css.toml")),
+    ("d", include_str!("../../../languages/d.toml")),
     ("dart", include_str!("../../../languages/dart.toml")),
     ("diff", include_str!("../../../languages/diff.toml")),
     ("dockerfile", include_str!("../../../languages/dockerfile.toml")),
@@ -374,6 +376,7 @@ mod tests {
     /// `name`s exported by `@codemirror/language-data` or built into `src/editor/core/cm/languages.ts`
     /// (the UI resolves `ui-mode` against these).
     const UI_MODES: &[&str] = &[
+        "AsciiDoc",
         "Batch",
         "C",
         "C++",
@@ -534,6 +537,12 @@ mod tests {
         let reg = reg();
         assert_eq!(detect(&reg, "src/main.rs"), "rust");
         assert_eq!(detect(&reg, "a/b.TS"), "typescript");
+        for path in ["guide.adoc", "guide.asciidoc", "GUIDE.ADOC"] {
+            assert_eq!(detect(&reg, path), "asciidoc");
+        }
+        let asciidoc = reg.get(&LanguageId::new("asciidoc")).unwrap();
+        assert_eq!(asciidoc.ui_mode.as_deref(), Some("AsciiDoc"));
+        assert_eq!(asciidoc.line_comment.as_deref(), Some("//"));
         assert_eq!(reg.detect(Path::new("script"), Some("#!/usr/bin/env python3")).as_str(), "python");
         assert_eq!(detect(&reg, "README"), "plaintext");
         assert_eq!(detect(&reg, "unknown.zzz"), "plaintext");
@@ -569,13 +578,31 @@ mod tests {
         };
         // After the TypeScript fallback (an available server before it would hide
         // it); before the HTML server (hover, rename and symbols take the first).
-        assert_eq!(names("typescript"), ["vtsls", "typescript-language-server", "angular-language-server"]);
+        assert_eq!(names("typescript"), ["vtsls", "typescript-language-server", "angular-language-server", "oxlint"]);
         assert_eq!(names("html"), ["angular-language-server", "vscode-html-language-server"]);
         for lang in ["typescript", "html"] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let angular = cfg.language_servers.iter().find(|s| s.name == "angular-language-server").unwrap();
             assert!(angular.require_root_marker && !angular.fallback, "{lang}");
             assert_eq!(angular.root_markers, ["angular.json", "node_modules/@angular/core"], "{lang}");
+        }
+    }
+
+    #[test]
+    fn oxlint_serves_js_files_only_below_its_config() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("apps/web/src")).unwrap();
+        std::fs::write(root.join("apps/web/.oxlintrc.json"), "{}").unwrap();
+        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte"] {
+            let cfg = reg.get(&LanguageId::new(lang)).unwrap();
+            let oxlint = cfg.language_servers.iter().find(|s| s.name == "oxlint").unwrap();
+            assert_eq!((oxlint.command.as_str(), oxlint.args.as_slice()), ("oxlint", ["--lsp".to_string()].as_slice()));
+            assert!(oxlint.require_root_marker && !oxlint.fallback, "{lang}");
+            let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &oxlint.root_markers);
+            assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
+            assert_eq!(served("apps/api/main.ts"), None, "{lang}");
         }
     }
 

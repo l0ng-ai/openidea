@@ -26,6 +26,17 @@ pub async fn term_spawn(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn term_store_image(
+    state: State<'_, AppState>,
+    id: TerminalId,
+    data: Vec<u8>,
+    mime: String,
+) -> IdeResult<String> {
+    ide_host::ops::term::store_image(&state.host, id, data, mime).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn term_write(state: State<'_, AppState>, id: TerminalId, data: String) -> IdeResult<()> {
     state.terminals.write(id, &data)
 }

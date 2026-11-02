@@ -21,6 +21,7 @@ use std::time::Duration;
 struct MockState {
     caps: Mutex<Value>,
     missing: std::sync::atomic::AtomicBool,
+    binary: Mutex<Option<PathBuf>>,
     launches: AtomicUsize,
     notifications: Mutex<Vec<(String, Value)>>,
     requests: Mutex<Vec<(String, Value)>>,
@@ -148,6 +149,18 @@ impl MockLauncher {
 }
 
 impl Launcher for MockLauncher {
+    fn launch_resolved(
+        &self,
+        config: &LanguageServerConfig,
+        root: &Path,
+        handler: Arc<dyn Handler>,
+        on_stderr: Box<dyn Fn(String) + Send + Sync>,
+        cancel: &ide_core::CancellationToken,
+    ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
+        self.launch_cancellable(config, root, handler, on_stderr, cancel)
+            .map(|peer| (peer, self.state(&config.name).binary.lock().clone()))
+    }
+
     fn launch(
         &self,
         config: &LanguageServerConfig,
@@ -1015,6 +1028,70 @@ async fn settings_changes_reach_servers_without_restarts() {
     h.wait_status("extra", ServerStatus::Ready).await;
     eventually(|| h.launcher.state("extra").notified("textDocument/didOpen").len() == 2).await;
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_formatter_profiles_reach_initialization_and_live_configuration_without_restart() {
+    let h = harness_configured("java", "java", &[("jdtls", incremental_caps())], |cfg| {
+        cfg.initialization_options = Some(
+            toml::Value::try_from(json!({
+                "settings": {"java": {"autobuild": {"enabled": false}}}
+            }))
+            .unwrap(),
+        );
+    });
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(h.root.join("custom.xml"), "<profiles/>").unwrap();
+    let style = Arc::new(Mutex::new(ide_core::editor_settings::LanguageCodeStyle {
+        formatter: Some("intellij".into()),
+        formatter_path: Some("custom.xml".into()),
+        ..Default::default()
+    }));
+    h.mgr.set_config_hook(Box::new({
+        let style = style.clone();
+        let root = h.root.clone();
+        let data = data.path().to_path_buf();
+        move |cfg, _| ide_lsp::jdtls::configure_formatter(cfg, Some(&style.lock()), &root, &data, None).unwrap()
+    }));
+    h.open("Main.java", "public class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let init = state.requested("initialize")[0].clone();
+    assert_eq!(
+        init["initializationOptions"]["settings"]["java"]["format"]["settings"]["profile"],
+        "OpenIDEA IntelliJ IDEA"
+    );
+    for mode in ["custom", "default", "intellij", "default"] {
+        style.lock().formatter = Some(mode.into());
+        h.mgr.reconfigure().await;
+        let expected = match mode {
+            "custom" => uri_of(&h.root.join("custom.xml")),
+            "intellij" => uri_of(&data.path().join("lsp/jdtls/intellij.xml")),
+            _ => String::new(),
+        };
+        eventually(|| {
+            state
+                .notified("workspace/didChangeConfiguration")
+                .last()
+                .is_some_and(|p| p["settings"]["java"]["format"]["settings"]["url"] == expected)
+        })
+        .await;
+        let result: Value = state
+            .peer()
+            .request(
+                "workspace/configuration",
+                json!({
+                    "items": [{"section": "java.format.settings"}, {"section": "java.autobuild.enabled"}]
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result[0]["url"], expected);
+        assert_eq!(result[0]["profile"], if mode == "intellij" { "OpenIDEA IntelliJ IDEA" } else { "" });
+        assert_eq!(result[1], false);
+        assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2771,4 +2848,69 @@ async fn formatting_provider_selection_tracks_dynamic_registration() {
     .await
     .unwrap();
     assert!(!h.mgr.can_format(doc).await.unwrap());
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn apple_clangd_warns_for_tidy_config_once_across_languages_and_restarts() {
+    for language in ["c", "cpp", "objective-c", "objective-cpp"] {
+        let h = harness_for(language, "src", &[("clangd", incremental_caps())], &[]);
+        *h.launcher.state("clangd").binary.lock() = Some(PathBuf::from("/usr/bin/clangd"));
+        std::fs::write(h.root.join(".clang-tidy"), "Checks: '-*,modernize-use-nullptr'").unwrap();
+        h.open("main.src", "int *p = 0;");
+        eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. }))).await;
+        let id = h.mgr.servers()[0].id;
+        h.mgr.restart(id).await.unwrap();
+        h.wait_status("clangd", ServerStatus::Ready).await;
+        h.open("other.src", "int *p = 0;");
+        h.mgr.shutdown_all().await;
+        let events = h.events.lock();
+        let warnings: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::LanguageServerWarning { name, message, install_tool } => Some((name, message, install_tool)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(warnings.len(), 1, "{language}");
+        assert_eq!(warnings[0].0, "clangd");
+        assert!(warnings[0].1.contains(".clang-tidy"));
+        assert_eq!(warnings[0].2, "clangd");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn clang_tidy_warning_requires_apple_binary_and_a_config() {
+    for (binary, config) in [
+        ("/usr/bin/clangd", false),
+        ("/opt/homebrew/opt/llvm/bin/clangd", true),
+        ("/Users/me/Library/Application Support/openidea/tools/clangd/bin/clangd", true),
+    ] {
+        let h = harness_for("cpp", "cpp", &[("clangd", incremental_caps())], &[]);
+        *h.launcher.state("clangd").binary.lock() = Some(PathBuf::from(binary));
+        if config {
+            std::fs::write(h.root.join(".clang-tidy"), "Checks: '-*,modernize-use-nullptr'").unwrap();
+        }
+        h.open("main.cpp", "int *p = 0;");
+        h.wait_status("clangd", ServerStatus::Ready).await;
+        h.mgr.shutdown_all().await;
+        assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. })), "{binary}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn clang_tidy_config_for_a_later_opened_file_warns_on_a_running_server() {
+    let h = harness_for("cpp", "cpp", &[("clangd", incremental_caps())], &[]);
+    *h.launcher.state("clangd").binary.lock() = Some(PathBuf::from("/usr/bin/clangd"));
+    h.open("main.cpp", "int *p = 0;");
+    h.wait_status("clangd", ServerStatus::Ready).await;
+    assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. })));
+    std::fs::create_dir(h.root.join("nested")).unwrap();
+    std::fs::write(h.root.join("nested/.clang-tidy"), "Checks: '-*,modernize-use-nullptr'").unwrap();
+    h.open("nested/other.cpp", "int *p = 0;");
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. }))).await;
+    assert_eq!(h.mgr.servers().len(), 1);
+    h.mgr.shutdown_all().await;
 }

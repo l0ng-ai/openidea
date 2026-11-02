@@ -50,10 +50,11 @@ fn detected_and_saved(
     suppressed: &[String],
 ) -> Vec<RunConfig> {
     let excluded_poms = crate::project::unlinked_maven_poms(root, settings);
-    let mut all: Vec<RunConfig> = ide_run::detect_excluding(root, &excluded_poms)
-        .into_iter()
-        .filter(|d| !suppressed.contains(&d.id) && !saved.iter().any(|u| u.id == d.id))
-        .collect();
+    let mut all: Vec<RunConfig> =
+        ide_run::detect_with_profiles(root, &excluded_poms, settings.cmake.profiles.as_deref())
+            .into_iter()
+            .filter(|d| !suppressed.contains(&d.id) && !saved.iter().any(|u| u.id == d.id))
+            .collect();
     all.extend(saved.iter().cloned());
     for config in all.iter_mut().filter(|c| c.kind != "gradle") {
         ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(config), root, settings);
