@@ -16,9 +16,9 @@ import type {
   SymbolMatch,
   WorkspaceSymbol,
 } from "@/platform/ipc";
-import type { SettingsSearchEntry } from "@/workbench/contributions";
+import type { EndpointEntry, SettingsSearchEntry } from "@/workbench/contributions";
 import { parseLocationQuery } from "../common/query";
-import { matchRoutes, routeIndex, type Route } from "./routes";
+import { matchRoutes } from "./routes";
 import { passesFilter, type ResolvedFilter } from "./filters";
 import {
   ALL_TAB_LIMIT,
@@ -57,8 +57,8 @@ export interface SeDeps {
   now(): number;
   /** Whether `path` is in a root-based named scope ("Project Test Files" …). */
   inFileSet?(set: ProjectFileSet, path: string): boolean;
-  /** Spring endpoints of the project, for request-path matches. */
-  routes?(): Promise<Route[]>;
+  /** Endpoints of the project, for request-path matches. */
+  routes?(): Promise<EndpointEntry[]>;
 }
 
 export interface SeRequest {
@@ -290,14 +290,9 @@ export class SeController {
     }
   }
 
-  /**
-   * Spring endpoints by request path (`/menu/search`), the way IDEA finds a controller
-   * method: the scan runs once per project, then the query is ranked in memory.
-   */
+  /** Project endpoints by request path (`/menu/search`), ranked in memory. */
   private async startEndpoints(id: SectionId, gen: number, text: string, limit: number, req: SeRequest) {
-    const root = this.deps.root();
-    // No project, no Tauri, or an older build: the section simply contributes nothing.
-    const routes = await (this.deps.routes ? this.deps.routes() : routeIndex(root)).catch((): Route[] => []);
+    const routes = (await this.deps.routes?.().catch((): EndpointEntry[] => [])) ?? [];
     const { items, hasMore } = matchRoutes(routes, text, limit);
     const keep = this.scopeFilter(req);
     this.set(id, gen, keep ? items.filter((i) => keep(i.path)) : items, hasMore, false);

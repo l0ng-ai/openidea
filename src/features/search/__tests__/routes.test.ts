@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { isRouteSource, matchRoutes, type Route } from "../everywhere/routes";
+import type { EndpointEntry } from "@/workbench/contributions";
+import { matchRoutes } from "../everywhere/routes";
 
-const route = (over: Partial<Route> = {}): Route => ({
+const route = (over: Partial<EndpointEntry> = {}): EndpointEntry => ({
   method: "POST",
   url: "/deeplink/menu/search",
   controller: "DeepLinkController",
@@ -13,7 +14,7 @@ const route = (over: Partial<Route> = {}): Route => ({
   ...over,
 });
 
-const routes: Route[] = [
+const routes: EndpointEntry[] = [
   route(),
   route({
     method: "GET",
@@ -23,20 +24,6 @@ const routes: Route[] = [
     col: 4,
   }),
 ];
-
-describe("the request-path index follows the workspace", () => {
-  it("is invalidated by a change to a mapping source", () => {
-    for (const [path, expected] of [
-      ["/p/A.java", true],
-      ["/p/B.kt", true],
-      ["/p/C.kts", true],
-      ["/p/pom.xml", false],
-      ["/p/notes.md", false],
-    ] as const) {
-      expect(isRouteSource(path), path).toBe(expected);
-    }
-  });
-});
 
 describe("endpoints in Search Everywhere", () => {
   it("finds a controller method by the request path it answers", () => {
