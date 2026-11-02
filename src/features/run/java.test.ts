@@ -252,6 +252,21 @@ describe("java command lines", () => {
     ).toEqual(["--module-path", "/m/x.jar"]);
   });
 
+  it("colours a Spring Boot console unless the configuration sets the property", () => {
+    const boot = (args: string[]) => ({
+      ...applicationConfig({ className: "a.Main" }, "src/main/java/a/Main.java"),
+      kind: "spring-boot" as const,
+      args,
+    });
+    expect(resolveJavaCommand(boot(["-Xmx1g", "a.Main"]), info).args[0]).toBe("-Dspring.output.ansi.enabled=always");
+    expect(resolveJavaCommand(boot(["-Dspring.output.ansi.enabled=never", "a.Main"]), info).args).toEqual([
+      "-Dspring.output.ansi.enabled=never",
+      "a.Main",
+    ]);
+    const plain = applicationConfig({ className: "a.Main" }, "src/main/java/a/Main.java");
+    expect(resolveJavaCommand(plain, info).args).not.toContain("-Dspring.output.ansi.enabled=always");
+  });
+
   it("joins arguments for java-debug and reads JDWP's port", () => {
     expect(joinJavaArgs(["a", "b c", 'q"'])).toBe('a "b c" "q\\""');
     expect(jdwpListeningPort("Listening for transport dt_socket at address: 50123")).toBe(50123);
