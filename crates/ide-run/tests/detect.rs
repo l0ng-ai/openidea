@@ -372,13 +372,19 @@ fn python_projects() {
         ("manage.py", ""),
     ]);
     let c = detect(dir.path());
-    assert_eq!(ids(&c), ["django:runserver", "python:module:mypkg", "pytest"]);
+    // pytest stays ahead of `manage.py test`: the first test configuration is the default for context runs.
+    assert_eq!(ids(&c), ["django:runserver", "python:module:mypkg", "pytest", "django:test"]);
     let pytest = find(&c, "pytest");
     assert_eq!(cmdline(pytest), "uv run pytest");
     assert!(pytest.is_test);
     assert_eq!(pytest.debug_adapter.as_deref(), Some("debugpy"));
     assert_eq!(cmdline(find(&c, "python:module:mypkg")), "uv run python -m mypkg");
     assert_eq!(cmdline(find(&c, "django:runserver")), "uv run python manage.py runserver");
+    let django = find(&c, "django:test");
+    assert_eq!(cmdline(django), "uv run python manage.py test");
+    assert_eq!(django.kind, "django-test");
+    assert!(django.is_test);
+    assert_eq!(django.debug_adapter.as_deref(), Some("debugpy"));
 
     let dir = project(&[("pytest.ini", "[pytest]\n"), ("poetry.lock", "")]);
     assert_eq!(cmdline(find(&detect(dir.path()), "pytest")), "poetry run pytest");
@@ -398,6 +404,7 @@ fn python_virtualenv() {
     let c = detect(dir.path());
     assert_eq!(cmdline(find(&c, "pytest")), ".venv/bin/pytest");
     assert_eq!(cmdline(find(&c, "django:runserver")), ".venv/bin/python manage.py runserver");
+    assert_eq!(cmdline(find(&c, "django:test")), ".venv/bin/python manage.py test");
 }
 
 #[cfg(unix)]
