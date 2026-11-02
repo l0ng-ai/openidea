@@ -67,3 +67,26 @@ it("opens a file outside the changes list without unrelated siblings", async () 
   expect(opened.mock.calls[0]![0].data.path).toBe("/repo/clean.ts");
   expect(opened.mock.calls[0]![0].data.chain).toBeUndefined();
 });
+
+it("follows directory order rather than global filename order", async () => {
+  const files = [status("a.ts"), status("src/z.ts"), status("src/nested/b.ts"), status("other.ts")];
+  useVcs.setState({ status: files, byPath: new Map(files.map((f) => [f.path, f])) });
+  useCommit.setState({ groupByDir: true });
+  await getAction("vcs.showDiff")!.run({ arg: "/repo/src/z.ts", ctx: { vcsAvailable: true } });
+  expect(opened.mock.calls[0]![0].data.chain.map((d: { path: string }) => d.path)).toEqual([
+    "/repo/src/nested/b.ts",
+    "/repo/src/z.ts",
+    "/repo/a.ts",
+  ]);
+});
+
+it("keeps repository grouping in a changelist's chain", async () => {
+  const files = [status("z.ts"), status("module/b.ts"), status("module/a.ts")];
+  useVcs.setState({ status: files, roots: ["/repo", "/repo/module"] });
+  await getAction("vcs.showDiff")!.run({ arg: "/repo/module/b.ts", ctx: { vcsAvailable: true } });
+  expect(opened.mock.calls[0]![0].data.chain.map((d: { path: string }) => d.path)).toEqual([
+    "/repo/z.ts",
+    "/repo/module/a.ts",
+    "/repo/module/b.ts",
+  ]);
+});

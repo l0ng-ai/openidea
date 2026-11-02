@@ -190,6 +190,23 @@ it("does not offer editor maximization in an embedded diff", async () => {
   expect(screen.queryByRole("button", { name: "Maximize Editor" })).toBeNull();
 });
 
+it("restores the shared layout after the diff tab is remounted", async () => {
+  const layout = useToolWindowLayout.getState();
+  const visible = { ...layout.visible, left: "project", bottom: "git" };
+  useToolWindowLayout.setState({ visible, stashed: null, maximized: "bottom" });
+  const first = render(<DiffEditorTab input={input} />);
+  fireEvent.click(screen.getByRole("button", { name: "Maximize Editor" }));
+  first.unmount();
+  const second = render(<DiffEditorTab input={input} />);
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Restore Size" }));
+    expect(useToolWindowLayout.getState()).toMatchObject({ visible, maximized: "bottom" });
+  } finally {
+    second.unmount();
+    useToolWindowLayout.setState(layout);
+  }
+});
+
 it.each([
   {
     index: 0,

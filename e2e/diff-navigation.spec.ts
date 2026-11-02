@@ -51,3 +51,44 @@ test("continues between changed files from toolbar buttons and the keymap", asyn
   await expect(selected).toContainText("a.ts");
   await expect(toolbar).toContainText("1 of 1 differences");
 });
+
+test("skips binary and unchanged siblings and restores after changing preview files", async ({ workbench: page }) => {
+  const toolbar = await openChain(page);
+  await page.evaluate(async () => {
+    const inputPath = "/src/features/vcs/diffInput.ts";
+    const layoutPath = "/src/workbench/toolwindows/store.ts";
+    const { openDiff, withChain } = await import(inputPath);
+    const { useToolWindowLayout } = await import(layoutPath);
+    useToolWindowLayout.setState({ maximized: "left" });
+    const files = [
+      ["a.ts", "after\n"],
+      ["binary.dat", "\0binary"],
+      ["unchanged.ts", "before\n"],
+      ["z.ts", "after\n"],
+    ].map(([name, text]) => ({
+      path: `/dev/acme-api/${name}`,
+      left: { type: "text", text: "before\n", label: "HEAD" },
+      right: { type: "text", text, label: "Working tree" },
+    }));
+    await openDiff(withChain(files, 0), { preview: true });
+  });
+  await expect(toolbar).toContainText("1 difference");
+  await toolbar.getByRole("button", { name: "Maximize Editor", exact: true }).click();
+  const selected = page.getByRole("tablist", { name: "Editor tabs" }).locator('[aria-selected="true"]');
+  await page.keyboard.press("F7");
+  await page.keyboard.press("F7");
+  await expect(selected).toContainText("z.ts");
+  await expect(toolbar).toContainText("1 of 1 differences");
+  await page.keyboard.press("F7");
+  await expect(selected).toContainText("z.ts");
+  await page.keyboard.press("Shift+F7");
+  await page.keyboard.press("Shift+F7");
+  await expect(selected).toContainText("a.ts");
+  await toolbar.getByRole("button", { name: "Restore Size", exact: true }).click();
+  const maximized = await page.evaluate(async () => {
+    const layoutPath = "/src/workbench/toolwindows/store.ts";
+    return (await import(layoutPath)).useToolWindowLayout.getState().maximized;
+  });
+  expect(maximized).toBe("left");
+  await expect(page.getByRole("tree", { name: "Project", exact: true })).toBeVisible();
+});

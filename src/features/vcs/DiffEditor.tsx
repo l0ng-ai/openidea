@@ -61,6 +61,7 @@ import {
   type DiffSide,
 } from "./diffInput";
 import { diffAnnotations } from "./diffAnnotations";
+import { changedChainNeighbour } from "./diffNavigation";
 import {
   createDiffViewerContributions,
   type DiffPaneSide,
@@ -548,14 +549,35 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     if (at === undefined) return;
     if (data.line != null) revealPos(v, at);
     else v.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
-    // A left-side line: that pane gets the focus, so navigation goes on from there.
-    if (v === viewsRef.current?.a) v.focus();
+    // Keep keyboard navigation in the revealed pane after moving to another file.
+    if (data.reveal || v === viewsRef.current?.a) v.focus();
     updateChunkInfo();
   }, [ready, statics, revealKey, data.line, data.lineSide, data.reveal, updateChunkInfo]);
 
   // IDEA: past the last (first) difference F7 (Shift+F7) first hints, then moves along the chain.
   const [navHint, setNavHint] = useState<string | null>(null);
   const pendingFile = useRef<0 | 1 | -1>(0);
+  const navigation = useRef<object | null>(null);
+  useEffect(
+    () => () => {
+      navigation.current = null;
+    },
+    [data],
+  );
+  const openNeighbour = useCallback(
+    async (dir: 1 | -1) => {
+      if (navigation.current) return;
+      const request = {};
+      navigation.current = request;
+      try {
+        const neighbour = await changedChainNeighbour(data, dir, opts.ignore);
+        if (navigation.current === request && neighbour) await openDiff(neighbour, { preview: true });
+      } finally {
+        if (navigation.current === request) navigation.current = null;
+      }
+    },
+    [data, opts.ignore],
+  );
   useEffect(() => {
     if (!navHint) return;
     const t = setTimeout(() => setNavHint(null), 2500);
@@ -579,7 +601,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         if (pendingFile.current === dir) {
           pendingFile.current = 0;
           setNavHint(null);
-          void openDiff(neighbour, { preview: true });
+          void openNeighbour(dir);
         } else {
           pendingFile.current = dir;
           setNavHint(dir === 1 ? "Press again to go to the next file" : "Press again to go to the previous file");
@@ -598,7 +620,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       }
       updateChunkInfo();
     },
-    [updateChunkInfo, data],
+    [updateChunkInfo, data, openNeighbour],
   );
 
   // A file-backed side is the source; for a diff of revisions (Git Log, Compare) the
@@ -767,8 +789,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     return true;
   };
   const file = (dir: 1 | -1) => {
-    const neighbour = chainNeighbour(data, dir);
-    if (neighbour) void openDiff(neighbour, { preview: true });
+    void openNeighbour(dir);
   };
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   /** The viewer settings menu, under the toolbar's gear (`from`) or its start. */
