@@ -33,8 +33,8 @@ export function hotSwapMessage(
 }
 
 /** Compiles (unless `build` is false) and reloads changed classes into every Java debug session. */
-export async function reloadChangedClasses(build = true): Promise<void> {
-  const sessions = hotSwapSessions();
+export async function reloadChangedClasses(build = true, configId?: string): Promise<void> {
+  const sessions = hotSwapSessions().filter((s) => !configId || s.runConfig?.id === configId);
   if (!sessions.length || !isTauri()) {
     notifications().notify({ group: "run", level: "info", key: KEY, title: "No debug session can reload classes" });
     return;

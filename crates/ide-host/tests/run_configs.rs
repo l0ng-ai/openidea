@@ -6,6 +6,7 @@ fn host(base: &std::path::Path) -> Arc<Host> {
     Arc::new(Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(NullSink)),
@@ -21,6 +22,7 @@ async fn removed_detections_stay_removed_and_overrides_restore() {
     let root = dunce::canonicalize(tmp.path()).unwrap();
     std::fs::write(root.join("package.json"), r#"{"scripts":{"dev":"node app.js","test":"node test.js"}}"#).unwrap();
     let host = host(&root.join("app"));
+    host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
     let detected = ops::run::configs(&host, "main").unwrap();
     assert!(detected.len() >= 2);
@@ -58,6 +60,7 @@ async fn gradle_defaults_are_not_saved_as_explicit_run_choices() {
     let root = dunce::canonicalize(tmp.path()).unwrap();
     std::fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
     let host = host(&root.join("app"));
+    host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
     ops::project::set_settings(
         &host,
@@ -76,4 +79,25 @@ async fn gradle_defaults_are_not_saved_as_explicit_run_choices() {
     let saved = ops::run::configs(&host, "main").unwrap().into_iter().find(|c| c.id == gradle.id).unwrap();
     assert_eq!(saved.env["JAVA_HOME"], "/explicit-jdk");
     assert_eq!(saved.command, gradle.command);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_cmake_before_launch_tasks_resolve_in_the_member() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    let member = root.join("native");
+    std::fs::create_dir(&member).unwrap();
+    std::fs::write(member.join("CMakeLists.txt"), "project(demo)").unwrap();
+    let workspace = root.join("workspace");
+    ide_workspace::workspace::Workspace::save(&workspace, "Native", vec![member.clone()], true).unwrap();
+    let host = host(&root.join("app"));
+    host.trust.decide(&workspace, true, false).unwrap();
+    host.trust.decide(&member, true, false).unwrap();
+    host.open_project("main", &workspace).unwrap();
+    let configs = ops::run::configs(&host, "main").unwrap();
+    let build = configs.iter().find(|c| c.kind == "cmake" && c.args.first().is_some_and(|a| a == "--build")).unwrap();
+    assert_eq!(build.cwd.as_deref(), Some(member.as_path()));
+    for task in &build.extras.before_launch {
+        assert!(configs.iter().any(|c| c.id == task.target && c.cwd == build.cwd));
+    }
 }

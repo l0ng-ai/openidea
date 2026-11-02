@@ -216,6 +216,7 @@ fn builds_nested_in_a_folder_of_repositories() {
     assert_eq!(app.kind, "spring-boot");
     assert_eq!(cmdline(app), "java -cp ${classpath} org.dromara.DromaraApplication");
     assert_eq!(app.cwd.as_deref(), Some(Path::new("RuoYi-Vue-Plus/ruoyi-admin")));
+    assert_eq!(app.extras.module.as_deref(), Some("RuoYi-Vue-Plus/ruoyi-admin"));
     assert_eq!(app.debug_adapter.as_deref(), Some("java-debug"));
     let package = find(&c, "maven:package:RuoYi-Vue-Plus");
     assert_eq!(package.name, "RuoYi-Vue-Plus: mvn package");
@@ -614,4 +615,175 @@ fn root_package_disables_nested_scan() {
     assert!(!ids(&c).contains(&"npm:tools:gen"));
     assert!(ids(&c).contains(&"go:test"));
     assert!(!ids(&c).contains(&"go:test:svc"));
+}
+
+#[test]
+fn cmake_detection_is_read_only_and_preserves_existing_build_directories() {
+    let dir = project(&[
+        ("CMakeLists.txt", "project(demo)"),
+        ("cmake-build-debug/CMakeCache.txt", "CMAKE_CONFIGURATION_TYPES:STRING=Release;RelWithDebInfo\n"),
+    ]);
+    let configs = detect(dir.path());
+    let configure = find(&configs, "cmake:cmake-build-debug:configure");
+    assert_eq!(configure.args, ["-S", ".", "-B", "cmake-build-debug", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]);
+    assert!(!dir.path().join("build").exists());
+    assert!(!dir.path().join("cmake-build-debug/.cmake").exists());
+    let build = find(&configs, "cmake:cmake-build-debug:build");
+    assert!(build.extras.before_launch.is_empty(), "a configured build regenerates by itself");
+    assert!(build.args.windows(2).any(|a| a == ["--config", "Release"]));
+    let test = find(&configs, "cmake:cmake-build-debug:test");
+    assert_eq!(test.extras.before_launch[0].target, build.id);
+}
+
+#[test]
+fn cmake_configures_before_the_first_build() {
+    let dir = project(&[("CMakeLists.txt", "project(demo)")]);
+    let configs = detect(dir.path());
+    let build = find(&configs, "cmake:build:build");
+    assert_eq!(build.extras.before_launch[0].target, "cmake:build:configure");
+}
+
+#[test]
+fn cmake_ignores_malformed_file_api_replies() {
+    let dir = project(&[
+        ("CMakeLists.txt", "project(demo)"),
+        ("build/CMakeCache.txt", ""),
+        ("build/.cmake/api/v1/reply/index-1.json", "not JSON"),
+    ]);
+    let configs = detect(dir.path());
+    assert_eq!(configs.iter().filter(|c| c.kind == "cmake").count(), 3);
+    assert!(!configs.iter().any(|c| c.kind == "native"));
+}
+
+#[test]
+fn go_work_members_define_configs_including_deep_and_quoted_directories() {
+    let dir = project(&[
+        (
+            "go.work",
+            "go 1.22\n// use ./ignored\nuse (\n ./apps/deep/server // member\n \"./module with spaces\"\n)\nuse ./apps/deep/server\n",
+        ),
+        ("apps/deep/server/go.mod", "module example.com/server\ngo 1.22\n"),
+        ("apps/deep/server/main.go", "package main\nfunc main() {}"),
+        ("module with spaces/go.mod", "module example.com/lib\ngo 1.22\n"),
+        ("ignored/go.mod", "module example.com/ignored\ngo 1.22\n"),
+    ]);
+    let configs = detect(dir.path());
+    assert_eq!(configs.iter().filter(|c| c.kind == "go" && c.is_test).count(), 2);
+    assert_eq!(find(&configs, "go:run:apps/deep/server").cwd.as_deref(), Some(Path::new("apps/deep/server")));
+    assert!(configs.iter().all(|c| !c.id.contains("ignored")));
+    assert!(configs.iter().any(|c| c.id == "go:test:module with spaces"));
+}
+
+#[test]
+fn go_work_external_member_has_a_plain_absolute_working_directory() {
+    let dir = project(&[
+        ("workspace/go.work", "go 1.22\nuse ../external\n"),
+        ("external/go.mod", "module example.com/external\ngo 1.22\n"),
+        ("external/main.go", "package main\nfunc main() {}"),
+    ]);
+    let configs = detect(&dir.path().join("workspace"));
+    let run = configs.iter().find(|c| c.kind == "go" && !c.is_test).unwrap();
+    let cwd = run.cwd.as_deref().unwrap();
+    assert_eq!(cwd, dunce::canonicalize(dir.path().join("external")).unwrap());
+    assert!(cwd.is_absolute());
+    assert!(!cwd.to_string_lossy().starts_with(r"\\?\"));
+}
+
+#[test]
+fn go_work_parser_ignores_other_directives_comments_and_malformed_groups() {
+    use ide_run::go::work_modules;
+    assert_eq!(
+        work_modules("replace use => ./not-a-member\n// use ./also-not\nuse ./real\n"),
+        vec![std::path::PathBuf::from("./real")]
+    );
+    assert!(work_modules("use (\n./missing-close\n").is_empty());
+    assert!(work_modules("use \"unterminated").is_empty());
+}
+
+#[test]
+fn go_work_paths_decode_go_string_escapes() {
+    use ide_run::go::work_modules;
+    for path in [r#""./\u0061pp""#, r#""./\x61pp""#, r#""./\141pp""#, "`./app`"] {
+        assert_eq!(work_modules(&format!("use {path}\n")), vec![std::path::PathBuf::from("./app")]);
+    }
+    assert!(work_modules(r#"use "./\qinvalid""#).is_empty());
+}
+
+#[test]
+fn go_default_build_output_is_ignored_by_version_control() {
+    let dir = project(&[("go.mod", "module x\ngo 1.22\n"), ("main.go", "package main\nfunc main() {}")]);
+    let mut config = detect(dir.path()).into_iter().find(|c| c.kind == "go" && !c.is_test).unwrap();
+    config.extras.params.insert("goKind".into(), "package".into());
+    assert!(ide_run::go::plan(dir.path(), &config).unwrap().is_some());
+    let ignore = fs::read_to_string(dir.path().join(".openidea/.gitignore")).unwrap();
+    assert!(ignore.lines().any(|l| l == "/bin/"), "{ignore}");
+}
+
+#[test]
+fn cmake_profiles_control_commands_names_and_environment() {
+    use ide_core::settings::CMakeProfile;
+    let dir = project(&[("CMakeLists.txt", "project(app)")]);
+    for generator in ["", "Ninja", "Unix Makefiles", "Ninja Multi-Config", "Visual Studio 17 2022"] {
+        let profile = CMakeProfile {
+            name: "Production".into(),
+            build_type: "Release".into(),
+            generator: generator.into(),
+            cmake_args: ["-DFEATURE=ON", "-DMESSAGE=two words", "-DQUOTE=\"hello world\"", ""].map(String::from).into(),
+            build_dir: "output dir".into(),
+            build_args: ["-j", "8", "--", "VERBOSE=1"].map(String::from).into(),
+            env: [("MY_ENV".into(), "yes".into())].into(),
+        };
+        let configs = ide_run::detect_with_profiles(dir.path(), &[], Some(std::slice::from_ref(&profile)));
+        let configure = find(&configs, "cmake:profile:0:configure");
+        let mut expected = vec!["-S", ".", "-B", "output dir"];
+        if !generator.is_empty() {
+            expected.extend(["-G", generator]);
+        }
+        expected.extend([
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            "-DFEATURE=ON",
+            "-DMESSAGE=two words",
+            "-DQUOTE=\"hello world\"",
+            "",
+        ]);
+        assert_eq!(configure.args, expected);
+        assert_eq!(configure.name, "CMake Configure (output dir)");
+        let build = find(&configs, "cmake:profile:0:build");
+        assert_eq!(build.args, ["--build", "output dir", "--config", "Release", "-j", "8", "--", "VERBOSE=1"]);
+        assert_eq!(build.extras.before_launch[0].target, configure.id);
+        assert!(configs.iter().all(|c| c.env == profile.env));
+        let configs = ide_run::detect_with_profiles(dir.path(), &[], Some(&[CMakeProfile::default(), profile]));
+        assert!(find(&configs, "cmake:profile:0:build").name.ends_with("[Debug]"));
+        assert!(find(&configs, "cmake:profile:1:build").name.ends_with("[Production]"));
+        assert_eq!(find(&configs, "cmake:profile:0:build").args[1], "cmake-build-debug");
+    }
+    assert_eq!(ide_run::detect_with_profiles(dir.path(), &[], None), detect(dir.path()));
+    assert!(ide_run::detect_with_profiles(dir.path(), &[], Some(&[])).is_empty());
+}
+
+#[test]
+fn cmake_profile_build_configures_only_without_a_cache() {
+    use ide_core::settings::CMakeProfile;
+    let root = project(&[("CMakeLists.txt", "project(app)")]);
+    for dir in ["", "custom output"] {
+        let profile = CMakeProfile { build_dir: dir.into(), generator: "Ninja".into(), ..Default::default() };
+        let build_dir = root.path().join(if dir.is_empty() { "cmake-build-debug" } else { dir });
+        for cached in [false, true] {
+            if cached {
+                fs::create_dir_all(&build_dir).unwrap();
+                // Generator changes are handled by an explicit Configure, not every Build.
+                fs::write(build_dir.join("CMakeCache.txt"), "CMAKE_GENERATOR:INTERNAL=Unix Makefiles\n").unwrap();
+            }
+            let configs = ide_run::detect_with_profiles(root.path(), &[], Some(std::slice::from_ref(&profile)));
+            let build = find(&configs, "cmake:profile:0:build");
+            if cached {
+                assert!(build.extras.before_launch.is_empty());
+            } else {
+                assert_eq!(build.extras.before_launch.len(), 1);
+                assert_eq!(build.extras.before_launch[0].target, "cmake:profile:0:configure");
+            }
+            assert_eq!(find(&configs, "cmake:profile:0:test").extras.before_launch[0].target, build.id);
+        }
+    }
 }

@@ -21,6 +21,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "editor.boldFontWeight",
   "editor.colorScheme",
   "editor.colorOverrides",
+  "editor.customSchemes",
   "editor.semanticHighlighting",
   "editor.rainbowBrackets",
   "editor.softWrap",

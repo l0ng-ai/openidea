@@ -168,11 +168,15 @@ impl Shared {
 
     fn load_persisted(&self) {
         let Some(store) = &self.store else { return };
-        let root = self.filter().root().to_owned();
+        let filter = self.filter();
+        let root = filter.root().to_owned();
         match store.load() {
             Ok(records) => {
-                let entries: Vec<FileEntry> =
-                    records.into_par_iter().map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec)).collect();
+                let entries: Vec<FileEntry> = records
+                    .into_par_iter()
+                    .filter(|(rel, _)| !filter.is_excluded(&root.join(rel), false))
+                    .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
+                    .collect();
                 let mut d = self.data.write();
                 for e in entries {
                     d.insert(e);

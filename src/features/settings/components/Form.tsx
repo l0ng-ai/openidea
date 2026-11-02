@@ -475,7 +475,7 @@ export function SettingText({
       <Input
         id={id}
         className={styles.text}
-        value={value}
+        value={value ?? ""}
         placeholder={placeholder}
         onChange={(e) => set(e.target.value)}
       />

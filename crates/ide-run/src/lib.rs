@@ -2,12 +2,15 @@
 
 mod config;
 mod detect;
+pub mod dotnet;
 pub mod envfile;
+pub mod go;
 pub mod gradle_jvm;
 pub mod java_cmdline;
 pub mod junit;
 mod process;
 pub mod python_path;
+pub mod tomcat;
 mod utf8;
 pub mod which;
 pub mod wrap;
@@ -69,6 +72,10 @@ fn is_true(b: &bool) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RunExtras {
+    /// Module supplying a JVM application's classpath; empty means the project root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub module: Option<String>,
     /// Values of the configuration type's own form fields (the command line derives from them).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(optional)]
@@ -136,6 +143,7 @@ pub struct RunExtras {
 impl Default for RunExtras {
     fn default() -> Self {
         Self {
+            module: None,
             params: BTreeMap::new(),
             folder: None,
             local: false,
@@ -194,6 +202,15 @@ pub fn detect_excluding(root: &Path, excluded_poms: &[PathBuf]) -> Vec<RunConfig
     detect::detect_excluding(root, excluded_poms)
 }
 
+/// Detects configurations with explicit CMake profiles, or legacy discovery when absent.
+pub fn detect_with_profiles(
+    root: &Path,
+    excluded_poms: &[PathBuf],
+    profiles: Option<&[ide_core::settings::CMakeProfile]>,
+) -> Vec<RunConfig> {
+    detect::detect_with_profiles(root, excluded_poms, profiles)
+}
+
 /// Reads `<root>/.openidea/run.toml`; a missing file yields no configs.
 pub fn load_user_configs(root: &Path) -> IdeResult<Vec<RunConfig>> {
     config::load(root)
@@ -232,6 +249,11 @@ pub fn save_templates(root: &Path, templates: &[RunConfig]) -> IdeResult<()> {
 /// The environment runs inherit (unless "Include system environment variables" is off).
 pub fn system_env() -> BTreeMap<String, String> {
     ide_core::process::host_vars().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect()
+}
+
+/// Complete environment for a preparatory tool belonging to this run configuration.
+pub fn resolved_env(root: &Path, config: &RunConfig) -> IdeResult<BTreeMap<String, String>> {
+    process::resolved_env(root, config)
 }
 
 /// Path of the user run configuration file for `root`.

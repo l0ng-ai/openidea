@@ -1,6 +1,7 @@
 //! Test helpers: sources are plain strings; positions are named by the n-th
 //! whole-word occurrence of an identifier (1-based), so fixtures stay readable.
 
+mod jvm;
 mod locals_langs;
 mod structure;
 

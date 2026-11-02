@@ -4,9 +4,21 @@ import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
 import { showError, confirmChecked } from "@/workbench/messages";
 import { isBusy } from "./model";
-import { archiveTask, deleteTask, openTask, useAgents } from "./store";
+import {
+  archiveTask,
+  unarchiveTask,
+  deleteTask,
+  dockTask,
+  forkTask,
+  openTask,
+  openTaskInEditorLocation,
+  setSessionLocation,
+  undockTask,
+  useAgents,
+} from "./store";
 
 const canArchive = (task: AgentTask) => !isBusy(task.status) && task.status !== "archived";
+const canFork = (task: AgentTask) => canArchive(task) && !!task.capabilities?.fork;
 
 function resolveTasks(arg: unknown): AgentTask[] {
   if (!Array.isArray(arg)) return [];
@@ -59,6 +71,29 @@ async function confirmDelete(tasks: AgentTask[]) {
 
 export const taskActions: Action[] = [
   {
+    id: "agents.useToolWindow",
+    title: "Chat in Tool Window",
+    category: "Agents",
+    icon: "open-in-tool-window",
+    run: () => setSessionLocation("toolWindow"),
+  },
+  {
+    id: "agents.useEditor",
+    title: "Chat in Editor",
+    category: "Agents",
+    icon: "editor-only",
+    run: () => setSessionLocation("editor"),
+  },
+  {
+    id: "agents.openTaskInEditor",
+    title: "Open Agent Task in Editor",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      if (typeof arg === "string") openTaskInEditorLocation(arg);
+    },
+  },
+  {
     id: "agents.openTask",
     title: "Open Agent Task",
     category: "Agents",
@@ -68,12 +103,51 @@ export const taskActions: Action[] = [
     },
   },
   {
+    id: "agents.dockTask",
+    title: "Open Agent Task in Tool Window",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      if (typeof arg === "string") dockTask(arg);
+    },
+  },
+  {
+    id: "agents.undockTask",
+    title: "Open Agent Task in Editor",
+    category: "Agents",
+    hidden: true,
+    run: () => undockTask(),
+  },
+  {
+    id: "agents.forkTask",
+    title: "Copy Agent Task to a New Task",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      const task = resolveTasks([arg])[0];
+      if (task && canFork(task))
+        return forkTask(task.id, null).catch((e: unknown) => showError(tx("Couldn't copy the task"), String(e)));
+    },
+  },
+  {
     id: "agents.archiveTasks",
     title: "Archive Agent Tasks",
     category: "Agents",
     hidden: true,
     run: ({ arg }) =>
       runTasks(resolveTasks(arg).filter(canArchive), (task) => archiveTask(task.id), tx("Cannot archive agent tasks")),
+  },
+  {
+    id: "agents.unarchiveTasks",
+    title: "Unarchive Agent Tasks",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) =>
+      runTasks(
+        resolveTasks(arg).filter((task) => task.status === "archived"),
+        (task) => unarchiveTask(task.id),
+        tx("Cannot unarchive agent tasks"),
+      ),
   },
   {
     id: "agents.deleteTasks",
@@ -89,13 +163,36 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
   const ids = tasks.map((task) => task.id);
   const task = tasks[0]!;
   const multiple = tasks.length > 1;
+  const archived = tasks.filter((task) => task.status === "archived").length;
   const archivable = tasks.filter(canArchive).length;
   return [
     ...(!multiple
       ? ([
           { kind: "action", action: "agents.openTask", label: "Open", arg: task.id },
           { kind: "action", action: "terminal.openAt", label: "Open in Terminal", icon: "terminal", arg: task.cwd },
+          ...(task.capabilities?.fork && task.status !== "archived"
+            ? ([
+                {
+                  kind: "action",
+                  action: "agents.forkTask",
+                  label: "Copy to a New Task",
+                  icon: "branch",
+                  arg: task.id,
+                  disabled: !canFork(task),
+                },
+              ] satisfies MenuItem[])
+            : []),
           { kind: "separator" },
+        ] satisfies MenuItem[])
+      : []),
+    ...(archived
+      ? ([
+          {
+            kind: "action",
+            action: "agents.unarchiveTasks",
+            label: multiple ? tx`Unarchive (${archived})` : "Unarchive",
+            arg: ids,
+          },
         ] satisfies MenuItem[])
       : []),
     {

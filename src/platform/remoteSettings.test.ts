@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLIENT_SETTINGS_KEYS } from "./clientSettings";
 import { commands, call, type Settings } from "./ipc";
 import { loadSettings, useProject } from "./project";
-import { connectRemote, disableRemote, enableRemote, remoteRouting } from "./remote";
+import { connectRemote, disableRemote, enableRemote, isRemoteWindow, remoteRouting } from "./remote";
 
 const handlers = vi.hoisted(() => new Map<string, () => void>());
 vi.mock("./ipc", async (original) => ({
@@ -49,6 +49,23 @@ afterEach(() => {
 });
 
 describe("remote client settings", () => {
+  it("ends remote routing before a successful local open is published, even at the same path", async () => {
+    invoke.mockResolvedValueOnce({ root: "/remote", settings: local });
+    await call(commands.openProject("/remote"));
+    expect(isRemoteWindow()).toBe(false);
+    await loadSettings();
+    expect(useProject.getState().settings).toEqual(local);
+    expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual(["open_project", "settings_get"]);
+  });
+
+  it("preserves remote routing when opening a local project fails", async () => {
+    invoke.mockRejectedValueOnce({ kind: "notFound", message: "missing folder" });
+    await expect(call(commands.openProject("/missing"))).rejects.toThrow("missing folder");
+    expect(isRemoteWindow()).toBe(true);
+    await loadSettings();
+    expect(useProject.getState().settings?.editor?.tabSize).toBe(2);
+  });
+
   it.each([...CLIENT_SETTINGS_KEYS, "customKeymaps.mine", "keymapOverrides.editor.copy", "appearance.theme"])(
     "keeps %s writes local in either scope",
     (key) => {
@@ -80,7 +97,9 @@ describe("remote client settings", () => {
             commands: [...served],
             project: { root: "/remote", name: "remote", settings: remote },
           }
-        : local,
+        : cmd === "remote_invoke"
+          ? "null"
+          : local,
     );
     await connectRemote("test", "/remote");
     expect(useProject.getState().settings).toMatchObject({ keymap: "my-map", editor: { tabSize: 2, fontSize: 19 } });

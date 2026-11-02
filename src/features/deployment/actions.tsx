@@ -17,7 +17,7 @@ import styles from "./Deployment.module.css";
 
 const GROUP = "tools";
 const CATEGORY = "Deployment";
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const errorText = (e: unknown) => txTemplate(e instanceof Error ? e.message : String(e));
 const projectRoot = () => useProject.getState().project?.root ?? null;
 const deployment = () => workflowSettings().deployment;
 
@@ -51,22 +51,54 @@ function notifyNoTargets() {
   });
 }
 
-/** Asks which server to use (the only one without asking). */
-async function pickServer(title: string): Promise<DeploymentServerValid | null> {
-  const servers = deployment().servers;
-  if (!servers.length) {
+async function serverCoverage(paths: string[]) {
+  try {
+    return await call(commands.deployCoverage(paths));
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot check deployment mappings",
+      body: errorText(e),
+      group: GROUP,
+    });
+    return null;
+  }
+}
+
+function notifyNoCoverage(server?: DeploymentServerValid, skipped?: TransferReport["errors"]) {
+  notifications().notify({
+    level: "warning",
+    title: server
+      ? txTemplate(`No selected paths can be deployed to ${serverLabel(server)}`)
+      : "No deployment server covers the selected paths",
+    body: skipped?.length ? <ReportBody report={{ files: 0, skipped: skipped.length, errors: skipped }} /> : undefined,
+    group: GROUP,
+    key: "deployment.noCoverage",
+    actions: [{ label: "Configure…", run: () => void executeAction("deployment.configure") }],
+  });
+}
+
+/** Keep the chooser visible even when only one server covers the selection. */
+async function pickServer(title: string, paths: string[]): Promise<DeploymentServerValid | null> {
+  const configured = deployment().servers;
+  if (!configured.length) {
     notifyNoServers();
     return null;
   }
-  if (servers.length === 1) return servers[0]!;
+  const coverage = await serverCoverage(paths);
+  if (!coverage) return null;
+  const servers = configured.filter((server) => coverage.some((c) => c.server === server.id && c.paths.length));
+  if (!servers.length) {
+    notifyNoCoverage();
+    return null;
+  }
   const labels = servers.map(serverLabel);
   const picked = await chooseItem({ title, items: labels });
   return picked === null ? null : (servers[labels.indexOf(picked)] ?? null);
 }
 
-/** The default server; asks when none is marked default and there are several. */
-async function defaultServer(title: string): Promise<DeploymentServerValid | null> {
-  return resolveServer(deployment(), null) ?? pickServer(title);
+async function defaultServer(title: string, paths: string[]): Promise<DeploymentServerValid | null> {
+  return resolveServer(deployment(), null) ?? pickServer(title, paths);
 }
 
 function ReportBody({ report }: { report: TransferReport }) {
@@ -80,7 +112,7 @@ function ReportBody({ report }: { report: TransferReport }) {
         <ul className={styles.reportErrors}>
           {shown.map((e, i) => (
             <li key={i}>
-              <span className={styles.mono}>{root ? relativePath(root, e.path) : e.path}</span>: {e.message}
+              <span className={styles.mono}>{root ? relativePath(root, e.path) : e.path}</span>: {txt(e.message)}
             </li>
           ))}
         </ul>
@@ -118,9 +150,12 @@ function showFailure(title: string, server: DeploymentServerValid, e: unknown) {
 
 async function transfer(direction: "upload" | "download", server: DeploymentServerValid | null, paths: string[]) {
   if (!server) return;
+  const coverage = (await serverCoverage(paths))?.find((c) => c.server === server.id);
+  if (!coverage) return;
+  if (!coverage.paths.length) return notifyNoCoverage(server, coverage.skipped);
   const request = nextRequestId();
   try {
-    const report = await withSsh(server.sshConfig, () =>
+    const report = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
       call(
         direction === "upload"
           ? commands.deployUpload(paths, server.id, request)
@@ -139,8 +174,11 @@ export function downloadPaths(server: DeploymentServerValid, paths: string[]) {
 }
 
 async function deleteRemote(paths: string[]) {
-  const server = await defaultServer("Delete from Server");
+  const server = await defaultServer("Delete from Server", paths);
   if (!server) return;
+  const coverage = (await serverCoverage(paths))?.find((c) => c.server === server.id);
+  if (!coverage) return;
+  if (!coverage.paths.length) return notifyNoCoverage(server, coverage.skipped);
   const root = projectRoot();
   const names = paths.map((p) => (root ? relativePath(root, p) || "/" : p));
   const ok = await confirm({
@@ -155,21 +193,27 @@ async function deleteRemote(paths: string[]) {
   });
   if (!ok) return;
   try {
-    const report = await withSsh(server.sshConfig, () => call(commands.deployDeleteRemote(paths, server.id)));
+    const report = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      call(commands.deployDeleteRemote(paths, server.id)),
+    );
     showReport(report, "delete", server);
   } catch (e) {
     showFailure("Cannot delete from {server}", server, e);
   }
 }
 
-/** Opens the Sync dialog for `path` and compares it with `server`. */
-export async function openSync(server: DeploymentServerValid, path: string) {
+/** Compares every covered selection with `server`. */
+export async function openSync(server: DeploymentServerValid, paths: string[]) {
+  const coverage = (await serverCoverage(paths))?.find((c) => c.server === server.id);
+  if (!coverage) return;
+  if (!coverage.paths.length) return notifyNoCoverage(server, coverage.skipped);
   const request = nextRequestId();
   useDeployment.setState({
     sync: {
       server: server.id,
       serverName: serverLabel(server),
-      path,
+      paths,
+      skipped: coverage.skipped,
       request,
       entries: null,
       error: null,
@@ -179,7 +223,15 @@ export async function openSync(server: DeploymentServerValid, path: string) {
     },
   });
   try {
-    const entries = await withSsh(server.sshConfig, () => call(commands.deployCompare(path, server.id, request)));
+    const groups = await withSsh(server.kind === "sftp" ? server.sshConfig : "", async () => {
+      const entries = [];
+      for (const path of coverage.paths) {
+        if (useDeployment.getState().sync?.request !== request) break;
+        entries.push(...(await call(commands.deployCompare(path, server.id, request))));
+      }
+      return entries;
+    });
+    const entries = [...new Map(groups.map((entry) => [entry.path, entry])).values()];
     if (useDeployment.getState().sync?.request !== request) return;
     patchSync({ entries, choices: initialSyncChoices(entries), request: null });
   } catch (e) {
@@ -203,8 +255,11 @@ export async function runSync(steps: { path: string; action: SyncAction }[]) {
   const request = nextRequestId();
   patchSync({ running: true, request });
   try {
-    const report = await withSsh(server.sshConfig, () => call(commands.deploySync(steps, server.id, request)));
+    const report = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      call(commands.deploySync(steps, server.id, request)),
+    );
     useDeployment.setState({ sync: null });
+    report.skipped += sync.skipped.length;
     showReport(report, "sync", server);
   } catch (e) {
     if (isCancelled(e)) patchSync({ running: false, request: null });
@@ -269,7 +324,7 @@ export function registerDeploymentActions(): () => void {
       icon: "export",
       when,
       keywords: ["deploy", "sftp", "upload", "remote"],
-      run: withTargets(async (paths) => transfer("upload", await defaultServer("Upload to"), paths)),
+      run: withTargets(async (paths) => transfer("upload", await defaultServer("Upload to", paths), paths)),
     },
     {
       id: "deployment.uploadTo",
@@ -278,7 +333,7 @@ export function registerDeploymentActions(): () => void {
       category: CATEGORY,
       when,
       keywords: ["deploy", "sftp", "upload", "remote"],
-      run: withTargets(async (paths) => transfer("upload", await pickServer("Upload to"), paths)),
+      run: withTargets(async (paths) => transfer("upload", await pickServer("Upload to", paths), paths)),
     },
     {
       id: "deployment.downloadFromDefault",
@@ -287,7 +342,7 @@ export function registerDeploymentActions(): () => void {
       category: CATEGORY,
       when,
       keywords: ["deploy", "sftp", "download", "remote"],
-      run: withTargets(async (paths) => transfer("download", await defaultServer("Download from"), paths)),
+      run: withTargets(async (paths) => transfer("download", await defaultServer("Download from", paths), paths)),
     },
     {
       id: "deployment.downloadFrom",
@@ -296,7 +351,7 @@ export function registerDeploymentActions(): () => void {
       category: CATEGORY,
       when,
       keywords: ["deploy", "sftp", "download", "remote"],
-      run: withTargets(async (paths) => transfer("download", await pickServer("Download from"), paths)),
+      run: withTargets(async (paths) => transfer("download", await pickServer("Download from", paths), paths)),
     },
     {
       id: "deployment.syncWith",
@@ -309,7 +364,8 @@ export function registerDeploymentActions(): () => void {
         const paths = actionTargets(arg);
         const target = paths[0] ?? projectRoot();
         if (!target) return;
-        void pickServer("Sync with Deployed to").then((server) => server && openSync(server, target));
+        const targets = paths.length ? paths : [target];
+        void pickServer("Sync with Deployed to", targets).then((server) => server && openSync(server, targets));
       },
     },
     {

@@ -11,7 +11,8 @@ import { useId, useState } from "react";
 import { Button, Checkbox, Input, type SelectOption, T } from "@/ui";
 import { commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
 import { ENCODING_CHOICES, lineCommentDefaults, type LanguageCodeStyle } from "@/platform/editorSettings";
-import { NumberInput, Row } from "../../components/Form";
+import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
+import { NumberInput, Row, Select } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import type { PageSpec } from "../spec";
 import { CODE_STYLE_SCOPE, CodeStyleMain, SchemeRow, formatterLabels } from "./codeStyleScheme";
@@ -158,6 +159,7 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
   return (
     <div className={styles.page}>
       <SchemeRow />
+      {lang.id === "java" && <JavaFormatter style={own} onChange={set} />}
       <section aria-label={tx("Tabs and Indents")}>
         <div className={styles.previewTitle}>
           <T>Tabs and Indents</T>
@@ -237,6 +239,62 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
   );
 }
 
+const JAVA_FORMATTERS: SelectOption<NonNullable<LanguageCodeStyle["formatter"]>>[] = [
+  { value: "default", label: "Default" },
+  { value: "intellij", label: "IntelliJ IDEA" },
+  { value: "custom", label: "Custom Eclipse formatter XML" },
+];
+
+function JavaFormatter({
+  style,
+  onChange,
+}: {
+  style: LanguageCodeStyle;
+  onChange: (patch: Partial<LanguageCodeStyle>) => void;
+}) {
+  const id = useId();
+  const browse = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const path = await open({
+      multiple: false,
+      title: tx("Eclipse formatter XML"),
+      filters: [{ name: "XML", extensions: ["xml"] }],
+    });
+    if (typeof path === "string") onChange({ formatterPath: path });
+  };
+  return (
+    <section aria-label={tx("Formatting profile")}>
+      <Row
+        label="Formatting profile"
+        hint="Changes take effect after Apply without restarting the Java language server."
+      >
+        <Select
+          value={style.formatter ?? "default"}
+          options={JAVA_FORMATTERS}
+          onChange={(formatter) => onChange({ formatter })}
+          aria-label="Formatting profile"
+        />
+      </Row>
+      {style.formatter === "custom" && (
+        <Row
+          label="Eclipse formatter XML"
+          htmlFor={id}
+          hint="Absolute or project-relative path. To reload an edited XML file, switch to Default, apply, then select Custom again."
+        >
+          <Input
+            id={id}
+            value={style.formatterPath ?? ""}
+            onChange={(e) => onChange({ formatterPath: e.target.value })}
+          />
+          <Button size="small" onClick={browse}>
+            <T>Browse…</T>
+          </Button>
+        </Row>
+      )}
+    </section>
+  );
+}
+
 const SKIP = new Set(["plaintext", "log", "diff", "ignore", "gitattributes"]);
 
 /** One Code Style page per language (registered once the language list is known). */
@@ -260,6 +318,9 @@ export async function codeStyleLanguagePages(): Promise<PageSpec[]> {
         "Hard wrap at",
         "Comment Code",
         "Line comment at first column",
+        ...(lang.id === "java"
+          ? ["Formatting profile", "IntelliJ IDEA", "Custom Eclipse formatter XML", "Eclipse formatter XML"]
+          : []),
       ],
       component: () => <LanguageStyle lang={lang} />,
     }));
@@ -272,7 +333,7 @@ const ENCODINGS_PAGE = editorPage({
   title: "File Encodings",
   order: 27,
   projectScope: true,
-  keywords: ["encoding", "charset", "utf-8", "bom"],
+  keywords: ["encoding", "charset", "utf-8", "bom", "native-to-ascii", "properties"],
   sections: [
     {
       items: [
@@ -300,6 +361,12 @@ const ENCODINGS_PAGE = editorPage({
           key: "editor.encodings.properties",
           label: "Default encoding for properties files",
           options: ENCODINGS,
+        },
+        {
+          t: "check",
+          key: "editor.encodings.nativeToAscii",
+          action: NATIVE_TO_ASCII_ACTION,
+          label: "Transparent native-to-ascii conversion",
         },
       ],
     },

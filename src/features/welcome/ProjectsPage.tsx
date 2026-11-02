@@ -14,6 +14,7 @@ import {
   Kbd,
   SearchField,
   Spinner,
+  isPopupOpen,
   listNavigate,
   showContextMenu,
   T,
@@ -54,6 +55,7 @@ function HeaderButtons() {
 /** Shown when there are no recent projects (IntelliJ's empty welcome). */
 function Landing() {
   const canClone = useActions((s) => s.actions.has("vcs.clone"));
+  const canRemote = useActions((s) => s.actions.has("remote.connect"));
   const opening = useProject((s) => s.opening);
   const shortcut = shortcutLabel("file.openProject");
   return (
@@ -86,6 +88,19 @@ function Landing() {
               <Icon name="branch" size={20} />
             </span>
             <T>Clone Repository</T>
+          </button>
+        )}
+        {canRemote && (
+          <button
+            type="button"
+            className={styles.landingAction}
+            disabled={opening}
+            onClick={() => void executeAction("remote.connect")}
+          >
+            <span className={styles.landingIcon}>
+              <Icon name="terminal" size={20} />
+            </span>
+            <T>Remote Development</T>
           </button>
         )}
       </div>
@@ -249,7 +264,7 @@ export function ProjectsPage() {
           aria-label="Search projects"
           aria-controls={`${baseId}-list`}
           aria-activedescendant={items.length ? optionId(current) : undefined}
-          autoFocus
+          autoFocus={!isPopupOpen()}
           data-autofocus
           onKeyDown={onKeyDown}
           className={styles.search}

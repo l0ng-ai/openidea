@@ -17,8 +17,10 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { RunConfig } from "@/bindings";
+import type { FileMatches, SearchQuery, RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
+import type { DragData } from "@/ui/pointerDrag";
+import type { TreeReorder } from "@/ui/Tree";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
@@ -232,6 +234,8 @@ export interface ServiceProviderContribution {
   banner?: ComponentType;
   /** Entries of the "Add Service" (+, ⌘N) menu. */
   addMenu?(): MenuItem[];
+  /** Optional sibling display ordering; does not move services between groups. */
+  reorder?: TreeReorder<ServiceTreeItem>;
 }
 
 export const useServiceProviders = create<{ providers: Map<string, ServiceProviderContribution> }>(() => ({
@@ -261,7 +265,13 @@ export interface EditorInput {
   data?: unknown;
 }
 
+export interface WorkbenchBannerContribution {
+  id: string;
+  component: ComponentType;
+}
+
 interface Contributions {
+  workbenchBanners: Map<string, WorkbenchBannerContribution>;
   toolWindows: Map<string, ToolWindowContribution>;
   statusItems: Map<string, StatusItemContribution>;
   overlays: Map<string, OverlayContribution>;
@@ -271,6 +281,7 @@ interface Contributions {
 }
 
 export const useContributions = create<Contributions>(() => ({
+  workbenchBanners: new Map(),
   toolWindows: new Map(),
   statusItems: new Map(),
   overlays: new Map(),
@@ -298,6 +309,7 @@ function register<K extends keyof Contributions>(
     });
 }
 
+export const registerWorkbenchBanner = (c: WorkbenchBannerContribution) => register("workbenchBanners", c.id, c);
 export const registerToolWindow = (c: ToolWindowContribution) => register("toolWindows", c.id, c);
 export const registerStatusItem = (c: StatusItemContribution) => register("statusItems", c.id, c);
 export const registerOverlay = (c: OverlayContribution) => register("overlays", c.id, c);
@@ -429,7 +441,9 @@ export async function resolveFileEditor(path: string): Promise<FileEditorResolut
 export interface TextEditorWrapperContribution {
   id: string;
   matches(path: string): boolean;
-  component: ComponentType<{ path: string; tabId: string; children: ReactNode }>;
+  component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
+  /** Layout controls in the tab strip; the wrapper supplies a floating fallback when tabs are hidden. */
+  tabActions?: ComponentType<{ path: string; tabId: string }>;
 }
 
 export const useTextEditorWrappers = create<{ wrappers: Map<string, TextEditorWrapperContribution> }>(() => ({
@@ -488,6 +502,9 @@ export interface OpenEditorTab {
   lastActive: number;
 }
 
+/** MIME of a dragged editor tab: the payload is `{ paneId, tabId }` as JSON. */
+export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
+
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
@@ -497,12 +514,16 @@ export interface EditorService {
   activeCursor(): { doc: number; path: string; line: number; col: number; offset: number } | null;
   /** Save all dirty documents; rejects with the failures once every save was tried. */
   saveAll(): Promise<void>;
+  /** Includes local edits not yet acknowledged by the backend. */
+  dirtyDocumentIds?(): number[];
   /** Move keyboard focus to the active editor (used by Escape from tool windows). */
   focus?(): void;
   /** Paths of the documents open in editor tabs (all panes, tab order). */
   openPaths?(): string[];
   /** Every open tab, files or not, most recently active first (Switcher). */
   openTabs?(): OpenEditorTab[];
+  /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
+  tabInput?(paneId: string, tabId: string): EditorInput | null;
   /** Input of the active tab (any kind), if any. */
   activeInput?(): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
@@ -616,6 +637,60 @@ export const notifications = (): NotificationService =>
 export const maybeEditorService = (): EditorService | undefined => services.editor;
 /** Creates terminal widgets; provided by the terminal feature. */
 export const embeddedTerminal = (): EmbeddedTerminalFactory | undefined => services.embeddedTerminal;
+
+/**
+ * Handles a pointer drag dropped on the editor content: features register handlers for
+ * their own drag types (e.g. an agent task dragged from the tool window) without the
+ * editor depending on them. The editor shows its center drop-zone for accepted types.
+ */
+export interface EditorDropHandler {
+  accepts(type: string): boolean;
+  drop(data: DragData): void;
+}
+
+const editorDropHandlers: EditorDropHandler[] = [];
+
+/** Registers a handler for drags dropped on editor content; returns the unregister. */
+export function registerEditorDropHandler(handler: EditorDropHandler): () => void {
+  editorDropHandlers.push(handler);
+  return () => {
+    const i = editorDropHandlers.indexOf(handler);
+    if (i >= 0) editorDropHandlers.splice(i, 1);
+  };
+}
+
+/** Whether any registered handler takes this drag type. */
+export function acceptsEditorDrop(type: string): boolean {
+  return editorDropHandlers.some((h) => h.accepts(type));
+}
+
+/** Hands a drag dropped on editor content to its registered handler, if any. */
+export function dropOnEditor(data: DragData): boolean {
+  const handler = editorDropHandlers.find((h) => h.accepts(data.type));
+  if (!handler) return false;
+  handler.drop(data);
+  return true;
+}
+
+/** Editor-backed results, recomputed on rerun without reading files from disk. */
+export interface FindResultsSource {
+  title: string;
+  query: SearchQuery;
+  read(): FileMatches;
+}
+
+let findResultsOpener: ((source: FindResultsSource) => void) | undefined;
+
+export function provideFindResults(opener: (source: FindResultsSource) => void): () => void {
+  findResultsOpener = opener;
+  return () => {
+    if (findResultsOpener === opener) findResultsOpener = undefined;
+  };
+}
+
+export function showFindResults(source: FindResultsSource) {
+  findResultsOpener?.(source);
+}
 
 // ---------------------------------------------------------------------------
 // File decorations: colour / badge / tooltip for a path, shown by the project
@@ -862,6 +937,8 @@ export interface MenuGroupContext {
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
   line?: number;
+  /** The tab's input, when the menu is for an editor tab without a path. */
+  input?: EditorInput;
 }
 
 export interface MenuGroupContribution {
@@ -1269,4 +1346,20 @@ export interface DebugRunSession {
   resume: () => void;
 }
 
-export const useDebugRunSessions = create<{ sessions: DebugRunSession[] }>(() => ({ sessions: [] }));
+/** Configured debugger roots retained by the debugger, including finished output. */
+export interface DebugServiceSession {
+  id: number;
+  config: RunConfig;
+  startedAt: number;
+  status: "starting" | "running" | "paused" | "terminated";
+  processId: number | null;
+  rerun: (() => void) | null;
+  stop: (options?: { stopProcess?: boolean }) => Promise<void>;
+  show: () => void;
+}
+
+export const useDebugRunSessions = create<{
+  sessions: DebugRunSession[];
+  serviceSessions: DebugServiceSession[];
+  Console: ComponentType<{ sessionId: number }> | null;
+}>(() => ({ sessions: [], serviceSessions: [], Console: null }));

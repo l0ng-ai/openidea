@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { getAction, isActionEnabled } from "@/platform/actions";
+import { executeAction, getAction, isActionEnabled } from "@/platform/actions";
 import { getContext, setContext } from "@/platform/context";
 import { bindingsFor } from "@/platform/keymap";
 import { IpcError, type BuildEvent, type BuildMessage, type BuildResult } from "@/platform/ipc";
@@ -173,7 +173,7 @@ describe("build feature", () => {
     await act(async () => {});
     expect(getContext()["build.running"]).toBe(true);
     expect(isActionEnabled(getAction("build.buildProject")!)).toBe(false);
-    expect(show).not.toHaveBeenCalled();
+    expect(show).toHaveBeenCalledWith("build", false);
     expect(useTasks.getState().tasks.some((t) => t.id === BUILD_TASK_ID && !t.done)).toBe(true);
     const messages = [err("/p/src/A.java", 11), warn("/p/src/B.java", 2)];
     await act(async () => {
@@ -213,7 +213,65 @@ describe("build feature", () => {
       await second;
     });
     expect(notes.at(-1)).toMatchObject({ level: "info", title: "Build completed successfully in 3 s" });
+    expect(show).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["build.buildProject", undefined],
+    ["build.buildModule", "/p/core/src/A.java"],
+    ["build.rebuildProject", undefined],
+  ])("opens the Build window without focus when %s starts", async (id, arg) => {
+    const run = executeAction(id!, arg);
+    await act(async () => {});
+    expect(useBuildRun.getState().status).toBe("running");
+    expect(show).toHaveBeenCalledExactlyOnceWith("build", false);
+    expect(openFile).not.toHaveBeenCalled();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
     expect(show).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps before-launch builds hidden until a failure", async () => {
+    const run = executeAction("build.buildProject", { activate: false });
+    await act(async () => {});
+    expect(useBuildRun.getState().status).toBe("running");
+    expect(show).not.toHaveBeenCalled();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+    expect(show).not.toHaveBeenCalled();
+
+    const failed = executeAction("build.buildProject", { activate: false });
+    await act(async () => {});
+    expect(show).not.toHaveBeenCalled();
+    const messages = [err("/p/src/A.java", 11)];
+    await act(async () => {
+      fake.resolve(result(messages, false));
+      await failed;
+    });
+    expect(show).toHaveBeenCalledExactlyOnceWith("build", false);
+    expect(useBuildRun.getState().selected).toBe(firstError(messages)!.key);
+    expect(openFile).toHaveBeenCalledWith(
+      "/p/src/A.java",
+      expect.objectContaining({ focus: true, selection: { line: 11, col: 4 } }),
+    );
+  });
+
+  it("starts a build without a workbench", async () => {
+    show.mockImplementation(() => {
+      throw new Error("No workbench");
+    });
+    const run = startBuild("build");
+    await act(async () => {});
+    expect(fake.calls).toHaveLength(1);
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+    expect(useBuildRun.getState().status).toBe("success");
   });
 
   it("shows a message on single click and navigates on F4", async () => {

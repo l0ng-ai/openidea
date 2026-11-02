@@ -90,6 +90,10 @@
   background: var(--bg-feedback-warning);
   border-bottom-color: var(--border-feedback-warning);
 }
+.virtualBannerText {
+  min-width: 0;
+  padding: 8px 0;
+}
 .bannerText {
   flex: none;
   white-space: nowrap;
@@ -116,6 +120,16 @@
   padding: 6px 8px 6px 10px;
   background: var(--bg-editor-inline, var(--bg-elev));
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
+}
+.findExpandable {
+  grid-template-columns: auto minmax(220px, 420px) auto 1fr;
+}
+.findExpand {
+  grid-column: 1;
+  grid-row: 1;
+}
+.findExpandable .findField {
+  grid-column: 2;
 }
 .findField {
   min-width: 0;

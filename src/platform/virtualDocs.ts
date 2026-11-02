@@ -4,12 +4,13 @@
  * code). Locations into them carry the URI as their `path`; the editor opens
  * them as `virtual` editor inputs instead of files.
  */
+import { isClassFile } from "./classFiles";
 import { call, commands, type VirtualDocument } from "./ipc";
 
-/** True for `scheme:…` URIs other than `file:` (scheme of 2+ chars, so `C:\…` is a path). */
+/** Server document URIs, including decompiled disk classes; drive letters remain paths. */
 export function isVirtualUri(s: string | null | undefined): boolean {
   const m = /^([a-zA-Z][a-zA-Z0-9+.-]+):/.exec(s ?? "");
-  return !!m && m[1]!.toLowerCase() !== "file";
+  return !!m && (m[1]!.toLowerCase() !== "file" || isClassFile(s!));
 }
 
 /** Last path segment of a URI (without query / fragment), e.g. `SpringApplication.class`. */

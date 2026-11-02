@@ -1,5 +1,6 @@
 id = "javascript"
 name = "JavaScript"
+formatter = { tool = "prettier", parser = "babel", range = true }
 extensions = ["js", "mjs", "cjs"]
 first-line = "^#!.*\\b(node|nodejs|deno|bun)\\b"
 line-comment = "//"
@@ -10,6 +11,7 @@ tree-sitter = "javascript"
 
 [[language-servers]]
 name = "vtsls"
+tsserver-project = true
 command = "vtsls"
 args = ["--stdio"]
 root-markers = ["jsconfig.json", "tsconfig.json", "package.json"]
@@ -17,12 +19,13 @@ install-hint = "npm i -g @vtsls/language-server"
 
 [[language-servers]]
 name = "typescript-language-server"
+tsserver-project = true
 # Alternative: used only when the server above is not installed.
 fallback = true
 command = "typescript-language-server"
 args = ["--stdio"]
 root-markers = ["jsconfig.json", "tsconfig.json", "package.json"]
-install-hint = "npm i -g typescript@\"<7\" typescript-language-server"
+install-hint = "npm i -g typescript@6 typescript-language-server"
 
 [debugger]
 adapter = "js-debug"

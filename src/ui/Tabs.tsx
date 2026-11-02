@@ -20,7 +20,7 @@ import { Icon, type IconName } from "./icons";
 import { IconButton } from "./Button";
 import { Menu, type MenuItem } from "./Menu";
 import { tooltipAttrs } from "./Tooltip";
-import { registerDropTarget, startPointerDrag } from "./pointerDrag";
+import { isOutsideWindow, registerDropTarget, startPointerDrag } from "./pointerDrag";
 import { T } from "./T";
 import styles from "./Tabs.module.css";
 import { tx } from "@/platform/i18n";
@@ -53,6 +53,12 @@ export interface TabsDnd {
   type: string;
   payload: (id: string) => string;
   onDrop: (payload: string, index: number) => void;
+  /**
+   * A dragged tab released with no accepting target (the pointer left the
+   * window): the editor uses it to detach the tab into a new window. Gets the
+   * dragged tab's payload and the release point in client coordinates.
+   */
+  onDropOutside?: (payload: string, x: number, y: number) => void;
 }
 
 /** Insertion index for a drop at `x` given the tabs' horizontal extents. Exported for tests. */
@@ -82,6 +88,8 @@ export interface TabsProps {
   onClose?: (id: string) => void;
   /** Alt+click on a close button (IDEA: close all other tabs). */
   onCloseOthers?: (id: string) => void;
+  /** Shift+left-click a tab closes it (editor tabs; plain clicks still select). */
+  closeOnShiftClick?: boolean;
   onDoubleClick?: (id: string) => void;
   onContextMenu?: (id: string, e: MouseEvent) => void;
   /** `editor`: 30px with separators (editor tabs); `compact`: 28px plain (popups, tool window sub-tabs). */
@@ -108,6 +116,7 @@ export function Tabs({
   onSelect,
   onClose,
   onCloseOthers,
+  closeOnShiftClick,
   onDoubleClick,
   onContextMenu,
   variant = "editor",
@@ -281,14 +290,30 @@ export function Tabs({
               onPointerDown={
                 dnd
                   ? (e) => {
-                      if ((e.target as Element).closest("[data-tab-close]")) return;
+                      if ((closeOnShiftClick && e.shiftKey) || (e.target as Element).closest("[data-tab-close]"))
+                        return;
                       startPointerDrag(
                         e,
                         e.currentTarget,
                         { type: dnd.type, payload: dnd.payload(item.id) },
                         {
                           onStart: () => setDragging(item.id),
-                          onEnd: () => setDragging(null),
+                          onEnd: (dragged, drop) => {
+                            setDragging(null);
+                            if (!dragged || !drop || drop.accepted) return;
+                            const outside = dnd.onDropOutside;
+                            if (!outside) return;
+                            const el = document.documentElement;
+                            const r = el.getBoundingClientRect();
+                            // The ghost (fixed, translated from the tab) never
+                            // covers the release point, so a miss outside the
+                            // viewport means the pointer left the window.
+                            const rect =
+                              r.width || r.height
+                                ? r
+                                : { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+                            if (isOutsideWindow(rect, drop.x, drop.y)) outside(dnd.payload(item.id), drop.x, drop.y);
+                          },
                         },
                       );
                     }
@@ -315,7 +340,15 @@ export function Tabs({
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
                 className={styles.tabButton}
                 style={item.color ? { color: item.color } : undefined}
-                onClick={() => onSelect(item.id)}
+                onClick={(e) => {
+                  // Shift+click is mouse-only: a keyboard Enter with Shift held still selects.
+                  if (closeOnShiftClick && e.shiftKey && e.detail > 0 && closable) {
+                    e.preventDefault();
+                    onClose!(item.id);
+                    return;
+                  }
+                  onSelect(item.id);
+                }}
                 onDoubleClick={onDoubleClick ? () => onDoubleClick(item.id) : undefined}
                 onKeyDown={(e) => onKeyDown(e, index, item)}
                 {...tooltipAttrs(item.tooltip)}

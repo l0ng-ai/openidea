@@ -33,15 +33,16 @@ pub fn is_python(command: &str) -> bool {
     n == "py" || n.strip_prefix("python").is_some_and(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.'))
 }
 
-/// The search path the configuration runs with (its `PATH` override, else the IDE's).
+/// The search path the configuration runs with (its `PATH` override, else the IDE's:
+/// the login shell's and the version managers', so `mvn` / `gradle` installed by mise,
+/// asdf or Homebrew resolve when the app's own `PATH` is minimal).
 pub fn search_path(config: &RunConfig) -> OsString {
     config
         .env
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
         .map(|(_, v)| OsString::from(v))
-        .or_else(|| std::env::var_os("PATH"))
-        .unwrap_or_default()
+        .unwrap_or_else(ide_core::tool_path::search_path)
 }
 
 /// `node_modules/.bin/<name>` in `dir` or an ancestor up to (and including) `root`.

@@ -53,8 +53,9 @@ pub(crate) fn remove(project_root: &Path, path: &Path) -> IdeResult<()> {
 }
 
 /// Files under `cwd` that differ from `base` (untracked files included), with line counts.
+/// Outside a repository there is nothing to compare against: no changes.
 pub(crate) fn changes(cwd: &Path, base: &str) -> IdeResult<Vec<AgentChange>> {
-    let repo = repo_at(cwd)?;
+    let Some(repo) = Repo::discover(cwd)? else { return Ok(Vec::new()) };
     let root = repo.root().to_path_buf();
     let stats = repo.numstat_with_worktree(base)?;
     let stat = |rel: &str| stats.iter().find(|(p, ..)| p == rel).map_or((0, 0), |&(_, a, r)| (a, r));
@@ -96,7 +97,7 @@ pub(crate) fn without_untouched(changes: Vec<AgentChange>, before: &BTreeMap<Str
 }
 
 pub(crate) fn file_at(cwd: &Path, path: &Path, rev: &str) -> IdeResult<Option<String>> {
-    let repo = repo_at(cwd)?;
+    let Some(repo) = Repo::discover(cwd)? else { return Ok(None) };
     let encoding = match ide_vfs::load_text(path) {
         Ok(loaded) => encoding_rs::Encoding::for_label(loaded.encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8),
         Err(_) => ide_vfs::detect_encoding(&repo.file_bytes_at(path, Some(rev))?.unwrap_or_default(), None),
@@ -139,6 +140,20 @@ mod tests {
         assert_eq!(slugify("修复越界"), "task");
         assert_eq!(slugify(&"a".repeat(50)).len(), 32);
         assert_eq!(unique_slug("x", |s| s == "x" || s == "x-2"), "x-3");
+    }
+
+    #[test]
+    fn outside_a_repository_there_is_nothing_to_compare() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plain");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+
+        assert!(changes(&dir, "HEAD").unwrap().is_empty());
+        assert!(snapshot(&dir).unwrap().is_empty());
+        assert_eq!(file_at(&dir, &dir.join("a.txt"), "HEAD").unwrap(), None);
+        assert!(create(&dir, &tmp.path().join("wt"), "Edit A", None).is_err());
+        assert!(remove(&dir, &dir).is_err());
     }
 
     fn git(dir: &Path, args: &[&str]) {

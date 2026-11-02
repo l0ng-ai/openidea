@@ -52,7 +52,7 @@ function RemoteFolderDialog({
 
   useEffect(() => {
     let live = true;
-    call(commands.remoteList(sshConfig, request.path)).then(
+    call(commands.remoteList({ kind: "sftp", ssh: sshConfig }, request.path)).then(
       (list) => {
         if (!live) return;
         setEntries(list.filter((e) => e.isDir).sort((a, b) => a.name.localeCompare(b.name)));

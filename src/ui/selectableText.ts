@@ -4,7 +4,8 @@
  * (chrome); content opts back in with `selectableText`. A right-click on a
  * selection, or anywhere in such content, offers Copy (`copyMenuFor`).
  */
-import { formatBinding } from "@/platform/keymap";
+import type { KeyboardEvent } from "react";
+import { hasPrimaryModifier, formatBinding } from "@/platform/keymap";
 import type { MenuItem } from "./Menu";
 import styles from "./SelectableText.module.css";
 
@@ -51,4 +52,41 @@ export async function copyText(text: string): Promise<void> {
     // Clipboard API refused (permissions): the selection is still there.
   }
   document.execCommand("copy");
+}
+
+/** Copy a DOM output selection locally, leaving editable children and other views alone. */
+export function copySelectionOnKeyDown(
+  e: Pick<
+    KeyboardEvent<HTMLElement>,
+    | "key"
+    | "ctrlKey"
+    | "metaKey"
+    | "altKey"
+    | "shiftKey"
+    | "defaultPrevented"
+    | "nativeEvent"
+    | "target"
+    | "currentTarget"
+    | "preventDefault"
+    | "stopPropagation"
+  >,
+): boolean {
+  if (e.defaultPrevented || e.nativeEvent.isComposing || e.altKey || e.shiftKey) return false;
+  const copy =
+    (e.key.toLowerCase() === "c" && (e.ctrlKey || hasPrimaryModifier(e))) ||
+    (e.key === "Insert" && e.ctrlKey && !e.metaKey);
+  if (!copy || (e.target instanceof Element && e.target.closest(EDITABLE))) return false;
+  const selection = window.getSelection();
+  if (
+    !selection ||
+    selection.isCollapsed ||
+    !selection.toString() ||
+    !e.currentTarget.contains(selection.anchorNode) ||
+    !e.currentTarget.contains(selection.focusNode)
+  )
+    return false;
+  e.preventDefault();
+  e.stopPropagation();
+  void copyText(selection.toString());
+  return true;
 }

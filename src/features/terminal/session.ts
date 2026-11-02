@@ -11,10 +11,13 @@ import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { editorService, notifications } from "@/workbench/contributions";
 import { fitScheduler, settledResize } from "./fit";
+import { installTerminalDrop } from "./drop";
+import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { splitCommandLine } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
@@ -52,6 +55,8 @@ export interface SessionSnapshot {
   commandRunning: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
+  /** True while the viewport is pinned to the newest output. */
+  follow: boolean;
 }
 
 export interface SessionOptions {
@@ -192,6 +197,7 @@ export class TerminalSession {
       appTitle: null,
       commandRunning: false,
       cwd: opts.cwd,
+      follow: true,
     };
     this.host = document.createElement("div");
     this.host.className = "openidea-terminal-host";
@@ -266,6 +272,15 @@ export class TerminalSession {
         const modes = params.map((p) => (Array.isArray(p) ? p[0] : p) ?? 0);
         return modes.length > 0 && modes.every((m) => MOUSE_MODES.has(m));
       }),
+      // Track scroll position: follow when the user scrolls back to the bottom.
+      this.term.onScroll(() => {
+        const atBottom = this.isAtBottom();
+        if (atBottom !== this.snapshot.follow) this.update({ follow: atBottom });
+      }),
+    );
+    this.disposables.push(
+      { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.remotePasteTarget) },
+      { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
   }
@@ -273,12 +288,29 @@ export class TerminalSession {
   private onMiddleClick = (e: MouseEvent) => {
     if (e.button !== 1 || !workflowSettings().terminal.pasteOnMiddleClick) return;
     e.preventDefault();
-    void navigator.clipboard
-      ?.readText()
-      .then((t) => t && this.paste(t))
-      .catch(() => undefined);
+    void this.pasteClipboard();
   };
 
+  private remotePasteTarget = () => {
+    const remote = useRemote.getState().session;
+    const id = this.ptyId;
+    if (!remote || id === null || this.disposed) return null;
+    const generation = this.generation;
+    return {
+      id,
+      supported: remote.commands.includes("term_store_image"),
+      current: () =>
+        !this.disposed &&
+        this.ptyId === id &&
+        this.generation === generation &&
+        useRemote.getState().session === remote,
+    };
+  };
+
+  pasteClipboard() {
+    if (this.remotePasteTarget()) this.focus();
+    return pasteTerminalClipboard((text) => this.paste(text), this.remotePasteTarget);
+  }
   /** Applies Settings › Tools › Terminal changes to a live session. */
   applySettings(t: TerminalSettingsValid) {
     const font = fontFor(t);
@@ -544,6 +576,7 @@ export class TerminalSession {
   }
 
   paste(text: string) {
+    if (this.disposed) return;
     this.term.paste(text);
   }
 
@@ -560,6 +593,16 @@ export class TerminalSession {
 
   clear() {
     this.term.clear();
+  }
+
+  isAtBottom(): boolean {
+    return this.term.buffer.active.viewportY >= this.term.buffer.active.baseY;
+  }
+
+  /** Sets the follow flag; when turning it on also scrolls to the bottom. */
+  setFollow(follow: boolean) {
+    if (follow) this.term.scrollToBottom();
+    if (follow !== this.snapshot.follow) this.update({ follow });
   }
 
   focus() {

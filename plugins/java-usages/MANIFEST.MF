@@ -1,0 +1,10 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: OpenIDEA Java usages
+Bundle-SymbolicName: ai.openidea.usages;singleton:=true
+Bundle-Version: 1.1.1
+Bundle-RequiredExecutionEnvironment: JavaSE-21
+Require-Bundle: org.eclipse.jdt.ls.core,org.eclipse.jdt.core,
+ org.eclipse.jdt.core.manipulation,org.eclipse.core.runtime,
+ org.eclipse.lsp4j
+

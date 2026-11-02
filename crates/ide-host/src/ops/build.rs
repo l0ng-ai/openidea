@@ -76,6 +76,7 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
 
 /// Maven and Gradle projects of the window's project, from the build files plus the last sync.
 pub async fn build_model(host: &Host, window: &str) -> IdeResult<BuildModel> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
     tokio::task::spawn_blocking(move || load(&root, &cache, &settings)).await.map_err(join_err)
@@ -93,9 +94,11 @@ pub async fn build_sync(
     profiles: Vec<String>,
     on_progress: Channel<SyncProgress>,
 ) -> IdeResult<BuildModel> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
-    let token = host.begin_request(request);
+    let bridge_profiles = profiles.clone();
+    let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         let current = load(&root, &cache, &settings);
         let env = match tool {
@@ -123,12 +126,37 @@ pub async fn build_sync(
             BuildTool::Maven => ide_build::sync_maven(&root, &cache, &options, &token, &progress)?,
             BuildTool::Gradle => ide_build::sync_gradle(&root, &cache, &options, &token, &progress)?,
         }
-        Ok(load(&root, &cache, &settings))
+        Ok::<BuildModel, IdeError>(load(&root, &cache, &settings))
     })
     .await
     .map_err(join_err);
     host.end_request(request);
-    result?
+    let model = result??;
+    if tool == BuildTool::Maven
+        && model.maven.is_some()
+        && let Some(bridge) = &project.kotlin_bridge
+    {
+        bridge.configure_maven(offline, bridge_profiles);
+    }
+    // jdtls re-imports on pom changes but misses artifacts added to ~/.m2
+    // meanwhile ("missing artifact" stays until Invalidate Caches); asking it
+    // to update the project configurations re-resolves them (#436). The same
+    // holds for Gradle: it reuses its cached classpath on restart, so a
+    // dependency added to `build.gradle` stays unresolved until told to sync.
+    let build_files: Vec<String> = match tool {
+        BuildTool::Maven => model.maven.iter().flat_map(|m| m.projects.iter().map(|p| p.pom.clone())).collect(),
+        BuildTool::Gradle => {
+            model.gradle.iter().flat_map(|g| g.projects.iter().filter_map(|p| p.build_file.clone())).collect()
+        }
+    };
+    let lsp = project.lsp.clone();
+    let uris = build_files.iter().map(|f| ide_lsp::path_to_uri_string(&project.root.join(f))).collect();
+    tokio::spawn(async move {
+        if let Err(e) = lsp.java_update_project_configs(&project.root, uris).await {
+            tracing::debug!("java/projectConfigurationsUpdate: {e}");
+        }
+    });
+    Ok(model)
 }
 
 /// The POM declaring `dependency` for the Maven module `pom` (project-relative): the
@@ -208,10 +236,12 @@ pub async fn build_run(
     clear: Vec<std::path::PathBuf>,
     on_event: Channel<BuildEvent>,
 ) -> IdeResult<BuildResult> {
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, sink) = (project.root.clone(), project.build_cache_dir(), project.sink.clone());
     let settings = project.settings.effective();
-    let token = host.begin_request(request);
+    let config_dir = host.config_dir.clone();
+    let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         for path in clear {
             sink.emit(IdeEvent::Diagnostics {
@@ -220,7 +250,23 @@ pub async fn build_run(
                 items: Vec::new(),
             });
         }
-        let plan = compile::plan(&root, &load(&root, &cache, &settings), kind, file.as_deref())?;
+        let plan = if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
+            let mut combined: Option<compile::BuildPlan> = None;
+            for member in workspace.projects.iter().filter(|p| file.as_ref().is_none_or(|f| f.starts_with(p))) {
+                let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
+                let member_cache = cache.join(crate::project::project_key(member));
+                let plan = compile::plan(member, &load(member, &member_cache, &settings), kind, file.as_deref())?;
+                match &mut combined {
+                    Some(combined) => combined.steps.extend(plan.steps),
+                    None => combined = Some(plan),
+                }
+            }
+            let mut plan = combined.ok_or_else(|| IdeError::invalid("No workspace project to build"))?;
+            plan.title = workspace.name;
+            plan
+        } else {
+            compile::plan(&root, &load(&root, &cache, &settings), kind, file.as_deref())?
+        };
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);
         })?;

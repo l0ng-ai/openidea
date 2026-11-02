@@ -16,6 +16,7 @@ import {
 } from "@/editor/api";
 import { tx } from "@/platform/i18n";
 import { call, commands, emitLocalIdeEvent, IpcError } from "@/platform/ipc";
+import { ipcPath } from "@/platform/paths";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
@@ -48,7 +49,8 @@ export interface Target {
 
 async function scratchFile(): Promise<{ path: string; created: boolean }> {
   const { appDataDir } = await import("@tauri-apps/api/path");
-  const dir = `${(await appDataDir()).replace(/[\\/]+$/, "")}/scratches`;
+  // `appDataDir()` is native (`C:\…`): the editor is found by its `/` path.
+  const dir = `${ipcPath(await appDataDir()).replace(/\/+$/, "")}/scratches`;
   const ignoreExisting = (e: unknown) => {
     if (!(e instanceof IpcError && e.kind === "alreadyExists")) throw e;
   };

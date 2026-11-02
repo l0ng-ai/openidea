@@ -62,7 +62,14 @@ it("preserves cross-message selection and lets the endpoint return inside", () =
   expect(selection.focusNode).toBe(text("Last message"));
 });
 
-it("leaves selections originating outside the conversation alone", () => {
+it("clamps a selection dragged up from another pane into the conversation", () => {
+  const { text, select } = fixture();
+  const selection = select(text("Branch or tag"), 6, text("Last message"), 4);
+  expect(selection.toString()).toBe(" message");
+  expect(selection.focusNode).toBe(text("Last message"));
+});
+
+it("leaves selections that do not touch the conversation alone", () => {
   const { text, select } = fixture();
   const selection = select(text("Reply to the agent"), 0, text("Branch or tag"), 13);
   expect(selection.toString()).toBe("Reply to the agentBranch or tag");

@@ -446,6 +446,7 @@ mod tests {
         let user = |sent: f64| AgentEntry::User {
             text: "q".into(),
             attachments: vec![],
+            images: vec![],
             sent_ms: Some(sent),
             done_ms: None,
             steered: false,

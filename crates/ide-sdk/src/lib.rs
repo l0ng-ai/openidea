@@ -9,6 +9,7 @@ mod angular;
 pub mod apply;
 mod discover;
 mod exec;
+pub mod go;
 pub mod godot;
 pub mod java;
 pub mod jdtls;

@@ -8,6 +8,8 @@ import clsx from "clsx";
 import { setContext } from "@/platform/context";
 import { useTxTemplate, tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
+import { useProject } from "@/platform/project";
+import { projectLocation, useRemote } from "@/platform/remote";
 import {
   EmptyState,
   Icon,
@@ -19,26 +21,26 @@ import {
   showContextMenu,
   T,
   type TreeRowState,
+  type TreeReorder,
 } from "@/ui";
 import {
   useServiceProviders,
   serviceProviders,
   type ServiceProviderContribution,
   type ServiceTreeItem,
+  type ServiceItemAction,
 } from "@/workbench/contributions";
 import {
   addServiceMenu,
   clearProviderRoots,
   expandableKeys,
   indexTree,
-  mergeItemActions,
   orderedRoots,
-  selectServiceNodes,
-  selectedItemsOf,
   setProviderRoots,
   useServicesTree,
 } from "./tree";
 import styles from "./Services.module.css";
+import { selectionActions, selectionMenu, selectedServices } from "./selection";
 
 export const SERVICES_VIEW_FOCUS = "servicesViewFocus";
 
@@ -77,24 +79,61 @@ function Row({ item, state }: { item: ServiceTreeItem; state: TreeRowState }) {
 }
 
 export function ServicesTreeView() {
+  const root = useProject((s) => s.project?.root ?? null);
+  useRemote((s) => s.session);
+  const location = projectLocation(root);
   const providers = useProviders();
   const rootsByProvider = useServicesTree((s) => s.roots);
+  const selectedKey = useServicesTree((s) => s.selectedKey);
   const selectedKeys = useServicesTree((s) => s.selectedKeys);
-  const leadKey = useServicesTree((s) => s.selectedKey);
   const expanded = useServicesTree((s) => s.expanded);
   const addRef = useRef<HTMLButtonElement>(null);
 
   const roots = useMemo(() => orderedRoots(rootsByProvider, providers), [rootsByProvider, providers]);
   const index = useMemo(() => indexTree(rootsByProvider), [rootsByProvider]);
-  const lead = leadKey ? (index.get(leadKey) ?? null) : null;
-  const owner = lead ? providers.find((p) => p.id === lead.provider) : undefined;
-  // The toolbar's buttons act on every selected node of the lead's provider.
-  const group = useMemo(
-    () => (owner ? selectedItemsOf(owner.id, selectedKeys, index) : []),
-    [selectedKeys, index, owner],
-  );
-  const targets = group.length ? group : lead ? [lead.item] : [];
-  const actions = owner?.actions ? mergeItemActions(targets, owner.actions) : [];
+  const selected = selectedKey ? (index.get(selectedKey) ?? null) : null;
+  const owner = selected ? providers.find((p) => p.id === selected.provider) : undefined;
+  const reorder: TreeReorder<ServiceTreeItem> = {
+    canMove: (source, target) => {
+      const from = index.get(source.key),
+        to = index.get(target.key);
+      return (
+        !!from &&
+        !!to &&
+        source.key !== target.key &&
+        from.provider === to.provider &&
+        from.parent?.key === to.parent?.key &&
+        !!providers.find((p) => p.id === from.provider)?.reorder?.canMove(source, target)
+      );
+    },
+    move: (source, target, position) => {
+      if (reorder.canMove(source, target))
+        providers.find((p) => p.id === index.get(source.key)?.provider)?.reorder?.move(source, target, position);
+    },
+  };
+  const moveActions = (item: ServiceTreeItem): ServiceItemAction[] => {
+    const located = index.get(item.key);
+    const siblings = located?.parent?.children;
+    if (!located || !siblings || !providers.find((p) => p.id === located.provider)?.reorder) return [];
+    const at = siblings.findIndex((s) => s.key === item.key);
+    return ([-1, 1] as const).map((delta) => {
+      const target = siblings[at + delta];
+      return {
+        id: delta < 0 ? "moveUp" : "moveDown",
+        title: delta < 0 ? "Move Up" : "Move Down",
+        icon: delta < 0 ? "arrow-up" : "arrow-down",
+        disabled: !target || !reorder.canMove(item, target),
+        run: () => {
+          if (target) reorder.move(item, target, delta < 0 ? "before" : "after");
+        },
+      };
+    });
+  };
+  const actions = [
+    ...selectionActions(selectedServices(selectedKeys, index), providers),
+    ...(selected && selectedKeys.size === 1 ? moveActions(selected.item) : []),
+  ];
+
   const Detail = owner?.detail;
   const add = shortcutLabel("services.addService");
 
@@ -164,6 +203,8 @@ export function ServicesTreeView() {
               onBlur={() => setContext(SERVICES_VIEW_FOCUS, false)}
             >
               <Tree<ServiceTreeItem>
+                key={location}
+                reorder={reorder}
                 roots={roots}
                 getKey={(n) => n.key}
                 getLabel={(n) => n.label}
@@ -172,22 +213,29 @@ export function ServicesTreeView() {
                 expanded={expanded}
                 onExpandedChange={(next) => useServicesTree.setState({ expanded: next })}
                 selected={selectedKeys}
-                onSelectionChange={(keys, node) => selectServiceNodes(keys, node?.key ?? null)}
+                onSelectionChange={(keys, lead) =>
+                  useServicesTree.setState({ selectedKeys: keys, selectedKey: keys.size ? (lead?.key ?? null) : null })
+                }
                 renderNode={(n, state) => <Row item={n} state={state} />}
                 onActivate={(n) => {
                   const p = index.get(n.key);
                   providers.find((x) => x.id === p?.provider)?.activate?.(n);
                 }}
-                onContextMenu={(n, _sel, e) => {
+                onContextMenu={(n, keys, e) => {
                   e.preventDefault();
                   if (!n) {
                     showContextMenu({ x: e.clientX, y: e.clientY }, addServiceMenu(providers));
                     return;
                   }
-                  // The menu is about one node: right-clicking inside a multi-selection selects it.
-                  selectServiceNodes([n.key], n.key);
-                  const p = providers.find((x) => x.id === index.get(n.key)?.provider);
-                  const items = p?.menu?.(n) ?? [];
+                  useServicesTree.setState({ selectedKeys: keys, selectedKey: n.key });
+                  const items = selectionMenu(selectedServices(keys, index), providers);
+                  const moves = keys.size === 1 ? moveActions(n) : [];
+                  if (moves.length)
+                    items.push(
+                      { kind: "separator" },
+                      ...moves.map((a) => ({ label: a.title, icon: a.icon, disabled: a.disabled, run: a.run })),
+                    );
+
                   if (items.length) showContextMenu({ x: e.clientX, y: e.clientY }, items);
                 }}
                 speedSearch
@@ -198,8 +246,8 @@ export function ServicesTreeView() {
           </SplitPanel>
           <SplitHandle />
           <SplitPanel minSize="200px">
-            {lead && Detail ? (
-              <Detail key={lead.item.key} item={lead.item} />
+            {selected && Detail ? (
+              <Detail key={selected.item.key} item={selected.item} />
             ) : (
               <EmptyState title="Select service to view details" />
             )}

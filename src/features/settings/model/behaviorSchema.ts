@@ -5,9 +5,10 @@
  */
 
 import { BUILTIN_THEME_IDS, type BuiltinThemeId } from "@/platform/themes";
+import { ZOOM_LIMITS } from "@/platform/zoom";
 
 export type Antialiasing = "subpixel" | "greyscale" | "none";
-export type OpenProjectIn = "ask" | "new" | "same";
+export type OpenProjectIn = "ask" | "new" | "same" | "attach";
 export type NotificationDisplay = "balloon" | "sticky" | "none";
 /** Themes selectable as "preferred" when syncing with the OS. */
 export type ConcreteTheme = BuiltinThemeId;
@@ -19,6 +20,7 @@ export interface AppearanceExtras {
   zoom: number;
   useCustomFont: boolean;
   uiFontFamily: string;
+  uiFontFallback: string;
   contrastScrollbars: boolean;
   redGreenVision: boolean;
   differentToolWindowBackground: boolean;
@@ -27,10 +29,12 @@ export interface AppearanceExtras {
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
   menuIcons: boolean;
+  mainMenuStyle: "hamburger" | "merged";
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
   showToolWindowNames: boolean;
+  showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
 }
 
@@ -60,7 +64,6 @@ export interface NotificationsValid {
   groups: Record<string, NotificationGroupValid>;
 }
 
-export const ZOOM_LIMITS = { min: 50, max: 300 } as const;
 export const IDLE_LIMITS = { min: 1, max: 3600 } as const;
 
 export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
@@ -70,6 +73,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   zoom: 100,
   useCustomFont: false,
   uiFontFamily: "Inter",
+  uiFontFallback: "",
   contrastScrollbars: false,
   redGreenVision: false,
   differentToolWindowBackground: false,
@@ -78,10 +82,12 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   projectColorsInToolbar: true,
   dndWithAltOnly: false,
   menuIcons: true,
+  mainMenuStyle: "hamburger",
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
   showToolWindowNames: false,
+  showToolWindowBadges: true,
   widescreenToolWindows: false,
 };
 
@@ -119,6 +125,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     zoom: int(a.zoom, d.zoom, ZOOM_LIMITS),
     useCustomFont: b("useCustomFont"),
     uiFontFamily: typeof a.uiFontFamily === "string" && a.uiFontFamily.trim() ? a.uiFontFamily.trim() : d.uiFontFamily,
+    uiFontFallback: typeof a.uiFontFallback === "string" ? a.uiFontFallback.trim() : d.uiFontFallback,
     contrastScrollbars: b("contrastScrollbars"),
     redGreenVision: b("redGreenVision"),
     differentToolWindowBackground: b("differentToolWindowBackground"),
@@ -127,10 +134,12 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
     menuIcons: b("menuIcons"),
+    mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged"], d.mainMenuStyle),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
     showToolWindowNames: b("showToolWindowNames"),
+    showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
   };
 }
@@ -140,7 +149,7 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
   const d = DEFAULT_GENERAL_EXTRAS;
   const df = obj(g.dateFormat);
   return {
-    openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same"] as const, d.openProjectIn),
+    openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same", "attach"] as const, d.openProjectIn),
     defaultProjectDirectory: typeof g.defaultProjectDirectory === "string" ? g.defaultProjectDirectory : "",
     saveOnIdle: bool(g.saveOnIdle, d.saveOnIdle),
     idleSeconds: int(g.idleSeconds, d.idleSeconds, IDLE_LIMITS),

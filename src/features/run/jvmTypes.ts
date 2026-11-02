@@ -9,6 +9,7 @@ import { CLASSPATH, parseJavaArgs, TEST_CLASSPATH } from "@/platform/javaLaunch"
 import type { RunConfigTypeContribution, RunConfigTypeField } from "@/workbench/contributions";
 import { formatArgs, parseArgs } from "./configs";
 import { commandName } from "./commandName";
+import { updatePolicyDefaults, updatePolicyFields } from "./updatePolicies";
 
 export const isWindows = () => typeof navigator !== "undefined" && /win/i.test(navigator.platform);
 
@@ -56,7 +57,7 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
     label: spring ? "Spring Boot" : "Application",
     icon: spring ? "spring-boot" : "class",
     description: spring ? "Run a Spring Boot application" : "Run a Java main class",
-    defaults: { classpath: CLASSPATH },
+    defaults: { classpath: CLASSPATH, ...(spring ? updatePolicyDefaults : {}) },
     debugAdapter: "java-debug",
     fields: [
       {
@@ -70,6 +71,7 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
       vmOptionsField(),
       { key: "programArgs", label: "Program arguments", mono: true },
       ...(spring ? [profilesField("Comma separated; passed as --spring.profiles.active")] : []),
+      ...(spring ? updatePolicyFields(false) : []),
       {
         key: "classpath",
         label: "Classpath",

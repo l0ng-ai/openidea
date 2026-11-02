@@ -1,6 +1,8 @@
 //! The file list on the OS clipboard: what Explorer copies when the user
 //! copies files, so the project view can paste them, and what the project view
-//! writes so Explorer can paste the files it copied (IDEA does both).
+//! writes so Explorer can paste the files it copied (IDEA does both). The
+//! written list comes with the paths as text, so a paste into an editor
+//! inserts them instead of doing nothing.
 //!
 //! Windows keeps it as `CF_HDROP`: a `DROPFILES` header and a double-NUL
 //! terminated list of absolute paths, wide when `fWide` is set. The data is set
@@ -10,6 +12,9 @@
 //! macOS keeps one `public.file-url` item per file on the general
 //! `NSPasteboard`; `NSURL` reads and writes them, so Finder's copies paste here
 //! and ours paste in Finder.
+//! On macOS, [`files`], [`has_files`] and [`set_files`] must run on the main
+//! thread: AppKit and WebKit also access the general pasteboard there, and its
+//! mutable type cache cannot be protected by a mutex in this crate.
 //!
 //! Other platforms (`text/uri-list` on X11) are not wired up: [`files`] is
 //! empty and [`set_files`] fails there.
@@ -20,7 +25,8 @@ use std::path::PathBuf;
 const HEADER: usize = 20;
 
 /// The absolute paths on the clipboard, empty when it holds no file list.
-pub fn files() -> Vec<PathBuf> {
+/// Read failures remain errors so callers can retain an internal copy.
+pub fn files() -> std::io::Result<Vec<PathBuf>> {
     imp::files()
 }
 
@@ -29,9 +35,8 @@ pub fn has_files() -> bool {
     imp::has_files()
 }
 
-/// Replaces the clipboard with `paths`. False when it is busy or holds nothing
-/// to write; the clipboard is a shared resource, so callers treat this as
-/// best-effort.
+/// Replaces the clipboard with `paths`. True only when the file list was
+/// accepted; writing just the accompanying text is not a successful hand-off.
 pub fn set_files(paths: &[PathBuf]) -> bool {
     if paths.is_empty() {
         return false;
@@ -111,6 +116,8 @@ mod imp {
 
     /// `CF_HDROP`, the clipboard format holding a file list.
     const CF_HDROP: u32 = 15;
+    /// `CF_UNICODETEXT`, so an editor paste of copied files inserts the paths.
+    const CF_UNICODETEXT: u32 = 13;
 
     /// An `HGLOBAL` or a `HANDLE`: both are opaque pointers here.
     type Handle = *mut c_void;
@@ -156,25 +163,29 @@ mod imp {
         (unsafe { IsClipboardFormatAvailable(CF_HDROP) }) != 0
     }
 
-    pub fn files() -> Vec<PathBuf> {
-        if !has_files() || !open() {
-            return Vec::new();
+    pub fn files() -> std::io::Result<Vec<PathBuf>> {
+        if !open() {
+            return Err(std::io::Error::last_os_error());
+        }
+        if !has_files() {
+            unsafe { CloseClipboard() };
+            return Ok(Vec::new());
         }
         let memory = unsafe { GetClipboardData(CF_HDROP) };
         let paths = if memory.is_null() {
-            Vec::new()
+            Err(std::io::Error::last_os_error())
         } else {
             // SAFETY: the clipboard keeps the block alive while it is open, and
             // `GlobalSize` bounds the bytes read from it.
             unsafe {
                 let data = GlobalLock(memory);
                 if data.is_null() {
-                    Vec::new()
+                    Err(std::io::Error::last_os_error())
                 } else {
                     let bytes = std::slice::from_raw_parts(data as *const u8, GlobalSize(memory));
                     let paths = decode(bytes);
                     GlobalUnlock(memory);
-                    paths
+                    Ok(paths)
                 }
             }
         };
@@ -182,12 +193,37 @@ mod imp {
         paths
     }
 
+    /// An `HGLOBAL` holding `text` as UTF-16 with a terminating NUL, and its
+    /// byte size. Null when the allocation failed.
+    fn global_text(text: &str) -> (Handle, usize) {
+        let mut units: Vec<u16> = text.encode_utf16().collect();
+        units.push(0);
+        let bytes = units.len() * 2;
+        unsafe {
+            let memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if memory.is_null() {
+                return (ptr::null_mut(), 0);
+            }
+            let data = GlobalLock(memory);
+            if data.is_null() {
+                GlobalFree(memory);
+                return (ptr::null_mut(), 0);
+            }
+            ptr::copy_nonoverlapping(units.as_ptr() as *const u8, data as *mut u8, bytes);
+            GlobalUnlock(memory);
+            (memory, bytes)
+        }
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         let bytes = encode(paths);
         if bytes.len() <= HEADER {
             return false;
         }
-        // SAFETY: the block is allocated, filled, handed to the clipboard and
+        // The paths as text, newline-separated, so pasting into an editor
+        // inserts them (IDEA writes the list and the text together).
+        let text = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\r\n");
+        // SAFETY: the blocks are allocated, filled, handed to the clipboard and
         // freed only on the paths where the clipboard did not take ownership.
         unsafe {
             let memory = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
@@ -205,17 +241,26 @@ mod imp {
                 GlobalFree(memory);
                 return false;
             }
-            // Replacing the list also drops the text the user copied before.
+            // Replacing the list also drops the text the user copied before;
+            // the paths' own text is set back with it.
             if EmptyClipboard() == 0 {
                 CloseClipboard();
                 GlobalFree(memory);
                 return false;
             }
             let taken = !SetClipboardData(CF_HDROP, memory).is_null();
-            CloseClipboard();
             if !taken {
                 GlobalFree(memory);
             }
+            let (text_memory, _) = global_text(&text);
+            if !text_memory.is_null() {
+                // The text alone still pastes somewhere useful.
+                let text_taken = !SetClipboardData(CF_UNICODETEXT, text_memory).is_null();
+                if !text_taken {
+                    GlobalFree(text_memory);
+                }
+            }
+            CloseClipboard();
             taken
         }
     }
@@ -223,13 +268,14 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use objc2::ClassType;
     use objc2::rc::{Retained, autoreleasepool};
     use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
+    use objc2::{ClassType, MainThreadMarker};
     use objc2_app_kit::{
-        NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting,
+        NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardTypeString, NSPasteboardURLReadingFileURLsOnlyKey,
+        NSPasteboardWriting,
     };
-    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSURL};
+    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL};
     use std::path::PathBuf;
 
     /// `NSURL` as the one class to read, limited to file URLs: a web link the
@@ -237,6 +283,7 @@ mod imp {
     fn read_file_urls<R>(
         f: impl FnOnce(&NSPasteboard, &NSArray<AnyClass>, &NSDictionary<NSPasteboardReadingOptionKey, AnyObject>) -> R,
     ) -> R {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
         autoreleasepool(|_| {
             let board = NSPasteboard::generalPasteboard();
             let classes = NSArray::from_slice(&[NSURL::class()]);
@@ -256,23 +303,28 @@ mod imp {
         })
     }
 
-    pub fn files() -> Vec<PathBuf> {
+    pub fn files() -> std::io::Result<Vec<PathBuf>> {
         read_file_urls(|board, classes, options| {
             // SAFETY: as in `has_files`; every object read for `NSURL` is one.
             let Some(objects) = (unsafe { board.readObjectsForClasses_options(classes, Some(options)) }) else {
-                return Vec::new();
+                return if unsafe { board.canReadObjectForClasses_options(classes, Some(options)) } {
+                    Err(std::io::Error::other("Cannot read clipboard files"))
+                } else {
+                    Ok(Vec::new())
+                };
             };
-            objects
+            Ok(objects
                 .iter()
                 .filter_map(|object| object.downcast::<NSURL>().ok())
                 .filter_map(|url| url.to_file_path())
                 // Finder ends a folder's URL in `/`; the project view names it without.
                 .map(|path| path.components().collect())
-                .collect()
+                .collect())
         })
     }
 
     pub fn set_files(paths: &[PathBuf]) -> bool {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
         autoreleasepool(|_| {
             // Folders get a directory URL (ending in `/`), as Finder writes them.
             let urls: Vec<Retained<NSURL>> = paths
@@ -285,9 +337,16 @@ mod imp {
             let writers: Vec<&ProtocolObject<dyn NSPasteboardWriting>> =
                 urls.iter().map(|url| ProtocolObject::from_ref(&**url)).collect();
             let board = NSPasteboard::generalPasteboard();
-            // Replacing the list also drops the text the user copied before.
+            // Replacing the list also drops the text the user copied before;
+            // the paths' own text is set back with it, so an editor paste
+            // inserts them (IDEA writes the list and the text together).
             board.clearContents();
-            board.writeObjects(&NSArray::from_slice(&writers))
+            let written = board.writeObjects(&NSArray::from_slice(&writers));
+            let text = NSString::from_str(
+                &paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"),
+            );
+            board.setString_forType(&text, unsafe { NSPasteboardTypeString });
+            written
         })
     }
 }
@@ -300,8 +359,8 @@ mod imp {
         false
     }
 
-    pub fn files() -> Vec<PathBuf> {
-        Vec::new()
+    pub fn files() -> std::io::Result<Vec<PathBuf>> {
+        Ok(Vec::new())
     }
 
     pub fn set_files(_paths: &[PathBuf]) -> bool {

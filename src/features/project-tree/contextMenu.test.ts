@@ -40,10 +40,12 @@ const OTHER_ACTIONS = [
   "localHistory.putLabel",
   "diff.compareWith",
   "diff.compareFiles",
+  "diff.compareDirectories",
   "vcs.commit",
   "vcs.addToVcs",
   "vcs.annotate",
   "vcs.showDiff",
+  "vcs.compareWithBranch",
   "vcs.rollback",
   "vcs.push",
 ];
@@ -53,7 +55,7 @@ let disposers: Array<() => void> = [];
 beforeEach(() => {
   useProjectTree.setState({ root: ROOT });
   useProject.setState({
-    project: { name: "p", root: ROOT, isGit: true, settings: {} } as never,
+    project: { name: "p", root: ROOT, trusted: true, isGit: true, settings: {} } as never,
     settings: {} as never,
   });
   disposers = [
@@ -74,6 +76,14 @@ afterEach(() => {
 });
 
 describe("project view context menu", () => {
+  it("offers directory comparison only for two folders and Compare With for a single folder", () => {
+    expect(labels(contextMenuItems([node("/p/left", true), node("/p/right", true)]))).toContain("Compare Directories");
+    expect(labels(contextMenuItems([node("/p/left", true)]))).toContain("Compare With…");
+    const mixed = labels(contextMenuItems([node("/p/left", true), node("/p/a.txt")]));
+    for (const label of ["Compare Directories", "Compare Files", "Compare With…"]) expect(mixed).not.toContain(label);
+    expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/b.txt")]))).toContain("Compare Files");
+  });
+
   it("follows IDEA's order for a file", () => {
     const items = contextMenuItems([node(`${ROOT}/src/a.py`)]);
     expect(labels(items)).toEqual([
@@ -129,11 +139,38 @@ describe("project view context menu", () => {
     }
   });
 
+  it("offers branch comparison for files, folders, their union and the project root", () => {
+    for (const nodes of [
+      [node("/p/a.py")],
+      [node("/p/src", true)],
+      [node("/p/src", true), node("/p/lib", true)],
+      [node("/p", true, true)],
+    ]) {
+      expect(sub(contextMenuItems(nodes), "Git")).toContain("Compare with Branch…");
+    }
+  });
+
+  it("offers Show History for files, directories, multi-selection and the project root", () => {
+    const dispose = registerActions([{ id: "vcs.showHistory", title: "Show History", run: () => undefined }]);
+    try {
+      for (const nodes of [
+        [node("/p/a.py")],
+        [node("/p/src", true)],
+        [node("/p/a.py"), node("/p/src", true)],
+        [node("/p", true, true)],
+      ]) {
+        expect(sub(contextMenuItems(nodes), "Git")).toContain("Show History");
+      }
+    } finally {
+      dispose();
+    }
+  });
+
   it("shows Mark Directory as for folders, without file-only items", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
     expect(l).toContain("Mark Directory as");
     expect(sub(contextMenuItems([node(`${ROOT}/src`, true)]), "Refactor")).toContain("Move Directory…");
-    for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Compare With…", "Run 'a'"])
+    for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Run 'a'"])
       expect(l).not.toContain(fileOnly);
   });
 
@@ -161,11 +198,22 @@ describe("project view context menu", () => {
     expect(l).not.toContain("Compare With…");
   });
 
+  it("offers Compare With… in a non-git project too", () => {
+    useProject.setState({
+      project: { name: "p", root: ROOT, trusted: true, isGit: false, settings: {} } as never,
+      settings: {} as never,
+    });
+    const l = labels(contextMenuItems([node(`${ROOT}/a.py`)]));
+    expect(l).not.toContain("Git");
+    expect(l).toContain("Compare With…");
+    expect(labels(contextMenuItems([node(`${ROOT}/a.py`), node(`${ROOT}/b.py`)]))).toContain("Compare Files");
+  });
+
   it("never shows an empty submenu", () => {
     disposers.forEach((d) => d());
     disposers = [];
     useProject.setState({
-      project: { name: "p", root: ROOT, isGit: true, settings: {} } as never,
+      project: { name: "p", root: ROOT, trusted: true, isGit: true, settings: {} } as never,
       settings: {} as never,
     });
     const l = labels(contextMenuItems([node(`${ROOT}/a.py`)]));
@@ -173,4 +221,29 @@ describe("project view context menu", () => {
     expect(l).not.toContain("Local History");
     expect(l).not.toContain("Find in Files…");
   });
+});
+
+it("offers workspace removal for every member root", () => {
+  useProject.setState({
+    project: {
+      root: "/workspace",
+      name: "A",
+      settings: {},
+      trusted: true,
+      isGit: false,
+      workspace: { version: 1, name: "A", projects: ["/a", "/b"] },
+    },
+  });
+  const removal = {
+    kind: "action",
+    action: "workspace.removeProject",
+    arg: "/b",
+  };
+  expect(contextMenuItems([node("/b", true, true)])).toContainEqual(removal);
+  expect(contextMenuItems([node("/a", true, true)])).toContainEqual(
+    expect.objectContaining({ action: "workspace.removeProject" }),
+  );
+  expect(contextMenuItems([node("/b/src", true)])).not.toContainEqual(
+    expect.objectContaining({ action: "workspace.removeProject" }),
+  );
 });

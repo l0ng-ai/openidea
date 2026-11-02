@@ -35,6 +35,7 @@ fn server(name: &str) -> LanguageServerConfig {
         fallback: false,
         max_java: None,
         launch_error: None,
+        tsserver_project: false,
     }
 }
 
@@ -209,6 +210,37 @@ fn project_jdk_and_maven_settings() {
 }
 
 #[test]
+fn saved_maven_goal_configs_take_the_configured_launcher() {
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let maven = tmp.path().join("maven");
+    std::fs::create_dir_all(maven.join("bin")).unwrap();
+    std::fs::write(maven.join("bin/mvn"), "").unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.home = maven.to_string_lossy().into_owned();
+    s.languages.java.maven.user_settings = "/m2/settings.xml".into();
+
+    // A goal configuration saved from the tool window (`mvn -s … clean`):
+    // the bare launcher resolves to the configured Maven home (#328) and its
+    // own args are left alone.
+    let mut saved = run("maven", "mvn", &["-s", "/m2/settings.xml", "clean"]);
+    saved.detected = false;
+    // A custom path / the wrapper stay as configured.
+    let mut custom = run("maven", "/opt/other/bin/mvn", &["package"]);
+    custom.detected = false;
+    let mut wrapper = run("maven", "./mvnw", &["package"]);
+    wrapper.detected = false;
+    let mut configs = vec![saved, custom, wrapper];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].command, maven.join("bin/mvn").to_string_lossy());
+    assert_eq!(configs[0].args, ["-s", "/m2/settings.xml", "clean"], "saved args are kept");
+    assert_eq!(configs[1].command, "/opt/other/bin/mvn");
+    assert_eq!(configs[2].command, "./mvnw");
+}
+
+#[test]
 fn language_server_settings_disable_add_and_override() {
     use crate::apply::{language_servers, server_launch_overrides, server_protocol_overrides, with_custom_servers};
     use ide_core::settings::LanguageServerSettings;
@@ -287,14 +319,40 @@ fn terminal_activation_for_project_venv() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/bin/zsh")), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "/bin/zsh"), None);
     fake_venv(tmp.path(), ".venv");
-    let line = terminal_activation(tmp.path(), &s, Some("/bin/zsh")).unwrap();
+    let line = terminal_activation(tmp.path(), &s, "/bin/zsh").unwrap();
     assert!(line.starts_with("source '") && line.ends_with("/activate'"), "{line}");
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/usr/bin/fish")), None, "no activate.fish");
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("docker")), None, "not a shell");
+    assert_eq!(terminal_activation(tmp.path(), &s, "/usr/bin/fish"), None, "no activate.fish");
+    assert_eq!(terminal_activation(tmp.path(), &s, "docker"), None, "not a shell");
     s.languages.python.activate_virtualenv = false;
-    assert_eq!(terminal_activation(tmp.path(), &s, Some("/bin/zsh")), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "/bin/zsh"), None);
+}
+
+#[test]
+fn terminal_activation_for_windows_shell_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.python.interpreter = fake_venv(tmp.path(), ".venv with spaces 'quoted'").to_string_lossy().into_owned();
+    let bin = tmp.path().join(".venv with spaces 'quoted'").join(bin_dir());
+    for (shell, script, powershell) in [
+        (r"C:\Program Files\PowerShell\7\pwsh.exe", "Activate.ps1", true),
+        (r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", "Activate.ps1", true),
+        (r"C:\Windows\System32\cmd.exe", "activate.bat", false),
+    ] {
+        assert_eq!(terminal_activation(tmp.path(), &s, shell), None, "missing {script}");
+        let path = bin.join(script);
+        std::fs::write(&path, "").unwrap();
+        let expected = if powershell {
+            format!("& '{}'", path.to_string_lossy().replace('\'', "''"))
+        } else {
+            format!("\"{}\"", path.display())
+        };
+        assert_eq!(terminal_activation(tmp.path(), &s, shell), Some(expected), "{shell}");
+        std::fs::remove_file(path).unwrap();
+    }
+    assert_eq!(terminal_activation(tmp.path(), &s, ""), None);
+    assert_eq!(terminal_activation(tmp.path(), &s, "   "), None);
 }
 
 #[test]
@@ -482,12 +540,12 @@ fn build_dependencies_resolve_to_local_jars() {
         std::fs::write(&p, "").unwrap();
         p
     };
-    touch(m2.join("com/google/guava/guava/33.0/guava-33.0.jar"));
-    let guava_src = touch(m2.join("com/google/guava/guava/33.0/guava-33.0-sources.jar"));
+    let guava = touch(m2.join("com/google/guava/guava/33.0/guava-33.0.jar"));
+    touch(m2.join("com/google/guava/guava/33.0/guava-33.0-sources.jar"));
     let junit = touch(m2.join("junit/junit/4.13/junit-4.13.jar"));
     let files = gradle.join("caches/modules-2/files-2.1/org.slf4j/slf4j-api/2.0.9");
-    touch(files.join("a1b2/slf4j-api-2.0.9.jar"));
-    let slf4j_src = touch(files.join("c3d4/slf4j-api-2.0.9-sources.jar"));
+    let slf4j = touch(files.join("a1b2/slf4j-api-2.0.9.jar"));
+    touch(files.join("c3d4/slf4j-api-2.0.9-sources.jar"));
     let dep = |gradle: bool, g: &str, a: &str, v: &str| BuildDependency {
         gradle,
         group: g.into(),
@@ -508,14 +566,14 @@ fn build_dependencies_resolve_to_local_jars() {
     assert_eq!(
         shown,
         [
-            ("Maven: com.google.guava:guava:33.0", "maven", "guava-33.0-sources.jar"),
+            ("Maven: com.google.guava:guava:33.0", "maven", "guava-33.0.jar"),
             ("Maven: junit:junit:4.13", "maven", "junit-4.13.jar"),
-            ("Gradle: org.slf4j:slf4j-api:2.0.9", "gradle", "slf4j-api-2.0.9-sources.jar"),
+            ("Gradle: org.slf4j:slf4j-api:2.0.9", "gradle", "slf4j-api-2.0.9.jar"),
         ]
     );
-    assert_eq!(groups[0].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&guava_src)));
+    assert_eq!(groups[0].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&guava)));
     assert_eq!(groups[1].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&junit)));
-    assert_eq!(groups[2].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&slf4j_src)));
+    assert_eq!(groups[2].roots[0].path, ide_core::IpcPath::from(ide_vfs::archive_root(&slf4j)));
     // A Gradle build also finds jars installed in the Maven local repository (`mavenLocal()`).
     let groups = dependency_libraries(&[dep(true, "junit", "junit", "4.13")], Some(&m2), Some(&gradle));
     assert_eq!(groups[0].name, "Gradle: junit:junit:4.13");
@@ -906,4 +964,99 @@ fn gradle_settings_precedence() {
         }
         assert_eq!(gradle_command(root, root, &settings), if local { expected } else { wrapper.clone() });
     }
+}
+
+/// The reporter of #440 has Node 26 in `~/.local/bin` and an 18 in `/usr/bin`; an SSH
+/// exec channel's PATH puts `/usr/bin` first, so only the system's Node was listed.
+#[test]
+fn node_lists_every_install_on_the_search_path_not_only_the_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (system, user) = (tmp.path().join("usr-bin"), tmp.path().join("local-bin"));
+    for dir in [&system, &user] {
+        std::fs::create_dir(dir).unwrap();
+        std::fs::write(dir.join(exe("node")), "").unwrap();
+    }
+    let found = crate::exec::executables_in("node", [system.clone(), user.clone()].into_iter());
+    assert_eq!(found, [system.join(exe("node")), user.join(exe("node"))]);
+    // A directory without the executable contributes nothing.
+    let found = crate::exec::executables_in("node", [tmp.path().join("empty"), user.clone()].into_iter());
+    assert_eq!(found, [user.join(exe("node"))]);
+}
+
+#[test]
+fn node_on_the_search_path_keeps_its_version_manager_as_source() {
+    let home = Path::new("/home/me");
+    let source = |p: &str| crate::discover::node_source(Path::new(p), Some(home));
+    assert_eq!(source("/home/me/.nvm/versions/node/v24.0.0/bin/node"), "nvm");
+    assert_eq!(source("/home/me/.volta/tools/image/node/24.0.0/bin/node"), "volta");
+    assert_eq!(source("/home/me/.local/share/fnm/node-versions/v24/installation/bin/node"), "fnm");
+    assert_eq!(source("/home/me/.local/bin/node"), "path");
+    assert_eq!(source("/usr/bin/node"), "system");
+}
+
+#[test]
+fn go_constraints_change_only_protocol_settings() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    let mut original = server("gopls");
+    original.settings = Some(json!({"analyses":{"unusedparams":true}}));
+    let mut defaults = original.clone();
+    configure_server(&mut defaults, tmp.path(), tmp.path(), &settings);
+    assert_eq!(defaults.settings, Some(json!({"analyses":{"unusedparams":true}, "buildFlags":[], "env":{}})));
+    defaults.settings = original.settings.clone();
+    assert_eq!(defaults, original);
+    settings.languages.go.build_tags.custom = "integration".into();
+    settings.languages.go.build_tags.os = "linux".into();
+    let mut configured = original.clone();
+    configure_server(&mut configured, tmp.path(), tmp.path(), &settings);
+    assert_eq!(
+        configured.settings.take(),
+        Some(json!({
+            "analyses":{"unusedparams":true}, "buildFlags":["-tags=integration"], "env":{"GOOS":"linux"}
+        }))
+    );
+    configured.settings = original.settings.clone();
+    assert_eq!(configured, original, "launch configuration stays unchanged for in-place reconfiguration");
+    let mut other = server("rust-analyzer");
+    configure_server(&mut other, tmp.path(), tmp.path(), &settings);
+    assert_eq!(other.settings, None);
+}
+
+#[test]
+fn go_empty_constraints_preserve_explicit_server_defaults() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("gopls");
+    cfg.initialization_options =
+        Some(toml::Value::try_from(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})).unwrap());
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(cfg.settings, Some(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})));
+}
+
+#[test]
+fn go_modules_configure_gopls_in_place_and_commands_with_explicit_run_overrides() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.languages.go.modules.env = BTreeMap::from([
+        ("GOPROXY".into(), "https://proxy.example".into()),
+        ("GOPRIVATE".into(), "example.com/private".into()),
+        ("GOFLAGS".into(), "-race".into()),
+    ]);
+    settings.languages.go.modules.auto_vendor = false;
+    let mut cfg = server("gopls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &settings);
+    let protocol = cfg.settings.take().unwrap();
+    assert_eq!(protocol["env"]["GOFLAGS"], "-race -mod=mod");
+    assert_eq!(protocol["env"]["GOPRIVATE"], "example.com/private");
+    assert!(cfg.env.is_empty(), "module environment changes must not restart gopls");
+    let mut run = run("go", "go", &["mod", "tidy"]);
+    run.env.insert("GOPROXY".into(), "off".into());
+    apply_to_run_configs(std::slice::from_mut(&mut run), tmp.path(), &settings);
+    assert_eq!(run.env["GOPROXY"], "off");
+    assert_eq!(run.env["GOPRIVATE"], "example.com/private");
+    let mut cleared = server("gopls");
+    configure_server(&mut cleared, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(cleared.settings.unwrap()["env"], json!({}));
 }

@@ -14,6 +14,8 @@ import { isTestPath } from "@/platform/languageSettings";
 import { currentRoots } from "@/platform/projectRoots";
 import { applicationConfig, jvmModuleDir } from "./application";
 import { formatArgs } from "./configs";
+import { goGenerateConfig } from "./goGenerate";
+import { goTestParts } from "./goArguments";
 import { contextConfig, fileRole, projectPython, testBasesFor, testConfigFor } from "./context";
 import { isWindows } from "./jvmTypes";
 import { detectRunTargets, targetConfig, targetLanguage, type RunTarget } from "./targets";
@@ -136,11 +138,12 @@ export function goTestNamed(
   test?: string,
 ): RunConfig {
   if (config.kind !== "go" || config.args[0] !== "test") return config;
-  const pkgArg =
-    config.args.find((a, i) => i > 0 && !a.startsWith("-") && !/^-(run|skip|bench)$/.test(config.args[i - 1]!)) ?? ".";
+  const pkgArg = goTestParts(config.args).targets[0] ?? ".";
   const recursive = /(^|\/)\.\.\.$/.test(pkgArg);
   const dir = pkgArg.replace(/\/?\.\.\.$/, "").replace(/^\.(?:\/|$)/, "");
-  const module = input.root ? input.goModule?.(goModuleDir(input.root, config.cwd)) : undefined;
+  const module = input.root
+    ? input.goModule?.(goModuleDir(input.root, config.params?.module ?? config.cwd))
+    : undefined;
   const clause = /^\s*package\s+(\w+)/m.exec(input.content ?? "")?.[1];
   const base = module ? (dir ? `${module}/${dir}` : module) : (clause ?? (dir || "."));
   const pkg = recursive ? `${base}/...` : base;
@@ -479,7 +482,7 @@ function compiled(
   const run = lang === "kotlin" ? [java!.command, "-jar", out] : [out, ...runArgs];
   const kind = lang === "rust" ? "rustc" : lang === "kotlin" ? "kotlinc" : "cc";
   const idPath = test ? `${s.idPath}#${test.name}` : s.idPath;
-  const debugAdapter = lang === "kotlin" ? null : "codelldb";
+  const debugAdapter = lang === "kotlin" ? null : lang === "rust" ? "codelldb" : "lldb-dap";
   const config: RunConfig = {
     ...fileConfig(s, kind, `${build} && ${shellLine(run, win)}`, [], debugAdapter),
     id: `context:file:${idPath}`,
@@ -572,6 +575,19 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
   const rel = s.idPath;
 
   if (s.inProject) {
+    if (lang === "c" || lang === "cpp") {
+      const target = cmakeTargets(input)[0];
+      if (target) return { name: target.name, scope: "file", config: target };
+      if (configs.some((c) => c.kind === "cmake"))
+        return {
+          name: s.file,
+          scope: "file",
+          missing: {
+            title: "No CMake executable target for this file",
+            body: "Run CMake Configure from the Run selector, then choose the executable target. Files in a CMake project are built with their target.",
+          },
+        };
+    }
     if (/\.t?scn$/i.test(rel)) return godotScene(rel, configs);
     // Project-aware: test files through the project's test runner, Cargo / Go / Gradle / Maven mains.
     const role = fileRole(rel, input.content);
@@ -769,7 +785,7 @@ export function innermostTarget(
   let best: RunTarget | null = null;
   for (const t of targets) {
     if (t.line > line) continue;
-    if (line > targetEnd(lines, t, python)) continue;
+    if (t.kind === "generate" ? line !== t.line : line > targetEnd(lines, t, python)) continue;
     if (!best || t.line >= best.line) best = t;
   }
   return best;
@@ -813,6 +829,10 @@ export function fileTargets(input: Pick<ContextInput, "path" | "root" | "configs
 function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget): Produced | null {
   const s = site(input);
   const rel = s.idPath;
+  if (target.kind === "generate") {
+    const config = goGenerateConfig(input.path, "file", input.content?.split("\n")[target.line]);
+    return config ? { name: config.name, scope: "element", config } : null;
+  }
   if (target.kind === "main") {
     // Java / Kotlin main classes in a Maven / Gradle project: an Application configuration.
     if (target.className && s.inProject && hasBuildTool(rel, input.configs, JVM_BUILDS)) {
@@ -861,13 +881,15 @@ export function produceContextChoices(input: ContextInput, env: ToolEnv): Produc
   if (!produced?.config || produced.scope === "directory" || !inProject(input.path, input.root))
     return produced ? [produced] : [];
   const rel = relTo(input.path, input.root);
+  const cmake = cmakeTargets(input);
+  if (cmake.length > 1) return cmake.map((config) => ({ name: config.name, scope: produced.scope, config }));
   const bases = testBasesFor(rel, [...input.configs]);
   if (bases.length < 2) return [produced];
   let element: RunTarget | null = null;
   if (produced.scope === "element") {
     const targets = fileTargets(input, (input.content ?? "").slice(0, 400_000));
     element = innermostTarget(input.content ?? "", targets, input.line ?? 0, /\.py$/.test(input.path));
-    if (!element || element.kind === "main") return [produced];
+    if (!element || element.kind === "main" || element.kind === "generate") return [produced];
   } else if (!produced.config.isTest) {
     return [produced];
   }
@@ -881,6 +903,14 @@ export function produceContextChoices(input: ContextInput, env: ToolEnv): Produc
     out.push({ name: config.name, scope: produced.scope, config, detail: base.name });
   }
   return out.length > 1 ? out : [produced];
+}
+
+function cmakeTargets(input: ContextInput): RunConfig[] {
+  if (!inProject(input.path, input.root)) return [];
+  const lang = scriptLanguage(input.path, input.content);
+  if (lang !== "c" && lang !== "cpp") return [];
+  const rel = relTo(input.path, input.root);
+  return input.configs.filter((c) => c.params?.cmakeSources?.split("\n").some((p) => p === rel || p === input.path));
 }
 
 // ---------------------------------------------------------------------------

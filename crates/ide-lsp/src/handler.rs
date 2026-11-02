@@ -120,7 +120,10 @@ impl ClientHandler {
         };
         let Some(path) = uri_to_path(params.uri.as_str()) else { return };
         // Files opened only for a request (references search) are not the user's problems.
-        if self.server.suppresses_diagnostics(&path) {
+        if (self.server.external_diagnostics.load(std::sync::atomic::Ordering::Acquire)
+            && !mgr.docs.lock().values().any(|d| d.path == path))
+            || self.server.suppresses_diagnostics(&path)
+        {
             return;
         }
         let conv = mgr.conv(self.encoding());
@@ -186,9 +189,12 @@ impl ClientHandler {
         // Convert before calling the hook: it re-enters document sync.
         let edit = convert::workspace_edit(&mgr.conv(self.encoding()), edit);
         let applied = match mgr.apply_edit_hook() {
-            Some(hook) => hook(edit),
+            Some(hook) => hook(edit.clone()),
             None => false,
         };
+        if applied {
+            let _ = mgr.applied_edits.send((self.server.id, edit));
+        }
         let mut reply = json!({ "applied": applied });
         if !applied {
             reply["failureReason"] = json!("edit could not be applied");
@@ -228,6 +234,9 @@ impl Handler for ClientHandler {
                 }
             }
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
+            "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
+                mgr.java_import_ready(self.server.clone(), self.generation);
+            }
             // The Angular server's project loading, shown like `$/progress`; one
             // task while several projects load.
             "angular/projectLoadingStart" if !self.server.progress.lock().contains_key(ANGULAR_LOADING) => self
@@ -285,6 +294,21 @@ impl Handler for ClientHandler {
 /// `initializationOptions` with its `settings` merged over them.
 pub(crate) fn all_settings(cfg: &ide_language::LanguageServerConfig) -> Value {
     let mut out = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or(Value::Null);
+    if cfg.name == "jdtls" {
+        out = out.get("settings").cloned().unwrap_or_else(|| json!({}));
+        if let Some(settings) = &cfg.settings {
+            // Accept the initialization-options wrapper as well as LSP settings.
+            if let Some(nested) = settings.get("settings") {
+                merge(&mut out, nested.clone());
+            }
+            let mut direct = settings.clone();
+            if let Some(direct) = direct.as_object_mut() {
+                direct.remove("settings");
+            }
+            merge(&mut out, direct);
+        }
+        return out;
+    }
     if let Some(settings) = &cfg.settings {
         merge(&mut out, settings.clone());
     }

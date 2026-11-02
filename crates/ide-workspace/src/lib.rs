@@ -1,6 +1,7 @@
 //! The project model that ties documents, settings and history together.
 
 pub mod caches;
+pub mod dependencies;
 pub mod devcontainer;
 pub mod documents;
 pub mod editorconfig;
@@ -14,6 +15,8 @@ pub mod recent;
 pub mod roots;
 pub mod settings;
 pub mod text_refs;
+pub mod window_groups;
+pub mod workspace;
 
 pub use documents::{DetectLanguage, DocumentInfo, Documents, TextSnapshot};
 pub use editorconfig::{EditorConfig, EditorConfigProps};

@@ -23,8 +23,12 @@ pub async fn coverage_prepare(
 /// Reads the report a coverage run left behind.
 #[tauri::command]
 #[specta::specta]
-pub async fn coverage_collect(state: State<'_, AppState>, report: CoverageReportSpec) -> IdeResult<CoverageSuite> {
-    ide_host::ops::coverage::coverage_collect(&state.host, "", report).await
+pub async fn coverage_collect(
+    window: Window,
+    state: State<'_, AppState>,
+    report: CoverageReportSpec,
+) -> IdeResult<CoverageSuite> {
+    ide_host::ops::coverage::coverage_collect(&state.host, window.label(), report).await
 }
 
 /// Reads a report collected elsewhere (CI): lcov, a Go cover profile or JaCoCo XML,

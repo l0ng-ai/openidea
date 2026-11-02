@@ -70,6 +70,19 @@ pub struct ProjectIndex {
     root: PathBuf,
 }
 
+/// Folders indexed alongside the internal state root.
+#[derive(Clone, PartialEq)]
+pub struct IndexRoots {
+    pub include_root: bool,
+    pub folders: Vec<PathBuf>,
+}
+
+impl From<Vec<PathBuf>> for IndexRoots {
+    fn from(folders: Vec<PathBuf>) -> Self {
+        Self { include_root: true, folders }
+    }
+}
+
 impl ProjectIndex {
     /// Opens (or creates) the persistent index at `cache_dir` and starts a
     /// background full scan that skips files whose content hash is unchanged.
@@ -77,7 +90,7 @@ impl ProjectIndex {
     pub fn open(
         root: &Path,
         cache_dir: &Path,
-        content_roots: Vec<PathBuf>,
+        content_roots: impl Into<IndexRoots>,
         excludes: Vec<String>,
         languages: Arc<LanguageRegistry>,
         syntax: Arc<Syntax>,
@@ -88,7 +101,7 @@ impl ProjectIndex {
             return Err(ide_core::IdeError::not_found(format!("{} is not a directory", root.display())));
         }
         let store = store::Store::open(cache_dir, &root, &syntax.fingerprint());
-        let filter = filter::PathFilter::new(&root, &content_roots, &excludes);
+        let filter = filter::PathFilter::new(&root, &content_roots.into(), &excludes);
         let shared = Arc::new(Shared::new(filter, languages, syntax, sink, store));
         Self::start(shared, root, true)
     }
@@ -102,7 +115,7 @@ impl ProjectIndex {
         sink: SharedSink,
     ) -> IdeResult<Arc<Self>> {
         let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_owned());
-        let filter = filter::PathFilter::new(&root, &[], &[]);
+        let filter = filter::PathFilter::new(&root, &Vec::new().into(), &[]);
         let shared = Arc::new(Shared::new(filter, languages, syntax, sink, None));
         Self::start(shared, root, false)
     }
@@ -121,7 +134,8 @@ impl ProjectIndex {
     /// Changes what is indexed besides the root (content roots) and the exclude
     /// globs, rescanning in the background (unchanged files are not re-read).
     /// Returns whether anything changed.
-    pub fn set_scope(&self, content_roots: Vec<PathBuf>, excludes: Vec<String>) -> bool {
+    pub fn set_scope(&self, content_roots: impl Into<IndexRoots>, excludes: Vec<String>) -> bool {
+        let content_roots = content_roots.into();
         if self.shared.filter().same_config(&content_roots, &excludes) {
             return false;
         }
@@ -222,7 +236,14 @@ impl ProjectIndex {
     /// the IDE was closed) are left out. Virtual documents are always listed.
     pub fn recent_files(&self) -> Vec<PathBuf> {
         let recent = self.shared.recent.lock().clone();
-        recent.into_iter().filter(|p| p.to_str().is_some_and(ide_core::text::is_virtual_uri) || p.exists()).collect()
+        let filter = self.shared.filter();
+        recent
+            .into_iter()
+            .filter(|p| {
+                p.to_str().is_some_and(ide_core::text::is_virtual_uri)
+                    || (p.exists() && (!p.starts_with(&self.root) || filter.contains(p)))
+            })
+            .collect()
     }
 
     /// Blocks until the initial scan and every queued update has been applied

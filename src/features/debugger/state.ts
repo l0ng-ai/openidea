@@ -2,6 +2,7 @@
  * Debug sessions as the UI sees them, fed by `IdeEvent::Debug` and by pulls
  * (threads, frames, locals) after each stop.
  */
+import { tx } from "@/platform/i18n";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { executeAction } from "@/platform/actions";
 import { create } from "zustand";
@@ -11,6 +12,7 @@ import {
   call,
   commands,
   isTauri,
+  isCancelled,
   type DebugCapabilities,
   type DebugEvent,
   type DebugSessionId,
@@ -22,7 +24,7 @@ import {
   type Variable,
 } from "@/platform/ipc";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
-import { breakpointsOf, consumeTemporary, refreshStates, resetStatuses } from "./breakpoints/store";
+import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
 import { refreshExceptionFilters } from "./breakpoints/exceptions";
@@ -95,10 +97,27 @@ interface ExecutionPoint {
 
 export const useExecutionPoint = create<ExecutionPoint>(() => ({ path: null, line: 0, top: true, values: {} }));
 
-const MAX_CONSOLE_LINES = 5000;
+/** Console buffer: at most this many physical lines per session. */
+const MAX_CONSOLE_LINES = 50_000;
 let lineSeq = 0;
 /** ANSI state per session and output category (a colour can span several output events). */
 const ansiStreams = new Map<DebugSessionId, Map<string, AnsiStream>>();
+
+/** Streamed output buffered until the next animation frame (one setState per frame). */
+interface PendingOutput {
+  session: DebugSessionId;
+  category: string;
+  raw: string;
+}
+const pendingOutput: PendingOutput[] = [];
+let outputFlushHandle: { raf: number; timeout: number } | null = null;
+
+function cancelOutputFlush() {
+  if (!outputFlushHandle) return;
+  cancelAnimationFrame(outputFlushHandle.raf);
+  clearTimeout(outputFlushHandle.timeout);
+  outputFlushHandle = null;
+}
 
 function ansiStream(session: DebugSessionId, category: string): AnsiStream {
   let streams = ansiStreams.get(session);
@@ -216,7 +235,29 @@ function settleStart(id: DebugSessionId | null) {
 
 export function publishContext() {
   const s = activeSession();
+  const retained = Object.values(useDebug.getState().sessions);
   useDebugRunSessions.setState({
+    serviceSessions: retained.flatMap((session) => {
+      if (session.parent != null || !session.runConfig) return [];
+      const paused =
+        isLive(session) && retained.some((child) => child.status === "paused" && rootOf(child).id === session.id);
+      return [
+        {
+          id: session.id,
+          config: session.runConfig,
+          startedAt: session.startedAt ?? 0,
+          status: paused ? ("paused" as const) : session.status,
+          processId: session.process,
+          rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
+          stop: (options?: { stopProcess?: boolean }) => stopSession(session.id, options),
+          show: () => {
+            if (!useDebug.getState().sessions[session.id]) return;
+            selectSession(session.id);
+            toolWindowService().show("debug", true);
+          },
+        },
+      ];
+    }),
     sessions: Object.values(useDebug.getState().sessions)
       .filter((session) => session.parent == null && isLive(session))
       .map((session) => {
@@ -240,6 +281,7 @@ export function publishContext() {
   });
   const anyLive = Object.values(useDebug.getState().sessions).some(isLive);
   setContext("debugSessionActive", anyLive);
+  setContext("debugSessionRunning", s?.status === "running");
   setContext("debugSessionPaused", s?.status === "paused");
   setContext("debugCanRerun", !!s && !!(rootOf(s).runConfig || rootOf(s).launch));
   setContext(
@@ -252,35 +294,162 @@ export function publishContext() {
 
 export function appendConsole(session: DebugSessionId, category: string, raw: string) {
   if (!raw) return;
+  flushConsoleOutput();
   const spans = ansiStream(session, category).parse(raw);
   const text = spans.map((sp) => sp.text).join("");
   if (!text) return;
   useDebug.setState((s) => {
     const prev = s.console[session] ?? [];
     const next = [...prev];
-    const last = next[next.length - 1];
-    // Merge partial lines of the same category.
-    if (last && last.category === category && !last.text.endsWith("\n")) {
-      next[next.length - 1] = { ...last, text: last.text + text, spans: appendSpans(last.spans, spans) };
-    } else {
-      next.push({ id: ++lineSeq, category, text, spans });
-    }
-    if (next.length > MAX_CONSOLE_LINES) next.splice(0, next.length - MAX_CONSOLE_LINES);
+    appendConsoleLines(next, category, spans);
+    trimConsole(next);
     return { console: { ...s.console, [session]: next } };
   });
 }
 
+/**
+ * Queues streamed debuggee output: ANSI parsing and the console store update happen
+ * once per animation frame (or timer while unfocused), with pending chunks merged per
+ * (session, category), so a flood of `output` events can't saturate React.
+ */
+export function appendConsoleQueued(session: DebugSessionId, category: string, raw: string) {
+  if (!raw) return;
+  const last = pendingOutput[pendingOutput.length - 1];
+  if (last && last.session === session && last.category === category) {
+    last.raw += raw;
+  } else {
+    pendingOutput.push({ session, category, raw });
+  }
+  if (outputFlushHandle === null) {
+    outputFlushHandle = {
+      raf: requestAnimationFrame(flushConsoleOutput),
+      timeout: window.setTimeout(flushConsoleOutput, 100),
+    };
+  }
+}
+
+function flushConsoleOutput() {
+  cancelOutputFlush();
+  if (pendingOutput.length === 0) return;
+  const chunks = pendingOutput.splice(0);
+  useDebug.setState((s) => {
+    const consoleBySession = { ...s.console };
+    for (const { session, category, raw } of chunks) {
+      if (!s.sessions[session]) continue;
+      const spans = ansiStream(session, category).parse(raw);
+      const text = spans.map((sp) => sp.text).join("");
+      if (!text) continue;
+      const prev = consoleBySession[session] ?? [];
+      const next = [...prev];
+      appendConsoleLines(next, category, spans);
+      trimConsole(next);
+      consoleBySession[session] = next;
+    }
+    return { console: consoleBySession };
+  });
+}
+
+/** Split styled output at real line breaks, retaining partial lines across events. */
+function appendConsoleLines(lines: ConsoleLine[], category: string, spans: Span[]) {
+  const last = lines.at(-1);
+  let line =
+    last && last.category === category && !last.text.endsWith("\n") ? { ...last, spans: [...last.spans] } : undefined;
+  if (line) lines[lines.length - 1] = line;
+  for (const span of spans) {
+    let start = 0;
+    while (start < span.text.length) {
+      const newline = span.text.indexOf("\n", start);
+      const end = newline < 0 ? span.text.length : newline + 1;
+      const text = span.text.slice(start, end);
+      if (!line) {
+        line = { id: ++lineSeq, category, text: "", spans: [] };
+        lines.push(line);
+      }
+      line.text += text;
+      line.spans = appendSpans(line.spans, [{ ...span, text }]);
+      if (newline >= 0) line = undefined;
+      start = end;
+    }
+  }
+}
+
+/** Drops the oldest lines once past the line or configured character cap. */
+function trimConsole(lines: ConsoleLine[]) {
+  let drop = 0;
+  if (lines.length > MAX_CONSOLE_LINES) {
+    drop = lines.length - MAX_CONSOLE_LINES + Math.ceil(MAX_CONSOLE_LINES / 10);
+  }
+  const c = workflowSettings().console;
+  if (c.overrideBuffer) {
+    const limit = c.bufferKb * 1024;
+    let chars = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      chars += lines[i]!.text.length + 1;
+      if (chars > limit) {
+        drop = Math.max(drop, i + 1);
+        break;
+      }
+    }
+  }
+  if (drop > 0) lines.splice(0, drop);
+}
+
 export function clearConsole(session: DebugSessionId) {
+  flushConsoleOutput();
   ansiStreams.delete(session);
   useDebug.setState((s) => ({ console: { ...s.console, [session]: [] } }));
 }
 
 // --- lifecycle ---------------------------------------------------------------
 
+let preparationSeq = 0;
+const preparations = new Map<DebugSessionId, AbortController>();
+
+/** A visible session owns preparation, including its console and Stop, before DAP has an id. */
+export async function startPreparedSession(
+  config: RunConfig,
+  prepare: (signal: AbortSignal, report: (text: string, kind?: "system" | "stderr") => void) => Promise<LaunchConfig>,
+): Promise<DebugSessionId | null> {
+  const id = --preparationSeq as DebugSessionId;
+  const controller = new AbortController();
+  preparations.set(id, controller);
+  useDebug.setState((s) => ({
+    sessions: {
+      ...s.sessions,
+      [id]: blank(id, { name: config.name, adapter: config.debugAdapter ?? "", runConfig: config }),
+    },
+    console: { ...s.console, [id]: [] },
+    active: id,
+  }));
+  publishContext();
+  try {
+    if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
+  } catch {
+    /* no workbench (tests) */
+  }
+  const report = (text: string, kind = "system") => {
+    if (!controller.signal.aborted && useDebug.getState().sessions[id]) appendConsole(id, kind, text);
+  };
+  try {
+    report(tx`Starting debugger for ${config.name}…` + "\n");
+    const launch = await prepare(controller.signal, report);
+    controller.signal.throwIfAborted();
+    return await startSession(launch, { runConfig: config, preparation: { id, signal: controller.signal } });
+  } catch (e) {
+    if (controller.signal.aborted || isCancelled(e)) return null;
+    report((e instanceof Error ? e.message : String(e)) + "\n", "stderr");
+    throw e;
+  } finally {
+    preparations.delete(id);
+    if (useDebug.getState().sessions[id]) markTerminated(id);
+  }
+}
+
 export async function startSession(
   launch: LaunchConfig,
   options: {
     runConfig?: RunConfig;
+    preparation?: { id: DebugSessionId; signal: AbortSignal };
     /** A process started for this session (e.g. Maven with a JDWP agent): Stop ends it too. */
     process?: RunId | null;
     /** Rerun repeats the launch (false for attaching to a process that is gone afterwards). */
@@ -298,6 +467,7 @@ export async function startSession(
     for (const id of ansiStreams.keys()) if (!sessions[id]) ansiStreams.delete(id);
     return { sessions, console: consoleLines, active: s.active != null && sessions[s.active] ? s.active : null };
   });
+  publishContext();
   try {
     if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
@@ -306,18 +476,39 @@ export async function startSession(
   const startedAt = Date.now();
   pendingStarts++;
   try {
+    await flushBreakpoints();
+    options.preparation?.signal.throwIfAborted();
+    const adapterStarted = performance.now();
     const id = await call(commands.debugStart(launch));
+    console.info("Debug adapter started", { name: launch.name, ms: performance.now() - adapterStarted });
     owned.add(id);
+    if (options.preparation?.signal.aborted) {
+      await call(commands.debugStop(id)).catch(() => undefined);
+      settleStart(id);
+      if (useDebug.getState().sessions[id]) markTerminated(id);
+      return null;
+    }
+    flushConsoleOutput();
+    const preparation = options.preparation && useDebug.getState().sessions[options.preparation.id];
     useDebug.setState((s) => {
       const cur = s.sessions[id] ?? blank(id, { status: "running" });
+      const sessions = { ...s.sessions };
+      const console = { ...s.console };
+      if (preparation) {
+        console[id] = [...(console[preparation.id] ?? []), ...(console[id] ?? [])];
+        delete console[preparation.id];
+        delete sessions[preparation.id];
+        ansiStreams.delete(preparation.id);
+      }
       return {
+        console,
         sessions: {
-          ...s.sessions,
+          ...sessions,
           [id]: {
             ...cur,
             name: launch.name,
             runConfig: options.runConfig,
-            startedAt,
+            startedAt: preparation?.startedAt ?? startedAt,
             adapter: launch.adapter,
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
@@ -336,6 +527,9 @@ export async function startSession(
     return id;
   } catch (e) {
     settleStart(null);
+    if (options.preparation?.signal.aborted || isCancelled(e)) return null;
+    if (options.preparation)
+      appendConsole(options.preparation.id, "stderr", (e instanceof Error ? e.message : String(e)) + "\n");
     const missing = missingAdapter(launch.adapter, e);
     if (missing) {
       notifications().notify({
@@ -365,10 +559,17 @@ export async function startSession(
   }
 }
 
-export async function stopSession(id: DebugSessionId) {
+export async function stopSession(id: DebugSessionId, options: { stopProcess?: boolean } = {}) {
   const s = useDebug.getState().sessions[id];
   if (!s) return;
   const root = rootOf(s);
+  const preparation = preparations.get(root.id);
+  if (preparation) {
+    preparation.abort();
+    appendConsole(root.id, "system", tx("Launch cancelled.") + "\n");
+    markTerminated(root.id);
+    return;
+  }
   try {
     await call(commands.debugStop(root.id));
   } catch (e) {
@@ -377,7 +578,8 @@ export async function stopSession(id: DebugSessionId) {
     markTerminated(root.id);
   }
   // Detaching leaves an attached JVM running: stop the process it belongs to, like IDEA.
-  if (root.process != null) await call(commands.runStop(root.process)).catch(() => undefined);
+  if (options.stopProcess !== false && root.process != null)
+    await call(commands.runStop(root.process)).catch(() => undefined);
 }
 
 export async function rerunSession(id: DebugSessionId) {
@@ -442,6 +644,7 @@ export function selectSession(id: DebugSessionId) {
 
 export async function selectThread(id: DebugSessionId, threadId: number) {
   patch(id, { selectedThread: threadId, frames: [], selectedFrame: null });
+  updateExecutionPoint();
   await loadFrames(id, threadId, true);
 }
 
@@ -450,7 +653,7 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
   updateExecutionPoint();
   const s = useDebug.getState().sessions[id];
   const frame = s?.frames.find((f) => f.id === frameId);
-  if (reveal && frame?.path) {
+  if (reveal && useDebug.getState().active === id && frame?.path) {
     void maybeEditorService()?.openFile(frame.path, {
       selection: { line: frame.line, col: frame.column },
       focus: false,
@@ -460,6 +663,7 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
 }
 
 async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean) {
+  const before = useDebug.getState().sessions[id];
   let frames: StackFrame[] = [];
   try {
     frames = await call(commands.debugStackTrace(id, threadId));
@@ -467,7 +671,7 @@ async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean)
     console.warn("stackTrace failed", e);
   }
   const s = useDebug.getState().sessions[id];
-  if (!s || s.status !== "paused" || s.selectedThread !== threadId) return;
+  if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
   patch(id, { frames });
   const top = frames.find((f) => f.path && f.presentationHint !== "label") ?? frames[0];
   if (top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
@@ -505,19 +709,21 @@ async function loadThreads(id: DebugSessionId) {
 
 /** Locals of `frameId` (first non-expensive scope) for inline values. */
 async function loadLocals(id: DebugSessionId, frameId: number) {
-  const values: Record<string, string> = {};
+  const frames = useDebug.getState().sessions[id]?.frames;
+  const values: Record<string, string> = Object.create(null);
   try {
     const scopes = await call(commands.debugScopes(id, frameId));
     const scope = scopes.find((sc) => !sc.expensive);
     if (scope) {
       const vars = await call(commands.debugVariables(id, scope.variablesReference));
-      for (const v of vars) if (v.name && !(v.name in values)) values[v.name] = v.value;
+      for (const v of vars) if (v.name && !Object.hasOwn(values, v.name)) values[v.name] = v.value;
     }
   } catch {
     // No inline values.
   }
   const s = useDebug.getState().sessions[id];
-  if (useDebug.getState().active !== id || s?.selectedFrame !== frameId) return;
+  if (useDebug.getState().active !== id || s?.status !== "paused" || s.selectedFrame !== frameId || s.frames !== frames)
+    return;
   useExecutionPoint.setState({ values });
 }
 
@@ -527,6 +733,7 @@ export async function showExecutionPoint(id: DebugSessionId) {
   if (!s || s.status !== "paused" || s.stoppedThread == null) return;
   if (s.selectedThread !== s.stoppedThread) {
     patch(id, { selectedThread: s.stoppedThread, frames: [], selectedFrame: null });
+    updateExecutionPoint();
     await loadFrames(id, s.stoppedThread, false);
   }
   const cur = useDebug.getState().sessions[id];
@@ -553,6 +760,32 @@ export function updateExecutionPoint() {
   const cur = useExecutionPoint.getState();
   if (cur.path === frame.path && cur.line === frame.line && cur.top === top) return;
   useExecutionPoint.setState({ path: frame.path, line: frame.line, top, values: {} });
+}
+
+/** Invalidate suspended data before sending a command that resumes execution. */
+export async function resumeExecution(id: DebugSessionId, request: () => Promise<unknown>) {
+  const before = useDebug.getState().sessions[id];
+  if (!before || before.status !== "paused") return;
+  const frames: StackFrame[] = [];
+  patch(id, { status: "running", frames, selectedFrame: null, stoppedThread: null });
+  updateExecutionPoint();
+  try {
+    await request();
+  } catch (e) {
+    const current = useDebug.getState().sessions[id];
+    // A stop/continue/termination received during the request owns the newer state.
+    if (current?.status === "running" && current.frames === frames) {
+      patch(id, {
+        status: before.status,
+        frames: before.frames,
+        selectedFrame: before.selectedFrame,
+        stoppedThread: before.stoppedThread,
+      });
+      updateExecutionPoint();
+      if (before.selectedFrame != null) void loadLocals(id, before.selectedFrame);
+    }
+    throw e;
+  }
 }
 
 // --- watches -------------------------------------------------------------------
@@ -660,6 +893,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       });
       useDebug.setState((st) => ({ active: id, stopSeq: st.stopSeq + 1 }));
       publishContext();
+      updateExecutionPoint();
       void loadThreads(id);
       void loadFrames(id, event.threadId, true);
       const dbg = workflowSettings().debugger;
@@ -674,6 +908,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
     case "continued": {
       const cur = useDebug.getState().sessions[id]!;
       if (cur.status === "terminated") break;
+      if (!event.allThreadsContinued && event.threadId !== (cur.selectedThread ?? cur.stoppedThread)) break;
       patch(id, {
         status: "running",
         frames: [],
@@ -684,7 +919,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     }
     case "output":
-      appendConsole(id, event.category, event.output);
+      appendConsoleQueued(id, event.category, event.output);
       break;
     case "thread":
       if (s.status === "paused") void loadThreads(id);
@@ -706,6 +941,8 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
 export function resetSessions() {
   const { sessions } = useDebug.getState();
   for (const s of Object.values(sessions)) if (s.parent == null && isLive(s)) void stopSession(s.id);
+  pendingOutput.length = 0;
+  cancelOutputFlush();
   ansiStreams.clear();
   useDebug.setState({ sessions: {}, active: null, console: {}, stopSeq: 0 });
   useExecutionPoint.setState({ path: null, line: 0, top: true, values: {} });

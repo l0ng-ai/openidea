@@ -1,5 +1,6 @@
 export * from "./icons";
 export * from "./Button";
+export * from "./FloatingToolbar";
 export * from "./Kbd";
 export * from "./Tooltip";
 export * from "./Input";
@@ -32,3 +33,4 @@ export { lazyComponent, prefetchLazyComponents } from "./lazy";
 export { T } from "./T";
 export { selectableText, copyMenuFor, copyText } from "./selectableText";
 export { useSelectionBoundary } from "./useSelectionBoundary";
+export * from "./rowSelection";

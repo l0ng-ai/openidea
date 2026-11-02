@@ -285,6 +285,14 @@ fn texts(e: &Element, path: &str, item: &str) -> Vec<String> {
     e.list(path, item).iter().map(|m| m.text.trim().to_owned()).filter(|m| !m.is_empty()).collect()
 }
 
+/// Child modules of a project or profile: `<modules>` (model 4.0.0) plus `<subprojects>`,
+/// which Maven 4 (model 4.1.0) uses instead.
+fn module_names(e: &Element) -> Vec<String> {
+    let mut names = texts(e, "modules", "module");
+    names.extend(texts(e, "subprojects", "subproject"));
+    names
+}
+
 fn read_build(e: &Element, plugins: &mut Vec<RawPlugin>, managed: &mut Vec<RawPlugin>) {
     plugins.extend(e.list("build/plugins", "plugin").into_iter().filter_map(read_plugin));
     managed.extend(e.list("build/pluginManagement/plugins", "plugin").into_iter().filter_map(read_plugin));
@@ -308,7 +316,7 @@ fn read_raw(project: &Element) -> RawPom {
         name: project.text_of("name"),
         parent,
         properties: read_properties(project.child("properties")),
-        modules: texts(project, "modules", "module"),
+        modules: module_names(project),
         deps: project.list("dependencies", "dependency").into_iter().filter_map(read_dep).collect(),
         managed: project
             .list("dependencyManagement/dependencies", "dependency")
@@ -329,7 +337,7 @@ fn read_raw(project: &Element) -> RawPom {
         let mut profile = RawProfile {
             id: p.text_of("id").unwrap_or_else(|| "default".into()),
             active_by_default: p.at("activation/activeByDefault").is_some_and(|a| a.text.trim() == "true"),
-            modules: texts(p, "modules", "module"),
+            modules: module_names(p),
             properties: read_properties(p.child("properties")),
             deps: p.list("dependencies", "dependency").into_iter().filter_map(read_dep).collect(),
             ..RawProfile::default()
@@ -401,6 +409,9 @@ struct Inherited {
     managed: Vec<RawDep>,
     plugins: Vec<RawPlugin>,
     managed_plugins: Vec<RawPlugin>,
+    /// `<id>`, `activeByDefault`: profiles of the POM and its ancestors —
+    /// Maven lets a child enable a parent's profiles with `-P`.
+    profiles: Vec<(String, bool)>,
 }
 
 fn merge_by<T: Clone>(base: &mut Vec<T>, own: &[T], key: impl Fn(&T) -> String) {
@@ -523,6 +534,11 @@ impl Resolver {
             merge_by(&mut ctx.deps, &p.deps, RawDep::key);
             merge_plugins(&mut ctx.plugins, &p.plugins);
         }
+        merge_by(
+            &mut ctx.profiles,
+            &pom.profiles.iter().map(|p| (p.id.clone(), p.active_by_default)).collect::<Vec<_>>(),
+            |(id, _)| id.clone(),
+        );
         // Managed dependencies: own entries win; imported BOMs fill the gaps.
         let props = self.properties_for(&pom, &ctx, &dir);
         let mut imported: Vec<RawDep> = Vec::new();
@@ -591,6 +607,72 @@ impl Resolver {
         }
         props
     }
+}
+
+/// Files and source/resource trees consumed by a launch build. Unresolved custom
+/// roots disable reuse rather than silently omitting an input.
+pub(crate) fn launch_inputs(
+    root: &Path,
+    projects: &[&MavenProject],
+    local_repo: Option<PathBuf>,
+) -> Option<Vec<PathBuf>> {
+    fn roots(el: &Element, parent: &str, dir: &Path, out: &mut Vec<PathBuf>) -> Option<()> {
+        let input =
+            matches!(el.name.as_str(), "sourceDirectory" | "testSourceDirectory" | "sourceDir" | "testSourceDir")
+                || (matches!(parent, "sources" | "sourceDirs" | "testSources" | "testSourceDirs")
+                    && matches!(el.name.as_str(), "source" | "sourceDir" | "testSourceDir"))
+                || (matches!(parent, "resource" | "testResource" | "source" | "testSource") && el.name == "directory")
+                || (parent == "filters" && el.name == "filter");
+        // Profile activation may depend on the presence of an otherwise unrelated file.
+        let activation = parent == "file" && matches!(el.name.as_str(), "exists" | "missing");
+        if input || activation {
+            // Other properties can be overridden by -D, profiles or settings.
+            // Without Maven's effective roots, conservatively disable reuse for them.
+            let value = el
+                .text
+                .trim()
+                .replace("${project.basedir}", &dir.to_string_lossy())
+                .replace("${basedir}", &dir.to_string_lossy());
+            if value.contains("${") {
+                return None;
+            }
+            if !value.is_empty() {
+                out.push(dir.join(value));
+            }
+        }
+        for child in &el.children {
+            roots(child, &el.name, dir, out)?;
+        }
+        Some(())
+    }
+    let mut resolver = Resolver::new(local_repo.or_else(default_local_repo));
+    let mut out = Vec::new();
+    for project in projects {
+        let dir = root.join(&project.dir);
+        // Include all conventional language/resource roots, including nonstandard files under src.
+        out.push(dir.join("src"));
+        let pom = root.join(&project.pom);
+        resolver.context(&pom, 0);
+        let mut path = pom;
+        let mut seen = HashSet::new();
+        loop {
+            let canonical = dunce::canonicalize(&path).ok()?;
+            if !seen.insert(canonical) || seen.len() > MAX_PARENT_DEPTH {
+                return None;
+            }
+            out.push(path.clone());
+            let text = std::fs::read_to_string(&path).ok()?;
+            roots(&xml::parse(&text)?, "", &dir, &mut out)?;
+            let raw = resolver.pom(&path)?;
+            let Some(parent) = raw.parent else { break };
+            path = resolver.parent_path(path.parent()?, &parent)?;
+        }
+    }
+    // Also track imported BOMs read while resolving inheritance.
+    out.extend(resolver.poms.into_keys());
+    out.sort();
+    out.dedup();
+    Some(out)
 }
 
 // ---------------------------------------------------------------- plugins
@@ -935,9 +1017,10 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
             .or_else(|| pom.compiler_release.as_deref().map(i))
             .and_then(|v| java_version(&v));
 
-        for p in &pom.profiles {
-            if !model.profiles.iter().any(|x| x.id == p.id) {
-                model.profiles.push(MavenProfile { id: p.id.clone(), active_by_default: p.active_by_default });
+        // The project can activate the profiles of its own POM and its ancestors'.
+        for (id, active) in &ctx.profiles {
+            if !model.profiles.iter().any(|x| x.id == *id) {
+                model.profiles.push(MavenProfile { id: id.clone(), active_by_default: *active });
             }
         }
         let artifact_id = i(&pom.artifact_id);
@@ -954,7 +1037,7 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
             aggregated,
             plugins,
             dependencies,
-            profiles: pom.profiles.iter().map(|p| p.id.clone()).collect(),
+            profiles: ctx.profiles.iter().map(|(id, _)| id.clone()).collect(),
             java_version: jv,
             command: wrapper(root, &dir),
             options: Vec::new(),
@@ -1202,6 +1285,26 @@ mod tests {
     </project>"#;
 
     #[test]
+    fn maven_4_subprojects_are_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            r#"<project xmlns="http://maven.apache.org/POM/4.1.0"><modelVersion>4.1.0</modelVersion>
+              <groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>
+              <subprojects><subproject>core</subproject></subprojects>
+              <profiles><profile><id>extra</id><subprojects><subproject>extra</subproject></subprojects></profile></profiles>
+            </project>"#,
+        );
+        write(root, "core/pom.xml", "<project><artifactId>core</artifactId></project>");
+        write(root, "extra/pom.xml", "<project><artifactId>extra</artifactId></project>");
+        let model = load_with_repo(root, None);
+        assert_eq!(model.projects[0].modules, ["core/pom.xml"]);
+        assert!(model.projects.iter().any(|p| p.pom == "core/pom.xml" && p.aggregated));
+    }
+
+    #[test]
     fn multi_module_parent_properties_and_managed_versions() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -1280,7 +1383,39 @@ mod tests {
         let profiles: Vec<(&str, bool)> = model.profiles.iter().map(|p| (p.id.as_str(), p.active_by_default)).collect();
         assert_eq!(profiles, [("dev", true), ("extra", false)]);
         assert_eq!(parent.profiles, ["dev", "extra"]);
+        assert_eq!(core.profiles, ["dev", "extra"], "a module inherits its parent's profiles");
         assert!(model.projects.iter().all(|p| p.command == if cfg!(windows) { "mvn.cmd" } else { "mvn" }));
+    }
+
+    #[test]
+    fn profiles_of_a_parent_pom_are_inherited() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version>
+              <packaging>pom</packaging><modules><module>child</module></modules>
+              <profiles>
+                <profile><id>jdk8</id></profile>
+                <profile><id>jdk21</id><activation><activeByDefault>true</activeByDefault></activation></profile>
+              </profiles>
+            </project>"#,
+        );
+        write(
+            root,
+            "child/pom.xml",
+            r#"<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent>
+              <artifactId>child</artifactId>
+              <profiles><profile><id>own</id></profile></profiles>
+            </project>"#,
+        );
+        let model = load_with_repo(root, None);
+        let child = &model.projects[1];
+        // `-Pjdk8` on the module activates the parent's profile, so it is listed.
+        assert_eq!(child.profiles, ["jdk8", "jdk21", "own"]);
+        let profiles: Vec<(&str, bool)> = model.profiles.iter().map(|p| (p.id.as_str(), p.active_by_default)).collect();
+        assert_eq!(profiles, [("jdk8", false), ("jdk21", true), ("own", false)]);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 /** Session state of the deployment feature: the Sync dialog, the SSH secret prompt and the Remote Host tree. */
 import { create } from "zustand";
-import type { RemoteEntry, RequestId, SyncEntry } from "@/platform/ipc";
+import type { TransferReport, RemoteEntry, RequestId, SyncEntry } from "@/platform/ipc";
 import type { FocusedPart, SyncChoice } from "./model";
 
 export const REMOTE_HOST_WINDOW = "remoteHost";
@@ -8,8 +8,9 @@ export const REMOTE_HOST_WINDOW = "remoteHost";
 export interface SyncDialogState {
   server: string;
   serverName: string;
-  /** Absolute local path compared (file or folder). */
-  path: string;
+  /** Absolute local paths selected for comparison. */
+  paths: string[];
+  skipped: TransferReport["errors"];
   request: RequestId | null;
   entries: SyncEntry[] | null;
   error: string | null;
@@ -26,6 +27,7 @@ export interface SecretPrompt {
 
 /** Remote Host tool window, per server: resolved root, loaded folders, expanded folders. */
 export interface RemoteTreeState {
+  source: string | null;
   root: string | null;
   error: string | null;
   listings: Record<string, RemoteEntry[]>;
@@ -52,6 +54,7 @@ export const useDeployment = create<DeploymentState>(() => ({
 }));
 
 export const EMPTY_TREE: RemoteTreeState = {
+  source: null,
   root: null,
   error: null,
   listings: {},

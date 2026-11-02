@@ -11,23 +11,17 @@
 .header {
   display: flex;
   align-items: center;
-  gap: 8px;
   height: var(--h-row);
   padding: 0 10px;
   font-size: var(--fs-small);
   color: var(--fg-subtle);
-  border-bottom: 1px solid var(--border-popup);
-  margin-bottom: 4px;
 }
 .title {
   flex: 1;
 }
-.filter {
-  font-family: var(--font-mono);
-  color: var(--fg-strong);
-  background: var(--accent-soft);
-  border-radius: var(--radius-small);
-  padding: 0 4px;
+.search {
+  margin: 0 8px 4px;
+  border-bottom: 1px solid var(--border-popup);
 }
 .list {
   max-height: 360px;

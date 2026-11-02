@@ -118,6 +118,7 @@ struct DocState {
     ui_mode: Option<String>,
     encoding: String,
     has_bom: bool,
+    native_to_ascii: bool,
     read_only: bool,
     large: bool,
     editorconfig: Option<EditorConfigProps>,
@@ -187,6 +188,72 @@ impl Documents {
     /// Settings-derived defaults for new files, fallback decoding and EditorConfig support.
     pub fn set_file_defaults(&self, defaults: FileDefaults) {
         *self.defaults.write() = defaults;
+    }
+
+    /// Re-decode only clean properties buffers after the conversion setting changes.
+    /// Runs on the host's blocking pool; dirty documents retain their current codec.
+    pub fn reload_properties(&self) {
+        for id in self.open_documents() {
+            let result = self.with_doc(id, |st| {
+                let enabled = self.file_defaults().native_to_ascii_for(&st.path);
+                if st.dirty || st.uri.is_some() || st.binary || enabled == st.native_to_ascii {
+                    return Ok(());
+                }
+                let loaded = Self::load_as(&st.path, &st.encoding, enabled)?;
+                self.replace_locked(id, st, &loaded.text)?;
+                st.native_to_ascii = enabled;
+                st.disk_mtime = loaded.mtime_ms;
+                st.disk_len = disk_len(&st.path);
+                Ok(())
+            });
+            if let Err(e) = result {
+                tracing::warn!("reload properties {id}: {e}");
+            }
+        }
+    }
+
+    pub fn native_to_ascii_for(&self, path: &Path) -> bool {
+        if let Some(id) = self.by_path(path)
+            && let Ok(enabled) = self.with_doc(id, |st| Ok(st.native_to_ascii))
+        {
+            return enabled;
+        }
+        self.file_defaults().native_to_ascii_for(path)
+    }
+
+    fn load_as(path: &Path, encoding: &str, native_to_ascii: bool) -> IdeResult<ide_vfs::LoadedText> {
+        let mut loaded = if native_to_ascii {
+            let detected = ide_vfs::load_text(path)?;
+            // Converted files are ASCII even when the selected source charset is UTF-16.
+            if detected.text.is_ascii() && !detected.binary && detected.encoding == "utf-8" {
+                detected
+            } else {
+                ide_vfs::load_text_as(path, encoding)?
+            }
+        } else {
+            ide_vfs::load_text_as(path, encoding)?
+        };
+        if native_to_ascii {
+            loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
+        }
+        Ok(loaded)
+    }
+
+    /// Closed-file readers use the same decoding as document opening.
+    pub fn load_file(&self, path: &Path) -> IdeResult<ide_vfs::LoadedText> {
+        Self::load_with_defaults(path, &self.file_defaults())
+    }
+
+    pub fn load_file_as(&self, path: &Path, encoding: &str) -> IdeResult<ide_vfs::LoadedText> {
+        Self::load_as(path, encoding, self.native_to_ascii_for(path))
+    }
+
+    fn load_with_defaults(path: &Path, defaults: &FileDefaults) -> IdeResult<ide_vfs::LoadedText> {
+        let mut loaded = ide_vfs::load_text_with_fallback(path, defaults.fallback_for(&absolute(path)))?;
+        if !loaded.binary && defaults.native_to_ascii_for(path) {
+            loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
+        }
+        Ok(loaded)
     }
 
     pub fn file_defaults(&self) -> FileDefaults {
@@ -263,7 +330,7 @@ impl Documents {
             return Ok(info);
         }
         let defaults = self.file_defaults();
-        let loaded = ide_vfs::load_text_with_fallback(path, defaults.fallback_for(&absolute(path)))?;
+        let loaded = Self::load_with_defaults(path, &defaults)?;
         let language = (self.detect_language)(path, loaded.text.lines().next());
         let ui_mode = (self.detect_ui_mode)(path, &language);
         // Archive entries (`<jar>!/<entry>`) are read-only and kept from language
@@ -305,6 +372,7 @@ impl Documents {
             ui_mode,
             encoding,
             has_bom,
+            native_to_ascii: !loaded.binary && defaults.native_to_ascii_for(path),
             read_only: !observed || !writable,
             large: loaded.large,
             editorconfig,
@@ -362,6 +430,7 @@ impl Documents {
             ui_mode: None,
             encoding: "utf-8".into(),
             has_bom: false,
+            native_to_ascii: false,
             read_only: true,
             large,
             editorconfig: None,
@@ -524,7 +593,12 @@ impl Documents {
             if !st.dirty || st.uri.is_some() {
                 return Ok(());
             }
-            let mtime = ide_vfs::save_text(&st.path, &st.doc.text_for_save(), &st.encoding, st.has_bom)?;
+            let text = st.doc.text_for_save();
+            let mtime = if st.native_to_ascii {
+                ide_vfs::save_properties_text(&st.path, &text)?
+            } else {
+                ide_vfs::save_text(&st.path, &text, &st.encoding, st.has_bom)?
+            };
             st.disk_mtime = mtime;
             st.disk_len = disk_len(&st.path);
             self.set_dirty(doc, st, false);
@@ -580,6 +654,18 @@ impl Documents {
     pub fn text_of(&self, path: &Path) -> Option<String> {
         let id = self.by_path(path)?;
         self.with_doc(id, |st| Ok(st.doc.text())).ok()
+    }
+
+    /// Search overlays include closed properties files when their disk spelling
+    /// differs from the text that opening the document would display.
+    pub fn search_text_of(&self, path: &Path) -> Option<String> {
+        self.text_of(path).or_else(|| {
+            if !self.native_to_ascii_for(path) {
+                return None;
+            }
+            let loaded = self.load_file(path).ok()?;
+            (!loaded.binary && !loaded.too_large).then(|| ide_text::normalize_line_endings(&loaded.text).into_owned())
+        })
     }
 
     /// Toggle Read-only Attribute: sets the file's writable bit and, when the
@@ -672,14 +758,18 @@ impl Documents {
             if st.uri.is_some() {
                 return Err(read_only_error(&st.path));
             }
+            ide_vfs::encode("", encoding, false)?;
             if reload {
                 if st.dirty {
                     return Err(IdeError::invalid("save or revert the unsaved changes before reloading"));
                 }
-                let loaded = ide_vfs::load_text_as(&st.path, encoding)?;
+                let enabled = self.file_defaults().native_to_ascii_for(&st.path);
+                let loaded = Self::load_as(&st.path, encoding, enabled)?;
+                st.native_to_ascii = enabled;
                 st.encoding = loaded.encoding.clone();
                 st.has_bom = loaded.has_bom;
                 st.disk_mtime = loaded.mtime_ms;
+                st.disk_len = disk_len(&st.path);
                 self.replace_locked(doc, st, &loaded.text)?;
                 // Reloading is not an edit: the buffer matches the file again.
                 self.set_dirty(doc, st, false);
@@ -691,12 +781,29 @@ impl Documents {
             let utf16 = encoding.starts_with("utf-16");
             let has_bom = utf16 || (st.has_bom && encoding == "utf-8");
             // Fails (with the offending character) when the text is not representable.
-            ide_vfs::encode(&st.doc.text_for_save(), encoding, has_bom)?;
+            if !st.native_to_ascii {
+                ide_vfs::encode(&st.doc.text_for_save(), encoding, has_bom)?;
+            }
             st.encoding = encoding.to_owned();
             st.has_bom = has_bom;
             self.set_dirty(doc, st, true);
             Ok(st.encoding.clone())
         })
+    }
+
+    /// Re-checks open file buffers, including files outside the watched roots.
+    /// Call from a blocking worker; unchanged files only need their metadata.
+    pub fn sync_from_disk(&self) {
+        let slots: Vec<Slot> = self.registry.lock().docs.values().map(|e| e.slot.clone()).collect();
+        let paths: Vec<PathBuf> = slots
+            .iter()
+            .filter_map(|slot| {
+                let st = slot.lock();
+                (!st.closed && st.uri.is_none() && !st.binary && !ide_vfs::is_archive_path(&st.path))
+                    .then(|| st.path.clone())
+            })
+            .collect();
+        self.on_disk_changed(&paths);
     }
 
     /// Re-reads from disk after an external change. Clean documents reload
@@ -706,6 +813,9 @@ impl Documents {
         for path in paths {
             let Some(id) = self.by_path(path) else { continue };
             let result = self.with_doc(id, |st| {
+                if st.uri.is_some() || st.binary || ide_vfs::is_archive_path(&st.path) {
+                    return Ok(());
+                }
                 let Ok(meta) = std::fs::metadata(&st.path) else { return Ok(()) };
                 let mtime = ide_vfs::mtime_ms(&meta);
                 if mtime == st.disk_mtime && meta.len() == st.disk_len {
@@ -726,7 +836,9 @@ impl Documents {
                     });
                     return Ok(());
                 }
-                let loaded = ide_vfs::load_text(&st.path)?;
+                let defaults = self.file_defaults();
+                let loaded = Self::load_with_defaults(&st.path, &defaults)?;
+                st.native_to_ascii = defaults.native_to_ascii_for(&st.path);
                 st.disk_mtime = loaded.mtime_ms;
                 st.disk_len = disk_len(&st.path);
                 if loaded.binary || st.binary {

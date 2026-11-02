@@ -56,6 +56,7 @@ import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
 import { inplaceRenameActive } from "./inplaceRename";
+import { phpConstructDocumentation } from "./phpConstructs";
 
 interface RequestContext {
   doc: number;
@@ -87,6 +88,8 @@ function resolveItem(doc: number, item: CompletionItem): Promise<CompletionItem>
   if (!p) {
     p = lspRequest(() => commands.lspResolveCompletion(doc, item)).then(
       (r) => {
+        if (isEmptyMarkup(r.documentation) && !isEmptyMarkup(item.documentation))
+          r = { ...r, documentation: item.documentation };
         resolvedItems.set(item, r);
         return r;
       },
@@ -365,6 +368,10 @@ async function fallback(ctx: CompletionContext): Promise<CompletionResult | null
 }
 
 export function makeCompletion(item: CompletionItem, req: RequestContext): LspCompletion {
+  if (item.kind === "keyword" && isEmptyMarkup(item.documentation)) {
+    const value = phpConstructDocumentation(req.language, item.label);
+    if (value) item = { ...item, documentation: { kind: "markdown", value } };
+  }
   // The lookup handles commit characters itself (focused lookups only, see `lookupKeys`).
   const { commitCharacters: _server, ...cm } = toCmCompletion(item);
   return Object.assign(cm, {

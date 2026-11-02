@@ -18,6 +18,7 @@ pub struct FileDefaults {
     /// Fallback for files outside `root`.
     pub global_fallback: String,
     pub properties_fallback: String,
+    pub native_to_ascii: bool,
     pub editorconfig: bool,
     pub root: Option<PathBuf>,
 }
@@ -47,6 +48,7 @@ impl FileDefaults {
             project_fallback: normalize(&enc.project),
             global_fallback: normalize(&enc.global),
             properties_fallback: normalize(&enc.properties),
+            native_to_ascii: enc.native_to_ascii,
             editorconfig: style.editorconfig,
             root: root.map(Path::to_path_buf),
         }
@@ -62,6 +64,10 @@ impl FileDefaults {
             &self.global_fallback
         };
         (label != "utf-8").then_some(label.as_str())
+    }
+
+    pub fn native_to_ascii_for(&self, path: &Path) -> bool {
+        self.native_to_ascii && path.extension().is_some_and(|e| e == "properties")
     }
 
     /// Bytes of a new empty file: a BOM when UTF-8 files are created with one.

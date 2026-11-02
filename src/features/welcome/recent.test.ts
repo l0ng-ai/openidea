@@ -68,9 +68,9 @@ describe("session restore", () => {
 
   it("remembers the open project and forgets it on explicit close", () => {
     const stop = trackSession();
-    useProject.setState({ project: { root: "/w/a", name: "a", isGit: false, settings: {} } });
+    useProject.setState({ project: { root: "/w/a", name: "a", trusted: true, isGit: false, settings: {} } });
     expect(lastSessionProject()).toBe("/w/a");
-    useProject.setState({ project: { root: "/w/b", name: "b", isGit: false, settings: {} } });
+    useProject.setState({ project: { root: "/w/b", name: "b", trusted: true, isGit: false, settings: {} } });
     expect(lastSessionProject()).toBe("/w/b");
     useProject.setState({ project: null });
     expect(lastSessionProject()).toBeNull();

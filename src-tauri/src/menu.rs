@@ -204,6 +204,9 @@ pub fn spec(os: Os) -> Vec<Entry> {
 
     let mut file = vec![
         act("file.newProject", "New Project…"),
+        act("workspace.create", "New Workspace…"),
+        act("workspace.open", "Open Workspace…"),
+        act("workspace.manage", "Manage Workspace…"),
         act("file.new", "New…"),
         act("file.newScratchFile", "New Scratch File…"),
         act("file.openProject", "Open…"),
@@ -571,6 +574,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("run.chooseDebugConfig", "Debug…"),
             act("runAnything.show", "Run Anything…"),
             act("run.editConfigs", "Edit Configurations…"),
+            act("run.updateApplication", "Update Application"),
             act("debug.attachToProcess", "Attach to Process…"),
             SEP,
             act("debug.resume", "Resume Program"),
@@ -791,6 +795,10 @@ pub fn spec(os: Os) -> Vec<Entry> {
         ),
         SEP,
         act("window.new", "New Window"),
+        act("window.mergeAllWindows", "Merge All Project Windows"),
+        act("window.detachTab", "Move Tab to New Window"),
+        act("window.nextTab", "Next Project Tab"),
+        act("window.previousTab", "Previous Project Tab"),
     ]);
     // ⌘` is macOS's window cycling; elsewhere Ctrl+` is Quick Switch Scheme and the keymap's
     // Ctrl+Alt+] / Ctrl+Alt+[ switch windows.
@@ -1165,10 +1173,10 @@ pub fn model(spec: &[Entry], recent: &[RecentItem], config: &MenuConfig) -> Vec<
     out
 }
 
-/// Whether the OS menu bar is used. Windows project windows draw IDEA's
-/// hamburger menu in their own title bar instead.
+/// Whether the OS menu bar is used. Windows and Linux project windows are
+/// frameless and draw IDEA's hamburger menu in their own title bar instead.
 pub fn native_menu_bar() -> bool {
-    !cfg!(target_os = "windows")
+    cfg!(target_os = "macos")
 }
 
 /// Rebuilds and installs the app menu from the current config and recent list.

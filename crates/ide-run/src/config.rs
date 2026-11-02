@@ -78,6 +78,7 @@ struct FileConfig {
     #[serde(default)]
     args: Vec<String>,
     cwd: Option<PathBuf>,
+    module: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default, alias = "isTest", alias = "is_test")]
@@ -161,6 +162,7 @@ fn convert(configs: Vec<FileConfig>, local: bool) -> Vec<RunConfig> {
             debug_adapter: c.debug_adapter.filter(|d| !d.is_empty()),
             allow_parallel: c.allow_parallel,
             extras: RunExtras {
+                module: c.module,
                 params: c.params,
                 folder: non_empty(c.folder),
                 local,
@@ -209,6 +211,9 @@ fn to_table(c: &RunConfig) -> Table {
     t.insert("command", value(&c.command));
     if !c.args.is_empty() {
         t.insert("args", value(c.args.iter().collect::<Array>()));
+    }
+    if let Some(module) = &c.extras.module {
+        t.insert("module", value(module));
     }
     if let Some(cwd) = &c.cwd {
         t.insert("cwd", value(cwd.to_string_lossy().replace('\\', "/")));
@@ -335,7 +340,11 @@ fn write_array(path: &Path, key: &str, configs: &[&RunConfig], suppressed: Optio
 
 /// Keeps the workspace-local file out of version control (`.openidea/.gitignore`).
 fn ignore_local(root: &Path) -> IdeResult<()> {
-    let entry = format!("/{LOCAL_FILE}");
+    ignore_private(root, &format!("/{LOCAL_FILE}"))
+}
+
+/// Adds `entry` to `.openidea/.gitignore` unless it is already listed.
+pub(crate) fn ignore_private(root: &Path, entry: &str) -> IdeResult<()> {
     let file = project_dir::path(root, ".gitignore");
     let current = fs::read_to_string(&file).unwrap_or_default();
     if current.lines().any(|l| l.trim() == entry) {
@@ -347,7 +356,7 @@ fn ignore_local(root: &Path) -> IdeResult<()> {
     } else if !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&entry);
+    text.push_str(entry);
     text.push('\n');
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;

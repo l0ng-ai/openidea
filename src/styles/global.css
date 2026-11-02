@@ -33,6 +33,11 @@ body {
   cursor: default;
 }
 
+html[data-selection-lock] *:not([data-selection-scope], [data-selection-scope] *) {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
 input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"]),
 textarea,
 [contenteditable="true"] {
@@ -166,6 +171,8 @@ a:hover {
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: 6px;
+  min-height: 32px;
+  min-width: 32px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background-color: var(--scrollbar-thumb-hover);

@@ -9,16 +9,88 @@ import {
 } from "@/workbench/contributions";
 import type { RunConfig } from "@/platform/ipc";
 import { registerDebugActions } from "../actions";
-import { adoptSession, publishContext, rerunSession, useDebug } from "../state";
+import {
+  adoptSession,
+  appendConsole,
+  handleDebugEvent,
+  publishContext,
+  rerunSession,
+  resetSessions,
+  startSession,
+  stopSession,
+  useDebug,
+} from "../state";
 
 const ipc = vi.hoisted(() => ({
   javaDebugServer: vi.fn(async () => ({ status: "ok", data: 5005 })),
   debugStart: vi.fn(async () => ({ status: "ok", data: 42 })),
   debugStop: vi.fn(async () => ({ status: "ok", data: null })),
+  runStop: vi.fn(async () => ({ status: "ok", data: null })),
 }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return { ...real, isTauri: () => true, commands: { ...real.commands, ...ipc } };
+});
+
+it("retains only configured debug roots for Services without changing live toolbar sessions", () => {
+  adoptSession(1, { runConfig: config, process: 7, startedAt: 10 });
+  adoptSession(2, { parent: 1, status: "paused" });
+  adoptSession(3);
+  publishContext();
+  expect(useDebugRunSessions.getState().serviceSessions).toMatchObject([
+    { id: 1, config, processId: 7, startedAt: 10, status: "paused" },
+  ]);
+  handleDebugEvent(1, { kind: "terminated" });
+  expect(useDebugRunSessions.getState().sessions.map((s) => s.id)).toEqual([3]);
+  expect(useDebugRunSessions.getState().serviceSessions).toMatchObject([{ id: 1, status: "terminated" }]);
+});
+
+it("does not republish service metadata when console output changes", () => {
+  adoptSession(1, { runConfig: config });
+  const summaries = useDebugRunSessions.getState().serviceSessions;
+  expect(summaries).toHaveLength(1);
+  appendConsole(1, "stdout", "application output\n");
+  expect(useDebugRunSessions.getState().serviceSessions).toBe(summaries);
+});
+
+it("stops shared-process debugger roots without stopping their process until requested", async () => {
+  adoptSession(1, { runConfig: config, process: 7 });
+  await stopSession(1, { stopProcess: false });
+  expect(ipc.debugStop).toHaveBeenCalledWith(1);
+  expect(ipc.runStop).not.toHaveBeenCalled();
+  await stopSession(1);
+  expect(ipc.runStop).toHaveBeenCalledWith(7);
+});
+
+it("pins Show in Debug to the configured session and clears summaries with the project", () => {
+  adoptSession(1, { runConfig: config });
+  adoptSession(2, { runConfig: { ...config, id: "other" } });
+  const summary = useDebugRunSessions.getState().serviceSessions[0]!;
+  summary.show();
+  expect(useDebug.getState().active).toBe(1);
+  resetSessions();
+  expect(useDebugRunSessions.getState().serviceSessions).toEqual([]);
+  summary.show();
+  expect(useDebug.getState().active).toBeNull();
+});
+
+it("removes terminated summaries when a subsequent debug start prunes their source", async () => {
+  adoptSession(1, { runConfig: config });
+  handleDebugEvent(1, { kind: "terminated" });
+  await startSession(
+    {
+      name: "next",
+      adapter: "js-debug",
+      request: "launch",
+      program: null,
+      args: [],
+      cwd: "/p",
+      env: {},
+      extraJson: null,
+    },
+    { runConfig: { ...config, id: "next" } },
+  );
+  expect(useDebugRunSessions.getState().serviceSessions.map((s) => s.id)).toEqual([42]);
 });
 const config: RunConfig = {
   id: "node:server",

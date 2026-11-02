@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { DEFAULT_SSH_CONFIG } from "@/platform/remoteSettings";
 import { commands, type Settings } from "@/platform/ipc";
 
 const settingsSet = vi.fn();
@@ -65,6 +66,47 @@ async function openDialog(page?: string) {
 }
 
 describe("Settings dialog", () => {
+  it("stages properties conversion through its action and applies the checkbox", async () => {
+    const dialog = await openDialog("editor.fileEncodings");
+    const checkbox = within(dialog).getByRole("checkbox", { name: "Transparent native-to-ascii conversion" });
+    expect(checkbox).not.toBeChecked();
+    await act(async () => fireEvent.click(checkbox));
+    expect(checkbox).toBeChecked();
+    expect(settingsSet).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "editor.encodings.nativeToAscii", "true");
+  });
+
+  it("toggles properties conversion through its stable action", async () => {
+    await executeAction("editor.encodings.toggleNativeToAscii");
+    expect(settingsSet).toHaveBeenCalledWith("global", "editor.encodings.nativeToAscii", "true");
+    await executeAction("editor.encodings.toggleNativeToAscii");
+    expect(settingsSet).toHaveBeenLastCalledWith("global", "editor.encodings.nativeToAscii", "false");
+  });
+
+  it("edits CMake profiles in project settings and persists them on Apply", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.cmake");
+    expect(within(dialog).getByRole("option", { name: "Debug" })).toBeInTheDocument();
+    fireEvent.click(
+      within(within(dialog).getByRole("toolbar", { name: "CMake profile actions" })).getByRole("button", {
+        name: "Add",
+      }),
+    );
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Release" } });
+    fireEvent.change(within(dialog).getByLabelText("Build type"), { target: { value: "Release" } });
+    fireEvent.change(within(dialog).getByLabelText("Generator"), { target: { value: "Ninja" } });
+    fireEvent.change(within(dialog).getByLabelText("Build arguments"), { target: { value: "-j 8" } });
+    expect(settingsSet).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    const write = settingsSet.mock.calls.find((c) => c[1] === "cmake.profiles")!;
+    expect(write[0]).toBe("project");
+    expect(JSON.parse(write[2])).toEqual([
+      expect.objectContaining({ name: "Debug", buildType: "Debug" }),
+      expect.objectContaining({ name: "Release", buildType: "Release", generator: "Ninja", buildArgs: ["-j", "8"] }),
+    ]);
+  });
+
   it("finds Gradle JVM and applies project Gradle settings", async () => {
     useProject.setState({ project: { root: "/project" } as never });
     const dialog = await openDialog("build.gradle");
@@ -203,6 +245,24 @@ describe("Settings dialog", () => {
     ]);
   });
 
+  it("enables, saves and clears the custom UI fallback font", async () => {
+    const dialog = await openDialog("appearance");
+    const fallback = within(dialog).getByRole("combobox", { name: "UI fallback font" });
+    const custom = within(dialog).getByRole("checkbox", { name: "Use custom font:" });
+    expect(fallback).toBeDisabled();
+    fireEvent.click(custom);
+    expect(fallback).toBeEnabled();
+    fireEvent.change(fallback, { target: { value: "Songti SC" } });
+    expect(settingsSet).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.uiFontFallback", JSON.stringify("Songti SC"));
+    fireEvent.change(fallback, { target: { value: "" } });
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.uiFontFallback", JSON.stringify(""));
+    fireEvent.click(custom);
+    expect(fallback).toBeDisabled();
+  });
+
   it("edits and saves independent custom font weights", async () => {
     const dialog = await openDialog("editor.font");
     for (const [label, value] of [
@@ -221,6 +281,28 @@ describe("Settings dialog", () => {
       ["global", "editor.boldFontWeight", "650"],
       ["global", "editor.fontWeight", "450"],
     ]);
+  });
+
+  it("enables Apply and Reset for a secret-only edit, and Reset discards it", async () => {
+    current = setAt(current, "ssh.configs", [{ ...DEFAULT_SSH_CONFIG, id: "ssh-dialog", auth: "password" }]);
+    useProject.setState({ settings: current });
+    const needsSecret = vi.spyOn(commands, "sshNeedsSecret").mockResolvedValue({ status: "ok", data: true });
+    const setSecret = vi.spyOn(commands, "sshSetSecret").mockResolvedValue();
+    try {
+      const dialog = await openDialog("tools.sshConfigurations");
+      const apply = within(dialog).getByRole("button", { name: "Apply" });
+      expect(apply).toBeDisabled();
+      fireEvent.change(within(dialog).getByLabelText("Password"), { target: { value: crypto.randomUUID() } });
+      expect(apply).toBeEnabled();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Reset" }));
+      expect(within(dialog).getByLabelText("Password")).toHaveValue("");
+      expect(apply).toBeDisabled();
+      expect(setSecret).not.toHaveBeenCalled();
+      expect(settingsSet).not.toHaveBeenCalled();
+    } finally {
+      needsSecret.mockRestore();
+      setSecret.mockRestore();
+    }
   });
 
   it("Cancel discards staged edits", async () => {

@@ -1,5 +1,6 @@
 id = "typescript"
 name = "TypeScript"
+formatter = { tool = "prettier", parser = "typescript", range = true }
 extensions = ["ts", "mts", "cts"]
 line-comment = "//"
 block-comment = ["/*", "*/"]
@@ -9,6 +10,7 @@ tree-sitter = "typescript"
 
 [[language-servers]]
 name = "vtsls"
+tsserver-project = true
 command = "vtsls"
 args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
@@ -16,12 +18,13 @@ install-hint = "npm i -g @vtsls/language-server"
 
 [[language-servers]]
 name = "typescript-language-server"
+tsserver-project = true
 # Alternative: used only when the server above is not installed.
 fallback = true
 command = "typescript-language-server"
 args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
-install-hint = "npm i -g typescript@\"<7\" typescript-language-server"
+install-hint = "npm i -g typescript@6 typescript-language-server"
 
 # Angular projects only: templates inline in components (`template: ...`),
 # and their usages and renames in templates. Last: TypeScript's own hover,

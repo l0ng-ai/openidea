@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -42,6 +42,21 @@ const session: DebugSession = {
 };
 
 describe("debug tool window", () => {
+  it("shows preparation output, preserves a chosen tab and opens variables on pause", () => {
+    useDebug.setState({ sessions: { 1: { ...session, status: "starting" } }, active: 1 });
+    render(<DebugToolWindow />);
+    const console = screen.getByRole("tab", { name: "Console" });
+    const variables = screen.getByRole("tab", { name: "Threads & Variables" });
+    expect(console.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(variables);
+    expect(variables.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(console);
+    act(() => useDebug.setState({ sessions: { 1: { ...session, status: "running" } } }));
+    expect(console.getAttribute("aria-selected")).toBe("true");
+    act(() => useDebug.setState({ sessions: { 1: session } }));
+    expect(variables.getAttribute("aria-selected")).toBe("true");
+  });
+
   it("renders session tabs, views, frames and typed variables", async () => {
     useDebug.setState({ sessions: { 1: session }, active: 1 });
     render(

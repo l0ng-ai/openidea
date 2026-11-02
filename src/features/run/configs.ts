@@ -1,3 +1,4 @@
+import { formatArgs } from "@/platform/commandLine";
 /** Run configuration helpers: grouping, overriding, validation and argument parsing. */
 import type { RunConfig } from "@/platform/ipc";
 import { useRunConfigTypes } from "@/workbench/contributions";
@@ -13,6 +14,7 @@ const KIND_LABELS: Record<string, string> = {
   python: "Python",
   pytest: "pytest",
   make: "Make",
+  cmake: "CMake",
   just: "Just",
   shell: "Shell Script",
   program: "Program",
@@ -40,11 +42,9 @@ const KIND_LABELS: Record<string, string> = {
 export const KIND_OPTIONS = Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }));
 
 export function kindLabel(kind: string): string {
-  return (
-    useRunConfigTypes.getState().types.get(kind)?.label ??
-    KIND_LABELS[kind] ??
-    (kind ? kind[0]!.toUpperCase() + kind.slice(1) : "Other")
-  );
+  const type = useRunConfigTypes.getState().types.get(kind);
+  // A grouped type ("Tomcat Server › Local") is named by its group outside the Add menu.
+  return type?.group ?? type?.label ?? KIND_LABELS[kind] ?? (kind ? kind[0]!.toUpperCase() + kind.slice(1) : "Other");
 }
 
 export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
@@ -67,6 +67,9 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
       return "file-gradle";
     case "maven":
       return "file-maven";
+    case "dotnet":
+    case "dotnet-test":
+      return "file-csharp";
     case "go":
       return "file-go";
     case "node":
@@ -220,7 +223,7 @@ export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []
   for (const t of config.beforeLaunch ?? []) {
     if (t.kind === "run" && (t.target === config.id || !all.some((c) => c.id === t.target)))
       errors.beforeLaunch = "A before launch task runs a missing configuration or this one";
-    else if (t.kind !== "build" && t.kind !== "run" && !(t.target ?? "").trim())
+    else if (t.kind !== "build" && t.kind !== "dotnetBuild" && t.kind !== "run" && !(t.target ?? "").trim())
       errors.beforeLaunch = "A before launch task is incomplete";
   }
   for (const key of Object.keys(config.env)) {
@@ -239,49 +242,7 @@ export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []
 
 export const hasErrors = (e: ConfigErrors) => Object.keys(e).length > 0;
 
-/**
- * Splits a command line into arguments: whitespace, '…' and "…" quoting, backslash escapes.
- * `windowsPaths`: a backslash only escapes a quote, so `C:\dir\app.jar` stays as typed.
- */
-export function parseArgs(input: string, windowsPaths = false): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let has = false;
-  let quote: "'" | '"' | null = null;
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i]!;
-    if (quote) {
-      if (ch === quote) quote = null;
-      else if (
-        ch === "\\" &&
-        quote === '"' &&
-        i + 1 < input.length &&
-        (windowsPaths ? '"' : '"\\$`').includes(input[i + 1]!)
-      )
-        cur += input[++i];
-      else cur += ch;
-    } else if (ch === "'" || ch === '"') {
-      quote = ch;
-      has = true;
-    } else if (ch === "\\" && i + 1 < input.length && (!windowsPaths || "\"'".includes(input[i + 1]!))) {
-      cur += input[++i];
-      has = true;
-    } else if (/\s/.test(ch)) {
-      if (has || cur) out.push(cur);
-      cur = "";
-      has = false;
-    } else {
-      cur += ch;
-    }
-  }
-  if (has || cur) out.push(cur);
-  return out;
-}
-
-/** Inverse of `parseArgs` (quotes only when needed). */
-export function formatArgs(args: readonly string[]): string {
-  return args.map((a) => (a === "" ? "''" : /[\s'"\\$`]/.test(a) ? `'${a.replace(/'/g, `'\\''`)}'` : a)).join(" ");
-}
+export { parseArgs, formatArgs } from "@/platform/commandLine";
 
 /** Display command line, e.g. `pnpm run dev`. */
 export function commandLine(config: Pick<RunConfig, "command" | "args">): string {

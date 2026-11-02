@@ -1,7 +1,8 @@
 /**
  * Run configurations in the Services tool window (IDEA's Run Dashboard): Spring
  * Boot by default, the configuration types added there ("Add Service › Run
- * Configuration Type") and the types of this window's run sessions, one group
+ * Configuration Type"), the types of this window's run sessions and the
+ * configurations that ran before (kept per project across restarts), one group
  * each, with run / debug / stop / rerun per configuration. A configuration that
  * ran shows its console in the detail pane, a running web application its HTTP port.
  */
@@ -10,26 +11,50 @@ import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { projectLocation, useRemote } from "@/platform/remote";
 import { tx, useT, useTxTemplate } from "@/platform/i18n";
 import { Button, EmptyState, T } from "@/ui";
 import type { MenuItem } from "@/ui";
 import {
   toolWindowService,
+  notifications,
   useRunConfigTypes,
+  useDebugRunSessions,
+  type DebugServiceSession,
   type ServiceItemAction,
   type ServiceProviderContribution,
   type ServiceTreeItem,
 } from "@/workbench/contributions";
 import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
 import { SessionPanel } from "./RunView";
-import { startRun, stopSession, useRun, type RunSession } from "./store";
+import { showApplicationUpdate } from "./applicationUpdate";
+import { isUpdatable } from "./updatePolicies";
+import { startRun, useRun, type RunSession } from "./store";
+import {
+  currentServiceSession,
+  currentServiceSessions,
+  liveServiceSession,
+  serviceDebugger,
+  serviceSessions,
+  stopServiceSessions,
+  type ServiceSession,
+} from "./serviceSessions";
 import { isDebugOnly } from "./types";
+import {
+  currentServiceOrder,
+  moveServiceOrder,
+  orderServices,
+  saveServiceOrder,
+  useServiceOrder,
+  type ServiceOrder,
+} from "./serviceOrder";
 import styles from "./RunServices.module.css";
 
 export const RUN_PROVIDER = "runConfigurations";
 const TYPE_PREFIX = "run:type:";
 const CONFIG_PREFIX = "run:config:";
 const STORAGE_KEY = "openidea.services.runTypes:";
+const RAN_KEY = "openidea.services.ran:";
 /** Types shown in Services until the user changes the list. */
 export const DEFAULT_TYPES: readonly string[] = ["spring-boot"];
 
@@ -78,19 +103,44 @@ export function removeType(kind: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Configurations that ran, per project (shown again after a restart)
+
+const useRanConfigs = create<{ root: string | null; ids: string[] }>(() => ({ root: null, ids: [] }));
+
+/** The project's previously run configuration ids, most recent last. */
+export function readRan(root: string): string[] {
+  try {
+    const raw = localStorage.getItem(RAN_KEY + root);
+    if (raw === null) return [];
+    const v: unknown = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function ranIds(root: string | null): string[] {
+  const s = useRanConfigs.getState();
+  return s.root === root ? s.ids : root ? readRan(root) : [];
+}
+
+/** Records a run, so its configuration is back in Services after a restart. */
+export function recordRun(configId: string) {
+  const root = useProject.getState().project?.root ?? null;
+  const ids = [...ranIds(root).filter((id) => id !== configId), configId];
+  useRanConfigs.setState({ root, ids });
+  if (!root) return;
+  try {
+    localStorage.setItem(RAN_KEY + root, JSON.stringify(ids));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tree
 
 const busy = (s: RunSession) => s.status === "running" || s.status === "starting";
-
-/** The newest session of each configuration id. */
-function latestSessions(sessions: readonly RunSession[]): Map<string, RunSession> {
-  const out = new Map<string, RunSession>();
-  for (const s of sessions) {
-    const prev = out.get(s.config.id);
-    if (!prev || s.startedAt >= prev.startedAt) out.set(s.config.id, s);
-  }
-  return out;
-}
 
 export function sessionStatus(s: RunSession | undefined): string | undefined {
   if (!s) return undefined;
@@ -105,16 +155,17 @@ export function sessionDetail(s: RunSession | undefined): string | undefined {
   return s && busy(s) && s.httpPort ? `:${s.httpPort}` : sessionStatus(s);
 }
 
-/**
- * Node labels of one type: configurations naming the same class (a `main` class of
- * the same name in several modules) carry their module directory.
- */
-export function configLabels(entries: readonly RunConfig[]): Map<string, string> {
-  const count = new Map<string, number>();
-  for (const c of entries) count.set(c.name, (count.get(c.name) ?? 0) + 1);
-  const labels = new Map<string, string>();
-  for (const c of entries) labels.set(c.id, (count.get(c.name) ?? 0) > 1 && c.cwd ? `${c.name} (${c.cwd})` : c.name);
-  return labels;
+function executionDetail(s: ServiceSession | undefined): string | undefined {
+  if (!s) return undefined;
+  const debug = serviceDebugger(s);
+  if (debug?.status === "paused") return "Suspended";
+  if (debug)
+    return s.run && busy(s.run) && s.run.httpPort
+      ? `:${s.run.httpPort}`
+      : debug.status === "starting"
+        ? "Starting"
+        : "Debugging";
+  return s.run ? sessionDetail(s.run) : "Finished";
 }
 
 /**
@@ -125,29 +176,38 @@ export function runServiceItems(
   configs: readonly RunConfig[],
   sessions: readonly RunSession[],
   added: readonly string[],
+  ran: readonly string[] = [],
+  order: ServiceOrder = {},
+  debug: readonly DebugServiceSession[] = [],
 ): ServiceTreeItem[] {
-  const latest = latestSessions(sessions);
+  const executions = serviceSessions(sessions, debug);
+  const latest = currentServiceSessions(executions);
   const kinds = [...added];
-  for (const s of sessions) if (!kinds.includes(s.config.kind)) kinds.push(s.config.kind);
+  for (const s of executions) if (!kinds.includes(s.config.kind)) kinds.push(s.config.kind);
+  for (const id of ran) {
+    const kind = configs.find((c) => c.id === id)?.kind;
+    if (kind && !kinds.includes(kind)) kinds.push(kind);
+  }
   return kinds.flatMap((kind) => {
-    const entries: RunConfig[] = added.includes(kind) ? configs.filter((c) => c.kind === kind) : [];
+    const entries: RunConfig[] = added.includes(kind)
+      ? configs.filter((c) => c.kind === kind)
+      : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
     for (const s of latest.values())
       if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
     if (!entries.length && DEFAULT_TYPES.includes(kind)) return [];
-    const labels = configLabels(entries);
-    const children = entries.map((c): ServiceTreeItem => {
+    const children = orderServices(entries, order[kind]).map((c): ServiceTreeItem => {
       const s = latest.get(c.id);
       return {
         key: CONFIG_PREFIX + c.id,
-        label: labels.get(c.id) ?? c.name,
-        icon: s && busy(s) ? "run" : configIcon(c),
-        detail: sessionDetail(s),
-        dim: !s || !busy(s),
+        label: c.name,
+        icon: serviceDebugger(s) ? "debug" : s && liveServiceSession(s) ? "run" : configIcon(c),
+        detail: executionDetail(s),
+        dim: !s || !liveServiceSession(s),
       };
     });
     const running = entries.filter((c) => {
       const s = latest.get(c.id);
-      return !!s && busy(s);
+      return !!s && liveServiceSession(s);
     }).length;
     return [
       {
@@ -164,36 +224,43 @@ export function runServiceItems(
 
 function useRoots(): ServiceTreeItem[] {
   const root = useProject((s) => s.project?.root ?? null);
+  useRemote((s) => s.session);
+  const order = useServiceOrder(projectLocation(root));
   const configs = useRun((s) => s.configs);
   const sessions = useRun((s) => s.sessions);
+  const debug = useDebugRunSessions((s) => s.serviceSessions);
   const types = useAddedTypes((s) => s.types);
   const typesRoot = useAddedTypes((s) => s.root);
+  const ran = useRanConfigs((s) => s.ids);
+  const ranRoot = useRanConfigs((s) => s.root);
   useEffect(() => {
     if (typesRoot !== root) useAddedTypes.setState({ root, types: root ? readTypes(root) : [] });
-  }, [root, typesRoot]);
+    if (ranRoot !== root) useRanConfigs.setState({ root, ids: root ? readRan(root) : [] });
+  }, [root, typesRoot, ranRoot]);
   return useMemo(
-    () => runServiceItems(configs, sessions, typesRoot === root ? types : []),
-    [configs, sessions, types, typesRoot, root],
+    () =>
+      runServiceItems(configs, sessions, typesRoot === root ? types : [], ranRoot === root ? ran : [], order, debug),
+    [configs, sessions, types, typesRoot, ran, ranRoot, root, order, debug],
   );
 }
 
 interface Resolved {
   kind: string | null;
   config: RunConfig | null;
-  session: RunSession | undefined;
+  session: ServiceSession | undefined;
   /** Sessions of a group's configurations. */
-  sessions: RunSession[];
+  sessions: ServiceSession[];
 }
 
 function resolve(item: ServiceTreeItem): Resolved {
   const { configs, sessions } = useRun.getState();
-  const latest = latestSessions(sessions);
+  const executions = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions);
   if (item.key.startsWith(TYPE_PREFIX)) {
     const kind = item.key.slice(TYPE_PREFIX.length);
-    return { kind, config: null, session: undefined, sessions: sessions.filter((s) => s.config.kind === kind) };
+    return { kind, config: null, session: undefined, sessions: executions.filter((s) => s.config.kind === kind) };
   }
   const id = item.key.slice(CONFIG_PREFIX.length);
-  const session = latest.get(id);
+  const session = currentServiceSession(id, executions);
   const config = configs.find((c) => c.id === id) ?? session?.config ?? null;
   return { kind: config?.kind ?? null, config, session, sessions: session ? [session] : [] };
 }
@@ -205,42 +272,60 @@ function showOutput(s: RunSession) {
 
 /** Runs (or reruns, in its tab) a configuration; the output stays in Services instead of opening Run. */
 function run(r: Resolved) {
-  if (r.session && r.session.config.id === r.config?.id)
-    void startRun(r.session.config, r.session.id, r.session.baseConfig, { show: false });
-  else if (r.config) void startRun(r.config, undefined, undefined, { show: false });
+  const debug = serviceDebugger(r.session);
+  if (debug) debug.rerun?.();
+  else if (r.session?.run) {
+    const s = r.session.run;
+    void startRun(s.config, s.id, s.baseConfig, { show: false });
+  } else if (r.config) void startRun(r.config, undefined, undefined, { show: false });
 }
 
 function debug(r: Resolved) {
-  if (r.config) void executeAction("run.debugConfig", r.config);
+  const session = serviceDebugger(r.session);
+  if (session) session.rerun?.();
+  else if (r.config) void executeAction("run.debugConfig", r.config);
 }
 
 function actions(item: ServiceTreeItem): ServiceItemAction[] {
   const r = resolve(item);
-  const running = r.sessions.filter(busy);
+  const running = r.sessions.filter(liveServiceSession);
   const stop = {
     id: "stop",
     title: "Stop",
     icon: "stop",
     disabled: !running.length,
-    run: () => running.forEach((s) => void stopSession(s.id)),
+    run: () => void stopServiceSessions(running),
   };
   if (!r.config) return [stop];
-  const live = !!r.session && busy(r.session);
+  const live = !!r.session && liveServiceSession(r.session);
+  const debugging = serviceDebugger(r.session);
   return [
     {
       id: "run",
       title: live ? "Rerun" : "Run",
       icon: live ? "rerun" : "run",
-      disabled: isDebugOnly(r.config),
+      disabled: debugging ? !debugging.rerun : isDebugOnly(r.config),
       run: () => run(r),
     },
-    { id: "debug", title: "Debug", icon: "debug", run: () => debug(r) },
+    { id: "debug", title: "Debug", icon: "debug", disabled: !!debugging && !debugging.rerun, run: () => debug(r) },
     stop,
+    ...(isUpdatable(r.config)
+      ? [
+          {
+            id: "update",
+            title: "Update Application",
+            icon: "refresh",
+            disabled: !live,
+            run: () => showApplicationUpdate(r.session?.run?.id ?? (debugging ? `debug:${debugging.id}` : undefined)),
+          },
+        ]
+      : []),
   ];
 }
 
 function menu(item: ServiceTreeItem): MenuItem[] {
   const items: MenuItem[] = actions(item).map((a) => ({
+    id: a.id,
     label: a.title,
     icon: a.icon,
     disabled: a.disabled,
@@ -253,7 +338,8 @@ function menu(item: ServiceTreeItem): MenuItem[] {
   }
   if (r.config) {
     const config = r.config;
-    const session = r.session;
+    const session = r.session?.run;
+    const debuggerSession = serviceDebugger(r.session) ?? r.session?.debug.at(-1);
     items.push(
       { kind: "separator" },
       {
@@ -261,6 +347,12 @@ function menu(item: ServiceTreeItem): MenuItem[] {
         icon: "toolwindow-run",
         disabled: !session,
         run: () => session && showOutput(session),
+      },
+      {
+        label: "Show in Debug Tool Window",
+        icon: "toolwindow-debug",
+        disabled: !debuggerSession,
+        run: () => debuggerSession?.show(),
       },
       { label: "Edit Configuration…", icon: "edit", run: () => void executeAction("run.editConfigs", config.id) },
     );
@@ -271,6 +363,8 @@ function menu(item: ServiceTreeItem): MenuItem[] {
 function RunDetail({ item }: { item: ServiceTreeItem }) {
   // Re-render on session changes.
   useRun((s) => s.sessions);
+  const debugViews = useDebugRunSessions();
+  const Console = debugViews.Console;
   const t = useT();
   const txTemplate = useTxTemplate();
   const r = resolve(item);
@@ -285,7 +379,25 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
       </EmptyState>
     );
   // The configuration ran: its console, as in the Run tool window.
-  if (r.session) return <SessionPanel session={r.session} />;
+  if (r.session?.run) {
+    const execution = r.session;
+    const d = serviceDebugger(execution);
+    return (
+      <SessionPanel
+        key={execution.run!.id}
+        session={execution.run!}
+        onRerun={d ? d.rerun : undefined}
+        onStop={d ? () => void stopServiceSessions([execution]) : undefined}
+      />
+    );
+  }
+  const d = r.session?.debug[0];
+  if (d && Console)
+    return (
+      <div className={styles.debugConsole}>
+        <Console key={d.id} sessionId={d.id} />
+      </div>
+    );
   return (
     <div className={styles.detail}>
       <dl className={styles.facts}>
@@ -352,8 +464,47 @@ export const runServiceProvider: ServiceProviderContribution = {
   menu,
   activate: (item) => {
     const r = resolve(item);
-    if (r.config && !(r.session && busy(r.session)) && !isDebugOnly(r.config)) run(r);
+    if (r.config && !(r.session && liveServiceSession(r.session)) && !isDebugOnly(r.config)) run(r);
   },
   detail: RunDetail,
   addMenu,
+  reorder: {
+    canMove: (source, target) => {
+      if (!source.key.startsWith(CONFIG_PREFIX) || !target.key.startsWith(CONFIG_PREFIX) || source.key === target.key)
+        return false;
+      const from = resolve(source),
+        to = resolve(target);
+      return !!from.config && !!to.config && from.kind === to.kind;
+    },
+    move: (source, target, position) => {
+      if (!runServiceProvider.reorder!.canMove(source, target)) return;
+      const location = projectLocation(useProject.getState().project?.root);
+      const kind = resolve(source).kind;
+      if (!location || !kind) return;
+      const { configs, sessions } = useRun.getState();
+      const order = currentServiceOrder(location);
+      const group = runServiceItems(
+        configs,
+        sessions,
+        currentTypes(),
+        ranIds(useProject.getState().project?.root ?? null),
+        order,
+        useDebugRunSessions.getState().serviceSessions,
+      ).find((g) => g.key === TYPE_PREFIX + kind);
+      const ids = group?.children?.map((c) => c.key.slice(CONFIG_PREFIX.length)) ?? [];
+      const from = source.key.slice(CONFIG_PREFIX.length),
+        to = target.key.slice(CONFIG_PREFIX.length);
+      if (!ids.includes(from) || !ids.includes(to)) return;
+      if (
+        !saveServiceOrder(location, { ...order, [kind]: moveServiceOrder(order[kind] ?? [], ids, from, to, position) })
+      ) {
+        notifications().notify({
+          group: "run",
+          level: "warning",
+          title: "Cannot save service order",
+          body: "The order will be kept for this session only.",
+        });
+      }
+    },
+  },
 };

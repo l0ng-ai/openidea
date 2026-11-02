@@ -179,3 +179,61 @@ describe("targetConfig", () => {
     expect(c.id).toBe("context:target:cargo:test:src/lib.rs:tests/adds");
   });
 });
+
+describe("Go test targets", () => {
+  it("detects benchmark, fuzz and example functions and runs a benchmark without tests", () => {
+    const text =
+      "package main\nfunc main() {}\nfunc BenchmarkWork(b *testing.B) {}\nfunc FuzzInput(f *testing.F) {}\nfunc Example() {}\n// func TestComment(t *testing.T) {}";
+    const targets = detectRunTargets(text, "work_test.go");
+    expect(targets.map((t) => t.name)).toEqual(["main", "BenchmarkWork", "FuzzInput", "Example"]);
+    const base = cfg({ id: "go:test", kind: "go", args: ["test", "-tags", "demo", "./...", "-args", "-test.short"] });
+    const config = targetConfig(targets[1]!, "work_test.go", [base], text)!;
+    expect(config.args).toEqual([
+      "test",
+      "-tags",
+      "demo",
+      ".",
+      "-run",
+      "^$",
+      "-bench",
+      "^BenchmarkWork$",
+      "-args",
+      "-test.short",
+    ]);
+  });
+  it("uses the module and overrides a saved filter before binary arguments", () => {
+    const base = cfg({
+      id: "go:typed",
+      kind: "go",
+      cwd: "runtime",
+      args: ["test", "-tags", "demo", "-run", "Old", ".", "-args", "-test.short"],
+      params: {
+        goKind: "test",
+        module: "app",
+        scope: "package",
+        target: ".",
+        pattern: "Old",
+        programArgs: "-test.short",
+      },
+    });
+    const text = 'package calc\nfunc TestNew(t *testing.T) {\n t.Run("child case", func(t *testing.T) {})\n}';
+    const targets = detectRunTargets(text, "app/calc_test.go");
+    const config = targetConfig(targets[1]!, "app/calc_test.go", [base], text, base)!;
+    expect(config.args).toEqual([
+      "test",
+      "-tags",
+      "demo",
+      ".",
+      "-run",
+      "^TestNew$/^child_case$",
+      "-args",
+      "-test.short",
+    ]);
+    expect(config.params).toMatchObject({
+      module: "app",
+      scope: "directory",
+      target: ".",
+      pattern: "^TestNew$/^child_case$",
+    });
+  });
+});

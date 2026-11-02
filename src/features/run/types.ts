@@ -3,6 +3,7 @@
  * Application, Spring Boot, Compound) and the helpers that turn a type's params into the launched
  * command line. Other features contribute types with `registerRunConfigType`.
  */
+import { isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
 import type { RunConfig } from "@/platform/ipc";
 import { registerRunConfigType, useRunConfigTypes, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { formatArgs, parseArgs, uid, uniqueName } from "./configs";
@@ -17,6 +18,11 @@ import {
 } from "./jvmTypes";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+
+import { tomcatType } from "./tomcat";
+import { goBuildType, goTestType } from "./goTypes";
+
+import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 
 export const COMPOUND = "compound";
 
@@ -392,8 +398,13 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   maven,
   godot,
   pytest,
+  dotnetProjectType,
+  dotnetTestType,
+  goBuildType,
+  goTestType,
   applicationType,
   springBootType,
+  tomcatType,
   compound,
 ];
 
@@ -415,13 +426,15 @@ export const isDebugOnly = (c: Pick<RunConfig, "kind">, type = typeFor(c.kind)) 
  */
 export function formParams(config: RunConfig, type = typeFor(config.kind)): Record<string, string> | null {
   if (!type) return null;
-  if (config.params && Object.keys(config.params).length) return { ...config.params };
+  if (config.params && Object.keys(config.params).length && (type.id !== "go" || config.params.goKind))
+    return { ...config.params };
   if (type.id === COMPOUND) return {};
   const derived = type.paramsFrom?.(config);
   if (!derived) return null;
   // Only when the form reproduces exactly what runs today.
   const line = type.commandLine(derived);
   if (!line) return null;
+  if (type.id === "go") return derived;
   const sameCwd = !type.ownsWorkingDirectory || (line.cwd ?? null) === (config.cwd ?? null);
   return line.command === config.command && formatArgs(line.args) === formatArgs(config.args) && sameCwd
     ? derived
@@ -435,9 +448,18 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
   if (!line) return { ...rest, params, command: "", args: [] };
   return {
     ...rest,
-    params,
+    ...(config.kind === "dotnet" && config.beforeLaunch === undefined
+      ? { beforeLaunch: [{ kind: "dotnetBuild", target: "" }] }
+      : {}),
+    ...(config.kind === "dotnet-test" ? { isTest: true } : {}),
+    params: params.goKind ? { ...params, programArgv: JSON.stringify(parseArgs(params.programArgs ?? "")) } : params,
+    ...(config.kind === "go-test" && !config.id.startsWith("template:") ? { kind: "go" } : {}),
+    ...(params.goKind ? { isTest: params.goKind === "test" } : {}),
     command: line.command,
     args: line.args,
+    ...(isJvmApplication(config) && parseJavaArgs(config.args).mainClass !== parseJavaArgs(line.args).mainClass
+      ? { module: undefined }
+      : {}),
     ...(type?.ownsWorkingDirectory ? { cwd: line.cwd ?? null } : {}),
     ...(line.stop ? { stopCommand: line.stop } : {}),
   };

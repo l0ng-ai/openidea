@@ -53,6 +53,19 @@ pub struct LanguageConfig {
     pub language_servers: Vec<LanguageServerConfig>,
     #[serde(default)]
     pub debugger: Option<DebuggerConfig>,
+    /// External formatter used when no language server can format, or selected in settings.
+    #[serde(default)]
+    pub formatter: Option<FormatterConfig>,
+}
+
+/// An external formatting tool and its language-specific parser.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FormatterConfig {
+    pub tool: String,
+    pub parser: String,
+    #[serde(default)]
+    pub range: bool,
 }
 
 /// A CodeMirror mode for the files of a framework's projects.
@@ -120,6 +133,9 @@ pub struct LanguageServerConfig {
     /// a JDK 21+); reported as the failure instead of launching it.
     #[serde(skip)]
     pub launch_error: Option<String>,
+    /// Register source files with tsserver when no project configuration exists.
+    #[serde(default)]
+    pub tsserver_project: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

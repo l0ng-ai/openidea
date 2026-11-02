@@ -34,6 +34,12 @@ pub struct GhRepo {
     pub name_with_owner: String,
     pub url: String,
     pub default_branch: Option<String>,
+    /// Merge methods the repository allows (all of them when gh does not say).
+    pub merge_commit_allowed: bool,
+    pub squash_merge_allowed: bool,
+    pub rebase_merge_allowed: bool,
+    /// The signed-in user's permission: `ADMIN`, `MAINTAIN`, `WRITE`, `TRIAGE`, `READ`; empty when unknown.
+    pub viewer_permission: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -152,6 +158,8 @@ pub struct PullRequestDetails {
     pub base_oid: String,
     /// `MERGEABLE`, `CONFLICTING`, `UNKNOWN`.
     pub mergeable: String,
+    /// GitHub's merge box state: `CLEAN`, `UNSTABLE`, `HAS_HOOKS`, `BLOCKED`, `BEHIND`, `DIRTY`, `DRAFT`, `UNKNOWN`.
+    pub merge_state_status: String,
     pub is_cross_repository: bool,
     pub merged_at: Option<String>,
     pub closed_at: Option<String>,
@@ -242,7 +250,7 @@ impl RawSummary {
 pub const LIST_FIELDS: &str = "number,title,author,state,isDraft,headRefName,baseRefName,createdAt,updatedAt,labels,reviewDecision,url,additions,deletions";
 
 /// Fields requested from `gh pr view`.
-pub const VIEW_FIELDS: &str = "number,title,author,state,isDraft,headRefName,baseRefName,createdAt,updatedAt,labels,reviewDecision,url,additions,deletions,body,headRefOid,baseRefOid,mergeable,isCrossRepository,mergedAt,closedAt,statusCheckRollup,reviewRequests,reviews,assignees,commits,files,comments";
+pub const VIEW_FIELDS: &str = "number,title,author,state,isDraft,headRefName,baseRefName,createdAt,updatedAt,labels,reviewDecision,url,additions,deletions,body,headRefOid,baseRefOid,mergeable,mergeStateStatus,isCrossRepository,mergedAt,closedAt,statusCheckRollup,reviewRequests,reviews,assignees,commits,files,comments";
 
 pub fn parse_list(json: &str) -> serde_json::Result<Vec<PullRequestSummary>> {
     let raw: Vec<RawSummary> = serde_json::from_str(json)?;
@@ -348,6 +356,7 @@ struct RawDetails {
     head_ref_oid: String,
     base_ref_oid: String,
     mergeable: String,
+    merge_state_status: String,
     is_cross_repository: bool,
     merged_at: Option<String>,
     closed_at: Option<String>,
@@ -442,6 +451,7 @@ pub fn parse_view(json: &str) -> serde_json::Result<PullRequestDetails> {
         head_oid: raw.head_ref_oid,
         base_oid: raw.base_ref_oid,
         mergeable: raw.mergeable,
+        merge_state_status: raw.merge_state_status,
         is_cross_repository: raw.is_cross_repository,
         merged_at: raw.merged_at.filter(|s| !s.is_empty()),
         closed_at: raw.closed_at.filter(|s| !s.is_empty()),
@@ -534,6 +544,10 @@ struct RawRepo {
     name_with_owner: String,
     url: String,
     default_branch_ref: Option<RawBranchRef>,
+    merge_commit_allowed: Option<bool>,
+    squash_merge_allowed: Option<bool>,
+    rebase_merge_allowed: Option<bool>,
+    viewer_permission: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -542,13 +556,21 @@ struct RawBranchRef {
     name: String,
 }
 
-/// `gh repo view --json nameWithOwner,url,defaultBranchRef`.
+/// Fields requested from `gh repo view`.
+pub const REPO_FIELDS: &str =
+    "nameWithOwner,url,defaultBranchRef,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed,viewerPermission";
+
+/// `gh repo view --json` with [`REPO_FIELDS`].
 pub fn parse_repo(json: &str) -> serde_json::Result<GhRepo> {
     let raw: RawRepo = serde_json::from_str(json)?;
     Ok(GhRepo {
         name_with_owner: raw.name_with_owner,
         url: raw.url,
         default_branch: raw.default_branch_ref.map(|b| b.name).filter(|n| !n.is_empty()),
+        merge_commit_allowed: raw.merge_commit_allowed.unwrap_or(true),
+        squash_merge_allowed: raw.squash_merge_allowed.unwrap_or(true),
+        rebase_merge_allowed: raw.rebase_merge_allowed.unwrap_or(true),
+        viewer_permission: raw.viewer_permission.unwrap_or_default(),
     })
 }
 

@@ -51,6 +51,13 @@ const KINDS: readonly DiffKind[] = ["modified", "inserted", "deleted"];
 const byKind = <T>(make: (kind: DiffKind) => T) =>
   Object.fromEntries(KINDS.map((k) => [k, make(k)])) as Record<DiffKind, T>;
 
+/**
+ * Text-area diff backgrounds stay translucent so the selection layer, painted
+ * below the content, shows through them; opaque line colours hide it. Gutters
+ * have no selection and keep the full colour.
+ */
+const diffTint = (kind: DiffKind, pct: number) => `color-mix(in srgb, var(--diff-${kind}) ${pct}%, transparent)`;
+
 /** Line backgrounds by type; `fine` ones (words compared) are lighter. */
 const lineDecos = byKind((kind) => ({
   coarse: Decoration.line({ class: `cm-diffLine cm-diffLine-${kind}` }),
@@ -260,22 +267,37 @@ export const viewerTheme = EditorView.theme(
     ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--fg-secondary)" },
     // Side-by-side panes colour lines by their chunk's type (changedLines) instead of the library's tint.
     "&.cm-merge-a .cm-changedLine, &.cm-merge-b .cm-changedLine": { backgroundColor: "transparent" },
-    ".cm-line.cm-diffLine-modified, .cm-diffGutter-modified": { backgroundColor: "var(--diff-modified)" },
-    ".cm-line.cm-diffLine-inserted, .cm-diffGutter-inserted": { backgroundColor: "var(--diff-inserted)" },
-    ".cm-line.cm-diffLine-deleted, .cm-diffGutter-deleted": { backgroundColor: "var(--diff-deleted)" },
-    // Chunks whose words were compared take the lighter colour (TextDiffType.getIgnoredColor), their fragments the full one.
-    ...Object.fromEntries(
-      KINDS.map((k) => [
-        `.cm-line.cm-diffLine-fine.cm-diffLine-${k}, .cm-diffGutter-fine.cm-diffGutter-${k}`,
-        { backgroundColor: `color-mix(in srgb, var(--diff-${k}) 40%, var(--bg-app))` },
+    // The unified view's own line tint (cm-inlineChangedLine), keyed to the inserted colour.
+    ".cm-inlineChangedLine": { backgroundColor: diffTint("inserted", 70) },
+    ".cm-line.cm-diffLine-modified": { backgroundColor: diffTint("modified", 70) },
+    ".cm-line.cm-diffLine-inserted": { backgroundColor: diffTint("inserted", 70) },
+    ".cm-line.cm-diffLine-deleted": { backgroundColor: diffTint("deleted", 70) },
+    ".cm-diffGutter-modified": { backgroundColor: "var(--diff-modified)" },
+    ".cm-diffGutter-inserted": { backgroundColor: "var(--diff-inserted)" },
+    ".cm-diffGutter-deleted": { backgroundColor: "var(--diff-deleted)" },
+    // Chunks whose words were compared take the lighter colour (TextDiffType.getIgnoredColor), their
+    // fragments the full one; lines translucent so the selection shows through, gutters opaque.
+    ...Object.assign(
+      {},
+      ...KINDS.flatMap((k) => [
+        {
+          [`.cm-line.cm-diffLine-fine.cm-diffLine-${k}`]: {
+            backgroundColor: `color-mix(in srgb, var(--diff-${k}) 28%, transparent)`,
+          },
+        },
+        {
+          [`.cm-diffGutter-fine.cm-diffGutter-${k}`]: {
+            backgroundColor: `color-mix(in srgb, var(--diff-${k}) 40%, var(--bg-app))`,
+          },
+        },
       ]),
     ),
     // Full line height, as IDEA paints them: an inline background only covers the font's height,
     // leaving stripes between the lines of a multi-line fragment.
     ".cm-diffWord": { display: "inline-block" },
-    ".cm-diffWord-modified": { backgroundColor: "var(--diff-modified)" },
-    ".cm-diffWord-inserted": { backgroundColor: "var(--diff-inserted)" },
-    ".cm-diffWord-deleted": { backgroundColor: "var(--diff-deleted)" },
+    ".cm-diffWord-modified": { backgroundColor: diffTint("modified", 85) },
+    ".cm-diffWord-inserted": { backgroundColor: diffTint("inserted", 85) },
+    ".cm-diffWord-deleted": { backgroundColor: diffTint("deleted", 85) },
     ".cm-diffWordEmpty": {
       display: "inline-block",
       width: "2px",
@@ -284,12 +306,11 @@ export const viewerTheme = EditorView.theme(
       verticalAlign: "top",
     },
     // The unified view: old lines deleted, new lines inserted.
-    ".cm-deletedChunk": { backgroundColor: "var(--diff-deleted)" },
-    "&.cm-diffWords .cm-deletedChunk": {
-      backgroundColor: "color-mix(in srgb, var(--diff-deleted) 40%, var(--bg-app))",
-    },
-    ".cm-deletedChunk .cm-deletedText": { background: "var(--diff-deleted)" },
-    "&.cm-merge-b .cm-changedText": { background: "var(--diff-inserted)" },
+    ".cm-deletedChunk": { backgroundColor: diffTint("deleted", 70) },
+    "&.cm-diffWords .cm-deletedChunk": { backgroundColor: diffTint("deleted", 28) },
+    ".cm-deletedChunk .cm-deletedText": { background: diffTint("deleted", 85) },
+    "&.cm-merge-a .cm-changedText": { background: diffTint("deleted", 85) },
+    "&.cm-merge-b .cm-changedText": { background: diffTint("inserted", 85) },
     ".cm-changeGutter": { width: "3px", paddingLeft: "0" },
     "&.cm-merge-a .cm-changedLineGutter, .cm-deletedLineGutter": { background: "var(--gutter-deleted)" },
     "&.cm-merge-b .cm-changedLineGutter": { background: "var(--gutter-modified)" },

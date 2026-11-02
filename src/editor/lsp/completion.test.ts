@@ -56,6 +56,27 @@ function item(over: Partial<CompletionItem> = {}): CompletionItem {
   };
 }
 
+describe("PHP construct completion documentation", () => {
+  const req = { doc: 1, path: "/p/a.php", language: "PHP", pos: 3, text: EditorState.create({ doc: "emp" }).doc };
+
+  it("documents a keyword without changing its insertion", () => {
+    const c = makeCompletion(item({ label: "empty", kind: "keyword", insertText: "empty" }), req);
+    expect(c.lsp.documentation?.value).toContain("empty(mixed $var): bool");
+    expect(c.lsp.insertText).toBe("empty");
+  });
+
+  it("preserves server documentation and leaves methods and other languages alone", () => {
+    const documentation = { kind: "markdown" as const, value: "Server documentation" };
+    expect(makeCompletion(item({ label: "empty", kind: "keyword", documentation }), req).lsp.documentation).toEqual(
+      documentation,
+    );
+    expect(makeCompletion(item({ label: "empty", kind: "method" }), req).lsp.documentation).toBeNull();
+    expect(
+      makeCompletion(item({ label: "empty", kind: "keyword" }), { ...req, language: "JavaScript" }).lsp.documentation,
+    ).toBeNull();
+  });
+});
+
 describe("toCmCompletion", () => {
   it("maps label, detail, kind and sort text", () => {
     const c = toCmCompletion(

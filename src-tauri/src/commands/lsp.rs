@@ -95,8 +95,8 @@ pub async fn lsp_implementations(
     ide_host::ops::lsp::lsp_implementations(&state.host, window.label(), request, doc, positions).await
 }
 
-/// Contents of a virtual document (library class, decompiled code) that a
-/// language server returned a non-`file:` URI for. Cached per project.
+/// Contents of a read-only language-server document, including JDT library
+/// classes and disk class files. Cached per project.
 #[tauri::command]
 #[specta::specta]
 pub async fn lsp_virtual_document(
@@ -105,6 +105,16 @@ pub async fn lsp_virtual_document(
     uri: String,
 ) -> IdeResult<VirtualDocument> {
     ide_host::ops::lsp::lsp_virtual_document(&state.host, window.label(), uri).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_resolve_class_file(
+    window: Window,
+    state: State<'_, AppState>,
+    path: std::path::PathBuf,
+) -> IdeResult<String> {
+    ide_host::ops::lsp::lsp_resolve_class_file(&state.host, window.label(), path).await
 }
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
@@ -222,11 +232,12 @@ pub async fn lsp_prepare_rename(
 pub async fn lsp_rename(
     window: Window,
     state: State<'_, AppState>,
+    request: RequestId,
     doc: DocId,
     pos: Pos,
     new_name: String,
-) -> IdeResult<WorkspaceEdit> {
-    ide_host::ops::lsp::lsp_rename(&state.host, window.label(), doc, pos, new_name).await
+) -> IdeResult<Renamed> {
+    ide_host::ops::lsp::lsp_rename(&state.host, window.label(), request, doc, pos, new_name).await
 }
 
 #[tauri::command]
@@ -284,11 +295,12 @@ pub async fn lsp_document_links(
 pub async fn lsp_call_hierarchy(
     window: Window,
     state: State<'_, AppState>,
+    request: RequestId,
     doc: DocId,
     pos: Pos,
     direction: HierarchyDirection,
-) -> IdeResult<Vec<HierarchyItem>> {
-    ide_host::ops::lsp::lsp_call_hierarchy(&state.host, window.label(), doc, pos, direction).await
+) -> IdeResult<CallHierarchy> {
+    ide_host::ops::lsp::lsp_call_hierarchy(&state.host, window.label(), request, doc, pos, direction).await
 }
 
 #[tauri::command]
@@ -340,4 +352,31 @@ pub async fn lsp_execute_command(
     command: Command,
 ) -> IdeResult<()> {
     ide_host::ops::lsp::lsp_execute_command(&state.host, window.label(), doc, command).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_resolve_command(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    server: ServerId,
+    command: Command,
+    answers: Vec<FormAnswer>,
+) -> IdeResult<Option<CommandForm>> {
+    ide_host::ops::lsp::lsp_resolve_command(&state.host, window.label(), request, doc, server, command, answers).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_execute_code_action(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    action: CodeAction,
+    answers: Vec<FormAnswer>,
+) -> IdeResult<Vec<ide_core::IpcPath>> {
+    ide_host::ops::lsp::lsp_execute_code_action(&state.host, window.label(), request, doc, action, answers).await
 }

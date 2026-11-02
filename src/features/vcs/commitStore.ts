@@ -29,7 +29,7 @@ interface CommitState {
   tab: CommitTab;
   /** Change list of the selected tree node (list actions without an argument). */
   selectedList: string | null;
-  /** Selected entry of the Shelf tab. */
+  /** Selected shelf tree key: shelf id, optionally followed by NUL and a file path. */
   selectedShelf: string | null;
 }
 

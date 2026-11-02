@@ -1,0 +1,40 @@
+/* The pull request views' fixed colours, in the dark themes and the light ones; themes do not change them. */
+:root {
+  --gh-unread: #548af7;
+  --gh-tag-fg: #868a91;
+  --gh-tag-bg: #43454a;
+  --gh-review-approved: #57965c;
+  --gh-review-changes: #e08855;
+  --gh-review-neutral: #6f737a;
+  --gh-conflict: #e05555;
+  --gh-status-info: #40b6e0b2;
+  --gh-status-secondary: #9aa7b0b3;
+  --gh-status-success: #62b543b3;
+  --gh-status-error: #f26522b3;
+  --gh-anchor-line: #544b2d;
+  --gh-reaction-bg: #2b2d30;
+  --gh-reaction-bg-hover: #393b40;
+  --gh-reaction-border-reacted: #548af7;
+  --gh-bubble-border: var(--border);
+  --gh-avatar-fg: #ffffff;
+  --gh-avatar-0: #5e8adf;
+  --gh-avatar-1: #c75450;
+  --gh-avatar-2: #4f9a62;
+  --gh-avatar-3: #b97e2f;
+  --gh-avatar-4: #8f62c8;
+  --gh-avatar-5: #3d9ba3;
+  --gh-avatar-6: #b9578e;
+  --gh-avatar-7: #6e7b8a;
+}
+:root[data-theme="light"] {
+  --gh-unread: #3574f0;
+  --gh-tag-fg: #6c707e;
+  --gh-tag-bg: #dfe1e5;
+  --gh-review-approved: #5fb865;
+  --gh-review-changes: #ec8f4c;
+  --gh-review-neutral: #818594;
+  --gh-anchor-line: #fbf1d1;
+  --gh-reaction-bg: #ebecf0;
+  --gh-reaction-bg-hover: #dfe1e5;
+  --gh-reaction-border-reacted: #3574f0;
+}

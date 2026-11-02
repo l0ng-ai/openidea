@@ -7,6 +7,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import clsx from "clsx";
 import type { AgentCommand, AgentConfigOption, AgentImage } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { nativeDropPoint } from "@/platform/nativeDrop";
+import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
@@ -29,6 +31,7 @@ import {
   type FileRef,
 } from "./composerModel";
 import { composerDraft, updateComposer, useAgents } from "./store";
+import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useCompletionAnchor } from "./useCompletionAnchor";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
@@ -69,6 +72,7 @@ export function Composer(props: ComposerProps) {
   const draft = useAgents((s) => s.composers.get(id));
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
+  const [preview, setPreview] = useState<AgentImage | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -219,13 +223,12 @@ export function Composer(props: ComposerProps) {
           const p = event.payload;
           if (p.type !== "drop" || !p.paths.length) return;
           const box = boxRef.current?.getBoundingClientRect();
-          const ratio = window.devicePixelRatio || 1;
-          const [x, y] = [p.position.x / ratio, p.position.y / ratio];
+          const { x, y } = nativeDropPoint(p.position);
           if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
           const refs: FileRef[] = [];
           for (const path of p.paths) {
             if (IMAGE_EXTENSIONS.test(path)) {
-              void call(commands.fsReadImage(path)).then((url) => {
+              void invokeLocal<string>("fs_read_image", { path }).then((url) => {
                 const image = imageFromDataUrl(url, basename(path));
                 if (image) addImages([image]);
               });
@@ -361,7 +364,9 @@ export function Composer(props: ComposerProps) {
         <div className={styles.images} onClick={(e) => e.stopPropagation()}>
           {images.map((img, i) => (
             <span key={i} className={styles.image} title={img.name ?? undefined}>
-              <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name ?? tx("Image")} />
+              <button type="button" className={styles.previewImage} onClick={() => setPreview(img)}>
+                <img src={imageSrc(img)} alt={img.name ?? tx("Image")} />
+              </button>
               <button
                 type="button"
                 className={styles.removeImage}
@@ -372,6 +377,7 @@ export function Composer(props: ComposerProps) {
               </button>
             </span>
           ))}
+          <ImagePreview image={preview} onClose={() => setPreview(null)} />
         </div>
       )}
       <textarea
@@ -397,30 +403,37 @@ export function Composer(props: ComposerProps) {
         }}
       />
       <div className={styles.bar} onClick={(e) => e.stopPropagation()}>
-        {props.toolbar}
-        <span className={styles.spacer} />
-        <IconButton
-          icon="file"
-          title="Reference a File (@)"
-          size="small"
-          onClick={() => {
-            const glue = text && !/\s$/.test(text) ? " " : "";
-            setText(`${text}${glue}@`, text.length + glue.length + 1);
-          }}
-        />
-        <IconButton icon="file-image" title="Attach Image…" size="small" onClick={() => imageInput.current?.click()} />
-        <input
-          ref={imageInput}
-          type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp"
-          multiple
-          hidden
-          onChange={(e) => {
-            readImageFiles(e.target.files ?? []);
-            e.target.value = "";
-          }}
-        />
-        {props.actions}
+        <div className={styles.toolbar}>{props.toolbar}</div>
+        <div className={styles.actions}>
+          <IconButton
+            icon="file"
+            title="Reference a File (@)"
+            size="small"
+            onClick={() => {
+              const glue = text && !/\s$/.test(text) ? " " : "";
+              setText(`${text}${glue}@`, text.length + glue.length + 1);
+            }}
+          />
+          <IconButton
+            icon="file-image"
+            title="Attach Image…"
+            size="small"
+            onClick={() => imageInput.current?.click()}
+          />
+          <input
+            ref={imageInput}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            hidden
+            onChange={(e) => {
+              readImageFiles(e.target.files ?? []);
+              e.target.value = "";
+            }}
+          />
+          <span className={styles.spacer} />
+          {props.actions}
+        </div>
       </div>
     </div>
   );

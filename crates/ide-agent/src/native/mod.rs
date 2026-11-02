@@ -27,7 +27,8 @@ pub(crate) fn newest_install(command: &str) -> String {
     let path = ide_core::process::host_var_os("PATH")
         .or_else(|| ide_core::process::shell_env().find(|(k, _)| *k == "PATH").map(|(_, v)| v.to_owned()))
         .unwrap_or_default();
-    newest_install_in(command, &path)
+    // Windows: read afresh, so a tool the user installed since the IDE started is found too.
+    newest_install_in(command, &ide_core::process::with_user_path(&path))
 }
 
 fn newest_install_in(command: &str, search: &std::ffi::OsStr) -> String {

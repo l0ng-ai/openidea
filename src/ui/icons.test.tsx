@@ -64,6 +64,21 @@ describe("Icon", () => {
     expect(colour!.querySelectorAll("g")).toHaveLength(2);
   });
 
+  it("preserves the dedicated read/write palettes in both themes", () => {
+    for (const [name, light, dark] of [
+      ["show-read-access", "#369650", "#57965C"],
+      ["show-write-access", "#DB3B4B", "#DB5C5C"],
+    ] as const) {
+      const { container, unmount } = render(<Icon name={name} size={16} />);
+      const svg = container.querySelector("svg")!;
+      expect(svg.getAttribute("width")).toBe("16");
+      expect(svg.querySelectorAll("g")).toHaveLength(2);
+      expect(svg.innerHTML).toContain(light);
+      expect(svg.innerHTML).toContain(dark);
+      unmount();
+    }
+  });
+
   it("uses the 20px variant for large tool window icons", () => {
     const { container } = render(<Icon name="toolwindow-project" size={20} />);
     expect(container.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 20 20");
@@ -112,7 +127,7 @@ describe("fileIconName", () => {
     ["yarn.lock", "file-lock"],
     ["pnpm-lock.yaml", "file-lock"],
     ["Cargo.toml", "file-cargo"],
-    ["Cargo.lock", "file-lock"],
+    ["Cargo.lock", "file-cargo-lock"],
     ["poetry.lock", "file-lock"],
     ["Gemfile", "file-ruby"],
     ["Gemfile.lock", "file-lock"],
@@ -174,7 +189,7 @@ describe("fileIconName", () => {
     ["config.hcl", "file-hcl"],
     ["Jenkinsfile", "file-jenkins"],
     ["BUILD.bazel", "file-bazel"],
-    [".gitignore", "file-git"],
+    [".gitignore", "file-ignored"],
     [".editorconfig", "file-config"],
     [".env", "file-dotenv"],
     [".env.example", "file-dotenv"],

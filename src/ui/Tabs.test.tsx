@@ -71,6 +71,42 @@ describe("Tabs interactions", () => {
     expect(onClose).toHaveBeenCalledWith("b");
   });
 
+  it("Shift+left-click closes an editor tab without selecting it", () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} closeOnShiftClick />);
+    fireEvent.click(screen.getByRole("tab", { name: "B" }), { shiftKey: true, detail: 1 });
+    expect(onClose).toHaveBeenCalledWith("b");
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("Shift+click only closes closable tabs", () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} closeOnShiftClick />);
+    fireEvent.click(screen.getByRole("tab", { name: "C" }), { shiftKey: true, detail: 1 });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSelect).toHaveBeenCalledWith("c");
+  });
+
+  it("keeps Shift+click selection where the strip does not opt in", () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} />);
+    fireEvent.click(screen.getByRole("tab", { name: "B" }), { shiftKey: true, detail: 1 });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSelect).toHaveBeenCalledWith("b");
+  });
+
+  it("does not treat a keyboard click with Shift held as a close", () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} closeOnShiftClick />);
+    fireEvent.click(screen.getByRole("tab", { name: "B" }), { shiftKey: true });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSelect).toHaveBeenCalledWith("b");
+  });
+
   it("lets a container close the selected tab when it is closable", () => {
     const handles: TabStripHandle[] = [];
     const register = (h: TabStripHandle) => (handles.push(h), () => void handles.splice(handles.indexOf(h), 1));

@@ -21,6 +21,7 @@ function makeView(doc: string) {
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+const flushFrame = () => new Promise((r) => requestAnimationFrame(r));
 
 function gutterClasses(view: EditorView): string[] {
   return [...view.dom.querySelectorAll(".cm-lineNumbers .cm-gutterElement")].map((e) => e.className);
@@ -49,6 +50,32 @@ describe("breakpoint gutter", () => {
     updateBreakpoint(ctx.path, bp.id, { enabled: false });
     await flush();
     expect(view.dom.querySelector(`.${styles.disabled}`)?.textContent).toBe("4");
+  });
+});
+
+describe("output class gutter", () => {
+  it("disables ordinary, temporary and logging breakpoints and explains why", () => {
+    loadBreakpoints("/proj");
+    const path = "file:///proj/target/classes/C.class";
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "class C {}",
+        extensions: [
+          lineNumbers(),
+          breakpointGutter({ ...ctx, path, language: "java", readOnly: true, virtual: true }),
+        ],
+      }),
+      parent: document.body,
+    });
+    views.push(view);
+    const cell = view.dom.querySelector(".cm-lineNumbers .cm-gutterElement")!;
+    cell.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(cell.closest(".cm-gutters")?.getAttribute("title")).toMatch(/output classes without source code/);
+    for (const modifier of [{}, { altKey: true }, { shiftKey: true }]) {
+      cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, ...modifier }));
+      cell.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0, ...modifier }));
+    }
+    expect(breakpointsOf(path)).toHaveLength(0);
   });
 });
 
@@ -139,6 +166,60 @@ describe("breakpoint gutter clicks", () => {
 });
 
 describe("execution point", () => {
+  it("keeps the execution line synchronized if inline rendering throws", async () => {
+    useExecutionPoint.setState({ path: null, values: {} });
+    const errors: unknown[] = [];
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "x\nx\nx",
+        extensions: [executionPoint(ctx), EditorView.exceptionSink.of((e) => errors.push(e))],
+      }),
+      parent: document.body,
+    });
+    views.push(view);
+    const values: Record<string, string> = Object.defineProperty({}, "x", {
+      enumerable: true,
+      get() {
+        throw new Error("inline rendering failed");
+      },
+    });
+    useExecutionPoint.setState({ path: ctx.path, line: 0, top: true, values });
+    await flush();
+    expect(errors).toHaveLength(1);
+    useExecutionPoint.setState({ line: 2, values: {} });
+    await flush();
+    expect(view.dom.querySelectorAll(".cm-line")[2]!.className).toContain(styles.execLine);
+    useExecutionPoint.setState({ path: null });
+    await flush();
+    expect(view.dom.querySelector(`.${styles.execLine}`)).toBeNull();
+  });
+
+  it("keeps refreshing the execution line around Object.prototype names", async () => {
+    useExecutionPoint.setState({ path: null, values: {} });
+    const view = makeView("String text = Integer.toString(40);\nint count = 40;\ncount++;\ncount++;");
+    useExecutionPoint.setState({ path: ctx.path, line: 1, top: true, values: { text: "40" } });
+    await flush();
+    useExecutionPoint.setState({ line: 3, values: { text: "40", count: "42" } });
+    await flush();
+    expect(view.dom.querySelector(`.${styles.execLine}`)?.textContent).toContain("count++");
+    useExecutionPoint.setState({ path: null, values: {} });
+    await flush();
+    expect(view.dom.querySelector(`.${styles.execLine}`)).toBeNull();
+  });
+
+  it.each([2, null])("refreshes a cached editor state when remounted at %s", async (line) => {
+    useExecutionPoint.setState({ path: ctx.path, line: 0, top: true, values: {} });
+    const view = makeView("first\nsecond\nthird");
+    const state = view.state;
+    view.destroy();
+    views.splice(views.indexOf(view), 1);
+    useExecutionPoint.setState({ path: line == null ? null : ctx.path, line: line ?? 0, values: {} });
+    const restored = new EditorView({ state, parent: document.body });
+    views.push(restored);
+    await flush();
+    expect(restored.dom.querySelector(`.${styles.execLine}`)?.textContent ?? null).toBe(line == null ? null : "third");
+  });
+
   it("highlights the suspended line and shows inline values", async () => {
     const view = makeView("x = 1\ny = x + 1\nprint(y)");
     useExecutionPoint.setState({ path: ctx.path, line: 1, top: true, values: { x: "1", y: "2" } });
@@ -154,11 +235,12 @@ describe("execution point", () => {
 });
 
 describe("session events", () => {
-  it("tracks pause / continue / termination and publishes context keys", () => {
+  it("tracks pause / continue / termination and publishes context keys", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     adoptSession(77);
     handleDebugEvent(77, { kind: "output", category: "stdout", output: "hel" });
     handleDebugEvent(77, { kind: "output", category: "stdout", output: "lo\n" });
+    await flushFrame();
     expect(useDebug.getState().console[77]!.map((l) => l.text)).toEqual(["hello\n"]);
     expect(getContext().debugSessionActive).toBe(true);
     handleDebugEvent(77, {
@@ -181,7 +263,7 @@ describe("session events", () => {
     expect(getContext().debugSessionActive).toBe(false);
   });
 
-  it("ignores sessions this window did not start, but adopts children of its own", () => {
+  it("ignores sessions this window did not start, but adopts children of its own", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     adoptSession(90, { name: "app", adapter: "js-debug" });
     // Another window's session: no session, no console, no tool window.
@@ -202,6 +284,7 @@ describe("session events", () => {
     // A child the adapter of our session started is adopted with its parent.
     handleDebugEvent(92, { kind: "started", name: "worker", adapter: "js-debug", parent: 90 });
     handleDebugEvent(92, { kind: "output", category: "stdout", output: "child\n" });
+    await flushFrame();
     const child = useDebug.getState().sessions[92]!;
     expect([child.name, child.parent, child.status]).toEqual(["worker", 90, "running"]);
     expect(useDebug.getState().console[92]!.map((l) => l.text)).toEqual(["child\n"]);

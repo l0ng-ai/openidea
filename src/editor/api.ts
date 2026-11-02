@@ -21,6 +21,7 @@ import {
   Annotation,
   Compartment,
   Facet,
+  StateEffect,
   type EditorState,
   type Extension,
   type RangeSet,
@@ -42,7 +43,7 @@ export interface EditorDocContext {
   /**
    * A read-only virtual document (library class contents from a language
    * server); `path` is then its URI, not a file: skip file-based features
-   * (VCS, local history, TODO scanning, breakpoints…).
+   * (VCS, local history, TODO scanning…). JDT class documents support breakpoints.
    */
   virtual?: boolean;
 }
@@ -276,6 +277,33 @@ export class LaneMarker extends GutterMarker {
   }
 }
 
+/**
+ * The floating row at the editor's top-right (IDEA's inspection widget area): widgets
+ * append their element to it (CSS `order` sorts them; lower first) and remove it when
+ * done. The inspection widget sits there; code review adds its Review Mode group.
+ *
+ *   const el = document.createElement("div");
+ *   el.style.order = "-1";
+ *   editorCorner(view).appendChild(el);
+ */
+export function editorCorner(view: EditorView): HTMLElement {
+  const found = view.dom.querySelector<HTMLElement>(":scope > .cm-openidea-corner");
+  if (found) return found;
+  const el = document.createElement("div");
+  el.className = "cm-openidea-corner";
+  Object.assign(el.style, {
+    position: "absolute",
+    top: "4px",
+    right: "16px",
+    zIndex: "5",
+    display: "flex",
+    alignItems: "center",
+    gap: "4px",
+  });
+  view.dom.appendChild(el);
+  return el;
+}
+
 // --- language support without a language server ----------------------------------
 
 /**
@@ -305,12 +333,23 @@ export function contributedAt<T>(state: EditorState, key: string, pos: number): 
   return state.languageDataAt<T>(key, pos)[0];
 }
 
-/** A context action a feature offers at the caret, listed by Show Context Actions (⌥↵) before the language server's. */
+/** A context action a feature offers at the caret, listed by Show Context Actions (⌥↵). */
 export interface ContributedIntention {
   id: string;
   label: string;
   icon?: string;
+  quickFix?: boolean;
   run: () => void | Promise<void>;
+}
+
+/** A background provider has new context actions for the current document. */
+export const intentionsChanged = StateEffect.define<null>();
+
+/** Local fixes of a diagnostic range (hover link and Apply Quick Fix). */
+export const quickFixProviders = Facet.define<(view: EditorView, from: number, to: number) => ContributedIntention[]>();
+
+export function contributedQuickFixes(view: EditorView, from: number, to: number): ContributedIntention[] {
+  return view.state.facet(quickFixProviders).flatMap((provider) => provider(view, from, to));
 }
 
 /** Providers of `ContributedIntention`s for the caret of `view` (cheap and synchronous: also drives the light bulb). */

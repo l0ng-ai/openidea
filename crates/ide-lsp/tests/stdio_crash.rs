@@ -3,7 +3,7 @@
 #![cfg(unix)]
 
 use ide_core::event::ServerStatus;
-use ide_core::{DocId, IdeEvent, LanguageId};
+use ide_core::{CancellationToken, DocId, IdeEvent, LanguageId};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
 use ide_lsp::{LspManager, ProcessLauncher};
 use parking_lot::Mutex;
@@ -63,5 +63,42 @@ async fn crash_before_the_handshake_reports_what_the_server_printed() {
     assert!(message.contains("'python' is not recognized"), "{message}");
     // The stdout prompt, decoded (code page 936 on Windows, lossily elsewhere).
     assert!(message.contains(". . ."), "{message}");
+    mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_that_needs_a_crashed_jdtls_reports_why_it_crashed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let script = root.join("fake-jdtls");
+    std::fs::write(&script, LAUNCHER).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let server: LanguageServerConfig =
+        toml::from_str(&format!("name = \"jdtls\"\ncommand = {:?}", script.to_string_lossy())).unwrap();
+    let lang: LanguageConfig = toml::from_str("id = \"java\"\nname = \"Java\"\nextensions = [\"java\"]").unwrap();
+    let lang = LanguageConfig { language_servers: vec![server], ..lang };
+    let registry = Arc::new(LanguageRegistry::from_configs(vec![lang]));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let mgr = LspManager::with_launcher(root.clone(), registry, sink, Arc::new(ProcessLauncher));
+    let path = root.join("A.java");
+    std::fs::write(&path, "class A {}\n").unwrap();
+    mgr.did_open(DocId::next(), &path, &LanguageId::new("java"), 1, "class A {}\n");
+    for _ in 0..1000 {
+        let crashed =
+            events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServer { status: ServerStatus::Crashed, .. }));
+        if crashed {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let error = mgr.java_classpath(&path, false, &CancellationToken::new()).await.unwrap_err();
+    assert!(error.message.contains("jdtls exited with code 1"), "{}", error.message);
+    assert!(error.message.contains("'python' is not recognized"), "{}", error.message);
     mgr.shutdown_all().await;
 }

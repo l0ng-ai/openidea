@@ -2,7 +2,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
-import type { AgentChange, AgentEntry, AgentRetry, AgentTask, AgentUsage } from "@/bindings";
+import type { AgentChange, AgentEntry, AgentImage, AgentRetry, AgentTask, AgentUsage } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -27,9 +27,11 @@ import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
 import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
+import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft, retryParts, usageLabel, workTime } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
+import { ImagePreview, imageSrc } from "./ImagePreview";
 import { Markdown } from "./Markdown";
 import {
   branchLabel,
@@ -45,7 +47,6 @@ import {
   type SubagentEntry,
 } from "./model";
 import {
-  archiveTask,
   cancelTask,
   loadEntries,
   markVisible,
@@ -64,14 +65,24 @@ import {
   useAgents,
 } from "./store";
 import { setFocusedSession, focusedSession, type FocusedSession } from "./sessionFocus";
+import { taskMenu } from "./taskActions";
 import styles from "./Session.module.css";
 
-export function SessionEditor({ input }: { input: EditorInput }) {
+export function SessionEditor({ input, docked = false }: { input: EditorInput; docked?: boolean }) {
   const id = (input.data as { task: string }).task;
+  return <TaskSession key={id} id={id} docked={docked} />;
+}
+
+function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const task = useAgents((s) => s.tasks.get(id));
   const entries = useAgents((s) => s.entries.get(id));
   const changes = useAgents((s) => s.changes.get(id));
-  const head = useLocalHead(task?.isolation === "local" ? task.status : null);
+  const project = useProject((s) => s.project);
+  const head = useLocalHead(
+    task?.isolation === "local" ? task.status : null,
+    project?.workspace ? (task?.projectRoot ?? project.root) : null,
+  );
+  const [changesOpen, setChangesOpen] = useChangesOpen(id, changes ?? null, docked);
   // The subagent conversation shown, with the subagents that lead to it (empty: the task's own).
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
@@ -83,8 +94,10 @@ export function SessionEditor({ input }: { input: EditorInput }) {
   useEffect(() => {
     void loadEntries(id).catch(() => undefined);
     void refreshChanges(id);
-    return markVisible(id);
   }, [id]);
+  useEffect(() => {
+    if (!docked || !changesOpen) return markVisible(id);
+  }, [id, docked, changesOpen]);
   useEffect(() => {
     if (view) void loadEntries(id, view).catch(() => undefined);
   }, [id, view]);
@@ -106,7 +119,7 @@ export function SessionEditor({ input }: { input: EditorInput }) {
   if (!task) return <EmptyState title="This agent task no longer exists" />;
   return (
     <div
-      className={styles.session}
+      className={clsx(styles.session, docked && styles.docked)}
       onFocusCapture={() => setFocusedSession(session)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedSession() === session) {
@@ -114,8 +127,16 @@ export function SessionEditor({ input }: { input: EditorInput }) {
         }
       }}
     >
-      <div className={styles.conversation}>
-        <Header task={task} entries={entries ?? null} head={head} />
+      <div className={styles.conversation} hidden={docked && changesOpen}>
+        <Header
+          task={task}
+          entries={entries ?? null}
+          head={head}
+          changes={changes ?? null}
+          changesOpen={changesOpen}
+          onToggleChanges={() => setChangesOpen(!changesOpen)}
+          docked={docked}
+        />
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
         <PermissionBanner task={task} entries={entries ?? null} />
         <Stream
@@ -136,7 +157,15 @@ export function SessionEditor({ input }: { input: EditorInput }) {
           <SessionComposer task={task} entries={entries ?? null} onOpenSubagent={openSubagent} />
         )}
       </div>
-      <ChangesPane task={task} changes={changes ?? null} head={head} />
+      {changesOpen && (
+        <ChangesPane
+          task={task}
+          changes={changes ?? null}
+          head={head}
+          docked={docked}
+          onHide={() => setChangesOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -149,14 +178,14 @@ function providerName(id: string) {
  * Current branch of the project's repository for a local-checkout task (`status` is
  * `null` otherwise); followed as git changes, since the agent or the user may switch it.
  */
-function useLocalHead(status: AgentTask["status"] | null): string | null {
+function useLocalHead(status: AgentTask["status"] | null, root: string | null): string | null {
   const [head, setHead] = useState<string | null>(null);
   const local = status !== null;
   useEffect(() => {
     if (!local) return;
     let live = true;
     const load = () =>
-      void call(commands.vcsBranchInfo(null)).then(
+      void call(commands.vcsBranchInfo(root)).then(
         (b) => live && setHead(b.head ?? b.headCommit?.slice(0, 8) ?? null),
         () => live && setHead(null),
       );
@@ -166,24 +195,53 @@ function useLocalHead(status: AgentTask["status"] | null): string | null {
       live = false;
       off();
     };
-  }, [local, status]);
+  }, [local, status, root]);
   return local ? head : null;
 }
 
-function Header({ task, entries, head }: { task: AgentTask; entries: AgentEntry[] | null; head: string | null }) {
+function Header({
+  task,
+  entries,
+  head,
+  changes,
+  changesOpen,
+  onToggleChanges,
+  docked,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  head: string | null;
+  changes: AgentChange[] | null;
+  changesOpen: boolean;
+  onToggleChanges: () => void;
+  /** The tool window bar above a docked conversation already shows the title. */
+  docked?: boolean;
+}) {
+  const project = useProject((s) => s.project);
+  const projectName = project?.workspace ? basename(task.projectRoot ?? project.root) : null;
+  const count = changes?.length ?? 0;
   const busy = isBusy(task.status);
   const where = task.isolation === "worktree" ? branchLabel(task.branch) : null;
   return (
-    <div className={styles.header}>
+    <div
+      className={styles.header}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        showContextMenu(e, taskMenu([task]));
+      }}
+    >
       <TaskStatusIcon status={task.status} />
-      <span className={styles.title} title={task.title}>
-        {task.title}
-      </span>
+      {!docked && (
+        <span className={styles.title} title={task.title}>
+          {task.title}
+        </span>
+      )}
       <span className={styles.headerDetail} title={task.cwd}>
         <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
         <span className={styles.headerText}>
           {providerName(task.provider)}
           {task.model ? ` · ${task.model}` : ""}
+          {projectName ? ` · ${projectName}` : ""}
           {" · "}
           {where ?? (
             <>
@@ -204,21 +262,27 @@ function Header({ task, entries, head }: { task: AgentTask; entries: AgentEntry[
         size="small"
         onClick={() => void executeAction("terminal.openAt", task.cwd)}
       />
-      {!busy && task.status !== "archived" && task.capabilities?.fork && (
+      {task.status === "archived" && (
         <IconButton
-          icon="branch"
-          title="Copy to a New Task"
+          icon="undo"
+          title="Unarchive Task"
           size="small"
-          onClick={() =>
-            void forkTask(task.id, null).catch((e: unknown) =>
-              notifications().notify({ level: "error", title: "Couldn't copy the task", body: String(e) }),
-            )
-          }
+          action="agents.unarchiveTasks"
+          actionArg={[task.id]}
         />
       )}
-      {!busy && task.status !== "archived" && (
-        <IconButton icon="close" title="Archive Task" size="small" onClick={() => void archiveTask(task.id)} />
-      )}
+      <button
+        type="button"
+        className={styles.changesToggle}
+        aria-pressed={changesOpen}
+        disabled={count === 0 && !changesOpen}
+        aria-label={changesOpen ? tx("Hide changes") : tx("Show changes")}
+        title={changesOpen ? tx("Hide changes") : tx("Show changes")}
+        onClick={onToggleChanges}
+      >
+        <Icon name="toolwindow-changes" size={14} />
+        {count > 0 && <span>{count}</span>}
+      </button>
     </div>
   );
 }
@@ -327,11 +391,29 @@ interface StreamProps {
 function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
-  const stick = useRef(true);
+  const key = entriesKey(task.id, subagent?.id ?? null);
+  const positions = useAgents.getState().scrollPositions;
+  const position = useRef(positions.get(key) ?? { top: 0, stick: true });
+  const restored = useRef(false);
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
+    if (!el || entries === null) return;
+    if (position.current.stick) el.scrollTop = el.scrollHeight;
+    else if (!restored.current) el.scrollTop = position.current.top;
+    restored.current = true;
   });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      if (position.current.stick) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
+    };
+  }, [key, positions]);
   const waiting = entries?.some((e) => e.type === "permission" && !e.chosen);
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
@@ -346,7 +428,8 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         tabIndex={-1}
         onScroll={(e) => {
           const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          position.current = { top: el.scrollTop, stick: el.scrollHeight - el.scrollTop - el.clientHeight < 40 };
+          positions.set(key, position.current);
         }}
         // Copy, plus Quote for a selection: replies to it in the composer.
         onContextMenu={(e) => {
@@ -698,22 +781,27 @@ function UserMessage({
     return (
       <MessageEditor
         initial={entry.text}
+        initialImages={entry.images ?? []}
         later={turn < turnCount - 1}
         onCancel={() => setEditing(false)}
-        onSend={async (text) => {
-          await rerunFrom(task.id, turn, text);
+        onSend={async (text, images) => {
+          await rerunFrom(task.id, turn, text, images);
           setEditing(false);
         }}
       />
     );
   }
+  const images = entry.images ?? [];
+  // Images are listed after the files in `attachments` and shown as thumbnails instead.
+  const files = entry.attachments.slice(0, entry.attachments.length - images.length);
   return (
     <div className={styles.message}>
       <div className={styles.user}>
         {entry.text}
-        {entry.attachments.length > 0 && (
+        <ImageStrip images={images} />
+        {files.length > 0 && (
           <div className={styles.attachments}>
-            {entry.attachments.map((a, i) => (
+            {files.map((a, i) => (
               <span key={i} className={styles.attachment}>
                 <Icon name={fileIconName(a)} size={12} />
                 {a}
@@ -744,7 +832,9 @@ function UserMessage({
               title={inPlace ? "Run Again From Here" : "Send Again"}
               size="small"
               onClick={() =>
-                void (inPlace ? rerunFrom(task.id, turn, entry.text) : resendMessage(task.id, entry.text)).catch(fail)
+                void (
+                  inPlace ? rerunFrom(task.id, turn, entry.text, images) : resendMessage(task.id, entry.text)
+                ).catch(fail)
               }
             />
           )}
@@ -765,28 +855,31 @@ function UserMessage({
 /** An earlier message edited where it is: sending runs the conversation again from it. */
 function MessageEditor({
   initial,
+  initialImages,
   later,
   onCancel,
   onSend,
 }: {
   initial: string;
+  initialImages: AgentImage[];
   /** Turns follow it (they are dropped on send). */
   later: boolean;
   onCancel: () => void;
-  onSend: (text: string) => Promise<void>;
+  onSend: (text: string, images: AgentImage[]) => Promise<void>;
 }) {
   const tx = useTx();
   const [text, setText] = useState(initial);
+  const [images, setImages] = useState(initialImages);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pending = useRef(false);
   const send = async () => {
-    if (!text.trim() || pending.current) return;
+    if ((!text.trim() && images.length === 0) || pending.current) return;
     pending.current = true;
     setSending(true);
     setError(null);
     try {
-      await onSend(text.trim());
+      await onSend(text.trim(), images);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) });
@@ -818,6 +911,7 @@ function MessageEditor({
           }
         }}
       />
+      <ImageStrip images={images} onRemove={sending ? undefined : (i) => setImages(images.filter((_, j) => j !== i))} />
       {error && (
         <div className={styles.error} role="alert">
           <Icon name="error" size={14} />
@@ -836,12 +930,48 @@ function MessageEditor({
           <Button size="small" disabled={sending} onClick={onCancel}>
             Cancel
           </Button>
-          <Button size="small" variant="primary" disabled={!text.trim() || sending} onClick={() => void send()}>
-            {sending && <Spinner size={12} />}
-            <T>Send</T>
-          </Button>
+          <SubmitButton
+            label="Send"
+            pending={sending}
+            disabled={(!text.trim() && images.length === 0) || sending}
+            onClick={() => void send()}
+          />
         </span>
       </div>
+    </div>
+  );
+}
+
+/** Image thumbnails; a click opens the full image, `onRemove` adds a remove button to each. */
+function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemove?: (index: number) => void }) {
+  const tx = useTx();
+  const [open, setOpen] = useState<AgentImage | null>(null);
+  if (images.length === 0) return null;
+  return (
+    <div className={styles.images}>
+      {images.map((img, i) => (
+        <span key={i} className={styles.imageItem}>
+          <button
+            type="button"
+            className={styles.imageButton}
+            title={img.name ?? undefined}
+            onClick={() => setOpen(img)}
+          >
+            <img className={styles.image} src={imageSrc(img)} alt={img.name ?? tx("Image")} />
+          </button>
+          {onRemove && (
+            <button
+              type="button"
+              className={styles.removeImage}
+              aria-label={tx("Remove Image")}
+              onClick={() => onRemove(i)}
+            >
+              <Icon name="close" size={10} />
+            </button>
+          )}
+        </span>
+      ))}
+      <ImagePreview image={open} onClose={() => setOpen(null)} />
     </div>
   );
 }
@@ -1064,6 +1194,16 @@ function SessionComposer({
     );
   return (
     <div className={styles.composerArea}>
+      {task.status === "archived" && (
+        <div className={styles.banner}>
+          <span className={styles.bannerText}>
+            <T>This task is archived. Unarchive it to continue the conversation.</T>
+          </span>
+          <Button size="small" onClick={() => void executeAction("agents.unarchiveTasks", [task.id])}>
+            Unarchive
+          </Button>
+        </div>
+      )}
       <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
       {task.queue.length > 0 && <Queue task={task} />}
       <Composer
@@ -1085,14 +1225,13 @@ function SessionComposer({
                 Stop
               </Button>
             )}
-            <Button
-              size="small"
+            <SubmitButton
+              label={busy ? "Queue" : "Send"}
+              pending={sending}
               variant={busy ? "secondary" : "primary"}
               disabled={!canSend(composer) || sending || task.status === "archived"}
               onClick={() => send(false)}
-            >
-              {busy ? "Queue" : "Send"}
-            </Button>
+            />
           </>
         }
       />
@@ -1146,13 +1285,65 @@ const KIND_COLOR: Partial<Record<AgentChange["kind"], string>> = {
   conflicted: "var(--vcs-conflict)",
 };
 
-function ChangesPane({ task, changes, head }: { task: AgentTask; changes: AgentChange[] | null; head: string | null }) {
+const CHANGES_OPEN_KEY = "openidea.agents.changesOpen.v1";
+
+function loadChangesOpen(): Record<string, boolean> {
+  try {
+    const raw = globalThis.localStorage?.getItem(CHANGES_OPEN_KEY);
+    const v: unknown = raw ? JSON.parse(raw) : {};
+    return v && typeof v === "object" ? (v as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Whether the Changes pane is shown for `task`: the user's choice once made, else
+ * only while the task has changes. Docked sessions stay in the conversation until
+ * the user explicitly opens changes; navigation there does not change editor preferences.
+ */
+function useChangesOpen(
+  task: string,
+  changes: AgentChange[] | null,
+  docked: boolean,
+): [boolean, (open: boolean) => void] {
+  const [state, setState] = useState<{ task: string; open: boolean | undefined }>(() => ({
+    task,
+    open: docked ? false : loadChangesOpen()[task],
+  }));
+  const chosen = state.task === task ? state.open : docked ? false : loadChangesOpen()[task];
+  const set = (open: boolean) => {
+    setState({ task, open });
+    if (docked) return;
+    try {
+      globalThis.localStorage?.setItem(CHANGES_OPEN_KEY, JSON.stringify({ ...loadChangesOpen(), [task]: open }));
+    } catch {
+      /* storage unavailable */
+    }
+  };
+  return [chosen ?? (changes?.length ?? 0) > 0, set];
+}
+
+function ChangesPane({
+  task,
+  changes,
+  head,
+  docked,
+  onHide,
+}: {
+  task: AgentTask;
+  changes: AgentChange[] | null;
+  head: string | null;
+  docked: boolean;
+  onHide: () => void;
+}) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
       <div className={styles.changesHeader}>
+        {docked && <IconButton icon="arrow-left" title="Back to conversation" size="small" onClick={onHide} />}
         <span className={styles.changesTitle}>
           <T>Changes</T>
         </span>
@@ -1163,6 +1354,7 @@ function ChangesPane({ task, changes, head }: { task: AgentTask; changes: AgentC
         )}
         <span className={styles.bannerSpacer} />
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshChanges(task.id)} />
+        {!docked && <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />}
       </div>
       {(head ?? task.base) && (
         <div className={styles.changesSummary}>

@@ -777,7 +777,7 @@ fn add_to_vcs_annotate_and_history() {
     repo.stage(&[fx.path("new/b.txt")]).unwrap();
     assert_eq!(status_of(&repo.status().unwrap(), "new/b.txt").unwrap().staged, Some(ChangeKind::Added));
 
-    let blame = repo.blame(&fx.path("a.txt"), Some("1\nchanged\nunsaved\n"), encoding_rs::UTF_8).unwrap();
+    let blame = repo.blame(&fx.path("a.txt"), Some("1\nchanged\nunsaved\n"), None, encoding_rs::UTF_8).unwrap();
     assert_eq!(blame.len(), 3);
     assert_eq!(blame[0].commit, first);
     assert_eq!(blame[1].commit, second);

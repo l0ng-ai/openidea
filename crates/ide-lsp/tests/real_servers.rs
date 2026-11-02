@@ -55,10 +55,58 @@ fn lang(id: &str, ext: &str, server: LanguageServerConfig) -> LanguageConfig {
         indent: None,
         ui_mode: None,
         framework_ui_modes: Vec::new(),
+        formatter: None,
         tree_sitter: None,
         language_servers: vec![server],
         debugger: None,
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires jdtls on PATH and a compatible JDK"]
+async fn intellij_java_formatter_preserves_manual_breaks_and_wraps_long_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let source = include_str!("fixtures/FormatterSample.input.java");
+    let expected = include_str!("fixtures/FormatterSample.intellij.java");
+    let path = root.join("src/demo/FormatterSample.java");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, source).unwrap();
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    let server = &mut java.language_servers[0];
+    if let Ok(bin) = std::env::var("OPENIDEA_TEST_JDTLS") {
+        server.command = bin;
+    }
+    server.args.extend(["-data".into(), root.join("jdtls-workspace").to_string_lossy().into_owned()]);
+    server.settings = Some(serde_json::json!({"java": {"autobuild": {"enabled": false}}}));
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    mgr.set_config_hook(Box::new({
+        let root = root.clone();
+        move |cfg, _| {
+            ide_lsp::jdtls::configure_source_paths(cfg, Some(vec!["src".into()]));
+            let style = ide_core::editor_settings::LanguageCodeStyle {
+                formatter: Some("intellij".into()),
+                ..Default::default()
+            };
+            ide_lsp::jdtls::configure_formatter(cfg, Some(&style), &root, &root.join("data"), None).unwrap();
+        }
+    }));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("java"), 1, source);
+    retry("jdtls ready", Duration::from_secs(120), || {
+        let status = last_status(&events, "jdtls");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+            panic!("jdtls failed: {msg:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+    let edits =
+        mgr.format(doc, None, ide_lsp::types::FormatOptions { tab_size: 4, insert_spaces: true, on_save: false }).await;
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+    let mut document = ide_text::Document::new(source);
+    document.apply_edits(&edits.unwrap()).unwrap();
+    assert_eq!(document.text(), expected);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -78,6 +126,7 @@ async fn missing_binary_is_reported_with_install_hint() {
         fallback: false,
         max_java: None,
         launch_error: None,
+        tsserver_project: false,
     };
     let (mgr, events) = manager(dir.path(), LanguageRegistry::from_configs(vec![lang("nope", "nope", server)]));
     let path = dir.path().join("a.nope");
@@ -247,6 +296,7 @@ async fn typescript_language_server_end_to_end() {
         fallback: false,
         max_java: None,
         launch_error: None,
+        tsserver_project: false,
     };
     let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![lang("typescript", "ts", server)]));
     let doc = DocId::next();
@@ -292,12 +342,13 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
         fallback: false,
         max_java: None,
         launch_error: None,
+        tsserver_project: false,
     }
 }
 
 /// Vue Language Server 3 in hybrid mode: its `tsserver/request`s go through the
 /// client to vtsls with `@vue/typescript-plugin` (issue #25). Set
-/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vue/language-server typescript@"<7" @vtsls/language-server`.
+/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vue/language-server typescript@6 @vtsls/language-server`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires @vue/language-server and @vtsls/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
 async fn vue_hybrid_mode_end_to_end() {
@@ -444,13 +495,13 @@ async fn angular_language_server_end_to_end() {
     let count = Pos::new(4, 20);
     let range = mgr.prepare_rename(inline, count).await.unwrap();
     assert_eq!(range, Some(Range::new(Pos::new(4, 19), Pos::new(4, 24))));
-    let edit = mgr.rename(inline, count, "total".into()).await.unwrap();
+    let edit = mgr.rename(inline, count, "total".into(), Default::default()).await.unwrap().edit;
     assert_eq!(edited_lines(&edit, &inline_ts), [4, 7], "{edit:?}");
 
     // `title` in the class, which both servers rename: vtsls's edit and the
     // template's from the Angular server.
     let title = Pos::new(7, 3);
-    let edit = mgr.rename(ts, title, "heading".into()).await.unwrap();
+    let edit = mgr.rename(ts, title, "heading".into(), Default::default()).await.unwrap().edit;
     assert_eq!((edited_lines(&edit, &app_ts), edited_lines(&edit, &app_html)), (vec![7], vec![0]), "{edit:?}");
     // Its usage in the template, the declaration left out, from either file.
     for (doc, pos) in [(ts, title), (html, Pos::new(0, 8))] {

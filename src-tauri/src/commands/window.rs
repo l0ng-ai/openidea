@@ -9,7 +9,7 @@ use specta::Type;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, State, WebviewWindow};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
@@ -37,6 +37,19 @@ pub async fn window_open_files(
     files: Vec<PathBuf>,
 ) -> IdeResult<Vec<ide_core::IpcPath>> {
     Ok(windows::open_files_window(&app, window.label(), files))
+}
+
+/// Detaches an editor tab: opens `file` in a forced new window (`project`, None
+/// for LightEdit, decided by the caller), bypassing the focus-an-existing-window
+/// routing of [`window_open_project`] / [`window_open_files`].
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_file_in_new_window(
+    app: AppHandle,
+    project: Option<PathBuf>,
+    file: PathBuf,
+) -> IdeResult<OpenOutcome> {
+    windows::open_file_in_new_window(&app, project, file)
 }
 
 /// [`window_open_project`] for folder `path` on the host of SSH configuration
@@ -87,6 +100,20 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     let on = !window.is_fullscreen().map_err(|e| IdeError::internal(e.to_string()))?;
     window.set_fullscreen(on).map_err(|e| IdeError::internal(e.to_string()))?;
     Ok(on)
+}
+
+/// Height of the web title bar in native logical pixels (CSS height × IDE zoom).
+#[tauri::command]
+#[specta::specta]
+pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResult<()> {
+    if !height.is_finite() || !(1.0..=1000.0).contains(&height) {
+        return Err(IdeError::invalid("invalid title bar height"));
+    }
+    #[cfg(target_os = "macos")]
+    crate::titlebar::set_height(&window, height).map_err(|e| IdeError::internal(e.to_string()))?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+    Ok(())
 }
 
 /// What this window was opened for (taken once).
@@ -145,21 +172,21 @@ pub fn window_close_context(app: AppHandle, windows: State<'_, WindowsState>) ->
 #[tauri::command]
 #[specta::specta]
 pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
+    if windows.quitting() {
+        return;
+    }
     windows.set_quitting(true);
-    let all = app.webview_windows();
-    if all.is_empty() {
-        app.exit(0);
-    }
-    for w in all.values() {
-        let _ = w.close();
-    }
+    windows::continue_quit(&app, None);
 }
 
 /// A window vetoed the quit (user cancelled its unsaved-changes prompt).
 #[tauri::command]
 #[specta::specta]
-pub fn app_cancel_quit(windows: State<'_, WindowsState>) {
+pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     windows.set_quitting(false);
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::window_groups::persist(&app).await;
+    });
 }
 
 /// Sets the menu's labels / shortcut text (on locale or keymap change) and rebuilds it.

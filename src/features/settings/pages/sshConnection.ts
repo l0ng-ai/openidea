@@ -17,13 +17,6 @@ export function sshTestRemedy(kind: string | undefined, message: string, auth: S
   return null;
 }
 
-/** "Password" or "Passphrase", from the configuration and the prompt. */
-export function secretKind(auth: SshAuthValid, message = ""): "password" | "passphrase" {
-  if (/passphrase|decrypt/.test(message)) return "passphrase";
-  if (/password/.test(message)) return "password";
-  return auth === "password" ? "password" : "passphrase";
-}
-
 /** A port typed in the Port field (empty or invalid: the default). */
 export function parseSshPort(text: string): number | null {
   if (!/^\s*\d+\s*$/.test(text)) return null;

@@ -149,6 +149,17 @@ export function modeIcon(mode: string): string {
   return "lock";
 }
 
+/** The settings that approve everything without asking (a bypass mode, or approvals), by option id. */
+export function bypassDefaults(config: readonly AgentConfigOption[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  const mode = modeOption(config);
+  const unlock = mode?.values.find((v) => modeIcon(v.value) === "unlock");
+  if (mode && unlock) out[mode.id] = unlock.value;
+  const approval = config.find((o) => o.category === "approval");
+  if (approval?.values.some((v) => v.value === "bypass")) out[approval.id] = "bypass";
+  return out;
+}
+
 /** Shift+Tab: the mode after the current one. */
 export function nextValue(option: AgentConfigOption, current = option.current): string | null {
   if (!option.values.length) return null;

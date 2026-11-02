@@ -36,8 +36,16 @@ fn deliver(client: Option<&str>, event: PluginEvent) {
 }
 
 /// Creates the host over `<app-data>/plugins` and loads installed plugins in the background.
-pub fn create_host(_app: &AppHandle, data_dir: &Path) -> IdeResult<Arc<PluginHost>> {
+pub fn create_host(
+    _app: &AppHandle,
+    data_dir: &Path,
+    project_host: &Arc<ide_host::Host>,
+) -> IdeResult<Arc<PluginHost>> {
     let host = Arc::new(PluginHost::new(data_dir.join("plugins"), Arc::new(deliver), Limits::default())?);
+    let weak = Arc::downgrade(project_host);
+    host.set_project_policy(Arc::new(move |root| {
+        weak.upgrade().is_some_and(|host| host.trust.trusted(root).unwrap_or(false))
+    }));
     let loader = host.clone();
     std::thread::Builder::new().name("plugin-load".into()).spawn(move || loader.load_all())?;
     Ok(host)

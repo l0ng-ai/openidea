@@ -51,6 +51,19 @@ export interface DragSession {
   cancel(): void;
 }
 
+/**
+ * Whether client point (`x`, `y`) is outside `rect` (the window's viewport):
+ * a tab drag released there detaches into a new window instead of reordering.
+ * Pure, so detach tests don't need a DOM.
+ */
+export function isOutsideWindow(
+  rect: { left: number; top: number; right: number; bottom: number },
+  x: number,
+  y: number,
+): boolean {
+  return x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom;
+}
+
 export function dragSession(data: DragData): DragSession {
   let current: DropTarget | null = null;
   const enter = (t: DropTarget | null) => {
@@ -84,16 +97,25 @@ export function setDragRequiresAlt(fn: () => boolean) {
 }
 export const dragRequiresAlt = () => requiresAlt();
 
+export interface PointerDrop {
+  x: number;
+  y: number;
+  /** True when a registered target accepted the drop. */
+  accepted: boolean;
+}
+
 /**
  * Starts a drag from a primary-button press on `source` once the pointer moved
  * past the threshold; a ghost copy of `source` follows the pointer. Escape
- * cancels. `onEnd` gets whether the drag happened (to swallow the click).
+ * cancels. `onEnd` gets whether the drag happened (to swallow the click) and,
+ * when it did, where the pointer was released and whether a target accepted it
+ * (an editor tab released outside the window detaches into a new window).
  */
 export function startPointerDrag(
   e: { button: number; clientX: number; clientY: number; altKey: boolean },
   source: HTMLElement,
   data: DragData,
-  opts: { onStart?: () => void; onEnd?: (dragged: boolean) => void } = {},
+  opts: { onStart?: () => void; onEnd?: (dragged: boolean, drop?: PointerDrop) => void } = {},
 ) {
   if (e.button !== 0 || (requiresAlt() && !e.altKey)) return;
   const start = { x: e.clientX, y: e.clientY };
@@ -124,8 +146,12 @@ export function startPointerDrag(
   const onUp = (ev: PointerEvent) => {
     const dragged = !!ghost;
     cleanup();
-    if (dragged) session.drop(ev.clientX, ev.clientY);
-    opts.onEnd?.(dragged);
+    if (!dragged) {
+      opts.onEnd?.(false);
+      return;
+    }
+    const accepted = session.drop(ev.clientX, ev.clientY);
+    opts.onEnd?.(true, { x: ev.clientX, y: ev.clientY, accepted });
   };
   const onKey = (ev: KeyboardEvent) => {
     if (ev.key !== "Escape" || !ghost) return;
@@ -153,4 +179,5 @@ export function startPointerDrag(
   window.addEventListener("pointerup", onUp);
   window.addEventListener("pointercancel", onCancel);
   window.addEventListener("keydown", onKey, true);
+  return onCancel;
 }

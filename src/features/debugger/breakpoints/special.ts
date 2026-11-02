@@ -5,6 +5,7 @@
  * them. Entries remember the source line they were created on for the gutter icon.
  */
 import { create } from "zustand";
+import { useProject } from "@/platform/project";
 import { call, commands, isTauri, type DataBreakpoint, type FunctionBreakpoint } from "@/platform/ipc";
 import { newBreakpointId, type BreakpointStatus } from "./model";
 import { useBreakpoints } from "./store";
@@ -121,7 +122,7 @@ function scheduleSync() {
 }
 
 export async function syncSpecial() {
-  if (!isTauri()) return;
+  if (!isTauri() || !useSpecialBreakpoints.getState().root || useProject.getState().project?.trusted === false) return;
   const { methods, fields } = useSpecialBreakpoints.getState();
   const muted = useBreakpoints.getState().muted;
   try {

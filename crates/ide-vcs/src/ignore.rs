@@ -33,17 +33,20 @@ pub fn add_to_ignore(paths: &[PathBuf], destination: IgnoreDestination) -> IdeRe
         if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(IdeError::invalid("Select an absolute path without '..'"));
         }
-        no_symlinks(path)?;
         let meta = fs::symlink_metadata(path)?;
-        if !meta.is_file() && !meta.is_dir() {
+        // A symlink or junction is one entry to Git: ignore its name, not its target,
+        // and never trail it with '/' (which matches directories only).
+        let link = is_link(&meta);
+        if !link && !meta.is_file() && !meta.is_dir() {
             return Err(IdeError::invalid("Only regular files and directories can be ignored"));
         }
+        let directory = !link && meta.is_dir();
         // A selected nested repository directory is an entry of its enclosing repository.
         let start = path.parent().ok_or_else(|| IdeError::invalid("Cannot ignore a filesystem root"))?;
         let repo = Repo::discover(start)?.ok_or_else(|| IdeError::invalid("Selection is not in a Git repository"))?;
         let rel =
             path.strip_prefix(repo.root()).map_err(|_| IdeError::invalid("Selection is outside its repository"))?;
-        let literal = pattern(rel, meta.is_dir())?;
+        let literal = pattern(rel, directory)?;
         if rel.components().any(|c| c.as_os_str() == ".git") {
             return Err(IdeError::invalid("Git administration files cannot be ignored"));
         }
@@ -60,10 +63,14 @@ pub fn add_to_ignore(paths: &[PathBuf], destination: IgnoreDestination) -> IdeRe
         let literal_query = format!("./{rel_str}");
         let ignored = cli::run_raw(repo.root(), &["check-ignore", "-q", "--", &literal_query], None)?;
         match ignored.code {
+            // Already ignored: unchanged, and nothing needs to be written or opened.
             Some(0) => continue,
             Some(1) => {}
             _ => return Err(IdeError::invalid(ignored.stdout_str() + &String::from_utf8_lossy(&ignored.stderr))),
         }
+        // Only paths that are about to be written are held to the stricter rule: a
+        // symlinked ancestor can put the rule or the ignore file in another repository.
+        no_symlinked_ancestors(path)?;
         verify.push((repo.root().to_path_buf(), rel_str.to_owned()));
         let (file, rule, base) = match destination {
             IgnoreDestination::LocalExclude => {
@@ -89,7 +96,7 @@ pub fn add_to_ignore(paths: &[PathBuf], destination: IgnoreDestination) -> IdeRe
                     .take_while(|p| p.starts_with(repo.root()))
                     .find(|p| p.join(".gitignore").symlink_metadata().is_ok())
                     .unwrap_or(repo.root());
-                (base.join(".gitignore"), pattern(path.strip_prefix(base).unwrap(), meta.is_dir())?, base)
+                (base.join(".gitignore"), pattern(path.strip_prefix(base).unwrap(), directory)?, base)
             }
         };
         no_symlinks(file.parent().unwrap())?;
@@ -97,7 +104,7 @@ pub fn add_to_ignore(paths: &[PathBuf], destination: IgnoreDestination) -> IdeRe
         edits.entry(file).or_default().push(IgnoreRule {
             pattern: rule,
             relative: path.strip_prefix(base).unwrap().to_path_buf(),
-            directory: meta.is_dir(),
+            directory,
         });
     }
     let mut changed = Vec::new();
@@ -151,6 +158,40 @@ fn pattern(path: &Path, directory: bool) -> IdeResult<String> {
         rule.push('/');
     }
     Ok(rule)
+}
+
+/// A symlink, or a Windows reparse point such as a junction, is a single entry for Git.
+fn is_link(meta: &fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Junctions and mount points are reparse points that `file_type` may report as directories.
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// The selected entry itself may be a link (its name is all that gets ignored);
+/// an ancestor may not: the rule would describe a path Git does not see.
+fn no_symlinked_ancestors(path: &Path) -> IdeResult<()> {
+    for part in path.ancestors().skip(1) {
+        match fs::symlink_metadata(part) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(IdeError::invalid(format!("Refusing symlink path: {}", part.display())));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Refuse symlinked ancestors too: writing through them could affect another repository.

@@ -9,6 +9,7 @@
 mod angular;
 mod caps;
 mod convert;
+mod external_project;
 mod file_ops;
 mod handler;
 mod inspect;
@@ -75,6 +76,8 @@ pub type ApplyEditHook = Arc<dyn Fn(WorkspaceEdit) -> bool + Send + Sync>;
 /// settings before each launch; receives the server's workspace root.
 pub type ConfigFn = dyn Fn(&mut LanguageServerConfig, &Path) + Send + Sync;
 pub type ConfigHook = Arc<ConfigFn>;
+/// Prepares dependencies on a blocking worker immediately before launching an installed server.
+pub type PrepareFn = dyn Fn(&LanguageServerConfig, &Path, &CancellationToken) + Send + Sync;
 /// The servers a language uses, from its definition's list (user settings
 /// disable some and add others).
 pub type ServersFn = dyn Fn(&LanguageId, &[LanguageServerConfig]) -> Vec<LanguageServerConfig> + Send + Sync;
@@ -87,6 +90,8 @@ struct Attached {
 
 struct DocState {
     path: PathBuf,
+    /// `path` with links resolved, to recognise a document under another name.
+    canonical: PathBuf,
     uri: lsp::Uri,
     language: LanguageId,
     version: i32,
@@ -124,6 +129,7 @@ impl Target {
 }
 
 struct DocSnap {
+    version: i32,
     path: PathBuf,
     uri: lsp::Uri,
     language: LanguageId,
@@ -155,6 +161,7 @@ impl DocSnap {
 pub struct LspManager {
     me: Weak<LspManager>,
     project_root: PathBuf,
+    content_roots: RwLock<Vec<PathBuf>>,
     languages: Arc<LanguageRegistry>,
     sink: SharedSink,
     launcher: Arc<dyn Launcher>,
@@ -162,10 +169,15 @@ pub struct LspManager {
     servers: Mutex<Vec<Arc<Server>>>,
     docs: Mutex<HashMap<DocId, DocState>>,
     apply_edit_hook: RwLock<Option<ApplyEditHook>>,
+    applied_edits: tokio::sync::broadcast::Sender<(ide_core::ServerId, WorkspaceEdit)>,
     config_hook: RwLock<Option<ConfigHook>>,
+    prepare_hook: RwLock<Option<Arc<PrepareFn>>>,
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
+    excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
     shutting_down: AtomicBool,
+    execution_allowed: AtomicBool,
+    java_usages_warned: AtomicBool,
     /// `window/showMessage` texts already surfaced; servers repeat them on every restart/reconfigure.
     shown_messages: Mutex<HashSet<(String, String)>>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
@@ -283,6 +295,7 @@ impl LspManager {
         Arc::new_cyclic(|me| Self {
             me: me.clone(),
             project_root,
+            content_roots: RwLock::new(Vec::new()),
             languages,
             sink,
             launcher,
@@ -290,10 +303,15 @@ impl LspManager {
             servers: Mutex::new(Vec::new()),
             docs: Mutex::new(HashMap::new()),
             apply_edit_hook: RwLock::new(None),
+            applied_edits: tokio::sync::broadcast::channel(64).0,
             config_hook: RwLock::new(None),
+            prepare_hook: RwLock::new(None),
             servers_hook: RwLock::new(None),
             candidates_hook: RwLock::new(None),
+            excludes_hook: RwLock::new(None),
             shutting_down: AtomicBool::new(false),
+            execution_allowed: AtomicBool::new(true),
+            java_usages_warned: AtomicBool::new(false),
             shown_messages: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
@@ -302,9 +320,24 @@ impl LspManager {
 
     // ---- server lookup & lifecycle ----
 
+    pub fn set_content_roots(&self, roots: Vec<PathBuf>) {
+        *self.content_roots.write() = roots;
+    }
+
+    fn project_root_for(&self, path: &Path) -> PathBuf {
+        self.content_roots
+            .read()
+            .iter()
+            .chain(std::iter::once(&self.project_root))
+            .filter(|root| path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
+            .unwrap_or_else(|| self.project_root.clone())
+    }
+
     fn server_for(&self, cfg: &LanguageServerConfig, language: &LanguageId, path: &Path) -> Arc<Server> {
         let mut servers = self.servers.lock();
-        let root = launch::find_root(&self.project_root, path, &cfg.root_markers).unwrap_or_else(|| {
+        let root = launch::find_root(&self.project_root_for(path), path, &cfg.root_markers).unwrap_or_else(|| {
             // Outside the project (library sources, …): reuse a running instance.
             servers
                 .iter()
@@ -332,7 +365,9 @@ impl LspManager {
             if sc.fallback && available_before {
                 continue;
             }
-            if sc.require_root_marker && launch::marked_root(&self.project_root, path, &sc.root_markers).is_none() {
+            if sc.require_root_marker
+                && launch::marked_root(&self.project_root_for(path), path, &sc.root_markers).is_none()
+            {
                 continue;
             }
             let server = self.server_for(sc, language, path);
@@ -344,6 +379,9 @@ impl LspManager {
 
     /// The definitions of the servers `language` uses.
     fn language_servers(&self, language: &LanguageId) -> Vec<LanguageServerConfig> {
+        if !self.execution_allowed.load(Ordering::Acquire) {
+            return Vec::new();
+        }
         let Some(cfg) = self.languages.get(language) else { return Vec::new() };
         match self.servers_hook.read().clone() {
             Some(hook) => hook(language, &cfg.language_servers),
@@ -390,7 +428,7 @@ impl LspManager {
     }
 
     fn ensure_started(&self, server: &Arc<Server>) {
-        if self.shutting_down.load(Ordering::Acquire) {
+        if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
             return;
         }
         let Some(generation) = server.begin_start() else { return };
@@ -408,13 +446,31 @@ impl LspManager {
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
-            let cfg = me.configured(&tail);
+            if !me.execution_allowed.load(Ordering::Acquire) {
+                return Err(LaunchError::Config("Project is in Restricted Mode".into()));
+            }
+            let mut cfg = me.configured(&tail);
+            if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
+                return Err(LaunchError::Config("Project is in Restricted Mode".into()));
+            }
+            tail.set_effective_config(cfg.clone());
+            let prepare = me.prepare_hook.read().clone();
+            if !cancel.is_cancelled()
+                && me.launcher.available(&cfg, &tail.root)
+                && let Some(prepare) = prepare
+            {
+                prepare(&cfg, &tail.root, &cancel);
+                cfg = me.configured(&tail);
+            }
             tail.set_effective_config(cfg.clone());
             let root = tail.root.clone();
             if let Some(message) = &cfg.launch_error {
                 // A missing binary still asks to be installed first.
                 let missing = !me.launcher.available(&cfg, &root);
                 return Err(if missing { LaunchError::Missing } else { LaunchError::Config(message.clone()) });
+            }
+            if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
+                return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
             me.launcher.launch_cancellable(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)), &cancel)
         })
@@ -427,29 +483,54 @@ impl LspManager {
                 let cfg = server.effective_config();
                 let message =
                     cfg.install_hint.clone().unwrap_or_else(|| format!("`{}` was not found on PATH", cfg.command));
-                if server.finish_start(generation, Conn::Missing) {
-                    server.set_status(&self.sink, ide_core::event::ServerStatus::Missing, Some(message));
+                if server.fail_start(
+                    generation,
+                    Conn::Missing,
+                    &self.sink,
+                    ide_core::event::ServerStatus::Missing,
+                    Some(message),
+                ) {
                     self.attach_fallbacks();
                 }
                 return;
             }
             Err(LaunchError::Config(message)) => {
                 tracing::warn!("{}: {message}", server.name);
-                if server.finish_start(generation, Conn::Failed) {
-                    server.set_status(&self.sink, ide_core::event::ServerStatus::Misconfigured, Some(message));
-                }
+                server.fail_start(
+                    generation,
+                    Conn::Failed,
+                    &self.sink,
+                    ide_core::event::ServerStatus::Misconfigured,
+                    Some(message),
+                );
                 return;
             }
             Err(LaunchError::Failed(message)) => {
                 tracing::warn!("{}: {message}", server.name);
-                if server.finish_start(generation, Conn::Failed) {
-                    server.set_status(&self.sink, ide_core::event::ServerStatus::Crashed, Some(message));
-                }
+                server.fail_start(
+                    generation,
+                    Conn::Failed,
+                    &self.sink,
+                    ide_core::event::ServerStatus::Crashed,
+                    Some(message),
+                );
                 return;
             }
         };
 
-        let init = self.initialize_params(&server);
+        let mut init = self.initialize_params(&server);
+        if server.name == "jdtls"
+            && init["initializationOptions"].get("triggerFiles").is_none()
+            && let Some(paths) = init
+                .pointer("/initializationOptions/settings/java/project/sourcePaths")
+                .and_then(Value::as_array)
+                .cloned()
+        {
+            let root = server.root.clone();
+            if let Ok(Some(path)) = tokio::task::spawn_blocking(move || jdtls::source_trigger(&root, &paths)).await {
+                init["initializationOptions"]["triggerFiles"] = json!([uri::path_to_uri_string(&path)]);
+            }
+        }
         let result = tokio::time::timeout(INITIALIZE_TIMEOUT, peer.request::<_, Value>("initialize", init, None))
             .await
             .unwrap_or(Err(RpcError::Timeout));
@@ -484,6 +565,8 @@ impl LspManager {
             tracing::debug!("{}: didChangeConfiguration: {e}", server.name);
         }
         let run = Running { generation, peer: peer.clone(), caps: Arc::new(RwLock::new(caps)) };
+
+        self.refresh_external_project(&server, &run).await;
 
         // Publish readiness and (re)open attached documents atomically w.r.t. did_change.
         {
@@ -527,6 +610,7 @@ impl LspManager {
         };
         self.clear_server_state(&server);
         if intentional {
+            server.announce_down();
             return;
         }
         let tail = server.stderr_tail(5);
@@ -543,6 +627,9 @@ impl LspManager {
         match server.record_crash() {
             Some(delay) => {
                 server.set_status(&self.sink, ServerStatus::Crashed, Some(format!("{message}\nRestarting…")));
+                // Woken after the crash is reported: a request that finds no instance
+                // reads this status to say why. The restart sets `Starting` again.
+                server.announce_down();
                 tokio::time::sleep(delay).await;
                 if server.is_idle_gen(generation) {
                     self.ensure_started(&server);
@@ -555,6 +642,8 @@ impl LspManager {
                     ServerStatus::Crashed,
                     Some(format!("{message}\nCrashed repeatedly; restart it manually.")),
                 );
+                // Requests still waiting for a start read this status for their error.
+                server.announce_down();
             }
         }
     }
@@ -584,12 +673,26 @@ impl LspManager {
     fn initialize_params(&self, server: &Server) -> Value {
         let root_uri = uri::path_to_uri(&server.root);
         let name = server.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "root".into());
-        let init_options = server
-            .effective_config()
-            .initialization_options
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok())
-            .unwrap_or(Value::Null);
+        let cfg = server.effective_config();
+        let mut init_options =
+            cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or(Value::Null);
+        if server.name == "jdtls" {
+            if !init_options.is_object() {
+                init_options = json!({});
+            }
+            init_options["settings"] = handler::all_settings(&cfg);
+            let triggers: Vec<_> = self
+                .docs
+                .lock()
+                .values()
+                .filter(|d| d.language.as_str() == "java" && d.path.starts_with(&server.root))
+                .map(|d| uri::path_to_uri_string(&d.path))
+                .collect();
+            if !triggers.is_empty() && init_options.get("triggerFiles").is_none() {
+                // Re-import cached invisible projects with the current source model.
+                init_options["triggerFiles"] = json!(triggers);
+            }
+        }
         let mut params = json!({
             "processId": std::process::id(),
             "clientInfo": { "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
@@ -600,6 +703,9 @@ impl LspManager {
             "capabilities": caps::client_capabilities(),
             "trace": "off",
         });
+        if server.name == "gopls" {
+            params["capabilities"]["experimental"]["interactiveResolve"] = json!({ "inputTypes": ["string"] });
+        }
         if !init_options.is_null() {
             params["initializationOptions"] = init_options;
         }
@@ -628,6 +734,11 @@ impl LspManager {
     pub(crate) fn text_for_path(&self, path: &Path) -> Option<Arc<DocText>> {
         if let Some(t) = self.docs.lock().values().find(|d| d.path == path).map(|d| d.text.clone()) {
             return Some(t);
+        }
+        if let Ok(key) = dunce::canonicalize(path)
+            && let Some(text) = self.docs.lock().values().find(|d| d.canonical == key).map(|d| d.text.clone())
+        {
+            return Some(text);
         }
         let key = path.to_str().filter(|s| is_virtual_uri(s))?;
         self.virtual_docs.lock().get(key).map(|d| Arc::new(DocText::new(&d.text)))
@@ -674,8 +785,10 @@ impl LspManager {
         text: &str,
         servers: Vec<Arc<Server>>,
     ) {
+        let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
         let mut state = DocState {
             path,
+            canonical,
             uri,
             language: language.clone(),
             version: version as i32,
@@ -809,6 +922,7 @@ impl LspManager {
         let docs = self.docs.lock();
         let d = docs.get(&doc).ok_or_else(|| IdeError::not_found(format!("{doc} is not open")))?;
         Ok(DocSnap {
+            version: d.version,
             path: d.path.clone(),
             uri: d.uri.clone(),
             language: d.language.clone(),
@@ -1077,6 +1191,106 @@ impl LspManager {
         cancel: CancellationToken,
     ) -> IdeResult<References> {
         let (snap, targets) = self.doc_targets(doc, "find references", |c| c.has("referencesProvider")).await?;
+        // The extension preserves method identity before JDT collapses references to locations.
+        // Old/custom servers retain the standard protocol, including cancellation and scope widening.
+        if targets.len() == 1
+            && targets[0].server.name == "jdtls"
+            && targets[0].caps().commands().iter().any(|c| c == "openidea.java.usages")
+        {
+            let classified = async {
+                let t = &targets[0];
+                let extension_error = Mutex::new(None);
+                let query = || async {
+                    if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                        return Err(IdeError::cancelled());
+                    }
+                    let params = snap.pos_params(t, pos);
+                    #[derive(serde::Deserialize)]
+                    struct JavaReference {
+                        #[serde(default)]
+                        access: Option<ReferenceAccess>,
+                        location: lsp::Location,
+                        kind: ReferenceKind,
+                    }
+                    let result: IdeResult<Vec<JavaReference>> = self
+                        .call(
+                            t,
+                            "workspace/executeCommand",
+                            json!({
+                                "command": "openidea.java.usages",
+                                "arguments": [params["textDocument"]["uri"], params["position"]["line"],
+                                    params["position"]["character"], include_declaration]
+                            }),
+                            Some(&cancel),
+                            LONG_TIMEOUT,
+                        )
+                        .await;
+                    if let Err(e) = &result {
+                        *extension_error.lock() = Some(e.clone());
+                    }
+                    let rows = result?;
+                    if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                        return Err(IdeError::cancelled());
+                    }
+                    let conv = self.conv(t.enc());
+                    Ok(rows
+                        .into_iter()
+                        .filter_map(|r| {
+                            conv.location(&r.location).map(|location| ClassifiedReference {
+                                location,
+                                kind: r.kind,
+                                access: r.access,
+                            })
+                        })
+                        .collect::<Vec<_>>())
+                };
+                let files = |v: &Vec<ClassifiedReference>| {
+                    v.iter().filter(|r| r.location.uri.is_none()).map(|r| r.location.path.to_path_buf()).collect()
+                };
+                let widened = if project_wide {
+                    self.widened(&snap, t, pos, &cancel, query, files).await?
+                } else {
+                    let first = query().await?;
+                    let empty = first.is_empty();
+                    scope::Widened::only(first, empty, &t.server)
+                };
+                // A changed source also invalidates an earlier answer retained by scope widening.
+                if cancel.is_cancelled() || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version) {
+                    return Err(IdeError::cancelled());
+                }
+                // Scope widening can retain the first answer after a failed second query.
+                if let Some(e) = extension_error.into_inner() {
+                    return Err(e);
+                }
+                let mut seen = std::collections::HashSet::new();
+                // Prefer the second query's metadata for repeated locations.
+                let classified: Vec<_> = widened
+                    .second
+                    .into_iter()
+                    .flatten()
+                    .chain(widened.first)
+                    .filter(|r| seen.insert(r.location.clone()))
+                    .collect();
+                let locations: Vec<Location> = classified.iter().map(|r| r.location.clone()).collect();
+                self.note_virtual(&t.server, locations.iter().map(|l| l.uri.as_deref()));
+                Ok(References { locations, classified, incomplete: widened.incomplete })
+            }
+            .await;
+            match classified {
+                Ok(references) => return Ok(references),
+                Err(e) => {
+                    if e.kind == ErrorKind::Cancelled
+                        || cancel.is_cancelled()
+                        || !self.docs.lock().get(&doc).is_some_and(|d| d.version == snap.version)
+                    {
+                        return Err(IdeError::cancelled());
+                    }
+                    if !self.java_usages_warned.swap(true, Ordering::Relaxed) {
+                        tracing::warn!("Java usages extension failed; using standard references: {e}");
+                    }
+                }
+            }
+        }
         let requests = targets.iter().map(|t| {
             let (snap, cancel) = (&snap, &cancel);
             async move {
@@ -1341,6 +1555,92 @@ impl LspManager {
         Ok(())
     }
 
+    async fn command_target(&self, doc: DocId, server: ide_core::ServerId, name: &str) -> IdeResult<Target> {
+        let snap = self.snapshot(doc)?;
+        self.ready_targets(&snap.servers, |c| c.commands().iter().any(|c| c == name))
+            .await
+            .into_iter()
+            .find(|t| t.server.id == server)
+            .ok_or_else(|| IdeError::unavailable(format!("no language server provides command `{name}`")))
+    }
+
+    /// Resolve only after explicit invocation; previews must never ask for input.
+    pub async fn resolve_command(
+        &self,
+        doc: DocId,
+        server: ide_core::ServerId,
+        command: Command,
+        answers: Vec<FormAnswer>,
+        cancel: CancellationToken,
+    ) -> IdeResult<Option<CommandForm>> {
+        let t = self.command_target(doc, server, &command.command).await?;
+        let interactive = t.server.name == "gopls"
+            && t.caps()
+                .raw
+                .pointer("/experimental/interactiveResolveProvider/kinds")
+                .and_then(Value::as_array)
+                .is_some_and(|k| k.iter().any(|v| v == "command"));
+        if !interactive {
+            return Ok(None);
+        }
+        let params = json!({ "command": command.command, "arguments": command.arguments, "formAnswers": answers });
+        let response: Value = self.call(&t, "command/resolve", params, Some(&cancel), LONG_TIMEOUT).await?;
+        let parse_error = |e: serde_json::Error| IdeError::internal(format!("invalid command form: {e}"));
+        let fields = response.get("formFields").filter(|v| !v.is_null()).cloned().unwrap_or(json!([]));
+        for field in fields.as_array().into_iter().flatten() {
+            if field.pointer("/type/kind").and_then(Value::as_str) != Some("string") {
+                return Err(IdeError::unavailable("unsupported command input type"));
+            }
+        }
+        Ok(Some(CommandForm {
+            command: Command {
+                title: command.title,
+                command: response
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| IdeError::internal("command form omitted command"))?
+                    .to_owned(),
+                arguments: serde_json::from_value(response.get("arguments").cloned().unwrap_or(json!([])))
+                    .map_err(parse_error)?,
+            },
+            form_fields: serde_json::from_value(fields).map_err(parse_error)?,
+            form_answers: serde_json::from_value(
+                response.get("formAnswers").filter(|v| !v.is_null()).cloned().unwrap_or(json!([])),
+            )
+            .map_err(parse_error)?,
+        }))
+    }
+
+    /// Execute on the originating server and return files from successfully applied edits.
+    pub async fn execute_action_command(
+        &self,
+        doc: DocId,
+        server: ide_core::ServerId,
+        command: Command,
+        answers: Vec<FormAnswer>,
+        cancel: CancellationToken,
+    ) -> IdeResult<Vec<PathBuf>> {
+        let t = self.command_target(doc, server, &command.command).await?;
+        let open_created = t.server.name == "gopls" && command.command == "gopls.add_test";
+        let mut edits = self.applied_edits.subscribe();
+        let mut params = json!({ "command": command.command, "arguments": command.arguments });
+        if !answers.is_empty() {
+            params["formAnswers"] = json!(answers);
+        }
+        let _: Value = self.call(&t, "workspace/executeCommand", params, Some(&cancel), LONG_TIMEOUT).await?;
+        let mut created = Vec::new();
+        while let Ok((origin, edit)) = edits.try_recv() {
+            if open_created && origin == server {
+                for file in edit.files {
+                    if let ide_core::FileEdit::Create { path, .. } = file {
+                        created.push(path.into());
+                    }
+                }
+            }
+        }
+        Ok(created)
+    }
+
     pub async fn prepare_rename(&self, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
         let (snap, targets) = self.doc_targets(doc, "rename", |c| c.has("renameProvider")).await?;
         let mut out = Outcome::new();
@@ -1380,21 +1680,34 @@ impl LspManager {
     /// server's analysis scope that mention the name are opened for the request.
     /// Every server that can rename there does: the Angular server adds the
     /// templates to vtsls's edit, whose own edits win where both change the same text.
-    pub async fn rename(&self, doc: DocId, pos: Pos, new_name: String) -> IdeResult<WorkspaceEdit> {
+    pub async fn rename(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        new_name: String,
+        cancel: CancellationToken,
+    ) -> IdeResult<Renamed> {
         let (snap, targets) = self.doc_targets(doc, "rename", |c| c.has("renameProvider")).await?;
         let renaming = self.rename_targets(&snap, &targets, pos).await;
-        let edits = join_all(renaming.into_iter().map(|t| self.rename_on(&snap, t, pos, &new_name))).await;
+        let edits = join_all(renaming.into_iter().map(|t| self.rename_on(&snap, t, pos, &new_name, &cancel))).await;
         let mut out = Outcome::new();
+        let mut incomplete = None;
         for edit in edits {
             match edit {
-                Ok(edit) => match &mut out.value {
-                    Some(merged) => convert::merge_workspace_edit(merged, edit),
-                    None => out.value = Some(edit),
-                },
+                Ok(renamed) => {
+                    incomplete = incomplete.or(renamed.incomplete);
+                    match &mut out.value {
+                        Some(merged) => convert::merge_workspace_edit(merged, renamed.edit),
+                        None => out.value = Some(renamed.edit),
+                    }
+                }
                 Err(e) => out.fail(e),
             }
         }
-        out.finish(WorkspaceEdit::default())
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        Ok(Renamed { edit: out.finish(WorkspaceEdit::default())?, incomplete })
     }
 
     /// The servers that can rename at `pos`, the first one when none can (a
@@ -1411,16 +1724,27 @@ impl LspManager {
         vec![&targets[0]]
     }
 
-    async fn rename_on(&self, snap: &DocSnap, t: &Target, pos: Pos, new_name: &str) -> IdeResult<WorkspaceEdit> {
+    async fn rename_on(
+        &self,
+        snap: &DocSnap,
+        t: &Target,
+        pos: Pos,
+        new_name: &str,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Renamed> {
         let query = || async {
             let mut params = snap.pos_params(t, pos);
             params["newName"] = json!(new_name);
-            let r: Option<lsp::WorkspaceEdit> = self.call(t, "textDocument/rename", params, None, LONG_TIMEOUT).await?;
+            let r: Option<lsp::WorkspaceEdit> =
+                self.call(t, "textDocument/rename", params, Some(cancel), LONG_TIMEOUT).await?;
             Ok(r.map(|e| convert::workspace_edit(&self.conv(t.enc()), e)).unwrap_or_default())
         };
         // The Angular server renames in the file's own project only, whatever is open.
         if t.server.name == angular::SERVER {
-            return query().await;
+            let edit = query().await?;
+            let empty = edit.files.is_empty();
+            let w = scope::Widened::only((), empty, &t.server);
+            return Ok(Renamed { edit, incomplete: w.incomplete });
         }
         let files = |e: &WorkspaceEdit| {
             e.files
@@ -1431,9 +1755,9 @@ impl LspManager {
                 })
                 .collect()
         };
-        let w = self.widened(snap, t, pos, &CancellationToken::new(), query, files).await?;
+        let w = self.widened(snap, t, pos, cancel, query, files).await?;
         // The second edit covers the first: its files stay analysed.
-        Ok(w.second.unwrap_or(w.first))
+        Ok(Renamed { edit: w.second.unwrap_or(w.first), incomplete: w.incomplete })
     }
 
     // ---- file operations (`workspace/willRenameFiles`, `workspace/didRenameFiles`) ----
@@ -1560,6 +1884,12 @@ impl LspManager {
                 tracing::debug!("{}: didRenameFiles: {e}", s.name);
             }
         }
+    }
+
+    /// Checks initialized capabilities, including dynamic registrations, before choosing a formatter.
+    pub async fn can_format(&self, doc: DocId) -> IdeResult<bool> {
+        let snap = self.snapshot(doc)?;
+        Ok(!self.ready_targets(&snap.servers, |c| c.has("documentFormattingProvider")).await.is_empty())
     }
 
     pub async fn format(&self, doc: DocId, range: Option<Range>, options: FormatOptions) -> IdeResult<Vec<TextEdit>> {
@@ -1728,11 +2058,14 @@ impl LspManager {
         doc: DocId,
         pos: Pos,
         direction: HierarchyDirection,
-    ) -> IdeResult<Vec<HierarchyItem>> {
+        cancel: CancellationToken,
+    ) -> IdeResult<CallHierarchy> {
         let (snap, targets) = self.doc_targets(doc, "call hierarchy", |c| c.has("callHierarchyProvider")).await?;
         let t = &targets[0];
-        let items: Option<Vec<lsp::CallHierarchyItem>> =
-            self.call(t, "textDocument/prepareCallHierarchy", snap.pos_params(t, pos), None, DEFAULT_TIMEOUT).await?;
+        let cancel = &cancel;
+        let items: Option<Vec<lsp::CallHierarchyItem>> = self
+            .call(t, "textDocument/prepareCallHierarchy", snap.pos_params(t, pos), Some(cancel), DEFAULT_TIMEOUT)
+            .await?;
         let items = items.filter(|i| !i.is_empty()).ok_or_else(no_hierarchy_target)?;
         let query = || async {
             let mut out = Vec::new();
@@ -1741,7 +2074,7 @@ impl LspManager {
                 match direction {
                     HierarchyDirection::Incoming => {
                         let calls: Option<Vec<lsp::CallHierarchyIncomingCall>> =
-                            self.call(t, "callHierarchy/incomingCalls", params, None, LONG_TIMEOUT).await?;
+                            self.call(t, "callHierarchy/incomingCalls", params, Some(cancel), LONG_TIMEOUT).await?;
                         let conv = self.conv(t.enc());
                         for c in calls.unwrap_or_default() {
                             let (path, _) = uri_target(c.from.uri.as_str());
@@ -1751,7 +2084,7 @@ impl LspManager {
                     }
                     HierarchyDirection::Outgoing => {
                         let calls: Option<Vec<lsp::CallHierarchyOutgoingCall>> =
-                            self.call(t, "callHierarchy/outgoingCalls", params, None, LONG_TIMEOUT).await?;
+                            self.call(t, "callHierarchy/outgoingCalls", params, Some(cancel), LONG_TIMEOUT).await?;
                         let conv = self.conv(t.enc());
                         let (src, _) = uri_target(item.uri.as_str());
                         for c in calls.unwrap_or_default() {
@@ -1763,19 +2096,22 @@ impl LspManager {
             }
             Ok(out)
         };
-        let out = match direction {
+        let (out, incomplete) = match direction {
             // Callers are references: they may sit in files outside the server's scope.
             HierarchyDirection::Incoming => {
                 let files = |v: &Vec<HierarchyItem>| {
                     v.iter().filter(|i| i.uri.is_none()).map(|i| i.path.to_path_buf()).collect()
                 };
-                let w = self.widened(&snap, t, pos, &CancellationToken::new(), query, files).await?;
-                w.second.unwrap_or(w.first)
+                let w = self.widened(&snap, t, pos, cancel, query, files).await?;
+                (w.second.unwrap_or(w.first), w.incomplete)
             }
-            HierarchyDirection::Outgoing => query().await?,
+            HierarchyDirection::Outgoing => (query().await?, None),
         };
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         self.note_virtual(&t.server, out.iter().map(|i| i.uri.as_deref()));
-        Ok(out)
+        Ok(CallHierarchy { items: out, incomplete })
     }
 
     pub async fn type_hierarchy(
@@ -1836,6 +2172,7 @@ impl LspManager {
             return Ok(d.clone());
         }
         let scheme = virtual_doc::scheme(uri).to_owned();
+        let class_file = scheme == "jdt" || (scheme == "file" && uri.ends_with(".class"));
         let origin = self.origin_server(uri);
         let mut servers: Vec<Arc<Server>> = origin.iter().cloned().collect();
         servers.extend(self.servers.lock().iter().filter(|s| Some(s.id) != origin.as_ref().map(|o| o.id)).cloned());
@@ -1844,7 +2181,7 @@ impl LspManager {
         for t in &targets {
             let languages = t.server.languages();
             let serves_scheme = t.caps().content_schemes().contains(&scheme);
-            let result: IdeResult<Option<String>> = if serves_scheme {
+            let result: IdeResult<Option<String>> = if serves_scheme && !class_file {
                 self.call::<_, Option<Value>>(
                     t,
                     "workspace/textDocumentContent",
@@ -1854,7 +2191,7 @@ impl LspManager {
                 )
                 .await
                 .map(|v| v.and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_owned)))
-            } else if scheme == "jdt" && languages.iter().any(|l| l.as_str() == "java") {
+            } else if class_file && languages.iter().any(|l| l.as_str() == "java") {
                 self.call::<_, Option<String>>(t, "java/classFileContents", json!({ "uri": uri }), None, LONG_TIMEOUT)
                     .await
             } else {
@@ -1901,6 +2238,10 @@ impl LspManager {
         *self.config_hook.write() = Some(Arc::from(hook));
     }
 
+    pub fn set_prepare_hook(&self, hook: Box<PrepareFn>) {
+        *self.prepare_hook.write() = Some(Arc::from(hook));
+    }
+
     /// Installed by `src-tauri` to apply the servers enabled / defined in settings.
     pub fn set_servers_hook(&self, hook: Box<ServersFn>) {
         *self.servers_hook.write() = Some(Arc::from(hook));
@@ -1909,6 +2250,10 @@ impl LspManager {
     /// The server's base configuration with the settings hook applied.
     fn configured(&self, server: &Server) -> LanguageServerConfig {
         let mut cfg = server.config.clone();
+        if !self.execution_allowed.load(Ordering::Acquire) {
+            cfg.launch_error = Some("Project is in Restricted Mode".into());
+            return cfg;
+        }
         if let Some(hook) = self.config_hook.read().clone() {
             hook(&mut cfg, &server.root);
         }
@@ -1919,7 +2264,27 @@ impl LspManager {
     /// (e.g. a new project interpreter); stopped ones pick it up on their next start.
     /// A change of `settings` alone reaches a running server without a restart.
     /// Servers no longer enabled stop; newly enabled ones attach to open documents.
+    pub fn set_execution_allowed(&self, allowed: bool) {
+        let previous = self.execution_allowed.swap(allowed, Ordering::AcqRel);
+        if !allowed {
+            for server in self.servers.lock().iter() {
+                server.start_token().cancel();
+            }
+        }
+        if allowed && !previous {
+            for server in self.servers.lock().iter() {
+                server.reset_for_restart();
+                self.ensure_started(server);
+            }
+        }
+    }
+
     pub async fn reconfigure(&self) {
+        if !self.execution_allowed.load(Ordering::Acquire) {
+            let servers = self.servers.lock().clone();
+            join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;
+            return;
+        }
         self.stop_unlisted().await;
         let Some(me) = self.me.upgrade() else { return };
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
@@ -1944,6 +2309,7 @@ impl LspManager {
             let without_settings = |c: &LanguageServerConfig| LanguageServerConfig { settings: None, ..c.clone() };
             if let Some(run) = s.running()
                 && without_settings(&next) == without_settings(&current)
+                && !jdtls::source_paths_removed(&current, &next)
             {
                 s.set_effective_config(next);
                 let params = json!({ "settings": handler::all_settings(&s.effective_config()) });
@@ -2146,6 +2512,7 @@ impl LspManager {
             return;
         }
         let graceful = async {
+            self.close_external_project(server, &run).await;
             peer.request::<_, Value>("shutdown", (), None).await.ok();
             peer.notify("exit", ()).ok();
             peer.closed().await;
@@ -2229,7 +2596,7 @@ mod send_check {
         assert_send(m.hover(doc, Pos::default(), CancellationToken::new()));
         assert_send(m.code_lens(doc));
         assert_send(m.workspace_symbols("", CancellationToken::new()));
-        assert_send(m.call_hierarchy(doc, Pos::default(), HierarchyDirection::Incoming));
+        assert_send(m.call_hierarchy(doc, Pos::default(), HierarchyDirection::Incoming, CancellationToken::new()));
         assert_send(m.restart(ide_core::ServerId(1)));
         assert_send(m.shutdown_all());
         assert_send(m.semantic_tokens(doc));

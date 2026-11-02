@@ -157,3 +157,34 @@ describe("withTestReporting", () => {
     expect(withTestReporting(cfg("cargo", "cargo", ["test"])).args).toEqual(["test"]);
   });
 });
+
+describe("Go rerun argument boundaries", () => {
+  it("replaces import-path targets without losing flag values or binary arguments", () => {
+    const config = cfg("go", "go", ["test", "-tags", "demo", "-run", "old", "example.com/old", "-args", "-test.short"]);
+    const rerun = rerunFailedConfig(config, [["example.com/new", "TestChild", "case"]])!;
+    expect(rerun.args).toEqual([
+      "test",
+      "-tags",
+      "demo",
+      "-run",
+      "^TestChild$/^case$",
+      "example.com/new",
+      "-args",
+      "-test.short",
+    ]);
+  });
+  it("retains preparation of file-scoped configurations", () => {
+    const config = {
+      ...cfg("go", "go", ["test", "main_test.go"]),
+      params: { goKind: "test", scope: "file", target: "main_test.go", module: "app", pattern: "", useTags: "true" },
+    };
+    const rerun = rerunFailedConfig(config, [["command-line-arguments", "TestFail"]])!;
+    expect(rerun.params).toMatchObject({
+      goKind: "test",
+      scope: "file",
+      target: "main_test.go",
+      pattern: "^(TestFail)$",
+    });
+    expect(rerun.args).toEqual(["test", "-run", "^(TestFail)$", "main_test.go"]);
+  });
+});

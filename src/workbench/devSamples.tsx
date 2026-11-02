@@ -9,7 +9,7 @@ import { useProject } from "@/platform/project";
 export function registerDevSamples(): () => void {
   if (!useProject.getState().project) {
     useProject.setState({
-      project: { root: "/dev/acme-api", name: "acme-api", isGit: true, settings: {} as never },
+      project: { root: "/dev/acme-api", name: "acme-api", trusted: true, isGit: true, settings: {} as never },
     });
   }
   return () => {};

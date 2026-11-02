@@ -16,6 +16,10 @@ import { ask, type Ask } from "@/workbench/messages";
 /** Document ids the backend reports dirty in this window. */
 const dirtyDocs = new Set<number>();
 
+export function dirtyCount(): number {
+  return new Set([...dirtyDocs, ...(maybeEditorService()?.dirtyDocumentIds?.() ?? [])]).size;
+}
+
 export function confirmExitEnabled(settings: Settings | null | undefined): boolean {
   return settings?.general?.confirmExit === true;
 }
@@ -116,7 +120,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
         quitting: ctx.quitting,
         windows: ctx.windows,
         confirmExit: confirmExitEnabled(s.settings),
-        dirty: dirtyDocs.size,
+        dirty: dirtyCount(),
         project: s.project?.name ?? null,
       },
       deps,
@@ -136,7 +140,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
 export function confirmLeave(deps: CloseDeps = defaultDeps): Promise<boolean> {
   const s = useProject.getState();
   return decideClose(
-    { quitting: false, windows: 2, confirmExit: false, dirty: dirtyDocs.size, project: s.project?.name ?? null },
+    { quitting: false, windows: 2, confirmExit: false, dirty: dirtyCount(), project: s.project?.name ?? null },
     deps,
   );
 }

@@ -5,6 +5,26 @@
 import { useMemo } from "react";
 import { useProject } from "./project";
 
+export interface GoBuildTags {
+  os: string;
+  arch: string;
+  version: string;
+  compiler: string;
+  cgo: string;
+  custom: string;
+  experiments: string;
+}
+
+const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
+  os: "",
+  arch: "",
+  version: "",
+  compiler: "",
+  cgo: "",
+  custom: "",
+  experiments: "",
+};
+
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
   node: { interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
@@ -15,8 +35,14 @@ export interface LanguagesValid {
     checkCommand: "check" | "clippy";
     rustfmtArgs: string;
   };
-  go: { goroot: string; gopath: string };
+  go: {
+    goroot: string;
+    gopath: string;
+    buildTags: GoBuildTags;
+    modules: { env: Record<string, string>; autoVendor: boolean };
+  };
   typescript: { version: string };
+  prettier: { path: string; languages: string[]; prefer: boolean; runOnSave: boolean };
   java: {
     jdk: string;
     jdtlsJdk: string;
@@ -53,8 +79,29 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
   node: { interpreter: "", packageManager: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
-  go: { goroot: "", gopath: "" },
+  go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
+  prettier: {
+    path: "",
+    languages: [
+      "markdown",
+      "yaml",
+      "css",
+      "scss",
+      "less",
+      "html",
+      "graphql",
+      "javascript",
+      "javascriptreact",
+      "typescript",
+      "typescriptreact",
+      "json",
+      "jsonc",
+      "vue",
+    ],
+    prefer: false,
+    runOnSave: false,
+  },
   java: {
     jdk: "",
     jdtlsJdk: "",
@@ -114,7 +161,10 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const node = obj(l.node);
   const rust = obj(l.rust);
   const go = obj(l.go);
+  const tags = obj(go.buildTags);
+  const modules = obj(go.modules);
   const ts = obj(l.typescript);
+  const prettier = obj(l.prettier);
   const java = obj(l.java);
   const maven = obj(java.maven);
   const gradle = obj(java.gradle);
@@ -134,8 +184,30 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       checkCommand: oneOf(rust.checkCommand, ["check", "clippy"] as const, d.rust.checkCommand),
       rustfmtArgs: typeof rust.rustfmtArgs === "string" ? rust.rustfmtArgs : d.rust.rustfmtArgs,
     },
-    go: { goroot: text(go.goroot, d.go.goroot), gopath: text(go.gopath, d.go.gopath) },
+    go: {
+      goroot: text(go.goroot, d.go.goroot),
+      gopath: text(go.gopath, d.go.gopath),
+      buildTags: Object.fromEntries(
+        Object.entries(DEFAULT_GO_BUILD_TAGS).map(([key, value]) => [key, text(tags[key], value)]),
+      ) as unknown as GoBuildTags,
+      modules: {
+        autoVendor: bool(modules.autoVendor, true),
+        env: Object.fromEntries(
+          Object.entries(obj(modules.env)).filter(
+            ([key, value]) => !!key && !/[=\s\0]/.test(key) && typeof value === "string" && !value.includes("\0"),
+          ),
+        ) as Record<string, string>,
+      },
+    },
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
+    prettier: {
+      path: text(prettier.path, d.prettier.path),
+      languages: Array.isArray(prettier.languages)
+        ? [...new Set(prettier.languages.filter((v): v is string => typeof v === "string"))]
+        : d.prettier.languages,
+      prefer: bool(prettier.prefer, d.prettier.prefer),
+      runOnSave: bool(prettier.runOnSave, d.prettier.runOnSave),
+    },
     java: {
       jdk: text(java.jdk, d.java.jdk),
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),

@@ -1,10 +1,11 @@
 /**
  * External tokens of `angular.grammar`. From @codemirror/lang-angular 0.1.4
- * (MIT, see LICENSE); text stopping at blocks, and the block tokens, added by
- * OpenIDEA.
+ * (MIT, see LICENSE); text stopping at blocks, the block tokens and
+ * microsyntax expressions added by OpenIDEA.
  */
 import { ExternalTokenizer, type InputStream } from "@lezer/lr";
 import {
+  BindingExpression,
   Brace,
   Expression,
   Text,
@@ -22,7 +23,9 @@ const NEWLINE = 10,
   SINGLE_QUOTE = 39,
   PAREN_L = 40,
   PAREN_R = 41,
+  COMMA = 44,
   DOT = 46,
+  COLON = 58,
   SEMICOLON = 59,
   AT = 64,
   BRACKET_L = 91,
@@ -32,6 +35,12 @@ const NEWLINE = 10,
   BACKTICK = 96,
   BRACE_L = 123,
   BRACE_R = 125;
+
+/** Characters ending an operand outside an identifier: brackets and quotes. */
+const CLOSERS = new Set([PAREN_R, BRACKET_R, BRACE_R, SINGLE_QUOTE, DOUBLE_QUOTE, BACKTICK]);
+
+/** Words that are operators rather than operands, unless after a `.`. */
+const OPERATORS = new Set(["in", "instanceof", "new", "typeof", "void"]);
 
 const BLOCKS = new Set([
   "if",
@@ -130,44 +139,75 @@ function blockOnNextLine(input: InputStream): boolean {
   return input.peek(i) == AT && blockAt(input, i);
 }
 
+/** The word at offset `i`: `as` in `index as i`, `let` in `let x`. */
+function wordAt(input: InputStream, i: number): string {
+  let word = "";
+  for (let ch = input.peek(i); isIdentifierChar(ch); ch = input.peek(++i)) word += String.fromCharCode(ch);
+  return word;
+}
+
 /**
  * A block parameter's or `@let`'s expression: up to a `;` or a closing bracket
  * outside brackets and strings, without the spaces around it. An unterminated
  * one (being typed) also ends before a child element or comment and before a
  * line starting with a block, so the blocks after it keep their highlighting.
+ * A structural directive's (`BindingExpression`) also ends at a `,`, an `as`
+ * alias or a word after an operand, the next key (`cond; then a else b`), and
+ * is not one starting with `let`, `as` or a key's `:`.
  */
-export const expression = new ExternalTokenizer((input) => {
-  if (isSpace(input.next)) return;
-  const start = input.pos;
-  let depth = 0,
-    quote = 0,
-    escaped = false,
-    end = start;
-  for (;;) {
-    const ch = input.next;
-    if (ch < 0 || (ch == NEWLINE && blockOnNextLine(input))) break;
-    if (escaped) {
-      escaped = false;
-    } else if (quote) {
-      // Strings but template literals end with their line, like in JavaScript.
-      if (ch == quote || (ch == NEWLINE && quote != BACKTICK)) quote = 0;
-      else escaped = ch == BACKSLASH;
-    } else if (ch == SINGLE_QUOTE || ch == DOUBLE_QUOTE || ch == BACKTICK) {
-      quote = ch;
-    } else if (ch == PAREN_L || ch == BRACKET_L || ch == BRACE_L) {
-      depth++;
-    } else if (ch == PAREN_R || ch == BRACKET_R || ch == BRACE_R) {
-      if (depth == 0) break;
-      depth--;
-    } else if (ch == SEMICOLON && depth == 0) {
-      break;
+export const expression = new ExternalTokenizer(
+  (input, stack) => {
+    if (isSpace(input.next)) return;
+    const binding = stack.canShift(BindingExpression);
+    if (binding && (input.next == COLON || /^(let|as)$/.test(wordAt(input, 0)))) return;
+    const start = input.pos;
+    let depth = 0,
+      quote = 0,
+      escaped = false,
+      end = start,
+      prev = -1,
+      // In a word of `OPERATORS`.
+      operator = false,
+      // The last character outside spaces ends an operand: `a`, `)`, `'`.
+      operand = false;
+    for (;;) {
+      const ch = input.next;
+      if (ch < 0 || (ch == NEWLINE && blockOnNextLine(input))) break;
+      if (escaped) {
+        escaped = false;
+      } else if (quote) {
+        // Strings but template literals end with their line, like in JavaScript.
+        if (ch == quote || (ch == NEWLINE && quote != BACKTICK)) quote = 0;
+        else escaped = ch == BACKSLASH;
+      } else if (ch == SINGLE_QUOTE || ch == DOUBLE_QUOTE || ch == BACKTICK) {
+        quote = ch;
+      } else if (ch == PAREN_L || ch == BRACKET_L || ch == BRACE_L) {
+        depth++;
+      } else if (ch == PAREN_R || ch == BRACKET_R || ch == BRACE_R) {
+        if (depth == 0) break;
+        depth--;
+      } else if (depth == 0 && (ch == SEMICOLON || (binding && ch == COMMA))) {
+        break;
+      } else if (binding && isIdentifierStart(ch) && !isIdentifierChar(prev)) {
+        const word = wordAt(input, 0);
+        // After a space, an alias or, after an operand, the next binding's
+        // key: `user$ | async as user`, `items index as i`.
+        if (depth == 0 && end < input.pos && (word == "as" || (operand && !OPERATORS.has(word)))) break;
+        operator = prev != DOT && OPERATORS.has(word);
+      }
+      if (!isSpace(ch)) {
+        end = input.pos + 1;
+        operand = !quote && (CLOSERS.has(ch) || (isIdentifierChar(ch) && !operator));
+      }
+      if (!isIdentifierChar(ch)) operator = false;
+      prev = ch;
+      if (!step(input)) break;
     }
-    if (!isSpace(ch)) end = input.pos + 1;
-    if (!step(input)) break;
-  }
-  // `end` is a document position: the stream skips the ranges' gaps.
-  if (end > start) input.acceptTokenTo(Expression, end);
-});
+    // `end` is a document position: the stream skips the ranges' gaps.
+    if (end > start) input.acceptTokenTo(binding ? BindingExpression : Expression, end);
+  },
+  { contextual: true },
+);
 
 function attrContent(quote: number, token: number, script: boolean) {
   return new ExternalTokenizer((input) => {

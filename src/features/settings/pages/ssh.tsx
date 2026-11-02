@@ -2,7 +2,7 @@
  * Tools › SSH Configurations: the app-wide SSH hosts used by data source tunnels,
  * deployment servers, run targets and Tools › Start SSH Session.
  */
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import clsx from "clsx";
 import { call, commands, IpcError, isTauri } from "@/platform/ipc";
 import { useTx, tx } from "@/platform/i18n";
@@ -16,8 +16,9 @@ import {
 import { Button, Checkbox, IconButton, Input, type SelectOption, T } from "@/ui";
 import { Row, Section, Select } from "../components/Form";
 import { useSetting } from "../components/context";
+import { stageSshSecret, useSettingsDialog } from "../model/staging";
 import type { PageSpec } from "./spec";
-import { parseSshPort, secretKind, sshTestRemedy, type SshTestRemedy } from "./sshConnection";
+import { parseSshPort, sshTestRemedy, type SshTestRemedy } from "./sshConnection";
 import { TOOLS_GROUP } from "./tools";
 import styles from "./Workflow.module.css";
 
@@ -131,24 +132,29 @@ function KeyFileRow({ value, onChange }: { value: string; onChange: (v: string) 
   );
 }
 
-/** Test Connection with the configuration as edited, offering host key trust and a password prompt. */
-function TestConnection({ config }: { config: SshConfigValid }) {
+/** Test with the staged credential, offering host key trust and authentication retries. */
+function TestConnection({
+  config,
+  secret,
+  focusSecret,
+}: {
+  config: SshConfigValid;
+  secret: string | undefined;
+  focusSecret: () => void;
+}) {
   const tx = useTx();
-  const secretId = useId();
   const [state, setState] = useState<TestState>({ status: "idle" });
-  const [secret, setSecret] = useState("");
 
-  const run = async (typed?: string) => {
+  const run = async () => {
     setState({ status: "running" });
     try {
-      const text = await call(commands.sshTest(config, typed ?? null));
-      if (typed !== undefined) await commands.sshSetSecret(config.id, typed, config.saveSecret);
-      setSecret("");
+      const text = await call(commands.sshTest(config, config.auth === "openSsh" ? null : (secret ?? null)));
       setState({ status: "ok", text });
     } catch (e) {
       const text = e instanceof Error ? e.message : String(e);
       const remedy = e instanceof IpcError ? sshTestRemedy(e.kind, e.message, config.auth) : null;
       setState({ status: "failed", text, remedy });
+      if (remedy === "secret") focusSecret();
     }
   };
   const trust = async () => {
@@ -163,7 +169,6 @@ function TestConnection({ config }: { config: SshConfigValid }) {
   };
 
   const running = state.status === "running";
-  const kind = state.status === "failed" ? secretKind(config.auth, state.text) : "password";
   return (
     <div className={styles.toolsLayout}>
       <span className={styles.inlineRow}>
@@ -187,27 +192,10 @@ function TestConnection({ config }: { config: SshConfigValid }) {
           </Button>
         </span>
       )}
-      {state.status === "failed" && state.remedy === "secret" && (
-        <form
-          className={styles.inlineRow}
-          onSubmit={(e) => {
-            e.preventDefault();
-            void run(secret);
-          }}
-        >
-          <label htmlFor={secretId}>{tx(kind === "password" ? "Password:" : "Passphrase:")}</label>
-          <Input
-            id={secretId}
-            type="password"
-            autoFocus
-            className={styles.medium}
-            value={secret}
-            onChange={(e) => setSecret(e.target.value)}
-          />
-          <Button size="small" type="submit">
-            <T>Connect</T>
-          </Button>
-        </form>
+      {state.status === "failed" && state.remedy === "secret" && config.auth !== "openSsh" && (
+        <Button size="small" onClick={() => void run()}>
+          <T>Connect</T>
+        </Button>
       )}
     </div>
   );
@@ -220,6 +208,28 @@ function SshConfigForm({
   config: SshConfigValid;
   update: (patch: Partial<SshConfigValid>) => void;
 }) {
+  const tx = useTx();
+  const secretId = useId();
+  const secretInput = useRef<HTMLInputElement>(null);
+  const secret = useSettingsDialog((s) => s.stagedSecrets[config.id]);
+  const [stored, setStored] = useState(false);
+  const storedPasswordConfig = useSettingsDialog((s) =>
+    s.globalBase.ssh.configs.some((c) => c.id === config.id && c.auth === "password"),
+  );
+  const hasSecret = secret !== undefined;
+  useEffect(() => {
+    let live = true;
+    if (!hasSecret && config.auth === "password" && storedPasswordConfig && isTauri()) {
+      void call(commands.sshNeedsSecret(config.id)).then(
+        (needsSecret) => live && setStored(!needsSecret),
+        () => {},
+      );
+    }
+    return () => {
+      live = false;
+    };
+  }, [config.id, config.auth, storedPasswordConfig, hasSecret]);
+
   return (
     <Section title="Connection">
       <Field label="Name" value={config.name} onChange={(name) => update({ name })} />
@@ -239,6 +249,23 @@ function SshConfigForm({
         />
       </Row>
       {config.auth === "keyPair" && <KeyFileRow value={config.keyFile} onChange={(keyFile) => update({ keyFile })} />}
+      {config.auth !== "openSsh" && (
+        <Row
+          label={config.auth === "password" ? "Password" : "Passphrase"}
+          htmlFor={secretId}
+          className={styles.alignedRow}
+        >
+          <Input
+            ref={secretInput}
+            id={secretId}
+            type="password"
+            className={styles.wide}
+            value={secret ?? ""}
+            placeholder={stored && secret === undefined ? tx("Password already stored") : undefined}
+            onChange={(e) => stageSshSecret(config.id, e.target.value)}
+          />
+        </Row>
+      )}
       {config.auth === "openSsh" ? (
         <div className={styles.note}>
           <T>
@@ -252,7 +279,7 @@ function SshConfigForm({
           label={config.auth === "password" ? "Save password" : "Save passphrase"}
         />
       )}
-      <TestConnection config={config} />
+      <TestConnection config={config} secret={secret} focusSecret={() => secretInput.current?.focus()} />
     </Section>
   );
 }
@@ -266,6 +293,7 @@ function SshConfigsEditor() {
 
   const update = (patch: Partial<SshConfigValid>) => {
     if (!current) return;
+    if (patch.auth && patch.auth !== current.auth) stageSshSecret(current.id, "");
     setConfigs(configs.map((c) => (c.id === current.id ? { ...c, ...patch } : c)));
   };
   const add = (base?: SshConfigValid) => {
@@ -277,6 +305,7 @@ function SshConfigsEditor() {
   };
   const remove = () => {
     if (!current) return;
+    stageSshSecret(current.id, "");
     const rest = configs.filter((c) => c.id !== current.id);
     setConfigs(rest);
     setSelected(rest[Math.min(index, rest.length - 1)]?.id ?? null);
@@ -316,7 +345,7 @@ function SshConfigsEditor() {
           ))}
         </div>
       </div>
-      {current && <SshConfigForm key={current.id} config={current} update={update} />}
+      {current && <SshConfigForm key={`${current.id}:${current.auth}`} config={current} update={update} />}
       <div className={styles.note}>
         <T>
           {
@@ -347,6 +376,8 @@ export const SSH_PAGES: PageSpec[] = [
               "User name",
               "Authentication type",
               "Private key file",
+              "Password",
+              "Passphrase",
               "Save password",
               "Save passphrase",
               "Test Connection",

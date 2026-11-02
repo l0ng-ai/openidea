@@ -75,6 +75,18 @@
   flex: 0 1 260px;
   min-width: 100px;
 }
+.filterGroup {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+.filterHidden {
+  visibility: hidden;
+}
 .filterButton {
   flex: none;
   height: 24px;
@@ -153,20 +165,21 @@
   cursor: default;
   font-size: var(--fs-ui);
 }
-/* View Options › Highlight › Current Branch: commits outside HEAD are dimmed. */
-.offBranch .subject,
-.offBranch .muted {
-  color: var(--fg-subtle);
+/* View Options › Highlight › Current Branch: commits reachable from HEAD are tinted. */
+.currentBranch {
+  --log-row-bg: var(--bg-log-current-branch);
+  background: var(--log-row-bg);
 }
 .row:hover {
   background: var(--bg-tree-hover);
 }
 .selected,
 .selected:hover {
-  background: var(--bg-tree-selected-inactive);
+  --log-row-bg: var(--bg-tree-selected-inactive);
+  background: var(--log-row-bg);
 }
 .list:focus-within .selected {
-  background: var(--bg-tree-selected);
+  --log-row-bg: var(--bg-tree-selected);
 }
 .colSubject {
   flex: 1;
@@ -174,8 +187,9 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  /* Let graph endpoints overlap adjacent rows; text is clipped by .subject. */
-  overflow: visible;
+  /* Let graph endpoints overlap adjacent rows, but never paint over the next column. */
+  overflow-x: clip;
+  overflow-y: visible;
 }
 .colAuthor {
   flex: none;
@@ -221,7 +235,9 @@
   overflow: visible;
 }
 .refs {
-  flex: none;
+  flex: 0 1 auto;
+  /* Shrinks to the first label's icon when the graph leaves no room. */
+  min-width: 11px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -242,6 +258,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
   max-width: 180px;
 }
 /* Outlined tag glyph in the ref's colour. */

@@ -1,3 +1,4 @@
+import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } from "./multiRoot";
 /** Git tool window: Log (graph, filters, commit details) and Console tabs. */
 import { IssueText } from "./issueLinks";
@@ -17,6 +18,7 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, ChangedFile, Commit, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
+import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
@@ -31,6 +33,7 @@ import {
   fileIconName,
   showContextMenu,
   type MenuItem,
+  type TreeHandle,
   T,
   copyText,
 } from "@/ui";
@@ -75,6 +78,7 @@ import {
 } from "./branches";
 import { chooseDateRange, chooseMany, promptText } from "./dialogs";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
+import { DIFF_KIND, diffInput } from "./diffInput";
 import {
   absolutePath,
   filesUnder,
@@ -504,25 +508,25 @@ const DATE_OPTIONS: { label: string; days: number }[] = [
   { label: "Last Year", days: 365 },
 ];
 
-function menuBelow(e: ReactMouseEvent<HTMLElement>, items: MenuItem[]) {
-  const r = e.currentTarget.getBoundingClientRect();
+function menuBelow(anchor: HTMLElement | ReactMouseEvent<HTMLElement>, items: MenuItem[]) {
+  const r = ("currentTarget" in anchor ? anchor.currentTarget : anchor).getBoundingClientRect();
   showContextMenu({ x: r.left, y: r.bottom + 2 }, items);
 }
 
-function FilterButton({
-  label,
-  value,
-  onOpen,
-  onClear,
-}: {
+interface LogFilter {
   label: string;
   value: string | null;
-  onOpen: (e: ReactMouseEvent<HTMLElement>) => void;
+  onOpen: (anchor: HTMLElement) => void;
   onClear: () => void;
-}) {
+}
+
+function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { hidden?: boolean }) {
   return (
-    <span className={clsx(styles.filterButton, value && styles.filterActive)}>
-      <button type="button" className={styles.filterMain} onClick={onOpen} aria-haspopup="menu">
+    <span
+      className={clsx(styles.filterButton, value && styles.filterActive, hidden && styles.filterHidden)}
+      inert={hidden}
+    >
+      <button type="button" className={styles.filterMain} onClick={(e) => onOpen(e.currentTarget)} aria-haspopup="menu">
         {value ? (
           <>
             {tx(label)}: <span className={styles.filterValue}>{value}</span>
@@ -576,6 +580,23 @@ function FilterBar() {
   }, [repositories, filters.repositories, version]);
   const [text, setText] = useState(filters.text);
   const [branchAnchor, setBranchAnchor] = useState<HTMLElement | null>(null);
+  // Filters that do not fit move behind a chevron, like a toolbar's overflow.
+  const groupRef = useRef<HTMLSpanElement>(null);
+  const [hiddenFrom, setHiddenFrom] = useState(Infinity);
+  useLayoutEffect(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    const measure = () => {
+      const items = [...group.children] as HTMLElement[];
+      const i = items.findIndex((el) => el.offsetLeft + el.offsetWidth > group.clientWidth + 1);
+      setHiddenFrom(i < 0 ? Infinity : i);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(group);
+    for (const el of group.children) ro.observe(el);
+    return () => ro.disconnect();
+  }, [filters, repositories.length]);
 
   // Keep the field in sync when filters change elsewhere (Show History, reveal).
   const [seen, setSeen] = useState(filters);
@@ -603,9 +624,9 @@ function FilterBar() {
     if (r) setLogBranches(r);
   };
 
-  const openUser = (e: ReactMouseEvent<HTMLElement>) => {
+  const openUser = (anchor: HTMLElement) => {
     const authors = [...new Set(commits.map((c) => c.author))].sort((a, b) => a.localeCompare(b)).slice(0, 30);
-    menuBelow(e, [
+    menuBelow(anchor, [
       { label: ME, checked: filters.authors.includes(ME), run: () => setLogFilters({ authors: [ME] }) },
       ...(authors.length ? [{ kind: "separator" as const }] : []),
       ...authors.map((a) => ({
@@ -629,8 +650,8 @@ function FilterBar() {
     ]);
   };
 
-  const openDate = (e: ReactMouseEvent<HTMLElement>) =>
-    menuBelow(e, [
+  const openDate = (anchor: HTMLElement) =>
+    menuBelow(anchor, [
       ...DATE_OPTIONS.map((o) => ({
         label: o.label,
         checked: filters.date?.label === o.label,
@@ -646,8 +667,8 @@ function FilterBar() {
       },
     ]);
 
-  const openPaths = (e: ReactMouseEvent<HTMLElement>) =>
-    menuBelow(e, [
+  const openPaths = (anchor: HTMLElement) =>
+    menuBelow(anchor, [
       {
         label: "Select Folders…",
         run: async () => {
@@ -659,6 +680,51 @@ function FilterBar() {
         },
       },
     ]);
+
+  const logFilters: LogFilter[] = [
+    ...(repositories.length > 1
+      ? [
+          {
+            label: "Repository",
+            value: filters.repositories?.map(repoName).join(", ") || null,
+            onOpen: (anchor: HTMLElement) =>
+              menuBelow(
+                anchor,
+                repositories.map((repo) => ({
+                  label: repoName(repo),
+                  checked: filters.repositories?.includes(repo) ?? false,
+                  run: () => setLogFilters({ repositories: [repo] }),
+                })),
+              ),
+            onClear: () => setLogFilters({ repositories: [] }),
+          },
+        ]
+      : []),
+    {
+      label: "Branch",
+      value: filters.branches.join(", ") || null,
+      onOpen: setBranchAnchor,
+      onClear: () => setLogBranches([]),
+    },
+    {
+      label: "User",
+      value: filters.authors.join(", ") || null,
+      onOpen: openUser,
+      onClear: () => setLogFilters({ authors: [] }),
+    },
+    {
+      label: "Date",
+      value: filters.date?.label ?? null,
+      onOpen: openDate,
+      onClear: () => setLogFilters({ date: null }),
+    },
+    {
+      label: "Paths",
+      value: filters.path ? (root ? relTo(root, filters.path) : filters.path) || "." : null,
+      onOpen: openPaths,
+      onClear: () => setLogFilters({ path: null }),
+    },
+  ];
 
   return (
     <div className={styles.filters} role="toolbar" aria-label={tx("Log filters")}>
@@ -688,29 +754,29 @@ function FilterBar() {
           },
         ]}
       />
-      {repositories.length > 1 && (
-        <FilterButton
-          label="Repository"
-          value={filters.repositories?.map(repoName).join(", ") || null}
-          onOpen={(e) =>
+      <span ref={groupRef} className={styles.filterGroup}>
+        {logFilters.map((f, i) => (
+          <FilterButton key={f.label} {...f} hidden={i >= hiddenFrom} />
+        ))}
+      </span>
+      {hiddenFrom < logFilters.length && (
+        <IconButton
+          icon="chevron-right"
+          title="More Filters"
+          size="small"
+          aria-haspopup="menu"
+          onClick={(e) => {
+            const anchor = e.currentTarget;
             menuBelow(
-              e,
-              repositories.map((repo) => ({
-                label: repoName(repo),
-                checked: filters.repositories?.includes(repo) ?? false,
-                run: () => setLogFilters({ repositories: [repo] }),
+              anchor,
+              logFilters.slice(hiddenFrom).map((f) => ({
+                label: f.value ? `${tx(f.label)}: ${f.value}` : f.label,
+                run: () => f.onOpen(anchor),
               })),
-            )
-          }
-          onClear={() => setLogFilters({ repositories: [] })}
+            );
+          }}
         />
       )}
-      <FilterButton
-        label="Branch"
-        value={filters.branches.join(", ") || null}
-        onOpen={(e) => setBranchAnchor(e.currentTarget)}
-        onClear={() => setLogBranches([])}
-      />
       {branchAnchor && (
         <BranchFilterPopup
           anchor={branchAnchor}
@@ -724,24 +790,6 @@ function FilterBar() {
           onSelectMany={() => void selectBranches()}
         />
       )}
-      <FilterButton
-        label="User"
-        value={filters.authors.join(", ") || null}
-        onOpen={openUser}
-        onClear={() => setLogFilters({ authors: [] })}
-      />
-      <FilterButton
-        label="Date"
-        value={filters.date?.label ?? null}
-        onOpen={openDate}
-        onClear={() => setLogFilters({ date: null })}
-      />
-      <FilterButton
-        label="Paths"
-        value={filters.path ? (root ? relTo(root, filters.path) : filters.path) || "." : null}
-        onOpen={openPaths}
-        onClear={() => setLogFilters({ path: null })}
-      />
       <span className={styles.grow} />
       <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reloadLog({ preserve: true })} />
       <IconButton
@@ -905,13 +953,16 @@ function CommitList() {
     const laid = collapsed ? computeGraph(collapsed.graph).rows : allRows;
     return opts.longEdges ? laid : hideLongEdges(laid);
   }, [collapsed, allRows, opts.longEdges]);
+  const filterBranches = useGitLog((s) => s.filters.branches);
+  const currentBranch = useVcs((s) => s.branch?.head ?? null);
+  // Nothing to tell apart when the log is filtered to the current branch.
+  const onlyCurrent = filterBranches.length > 0 && filterBranches.every((b) => b === "HEAD" || b === currentBranch);
   const onBranch = useMemo(() => {
-    if (!opts.highlightCurrentBranch) return null;
+    if (!opts.highlightCurrentBranch || onlyCurrent) return null;
     const reach = new Set<string>();
     for (const head of headKeys) for (const id of reachableFrom(all.map(graphCommit), head)) reach.add(id);
-    // Nothing to tell apart when only the current branch is shown.
-    return all.every((c) => reach.has(commitKey(c))) ? null : reach;
-  }, [all, headKeys, opts.highlightCurrentBranch]);
+    return reach;
+  }, [all, headKeys, opts.highlightCurrentBranch, onlyCurrent]);
   const loading = useGitLog((s) => s.loading);
   const done = useGitLog((s) => s.done);
   const error = useGitLog((s) => s.error);
@@ -1021,7 +1072,7 @@ function CommitList() {
                 selected={selectedSet.has(commitKey(c))}
                 head={headKeys.has(commitKey(c))}
                 mine={opts.highlightMine && isMine(c, user)}
-                onBranch={!onBranch || onBranch.has(commitKey(c))}
+                onBranch={!!onBranch?.has(commitKey(c))}
                 opts={opts}
                 remoteNames={new Set((c as RepoCommit).remoteNames ?? remoteNames)}
                 onPick={pick}
@@ -1075,7 +1126,7 @@ const CommitRow = memo(function CommitRow({
       id={id}
       role="option"
       aria-selected={selected}
-      className={clsx(styles.row, !onBranch && styles.offBranch, selected && styles.selected)}
+      className={clsx(styles.row, onBranch && styles.currentBranch, selected && styles.selected)}
       style={{ top }}
       onMouseDown={(e) => {
         if (e.shiftKey) e.preventDefault(); // no text selection on range clicks
@@ -1146,14 +1197,21 @@ export function GraphCell({ row, head }: { row: GraphRow; head?: boolean }) {
           strokeDasharray={s.dashed ? "2 2" : undefined}
         />
       ))}
-      <circle
-        cx={x(row.lane)}
-        cy={cy}
-        r={head ? 4.5 : 3.8}
-        fill={head ? "var(--bg-app)" : laneColor(row.color)}
-        stroke={laneColor(row.color)}
-        strokeWidth={head ? 2 : 0}
-      />
+      {head ? (
+        <>
+          <circle
+            cx={x(row.lane)}
+            cy={cy}
+            r={5}
+            fill="var(--log-row-bg, var(--bg-app))"
+            stroke={laneColor(row.color)}
+            strokeWidth={1.5}
+          />
+          <circle cx={x(row.lane)} cy={cy} r={2.5} fill={laneColor(row.color)} />
+        </>
+      ) : (
+        <circle cx={x(row.lane)} cy={cy} r={3.8} fill={laneColor(row.color)} />
+      )}
     </svg>
   );
 }
@@ -1235,6 +1293,9 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
 
   const groupByDirectory = useLogOptions((s) => s.groupByDirectory);
   const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const treeRef = useRef<TreeHandle>(null);
+  const [diffToReveal, setDiffToReveal] = useState<{ key: string } | null>(null);
+  const syncingDiff = useRef(false);
   const changes = useMemo(
     () => (files && commit ? toLogChanges(files, many ? null : commit, commitRoot) : []),
     [files, commit, many, commitRoot],
@@ -1255,12 +1316,43 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   useEffect(() => () => clearTimeout(previewTimer.current), []);
   const previewSelection = (sel: ReadonlySet<string>) => {
     clearTimeout(previewTimer.current);
+    if (syncingDiff.current) return;
     if (!logOptions().diffPreview || sel.size !== 1) return;
     const file = fileNodeAt(tree, [...sel][0]!)?.file;
     // A preview that cannot open (no editor yet, the file went away) is just skipped.
     if (file)
       previewTimer.current = setTimeout(() => void showChangesDiff([file], true).catch(() => undefined), PREVIEW_DELAY);
   };
+
+  // Follow only this pane's exact diff (path AND revisions); another commit or
+  // Compare with Local must not move its selection. Never take focus from F7.
+  useEffect(() => {
+    const editor = maybeEditorService();
+    const followDiff = (input: EditorInput | null) => {
+      if (input?.kind !== DIFF_KIND) return;
+      const change = ordered.find((c) => diffInput(c.diff).key === input.key);
+      if (!change) return;
+      clearTimeout(previewTimer.current);
+      const rel = relTo(root, change.path);
+      setExpanded((current) => {
+        const next = new Set(current ?? allDirs);
+        for (const key of allDirs) if (rel.startsWith(key.slice(2) + "/")) next.add(key);
+        return next;
+      });
+      setDiffToReveal({ key: `f:${rel}` });
+    };
+    followDiff(editor?.activeInput?.() ?? null);
+    return editor?.onActiveInputChange?.(followDiff);
+  }, [ordered, allDirs, root]);
+
+  // Tree.reveal needs the expanded rows to have rendered. Suppress the reverse
+  // preview update so it cannot reopen the diff and lose its requested chunk.
+  useLayoutEffect(() => {
+    if (!diffToReveal) return;
+    syncingDiff.current = true;
+    treeRef.current?.reveal(diffToReveal.key);
+    syncingDiff.current = false;
+  }, [diffToReveal]);
 
   useEffect(() => {
     useLogChanges.setState({ commits: chosen, all: ordered, selected: chosenChanges });
@@ -1343,6 +1435,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
             )}
             {files && (
               <Tree<FileTreeNode<LogChange>>
+                handleRef={treeRef}
                 roots={tree}
                 getKey={(n) => n.key}
                 getLabel={(n) => n.name}
@@ -1486,7 +1579,9 @@ function ConsoleView() {
       <div
         ref={ref}
         className={styles.console}
+        tabIndex={0}
         role="log"
+        onKeyDown={copySelectionOnKeyDown}
         aria-label={tx("Git console")}
         onScroll={(e) => {
           const el = e.currentTarget;

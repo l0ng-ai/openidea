@@ -19,7 +19,7 @@ export const intellijMacos: Record<string, string[]> = {
   "navigate.forward": ["Meta+]", "Meta+Alt+Right", "Button5"],
   "navigate.gotoLine": ["Meta+L"],
   "navigate.declaration": ["Meta+B"],
-  "navigate.implementation": ["Meta+Alt+B"],
+  "navigate.implementation": ["Meta+Alt+B", "Meta+Alt+Button1"],
   "navigate.typeDeclaration": ["Meta+Shift+B", "Ctrl+Shift+B"],
   "navigate.fileStructure": ["Meta+F12"],
   "navigate.nextError": ["F2"],
@@ -186,6 +186,8 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.nextSplitter": ["Alt+Tab"],
   "editor.prevSplitter": ["Alt+Shift+Tab"],
   "window.toggleFullScreen": ["Meta+Ctrl+F"],
+  "window.nextTab": ["Meta+Alt+PageDown"],
+  "window.previousTab": ["Meta+Alt+PageUp"],
   "window.next": ["Meta+Alt+`"],
   "window.previous": ["Meta+Alt+Shift+`"],
   "file.reloadFromDisk": ["Meta+Alt+Y"],
@@ -254,6 +256,7 @@ export const intellijMacos: Record<string, string[]> = {
   "run.debugContext": ["Ctrl+Shift+D"],
   "run.stop": ["Meta+F2"],
   "workbench.stopBackgroundProcesses": ["Meta+Shift+F2"],
+  "run.updateApplication": ["Meta+F10"],
   // Rerun in the Run / Debug tool window only (when / keyWhen); Meta+R stays with the editor elsewhere.
   "run.rerun": ["Meta+R"],
   "coverage.manageReports": ["Meta+Alt+F6"],
@@ -281,7 +284,7 @@ export const intellijMacos: Record<string, string[]> = {
   "debug.setValue": ["F2"],
   "debug.jumpToSource": ["F4", "Meta+Down"],
   "debug.evaluate": ["Alt+F8"],
-  "debug.quickEvaluate": ["Meta+Alt+F8"],
+  "debug.quickEvaluate": ["Meta+Alt+F8", "Alt+Button1"],
   "debug.browseConsoleHistory": ["Meta+Alt+E"],
 
   // VCS
@@ -354,6 +357,12 @@ export const intellijMacos: Record<string, string[]> = {
   "db.newDataSource": [],
   "db.new": ["Meta+N"],
   "services.addService": ["Meta+N"],
+  // Pull Requests tool window (Create in its title bar, Refresh per tab) and the review's viewed toggle.
+  "github.createPullRequest": ["Meta+N"],
+  "github.refresh": ["Meta+R"],
+  "github.pullRequest.refresh": ["Meta+R"],
+  "github.pullRequest.timeline.refresh": ["Meta+R"],
+  "github.pullRequest.toggleViewed": ["Meta+Shift+S"],
   "db.properties": ["Shift+Enter"],
   "db.refresh": ["Meta+R"],
   "db.disconnect": ["Meta+F2"],
@@ -387,6 +396,7 @@ export const intellijMacos: Record<string, string[]> = {
   "find.popup.openResult": ["F4", "Meta+Down"],
   "find.popup.recentSearches": ["Alt+Down"],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.
+  "find.openInWindow": ["Alt+F7"],
   "find.field.newLine": ["Meta+Shift+Enter"],
   "find.field.recentSearches": ["Alt+Down"],
 };

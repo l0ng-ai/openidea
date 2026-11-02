@@ -36,6 +36,7 @@ import { installActionProxies, installSettingsHost } from "./window/bridge";
 import { AssignShortcutOverlay, showAssignShortcut } from "./keymap/AssignShortcut";
 import { settingsSearchEntries } from "./searchIndex";
 import { activatePythonStatus } from "./languages/PythonStatus";
+import { nativeToAsciiAction } from "./nativeToAscii";
 import { isImeKey } from "@/platform/ime";
 
 export { settingsWindowParent } from "./window/bridge";
@@ -49,6 +50,7 @@ const NEW_PROJECTS_PAGE = "languages.java";
 
 function settingsActions(open: (page?: string, newProjects?: boolean) => void): Action[] {
   return [
+    nativeToAsciiAction(),
     {
       id: "file.settings",
       title: "Settings…",

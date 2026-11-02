@@ -111,6 +111,17 @@ fn discover_outside_and_inside() {
 }
 
 #[test]
+fn discover_sha256_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("work");
+    std::fs::create_dir(&dir).unwrap();
+    git_in(&dir, &["init", "-q", "--object-format=sha256"]);
+    let repo = Repo::discover(&dir).unwrap().unwrap();
+    assert_eq!(std::fs::canonicalize(repo.root()).unwrap(), std::fs::canonicalize(&dir).unwrap());
+    assert!(repo.status().unwrap().is_empty());
+}
+
+#[test]
 fn repository_without_commits() {
     let fx = Fixture::new();
     fx.write("new.txt", "hello\n");
@@ -175,6 +186,9 @@ fn status_matrix() {
     fx.write("staged_del.txt", "a\n");
     fx.write("rename_me.txt", "some longer content\nthat is stable\nfor rename detection\n");
     fx.write("both.txt", "a\n");
+    // A committed file the IDE ignores keeps its history but drops out of the change list.
+    fx.write("tracked.pyc", "a\n");
+    fx.git(&["add", "-f", "tracked.pyc"]);
     fx.commit_all("base");
 
     fx.write("modified.txt", "b\n");
@@ -195,6 +209,10 @@ fn status_matrix() {
     fx.write(".DS_Store", "junk");
     fx.write("dir/.DS_Store", "junk");
     fx.write("pkg/__pycache__/m.pyc", "junk");
+    fx.write("tracked.pyc", "b\n");
+    // Contents differ from `staged_del.txt` so rename detection cannot pair them.
+    fx.write("staged_ignored.pyc", "cached\nbytecode\n");
+    fx.git(&["add", "-f", "staged_ignored.pyc"]);
 
     let repo = fx.repo();
     repo.set_ignored_names(ide_core::settings::Settings::default().ignored_names());
@@ -217,6 +235,10 @@ fn status_matrix() {
     assert_eq!(status_of(&st, "renamed.txt").renamed_from.as_deref(), Some("rename_me.txt"));
     assert!(!st.iter().any(|s| s.rel_path == "rename_me.txt"), "rename source listed: {st:#?}");
     assert!(!st.iter().any(|s| s.rel_path.contains("debug.log") || s.rel_path.contains("build")));
+    assert!(
+        !st.iter().any(|s| s.rel_path.contains("tracked.pyc") || s.rel_path.contains("staged_ignored.pyc")),
+        "{st:#?}"
+    );
     assert!(!st.iter().any(|s| s.rel_path.contains(".DS_Store") || s.rel_path.contains("pkg")), "{st:#?}");
     // Sorted by path.
     let paths: Vec<_> = st.iter().map(|s| s.rel_path.clone()).collect();
@@ -419,7 +441,7 @@ fn blame_with_unsaved_edits() {
     let second = fx.commit_all("second");
     let repo = fx.repo();
 
-    let lines = repo.blame(&fx.path("b.txt"), None, encoding_rs::UTF_8).unwrap();
+    let lines = repo.blame(&fx.path("b.txt"), None, None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[0].commit, first);
     assert_eq!(lines[1].commit, second);
@@ -427,7 +449,7 @@ fn blame_with_unsaved_edits() {
     assert_eq!(lines[0].author, "Test User");
     assert!(lines[0].time_ms > 1.0e12);
 
-    let lines = repo.blame(&fx.path("b.txt"), Some("one\nedited\nthree\nfour"), encoding_rs::UTF_8).unwrap();
+    let lines = repo.blame(&fx.path("b.txt"), Some("one\nedited\nthree\nfour"), None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.len(), 4);
     assert_eq!(lines[0].commit, first);
     assert!(lines[1].commit.bytes().all(|b| b == b'0'));
@@ -435,9 +457,38 @@ fn blame_with_unsaved_edits() {
     assert_eq!(lines[2].commit, first);
     assert_eq!(lines[3].author, "Not Committed Yet");
 
-    let lines = repo.blame(&fx.path("untracked.txt"), Some("x\ny\n"), encoding_rs::UTF_8).unwrap();
+    let lines = repo.blame(&fx.path("untracked.txt"), Some("x\ny\n"), None, encoding_rs::UTF_8).unwrap();
     assert_eq!(lines.len(), 2);
     assert!(lines.iter().all(|l| l.author == "Not Committed Yet"));
+}
+
+#[test]
+fn blame_against_another_revision() {
+    // The merge view blames each side pane on the branch it belongs to: lines that
+    // only exist on the merged branch show their real history, not "Not Committed Yet".
+    let fx = Fixture::new();
+    fx.write("b.txt", "one\nthree\n");
+    let first = fx.commit_all("first");
+    fx.write("b.txt", "one\nTWO\nthree\n");
+    fx.commit_all("second");
+    fx.git(&["checkout", "-q", "-b", "feature", &first]);
+    fx.write("b.txt", "one\nfeature\nthree\n");
+    let feature = fx.commit_all("feature line");
+    fx.git(&["checkout", "-q", "main"]);
+    let repo = fx.repo();
+
+    // Blaming the feature content against HEAD marks its extra line uncommitted…
+    let text = "one\nfeature\nthree\n";
+    let lines = repo.blame(&fx.path("b.txt"), Some(text), Some("HEAD"), encoding_rs::UTF_8).unwrap();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0].commit, first);
+    assert_eq!(lines[1].author, "Not Committed Yet");
+    assert_eq!(lines[2].commit, first);
+    // …while blaming it against the feature commit resolves its real history.
+    let lines = repo.blame(&fx.path("b.txt"), Some(text), Some(&feature), encoding_rs::UTF_8).unwrap();
+    assert_eq!(lines[1].commit, feature);
+    assert_eq!(lines[1].summary, "feature line");
+    assert!(repo.blame(&fx.path("b.txt"), Some(text), Some("no-such-ref"), encoding_rs::UTF_8).is_err());
 }
 
 #[test]
@@ -1357,7 +1408,7 @@ fn encoded_java_hunks_staging_blame_and_partial_commit_preserve_bytes() {
             let repo = fx.repo();
             assert_eq!(repo.file_at(&path, None, encoding).unwrap().as_deref(), Some(old.as_str()));
             assert!(
-                repo.blame(&path, Some(&old.replace("\r\n", "\n")), encoding)
+                repo.blame(&path, Some(&old.replace("\r\n", "\n")), None, encoding)
                     .unwrap()
                     .iter()
                     .all(|line| line.author == "Test User")
@@ -1482,4 +1533,63 @@ fn gbk_text_patch_keeps_utf8_paths_and_encoded_payload() {
     let patch = build_partial_patch("中文.java", new, "// 😀\n", &[0]);
     assert!(repo.stage_patch(&patch, &|_| Ok(encoding_rs::GBK)).is_err());
     assert_eq!(repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(), encoding_rs::GBK.encode(new).0.as_ref());
+}
+
+#[cfg(unix)]
+#[test]
+fn restricted_reads_ignore_executable_repository_configuration() {
+    let f = Fixture::new();
+    f.write("a.txt", "one\ntwo\n");
+    f.commit_all("initial");
+    f.write(".gitattributes", "*.txt filter=evil diff=evil\n");
+    f.write("a.txt", "one\nchanged\n");
+    for key in ["filter.evil.clean", "diff.evil.textconv", "diff.external", "core.fsmonitor"] {
+        f.git(&["config", key, "touch execution.marker; cat"]);
+    }
+    let repo = f.repo();
+    repo.set_execution_allowed(false);
+    assert!(!repo.status().unwrap().is_empty());
+    assert!(repo.diff_text(&f.path("a.txt"), false, encoding_rs::UTF_8).unwrap().contains("changed"));
+    assert_eq!(repo.blame(&f.path("a.txt"), None, None, encoding_rs::UTF_8).unwrap().len(), 2);
+    assert!(!repo.diff_with_worktree("HEAD").unwrap().is_empty());
+    assert!(!repo.log(&LogQuery::default()).unwrap().is_empty());
+    repo.merge_versions(&f.path("a.txt"), encoding_rs::UTF_8).unwrap();
+    assert!(!f.path("execution.marker").exists());
+    let repos = ide_vcs::Repos::discover(&f.dir, &|_| false).unwrap();
+    for r in repos.all() {
+        r.set_execution_allowed(false);
+    }
+    let compared =
+        repos.compare_paths(std::slice::from_ref(&f.dir), "HEAD", None, &ide_core::CancellationToken::new()).unwrap();
+    assert!(compared.repositories.iter().all(|r| r.error.is_none()));
+    assert!(!f.path("execution.marker").exists());
+    // Positive control: the same filter really executes without restriction.
+    f.git(&["-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"]);
+    assert!(f.path("execution.marker").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn restricted_conflict_preview_uses_host_owned_temporary_files() {
+    let f = Fixture::new();
+    f.write("a.txt", "base\n");
+    f.commit_all("base");
+    f.git(&["checkout", "-b", "other"]);
+    f.write("a.txt", "other\n");
+    f.commit_all("other");
+    f.git(&["checkout", "main"]);
+    f.write("a.txt", "mine\n");
+    f.commit_all("mine");
+    let output = Command::new("git").current_dir(&f.dir).args(["merge", "other"]).output().unwrap();
+    assert!(!output.status.success());
+    let trap = f.path(&format!(".git/openidea-merge-{}", std::process::id()));
+    std::fs::create_dir_all(&trap).unwrap();
+    let marker = f._tmp.path().join("user-data");
+    std::fs::write(&marker, "untouched").unwrap();
+    std::os::unix::fs::symlink(&marker, trap.join("ours")).unwrap();
+    let repo = f.repo();
+    repo.set_execution_allowed(false);
+    let versions = repo.merge_versions(&f.path("a.txt"), encoding_rs::UTF_8).unwrap();
+    assert!(versions.merged.unwrap().contains("<<<<<<<"));
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "untouched");
 }

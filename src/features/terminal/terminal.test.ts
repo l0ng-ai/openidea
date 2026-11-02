@@ -15,6 +15,7 @@ import {
   type TerminalTab,
 } from "./store";
 import type { SessionSnapshot } from "./session";
+import { usePlatform } from "@/platform/platformInfo";
 import { buildTheme, mix, parseColor, terminalFont, toHex } from "./theme";
 
 describe("theme", () => {
@@ -110,7 +111,7 @@ describe("terminal keys", () => {
       kind: "send",
       data: "\x04",
     });
-    expect(terminalKeyAction(key({ key: "c", code: "KeyC", ctrlKey: true }), true)).toEqual({
+    expect(terminalKeyAction(key({ key: "c", code: "KeyC", ctrlKey: true }), false)).toEqual({
       kind: "send",
       data: "\x03",
     });
@@ -147,6 +148,25 @@ describe("terminal keys", () => {
       kind: "send",
       data: "\x0a",
     });
+  });
+
+  it.each([
+    { key: "c", code: "KeyC", ctrlKey: true },
+    { key: "c", code: "KeyI", ctrlKey: true },
+    { key: "C", code: "KeyC", ctrlKey: true, shiftKey: true },
+    { key: "c", code: "KeyC", metaKey: true },
+  ])("copies terminal selections with %o", (stroke) => {
+    usePlatform.setState({ os: "windows" });
+    try {
+      expect(terminalKeyAction(key(stroke), true)).toEqual({ kind: "copy" });
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
+  });
+
+  it("keeps Ctrl+C as interrupt on macOS even with a selection", () => {
+    usePlatform.setState({ os: "macos" });
+    expect(terminalKeyAction(key({ key: "c", code: "KeyC", ctrlKey: true }), true)).not.toEqual({ kind: "copy" });
   });
 
   it("implements macOS conveniences", () => {
@@ -345,7 +365,7 @@ describe("terminalFont", () => {
 describe("terminal tab titles", () => {
   const tab: TerminalTab = { id: "t1", name: "Local", customName: null, panes: ["s1"], layout: "s1", activePane: "s1" };
   const snap = (appTitle: string | null, commandRunning = true): Record<string, SessionSnapshot> => ({
-    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p" },
+    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p", follow: true },
   });
 
   it("shows the default name at the prompt, whatever title the shell sets", () => {

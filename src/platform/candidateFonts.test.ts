@@ -18,8 +18,26 @@ it("probes the legacy list and classifies measured mono and proportional familie
   ]);
 });
 it("returns no inferred families when Canvas is absent", () => {
+  const remove = vi.spyOn(HTMLCanvasElement.prototype, "remove");
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   expect(detectCandidateFonts()).toEqual([]);
+  expect(remove).toHaveBeenCalledOnce();
+});
+it("detects user-installed candidates with a connected probe and removes it afterwards", () => {
+  const probes: HTMLCanvasElement[] = [];
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+    probes.push(this);
+    const isConnected = () => this.isConnected;
+    return {
+      font: "",
+      measureText(this: { font: string }) {
+        return { width: isConnected() && this.font.includes('"Fira Code"') ? 120 : 100 };
+      },
+    } as unknown as CanvasRenderingContext2D;
+  });
+  expect(detectCandidateFonts()).toEqual([{ name: "Fira Code", monospaced: true }]);
+  expect(probes[0]?.hidden).toBe(true);
+  expect(probes[0]?.isConnected).toBe(false);
 });
 it("contains failures from Canvas and never claims candidates are installed", () => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => {

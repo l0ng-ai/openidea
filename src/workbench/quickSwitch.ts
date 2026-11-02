@@ -3,7 +3,8 @@
  * toolbar's gear menu and View › Quick Switch Scheme… (⌃`).
  */
 import { call, commands, isTauri } from "@/platform/ipc";
-import { SCHEMES } from "@/platform/colorScheme";
+import { listSchemes } from "@/platform/colorScheme";
+import { editorPrefs } from "@/platform/editorSettings";
 import { PRESET_TITLES, useKeymap } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import type { MenuItem } from "@/ui";
@@ -40,7 +41,8 @@ export function keymapItems(keymapId: string, customKeymaps: string[]): MenuItem
 }
 
 export function colorSchemeItems(current: string | undefined): MenuItem[] {
-  const value = current && SCHEMES.some((s) => s.id === current) ? current : "theme-default";
+  const schemes = listSchemes(editorPrefs().customSchemes);
+  const value = current && schemes.some((s) => s.id === current) ? current : "theme-default";
   return [
     {
       id: "scheme.theme-default",
@@ -48,7 +50,7 @@ export function colorSchemeItems(current: string | undefined): MenuItem[] {
       checked: value === "theme-default",
       run: () => void setGlobal("editor.colorScheme", "theme-default", "color scheme"),
     },
-    ...SCHEMES.map<MenuItem>((s) => ({
+    ...schemes.map<MenuItem>((s) => ({
       id: `scheme.${s.id}`,
       label: s.name,
       checked: s.id === value,

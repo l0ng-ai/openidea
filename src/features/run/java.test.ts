@@ -140,6 +140,20 @@ describe("application configurations", () => {
     expect(jvmModuleDir("odd/App.java", [cfg({ id: "m", kind: "maven", cwd: "odd" })])).toBe("odd");
   });
 
+  it("adds JDWP to a script explicitly assigned the Kotlin debugger", () => {
+    const rc = cfg({ id: "kotlin-script", kind: "shell", command: "./run.sh", debugAdapter: "kotlin-debug-adapter" });
+    expect(jdwpLaunch(rc)?.env.JAVA_TOOL_OPTIONS).toContain("-agentlib:jdwp=");
+  });
+
+  it("routes Kotlin facade and @file:JvmName Application configurations to Kotlin", () => {
+    for (const className of ["org.example.MainKt", "org.example.CustomFacade"]) {
+      expect(applicationConfig({ className }, "src/main/kotlin/Main.kt")).toMatchObject({
+        debugAdapter: "kotlin-debug-adapter",
+        args: ["-cp", "${classpath}", className],
+      });
+    }
+  });
+
   it("creates an Application / Spring Boot config named after the class", () => {
     const rel = "src/main/java/com/example/demo/SpringDemoApplication.java";
     const src =
@@ -180,6 +194,7 @@ describe("java compile errors", () => {
     projectRoot: "/p",
     classPaths: [],
     modulePaths: [],
+    pathListSeparator: ":",
     javaHome: null,
     javaExec: null,
     shortenCommandLine: null,
@@ -206,6 +221,7 @@ describe("java command lines", () => {
     projectRoot: "/p",
     classPaths: ["/p/target/classes", "/m2/a.jar"],
     modulePaths: [],
+    pathListSeparator: ":",
     javaHome: "/jdk21",
     javaExec: "/jdk21/bin/java",
     shortenCommandLine: "none",
@@ -231,10 +247,9 @@ describe("java command lines", () => {
     const r = resolveJavaCommand({ ...c, args: ["-Dx=1", ...c.args, "arg"] }, info);
     expect(r.command).toBe("/jdk21/bin/java");
     expect(r.args).toEqual(["-Dx=1", "-cp", "/p/target/classes:/m2/a.jar", "a.Main", "arg"]);
-    expect(resolveJavaCommand(c, { ...info, modulePaths: ["/m/x.jar"] }, ";").args.slice(0, 2)).toEqual([
-      "--module-path",
-      "/m/x.jar",
-    ]);
+    expect(
+      resolveJavaCommand(c, { ...info, modulePaths: ["/m/x.jar"], pathListSeparator: ";" }).args.slice(0, 2),
+    ).toEqual(["--module-path", "/m/x.jar"]);
   });
 
   it("joins arguments for java-debug and reads JDWP's port", () => {

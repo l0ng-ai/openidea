@@ -3,10 +3,12 @@
  * status, navigation history, autosave. The React views and actions talk to
  * this singleton; other features use the EditorService and editor/api.
  */
+import { pasteEditorClipboard } from "./cm/clipboard";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
+import { isSameOrInside } from "@/platform/paths";
 import { basename, useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
@@ -31,6 +33,8 @@ import {
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ask } from "@/workbench/messages";
 import { t } from "@/platform/i18n";
+import { call, commands } from "@/platform/ipc";
+import { isRemoteWindow } from "@/platform/remote";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
 import { usePlatform } from "@/platform/platformInfo";
 import {
@@ -69,6 +73,7 @@ import {
   type TabsState,
 } from "./model/tabs";
 import { DocumentManager, useDocMeta } from "./model/document";
+import { installDiskSync } from "./diskSync";
 import {
   closedDocuments,
   combinedError,
@@ -84,6 +89,7 @@ import { NavigationHistory } from "./model/navHistory";
 import { EditHistory } from "./model/editHistory";
 import { loadSession, restoreTabsState, serializeSession, storeSession, type FileViewState } from "./model/session";
 import { docBackend, type DocBackend } from "./backend";
+import { isClassFile } from "@/platform/classFiles";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import type { Scheduler } from "./sync/DocSync";
@@ -262,6 +268,15 @@ export class EditorController implements SlotHost {
           prevRoot = root;
           prevLight = s.lightEdit;
           this.saveSession();
+          if (
+            root &&
+            previous.project &&
+            !previous.project.workspace &&
+            s.project?.workspace?.projects[0] === previous.project.root
+          ) {
+            const session = loadSession(previous.project.root);
+            if (session) storeSession(root, session);
+          }
           this.sessionRoot = null;
           const generation = ++this.projectGeneration;
           const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);
@@ -301,6 +316,13 @@ export class EditorController implements SlotHost {
     };
     const onPageHide = () => this.saveSession();
     if (typeof window !== "undefined") {
+      if (this.manager.backend.syncFromDisk)
+        this.disposers.push(
+          installDiskSync(
+            () => this.manager.backend.syncFromDisk!(),
+            () => !this.closeSession,
+          ),
+        );
       window.addEventListener("blur", onWindowBlur);
       window.addEventListener("pagehide", onPageHide);
       window.addEventListener("beforeunload", onPageHide);
@@ -621,18 +643,7 @@ export class EditorController implements SlotHost {
         icon: "paste",
         shortcut: "⌘V",
         disabled: view.state.readOnly,
-        run: () => {
-          void navigator.clipboard
-            ?.readText()
-            .then((text) => {
-              view.dispatch(view.state.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
-              view.focus();
-            })
-            .catch(() => {
-              view.focus();
-              document.execCommand("paste");
-            });
-        },
+        run: () => void pasteEditorClipboard(view),
       },
       { kind: "separator" },
       {
@@ -708,6 +719,12 @@ export class EditorController implements SlotHost {
             localHistoryMenu(slot.model.path),
             gitMenu(slot.model.path),
             { kind: "separator" },
+            {
+              kind: "action",
+              action: "diff.compareWith",
+              arg: slot.model.path,
+              label: "Compare With…",
+            },
             {
               kind: "action",
               action: "diff.compareWithClipboard",
@@ -844,9 +861,21 @@ export class EditorController implements SlotHost {
       throw new Error("The project is closing");
   }
 
-  async openFile(path: string, o: OpenOptions = {}) {
+  async openFile(path: string, o: OpenOptions = {}): Promise<void> {
     const generation = this.openingGeneration();
     if (isVirtualUri(path)) return this.openVirtual(path, o);
+    if (isClassFile(path)) {
+      await this.projectTransition;
+      this.checkOpening(generation);
+      try {
+        const target = await call(commands.lspResolveClassFile(path));
+        this.checkOpening(generation);
+        return isVirtualUri(target) ? this.openVirtual(target, o) : this.openFile(target, o);
+      } catch (e) {
+        notifications().notify({ level: "warning", title: "Cannot open library class", body: String(e), group: "lsp" });
+        return;
+      }
+    }
     await this.projectTransition;
     this.checkOpening(generation);
     // Images, binary and huge files open in a contributed viewer unless already open as text.
@@ -885,6 +914,7 @@ export class EditorController implements SlotHost {
   }
 
   async openInput(input: EditorInput, o: OpenOptions = {}) {
+    if (input.path && isClassFile(input.path)) return this.openFile(input.path, o);
     return this.admitInput(input, o, this.openingGeneration());
   }
 
@@ -1044,7 +1074,7 @@ export class EditorController implements SlotHost {
   /** Close exactly the originally selected tabs, evaluating references after every await. */
   private removeGuarded(
     select: (s: TabsState) => TabsState,
-    options: { protect?: (tab: Tab) => boolean; clearHistory?: boolean } = {},
+    options: { protect?: (tab: Tab) => boolean; clearHistory?: boolean; beforeRemove?: () => Promise<boolean> } = {},
   ): Promise<boolean> {
     const generation = this.projectGeneration;
     const initial = useTabs.getState();
@@ -1114,6 +1144,7 @@ export class EditorController implements SlotHost {
           }
           authorized.add(d.input.key);
         }
+        if (options.beforeRemove && !(await options.beforeRemove())) return false;
         // Commit only the original target ids against the latest tab state.
         if (generation !== this.projectGeneration) return false;
         const before = useTabs.getState();
@@ -1288,6 +1319,46 @@ export class EditorController implements SlotHost {
   changeSplitOrientation(paneId: string) {
     this.apply((s) => changeSplitOrientation(s, paneId));
   }
+  /** Save or resolve the dirty guard, open the window, then remove the original tab. */
+  async detachTab(paneId: string, tabId: string): Promise<boolean> {
+    const tab = useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId);
+    const path = tab?.input.path;
+    if (
+      !tab ||
+      !path ||
+      (tab.input.kind !== "file" && !documentLifecycle(tab.input, useContributions.getState().editorKinds))
+    )
+      return false;
+    if (isRemoteWindow()) {
+      notifications().notify({ level: "warning", title: t("app.window.desktopOnly") });
+      return false;
+    }
+    const project = useProject.getState().project;
+    const inProject =
+      !!project && (project.workspace?.projects ?? [project.root]).some((root) => isSameOrInside(path, root));
+    return this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s), {
+      beforeRemove: async () => {
+        if (!useTabs.getState().panes[paneId]?.tabs.some((t) => t.id === tabId)) return false;
+        if (isTextTab(tab)) {
+          const slot = await this.ensureSlot(tabId);
+          if (!slot) return false;
+          await slot.model.save("explicit");
+        }
+        try {
+          await call(commands.windowOpenFileInNewWindow(inProject ? project.root : null, path));
+          return true;
+        } catch (e) {
+          notifications().notify({
+            level: "error",
+            title: t("app.window.openFailed", { name: basename(path) }),
+            body: e instanceof Error ? e.message : String(e),
+            key: `app.open:${path}`,
+          });
+          return false;
+        }
+      },
+    });
+  }
   /** IDEA "Open in Opposite Group": the tab stays and a copy opens next door (or in a new split). */
   openInOpposite(paneId: string, tabId: string) {
     const s = useTabs.getState();
@@ -1399,6 +1470,11 @@ export class EditorController implements SlotHost {
     const out = new Set<string>();
     for (const id of paneIds(s)) for (const t of s.panes[id]?.tabs ?? []) if (t.input.path) out.add(t.input.path);
     return [...out];
+  }
+
+  /** Input of the tab `tabId` in pane `paneId` (dragging a tab between views), null if there is none. */
+  tabInput(paneId: string, tabId: string): EditorInput | null {
+    return useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId)?.input ?? null;
   }
 
   closePath(path: string): Promise<boolean> {
@@ -1588,6 +1664,10 @@ export class EditorController implements SlotHost {
             { label: "Unsplit All", run: () => void this.unsplitAll(paneId) },
           ] as MenuItem[])
         : []),
+      ...(tab.input.path &&
+      (tab.input.kind === "file" || documentLifecycle(tab.input, useContributions.getState().editorKinds))
+        ? ([{ label: "Open in New Window", run: () => void this.detachTab(paneId, tab.id) }] as MenuItem[])
+        : []),
       { kind: "separator" },
       ...(path
         ? ([
@@ -1597,6 +1677,9 @@ export class EditorController implements SlotHost {
             { kind: "separator" },
             localHistoryMenu(path),
             ...(inProject ? [gitMenu(path)] : []),
+            { kind: "separator" },
+            { kind: "action", action: "diff.compareWith", arg: path, label: "Compare With…" },
+            { kind: "action", action: "diff.compareWithClipboard", arg: { path }, label: "Compare with Clipboard" },
             { kind: "separator" },
             {
               label: "Copy Path/Reference…",
@@ -1618,7 +1701,10 @@ export class EditorController implements SlotHost {
             { kind: "action", action: "project.rename", arg: path, label: "Rename File…" },
             { kind: "separator" },
           ] as MenuItem[])
-        : []),
+        : [
+            // Contributed groups for tabs without a file (e.g. "Open in Tool Window").
+            ...menuGroupItems("editorTab", { paths: [], input: tab.input }),
+          ]),
       { kind: "action", action: "file.settings", arg: "editor.general.editorTabs", label: "Configure Editor Tabs…" },
     ];
   }

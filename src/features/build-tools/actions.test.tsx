@@ -78,6 +78,7 @@ describe("build tools feature", () => {
       "maven.analyzeDependencies",
       "maven.executeGoal",
       "maven.reload",
+      "maven.settings",
       "maven.toggleOffline",
       "maven.toggleSkipTests",
     ]);

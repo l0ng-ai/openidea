@@ -12,6 +12,7 @@ pub enum ToolKind {
     Debugger,
     /// Loaded into another tool's process, e.g. a jdtls agent.
     Plugin,
+    Formatter,
 }
 
 /// Where release archives come from.
@@ -31,6 +32,8 @@ pub enum ReleaseSource {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Method {
+    /// An app-owned plugin jar, materialized without a network download.
+    Bundled { filename: &'static str, version: &'static str, bytes: &'static [u8] },
     /// `rustup component add <component>`.
     Rustup { component: &'static str },
     /// npm / pnpm packages installed into `<tools>/node_modules`; the first is the primary one.
@@ -56,6 +59,7 @@ pub enum Method {
 impl Method {
     pub fn label(&self) -> &'static str {
         match self {
+            Method::Bundled { .. } => "Bundled",
             Method::Rustup { .. } => "rustup",
             Method::Npm { .. } => "npm",
             Method::Go { .. } => "go install",
@@ -82,6 +86,8 @@ pub struct ToolSpec {
     /// is a plugin bundle loaded by another tool (copied to `bin/` under this name).
     pub commands: &'static [&'static str],
     pub method: Method,
+    /// Used when the primary installer is unavailable.
+    pub fallback: Option<Method>,
     /// Version query: a command (looked up next to the main binary first) and its args.
     pub version: Option<(&'static str, &'static [&'static str])>,
     pub homepage: &'static str,
@@ -100,7 +106,7 @@ impl ToolSpec {
 
 use Arch::{Arm64, X64};
 use Os::{Linux, Mac, Windows};
-use ToolKind::{Debugger, LanguageServer, Plugin};
+use ToolKind::{Debugger, Formatter, LanguageServer, Plugin};
 
 const V: Option<(&str, &[&str])> = None;
 const JAVA: &[(&str, &str)] = &[("java", "Java is required (https://adoptium.net)")];
@@ -114,15 +120,38 @@ const fn ver(cmd: &'static str) -> Option<(&'static str, &'static [&'static str]
 
 /// The TypeScript these npm servers load as a library (`tsserver.js`, `ts.server`):
 /// TypeScript 7 (the native port) ships neither, and `@latest` resolves to it.
-pub const TYPESCRIPT: &str = "typescript@<7";
+pub const TYPESCRIPT: &str = "typescript@6";
 
 pub static TOOLS: &[ToolSpec] = &[
+    ToolSpec {
+        name: "prettier",
+        display: "Prettier",
+        kind: Formatter,
+        commands: &["prettier"],
+        method: Method::Npm { packages: &["prettier"] },
+        fallback: None,
+        version: ver("prettier"),
+        needs: NODE,
+        homepage: "https://prettier.io",
+    },
     ToolSpec {
         name: "rust-analyzer",
         display: "rust-analyzer",
         kind: LanguageServer,
         commands: &["rust-analyzer"],
         method: Method::Rustup { component: "rust-analyzer" },
+        fallback: Some(Method::Release {
+            source: ReleaseSource::OpenVsx { namespace: "rust-lang", extension: "rust-analyzer" },
+            assets: &[
+                rule(Mac, Arm64, "rust-lang.rust-analyzer-*@darwin-arm64.vsix"),
+                rule(Mac, X64, "rust-lang.rust-analyzer-*@darwin-x64.vsix"),
+                rule(Linux, Arm64, "rust-lang.rust-analyzer-*@linux-arm64.vsix"),
+                rule(Linux, X64, "rust-lang.rust-analyzer-*@linux-x64.vsix"),
+                rule(Windows, Arm64, "rust-lang.rust-analyzer-*@win32-arm64.vsix"),
+                rule(Windows, X64, "rust-lang.rust-analyzer-*@win32-x64.vsix"),
+            ],
+            locate: &["rust-analyzer"],
+        }),
         version: ver("rust-analyzer"),
         homepage: "https://rust-analyzer.github.io",
         needs: &[],
@@ -133,6 +162,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["vtsls"],
         method: Method::Npm { packages: &["@vtsls/language-server"] },
+        fallback: None,
         version: V,
         homepage: "https://github.com/yioneko/vtsls",
         needs: &[],
@@ -143,6 +173,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["typescript-language-server"],
         method: Method::Npm { packages: &["typescript-language-server", TYPESCRIPT] },
+        fallback: None,
         version: ver("typescript-language-server"),
         homepage: "https://github.com/typescript-language-server/typescript-language-server",
         needs: &[],
@@ -153,6 +184,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["pyright-langserver", "pyright"],
         method: Method::Npm { packages: &["pyright"] },
+        fallback: None,
         version: ver("pyright"),
         homepage: "https://github.com/microsoft/pyright",
         needs: &[],
@@ -163,6 +195,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["basedpyright-langserver", "basedpyright"],
         method: Method::PipVenv { package: "basedpyright" },
+        fallback: None,
         version: ver("basedpyright"),
         homepage: "https://docs.basedpyright.com",
         needs: &[],
@@ -173,6 +206,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["ty"],
         method: Method::PipVenv { package: "ty" },
+        fallback: None,
         version: ver("ty"),
         homepage: "https://docs.astral.sh/ty/",
         needs: &[],
@@ -183,6 +217,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["bash-language-server"],
         method: Method::Npm { packages: &["bash-language-server"] },
+        fallback: None,
         version: ver("bash-language-server"),
         homepage: "https://github.com/bash-lsp/bash-language-server",
         needs: &[],
@@ -193,6 +228,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["yaml-language-server"],
         method: Method::Npm { packages: &["yaml-language-server"] },
+        fallback: None,
         version: V,
         homepage: "https://github.com/redhat-developer/yaml-language-server",
         needs: &[],
@@ -203,6 +239,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["vscode-json-language-server"],
         method: Method::Npm { packages: &["vscode-langservers-extracted"] },
+        fallback: None,
         version: V,
         homepage: "https://github.com/hrsh7th/vscode-langservers-extracted",
         needs: &[],
@@ -213,6 +250,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["vscode-css-language-server"],
         method: Method::Npm { packages: &["vscode-langservers-extracted"] },
+        fallback: None,
         version: V,
         homepage: "https://github.com/hrsh7th/vscode-langservers-extracted",
         needs: &[],
@@ -223,6 +261,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["vscode-html-language-server"],
         method: Method::Npm { packages: &["vscode-langservers-extracted"] },
+        fallback: None,
         version: V,
         homepage: "https://github.com/hrsh7th/vscode-langservers-extracted",
         needs: &[],
@@ -233,6 +272,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["docker-langserver"],
         method: Method::Npm { packages: &["dockerfile-language-server-nodejs"] },
+        fallback: None,
         version: V,
         homepage: "https://github.com/rcjsuen/dockerfile-language-server",
         needs: &[],
@@ -243,6 +283,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["svelteserver"],
         method: Method::Npm { packages: &["svelte-language-server", TYPESCRIPT] },
+        fallback: None,
         version: V,
         homepage: "https://github.com/sveltejs/language-tools",
         needs: &[],
@@ -253,6 +294,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["vue-language-server"],
         method: Method::Npm { packages: &["@vue/language-server", TYPESCRIPT] },
+        fallback: None,
         version: V,
         homepage: "https://github.com/vuejs/language-tools",
         needs: &[],
@@ -264,6 +306,7 @@ pub static TOOLS: &[ToolSpec] = &[
         commands: &["ngserver"],
         // Brings the TypeScript and `@angular/language-service` it loads.
         method: Method::Npm { packages: &["@angular/language-server"] },
+        fallback: None,
         version: V,
         homepage: "https://angular.dev/tools/language-service",
         needs: &[],
@@ -274,6 +317,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["graphql-lsp"],
         method: Method::Npm { packages: &["graphql-language-service-cli"] },
+        fallback: None,
         version: V,
         homepage: "https://github.com/graphql/graphiql",
         needs: &[],
@@ -284,6 +328,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["intelephense"],
         method: Method::Npm { packages: &["intelephense"] },
+        fallback: None,
         version: V,
         homepage: "https://intelephense.com",
         needs: &[],
@@ -294,6 +339,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["gopls"],
         method: Method::Go { module: "golang.org/x/tools/gopls@latest" },
+        fallback: None,
         version: Some(("gopls", &["version"])),
         homepage: "https://pkg.go.dev/golang.org/x/tools/gopls",
         needs: &[],
@@ -304,6 +350,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["sqls"],
         method: Method::Go { module: "github.com/sqls-server/sqls@latest" },
+        fallback: None,
         version: Some(("sqls", &["--version"])),
         homepage: "https://github.com/sqls-server/sqls",
         needs: &[],
@@ -314,6 +361,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: Debugger,
         commands: &["dlv"],
         method: Method::Go { module: "github.com/go-delve/delve/cmd/dlv@latest" },
+        fallback: None,
         version: Some(("dlv", &["version"])),
         homepage: "https://github.com/go-delve/delve",
         needs: &[],
@@ -324,6 +372,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: Debugger,
         commands: &["python3"],
         method: Method::PipTarget { package: "debugpy", module: "debugpy" },
+        fallback: None,
         version: V,
         homepage: "https://github.com/microsoft/debugpy",
         needs: &[],
@@ -342,6 +391,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["clangd"],
         },
+        fallback: None,
         version: ver("clangd"),
         homepage: "https://clangd.llvm.org",
         needs: &[],
@@ -362,6 +412,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["lua-language-server"],
         },
+        fallback: None,
         version: ver("lua-language-server"),
         homepage: "https://luals.github.io",
         needs: &[],
@@ -381,6 +432,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["marksman"],
         },
+        fallback: None,
         version: ver("marksman"),
         homepage: "https://github.com/artempyanykh/marksman",
         needs: &[],
@@ -398,9 +450,11 @@ pub static TOOLS: &[ToolSpec] = &[
                 rule(Linux, X64, "taplo-linux-x86_64.gz"),
                 rule(Linux, Arm64, "taplo-linux-aarch64.gz"),
                 rule(Windows, X64, "taplo-windows-x86_64.zip"),
+                rule(Windows, Arm64, "taplo-windows-aarch64.zip"),
             ],
             locate: &["taplo"],
         },
+        fallback: None,
         version: ver("taplo"),
         homepage: "https://taplo.tamasfe.dev",
         needs: &[],
@@ -418,9 +472,11 @@ pub static TOOLS: &[ToolSpec] = &[
                 rule(Linux, X64, "zls-x86_64-linux.tar.xz"),
                 rule(Linux, Arm64, "zls-aarch64-linux.tar.xz"),
                 rule(Windows, X64, "zls-x86_64-windows.zip"),
+                rule(Windows, Arm64, "zls-aarch64-windows.zip"),
             ],
             locate: &["zls"],
         },
+        fallback: None,
         version: ver("zls"),
         homepage: "https://github.com/zigtools/zls",
         needs: &[],
@@ -438,9 +494,11 @@ pub static TOOLS: &[ToolSpec] = &[
                 rule(Linux, X64, "terraform-ls_*_linux_amd64.zip"),
                 rule(Linux, Arm64, "terraform-ls_*_linux_arm64.zip"),
                 rule(Windows, X64, "terraform-ls_*_windows_amd64.zip"),
+                rule(Windows, Arm64, "terraform-ls_*_windows_arm64.zip"),
             ],
             locate: &["terraform-ls"],
         },
+        fallback: None,
         version: Some(("terraform-ls", &["version"])),
         homepage: "https://github.com/hashicorp/terraform-ls",
         needs: &[],
@@ -466,6 +524,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["codelldb"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/vadimcn/codelldb",
         needs: &[],
@@ -485,6 +544,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["dapDebugServer.js"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/microsoft/vscode-js-debug",
         needs: &[],
@@ -503,6 +563,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["jdtls", "jdtls.bat"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/eclipse-jdtls/eclipse.jdt.ls",
         needs: &[],
@@ -522,6 +583,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["com.microsoft.java.debug.plugin-*.jar"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/microsoft/java-debug",
         needs: &[],
@@ -531,16 +593,15 @@ pub static TOOLS: &[ToolSpec] = &[
         display: "Lombok (jdtls agent)",
         kind: Plugin,
         commands: &["lombok.jar"],
-        // Newer than the Lombok a project pins: old ones fail inside current ECJ.
-        method: Method::Release {
-            source: ReleaseSource::MavenCentral { group: "org.projectlombok", artifact: "lombok" },
-            assets: &[
-                any_arch(Mac, "lombok-*.jar"),
-                any_arch(Linux, "lombok-*.jar"),
-                any_arch(Windows, "lombok-*.jar"),
-            ],
-            locate: &["lombok.jar"],
+        // Equinox removed getModuleClassLoader(boolean), breaking lombok.config lookup.
+        // Return to Maven Central once an official release includes lombok#4059.
+        // Source commit, build instructions and checksum: plugins/lombok/README.md.
+        method: Method::Bundled {
+            filename: "lombok-1.18.48-openidea.1.jar",
+            version: "1.18.48-openidea.1",
+            bytes: include_bytes!("../../../plugins/lombok/lombok-1.18.48-openidea.1.jar"),
         },
+        fallback: None,
         version: V,
         homepage: "https://projectlombok.org",
         needs: &[],
@@ -565,6 +626,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["kotlin-lsp", "kotlin-lsp.sh", "kotlin-lsp.cmd"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/Kotlin/kotlin-lsp",
         needs: &[],
@@ -581,6 +643,7 @@ pub static TOOLS: &[ToolSpec] = &[
             assets: ELIXIR_LS_ASSETS,
             locate: &["language_server.sh", "language_server.bat"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/elixir-lsp/elixir-ls",
         needs: ELIXIR,
@@ -595,6 +658,7 @@ pub static TOOLS: &[ToolSpec] = &[
             assets: ELIXIR_LS_ASSETS,
             locate: &["debug_adapter.sh", "debug_adapter.bat"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/elixir-lsp/elixir-ls",
         needs: ELIXIR,
@@ -616,6 +680,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["buf"],
         },
+        fallback: None,
         version: ver("buf"),
         homepage: "https://buf.build",
         needs: &[],
@@ -636,6 +701,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["clojure-lsp"],
         },
+        fallback: None,
         version: V,
         homepage: "https://clojure-lsp.io",
         needs: &[],
@@ -657,6 +723,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["texlab"],
         },
+        fallback: None,
         version: ver("texlab"),
         homepage: "https://github.com/latex-lsp/texlab",
         needs: &[],
@@ -677,6 +744,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["neocmakelsp"],
         },
+        fallback: None,
         version: ver("neocmakelsp"),
         homepage: "https://github.com/Decodetalkers/neocmakelsp",
         needs: &[],
@@ -697,6 +765,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["lemminx-*"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/eclipse/lemminx",
         needs: &[],
@@ -715,6 +784,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["perlnavigator"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/bscan/PerlNavigator",
         needs: &[("perl", "Perl is required (https://www.perl.org/get.html)")],
@@ -729,6 +799,7 @@ pub static TOOLS: &[ToolSpec] = &[
             assets: &[any_arch(Mac, "server.zip"), any_arch(Linux, "server.zip"), any_arch(Windows, "server.zip")],
             locate: &["kotlin-language-server"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/fwcd/kotlin-language-server",
         needs: JAVA,
@@ -743,6 +814,7 @@ pub static TOOLS: &[ToolSpec] = &[
             assets: &[any_arch(Mac, "adapter.zip"), any_arch(Linux, "adapter.zip"), any_arch(Windows, "adapter.zip")],
             locate: &["kotlin-debug-adapter"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/fwcd/kotlin-debug-adapter",
         needs: JAVA,
@@ -762,6 +834,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["netcoredbg"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/Samsung/netcoredbg",
         needs: &[],
@@ -780,6 +853,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["bashDebug.js"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/rogalmic/vscode-bash-debug",
         needs: NODE,
@@ -798,6 +872,7 @@ pub static TOOLS: &[ToolSpec] = &[
             ],
             locate: &["phpDebug.js"],
         },
+        fallback: None,
         version: V,
         homepage: "https://github.com/xdebug/vscode-php-debug",
         needs: NODE,
@@ -808,6 +883,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["ruby-lsp"],
         method: Method::Gem { gem: "ruby-lsp" },
+        fallback: None,
         version: V,
         homepage: "https://shopify.github.io/ruby-lsp",
         needs: &[],
@@ -818,6 +894,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["solargraph"],
         method: Method::Gem { gem: "solargraph" },
+        fallback: None,
         version: ver("solargraph"),
         homepage: "https://solargraph.org",
         needs: &[],
@@ -828,6 +905,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["csharp-ls"],
         method: Method::DotnetTool { package: "csharp-ls" },
+        fallback: None,
         version: V,
         homepage: "https://github.com/razzmatazz/csharp-language-server",
         needs: &[],
@@ -838,6 +916,7 @@ pub static TOOLS: &[ToolSpec] = &[
         kind: LanguageServer,
         commands: &["fsautocomplete"],
         method: Method::DotnetTool { package: "fsautocomplete" },
+        fallback: None,
         version: V,
         homepage: "https://github.com/ionide/FsAutoComplete",
         needs: &[],
@@ -874,6 +953,11 @@ mod tests {
             }
             if let Some(d) = &l.debugger {
                 known.insert((d.adapter.clone(), d.command.clone()));
+            }
+        }
+        for l in &langs {
+            if let Some(f) = &l.formatter {
+                known.insert((f.tool.clone(), f.tool.clone()));
             }
         }
         for t in TOOLS.iter().filter(|t| t.kind != Plugin) {

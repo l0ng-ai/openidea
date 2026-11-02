@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
-import { DEFAULT_TYPES, readTypes, runServiceItems, sessionDetail, sessionStatus } from "./services";
+import { DEFAULT_TYPES, readRan, readTypes, runServiceItems, sessionDetail, sessionStatus } from "./services";
 import { startedPort } from "./serverPort";
 import type { RunSession } from "./store";
+import type { DebugServiceSession } from "@/workbench/contributions";
 
 const config = (id: string, kind: string): RunConfig => ({
   id,
@@ -40,6 +41,108 @@ describe("run configurations in Services", () => {
   const test = config("test", "cargo");
   const dev = config("dev", "npm");
   const scratch = config("context:file", "python");
+
+  it.each(["spring-boot", "node", "python", "go", "cargo"])(
+    "shows configured %s debug roots without a Run session",
+    (kind) => {
+      const c = config("debug-app", kind);
+      const d: DebugServiceSession = {
+        id: 1,
+        config: c,
+        status: "running",
+        processId: null,
+        startedAt: 2,
+        stop: async () => {},
+        rerun: null,
+        show: () => {},
+      };
+      const build = (status: DebugServiceSession["status"]) => runServiceItems([c], [], [], [], {}, [{ ...d, status }]);
+      expect(build("running")[0]?.children?.[0]).toMatchObject({
+        key: "run:config:debug-app",
+        detail: "Debugging",
+        icon: "debug",
+        dim: false,
+      });
+      expect(build("paused")[0]?.children?.[0]?.detail).toBe("Suspended");
+      expect(build("terminated")[0]?.children?.[0]).toMatchObject({ detail: "Finished", dim: true });
+    },
+  );
+
+  it("does not reuse an old Run port for a new direct debug launch or double-count an attachment", () => {
+    const c = config("app", "spring-boot");
+    const r = session("run", c, "finished", 1, { runId: 7, httpPort: 8080 });
+    const d: DebugServiceSession = {
+      id: 1,
+      config: c,
+      status: "running",
+      processId: null,
+      startedAt: 2,
+      stop: async () => {},
+      rerun: null,
+      show: () => {},
+    };
+    const direct = runServiceItems([c], [r], DEFAULT_TYPES, [], {}, [d]);
+    expect(direct[0]?.detail).toBe("1 running");
+    expect(direct[0]?.children?.[0]?.detail).toBe("Debugging");
+    const attached = runServiceItems([c], [{ ...r, status: "running" }], DEFAULT_TYPES, [], {}, [
+      { ...d, processId: 7 },
+    ]);
+    expect(attached[0]?.detail).toBe("1 running");
+    expect(attached[0]?.children).toHaveLength(1);
+    expect(attached[0]?.children?.[0]?.detail).toBe(":8080");
+  });
+
+  it("applies display order to detected and saved configurations of every language", () => {
+    const configs = [
+      config("java-a", "spring-boot"),
+      config("java-b", "spring-boot"),
+      config("node-a", "npm"),
+      { ...config("node-b", "npm"), detected: false },
+      config("py-a", "python"),
+      config("py-b", "python"),
+    ];
+    const items = runServiceItems(configs, [], ["spring-boot", "npm", "python"], [], {
+      "spring-boot": ["java-b", "java-a"],
+      npm: ["node-b", "node-a"],
+      python: ["py-b", "py-a"],
+    });
+    expect(items.map((g) => g.children!.map((c) => c.label))).toEqual([
+      ["java-b", "java-a"],
+      ["node-b", "node-a"],
+      ["py-b", "py-a"],
+    ]);
+    expect(configs.map((c) => c.id)).toEqual(["java-a", "java-b", "node-a", "node-b", "py-a", "py-b"]);
+  });
+
+  it.each(["tomcat", "application", "compound"])("orders %s configurations across workspace members", (kind) => {
+    const first = { ...config("workspace:one:app", kind), cwd: "/workspace/one", module: "one" };
+    const second = { ...config("workspace:two:app", kind), cwd: "/workspace/two", module: "two" };
+    const fresh = config("workspace:two:new", kind);
+    const configs = [first, second, fresh];
+    const items = runServiceItems(configs, [], [kind], [], { [kind]: [second.id, first.id] });
+    expect(items[0]!.children!.map((c) => c.key)).toEqual([second, first, fresh].map((c) => `run:config:${c.id}`));
+    expect(configs).toEqual([first, second, fresh]);
+  });
+
+  it("orders remembered configurations when their type was not explicitly added", () => {
+    const items = runServiceItems([build, test], [], [], ["build", "test"], { cargo: ["test", "build"] });
+    expect(items[0]!.children!.map((c) => c.key)).toEqual(["run:config:test", "run:config:build"]);
+  });
+
+  it("keeps stable service identity and session details after refresh and rename", () => {
+    const renamed = { ...build, name: "Renamed build" };
+    const items = runServiceItems(
+      [renamed, test],
+      [session("s1", renamed, "running", 1, { httpPort: 8080 })],
+      ["cargo"],
+      [],
+      { cargo: ["test", "build"] },
+    );
+    expect(items[0]!.children!.map((c) => [c.key, c.label, c.detail])).toEqual([
+      ["run:config:test", "test", undefined],
+      ["run:config:build", "Renamed build", ":8080"],
+    ]);
+  });
 
   it("lists added types fully and other types only with their runs", () => {
     const sessions = [
@@ -120,6 +223,38 @@ describe("types added to Services", () => {
     localStorage.setItem("openidea.services.runTypes:/p", "[]");
     expect(readTypes("/p")).toEqual([]);
     expect(readTypes("/q")).toEqual(["spring-boot"]);
+  });
+});
+
+describe("configurations that ran", () => {
+  const dev = config("dev", "npm");
+  const scratch = config("context:file", "python");
+  beforeEach(() => localStorage.clear());
+
+  it("persists the ran configuration ids per project", () => {
+    expect(readRan("/p")).toEqual([]);
+    localStorage.setItem("openidea.services.ran:/p", JSON.stringify(["dev"]));
+    expect(readRan("/p")).toEqual(["dev"]);
+    expect(readRan("/q")).toEqual([]);
+  });
+
+  it("lists previously run configurations without a session", () => {
+    const items = runServiceItems([dev, scratch], [], [], ["dev", "context:file"]);
+    expect(items.map((i) => [i.key, i.label])).toEqual([
+      ["run:type:npm", "npm"],
+      ["run:type:python", "Python"],
+    ]);
+    expect(items[0]!.children!.map((c) => [c.label, c.dim])).toEqual([["dev", true]]);
+    expect(items[1]!.children!.map((c) => c.key)).toEqual(["run:config:context:file"]);
+  });
+
+  it("ignores ran ids whose configuration is gone and merges sessions", () => {
+    const gone = runServiceItems([dev], [], [], ["missing"]);
+    expect(gone).toEqual([]);
+    const running = session("s1", dev, "running", 1);
+    const items = runServiceItems([dev], [running], [], ["dev"]);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.children!.map((c) => [c.label, c.detail])).toEqual([["dev", "Running"]]);
   });
 });
 

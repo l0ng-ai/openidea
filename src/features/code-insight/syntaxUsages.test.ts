@@ -25,7 +25,8 @@ vi.mock("@/platform/ipc", async (orig) => {
 vi.mock("./candidates", () => ({ filesMentioning: () => filesMentioning() }));
 
 const { _addEditor } = await import("@/editor/api");
-const { fetchUsages, incompleteNote } = await import("./usages");
+const { fetchUsages } = await import("./usages");
+const { incompleteNote } = await import("@/editor/lsp/lsp");
 const { LOCAL_NOTE, TEXT_NOTE } = await import("./syntaxUsages");
 
 const r = (line: number, col: number, endCol: number): Range => ({ start: { line, col }, end: { line, col: endCol } });
@@ -54,6 +55,9 @@ describe("Find Usages fallback", () => {
     expect(res.note).toBe(incompleteNote("indexing", "x"));
     expect(incompleteNote("tooManyFiles", "x")).toBe(
       "May be incomplete: too many files mention 'x' to search them all",
+    );
+    expect(incompleteNote("filesSkipped", "x")).toBe(
+      "May be incomplete: some files that mention 'x' are too large or unreadable",
     );
   });
 

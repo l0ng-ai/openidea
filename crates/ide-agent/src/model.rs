@@ -47,6 +47,9 @@ pub enum Isolation {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTask {
+    /// Original project folder; absent in tasks saved before per-task roots.
+    #[serde(default)]
+    pub project_root: Option<IpcPath>,
     pub id: String,
     pub title: String,
     /// [`AgentProvider::id`].
@@ -240,6 +243,9 @@ pub enum AgentEntry {
         text: String,
         /// Names of the files and images sent with it.
         attachments: Vec<String>,
+        /// The images sent with it, shown in the conversation.
+        #[serde(default)]
+        images: Vec<AgentImage>,
         /// When it was sent (ms since the epoch); `None` in tasks saved before this was kept.
         #[serde(default)]
         sent_ms: Option<f64>,
@@ -361,6 +367,9 @@ pub struct AgentProbe {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct NewAgentTask {
+    /// Validated by the host; defaults to the window project root.
+    #[serde(default)]
+    pub project_root: Option<IpcPath>,
     pub prompt: AgentPrompt,
     pub provider: String,
     /// Settings for the new session (model, mode…).

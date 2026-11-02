@@ -16,6 +16,7 @@ import {
 import { typeRows } from "./AddConfigPopup";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { buildRows } from "./ConfigChooser";
+import { ConfigForm, memberRows } from "./ConfigForm";
 import { compoundChildren, compoundCycle, formatEnv, parseEnv, validateConfig } from "./configs";
 import { contextConfig } from "./context";
 import { EditConfigsOverlay, moveConfig, treeRows } from "./EditConfigsDialog";
@@ -69,6 +70,22 @@ beforeEach(() => {
 afterEach(() => disposeTypes());
 
 describe("configuration types", () => {
+  it.each(["spring-boot", "tomcat"])("edits shared update policies in the %s form", async (kind) => {
+    const type = typeFor(kind)!;
+    const original = newConfigOfType(type, []);
+    const config =
+      kind === "spring-boot" ? withParams(original, { ...original.params, mainClass: "a.Main" }) : original;
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    expect(screen.getByRole("button", { name: "On 'Update' action" }).textContent).toContain("Show chooser");
+    expect(screen.getByRole("button", { name: "On frame deactivation" }).textContent).toContain("Do nothing");
+    fireEvent.click(screen.getByRole("button", { name: "On frame deactivation" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Update resources" }));
+    expect(changed).toHaveBeenCalledWith(
+      expect.objectContaining({ params: expect.objectContaining({ onDeactivation: "resources" }) }),
+    );
+  });
+
   it("are contributed through the registry", () => {
     expect(runConfigTypes().map((t) => t.id)).toEqual(expect.arrayContaining(BUILTIN_TYPES.map((t) => t.id)));
   });
@@ -347,6 +364,17 @@ describe("compound configurations", () => {
         .sort(),
     ).toEqual(["a", "b"]);
   });
+
+  it("member picker lists candidates and filters them by name", () => {
+    // `outer` contains `inner`, so adding it to `inner` would close a cycle.
+    const rows = memberRows(inner, [a, b, inner, outer], [], "");
+    expect(rows.map((r) => r.config.id)).toEqual(["a", "b"]);
+    // Already-added members and the compound itself are excluded.
+    expect(memberRows(inner, [a, b, inner, outer], ["a"], "").map((r) => r.config.id)).toEqual(["b"]);
+    const named = cfg("named", { name: "Deploy App" });
+    expect(memberRows(outer, [a, b, inner, outer, named], ["a"], "deploy").map((r) => r.config.id)).toEqual(["named"]);
+    expect(memberRows(outer, [a, b, inner, outer, named], ["a"], "zzz")).toEqual([]);
+  });
 });
 
 describe("before launch tasks", () => {
@@ -367,7 +395,7 @@ describe("before launch tasks", () => {
       ],
     });
     expect(await runBeforeLaunch(app, [app.id])).toBe(true);
-    expect(build).toHaveBeenCalledOnce();
+    expect(build).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arg: { activate: false } }));
     expect(show).toHaveBeenCalledWith("todo", true);
 
     build.mockImplementation(async () => setContext("build.lastStatus", "failed"));

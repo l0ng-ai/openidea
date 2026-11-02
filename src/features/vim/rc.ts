@@ -2,7 +2,8 @@
  * `~/.openideavimrc` / `~/.ideavimrc`: the safe subset IdeaVim users keep in
  * their rc file — `set` options, `map` variants, `let mapleader` — plus
  * IdeaVim's `:action <id>` / `<Action>(id)` mappings, which run OpenIDEA
- * actions. Everything else is reported as ignored, never executed.
+ * actions. `source` reads another file by the same rules. Everything else is
+ * reported as ignored, never executed.
  */
 
 /** codemirror-vim mapping context; undefined = Normal, Visual and Operator-pending. */
@@ -15,6 +16,8 @@ export type RcCommand =
   | { kind: "mapEx"; mode: MapMode; lhs: string; ex: string };
 
 export interface RcIgnored {
+  /** The sourced file it came from, as written after `source`; absent for the rc file itself. */
+  file?: string;
   line: number;
   text: string;
   reason: string;
@@ -27,6 +30,7 @@ export interface RcParseResult {
 
 export const RC_FILES = [".openideavimrc", ".ideavimrc"] as const;
 
+const SOURCE_RE = /^so(?:urce)?\s+(.+)$/;
 const MAP_RE = /^(n|v|x|i|o)?(map|noremap)$/;
 const MAP_MODES: Record<string, MapMode> = {
   "": undefined,
@@ -64,15 +68,53 @@ export function exOfRhs(rhs: string): string | null {
   return ex ? ex[1]!.trim() : null;
 }
 
-export function parseVimrc(text: string): RcParseResult {
+/** What `source` lines name, for reading them ahead of the synchronous parse. */
+export function sourcedPaths(text: string): string[] {
+  return text.split(/\r?\n/).flatMap((raw) => {
+    const m = SOURCE_RE.exec(raw.trim());
+    return m ? [m[1]!.trim()] : [];
+  });
+}
+
+interface RcLine {
+  file?: string;
+  line: number;
+  text: string;
+}
+
+/** The rc file's lines with each readable `source` line replaced by that file's lines. */
+function expandSources(
+  text: string,
+  sources: ReadonlyMap<string, string | null> | undefined,
+  ignored: RcIgnored[],
+  file?: string,
+  active: readonly string[] = [],
+): RcLine[] {
+  const at = file === undefined ? {} : { file };
+  return text.split(/\r?\n/).flatMap((raw, i): RcLine[] => {
+    const line = raw.trim();
+    const m = SOURCE_RE.exec(line);
+    if (!m) return [{ ...at, line: i + 1, text: line }];
+    const path = m[1]!.trim();
+    const sourced = sources?.get(path);
+    const reason = active.includes(path) ? "file sources itself" : typeof sourced !== "string" && "cannot read file";
+    if (reason) {
+      ignored.push({ ...at, line: i + 1, text: line, reason });
+      return [];
+    }
+    return expandSources(sourced as string, sources, ignored, path, [...active, path]);
+  });
+}
+
+/** `sources` holds the text of sourced files by the path written in the rc file; null = unreadable. */
+export function parseVimrc(text: string, sources?: ReadonlyMap<string, string | null>): RcParseResult {
   const commands: RcCommand[] = [];
   const ignored: RcIgnored[] = [];
   let leader = "\\";
-  const lines = text.split(/\r?\n/);
-  lines.forEach((raw, i) => {
-    const line = raw.trim();
+  expandSources(text, sources, ignored).forEach(({ file, line: lineNumber, text: line }) => {
     if (!line || line.startsWith('"')) return;
-    const ignore = (reason: string) => ignored.push({ line: i + 1, text: line, reason });
+    const ignore = (reason: string) =>
+      ignored.push({ ...(file === undefined ? {} : { file }), line: lineNumber, text: line, reason });
     const [word = "", ...restWords] = splitArgs(line);
     const rest = line.slice(line.indexOf(word) + word.length);
 

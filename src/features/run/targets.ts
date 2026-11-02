@@ -5,13 +5,15 @@
  * Line-based regex detection (cheap, no parser), plus the run configuration for
  * one target derived from the project's detected test configurations.
  */
+import { formatArgs } from "./configs";
 import type { RunConfig } from "@/platform/ipc";
 import { applicationConfig, jvmTestConfig } from "./application";
+import { goTestParts, withoutGoSelection } from "./goArguments";
 import { contextConfig, testConfigFor } from "./context";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
 
-export type TargetKind = "main" | "test" | "suite";
+export type TargetKind = "main" | "test" | "suite" | "generate";
 
 export interface RunTarget {
   /** 0-based line of the declaration. */
@@ -173,10 +175,19 @@ function goTargets(lines: string[]): RunTarget[] {
   const isMain = lines.some((l) => /^package\s+main\b/.test(l));
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    const t = /^func\s+(Test\w*|Example\w*|Fuzz\w*)\s*\(\s*(?:\w+\s+\*testing\.[TF])?\s*\)?/.exec(line);
-    if (t && (/^Example/.test(t[1]!) || /\*testing\.[TF]/.test(line))) {
+    if (/^\/\/go:generate[ \t]+\S/.test(line)) {
+      out.push({
+        line: i,
+        kind: "generate",
+        name: line.replace(/^\/\/go:generate[ \t]+/, "").trim(),
+        path: [String(i)],
+      });
+      continue;
+    }
+    const t = /^func\s+(Test\w*|Benchmark\w*|Example\w*|Fuzz\w*)\s*\(\s*(?:\w+\s+\*testing\.[TFB])?\s*\)?/.exec(line);
+    if (t && (/^Example/.test(t[1]!) || /\*testing\.[TFB]/.test(line))) {
       out.push({ line: i, kind: "test", name: t[1]!, path: [t[1]!] });
-      if (/\*testing\.T\b/.test(line)) out.push(...goSubtests(lines, i, t[1]!));
+      if (/\*testing\.[TB]\b/.test(line)) out.push(...goSubtests(lines, i, t[1]!));
       continue;
     }
     if (isMain && /^func\s+main\s*\(\s*\)/.test(line)) out.push({ line: i, kind: "main", name: "main", path: [] });
@@ -301,7 +312,7 @@ export function detectRunTargets(text: string, relPath: string): RunTarget[] {
         (t) => t.kind === "main" || /(^|\/)(test_[^/]*|[^/]*_test)\.py$|(^|\/)tests?\//.test(relPath),
       );
     case "go":
-      return goTargets(lines).filter((t) => t.kind === "main" || /_test\.go$/.test(relPath));
+      return goTargets(lines).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
     case "jvm":
       return /\.(java|kts?)$/.test(relPath) ? javaKotlinTargets(text, relPath) : jvmTargets(lines, relPath);
     default:
@@ -363,7 +374,23 @@ export function targetConfig(
       return named(withLast(file.args, (f) => `${f}::${target.path.join("::")}`));
     case "go": {
       const pattern = `^${target.path.map(escapeRegExp).join("$/^")}$`;
-      return named([...file.args, "-run", pattern]);
+      const benchmark = target.path[0]?.startsWith("Benchmark");
+      const parts = goTestParts(file.args);
+      const selection = benchmark ? ["-run", "^$", "-bench", pattern] : ["-run", pattern];
+      const result = named([
+        "test",
+        ...withoutGoSelection(parts.flags),
+        ...parts.targets,
+        ...selection,
+        ...parts.program,
+      ]);
+      if (file.params?.goKind)
+        result.params = {
+          ...file.params,
+          pattern: benchmark ? "^$" : pattern,
+          toolArgs: formatArgs([...withoutGoSelection(parts.flags), ...(benchmark ? ["-bench", pattern] : [])]),
+        };
+      return result;
     }
     case "cargo": {
       const path = target.path.join("::");

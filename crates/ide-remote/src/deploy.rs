@@ -1,5 +1,5 @@
 //! Upload, download, delete and synchronise project files with a deployment
-//! server over SFTP.
+//! server through a shared filesystem interface.
 
 use crate::mapping::{Excludes, Mappings, posix};
 use ide_core::{CancellationToken, IdeError, IdeResult};
@@ -9,6 +9,45 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// Mapping eligibility uses a common synthetic server root: mapping and exclusion
+/// paths are both relative to that root, so checking never opens a connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentCoverage {
+    pub server: String,
+    pub paths: Vec<String>,
+    pub skipped: Vec<TransferError>,
+}
+
+pub fn coverage(settings: &ide_core::settings::Settings, root: &Path, paths: &[PathBuf]) -> Vec<DeploymentCoverage> {
+    settings
+        .deployment
+        .servers
+        .iter()
+        .map(|server| {
+            let map = Mappings::new(server, root, "/");
+            let exclude = Excludes::new(&settings.deployment, server, "/");
+            let mut result = DeploymentCoverage { server: server.id.clone(), paths: Vec::new(), skipped: Vec::new() };
+            for path in paths {
+                let name = ide_core::ipc_path::to_ipc(path);
+                match mapped_path(&map, &exclude, path) {
+                    Ok(_) => result.paths.push(name),
+                    Err(message) => result.skipped.push(TransferError { path: name, message: message.into() }),
+                }
+            }
+            result
+        })
+        .collect()
+}
+
+fn mapped_path(map: &Mappings, exclude: &Excludes, local: &Path) -> Result<String, &'static str> {
+    let remote = map.remote(local).ok_or("Not covered by this server's mappings")?;
+    if exclude.local(local.strip_prefix(map.project_root()).unwrap_or(local)) || exclude.remote(&remote) {
+        return Err("Excluded from deployment");
+    }
+    Ok(remote)
+}
 
 /// Modification times closer than this count as equal (FAT, rounding by servers).
 const MTIME_SLACK: u32 = 2;
@@ -96,7 +135,7 @@ pub fn status(local: Option<FileStamp>, remote: Option<FileStamp>) -> SyncStatus
     }
 }
 
-/// Operations on one server through one SFTP session.
+/// Operations on one server through its filesystem.
 pub struct Deployment<'a> {
     pub fs: &'a RemoteFs,
     pub map: &'a Mappings,
@@ -171,7 +210,7 @@ impl Deployment<'_> {
                 break;
             }
             let rel = self.rel(local);
-            let Some(remote) = self.map.remote(local).filter(|r| !self.exclude.remote(r)) else {
+            let Some(remote) = mapped_path(self.map, self.exclude, local).ok() else {
                 report.skipped += 1;
                 continue;
             };
@@ -193,7 +232,7 @@ impl Deployment<'_> {
         let mut report = TransferReport::default();
         let mut jobs: Vec<(String, PathBuf)> = Vec::new();
         for p in paths {
-            let Some(remote) = self.map.remote(p).filter(|r| !self.exclude.remote(r)) else {
+            let Some(remote) = mapped_path(self.map, self.exclude, p).ok() else {
                 report.skipped += 1;
                 continue;
             };
@@ -239,7 +278,7 @@ impl Deployment<'_> {
         let mut report = TransferReport::default();
         for p in paths {
             // Never a whole mapping (the project folder went away, or a mapped folder did).
-            let Some(remote) = self.map.remote(p).filter(|r| !self.exclude.remote(r) && !self.map.is_root(r)) else {
+            let Some(remote) = mapped_path(self.map, self.exclude, p).ok().filter(|r| !self.map.is_root(r)) else {
                 report.skipped += 1;
                 continue;
             };
@@ -257,12 +296,12 @@ impl Deployment<'_> {
 
     /// Sync with Deployed: local and remote files under `local` side by side.
     pub async fn compare(&self, local: &Path) -> IdeResult<Vec<SyncEntry>> {
-        let remote_root =
-            self.map.remote(local).ok_or_else(|| IdeError::invalid(format!("{} is not mapped", local.display())))?;
+        let remote_root = mapped_path(self.map, self.exclude, local)
+            .map_err(|reason| IdeError::invalid(format!("{}: {reason}", local.display())))?;
         let mut by_rel: BTreeMap<String, SyncEntry> = BTreeMap::new();
         let mut ignored = TransferReport::default();
         for f in self.local_files(&[local.to_path_buf()], &mut ignored) {
-            let Some(remote_path) = self.map.remote(&f) else { continue };
+            let Ok(remote_path) = mapped_path(self.map, self.exclude, &f) else { continue };
             let size = std::fs::metadata(&f).map(|m| m.len()).unwrap_or(0);
             let stamp = FileStamp { size, mtime: mtime_of(&f) };
             by_rel.insert(
@@ -319,9 +358,7 @@ impl Deployment<'_> {
                 break;
             }
             let local = step.path.split('/').filter(|s| !s.is_empty()).fold(root.clone(), |p, s| p.join(s));
-            let Some(remote) =
-                self.map.remote(&local).filter(|r| !self.exclude.remote(r) && !self.excluded_local(&local))
-            else {
+            let Some(remote) = mapped_path(self.map, self.exclude, &local).ok() else {
                 report.skipped += 1;
                 continue;
             };

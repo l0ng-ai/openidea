@@ -7,7 +7,7 @@ interface PlatformInfo {
   version: string | null;
   /** Native traffic lights overlay the title bar (Tauri, macOS, Overlay style). */
   overlayTitleBar: boolean;
-  /** Frameless window: the title bar draws the main menu and caption buttons (Tauri, Windows). */
+  /** Frameless window: the title bar draws the main menu and caption buttons (Tauri, Windows and Linux). */
   framelessTitleBar: boolean;
 }
 
@@ -27,7 +27,7 @@ export const usePlatform = create<PlatformInfo>(() => {
     os,
     version: null,
     overlayTitleBar: isTauri() && os === "macos",
-    framelessTitleBar: isTauri() && os === "windows",
+    framelessTitleBar: isTauri() && (os === "windows" || os === "linux"),
   };
 });
 
@@ -39,7 +39,7 @@ export async function loadPlatformInfo() {
       os: info.platform,
       version: info.version,
       overlayTitleBar: info.platform === "macos",
-      framelessTitleBar: info.platform === "windows",
+      framelessTitleBar: info.platform === "windows" || info.platform === "linux",
     });
   } catch {
     /* keep the user-agent guess */

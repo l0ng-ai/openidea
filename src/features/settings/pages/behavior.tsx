@@ -9,15 +9,16 @@ import { FontPicker } from "../components/FontPicker";
 import { useId, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
+import { usePlatform } from "@/platform/platformInfo";
 import { isTauri } from "@/platform/ipc";
-import { SCHEMES as EDITOR_SCHEMES } from "@/platform/colorScheme";
+import { ZOOM_LIMITS } from "@/platform/zoom";
+import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
 import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
 import { ColorSwatches, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import {
-  ZOOM_LIMITS,
   IDLE_LIMITS,
   type Antialiasing,
   type ConcreteTheme,
@@ -117,7 +118,8 @@ const SCHEMES: SelectOption[] = [
 
 function ColorSchemeRow() {
   const [scheme, setScheme] = useSetting<string>("editor.colorScheme");
-  const options = SCHEMES.some((s) => s.value === scheme) ? SCHEMES : [...SCHEMES, { value: scheme, label: scheme }];
+  const [customs] = useSetting<unknown>("editor.customSchemes", "global");
+  const options = [SCHEMES[0]!, ...listSchemes(customSchemes(customs)).map((s) => ({ value: s.id, label: s.name }))];
   return (
     <Indented>
       <Row label="Editor color scheme">
@@ -179,35 +181,53 @@ function ZoomRow() {
 function CustomFontRow() {
   const [on, setOn] = useSetting<boolean>("appearance.useCustomFont");
   const [family, setFamily] = useSetting<string>("appearance.uiFontFamily");
+  const [fallback, setFallback] = useSetting<string>("appearance.uiFontFallback");
   const [size, setSize] = useSetting<number>("appearance.uiFontSize");
   const id = useId();
   const matched = useLabelMatch("Use custom font");
   return (
-    <div className={clsx(styles.fontRow, matched && styles.matched)}>
-      <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
-      <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
-      <label className={clsx(styles.sizeLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
-        <SearchLabel text="Size:" />
-      </label>
-      {on ? (
-        <NumberInput
-          id={`${id}-size`}
-          value={size}
-          onChange={setSize}
-          {...LIMITS.uiFontSize}
-          integer
-          aria-label="UI font size"
+    <div className={clsx(styles.fontRow, styles.customFontRow, matched && styles.matched)}>
+      <span className={styles.fontOption}>
+        <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
+        <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
+      </span>
+      <span className={styles.fontOption}>
+        <label className={clsx(!on && styles.disabled)} htmlFor={`${id}-fallback`}>
+          <SearchLabel text="Fallback font:" />
+        </label>
+        <FontPicker
+          id={`${id}-fallback`}
+          label="UI fallback font"
+          disabled={!on}
+          value={fallback}
+          onChange={setFallback}
+          allowEmpty
         />
-      ) : (
-        <Input
-          id={`${id}-size`}
-          className={styles.sizeInput}
-          value={String(size)}
-          disabled
-          aria-label="UI font size"
-          readOnly
-        />
-      )}
+      </span>
+      <span className={styles.fontOption}>
+        <label className={clsx(!on && styles.disabled)} htmlFor={`${id}-size`}>
+          <SearchLabel text="Size:" />
+        </label>
+        {on ? (
+          <NumberInput
+            id={`${id}-size`}
+            value={size}
+            onChange={setSize}
+            {...LIMITS.uiFontSize}
+            integer
+            aria-label="UI font size"
+          />
+        ) : (
+          <Input
+            id={`${id}-size`}
+            className={styles.sizeInput}
+            value={String(size)}
+            disabled
+            aria-label="UI font size"
+            readOnly
+          />
+        )}
+      </span>
     </div>
   );
 }
@@ -219,6 +239,25 @@ function Grid({ left, right }: { left: ReactNode; right: ReactNode }) {
       <div className={styles.column}>{left}</div>
       <div className={styles.column}>{right}</div>
     </div>
+  );
+}
+
+function MainMenuStyleRow() {
+  const frameless = usePlatform((s) => s.framelessTitleBar);
+  const [mainMenuStyle, setMainMenuStyle] = useSetting<"hamburger" | "merged">("appearance.mainMenuStyle");
+  if (!frameless) return null;
+  return (
+    <Row label="Main menu">
+      <Select
+        value={mainMenuStyle ?? "hamburger"}
+        options={[
+          { value: "hamburger", label: "Hamburger button" },
+          { value: "merged", label: "Merged with main toolbar" },
+        ]}
+        onChange={setMainMenuStyle}
+        aria-label="Main menu"
+      />
+    </Row>
   );
 }
 
@@ -263,6 +302,11 @@ function ToolWindowsGrid() {
         <>
           <BoundToggle k="appearance.showToolWindowBars" label="Show tool window bars" />
           <BoundToggle k="appearance.showToolWindowNames" label="Show tool window names" />
+          <BoundToggle
+            k="appearance.showToolWindowBadges"
+            label="Show tool window badges"
+            hint="Counts on the stripe icons, e.g. changed files or agent tasks needing input"
+          />
         </>
       }
       right={
@@ -281,6 +325,7 @@ function ToolWindowsGrid() {
 
 const OPEN_IN: Array<{ value: OpenProjectIn; label: string }> = [
   { value: "new", label: "New window" },
+  { value: "attach", label: "Attach" },
   { value: "same", label: "Current window" },
   { value: "ask", label: "Ask" },
 ];
@@ -504,7 +549,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Use custom font",
-            keywords: ["UI font size", "Size", "font family"],
+            keywords: ["UI font size", "Size", "font family", "fallback font"],
             component: CustomFontRow,
           },
           { kind: "toggle", key: "appearance.contrastScrollbars", label: "Use contrast scrollbars" },
@@ -519,6 +564,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       {
         title: "UI Options",
         options: [
+          {
+            kind: "custom",
+            label: "Main menu",
+            keywords: ["Hamburger button", "Merged with main toolbar"],
+            component: MainMenuStyleRow,
+          },
           {
             kind: "custom",
             label: "Compact mode",
@@ -566,7 +617,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Open project in",
-            keywords: ["New window", "Current window", "Ask"],
+            keywords: ["New window", "Current window", "Attach", "Ask"],
             component: OpenProjectInRow,
           },
           { kind: "custom", label: "Default directory", component: DefaultDirectoryRow },
@@ -585,6 +636,11 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "files.autoSave",
             label: "Save files when switching to a different application or a built-in terminal",
+          },
+          {
+            kind: "toggle",
+            key: "files.syncOnFocus",
+            label: "Synchronize external changes when switching to the IDE window",
           },
         ],
       },

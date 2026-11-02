@@ -4,7 +4,11 @@
  */
 import type { FileEntry } from "@/bindings";
 import { notifyFileOperation } from "@/platform/fileOps";
-import { call, commands, emitLocalIdeEvent, isTauri, IpcError } from "@/platform/ipc";
+import { call, commands, emitLocalIdeEvent, isTauri, IpcError, nextRequestId } from "@/platform/ipc";
+import { isRemoteWindow } from "@/platform/remote";
+import { invokeLocal } from "@/platform/tauriCore";
+import { tx } from "@/platform/i18n";
+import { upsertTask } from "@/workbench/tasks";
 import { isInside, joinPath, nameOf, parentOf } from "./paths";
 
 export interface ProjectFs {
@@ -15,6 +19,7 @@ export interface ProjectFs {
   /** Moves to the trash when possible. */
   delete(path: string): Promise<void>;
   copy(from: string, to: string): Promise<void>;
+  importLocal(from: string, to: string, upload?: LocalImport): Promise<string[]>;
 }
 
 export const tauriFs: ProjectFs = {
@@ -33,7 +38,60 @@ export const tauriFs: ProjectFs = {
     await call(commands.fsCopy(from, to));
     notifyFileOperation({ kind: "created", paths: [to] });
   },
+  importLocal: async (from, to, upload) => {
+    if (!isRemoteWindow()) {
+      await tauriFs.copy(from, to);
+      return [];
+    }
+    const batch = upload ?? beginLocalImport();
+    try {
+      const request = batch.start(from);
+      const skipped = await call(commands.remoteImportLocal(from, to, request));
+      notifyFileOperation({ kind: "created", paths: [to] });
+      return skipped;
+    } finally {
+      if (!upload) batch.finish();
+    }
+  },
 };
+
+interface LocalImport {
+  readonly cancelled: boolean;
+  start(from: string): number;
+  finish(): void;
+}
+
+/** One task spans every selected path; cancellation also stops paths not started yet. */
+export function beginLocalImport(): LocalImport {
+  let cancelled = false;
+  let request = nextRequestId();
+  const task = {
+    id: `file-import-${request}`,
+    title: tx("Uploading files"),
+    message: null as string | null,
+    fraction: null,
+    cancel: () => {
+      cancelled = true;
+      void invokeLocal("cancel_request", { id: request }).catch(() => {});
+    },
+  };
+  upsertTask({ ...task, done: false });
+  return {
+    get cancelled() {
+      return cancelled;
+    },
+    start(from) {
+      if (cancelled) throw new IpcError({ kind: "cancelled", message: "Cancelled" });
+      request = nextRequestId();
+      task.message = nameOf(from);
+      upsertTask({ ...task, done: false });
+      return request;
+    },
+    finish() {
+      upsertTask({ ...task, done: true });
+    },
+  };
+}
 
 type MemNode = { kind: "file"; size: number } | { kind: "dir" };
 
@@ -137,6 +195,11 @@ export class MemoryFs implements ProjectFs {
       this.nodes.set(to + p.slice(from.length), { ...this.nodes.get(p)! });
     }
     this.emit({ created: [to] });
+  }
+
+  async importLocal(from: string, to: string): Promise<string[]> {
+    await this.copy(from, to);
+    return [];
   }
 }
 

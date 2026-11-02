@@ -240,11 +240,11 @@ export function JavaPage() {
           label="JDK"
           kind="jdk"
           emptyLabel="Auto"
-          emptyDetail="the project JDK if new enough, else the first installed JDK that is"
+          emptyDetail="auto-managed; uses an installed JDK or downloads a runtime when needed"
           directory
           browseTitle="Select JDK Home Directory"
           aria-label="Language server JDK"
-          hint="Runs jdtls only, like IDEA's JDK for importer; the project keeps compiling and running with the Project JDK. jdtls needs JDK 21 or newer (recent releases 25); Download JDK… in the list fetches one. The jdtls executable itself is set in Language Servers."
+          hint="Runs jdtls only; the project keeps its Project JDK. When empty, a suitable installed JDK is used first, otherwise Eclipse Temurin is downloaded automatically into a separate language-server folder. The jdtls executable itself is set in Language Servers."
         />
         <Row
           label="JVM options"

@@ -11,6 +11,8 @@ name = "fsautocomplete"
 command = "fsautocomplete"
 root-markers = ["*.sln", "*.fsproj", "global.json"]
 install-hint = "dotnet tool install --global fsautocomplete"
+# Otherwise it waits for the client to load the project through `fsharp/workspaceLoad`.
+initialization-options = { AutomaticWorkspaceInit = true }
 
 [debugger]
 adapter = "netcoredbg"

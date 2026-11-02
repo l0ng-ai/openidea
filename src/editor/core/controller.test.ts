@@ -170,6 +170,33 @@ describe("EditorController", () => {
     expect(pane().tabs.map((t) => t.input.path)).toEqual(["/p/a.ts", "/p/c.ts"]);
   });
 
+  it("carries the plain project's editor tabs into its automatic workspace", async () => {
+    const settings = {};
+    useProject.setState({
+      project: { root: "/attach-a", name: "A", trusted: true, isGit: false, settings },
+      settings,
+      lightEdit: false,
+    });
+    ctrl = new EditorController(createMemoryBackend({ "/attach-a/one.txt": "one", "/attach-a/two.txt": "two" }));
+    ctrl.start();
+    await ctrl.openFile("/attach-a/one.txt", { focus: false, preview: false });
+    await ctrl.openFile("/attach-a/two.txt", { focus: false, preview: false });
+    useProject.setState({
+      project: {
+        root: "/attach-workspace",
+        name: "A",
+        trusted: true,
+        isGit: false,
+        settings,
+        workspace: { version: 1, name: "A", projects: ["/attach-a", "/attach-b"] },
+      },
+    });
+    await vi.waitFor(() =>
+      expect(openFilePaths(useTabs.getState())).toEqual(["/attach-a/one.txt", "/attach-a/two.txt"]),
+    );
+    useProject.setState({ project: null });
+  });
+
   it("reopens the LightEdit files the next time a window switches to LightEdit", async () => {
     ctrl = new EditorController(createMemoryBackend({ "/x/a.txt": "a", "/y/b.md": "b" }));
     ctrl.start();
@@ -204,7 +231,7 @@ describe("EditorController", () => {
 
   it("builds IDEA's editor tab menu", async () => {
     useProject.setState({
-      project: { name: "p", root: "/p", isGit: true, settings: {} } as never,
+      project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
       settings: {} as never,
     });
     const ids = [

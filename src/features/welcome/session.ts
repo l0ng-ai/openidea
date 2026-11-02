@@ -5,7 +5,7 @@
  */
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
-import { commands, isTauri, type Settings } from "@/platform/ipc";
+import { commands, isCancelled, isTauri, type Settings } from "@/platform/ipc";
 import { openProject, startupLaunchHandled, useProject } from "@/platform/project";
 import { connectRemote, parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { notifications } from "@/workbench/contributions";
@@ -123,6 +123,7 @@ async function reopen(path: string) {
   } catch (e) {
     write(SESSION_KEY, null);
     windowProject(null);
+    if (isCancelled(e)) return;
     notifications().notify({
       level: "warning",
       title: `Cannot reopen ${name}`,

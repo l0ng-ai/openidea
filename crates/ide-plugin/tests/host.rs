@@ -380,6 +380,7 @@ fn state_persists_across_restarts() {
 #[test]
 fn dev_plugins_follow_the_project() {
     let f = fixture(Limits::default());
+    f.host.set_project_policy(Arc::new(|_| true));
     let dev = f.project.join(DEV_PLUGINS_DIR).join("toy");
     copy_dir(&sample("language-toy"), &dev);
     f.host.sync_project(&f.project);
@@ -473,4 +474,39 @@ fn catalog_lists_sample_packages() {
     assert_eq!((theme.theme_count, theme.has_code), (1, false));
     let x = catalog.iter().find(|c| c.id == "x").unwrap();
     assert!(x.problem.as_deref().unwrap().contains("plugin.wasm"));
+}
+
+#[test]
+fn restricted_dev_plugin_has_no_activation_registration() {
+    let f = fixture(Limits::default());
+    let dev = f.project.join(DEV_PLUGINS_DIR).join("hello");
+    copy_dir(&sample("hello"), &dev);
+    let manifest = dev.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, text.split("[[contributes.commands]]").next().unwrap()).unwrap();
+    assert!(PluginManifest::load(&dev).unwrap().contributes.commands.is_empty());
+    let trusted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let policy = trusted.clone();
+    f.host.set_project_policy(Arc::new(move |_| policy.load(std::sync::atomic::Ordering::Acquire)));
+    f.host.sync_project(&f.project);
+    let untrusted = f.host.list(Some(&f.project));
+    assert!(
+        !untrusted.plugins.iter().flat_map(|plugin| &plugin.commands).any(|command| command.id == "word-count"),
+        "untrusted development plugin registered its activation witness"
+    );
+    assert!(untrusted.plugins.is_empty());
+    assert!(f.host.info_of("hello").is_err());
+
+    // Positive control: activation itself registers these commands, not the manifest.
+    trusted.store(true, std::sync::atomic::Ordering::Release);
+    f.host.sync_project(&f.project);
+    let info = f.host.info_of("hello").unwrap();
+    assert_eq!(info.status, PluginStatus::Active);
+    assert!(info.commands.iter().any(|c| c.id == "word-count"));
+    trusted.store(false, std::sync::atomic::Ordering::Release);
+    assert!(f.host.reload("hello").is_err());
+    assert!(f.host.set_enabled("hello", true).is_err());
+    assert!(f.run("hello", "word-count", None).is_err());
+    f.host.sync_project(&f.project);
+    assert!(f.host.list(Some(&f.project)).plugins.is_empty());
 }

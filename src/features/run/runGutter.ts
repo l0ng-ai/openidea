@@ -81,6 +81,7 @@ async function launch(target: RunTarget, path: string, debug: boolean, content: 
 }
 
 export function targetTitle(t: RunTarget): string {
+  if (t.kind === "generate") return tx`Run Go Generate`;
   if (t.kind === "main") return "Run";
   if (t.kind === "suite") return "Run tests";
   return "Run test";
@@ -133,7 +134,7 @@ const fileRootedResults = (path: string) => /\.(py|[cm]?[jt]sx?)$/.test(path);
 
 /** Last test result of a gutter target (IDEA: green / red run icons after a test run). */
 export function gutterTestState(target: RunTarget, path: string): TestState | null {
-  if (target.kind === "main") return null;
+  if (target.kind === "main" || target.kind === "generate") return null;
   return testState({ path: target.path, file: fileRootedResults(path) ? path : undefined });
 }
 
