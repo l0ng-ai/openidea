@@ -124,7 +124,7 @@ describe("expanded main menu in a frameless title bar", () => {
       await screen.findByRole("menu");
       expect(gear()).toBeNull();
       expect(screen.getByRole("button", { name: "Main Menu" })).toBeInTheDocument();
-      fireEvent.keyDown(document, { key: "Escape" });
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
       await act(async () => {});
       expect(gear()).toBeInTheDocument();
     } finally {
