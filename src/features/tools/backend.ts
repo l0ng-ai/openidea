@@ -94,13 +94,20 @@ export function sampleTools(): ToolInfo[] {
       version: "4.3.3",
       path: "/opt/homebrew/bin/typescript-language-server",
     }),
-    ...["basedpyright", "pyright", "ty"].map((name) =>
+    ...["basedpyright", "pyright", "ty", "pyrefly"].map((name) =>
       tool({
         name,
-        displayName: name === "pyright" ? "Pyright" : name === "ty" ? "ty (Python)" : name,
+        displayName:
+          name === "pyright"
+            ? "Pyright"
+            : name === "ty"
+              ? "ty (Python)"
+              : name === "pyrefly"
+                ? "Pyrefly (Python)"
+                : name,
         languages: ["Python"],
         installMethod: "pip (virtualenv)",
-        alternatives: ["basedpyright", "pyright", "ty"],
+        alternatives: ["basedpyright", "pyright", "ty", "pyrefly"],
       }),
     ),
     tool({ name: "gopls", languages: ["Go"], installMethod: "go install" }),
