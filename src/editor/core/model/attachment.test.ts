@@ -36,6 +36,20 @@ function setup(files: Record<string, string>) {
 afterEach(() => useDocMeta.setState({}, true));
 
 describe("attached document views (editable diff side)", () => {
+  it("can save a confirmed merge result without trimming or adding a final newline", async () => {
+    const { backend, manager } = setup({ "/p/merge.txt": "old\n" });
+    const att = await attachDocument(manager, "/p/merge.txt");
+    const view = new EditorView({ doc: att.text(), extensions: [att.extension] });
+    const model = manager.get("/p/merge.txt")!;
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "标题😀  \nexact result  " } });
+    await att.save({ exact: true });
+    expect(view.state.doc.toString()).toBe("标题😀  \nexact result  ");
+    expect(backend.docs.get(model.doc)?.text).toBe("标题😀  \nexact result  ");
+    expect(useDocMeta.getState()["/p/merge.txt"]?.dirty).toBe(false);
+    view.destroy();
+    att.release();
+  });
+
   it("shares the document with editor tabs both ways and syncs to the backend", async () => {
     const { backend, manager, frame } = setup({ "/p/a.txt": "one\ntwo\n" });
     const model = await manager.acquire("/p/a.txt");

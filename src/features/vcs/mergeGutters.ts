@@ -6,6 +6,7 @@
 import { RangeSetBuilder, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, WidgetType, gutter, type ViewUpdate } from "@codemirror/view";
 import { hasPrimaryModifier } from "@/platform/keymap";
+import { tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui";
 import {
   canResolveAutomatically,
@@ -43,7 +44,11 @@ function button(className: string, title: string, icon: string, press: (e: Mouse
   b.setAttribute("aria-label", title);
   b.innerHTML = iconMarkup(icon, 14) ?? "";
   b.addEventListener("mousedown", (e) => {
-    // The editor keeps its focus and selection; the press acts at once.
+    // Pointer presses keep the editor's focus and selection.
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  b.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
     press(e);
@@ -69,11 +74,17 @@ class SideMarker extends GutterMarker {
     const toward = this.side === "left" ? "right" : "left";
     const arrow = this.oneside ? `diff-arrow-${toward}-down` : `diff-arrow-${toward}`;
     box.append(
-      button("cm-merge-op cm-merge-accept", "Accept (hold the modifier key to resolve using this side)", arrow, (e) =>
-        this.controls.accept(this.index, this.side, hasPrimaryModifier(e)),
+      button(
+        "cm-merge-op cm-merge-accept",
+        tx("Accept (hold the modifier key to resolve using this side)"),
+        arrow,
+        (e) => this.controls.accept(this.index, this.side, hasPrimaryModifier(e)),
       ),
-      button("cm-merge-op cm-merge-ignore", "Ignore (hold the modifier key to ignore both sides)", "diff-remove", (e) =>
-        this.controls.ignore(this.index, this.side, hasPrimaryModifier(e)),
+      button(
+        "cm-merge-op cm-merge-ignore",
+        tx("Ignore (hold the modifier key to ignore both sides)"),
+        "diff-remove",
+        (e) => this.controls.ignore(this.index, this.side, hasPrimaryModifier(e)),
       ),
     );
     return box;
@@ -115,7 +126,7 @@ class WandMarker extends GutterMarker {
     const box = document.createElement("div");
     box.className = "cm-merge-ops";
     box.append(
-      button("cm-merge-op cm-merge-wand", "Resolve Automatically", "diff-magic", () =>
+      button("cm-merge-op cm-merge-wand", tx("Resolve Automatically"), "diff-magic", () =>
         this.controls.resolveAutomatically(this.index),
       ),
     );

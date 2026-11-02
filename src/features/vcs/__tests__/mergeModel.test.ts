@@ -63,6 +63,32 @@ const right = lines("a", "R", "c", "D", "e", "f", "G");
 // changes: 0 conflict (b / L / R), 1 right-only (d), 2 identical on both (g)
 
 describe("the model", () => {
+  it("keeps CRLF changes in CodeMirror coordinates after earlier lines", () => {
+    const base = "标题😀\r\nunchanged\r\nbase\r\ntail\r\n";
+    const left = base.replace("base", "ours中文");
+    const right = base.replace("base", "theirs中文");
+    const m = merge(left, base, right);
+    const c = m.changes[0]!;
+    expect(m.view.state.doc.sliceString(c.from, c.to)).toBe("base\n");
+    m.act([0], { type: "accept", side: "left", resolve: true });
+    expect(m.view.state.doc.sliceString(0, undefined, "\r\n")).toBe(left);
+    expect(m.undo()).toBe(true);
+    expect(unresolved(m.view.state)).toHaveLength(1);
+    expect(m.view.state.doc.sliceString(0, undefined, "\r\n")).toBe(base);
+    m.act([0], { type: "accept", side: "right", resolve: true });
+    expect(m.view.state.doc.sliceString(0, undefined, "\r\n")).toBe(right);
+  });
+
+  it("preserves a missing final newline when resolving after non-ASCII text", () => {
+    const base = "标题😀\nunchanged\nbase";
+    const m = merge(base.replace("base", "左侧🚀"), base, base.replace("base", "右侧🧪"));
+    m.act([0], { type: "accept", side: "left", resolve: true });
+    expect(m.text).toBe("标题😀\nunchanged\n左侧🚀");
+    m.undo();
+    m.act([0], { type: "accept", side: "right", resolve: true });
+    expect(m.text).toBe("标题😀\nunchanged\n右侧🧪");
+  });
+
   it("starts from the base with every change pending", () => {
     const m = merge(left, base, right);
     expect(m.text).toBe(base);

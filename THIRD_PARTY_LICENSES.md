@@ -64,6 +64,11 @@ from its tests (`LineComparisonUtilTest`, `WordComparisonUtilTest`,
 `SplitComparisonUtilTest`). Modified from the originals. Copyright 2000-2026
 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
 
+`src/features/vcs/mergeDiff3.ts`, `chunkOptimizer.ts` and `mergeModel.ts` also adapt
+the IntelliJ Platform merge implementation (`MergeRangeUtil`, `MergeResolveUtil`,
+`ChunkOptimizer.LineChunkOptimizer` and `MergeConflictModel`). Modified from the
+originals. Copyright 2000-2026 JetBrains s.r.o. and contributors. Apache License 2.0 (below).
+
 `src/ui/openidea/**` holds OpenIDEA's own file-type icons drawn in the expui style for
 languages whose JetBrains icons are not open source (Go, Ruby, Dart, Lua, Zig,
 Svelte, …). Those using the page-with-corner-badge layout (`goMod`, `goWork`,

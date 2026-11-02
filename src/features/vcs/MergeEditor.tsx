@@ -81,6 +81,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     theirs: string;
     base: string | null;
     sides: MergeSides;
+    deleted: Record<MergeSide, boolean>;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lang, setLang] = useState<Extension | null>(null);
@@ -103,7 +104,16 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const load = useCallback(async () => {
     try {
       const v = await call(commands.vcsConflictVersions(path));
-      setState({ ours: v.ours ?? "", theirs: v.theirs ?? "", base: v.base, sides: v.sides });
+      if ([v.base, v.ours, v.theirs].some((text) => text?.includes("\0"))) {
+        throw new Error(tx("Binary files cannot be resolved in the merge editor."));
+      }
+      setState({
+        ours: v.ours ?? "",
+        theirs: v.theirs ?? "",
+        base: v.base,
+        sides: v.sides,
+        deleted: { left: v.ours === null, right: v.theirs === null },
+      });
       setError(null);
     } catch (e) {
       setError(errorMessage(e));
@@ -218,11 +228,12 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   };
 
   /** Saves `text` as the resolved file and stages it; like IDEA, that closes the merge editor. */
-  const writeResolved = async (text: string) => {
+  const writeResolved = async (text: string | null) => {
     const ok = await runOp(
       `Resolve ${baseName(path)}`,
       async () => {
-        await writeFileText(path, text, { save: true });
+        if (text === null) await call(commands.fsDelete(path));
+        else await writeFileText(path, text, { save: true, exact: true });
         await call(commands.vcsStage([path]));
         return true;
       },
@@ -251,7 +262,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       }))
     )
       return;
-    await writeResolved(v.state.doc.toString());
+    const separator = (state?.base ?? state?.ours ?? state?.theirs ?? "").includes("\r\n") ? "\r\n" : "\n";
+    await writeResolved(v.state.doc.sliceString(0, undefined, separator));
   };
 
   /** Whether the user decided or edited anything: what Accept and Cancel ask about. */
@@ -273,7 +285,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       }))
     )
       return;
-    await writeResolved(side === "left" ? state.ours : state.theirs);
+    await writeResolved(state.deleted[side] ? null : side === "left" ? state.ours : state.theirs);
   };
 
   const cancel = async () => {

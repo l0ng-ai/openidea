@@ -567,7 +567,7 @@ export class DocModel {
 
   // --- saving -----------------------------------------------------------------
 
-  save(reason: "explicit" | "auto"): Promise<void> {
+  save(reason: "explicit" | "auto" | "exact"): Promise<void> {
     const run = async () => {
       if (this.closed || this.meta.readOnly) return;
       if (reason === "auto" && !this.meta.dirty) return;
@@ -582,7 +582,7 @@ export class DocModel {
         }
       }
       const files: FileSettings | undefined = this.manager.settings()?.files;
-      if (slot && !this.closed) {
+      if (slot && !this.closed && reason !== "exact") {
         const state = slot.currentState();
         const protectLines = new Set<number>();
         // Like IDEA's "keep trailing spaces on caret line": never strip under a visible caret.

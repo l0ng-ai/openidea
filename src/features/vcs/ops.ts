@@ -7,7 +7,7 @@ import { create } from "zustand";
 import type { GitOperation, RemoteOp } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
-import { editorsFor } from "@/editor/api";
+import { attachDocument, editorsFor } from "@/editor/api";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { cancelTask, upsertTaskSoon, useTasks } from "@/workbench/tasks";
 import { progressFraction } from "./model";
@@ -432,14 +432,17 @@ const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * file: through the open editor (one undoable transaction) or, when the file
  * isn't open, through a transient backend document that is saved.
  */
-export async function applyFileEdits(path: string, edits: TextEdit[], opts: { save?: boolean } = {}) {
+export async function applyFileEdits(path: string, edits: TextEdit[], opts: { save?: boolean; exact?: boolean } = {}) {
   const editor = editorsFor(path)[0];
   if (editor) {
     editor.view.dispatch({ changes: edits, userEvent: "input.vcs", scrollIntoView: true });
     if (opts.save) {
-      // Let editor/core sync the change to the backend before saving.
-      await tick(60);
-      await maybeEditorService()?.saveAll();
+      if (opts.exact) await saveExactText(path);
+      else {
+        // Let editor/core sync the change to the backend before saving.
+        await tick(60);
+        await maybeEditorService()?.saveAll();
+      }
     }
     return;
   }
@@ -453,11 +456,24 @@ export async function applyFileEdits(path: string, edits: TextEdit[], opts: { sa
 }
 
 /** Replaces the whole content of a working file. */
-export async function writeFileText(path: string, text: string, opts: { save?: boolean } = {}) {
+export async function writeFileText(path: string, text: string, opts: { save?: boolean; exact?: boolean } = {}) {
   const current = (await readWorkingText(path)) ?? "";
   if (current === text) {
-    if (opts.save) await saveAll();
+    if (opts.save) {
+      if (opts.exact) await saveExactText(path);
+      else await saveAll();
+    }
     return;
   }
   await applyFileEdits(path, [{ from: 0, to: current.length, insert: text }], opts);
+}
+
+/** Merge results keep their text even when the file is also shown in an editor tab. */
+async function saveExactText(path: string) {
+  const document = await attachDocument(path);
+  try {
+    await document.save({ exact: true });
+  } finally {
+    document.release();
+  }
 }

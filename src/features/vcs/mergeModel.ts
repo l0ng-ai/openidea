@@ -88,6 +88,10 @@ export const mergeHistory = invertedEffects.of((tr) => {
 
 /** The result's starting text, the base, and the changes waiting in it. */
 export function startMerge(left: string, base: string, right: string): { text: string; changes: MergeChange[] } {
+  // CodeMirror counts each line break as one UTF-16 code unit, including CRLF.
+  left = left.replace(/\r\n?/g, "\n");
+  base = base.replace(/\r\n?/g, "\n");
+  right = right.replace(/\r\n?/g, "\n");
   const found = mergeChanges(left, base, right);
   // Too different to compare line by line: the whole file is one change.
   const whole = (): MergeChange[] => {
