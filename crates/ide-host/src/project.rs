@@ -513,7 +513,7 @@ impl Host {
             sink.clone(),
         );
         let project = Arc::new(Project {
-            trusted: Arc::new(AtomicBool::new(true)),
+            trusted: Arc::new(AtomicBool::new(false)),
             sink,
             languages,
             settings,
