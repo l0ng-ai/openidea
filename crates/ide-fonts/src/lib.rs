@@ -13,12 +13,24 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 /// One installed family. `monospaced` is the font system's own flag (fixed
-/// pitch; on Linux also fontconfig's dual-width CJK monospace).
+/// pitch; on Linux also fontconfig's dual-width CJK monospace, on Windows
+/// also PANOSE proportion 9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct FontFamily {
     pub name: String,
     pub monospaced: bool,
+}
+
+/// PANOSE bProportion value 9 means "Monospaced"; DirectWrite's
+/// `IsMonospacedFont` alone misses fonts that only carry this classification.
+const PANOSE_MONOSPACED: u8 = 9;
+
+/// One face counts as monospaced when the font system flags it fixed pitch or
+/// its PANOSE proportion is "Monospaced".
+#[cfg_attr(not(windows), allow(dead_code))]
+fn face_is_mono(is_monospaced_font: bool, panose_proportion: u8) -> bool {
+    is_monospaced_font || panose_proportion == PANOSE_MONOSPACED
 }
 
 type Cache = Mutex<Option<Arc<[FontFamily]>>>;
@@ -272,13 +284,13 @@ mod imp {
 #[cfg(windows)]
 mod imp {
     use windows::Win32::Graphics::DirectWrite::{
-        DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-        DWriteCreateFactory, IDWriteFactory, IDWriteFont1, IDWriteLocalizedStrings,
+        DWRITE_FACTORY_TYPE_SHARED, DWriteCreateFactory, IDWriteFactory, IDWriteFactory3, IDWriteFont1,
+        IDWriteFontCollection, IDWriteFontFamily, IDWriteLocalizedStrings,
     };
     use windows::core::{BOOL, Interface, w};
 
-    /// The system font collection's families, named in English when the
-    /// family has an English name (what CSS matches), else its first name.
+    /// The installed families, named in English when the family has an
+    /// English name (what CSS matches), else its first name.
     pub(crate) fn list(refresh: bool) -> Vec<(String, bool)> {
         // SAFETY: plain DirectWrite COM calls on interfaces we own.
         unsafe { read(refresh) }.unwrap_or_default()
@@ -286,11 +298,26 @@ mod imp {
 
     unsafe fn read(refresh: bool) -> windows::core::Result<Vec<(String, bool)>> {
         let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
+        // Windows 10+: the system font set also covers per-user installs
+        // (%LOCALAPPDATA%\Microsoft\Windows\Fonts), which the plain system
+        // collection can miss. Older Windows falls back to the collection.
+        // Bitmap .FON fonts (e.g. the stock raster Fixedsys) are invisible to
+        // DirectWrite either way: it only reads TrueType/OpenType files.
+        if let Ok(factory3) = factory.cast::<IDWriteFactory3>()
+            && let Ok(font_set) = unsafe { factory3.GetSystemFontSet() }
+            && let Ok(collection) = unsafe { factory3.CreateFontCollectionFromFontSet(&font_set) }
+        {
+            return Ok(collect(&collection));
+        }
         let mut collection = None;
         unsafe { factory.GetSystemFontCollection(&mut collection, refresh) }?;
         let Some(collection) = collection else {
             return Ok(Vec::new());
         };
+        Ok(collect(&collection))
+    }
+
+    fn collect(collection: &IDWriteFontCollection) -> Vec<(String, bool)> {
         let mut out = Vec::new();
         for i in 0..unsafe { collection.GetFontFamilyCount() } {
             let Ok(family) = (unsafe { collection.GetFontFamily(i) }) else {
@@ -299,19 +326,27 @@ mod imp {
             let Some(name) = unsafe { family.GetFamilyNames() }.ok().and_then(|n| unsafe { english(&n) }) else {
                 continue;
             };
-            let mono = unsafe {
-                family.GetFirstMatchingFont(
-                    DWRITE_FONT_WEIGHT_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    DWRITE_FONT_STYLE_NORMAL,
-                )
-            }
-            .ok()
-            .and_then(|f| f.cast::<IDWriteFont1>().ok())
-            .is_some_and(|f| unsafe { f.IsMonospacedFont() }.as_bool());
-            out.push((name, mono));
+            out.push((name, unsafe { family_is_mono(&family) }));
         }
-        Ok(out)
+        out
+    }
+
+    /// A family is monospaced when any face reports fixed pitch or PANOSE
+    /// proportion 9; probing every face matches `normalize`'s any-face merge
+    /// (macOS and Linux already flag every face, not just the regular one).
+    unsafe fn family_is_mono(family: &IDWriteFontFamily) -> bool {
+        (0..unsafe { family.GetFontCount() }).any(|i| {
+            let Ok(font) = (unsafe { family.GetFont(i) }) else {
+                return false;
+            };
+            let Ok(font1) = font.cast::<IDWriteFont1>() else {
+                return false;
+            };
+            let is_monospaced = unsafe { font1.IsMonospacedFont() }.as_bool();
+            // SAFETY: reading the union's byte array, bProportion is values[3].
+            let panose_proportion = unsafe { font1.GetPanose().values[3] };
+            super::face_is_mono(is_monospaced, panose_proportion)
+        })
     }
 
     unsafe fn english(names: &IDWriteLocalizedStrings) -> Option<String> {
@@ -474,6 +509,14 @@ mod tests {
                 fam("PingFang SC", false),
             ]
         );
+    }
+
+    #[test]
+    fn panose_monospaced_proportion_counts_as_mono() {
+        assert!(face_is_mono(true, 0));
+        assert!(face_is_mono(false, PANOSE_MONOSPACED));
+        assert!(!face_is_mono(false, 0));
+        assert!(!face_is_mono(false, 3));
     }
 
     #[test]
