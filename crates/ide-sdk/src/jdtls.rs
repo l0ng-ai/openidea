@@ -218,6 +218,19 @@ pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]
     args
 }
 
+/// The launch target of a scoop shim: `shims\<name>.exe` is driven by a
+/// `shims\<name>.shim` text file whose `path` entry names the wrapped script.
+fn shim_target(shim_exe: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(shim_exe.with_extension("shim")).ok()?;
+    text.lines().find_map(|line| match line.split_once('=') {
+        Some((key, value)) if key.trim().eq_ignore_ascii_case("path") => {
+            let target = value.trim();
+            (!target.is_empty()).then(|| PathBuf::from(target))
+        }
+        _ => None,
+    })
+}
+
 /// Rewrites a jdtls launch (`command` = the release's script, `JAVA_HOME` chosen by
 /// [`crate::java::configure_jdtls`]) to start `java` directly. Left unchanged when the
 /// command is someone's own wrapper, the install has another layout, or no JDK is set
@@ -228,13 +241,19 @@ pub fn launch_directly(cfg: &mut LanguageServerConfig) {
     }
     let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
     let Some(script) = search.and_then(|s| ide_run::which::find_executable(&cfg.command, &s)) else { return };
-    let is_script = dunce::canonicalize(&script)
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()))
-        .is_some_and(|n| SCRIPTS.contains(&n.as_str()));
-    if !is_script {
-        return;
-    }
+    let Ok(resolved) = dunce::canonicalize(&script) else { return };
+    let name = resolved.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
+    let script = match name.as_deref() {
+        Some(n) if SCRIPTS.contains(&n) => resolved,
+        // A scoop shim (`shims\jdtls.exe` from PATHEXT) hides the release layout
+        // behind itself, so the launch ran the shim's own command line and the
+        // configured JDK never applied (issue #794).
+        Some("jdtls.exe") if cfg!(windows) => match shim_target(&resolved) {
+            Some(target) => target,
+            None => return,
+        },
+        _ => return,
+    };
     let Some(install) =
         jdtls_home(&script).and_then(|h| find_install(&h, std::env::consts::OS, std::env::consts::ARCH))
     else {
@@ -519,5 +538,68 @@ mod tests {
         failing.launch_error = Some("needs JDK 25".into());
         launch_directly(&mut failing);
         assert_eq!(failing.command, "jdtls");
+    }
+
+    #[test]
+    fn reads_a_scoop_shims_path_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = dir.path().join("jdtls.shim");
+        let shim_exe = dir.path().join("jdtls.exe");
+        std::fs::write(&shim, "path = C:\\apps\\jdtls\\current\\bin\\jdtls.cmd\nargs =\n").unwrap();
+        assert_eq!(shim_target(&shim_exe), Some(PathBuf::from("C:\\apps\\jdtls\\current\\bin\\jdtls.cmd")));
+        std::fs::write(&shim, "args = -x\n").unwrap();
+        assert_eq!(shim_target(&shim_exe), None, "no path entry");
+        std::fs::write(&shim, "path =\n").unwrap();
+        assert_eq!(shim_target(&shim_exe), None, "empty path entry");
+        assert_eq!(shim_target(&dir.path().join("other.exe")), None, "no shim file");
+    }
+
+    /// Issue #794: scoop puts a `jdtls.exe` shim (plus its `.shim` descriptor) on
+    /// PATH, hiding the release layout — the launch must follow the shim to the
+    /// release script so the configured JDK applies.
+    #[cfg(windows)]
+    #[test]
+    fn follows_a_scoop_shim_to_the_release_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let shims = dir.path().join("shims");
+        let home = dir.path().join("apps").join("jdtls").join("current");
+        std::fs::create_dir_all(&shims).unwrap();
+        std::fs::write(shims.join("jdtls.exe"), "shim binary").unwrap();
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("bin").join("jdtls.cmd"), "@echo off\n").unwrap();
+        std::fs::create_dir_all(home.join("plugins")).unwrap();
+        std::fs::write(home.join("plugins/org.eclipse.equinox.launcher_1.7.0.jar"), "").unwrap();
+        for config in config_dir_names(std::env::consts::OS, std::env::consts::ARCH) {
+            std::fs::create_dir_all(home.join(&config)).unwrap();
+            std::fs::write(home.join(&config).join("config.ini"), "").unwrap();
+        }
+        let jdk = dir.path().join("jdk-25");
+        std::fs::create_dir_all(jdk.join("bin")).unwrap();
+        std::fs::write(jdk.join("release"), "JAVA_VERSION=\"25.0.1\"\n").unwrap();
+        std::fs::write(jdk.join("bin").join(crate::exe("java")), "").unwrap();
+        let target = format!("path = {}\n", home.join("bin").join("jdtls.cmd").to_string_lossy());
+        std::fs::write(shims.join("jdtls.shim"), target).unwrap();
+
+        let cfg = || -> LanguageServerConfig {
+            let mut cfg: LanguageServerConfig = toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap();
+            cfg.env.insert("PATH".into(), shims.to_string_lossy().into_owned());
+            cfg.env.insert("JAVA_HOME".into(), jdk.to_string_lossy().into_owned());
+            cfg.args = strings(&["-data", r"C:\ws", "--jvm-arg=-Xmx1G"]);
+            cfg
+        };
+        let mut direct = cfg();
+        launch_directly(&mut direct);
+        let java = dunce::canonicalize(&jdk).unwrap().join("bin").join(crate::exe("java"));
+        assert_eq!(Path::new(&direct.command), java);
+        assert!(direct.args.iter().any(|a| a == "-Xmx1G"));
+        let jar = direct.args.iter().position(|a| a == "-jar").unwrap();
+        assert!(direct.args[jar + 1].ends_with("org.eclipse.equinox.launcher_1.7.0.jar"));
+        assert_eq!(direct.args[jar + 2..], strings(&["-data", r"C:\ws"]));
+
+        // A shim whose descriptor is gone is someone's own wrapper: keep the command.
+        std::fs::remove_file(shims.join("jdtls.shim")).unwrap();
+        let mut own = cfg();
+        launch_directly(&mut own);
+        assert_eq!(own.command, "jdtls");
     }
 }
