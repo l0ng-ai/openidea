@@ -575,7 +575,12 @@ mod tests {
         }
         let jdk = dir.path().join("jdk-25");
         std::fs::create_dir_all(jdk.join("bin")).unwrap();
-        std::fs::write(jdk.join("release"), "JAVA_VERSION=\"25.0.1\"\n").unwrap();
+        std::fs::write(
+            jdk.join("release"),
+            "JAVA_VERSION=\"25.0.1\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+        )
+        .unwrap();
+        std::fs::write(jdk.join("bin").join(crate::exe("javac")), "").unwrap();
         std::fs::write(jdk.join("bin").join(crate::exe("java")), "").unwrap();
         let target = format!("path = {}\n", home.join("bin").join("jdtls.cmd").to_string_lossy());
         std::fs::write(shims.join("jdtls.shim"), target).unwrap();
