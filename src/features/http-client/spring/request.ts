@@ -3,8 +3,11 @@
  * `application.properties` / `application.yml`, `{var}` → `{{var}}`, query
  * parameters, headers and a JSON skeleton of the `@RequestBody` type.
  */
+import { renderRequestBlock, type RequestSpec } from "../generate";
 import type { Endpoint } from "./endpoints";
 import { allClasses, parseSource, type ClassDecl, type SourceFile } from "./source";
+
+export { appendRequests } from "../generate";
 
 /** Flat `key → value` of a `.properties` file (`=`, `:` or space separated; `#` / `!` comments). */
 export function parseProperties(text: string): Map<string, string> {
@@ -131,43 +134,37 @@ export interface RenderOptions {
   body?: Json;
 }
 
-/** One `### Name` request block, ending with a line break. */
-export function renderRequest(e: Endpoint, opts: RenderOptions): string {
+/** The request of a Spring endpoint as a `.http` block. */
+export function requestSpec(e: Endpoint, opts: RenderOptions): RequestSpec {
   const path = pathVariables(opts.path ?? e.paths[0] ?? "/");
   const query = e.query.map((q) => `${q.name}=${q.value ?? `{{${q.name}}}`}`).join("&");
-  const lines = [
-    `### ${e.className}.${e.methodName}`,
-    `${e.httpMethod} ${opts.host}${path}${query ? `?${query}` : ""}`,
-  ];
   const headers = [...e.headers];
   const contentType = e.consumes ?? (e.bodyType ? "application/json" : null);
   if (e.produces) headers.unshift({ name: "Accept", value: e.produces });
   if (contentType && (e.bodyType || e.consumes)) headers.push({ name: "Content-Type", value: contentType });
-  for (const h of headers) lines.push(`${h.name}: ${h.value}`);
+  let body: string | undefined;
   if (e.bodyType) {
-    lines.push("");
-    const body = opts.body ?? {};
+    const json = opts.body ?? {};
     const form =
-      contentType === "application/x-www-form-urlencoded" && body && typeof body === "object" && !Array.isArray(body);
-    lines.push(
-      form
-        ? Object.keys(body)
-            .map((k) => `${k}=`)
-            .join("&")
-        : JSON.stringify(body, null, 2),
-    );
+      contentType === "application/x-www-form-urlencoded" && json && typeof json === "object" && !Array.isArray(json);
+    body = form
+      ? Object.keys(json)
+          .map((k) => `${k}=`)
+          .join("&")
+      : JSON.stringify(json, null, 2);
   }
-  return `${lines.join("\n")}\n`;
+  return {
+    name: `${e.className}.${e.methodName}`,
+    method: e.httpMethod,
+    url: `${opts.host}${path}${query ? `?${query}` : ""}`,
+    headers,
+    body,
+  };
 }
 
-/** Text to append to a request file holding `existing`, and the offset (in the new text) of the first request line. */
-export function appendRequests(existing: string, blocks: string[]): { insert: string; from: number; caret: number } {
-  const from = existing.length;
-  let sep = "";
-  if (existing.trim()) sep = existing.endsWith("\n\n") ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
-  const insert = sep + blocks.join("\n");
-  const firstLine = blocks[0]?.indexOf("\n") ?? -1;
-  return { insert, from, caret: from + sep.length + (firstLine >= 0 ? firstLine + 1 : 0) };
+/** One `### Name` request block, ending with a line break. */
+export function renderRequest(e: Endpoint, opts: RenderOptions): string {
+  return renderRequestBlock(requestSpec(e, opts));
 }
 
 // --- project lookups -------------------------------------------------------------
