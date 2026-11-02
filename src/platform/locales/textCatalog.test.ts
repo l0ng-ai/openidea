@@ -98,6 +98,7 @@ const UNTRANSLATED = new Set<string>([
   "Vanilla",
   "JavaScript",
   "Generators",
+  "Spring Initializr",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",

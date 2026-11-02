@@ -5512,5 +5512,7 @@
   "Configuration format": "配置文件格式",
   "Framework": "框架",
   "Language variant": "语言变体",
-  "Creating…": "正在创建…"
+  "Creating…": "正在创建…",
+  "Spring Initializr Server URL": "Spring Initializr 服务 URL",
+  "Spring Initializr settings": "Spring Initializr 设置"
 }

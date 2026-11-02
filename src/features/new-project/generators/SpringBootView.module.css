@@ -95,3 +95,25 @@
   width: 100%;
   max-width: 440px;
 }
+
+.dialogTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dialogAppIcon {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  display: block;
+}
+
+.dialogBody {
+  padding: 16px;
+}
+
+.dialogInput {
+  width: 100%;
+}

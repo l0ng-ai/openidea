@@ -1,6 +1,8 @@
-import { useEffect } from "react";
-import { Checkbox, Icon, Input, Select, type SelectOption } from "@/ui";
+import { useEffect, useRef, useState } from "react";
+import { Checkbox, Dialog, Icon, Input, Select, type SelectOption } from "@/ui";
 import { useDetected } from "@/features/settings/languages/components";
+import { useTx } from "@/platform/i18n";
+import appIcon from "../../../../src-tauri/icons/128x128.png";
 import { FolderPickerRow } from "../components/FolderPickerRow";
 import { SegmentedControl } from "../components/SegmentedControl";
 import { useNewProjectStore } from "../store";
@@ -40,6 +42,32 @@ export function SpringBootView() {
   const form = useNewProjectStore((s) => s.springBoot);
   const update = useNewProjectStore((s) => s.updateSpringBoot);
   const { list: jdks, loading: loadingJdks } = useDetected("jdk");
+  const [showServerUrlDialog, setShowServerUrlDialog] = useState(false);
+  const [tempUrl, setTempUrl] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const tx = useTx();
+
+  const openServerUrlDialog = () => {
+    const current = form.serverUrl.startsWith("http") ? form.serverUrl : `https://${form.serverUrl}`;
+    setTempUrl(current);
+    setShowServerUrlDialog(true);
+  };
+
+  const handleSaveUrl = () => {
+    const trimmed = tempUrl.trim();
+    if (trimmed) {
+      update({ serverUrl: trimmed });
+    }
+    setShowServerUrlDialog(false);
+  };
+
+  useEffect(() => {
+    if (showServerUrlDialog) {
+      setTimeout(() => {
+        inputRef.current?.select();
+      }, 50);
+    }
+  }, [showServerUrlDialog]);
 
   const jdkOptions: SelectOption[] = [
     { value: "", label: loadingJdks ? "Detecting JDKs…" : "Auto-detect system JDK" },
@@ -62,15 +90,14 @@ export function SpringBootView() {
         {/* Server URL */}
         <div className={styles.label}>Server URL:</div>
         <div className={styles.serverRow}>
-          <span className={styles.serverLink}>{form.serverUrl}</span>
+          <span className={styles.serverLink} onClick={openServerUrlDialog}>
+            {form.serverUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}
+          </span>
           <button
             type="button"
             className={styles.gearBtn}
-            title="Spring Initializr settings"
-            onClick={() => {
-              const url = prompt("Spring Initializr Server URL:", form.serverUrl);
-              if (url) update({ serverUrl: url.trim() });
-            }}
+            title={tx("Spring Initializr settings")}
+            onClick={openServerUrlDialog}
           >
             <Icon name="settings" size={14} />
           </button>
@@ -193,6 +220,46 @@ export function SpringBootView() {
           aria-label="Configuration format"
         />
       </div>
+
+      <Dialog
+        open={showServerUrlDialog}
+        onClose={() => setShowServerUrlDialog(false)}
+        width={450}
+        title={
+          <div className={styles.dialogTitleRow}>
+            <img src={appIcon} alt="" className={styles.dialogAppIcon} />
+            <span>{tx("Spring Initializr Server URL")}</span>
+          </div>
+        }
+        buttons={[
+          {
+            label: "OK",
+            role: "default",
+            onClick: handleSaveUrl,
+          },
+          {
+            label: "Cancel",
+            role: "cancel",
+            onClick: () => setShowServerUrlDialog(false),
+          },
+        ]}
+      >
+        <div className={styles.dialogBody}>
+          <Input
+            ref={inputRef}
+            value={tempUrl}
+            onChange={(e) => setTempUrl(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleSaveUrl();
+              }
+            }}
+            className={styles.dialogInput}
+            autoFocus
+          />
+        </div>
+      </Dialog>
     </div>
   );
 }
