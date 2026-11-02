@@ -252,8 +252,10 @@ fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool)
         let search = crate::wrap::search_path(config);
         let pathext = std::env::var("PATHEXT").ok();
         if windows {
+            // As cmd.exe does: the run directory first, a name with an extension as is,
+            // an extensionless one only through PATHEXT (a POSIX `gradlew` script is not runnable).
             let local = cwd.join(path);
-            if local.is_file() {
+            if path.extension().is_some() && local.is_file() {
                 return local;
             }
             if path.extension().is_none()
@@ -1178,10 +1180,11 @@ mod tests {
             assert_eq!(resolve_program(name, cwd, &config, true), bin.join(name));
             assert_eq!(resolve_program(bare, cwd, &config, true), bin.join(name));
         }
-        // Exact files are checked before PATHEXT candidates, and directories are ignored.
+        // An extensionless file is not runnable on Windows: only PATHEXT candidates count,
+        // and directories are ignored.
         std::fs::write(cwd.join("local-tool"), "tool").unwrap();
         std::fs::write(cwd.join("local-tool.exe"), "tool").unwrap();
-        assert_eq!(resolve_program("local-tool", cwd, &config, true), cwd.join("local-tool"));
+        assert_eq!(resolve_program("local-tool", cwd, &config, true), cwd.join("local-tool.exe"));
         assert_eq!(resolve_program("local-tool", cwd, &config, false), PathBuf::from("local-tool"));
         std::fs::remove_file(cwd.join("local-tool")).unwrap();
         assert_eq!(resolve_program("local-tool", cwd, &config, true), cwd.join("local-tool.exe"));
