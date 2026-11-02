@@ -313,20 +313,35 @@ fn text_key(text: &str) -> String {
     format!("{h:016x}")
 }
 
+/// Adds `arg` as its own `--jvm-arg`, unless the user already set the property it
+/// carries: a value of theirs wins, and a second call adds nothing.
+fn set_jvm_property(args: &mut Vec<String>, arg: &str) {
+    let key = arg.split('=').next().unwrap_or(arg);
+    let taken = args.iter().enumerate().any(|(i, a)| {
+        let value =
+            a.strip_prefix("--jvm-arg=").or_else(|| (i > 0 && args[i - 1] == "--jvm-arg").then_some(a.as_str()));
+        value.is_some_and(|a| a.split('=').next() == Some(key))
+    });
+    if !taken {
+        args.push(format!("--jvm-arg={arg}"));
+    }
+}
+
 fn add_jdtls_proxy_args(args: &mut Vec<String>, proxy: &ide_core::proxy_settings::ProxySettings) {
     for arg in proxy.jvm_args() {
-        let key = arg.split('=').next().unwrap_or(arg.as_str());
-        if !args.iter().enumerate().any(|(i, a)| {
-            let value =
-                a.strip_prefix("--jvm-arg=").or_else(|| (i > 0 && args[i - 1] == "--jvm-arg").then_some(a.as_str()));
-            value.is_some_and(|a| a.split('=').next() == Some(key))
-        }) {
-            args.push(format!("--jvm-arg={arg}"));
-        }
+        set_jvm_property(args, &arg);
     }
 }
 
 const METADATA_PROPERTY: &str = "java.import.generatesMetadataFilesAtProjectRoot";
+
+/// JDK 25's `ZipFile` validates the ZIP64 extra field, and jars written by older tools
+/// carry a size that check rejects: ECJ reports the dependency as "cannot be read or is
+/// not a valid ZIP file", the project using it gets a build path error, and every project
+/// depending on that one stops compiling — aspectjweaver 1.8.10 stalls a whole Maven
+/// build that way, while the same jar loads fine on IDEA's JBR 21. This is how 25 is told
+/// to behave the same.
+const ZIP64_LENIENCY: &str = "-Djdk.util.zip.disableZip64ExtraFieldValidation=true";
 
 /// jdtls: its Eclipse workspace (`-data`) lives under the IDE's data
 /// directory, one per server root, and no Eclipse metadata is written into
@@ -384,6 +399,10 @@ pub fn configure_jdtls(
     // of the `HTTP_PROXY` / `HTTPS_PROXY` it inherits: pass the same proxy as system
     // properties. One the user set in their own JVM arguments wins.
     add_jdtls_proxy_args(&mut cfg.args, &ide_core::proxy_settings::proxy());
+    // ECJ reads the project's jars with the server JVM's own zip reader, so a jar JDK 25
+    // refuses to open takes the whole Maven build with it. IDEA never notices: its JBR 21
+    // accepts the same file.
+    set_jvm_property(&mut cfg.args, ZIP64_LENIENCY);
     let managed = language_server_runtimes_dir(data_dir);
     let managed = dunce::canonicalize(&managed).unwrap_or(managed);
     let project_jdks: Vec<_> = project_jdk
@@ -664,6 +683,11 @@ mod tests {
         assert_eq!(cfg.args[n], "-data");
         assert!(cfg.args[n + 1].starts_with("/data/lsp/jdtls/"), "{}", cfg.args[n + 1]);
         assert_eq!(cfg.args[n + 2], "--jvm-arg=-Djava.import.generatesMetadataFilesAtProjectRoot=false");
+        assert!(
+            cfg.args.iter().any(|a| a == "--jvm-arg=-Djdk.util.zip.disableZip64ExtraFieldValidation=true"),
+            "jars JDK 25 rejects must still load: {:?}",
+            cfg.args
+        );
         let opts = serde_json::to_value(cfg.initialization_options.clone().unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
         assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": "/jdk8" }));
@@ -748,6 +772,25 @@ mod tests {
                 add_jdtls_proxy_args(&mut args, &proxy);
                 assert_eq!(args, before, "idempotent: {user_arg}");
             }
+        }
+    }
+
+    #[test]
+    fn a_jar_jdk_25_rejects_loads_and_the_users_value_wins() {
+        // aspectjweaver 1.8.10 carries a ZIP64 extra field size 25 refuses to read; on the
+        // JVM that runs jdtls that is a build path error in every project using it.
+        let mut args = Vec::new();
+        set_jvm_property(&mut args, ZIP64_LENIENCY);
+        assert_eq!(args, ["--jvm-arg=-Djdk.util.zip.disableZip64ExtraFieldValidation=true"]);
+        set_jvm_property(&mut args, ZIP64_LENIENCY);
+        assert_eq!(args.len(), 1, "added once");
+        for user in [
+            "--jvm-arg=-Djdk.util.zip.disableZip64ExtraFieldValidation=false".to_owned(),
+            "--jvm-arg=-Djdk.util.zip.disableZip64ExtraFieldValidation".to_owned(),
+        ] {
+            let mut own = vec![user.clone()];
+            set_jvm_property(&mut own, ZIP64_LENIENCY);
+            assert_eq!(own, [user], "the user decides");
         }
     }
 

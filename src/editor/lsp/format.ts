@@ -118,19 +118,22 @@ async function format(
   try {
     edits = await lspRequest(() => commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave }));
   } catch (e) {
-    if (e instanceof IpcError && e.data?.type === "tool" && e.data.tool === "prettier") {
+    if (e instanceof IpcError && e.data?.type === "tool" && (e.data.tool === "prettier" || e.data.tool === "oxfmt")) {
+      const tool = e.data.tool;
       if (e.kind === "notFound" && e.data.missing) {
-        await executeAction("tools.promptInstall", { name: "prettier", sticky: !opts.onSave });
+        await executeAction("tools.promptInstall", { name: tool, sticky: !opts.onSave });
       } else if (e.kind !== "cancelled") {
         notifications().notify({
           group: "tools",
           level: "error",
-          title: tx("Prettier formatting failed"),
+          title: tool === "oxfmt" ? tx("oxfmt formatting failed") : tx("Prettier formatting failed"),
           body:
             e.kind === "timedOut"
-              ? tx("Prettier formatting timed out")
+              ? tool === "oxfmt"
+                ? tx("oxfmt formatting timed out")
+                : tx("Prettier formatting timed out")
               : createElement("span", { className: styles.diagnostics }, e.message),
-          key: `prettier-format-error:${doc.path}`,
+          key: `${tool}-format-error:${doc.path}`,
           sticky: false,
         });
       }

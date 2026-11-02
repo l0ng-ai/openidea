@@ -96,6 +96,14 @@ describe("terminal links", () => {
     expect(resolvePath("/abs/c.ts", "/p")).toBe("/abs/c.ts");
     expect(resolvePath("~/d.ts", "/p", "/Users/me")).toBe("/Users/me/d.ts");
   });
+
+  it("resolves paths against a Windows cwd (#705)", () => {
+    expect(resolvePath("a/main.php", "C:\\Users\\me\\proj")).toBe("C:/Users/me/proj/a/main.php");
+    expect(resolvePath("a\\main.php", "C:/Users/me/proj")).toBe("C:/Users/me/proj/a/main.php");
+    expect(resolvePath("C:\\abs\\d.ts", "C:/p")).toBe("C:/abs/d.ts");
+    expect(resolvePath("~/e.ts", "C:/p", "C:\\Users\\me")).toBe("C:/Users/me/e.ts");
+    expect(resolvePath("../f.ts", "C:/p/web")).toBe("C:/p/f.ts");
+  });
 });
 
 describe("terminal keys", () => {
