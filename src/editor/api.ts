@@ -32,6 +32,9 @@ import type { LanguageDescription } from "@codemirror/language";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
 
+/** Documents above this size (UTF-16 units) skip per-line decorations. */
+export const HEAVY_LIMIT = 8_000_000;
+
 export interface EditorDocContext {
   doc: number;
   path: string;

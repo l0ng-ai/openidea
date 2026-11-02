@@ -166,7 +166,12 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
 fn fake_jdk(dir: &Path) {
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::write(dir.join("bin").join(exe("java")), "").unwrap();
-    std::fs::write(dir.join("release"), "JAVA_VERSION=\"17.0.9\"\n").unwrap();
+    std::fs::write(
+        dir.join("release"),
+        "JAVA_VERSION=\"17.0.9\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("bin").join(crate::exe("javac")), "").unwrap();
 }
 
 #[test]
@@ -307,6 +312,12 @@ fn jdtls_jdk_setting() {
     assert_eq!(jdtls_jdk(tmp.path(), &s), Ok(None));
     s.languages.java.jdtls_jdk = "jdk17/bin".into();
     assert_eq!(jdtls_jdk(tmp.path(), &s).unwrap().map(|j| j.major), Some(17));
+    std::fs::write(
+        tmp.path().join("jdk17/release"),
+        "JAVA_VERSION=\"25\"\nIMAGE_TYPE=\"JRE\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+    )
+    .unwrap();
+    assert!(jdtls_jdk(tmp.path(), &s).unwrap_err().contains("full JDK"));
     // A chosen path that is not a JDK is an error, not a silent fallback.
     std::fs::create_dir(tmp.path().join("not-a-jdk")).unwrap();
     s.languages.java.jdtls_jdk = "not-a-jdk".into();

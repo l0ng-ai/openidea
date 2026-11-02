@@ -4086,6 +4086,7 @@ dependencies = [
  "specta",
  "tempfile",
  "tracing",
+ "zip",
 ]
 
 [[package]]
