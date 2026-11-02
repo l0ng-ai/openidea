@@ -1,143 +1,78 @@
-/** Three-pane merge conflict editor: Yours | Result | Theirs. */
+/** Three-pane merge editor: Yours | Result | Theirs, after IntelliJ's merge tool. */
 import { useCallback, useEffect, useRef, useState } from "react";
-import clsx from "clsx";
-import { RangeSetBuilder, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
-import { history, historyKeymap } from "@codemirror/commands";
-import { keymap } from "@codemirror/view";
+import { Transaction, type EditorState, type Extension, type TransactionSpec } from "@codemirror/state";
+import { EditorView, keymap } from "@codemirror/view";
+import { history, historyKeymap, undoDepth } from "@codemirror/commands";
 import { unifiedMergeView } from "@codemirror/merge";
 import type { MergeSides } from "@/bindings";
 import { embeddedEditorExtensions } from "@/editor/api";
 import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
-import { shortcutLabel } from "@/platform/keymap";
-import { Button, IconButton, showContextMenu, Spinner, T } from "@/ui";
+import { Button, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
-import { blameSlot, toggleAnnotations } from "./blame";
+import { blameSlot } from "./blame";
 import { languageFor, viewerBase } from "./cm";
 import { confirmDialog } from "./dialogs";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
 import { syncMergeScroll } from "./mergeScroll";
-import { initialResult, mergeTitles, resolutionText, type Resolution, type ResultConflict } from "./conflicts";
+import { mergeTitles } from "./conflicts";
+import {
+  mergeChanged,
+  mergeTheme,
+  resultControls,
+  resultMarks,
+  sideControls,
+  syncSide,
+  type MergeControls,
+} from "./mergeGutters";
+import { showCompareMenu, showResultMenu, showSettingsMenu, showSideMenu } from "./mergeMenus";
+import {
+  applyNonConflicting,
+  applyTo,
+  mergeField,
+  mergeHistory,
+  startMerge,
+  summarize,
+  unresolved,
+  type MergeSide,
+  type MergeSummary,
+} from "./mergeModel";
+import { MergeFooter, MergeToolbar } from "./MergeToolbar";
 import { baseName } from "./model";
-import { errorMessage, readWorkingText, runOp, writeFileText } from "./ops";
+import { errorMessage, runOp, writeFileText } from "./ops";
 import { refreshNow } from "./store";
 import styles from "./MergeEditor.module.css";
 
 import type { MergeData } from "./mergeKind";
 export { MERGE_KIND, mergeInput, type MergeData } from "./mergeKind";
 
-/** Drops the conflict at an index once a resolution replaced its text. */
-const resolvedConflict = StateEffect.define<number>();
+const NOTHING_LEFT: MergeSummary = {
+  pending: 0,
+  conflicts: 0,
+  left: false,
+  all: false,
+  right: false,
+  simple: false,
+  revert: false,
+};
 
-function resolveConflict(view: EditorView, index: number, how: Resolution) {
-  const c = view.state.field(conflictField).conflicts[index];
-  if (!c) return;
-  view.dispatch({
-    changes: { from: c.from, to: c.to, insert: resolutionText(c, how) },
-    effects: resolvedConflict.of(index),
-    userEvent: "input.resolve",
-  });
-}
-
-class ActionsWidget extends WidgetType {
-  constructor(
-    readonly index: number,
-    readonly hasBase: boolean,
-  ) {
-    super();
+// IntelliJ's "Automatically apply non-conflicting changes" (Tools | Diff & Merge); off by default.
+const AUTO_APPLY_KEY = "openidea.merge.autoApplyNonConflicting";
+const readAutoApply = () => {
+  try {
+    return localStorage.getItem(AUTO_APPLY_KEY) === "true";
+  } catch {
+    return false;
   }
-  eq(o: ActionsWidget) {
-    return o.index === this.index && o.hasBase === this.hasBase;
+};
+const writeAutoApply = (on: boolean) => {
+  try {
+    localStorage.setItem(AUTO_APPLY_KEY, String(on));
+  } catch {
+    // The choice then lasts only until the editor closes.
   }
-  toDOM(view: EditorView) {
-    const el = document.createElement("div");
-    el.className = "cm-conflict-actions";
-    const add = (label: string, how: Resolution) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = label;
-      // Keep the caret / focus in the editor; resolve on click (mouse or keyboard).
-      b.onmousedown = (e) => e.preventDefault();
-      b.onclick = (e) => {
-        e.preventDefault();
-        resolveConflict(view, this.index, how);
-      };
-      el.appendChild(b);
-    };
-    const title = document.createElement("span");
-    title.textContent = `Conflict ${this.index + 1}`;
-    el.appendChild(title);
-    add("Accept Yours", "ours");
-    add("Accept Theirs", "theirs");
-    add("Accept Both", "both");
-    if (this.hasBase) add("Use Base", "base");
-    return el;
-  }
-  ignoreEvent() {
-    return true;
-  }
-}
-
-const conflictLine = Decoration.line({ class: "cm-conflict-marker" });
-
-function decorate(state: EditorState, conflicts: readonly ResultConflict[]): DecorationSet {
-  const b = new RangeSetBuilder<Decoration>();
-  const doc = state.doc;
-  conflicts.forEach((c, i) => {
-    b.add(c.from, c.from, Decoration.widget({ widget: new ActionsWidget(i, c.base !== null), block: true, side: -1 }));
-    if (c.to <= c.from) return;
-    const endLine = doc.lineAt(c.to - 1).number;
-    for (let n = doc.lineAt(c.from).number; n <= endLine; n++) b.add(doc.line(n).from, doc.line(n).from, conflictLine);
-  });
-  return b.finish();
-}
-
-/**
- * The result's unresolved conflicts, tracked as ranges holding the base text (no
- * markers), as IDEA's merge dialog shows them. Typing at a conflict's edges stays in it.
- */
-const conflictField = StateField.define<{ conflicts: ResultConflict[]; deco: DecorationSet }>({
-  create: () => ({ conflicts: [], deco: Decoration.none }),
-  update(v, tr) {
-    const done = new Set(tr.effects.filter((e) => e.is(resolvedConflict)).map((e) => e.value as number));
-    let conflicts = v.conflicts.filter((_, i) => !done.has(i));
-    if (tr.docChanged)
-      conflicts = conflicts.map((c) => ({ ...c, from: tr.changes.mapPos(c.from, -1), to: tr.changes.mapPos(c.to, 1) }));
-    if (!tr.docChanged && !done.size) return v;
-    return { conflicts, deco: decorate(tr.state, conflicts) };
-  },
-  provide: (f) => EditorView.decorations.from(f, (v) => v.deco),
-});
-
-const resultTheme = EditorView.baseTheme({
-  ".cm-conflict-marker": {
-    backgroundColor: "color-mix(in srgb, var(--vcs-conflict) 14%, transparent)",
-    color: "var(--fg-subtle)",
-  },
-  ".cm-conflict-actions": {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    padding: "3px 8px",
-    fontFamily: "var(--font-ui)",
-    fontSize: "var(--fs-small)",
-    color: "var(--vcs-conflict)",
-    background: "var(--bg-elev)",
-    borderTop: "1px solid var(--border)",
-  },
-  ".cm-conflict-actions button": {
-    padding: "0 6px",
-    border: "1px solid var(--border-strong)",
-    borderRadius: "var(--radius-small)",
-    color: "var(--fg-secondary)",
-    background: "var(--bg-control)",
-    font: "inherit",
-    lineHeight: "18px",
-  },
-  ".cm-conflict-actions button:hover": { color: "var(--fg-strong)", background: "var(--bg-control-hover)" },
-});
+};
 
 export function MergeEditor({ input }: { input: EditorInput }) {
   const { path } = input.data as MergeData;
@@ -145,13 +80,12 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     ours: string;
     theirs: string;
     base: string | null;
-    working: string;
-    merged: string | null;
     sides: MergeSides;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lang, setLang] = useState<Extension | null>(null);
-  const [left, setLeft] = useState(0);
+  const [summary, setSummary] = useState<MergeSummary>(NOTHING_LEFT);
+  const [autoApply, setAutoApply] = useState(readAutoApply);
   const [resolved, setResolved] = useState(false);
   const oursRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -159,20 +93,17 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const resultView = useRef<EditorView | null>(null);
   const oursView = useRef<EditorView | null>(null);
   const theirsView = useRef<EditorView | null>(null);
+  const autoApplyRef = useRef(autoApply);
+  useEffect(() => {
+    autoApplyRef.current = autoApply;
+  }, [autoApply]);
   const txt = useTxTemplate();
   const titles = mergeTitles(state?.sides);
 
   const load = useCallback(async () => {
     try {
-      const [v, working] = await Promise.all([call(commands.vcsConflictVersions(path)), readWorkingText(path)]);
-      setState({
-        ours: v.ours ?? "",
-        theirs: v.theirs ?? "",
-        base: v.base,
-        working: working ?? "",
-        merged: v.merged,
-        sides: v.sides,
-      });
+      const v = await call(commands.vcsConflictVersions(path));
+      setState({ ours: v.ours ?? "", theirs: v.theirs ?? "", base: v.base, sides: v.sides });
       setError(null);
     } catch (e) {
       setError(errorMessage(e));
@@ -192,38 +123,59 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   useEffect(() => {
     if (!state || lang === null || !oursRef.current || !resultRef.current || !theirsRef.current) return;
-    const side = () => [
+    // Like IntelliJ, the result starts as the base, with every change waiting to be decided.
+    const start = startMerge(state.ours, state.base ?? "", state.theirs);
+    const run = (spec: TransactionSpec | null) => spec && result.dispatch(spec);
+    const controls: MergeControls = {
+      accept: (index, side, resolve) => run(applyTo(result.state, [index], { type: "accept", side, resolve })),
+      ignore: (index, side, resolve) =>
+        run(applyTo(result.state, [index], { type: "ignore", side: resolve ? null : side })),
+      resolveAutomatically: (index) => run(applyTo(result.state, [index], { type: "auto", side: "base" })),
+    };
+    const side = (which: MergeSide): Extension[] => [
       viewerBase({ readOnly: true }),
       lang,
       blameSlot(),
       state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
+      sideControls(which, controls),
+      mergeTheme,
     ];
-    const ours = new EditorView({ doc: state.ours, parent: oursRef.current, extensions: side() });
-    const theirs = new EditorView({ doc: state.theirs, parent: theirsRef.current, extensions: side() });
-    // Like IDEA, start from the three-way merge (non-conflicting changes applied, conflicts
-    // showing the base) rather than the marker-laden working copy.
-    const start =
-      state.merged !== null ? initialResult(state.merged) : initialResult(state.working, state.sides.reversed);
-    const result = new EditorView({
+    const ours = new EditorView({ doc: state.ours, parent: oursRef.current, extensions: side("left") });
+    const theirs = new EditorView({ doc: state.theirs, parent: theirsRef.current, extensions: side("right") });
+    const result: EditorView = new EditorView({
       doc: start.text,
       parent: resultRef.current,
       extensions: [
         viewerBase({ readOnly: false }),
         history(),
         keymap.of(historyKeymap),
+        mergeField.init(() => start.changes),
+        mergeHistory,
         embeddedEditorExtensions(path),
         lang,
-        conflictField.init((s) => ({ conflicts: start.conflicts, deco: decorate(s, start.conflicts) })),
-        resultTheme,
+        resultMarks,
+        resultControls(controls),
+        mergeTheme,
         EditorView.updateListener.of((u) => {
-          if (u.docChanged) setLeft(u.state.field(conflictField).conflicts.length);
+          if (!mergeChanged(u)) return;
+          const changes = u.state.field(mergeField);
+          ours.dispatch({ effects: syncSide.of(changes) });
+          theirs.dispatch({ effects: syncSide.of(changes) });
+          setSummary(summarize(u.state));
         }),
       ],
     });
     resultView.current = result;
-    setLeft(result.state.field(conflictField).conflicts.length);
     oursView.current = ours;
     theirsView.current = theirs;
+    ours.dispatch({ effects: syncSide.of(start.changes) });
+    theirs.dispatch({ effects: syncSide.of(start.changes) });
+    setSummary(summarize(result.state));
+    if (autoApplyRef.current) {
+      const spec = applyNonConflicting(result.state, "base");
+      // The starting point, not a step to undo.
+      if (spec) result.dispatch({ ...spec, annotations: Transaction.addToHistory.of(false) });
+    }
     // Scroll the three panes together, lined up through their changes.
     const stopSync = syncMergeScroll({ ours, result, theirs });
     return () => {
@@ -237,51 +189,36 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     };
   }, [state, lang, path]);
 
+  /** Puts the caret at a change and brings it into view. */
+  const moveTo = (view: EditorView, at: number) =>
+    view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
+
   const goto = (dir: 1 | -1) => {
     const v = resultView.current;
     if (!v) return;
-    const blocks = v.state.field(conflictField).conflicts;
-    if (!blocks.length) return;
+    const open = unresolved(v.state);
+    if (!open.length) return;
     const head = v.state.selection.main.head;
     const target =
       dir === 1
-        ? (blocks.find((b) => b.from > head) ?? blocks[0]!)
-        : ([...blocks].reverse().find((b) => b.to < head) ?? blocks[blocks.length - 1]!);
-    v.dispatch({
-      selection: { anchor: target.from },
-      effects: EditorView.scrollIntoView(target.from, { y: "center" }),
-    });
+        ? (open.find((c) => c.from > head) ?? open[0]!)
+        : ([...open].reverse().find((c) => c.from < head) ?? open[open.length - 1]!);
+    moveTo(v, target.from);
     v.focus();
   };
 
-  const acceptAll = (how: Resolution) => {
+  /** Runs a command on the result; `reveal` then moves to what is left to decide. */
+  const command = (make: (s: EditorState) => TransactionSpec | null, reveal = false) => {
     const v = resultView.current;
-    if (!v) return;
-    const conflicts = v.state.field(conflictField).conflicts;
-    v.dispatch({
-      changes: conflicts.map((c) => ({ from: c.from, to: c.to, insert: resolutionText(c, how) })),
-      effects: conflicts.map((_, i) => resolvedConflict.of(i)),
-      userEvent: "input.resolve",
-    });
+    const spec = v && make(v.state);
+    if (!v || !spec) return;
+    v.dispatch(spec);
+    const first = reveal ? unresolved(v.state)[0] : undefined;
+    if (first) moveTo(v, first.from);
   };
 
-  const apply = async () => {
-    const v = resultView.current;
-    if (!v) return;
-    const remaining = v.state.field(conflictField).conflicts.length;
-    if (
-      remaining > 0 &&
-      !(await confirmDialog({
-        title: "Unresolved Conflicts",
-        message:
-          remaining === 1
-            ? tx`${remaining} conflict is unresolved and keeps the base text. Save and mark the file as resolved anyway?`
-            : tx`${remaining} conflicts are unresolved and keep the base text. Save and mark the file as resolved anyway?`,
-        okLabel: "Mark Resolved",
-      }))
-    )
-      return;
-    const text = v.state.doc.toString();
+  /** Saves `text` as the resolved file and stages it; like IDEA, that closes the merge editor. */
+  const writeResolved = async (text: string) => {
     const ok = await runOp(
       `Resolve ${baseName(path)}`,
       async () => {
@@ -294,12 +231,66 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     if (ok) {
       setResolved(true);
       await refreshNow();
-      // Like IDEA, applying the result closes the merge editor.
       await editorService().closeInput?.(input.key);
     }
   };
 
-  // Next / Previous Difference (F7 / Shift+F7 by default) jump between conflicts through
+  const apply = async () => {
+    const v = resultView.current;
+    if (!v) return;
+    const remaining = unresolved(v.state).length;
+    if (
+      remaining > 0 &&
+      !(await confirmDialog({
+        title: "Unresolved Changes",
+        message:
+          remaining === 1
+            ? tx`${remaining} change is unresolved and keeps the base text. Save and mark the file as resolved anyway?`
+            : tx`${remaining} changes are unresolved and keep the base text. Save and mark the file as resolved anyway?`,
+        okLabel: "Mark Resolved",
+      }))
+    )
+      return;
+    await writeResolved(v.state.doc.toString());
+  };
+
+  /** Whether the user decided or edited anything: what Accept and Cancel ask about. */
+  const modified = () => {
+    const v = resultView.current;
+    return !!v && undoDepth(v.state) > 0;
+  };
+
+  /** Accept Yours / Accept Theirs: that version as it is, whatever was done in the result. */
+  const acceptSide = async (side: MergeSide) => {
+    if (!state) return;
+    if (
+      modified() &&
+      !(await confirmDialog({
+        title: side === "left" ? "Accept Yours" : "Accept Theirs",
+        message: "The result was changed. Discard the changes and take this version as it is?",
+        okLabel: "Discard Changes",
+        danger: true,
+      }))
+    )
+      return;
+    await writeResolved(side === "left" ? state.ours : state.theirs);
+  };
+
+  const cancel = async () => {
+    if (
+      modified() &&
+      !(await confirmDialog({
+        title: "Cancel Merge",
+        message: "Exit without applying the changes made in the result?",
+        okLabel: "Exit",
+        danger: true,
+      }))
+    )
+      return;
+    await editorService().closeInput?.(input.key);
+  };
+
+  // Next / Previous Difference (F7 / Shift+F7 by default) jump between changes through
   // the keymap, as in the diff viewer.
   // `goto` reads only refs, so the first render's one stays valid.
   const [nav] = useState<DiffNavigator>(() => ({
@@ -320,22 +311,38 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     [nav],
   );
 
-  // Each side pane can annotate its version with Git Blame from the context menu, on
-  // the branch it belongs to, so lines that only exist on the other branch show their
-  // real history instead of "Not Committed Yet".
-  const otherRev = state?.sides.commit ?? "HEAD";
+  const setAutoApplyNonConflicting = (on: boolean) => {
+    setAutoApply(on);
+    writeAutoApply(on);
+    if (on) command((s) => applyNonConflicting(s, "base"), true);
+  };
 
-  const sideMenu = (e: React.MouseEvent, viewRef: { current: EditorView | null }, text: string, revision?: string) => {
-    const view = viewRef.current;
-    if (!view) return;
-    e.preventDefault();
-    showContextMenu(e.nativeEvent, [
-      {
-        label: "Annotate with Git Blame",
-        icon: "changelist",
-        run: () => void toggleAnnotations(view, path, text, revision),
-      },
-    ]);
+  const compare = (e: React.MouseEvent) => {
+    const v = resultView.current;
+    if (!state || !v) return;
+    showCompareMenu(e, path, {
+      yours: { text: state.ours, label: txt(titles.yours) },
+      base: { text: state.base ?? "", label: tx("Base") },
+      result: { text: v.state.doc.toString(), label: tx("Result") },
+      theirs: { text: state.theirs, label: txt(titles.theirs) },
+    });
+  };
+
+  // Each side is annotated with Git Blame on the branch it belongs to.
+  const otherRev = state?.sides.commit ?? "HEAD";
+  const sidePane = (e: React.MouseEvent, which: MergeSide) => {
+    const view = (which === "left" ? oursView : theirsView).current;
+    const result = resultView.current;
+    if (!view || !result || !state) return;
+    // Yours is the current branch, except in a rebase, where it is the commit being replayed.
+    const isHead = which === "left" ? !state.sides.reversed : state.sides.reversed;
+    const revision = isHead ? "HEAD" : otherRev;
+    showSideMenu(
+      e,
+      { which, view, path, text: which === "left" ? state.ours : state.theirs, revision },
+      result,
+      command,
+    );
   };
 
   if (error)
@@ -371,36 +378,14 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         }
       }}
     >
-      <div className={styles.toolbar} role="toolbar" aria-label={tx("Merge")}>
-        <IconButton
-          icon="arrow-up"
-          title="Previous Conflict"
-          shortcut={shortcutLabel("diff.prevDifference")}
-          size="small"
-          onClick={() => goto(-1)}
-        />
-        <IconButton
-          icon="arrow-down"
-          title="Next Conflict"
-          shortcut={shortcutLabel("diff.nextDifference")}
-          size="small"
-          onClick={() => goto(1)}
-        />
-        <span className={styles.sep} />
-        <Button size="small" onClick={() => acceptAll("ours")}>
-          <T>Accept All Yours</T>
-        </Button>
-        <Button size="small" onClick={() => acceptAll("theirs")}>
-          <T>Accept All Theirs</T>
-        </Button>
-        <IconButton icon="refresh" title="Reload from Disk" size="small" onClick={() => void load()} />
-        <span className={clsx(styles.status, !left && styles.statusDone)}>
-          {left === 1 ? tx`${left} conflict left` : left ? tx`${left} conflicts left` : tx("All conflicts resolved")}
-        </span>
-        <Button size="small" variant="primary" onClick={() => void apply()}>
-          <T>Apply</T>
-        </Button>
-      </div>
+      <MergeToolbar
+        summary={summary}
+        goto={goto}
+        run={command}
+        onCompare={compare}
+        onReload={() => void load()}
+        onSettings={(e) => showSettingsMenu(e, autoApply, setAutoApplyNonConflicting)}
+      />
       <div className={styles.labels}>
         <span>{txt(titles.yours)}</span>
         <span>
@@ -419,17 +404,28 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           className={styles.pane}
           aria-label={tx("Your version")}
           role="region"
-          onContextMenu={(e) => sideMenu(e, oursView, state?.ours ?? "", state?.sides.reversed ? otherRev : "HEAD")}
+          onContextMenu={(e) => sidePane(e, "left")}
         />
-        <div ref={resultRef} className={styles.pane} aria-label={tx("Result")} role="region" />
+        <div
+          ref={resultRef}
+          className={styles.pane}
+          aria-label={tx("Result")}
+          role="region"
+          onContextMenu={(e) => resultView.current && showResultMenu(e, resultView.current, command)}
+        />
         <div
           ref={theirsRef}
           className={styles.pane}
           aria-label={tx("Their version")}
           role="region"
-          onContextMenu={(e) => sideMenu(e, theirsView, state?.theirs ?? "", state?.sides.reversed ? "HEAD" : otherRev)}
+          onContextMenu={(e) => sidePane(e, "right")}
         />
       </div>
+      <MergeFooter
+        onAccept={(side) => void acceptSide(side)}
+        onCancel={() => void cancel()}
+        onApply={() => void apply()}
+      />
     </div>
   );
 }
