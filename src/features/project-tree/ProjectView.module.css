@@ -40,6 +40,10 @@
   color: var(--fg-strong);
   font-weight: 600;
 }
+
+.moduleLabel {
+  font-weight: 600;
+}
 /* IDEA's "excluded" look: ignored / excluded entries are dimmed. */
 .excluded {
   color: var(--vcs-ignored);

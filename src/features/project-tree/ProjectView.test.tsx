@@ -26,6 +26,14 @@ vi.mock("@/bindings", async (orig) => {
   return { ...real, commands: { ...real.commands, ...ipc } };
 });
 
+const presentation = vi.hoisted(() => ({
+  current: { spring: false, modules: new Map<string, "maven" | "gradle">() },
+}));
+vi.mock("@/platform/projectPresentation", async (orig) => ({
+  ...(await orig<typeof import("@/platform/projectPresentation")>()),
+  useProjectPresentation: () => presentation.current,
+}));
+
 const ok = <T,>(data: T) => ({ status: "ok" as const, data });
 const item = (name: string, kind: OutlineItem["kind"], line: number, children: OutlineItem[] = []): OutlineItem => {
   const r = { start: { line, col: 0 }, end: { line, col: 1 } };
@@ -94,6 +102,19 @@ function setup() {
 }
 
 describe("ProjectView", () => {
+  it("shows the folder of a Maven or Gradle module in bold, other folders and the root as before", async () => {
+    presentation.current = { spring: false, modules: new Map([["src", "maven"]]) };
+    try {
+      const { rows, row } = setup();
+      await waitFor(() => expect(rows()).toEqual(["acme/w/acme", "build", "src", "README.md"]));
+      expect(row("src").querySelector("[class*=moduleLabel]")).not.toBeNull();
+      expect(row("build").querySelector("[class*=moduleLabel]")).toBeNull();
+      expect(row("acme").querySelector("[class*=moduleLabel]")).toBeNull();
+    } finally {
+      presentation.current = { spring: false, modules: new Map() };
+    }
+  });
+
   it("shows the root with its path and loads children lazily", async () => {
     const { rows, row, tree } = setup();
     await waitFor(() => expect(rows()).toEqual(["acme/w/acme", "build", "src", "README.md"]));

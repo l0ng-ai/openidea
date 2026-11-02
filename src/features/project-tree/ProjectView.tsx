@@ -273,6 +273,8 @@ const Row = memo(function Row({
   const isEditing =
     !!editing && (node.placeholder ? editing.kind === "new" : editing.kind === "rename" && editing.key === node.key);
   const faded = node.ignored || deco.faded;
+  // Like IDEA, the folder of a Maven / Gradle module is bold.
+  const isModule = node.dir && !node.root && !!root && build.modules.has(relativePath(root, node.path));
   // IDEA dims the icon of excluded folders only; git-ignored ones just get the ignored colour.
   const dimIcon = node.excluded;
   return (
@@ -310,6 +312,7 @@ const Row = memo(function Row({
               node.root && styles.rootName,
               // Only the project itself is bold (IDEA); contributed roots like Scratches are not.
               node.root && !node.icon && styles.rootLabel,
+              isModule && styles.moduleLabel,
               faded && !deco.color && styles.excluded,
               deco.error && styles.error,
             )}
