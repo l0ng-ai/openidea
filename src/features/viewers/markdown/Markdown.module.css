@@ -213,3 +213,17 @@
   text-align: left;
   white-space: pre-wrap;
 }
+.preview :global([data-excalidraw-block]) {
+  display: flex;
+  justify-content: center;
+  margin: 0.9em 0;
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-medium);
+  background: var(--bg-elev);
+}
+.preview :global([data-excalidraw-block] > svg) {
+  max-width: 100%;
+  height: auto;
+}

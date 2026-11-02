@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { binaryInput, formatSize, imageInput, isImagePath, isMarkdownPath, isSvgPath, wantsHexView } from "./fileKinds";
+import {
+  binaryInput,
+  formatSize,
+  imageInput,
+  isExcalidrawPath,
+  isImagePath,
+  isMarkdownPath,
+  isSvgPath,
+  wantsHexView,
+} from "./fileKinds";
 import {
   BYTES_PER_ROW,
   MAX_SCROLL_PX,
@@ -25,6 +34,9 @@ describe("file kinds", () => {
     expect(isSvgPath("/p/x.svg")).toBe(true);
     expect(isMarkdownPath("/p/README.md")).toBe(true);
     expect(isMarkdownPath("/p/notes.txt")).toBe(false);
+    expect(isExcalidrawPath("/p/diagram.excalidraw")).toBe(true);
+    expect(isExcalidrawPath("/p/flow.EXCALIDRAW.JSON")).toBe(true);
+    expect(isExcalidrawPath("/p/config.json")).toBe(false);
   });
 
   it("builds viewer inputs keyed apart from text tabs", () => {

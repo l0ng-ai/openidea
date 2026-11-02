@@ -20,6 +20,8 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { FloatingToolbar, selectableText } from "@/ui";
+import { isExcalidrawPath } from "../fileKinds";
+import { parseExcalidrawScene, renderExcalidrawSvg } from "../excalidraw/scene";
 import { useLiveMarkdown } from "./live";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn, subscribeTheme, themeKey } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
@@ -114,6 +116,22 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       if (target?.kind !== "file") {
         img.classList.add(styles.blocked!);
         img.title = "Remote images are not loaded";
+        return;
+      }
+      if (isExcalidrawPath(target.path)) {
+        call(commands.fsReadText(target.path))
+          .then((raw) => {
+            if (!live) return;
+            const parsed = parseExcalidrawScene(raw);
+            if (!parsed.scene) {
+              img.classList.add(styles.blocked!);
+              return;
+            }
+            const dark = document.documentElement.dataset.themeMode === "dark";
+            const svg = renderExcalidrawSvg(parsed.scene, { dark, padding: 16, background: true });
+            img.src = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+          })
+          .catch(() => live && img.classList.add(styles.blocked!));
         return;
       }
       imageUrl(target.path).then(

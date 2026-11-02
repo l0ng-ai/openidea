@@ -20,12 +20,16 @@ import {
   IMAGE_KIND,
   binaryInput,
   imageInput,
+  isExcalidrawPath,
   isImagePath,
   isMarkdownPath,
   wantsHexView,
 } from "./fileKinds";
 import { ImageViewer, toggleChessboard, useImageViewers } from "./ImageViewer";
 import { HexViewer } from "./HexViewer";
+import { registerExcalidrawLiveSource } from "./excalidraw/live";
+import { setExcalidrawMode, type ExcalidrawMode } from "./excalidraw/modes";
+import { ExcalidrawLayoutActions } from "./excalidraw/ExcalidrawLayoutActions";
 import { registerMarkdownLiveSource } from "./markdown/live";
 import { setMarkdownMode, type MarkdownMode } from "./markdown/modes";
 import { MarkdownLayoutActions } from "./markdown/MarkdownLayoutActions";
@@ -77,6 +81,26 @@ function markdownActions(): Action[] {
   ];
 }
 
+function excalidrawActions(): Action[] {
+  const mode = (id: string, title: string, m: ExcalidrawMode, icon: string): Action => ({
+    id,
+    title,
+    category: "Excalidraw",
+    icon,
+    keywords: ["excalidraw", "diagram", "whiteboard", "canvas", "preview", "layout"],
+    when: "textEditorActive",
+    run: ({ arg }) => {
+      const path = typeof arg === "string" ? arg : getContext().editorPath;
+      if (typeof path === "string" && isExcalidrawPath(path)) setExcalidrawMode(path, m);
+    },
+  });
+  return [
+    mode("excalidraw.editorOnly", "Editor Only", "editor", "editor-only"),
+    mode("excalidraw.editorAndPreview", "Editor and Preview", "split", "editor-preview"),
+    mode("excalidraw.previewOnly", "Preview Only", "preview", "preview-only"),
+  ];
+}
+
 export function activate(): () => void {
   const disposers = [
     registerEditorKind({ kind: IMAGE_KIND, component: ImageViewer, title: titleOf, icon: iconOf }),
@@ -100,8 +124,15 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor)),
       tabActions: MarkdownLayoutActions,
     }),
+    registerTextEditorWrapper({
+      id: "viewers.excalidraw",
+      matches: isExcalidrawPath,
+      component: lazyComponent(() => import("./excalidraw/ExcalidrawEditor").then((m) => m.ExcalidrawEditor)),
+      tabActions: ExcalidrawLayoutActions,
+    }),
     registerMarkdownLiveSource(),
-    registerActions([...imageActions(), ...markdownActions()]),
+    registerExcalidrawLiveSource(),
+    registerActions([...imageActions(), ...markdownActions(), ...excalidrawActions()]),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

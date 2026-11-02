@@ -7,6 +7,7 @@
  */
 import { Marked, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
+import { parseExcalidrawScene, renderExcalidrawSvg } from "../excalidraw/scene";
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -16,8 +17,19 @@ const marked = new Marked({
   breaks: false,
   renderer: {
     code({ text, lang }) {
-      if (lang?.trim().split(/\s+/)[0]?.toLowerCase() !== "mermaid") return false;
-      return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
+      const tag = lang?.trim().split(/\s+/)[0]?.toLowerCase();
+      if (tag === "mermaid") {
+        return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
+      }
+      if (tag === "excalidraw") {
+        const parsed = parseExcalidrawScene(text);
+        if (parsed.scene) {
+          const dark = typeof document !== "undefined" && document.documentElement.dataset.themeMode === "dark";
+          const svg = renderExcalidrawSvg(parsed.scene, { dark, padding: 16, background: true });
+          return `<div data-excalidraw-block="">${svg}</div>\n`;
+        }
+      }
+      return false;
     },
   },
 });
@@ -81,7 +93,10 @@ export function renderMarkdown(text: string): string {
     }
     html += `<div data-line="${start}">${body}</div>`;
   }
-  return purify().sanitize(html, { USE_PROFILES: { html: true }, ADD_ATTR: ["data-src", "data-line"] });
+  return purify().sanitize(html, {
+    USE_PROFILES: { html: true, svg: true },
+    ADD_ATTR: ["data-src", "data-line", "data-excalidraw", "data-excalidraw-block", "data-element-id"],
+  });
 }
 
 export type LinkTarget =

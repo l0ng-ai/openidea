@@ -127,6 +127,7 @@ const UNTRANSLATED = new Set<string>([
   "Eclipse (macOS)",
   "Eclipse Temurin",
   "EditorConfig",
+  "Excalidraw",
   "Git",
   "GitHub",
   "Go",
