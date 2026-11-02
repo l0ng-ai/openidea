@@ -248,7 +248,7 @@ pub async fn vcs_read_commit_revision(
         project.with_repo_of(&path, |repo| {
             let bytes = repo.commit_bytes_at(&path, &rev)?;
             if bytes.len() > 16 * 1024 * 1024 {
-                return Err(IdeError::invalid("Selected file is too large"));
+                return Err(ide_core::IdeError::invalid("Selected file is too large"));
             }
             let defaults = project.documents.file_defaults();
             let selected = project
