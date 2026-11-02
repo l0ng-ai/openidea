@@ -151,6 +151,14 @@ pub struct Http {
     https_only: bool,
 }
 
+/// The TLS handshake itself failed because the certificate's revocation server was
+/// unreachable. Windows Schannel treats that as fatal even though the certificate is
+/// fine, which takes down downloads on corporate proxies and firewalls; curl reports
+/// it as exit 35 with this message.
+fn revocation_offline(err: &str) -> bool {
+    err.contains("CRYPT_E_REVOCATION_OFFLINE")
+}
+
 impl Http {
     pub fn new(search_path: &std::ffi::OsStr) -> IdeResult<Self> {
         let curl = which::which_in("curl", Some(search_path), ".")
@@ -204,7 +212,47 @@ impl Http {
         empty_on_404: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<String> {
+        let mut extra: Vec<&str> = Vec::new();
+        let mut first_err = String::new();
+        loop {
+            let (mut body, ok, err) = self.run_get(&extra, url, max_bytes, empty_on_404, cancel)?;
+            if ok {
+                if empty_on_404 && let Some(split) = body.iter().rposition(|b| *b == b'\n') {
+                    let code = &body[split + 1..];
+                    if code == b"404" {
+                        return Ok("[]".into());
+                    }
+                    body.truncate(split);
+                }
+                if let Some(max) = max_bytes
+                    && body.len() as u64 > max
+                {
+                    return Err(IdeError::new(ErrorKind::Io, format!("{url}: response is larger than {max} bytes")));
+                }
+                return String::from_utf8(body)
+                    .map_err(|_| IdeError::new(ErrorKind::Protocol, format!("{url}: response is not UTF-8")));
+            }
+            // The retry uses --ssl-revoke-best-effort, which a curl without it rejects
+            // as an unknown option; report the original handshake error then.
+            if !extra.is_empty() || !revocation_offline(&err) {
+                let err = if first_err.is_empty() { err } else { first_err };
+                return Err(IdeError::new(ErrorKind::Io, format!("GET {url} failed: {}", err.trim())));
+            }
+            first_err = err;
+            extra.push("--ssl-revoke-best-effort");
+        }
+    }
+
+    fn run_get(
+        &self,
+        extra: &[&str],
+        url: &str,
+        max_bytes: Option<u64>,
+        empty_on_404: bool,
+        cancel: &CancellationToken,
+    ) -> IdeResult<(Vec<u8>, bool, String)> {
         let mut cmd = self.base(url);
+        cmd.args(extra);
         if empty_on_404 {
             cmd.args(["--write-out", "\n%{http_code}"]);
         }
@@ -232,26 +280,13 @@ impl Http {
                 None => std::thread::sleep(Duration::from_millis(30)),
             }
         };
-        let mut body = out_t.join().unwrap_or_default();
-        if empty_on_404 && let Some(split) = body.iter().rposition(|b| *b == b'\n') {
-            let code = &body[split + 1..];
-            if code == b"404" {
-                return Ok("[]".into());
-            }
-            body.truncate(split);
+        let body = out_t.join().unwrap_or_default();
+        if status.success() {
+            return Ok((body, true, String::new()));
         }
-        if let Some(max) = max_bytes
-            && body.len() as u64 > max
-        {
-            return Err(IdeError::new(ErrorKind::Io, format!("{url}: response is larger than {max} bytes")));
-        }
-        if !status.success() {
-            let mut err = Vec::new();
-            let _ = stderr.read_to_end(&mut err);
-            let err = decode_tool_output(&err);
-            return Err(IdeError::new(ErrorKind::Io, format!("GET {url} failed: {}", err.trim())));
-        }
-        String::from_utf8(body).map_err(|_| IdeError::new(ErrorKind::Protocol, format!("{url}: response is not UTF-8")))
+        let mut err = Vec::new();
+        let _ = stderr.read_to_end(&mut err);
+        Ok((body, false, decode_tool_output(&err)))
     }
 
     /// Downloads `url` to `dest`, reporting progress against `size` when known.
@@ -263,7 +298,36 @@ impl Http {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
+        let mut extra: Vec<&str> = Vec::new();
+        let mut first_err = String::new();
+        loop {
+            let (ok, err) = self.run_download(&extra, url, dest, size, cancel, emit)?;
+            if ok {
+                let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+                emit(progress_event(bytes, size.or(Some(bytes))));
+                return Ok(());
+            }
+            // See `get_text_response`: report the original error when the retry cannot help.
+            if !extra.is_empty() || !revocation_offline(&err) {
+                let err = if first_err.is_empty() { err } else { first_err };
+                return Err(IdeError::new(ErrorKind::Io, format!("download of {url} failed: {}", err.trim())));
+            }
+            first_err = err;
+            extra.push("--ssl-revoke-best-effort");
+        }
+    }
+
+    fn run_download(
+        &self,
+        extra: &[&str],
+        url: &str,
+        dest: &Path,
+        size: Option<u64>,
+        cancel: &CancellationToken,
+        emit: Emit,
+    ) -> IdeResult<(bool, String)> {
         let mut cmd = self.base(url);
+        cmd.args(extra);
         cmd.arg("-o").arg(dest).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run curl: {e}")))?;
         let mut stderr = child.stderr.take().expect("piped");
@@ -293,15 +357,7 @@ impl Http {
                 }
             }
         };
-        if !status.success() {
-            return Err(IdeError::new(
-                ErrorKind::Io,
-                format!("download of {url} failed: {}", err_t.join().unwrap_or_default().trim()),
-            ));
-        }
-        let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
-        emit(progress_event(bytes, size.or(Some(bytes))));
-        Ok(())
+        Ok((status.success(), err_t.join().unwrap_or_default()))
     }
 }
 

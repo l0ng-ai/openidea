@@ -679,3 +679,86 @@ fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
     env.tools().uninstall("rust-analyzer", &langs()).unwrap();
     assert!(!env.root.join("rust-analyzer").exists());
 }
+
+#[cfg(unix)]
+const REVOCATION_OFFLINE_MESSAGE: &str = "curl: (35) schannel: next InitializeSecurityContext failed: \
+CRYPT_E_REVOCATION_OFFLINE (0x80092013) - The revocation function was unable to check revocation \
+because the revocation server was offline.";
+
+#[cfg(unix)]
+fn env_with_curl(body: &str) -> (Env, Http) {
+    let env = Env::new();
+    env.script(&env.sys, "curl", body);
+    let http = Http::new(&std::env::join_paths([&env.sys]).unwrap()).unwrap();
+    (env, http)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_schannel_revocation_offline_failure_is_retried_best_effort() {
+    let env = Env::new();
+    let done = env.root.join("retried");
+    let body = format!(
+        "if [ -f {done} ]; then\n  printf hello\n  exit 0\nfi\necho '{msg}' >&2\ntouch {done}\nexit 35\n",
+        done = done.display(),
+        msg = REVOCATION_OFFLINE_MESSAGE,
+    );
+    env.script(&env.sys, "curl", &body);
+    let http = Http::new(&std::env::join_paths([&env.sys]).unwrap()).unwrap();
+    let text = http.get_text("https://download.eclipse.org/jdtls/milestones/", &CancellationToken::new()).unwrap();
+    assert_eq!(text, "hello");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_revocation_retry_reports_the_original_schannel_error() {
+    let body = format!(
+        "for a in \"$@\"; do\n  if [ \"$a\" = --ssl-revoke-best-effort ]; then\n    echo 'curl: option --ssl-revoke-best-effort: is unknown' >&2\n    exit 2\n  fi\ndone\necho '{msg}' >&2\nexit 35\n",
+        msg = REVOCATION_OFFLINE_MESSAGE,
+    );
+    let (_env, http) = env_with_curl(&body);
+    let err = http.get_text("https://download.eclipse.org/jdtls/milestones/", &CancellationToken::new()).unwrap_err();
+    let err = err.to_string();
+    assert!(err.contains("CRYPT_E_REVOCATION_OFFLINE"), "{err}");
+    assert!(!err.contains("is unknown"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn other_curl_failures_are_not_retried() {
+    let env = Env::new();
+    let count = env.root.join("invocations");
+    let body = format!(
+        "echo x >> {cnt}\necho 'curl: (6) Could not resolve host: example.org' >&2\nexit 6\n",
+        cnt = count.display(),
+    );
+    env.script(&env.sys, "curl", &body);
+    let http = Http::new(&std::env::join_paths([&env.sys]).unwrap()).unwrap();
+    let err = http.get_text("https://example.org/", &CancellationToken::new()).unwrap_err();
+    assert!(err.to_string().contains("Could not resolve host"), "{err}");
+    assert_eq!(fs::read_to_string(&count).unwrap().lines().count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_schannel_revocation_offline_failure_is_retried_when_downloading() {
+    let env = Env::new();
+    let done = env.root.join("retried");
+    let dest = env.root.join("jdtls.tar.gz");
+    let body = format!(
+        "prev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = -o ] && [ -f {done} ]; then\n    printf archive > \"$a\"\n  fi\n  prev=$a\ndone\nif [ -f {done} ]; then\n  exit 0\nfi\necho '{msg}' >&2\ntouch {done}\nexit 35\n",
+        done = done.display(),
+        msg = REVOCATION_OFFLINE_MESSAGE,
+    );
+    env.script(&env.sys, "curl", &body);
+    let http = Http::new(&std::env::join_paths([&env.sys]).unwrap()).unwrap();
+    http.download(
+        "https://download.eclipse.org/jdtls/milestones/1.50.0/jdt-language-server-1.50.0.tar.gz",
+        &dest,
+        None,
+        &CancellationToken::new(),
+        &|_| {},
+    )
+    .unwrap();
+    assert_eq!(fs::read(&dest).unwrap(), b"archive");
+}
