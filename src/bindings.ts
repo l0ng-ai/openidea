@@ -853,7 +853,7 @@ export const commands = {
 	 */
 	pluginList: () => typedError<PluginsSnapshot, IdeError>(__TAURI_INVOKE("plugin_list")),
 	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
-	/**  Installs the plugin package in `path` (a folder with `plugin.toml`). */
+	/**  Installs the plugin package at `path`: a folder, its `plugin.toml`, or a `.zip` of the folder. */
 	pluginInstallDir: (path: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_install_dir", { path })),
 	/**
 	 *  Plugin packages available locally for installation: `<resources>/plugins`
@@ -1688,7 +1688,7 @@ export type CatalogPlugin = {
 	authors: string[],
 	homepage: string | null,
 	changeNotes: string | null,
-	/**  Package directory; install with `install_from_dir(path)`. */
+	/**  Package directory; install with `install_from_path(path)`. */
 	path: IpcPath,
 	hasCode: boolean,
 	permissions: Permission[],
