@@ -87,8 +87,11 @@ function derived(base: RunConfig, relPath: string, patch: Partial<RunConfig>): R
 export function projectPython(configs: RunConfig[]): { command: string; prefix: string[] } | null {
   const py = configs.find((c) => c.kind === "python");
   if (py) {
-    const m = py.args.indexOf("-m");
-    return { command: py.command, prefix: m >= 0 ? py.args.slice(0, m) : py.args.filter((a) => !a.endsWith(".py")) };
+    // The interpreter part ends where the program starts: `-m`, or the script (`manage.py`). What follows
+    // (`runserver`, `test`…) belongs to that program, never to the interpreter.
+    const end = py.args.findIndex((a) => a === "-m" || a.endsWith(".py"));
+    const python = py.args.findIndex((a) => /^python[\d.]*$/.test(a));
+    return { command: py.command, prefix: py.args.slice(0, end >= 0 ? end : python + 1) };
   }
   const pytest = configs.find((c) => c.kind === "pytest");
   if (!pytest) return null;

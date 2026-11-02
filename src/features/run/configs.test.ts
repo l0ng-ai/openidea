@@ -247,4 +247,26 @@ describe("context configuration", () => {
     const uv = [cfg({ id: "pytest", kind: "pytest", command: "uv", args: ["run", "pytest"], isTest: true })];
     expect(contextConfig("tools/gen.py", uv)).toMatchObject({ command: "uv", args: ["run", "python", "tools/gen.py"] });
   });
+
+  it("takes the interpreter from a Django runserver config without its arguments", () => {
+    const runserver = (command: string, args: string[]) =>
+      cfg({ id: "django:runserver", kind: "python", command, args: [...args, "manage.py", "runserver"] });
+    expect(contextConfig("tools/seed.py", [runserver(".venv/bin/python", [])])).toMatchObject({
+      command: ".venv/bin/python",
+      args: ["tools/seed.py"],
+    });
+    expect(contextConfig("tools/seed.py", [runserver("uv", ["run", "python"])])).toMatchObject({
+      command: "uv",
+      args: ["run", "python", "tools/seed.py"],
+    });
+    expect(contextConfig("worker/test_worker.py", [runserver(".venv/bin/python", [])])).toMatchObject({
+      args: ["-m", "pytest", "worker/test_worker.py"],
+    });
+  });
+
+  it("keeps the interpreter of a plain python config", () => {
+    const plain = [cfg({ id: "python:module:app", kind: "python", command: "python3", args: ["-m", "app"] })];
+    expect(contextConfig("tools/gen.py", plain)).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
+    expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
+  });
 });
