@@ -15,6 +15,7 @@
 //! (dev plugins, loaded by [`PluginHost::sync_project`]).
 
 mod manifest;
+mod package;
 mod runtime;
 mod sandbox;
 mod theme;
@@ -261,6 +262,20 @@ impl PluginHost {
         self.emit(None, PluginEvent::CommandsChanged);
         self.emit_theme_if_owned(&new_id);
         self.info_of(&new_id)
+    }
+
+    /// Installs the package at `path`: a folder, its `plugin.toml`, or a `.zip` of the folder.
+    pub fn install_from_path(&self, path: &Path) -> IdeResult<PluginInfo> {
+        if package::is_zip(path) && path.is_file() {
+            // Outside the plugins directory: a crash must not leave a package that loads.
+            let unpacked = tempfile::Builder::new().prefix("openidea-plugin-").tempdir()?;
+            let root = package::unpack_zip(path, unpacked.path())?;
+            return self.install_from_dir(&root);
+        }
+        if path.file_name().is_some_and(|name| name == MANIFEST_FILE) && path.is_file() {
+            return self.install_from_dir(path.parent().unwrap_or(path));
+        }
+        self.install_from_dir(path)
     }
 
     /// Copies a plugin package (manifest + referenced files) into the plugins
