@@ -4,6 +4,16 @@ use std::path::{Path, PathBuf};
 
 /// Largest file `read-file` returns.
 pub const MAX_READ_BYTES: u64 = 16 << 20;
+/// Most entries `list-dir` returns (the first ones by name).
+pub const MAX_DIR_ENTRIES: usize = 10_000;
+
+/// One entry of a `list-dir` answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirEntry {
+    pub name: String,
+    /// A directory; symbolic links are not followed, so a link is neither a file nor a directory.
+    pub is_dir: bool,
+}
 
 /// Resolves `path` (absolute, or relative to `root`) and checks that the real
 /// path — after following `..` and symlinks — stays inside `root`.
@@ -32,6 +42,26 @@ pub fn read_text(real: &Path) -> Result<String, String> {
     }
     let bytes = std::fs::read(real).map_err(|e| e.to_string())?;
     String::from_utf8(bytes).map_err(|_| format!("{}: not valid UTF-8 text", real.display()))
+}
+
+/// Lists a directory that `resolve_in_root` already approved: its entries
+/// sorted by name (no recursion), at most [`MAX_DIR_ENTRIES`].
+pub fn list_dir(real: &Path) -> Result<Vec<DirEntry>, String> {
+    let meta = std::fs::metadata(real).map_err(|e| e.to_string())?;
+    if !meta.is_dir() {
+        return Err(format!("{}: not a directory", real.display()));
+    }
+    let entries = std::fs::read_dir(real).map_err(|e| format!("{}: {e}", real.display()))?;
+    let mut out: Vec<DirEntry> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| DirEntry {
+            name: e.file_name().to_string_lossy().into_owned(),
+            is_dir: e.file_type().is_ok_and(|t| t.is_dir()),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.truncate(MAX_DIR_ENTRIES);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -71,6 +101,45 @@ mod tests {
         std::fs::write(tmp.path().join("secret.txt"), "s").unwrap();
         std::os::unix::fs::symlink(tmp.path().join("secret.txt"), root.join("link")).unwrap();
         assert!(resolve_in_root(&root, "link").unwrap_err().contains("outside"));
+    }
+
+    #[test]
+    fn lists_a_directory_sorted_without_recursion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join("app/views/photos")).unwrap();
+        std::fs::write(root.join("app/views/show.html.erb"), "").unwrap();
+        std::fs::write(root.join("app/views/index.html.erb"), "").unwrap();
+        std::fs::write(root.join("app/views/_form.html.erb"), "").unwrap();
+        std::fs::write(root.join("app/views/photos/show.html.erb"), "").unwrap();
+
+        let entries = list_dir(&resolve_in_root(&root, "app/views").unwrap()).unwrap();
+        let listed: Vec<(&str, bool)> = entries.iter().map(|e| (e.name.as_str(), e.is_dir)).collect();
+        assert_eq!(
+            listed,
+            [("_form.html.erb", false), ("index.html.erb", false), ("photos", true), ("show.html.erb", false)]
+        );
+        assert!(
+            list_dir(&resolve_in_root(&root, "app/views/show.html.erb").unwrap())
+                .unwrap_err()
+                .contains("not a directory")
+        );
+        assert!(resolve_in_root(&root, "../").unwrap_err().contains("outside"));
+        assert!(resolve_in_root(&root, "app/nope").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listed_symlinks_are_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("outside")).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("outside"), root.join("src/link")).unwrap();
+        let entries = list_dir(&resolve_in_root(&root, "src").unwrap()).unwrap();
+        assert_eq!(entries, [DirEntry { name: "link".into(), is_dir: false }]);
+        // Following the link is rejected by the root check.
+        assert!(resolve_in_root(&root, "src/link").unwrap_err().contains("outside"));
     }
 
     #[test]

@@ -12,7 +12,7 @@ pub const MANIFEST_FILE: &str = "plugin.toml";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum Permission {
-    /// `workspace-root`, `read-file` (inside the project root only).
+    /// `workspace-root`, `read-file`, `list-dir` (inside the project root only).
     ProjectRead,
     /// `active-file`.
     EditorRead,

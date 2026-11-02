@@ -48,11 +48,11 @@ All paths are relative to the package directory and may not leave it.
 
 ### Permissions
 
-| Permission     | Unlocks                                           |
-| -------------- | ------------------------------------------------- |
-| `project-read` | `workspace-root`, `read-file` (project root only) |
-| `editor-read`  | `active-file`                                     |
-| `editor-write` | `insert-text`, `replace-selection`                |
+| Permission     | Unlocks                                                       |
+| -------------- | ------------------------------------------------------------- |
+| `project-read` | `workspace-root`, `read-file`, `list-dir` (project root only) |
+| `editor-read`  | `active-file`                                                 |
+| `editor-write` | `insert-text`, `replace-selection`                            |
 
 `log`, `register-command`, `show-notification`, `register-language` and
 `register-theme` are always available. Calling a gated function without its
@@ -141,6 +141,7 @@ Any language with component-model tooling works (e.g. `componentize-py`,
 | `workspace-root()`                       | Root of the project the command runs in.                                                                                                 |
 | `active-file()`                          | Absolute path of the focused editor's file.                                                                                              |
 | `read-file(path)`                        | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB. Unsaved editor contents win over disk. |
+| `list-dir(path)`                         | Entries (`name`, `is-dir`) of a directory inside the project root, sorted by name, no recursion, ≤ 10 000; symlinks are not followed.    |
 | `insert-text(text)`                      | Inserts at every cursor of the active editor (cursor ends after the text).                                                               |
 | `replace-selection(text)`                | Replaces every selection and selects the new text.                                                                                       |
 | `register-language(toml)`                | Same format as `languages/<id>.toml`.                                                                                                    |
