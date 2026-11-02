@@ -169,7 +169,7 @@ impl Translator {
                     Some("tool_use") => {
                         // The input streams after this: shown by name until the message has it.
                         let (id, name) = (str_of(&block, "id"), str_of(&block, "name"));
-                        if !id.is_empty() && !tools::is_plan(&name) && !(tools::is_agent(&name) && self.subagents) {
+                        if !(id.is_empty() || tools::is_plan(&name) || tools::is_agent(&name) && self.subagents) {
                             out.extend(self.ensure_call(&id, &name, &json!({}), &session));
                         }
                     }

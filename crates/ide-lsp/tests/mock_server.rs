@@ -2916,3 +2916,92 @@ async fn clang_tidy_config_for_a_later_opened_file_warns_on_a_running_server() {
     assert_eq!(h.mgr.servers().len(), 1);
     h.mgr.shutdown_all().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_definition_uses_java_without_yaml_definition_capability() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Settings.java"));
+    s.respond("workspace/executeCommand", json!({
+        "locations": [{"uri": target, "range": {"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 11}}}],
+        "keys": [{"name": "app.timeOut", "relaxed": true}], "roots": []
+    }));
+    let path = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &path, &LanguageId::new("yaml"), 1, "app:\n  time-out: 5\n");
+    let locations = h.mgr.goto(doc, Pos::new(1, 4), GotoKind::Definition).await.unwrap();
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].range.start, Pos::new(2, 4));
+    assert_eq!(s.requested("workspace/executeCommand")[0]["arguments"][1], "app.time-out");
+    assert!(s.requested("textDocument/definition").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_usages_merge_native_and_unsaved_profiles_without_sibling_modules() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let (doc, path) = h.open("Settings.java", "int timeOut;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let root = uri_of(&h.root);
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [], "keys": [{"name": "app.timeOut", "relaxed": true}], "roots": [root]
+        }),
+    );
+    s.respond(
+        "textDocument/references",
+        json!([{"uri": uri_of(&path), "range": {
+            "start": {"line": 3, "character": 0}, "end": {"line": 3, "character": 7}
+        }}]),
+    );
+    std::fs::write(h.root.join("application.yml"), "app:\n  time-out: 1\n").unwrap();
+    std::fs::write(h.root.join("application-prod.properties"), "app.time-out=2\n").unwrap();
+    let overlay = h.root.join("application-dev.yml");
+    std::fs::write(&overlay, "app:\n  old: 3\n").unwrap();
+    h.mgr.did_open(DocId::next(), &overlay, &LanguageId::new("yaml"), 1, "app:\n  time-out: 3\n");
+    let sibling = h.root.join("other");
+    std::fs::create_dir(&sibling).unwrap();
+    std::fs::write(sibling.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(sibling.join("application.yml"), "app:\n  time-out: wrong\n").unwrap();
+    h.mgr.did_open(
+        DocId::next(),
+        &sibling.join("application.yml"),
+        &LanguageId::new("yaml"),
+        1,
+        "app:\n  time-out: still-wrong\n",
+    );
+    let scoped = h.mgr.references(doc, Pos::new(0, 6), false, false, Default::default()).await.unwrap();
+    assert_eq!(scoped.locations.len(), 1);
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    let refs = h.mgr.references(doc, Pos::new(0, 6), false, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 4, "{refs:?}");
+    assert!(refs.locations.iter().all(|l| !l.path.to_path_buf().starts_with(&sibling)));
+    assert!(refs.locations.iter().any(|l| l.path.to_path_buf() == overlay));
+    assert_eq!(refs.incomplete, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_extension_failure_preserves_native_java_navigation() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let (doc, path) = h.open("Settings.java", "@Value(\"${app.port}\") int port;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "old server".into()));
+    s.respond(
+        "textDocument/definition",
+        json!({"uri": uri_of(&path), "range": {
+            "start": {"line": 0, "character": 1}, "end": {"line": 0, "character": 6}
+        }}),
+    );
+    let result = h.mgr.goto(doc, Pos::new(0, 2), GotoKind::Definition).await.unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(s.requested("textDocument/definition").len(), 1);
+}
