@@ -32,6 +32,7 @@ import {
   ideaDiffConfig,
   loadDiffOptions,
   saveDiffOptions,
+  getDiffInsights,
   type DiffMode,
   type DiffViewOptions,
   type HighlightPolicy,
@@ -51,6 +52,7 @@ import {
   type DiffSide,
 } from "./diffInput";
 import { diffAnnotations } from "./diffAnnotations";
+import { movedCodeHighlights } from "./movedCode";
 import {
   createDiffViewerContributions,
   type DiffPaneSide,
@@ -206,7 +208,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
   const [error, setError] = useState<string | null>(null);
   const [opts, setOptsState] = useState<DiffViewOptions>(loadDiffOptions);
   const [lang, setLang] = useState<Extension | null>(null);
-  const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1 });
+  const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1, moves: 0, whitespaceOnly: false });
   const [busy, setBusy] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   const viewsRef = useRef<Views | null>(null);
@@ -302,7 +304,15 @@ export function DiffEditor({ input }: { input: EditorInput }) {
     const chunks = getChunks(v.state)?.chunks ?? [];
     const head = v.state.selection.main.head;
     const current = chunks.findIndex((c) => c.fromB <= head && head <= Math.max(c.fromB, c.endB));
-    setChunkInfo((p) => (p.count === chunks.length && p.current === current ? p : { count: chunks.length, current }));
+    const { moves, whitespaceOnly } = getDiffInsights(chunks);
+    setChunkInfo((p) =>
+      p.count === chunks.length &&
+      p.current === current &&
+      p.moves === moves.length &&
+      p.whitespaceOnly === whitespaceOnly
+        ? p
+        : { count: chunks.length, current, moves: moves.length, whitespaceOnly },
+    );
   }, []);
 
   // A HEAD ↔ working file diff of a tracked change: blocks can be left out of the commit.
@@ -379,7 +389,11 @@ export function DiffEditor({ input }: { input: EditorInput }) {
                 : undefined,
           });
       // IDEA's colouring: lines by chunk type, carried into the gutters, and typed word highlights.
-      const colours = [changedLineGutters, highlightChanges ? diffWords : []];
+      const colours = [
+        changedLineGutters,
+        highlightChanges ? diffWords : [],
+        opts.highlight !== "none" ? movedCodeHighlights(highlightChanges) : [],
+      ];
       const mv = new MergeView({
         a: {
           doc: textA,
@@ -993,12 +1007,19 @@ export function DiffEditor({ input }: { input: EditorInput }) {
             : chunkInfo.count === 0
               ? identical
                 ? tx("Contents are identical")
-                : tx("No differences")
+                : chunkInfo.whitespaceOnly
+                  ? tx("Whitespace-only changes")
+                  : tx("No differences")
               : chunkInfo.current >= 0
                 ? tx`${chunkInfo.current + 1} of ${chunkInfo.count} differences`
                 : chunkInfo.count === 1
                   ? tx`${chunkInfo.count} difference`
                   : tx`${chunkInfo.count} differences`}
+          {ready && !binary && chunkInfo.count > 0 && chunkInfo.whitespaceOnly && tx(" · Whitespace-only changes")}
+          {ready &&
+            !binary &&
+            chunkInfo.moves > 0 &&
+            (chunkInfo.moves === 1 ? tx(" · 1 moved block") : tx` · ${chunkInfo.moves} moved blocks`)}
         </span>
         {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
         <IconButton
