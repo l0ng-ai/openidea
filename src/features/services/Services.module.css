@@ -57,8 +57,15 @@
   flex: 1;
   min-height: 0;
 }
-.tree {
+.treePane {
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.tree {
+  flex: 1;
+  min-height: 0;
 }
 .loading {
   display: flex;

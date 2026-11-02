@@ -207,6 +207,11 @@ export interface ServiceItemAction {
   title: string;
   icon: string;
   disabled?: boolean;
+  /**
+   * false keeps the action out of the tree toolbar (the detail pane owns it,
+   * e.g. a run configuration's Run / Debug / Stop); the context menu keeps it.
+   */
+  toolbar?: boolean;
   run(): void;
 }
 
@@ -1353,6 +1358,8 @@ export interface DebugServiceSession {
   startedAt: number;
   status: "starting" | "running" | "paused" | "terminated";
   processId: number | null;
+  /** Started from the Services tool window: its UI belongs there, not in the Debug window. */
+  origin?: "services";
   rerun: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;
@@ -1361,5 +1368,4 @@ export interface DebugServiceSession {
 export const useDebugRunSessions = create<{
   sessions: DebugRunSession[];
   serviceSessions: DebugServiceSession[];
-  Console: ComponentType<{ sessionId: number }> | null;
-}>(() => ({ sessions: [], serviceSessions: [], Console: null }));
+}>(() => ({ sessions: [], serviceSessions: [] }));

@@ -1,25 +1,28 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui";
+import { IconButton, showContextMenu, T, type MenuItem } from "@/ui";
 import { tx } from "@/platform/i18n";
 import { spanStyle } from "@/ui/ansi";
 import ansi from "@/ui/ansi.module.css";
+import type { ConsoleControls } from "@/features/run/RunView";
 import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSession } from "../state";
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import styles from "./DebugToolWindow.module.css";
 
-export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
-  const session = useDebug((s) => s.sessions[sessionId]);
-  return session ? (
-    <DebugConsole key={sessionId} session={session} interactive={false} />
-  ) : (
-    <EmptyState title="No debug output available" />
-  );
-}
-
-export function DebugConsole({ session, interactive = true }: { session: DebugSession; interactive?: boolean }) {
+export function DebugConsole({
+  session,
+  interactive = true,
+  strip = true,
+  onControls,
+}: {
+  session: DebugSession;
+  interactive?: boolean;
+  /** Render the right-edge control strip here (the Services pane keeps a permanent one instead). */
+  strip?: boolean;
+  onControls?: (controls: ConsoleControls | null) => void;
+}) {
   const lines = useDebug((s) => s.console[session.id]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -62,6 +65,31 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     }
   };
 
+  // The console strip's buttons: page scrolling and jump to the live tail.
+  const controls = useMemo<ConsoleControls>(
+    () => ({
+      scrollByPage: (dir) => {
+        const el = scroller.current;
+        if (el) el.scrollBy({ top: dir * el.clientHeight * 0.8 });
+      },
+      scrollToEnd: () => {
+        const el = scroller.current;
+        if (!el) return;
+        stick.current = true;
+        el.scrollTop = el.scrollHeight;
+      },
+      clear: () => clearConsole(session.id),
+    }),
+    [session.id],
+  );
+  useEffect(() => {
+    if (strip) return;
+    onControls?.(controls);
+    return () => onControls?.(null);
+  }, [strip, controls, onControls]);
+  const scrollByPage = (dir: 1 | -1) => controls.scrollByPage(dir);
+  const scrollToEnd = () => controls.scrollToEnd();
+
   /** IDEA's Browse History popup: the expressions typed before, most recent first. */
   const browseHistory = () => {
     const el = inputRef.current;
@@ -96,78 +124,82 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
 
   return (
     <div className={styles.console}>
-      <div
-        ref={scroller}
-        className={clsx(styles.consoleOutput, ansi.palette)}
-        onScroll={(e) => {
-          if (programmatic.current) return;
-          const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-        }}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          showContextMenu(e, [{ label: "Clear All", icon: "trash", run: () => clearConsole(session.id) }]);
-        }}
-        role="log"
-        onKeyDown={copySelectionOnKeyDown}
-        aria-label={tx("Debug console")}
-        tabIndex={0}
-      >
-        {!lines?.length && session.launch?.request === "attach" && (
-          <T>The attached process may not provide standard output to the debugger.</T>
-        )}
-        <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map((item) => {
-            const l = lines?.[item.index];
-            if (!l) return null;
-            return (
-              <span
-                key={item.key}
-                data-index={item.index}
-                ref={virtualizer.measureElement}
-                className={clsx(styles.out, styles[`cat-${l.category}`])}
-                style={{ transform: `translateY(${item.start}px)` }}
-              >
-                {l.spans.map((sp, i) => (
-                  <span key={i} style={spanStyle(sp)}>
-                    {sp.text}
-                  </span>
-                ))}
+      <div className={styles.consoleMain}>
+        <div
+          ref={scroller}
+          className={clsx(styles.consoleOutput, ansi.palette)}
+          onScroll={(e) => {
+            if (programmatic.current) return;
+            const el = e.currentTarget;
+            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            showContextMenu(e, [{ label: "Clear All", icon: "trash", run: () => clearConsole(session.id) }]);
+          }}
+          role="log"
+          onKeyDown={copySelectionOnKeyDown}
+          aria-label={tx("Debug console")}
+          tabIndex={0}
+        >
+          {!lines?.length && session.launch?.request === "attach" && (
+            <T>The attached process may not provide standard output to the debugger.</T>
+          )}
+          <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+            {virtualizer.getVirtualItems().map((item) => {
+              const l = lines?.[item.index];
+              if (!l) return null;
+              return (
+                <span
+                  key={item.key}
+                  data-index={item.index}
+                  ref={virtualizer.measureElement}
+                  className={clsx(styles.out, styles[`cat-${l.category}`])}
+                  style={{ transform: `translateY(${item.start}px)` }}
+                >
+                  {l.spans.map((sp, i) => (
+                    <span key={i} style={spanStyle(sp)}>
+                      {sp.text}
+                    </span>
+                  ))}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+        <div className={styles.repl}>
+          {interactive && (
+            <>
+              <span className={styles.prompt} aria-hidden>
+                ›
               </span>
-            );
-          })}
+              <input
+                ref={inputRef}
+                className={styles.evalInput}
+                onFocus={() => setConsoleHistoryBrowser(browseHistory)}
+                onBlur={() => setConsoleHistoryBrowser(null)}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onKeyDown}
+                placeholder={isLive(session) ? tx("Evaluate in the debug console") : tx("Session finished")}
+                disabled={!isLive(session)}
+                aria-label={tx("Debug console input")}
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </>
+          )}
         </div>
       </div>
-      <div className={styles.repl}>
-        {interactive && (
-          <>
-            <span className={styles.prompt} aria-hidden>
-              ›
-            </span>
-            <input
-              ref={inputRef}
-              className={styles.evalInput}
-              onFocus={() => setConsoleHistoryBrowser(browseHistory)}
-              onBlur={() => setConsoleHistoryBrowser(null)}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={onKeyDown}
-              placeholder={isLive(session) ? "Evaluate in the debug console" : "Session finished"}
-              disabled={!isLive(session)}
-              aria-label={tx("Debug console input")}
-              spellCheck={false}
-              autoComplete="off"
-            />
-          </>
-        )}
-        <IconButton
-          icon="trash"
-          title="Clear Console"
-          size="small"
-          iconSize={12}
-          onClick={() => clearConsole(session.id)}
-        />
-      </div>
+      {/* IDEA's console controls: a narrow strip on the console's right edge. */}
+      {strip && (
+        <div className={styles.consoleStrip}>
+          <IconButton icon="chevron-up" iconSize={14} title="Scroll Up" onClick={() => scrollByPage(-1)} />
+          <IconButton icon="chevron-down" iconSize={14} title="Scroll Down" onClick={() => scrollByPage(1)} />
+          <IconButton icon="arrow-down" iconSize={14} title="Scroll to End" onClick={scrollToEnd} />
+          <IconButton icon="trash" iconSize={14} title="Clear All" onClick={() => clearConsole(session.id)} />
+        </div>
+      )}
     </div>
   );
 }

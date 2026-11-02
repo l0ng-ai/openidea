@@ -16,7 +16,7 @@ import { runUpdateBuild } from "./buildUpdate";
 import { startRun, stopSession, useRun, waitForExit, type RunSession } from "./store";
 import { isUpdatable, updateAllowed, type UpdateMode } from "./updatePolicies";
 
-export type UpdateSession = Pick<RunSession, "id" | "config"> & { debug?: DebugServiceSession };
+export type UpdateSession = Pick<RunSession, "id" | "config" | "origin"> & { debug?: DebugServiceSession };
 export const useApplicationUpdates = create<{ ids: ReadonlySet<string> }>(() => ({ ids: new Set() }));
 const updatingConfigs = new Set<string>();
 
@@ -30,7 +30,7 @@ export function updatableSessions(): UpdateSession[] {
         (s.status === "running" || s.status === "paused") &&
         !runs.some((r) => r.runId === s.processId && r.config.id === s.config.id),
     )
-    .map((s) => ({ id: `debug:${s.id}`, config: s.config, debug: s }));
+    .map((s) => ({ id: `debug:${s.id}`, config: s.config, origin: s.origin, debug: s }));
   return [...runs, ...debug];
 }
 
@@ -72,13 +72,14 @@ export async function updateApplication(session: UpdateSession, mode: string): P
     const debugging =
       !!session.debug || useDebugRunSessions.getState().sessions.some((s) => s.configId === session.config.id);
     if (mode === "restart") {
+      // Restart keeps the session's origin: a Services update stays in Services.
       if (session.debug) {
         await session.debug.stop();
-        await executeAction("run.debugConfig", session.config);
+        await executeAction("run.debugConfig", { config: session.config, origin: session.origin });
       } else if (debugging) {
         await stopSession(session.id);
         await waitForExit([session.id]);
-        await executeAction("run.debugConfig", session.config);
+        await executeAction("run.debugConfig", { config: session.config, origin: session.origin });
       } else await startRun(session.config, session.id);
       return;
     }

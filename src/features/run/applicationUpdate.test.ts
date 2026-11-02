@@ -90,7 +90,8 @@ describe("Tomcat application updates", () => {
     expect(mocks.stop).toHaveBeenCalledWith("run1");
     expect(mocks.wait).toHaveBeenCalledWith(["run1"]);
     expect(mocks.wait.mock.invocationCallOrder[0]).toBeLessThan(mocks.action.mock.invocationCallOrder[0]!);
-    expect(mocks.action).toHaveBeenCalledWith("run.debugConfig", session.config);
+    // Restart keeps the session's origin so Services-owned updates stay in Services.
+    expect(mocks.action).toHaveBeenCalledWith("run.debugConfig", { config: session.config, origin: undefined });
   });
   it("redeploys when the debugger cannot perform HotSwap", async () => {
     mocks.action.mockResolvedValue(false);

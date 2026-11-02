@@ -212,7 +212,7 @@ async function listenForJvm(name: string, host: string, port: number): Promise<n
 }
 
 /** Remote JVM Debug, Go Remote, Python / Node.js remote: attach over host:port. */
-async function startRemote(config: RunConfig, root: string) {
+async function startRemote(config: RunConfig, root: string, origin?: "services") {
   if (config.kind === REMOTE_JVM) {
     const t = remoteJvmTarget(config);
     let hostName = t.host;
@@ -224,37 +224,44 @@ async function startRemote(config: RunConfig, root: string) {
     }
     const launch = await javaAttachConfig({ name: config.name, module: t.module, hostName, port }, root);
     // A listen relay accepts one debugger: rerunning listens again through the configuration.
-    await startSession(launch, { runConfig: config, rerunnable: t.mode === "attach" });
+    await startSession(launch, { runConfig: config, rerunnable: t.mode === "attach", origin });
     return;
   }
   const launch = remoteAttachConfig(config, root);
-  if (launch) await startSession(launch, { runConfig: config });
+  if (launch) await startSession(launch, { runConfig: config, origin });
 }
 
 /** Preparation belongs to a session from the moment the action begins. */
-async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig) {
-  await startPreparedSession(origin, async (signal, report) => {
-    const request = nextRequestId();
-    const cancel = () => {
-      void commands.cancelRequest(request).catch(() => undefined);
-    };
-    signal.addEventListener("abort", cancel, { once: true });
-    try {
-      await maybeEditorService()
-        ?.saveAll()
-        .catch(() => undefined);
-      signal.throwIfAborted();
-      return await javaLaunchConfig(config, root, { request, signal, report });
-    } finally {
-      signal.removeEventListener("abort", cancel);
-    }
-  });
+async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig, services: boolean) {
+  await startPreparedSession(
+    origin,
+    async (signal, report) => {
+      const request = nextRequestId();
+      const cancel = () => {
+        void commands.cancelRequest(request).catch(() => undefined);
+      };
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        await maybeEditorService()
+          ?.saveAll()
+          .catch(() => undefined);
+        signal.throwIfAborted();
+        return await javaLaunchConfig(config, root, { request, signal, report });
+      } finally {
+        signal.removeEventListener("abort", cancel);
+      }
+    },
+    { origin: services ? "services" : undefined },
+  );
 }
 
 async function startConfig(arg: unknown) {
   const root = useProject.getState().project?.root;
   if (!root) return;
   const origin = arg && typeof arg === "object" && "origin" in arg && isRunConfig(arg.origin) ? arg.origin : null;
+  const services =
+    !!arg && typeof arg === "object" && "services" in arg && (arg as { services?: boolean }).services === true;
+  const servicesOrigin = services ? ("services" as const) : undefined;
   const input = arg && typeof arg === "object" && "config" in arg ? arg.config : arg;
   let config: RunConfig | null = isRunConfig(input) ? input : null;
   if (!config) {
@@ -284,11 +291,11 @@ async function startConfig(arg: unknown) {
     }
   }
   if (isRemoteConfig(config)) {
-    await startRemote(config, root);
+    await startRemote(config, root, servicesOrigin);
     return;
   }
   if (isJavaDebuggable(config)) {
-    await startJavaConfig(config, root, origin ?? config);
+    await startJavaConfig(config, root, origin ?? config, services);
     return;
   }
   const launch = launchConfigFor(config, root);
@@ -304,7 +311,7 @@ async function startConfig(arg: unknown) {
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
-  await startSession(launch, { runConfig: origin ?? config });
+  await startSession(launch, { runConfig: origin ?? config, origin: servicesOrigin });
 }
 
 export function registerDebugActions(): () => void {
@@ -344,10 +351,13 @@ export function registerDebugActions(): () => void {
             const root = useProject.getState().project?.root;
             if (!root || !isJavaAttachTarget(arg)) return;
             const launch = await javaAttachConfig(arg, root);
+            const services =
+              typeof arg === "object" && "services" in arg && (arg as { services?: boolean }).services === true;
             await startSession(launch, {
               process: (arg.process ?? null) as RunId | null,
               runConfig: arg.runConfig,
               rerunnable: false,
+              origin: services ? "services" : undefined,
             });
           })(),
         ),

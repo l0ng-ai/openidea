@@ -4,6 +4,7 @@ import { useProject } from "@/platform/project";
 import {
   provideNotificationService,
   provideToolWindowService,
+  toolWindowService,
   useDebugRunSessions,
   type ToolWindowService,
 } from "@/workbench/contributions";
@@ -17,6 +18,7 @@ import {
   rerunSession,
   resetSessions,
   startSession,
+  startPreparedSession,
   stopSession,
   useDebug,
 } from "../state";
@@ -125,7 +127,8 @@ it("keeps the RunConfig through debug.startConfig and reruns through its debug p
     expect(useDebugRunSessions.getState().sessions[0]?.configId).toBe(config.id);
     await rerunSession(42);
     expect(ipc.debugStop).toHaveBeenCalledWith(42);
-    expect(restart).toHaveBeenCalledWith(config);
+    // Rerun keeps the session's origin so Services-owned sessions stay in Services.
+    expect(restart).toHaveBeenCalledWith({ config, origin: undefined });
   } finally {
     dispose();
     unregister();
@@ -173,4 +176,84 @@ it("exposes a paused child through its originating root rather than the active u
   ]);
   roots[0]!.resume();
   expect(useDebug.getState().active).toBe(2);
+});
+
+it("keeps a Services-owned debug start out of the Debug window and marks the session", async () => {
+  await startSession(
+    {
+      name: "svc",
+      adapter: "java-debug",
+      request: "launch",
+      program: null,
+      args: [],
+      cwd: "/p",
+      env: {},
+      extraJson: null,
+    },
+    { runConfig: config, origin: "services" },
+  );
+  expect(toolWindowService().show).not.toHaveBeenCalled();
+  expect(useDebug.getState().sessions[42]?.origin).toBe("services");
+  expect(useDebugRunSessions.getState().serviceSessions[0]?.origin).toBe("services");
+});
+
+it("opens the Debug window for a normal debug start", async () => {
+  await startSession(
+    {
+      name: "svc",
+      adapter: "java-debug",
+      request: "launch",
+      program: null,
+      args: [],
+      cwd: "/p",
+      env: {},
+      extraJson: null,
+    },
+    { runConfig: config },
+  );
+  expect(toolWindowService().show).toHaveBeenCalledWith("debug");
+});
+
+it("does not open the Debug window when a Services-owned session pauses", () => {
+  adoptSession(1, { runConfig: config, origin: "services" });
+  handleDebugEvent(1, {
+    kind: "stopped",
+    threadId: 1,
+    reason: "breakpoint",
+    description: null,
+    allThreadsStopped: true,
+  });
+  expect(useDebug.getState().sessions[1]?.status).toBe("paused");
+  expect(toolWindowService().show).not.toHaveBeenCalled();
+  // An unrelated session still opens it (the setting applies to sessions the window owns).
+  adoptSession(2, { runConfig: { ...config, id: "other" } });
+  handleDebugEvent(2, {
+    kind: "stopped",
+    threadId: 1,
+    reason: "breakpoint",
+    description: null,
+    allThreadsStopped: true,
+  });
+  expect(toolWindowService().show).toHaveBeenCalledWith("debug");
+});
+
+it("carries the Services origin through a prepared debug start (Java direct launch)", async () => {
+  // The java-debug launch path prepares a session first; its startSession call
+  // must inherit the origin or the Debug window opens anyway.
+  await startPreparedSession(
+    config,
+    async () => ({
+      name: "svc",
+      adapter: "java-debug",
+      request: "launch",
+      program: null,
+      args: [],
+      cwd: "/p",
+      env: {},
+      extraJson: null,
+    }),
+    { origin: "services" },
+  );
+  expect(toolWindowService().show).not.toHaveBeenCalled();
+  expect(useDebug.getState().sessions[42]?.origin).toBe("services");
 });

@@ -1,39 +1,69 @@
 /* Run configurations in the Services tool window */
-.detail {
-  height: 100%;
-  overflow: auto;
-}
-.facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
-  padding: 12px;
-  margin: 0;
-}
-.facts dt {
-  color: var(--fg-secondary);
-}
-.facts dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  -webkit-user-select: text;
-  user-select: text;
-}
-.mono {
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
-}
-.actions {
-  display: flex;
-  gap: 6px;
-  padding: 0 12px 12px;
-}
 
-.debugConsole {
+/* The detail pane's toolbar, console and debug views. */
+.panel {
   display: flex;
+  /* Main column (toolbar + console) and the permanent right-edge control strip. */
+  flex-direction: row;
   height: 100%;
+  min-width: 0;
   min-height: 0;
+}
+.panelMain {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.panelToolbar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  min-height: 32px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+}
+.panelTool {
+  flex: none;
+}
+.panelSep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border-strong);
+}
+/* The debug views as inline tabs of the toolbar row (IDEA's Services window). */
+.panelTabs {
+  flex: none;
+  margin-left: 8px;
+}
+.panelBody {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+.panelBody > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+/* A configuration that never ran: the console area stays blank. */
+.panelEmpty {
+  flex: 1;
+}
+/* The permanent right-edge control strip (IDEA's console controls). */
+.panelStrip {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 3px;
+  border-left: 1px solid var(--border);
 }
 
 .importList {

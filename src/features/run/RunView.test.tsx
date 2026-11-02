@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { debugSession, resetRuns, useRun, type RunSession } from "./store";
-import { sessionIcon } from "./RunView";
+import { sessionIcon, windowSessions } from "./RunView";
 
 const actions = vi.hoisted(() => ({ executeAction: vi.fn() }));
 vi.mock("@/platform/actions", async (orig) => ({ ...(await orig<object>()), executeAction: actions.executeAction }));
@@ -78,5 +78,14 @@ describe("debugSession", () => {
   it("ignores unknown session ids", () => {
     debugSession("nope");
     expect(actions.executeAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("windowSessions", () => {
+  it("hides Services-owned sessions from the Run tool window", () => {
+    const plain = session({ id: "s1" });
+    const services = session({ id: "s2", origin: "services" });
+    expect(windowSessions([plain, services]).map((s) => s.id)).toEqual(["s1"]);
+    expect(windowSessions([])).toEqual([]);
   });
 });

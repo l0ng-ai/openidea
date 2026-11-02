@@ -4,7 +4,6 @@ import { commands, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { validateSettings } from "@/features/settings/model/schema";
 import { adoptSession, appendConsole, useDebug } from "@/features/debugger/state";
-import { DebugServiceConsole } from "@/features/debugger/ui/DebugConsole";
 import { runServiceProvider } from "@/features/run/services";
 import { onRunExited, runtime, startRun, useRun } from "@/features/run/store";
 import { registerServiceProvider, useDebugRunSessions, type DebugServiceSession } from "@/workbench/contributions";
@@ -53,7 +52,7 @@ beforeEach(() => {
   });
   useRun.setState({ configs: [config], sessions: [], loaded: true });
   useDebug.setState({ sessions: {}, console: {}, active: null });
-  useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: DebugServiceConsole });
+  useDebugRunSessions.setState({ sessions: [], serviceSessions: [] });
   useServicesTree.setState({
     roots: {},
     selectedKey: null,
@@ -65,7 +64,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   dispose();
-  useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null });
+  useDebugRunSessions.setState({ sessions: [], serviceSessions: [] });
 });
 const select = () =>
   fireEvent.mouseDown(
@@ -74,6 +73,8 @@ const select = () =>
       .closest('[role="treeitem"]')!,
   );
 const toolbar = () => within(screen.getByRole("toolbar", { name: "Services actions" }));
+/** The detail pane's toolbar: lifecycle actions (Run / Rerun / Stop) live there, not in the tree toolbar. */
+const panel = () => within(screen.getByRole("toolbar", { name: "Run actions" }));
 
 it("shows debug output/state, pins actions, and does not rebuild the tree for stdout", async () => {
   adoptSession(1, { runConfig: config });
@@ -87,8 +88,10 @@ it("shows debug output/state, pins actions, and does not rebuild the tree for st
   select();
   expect(screen.getByRole("log")).toHaveTextContent("gateway log");
   expect(screen.getByRole("log")).not.toHaveTextContent("other log");
-  expect(toolbar().getByRole("button", { name: "Stop" })).toBeEnabled();
-  fireEvent.click(toolbar().getByRole("button", { name: "Rerun" }));
+  // Lifecycle actions belong to the detail pane's toolbar; the tree toolbar keeps batch/reorder only.
+  expect(toolbar().queryByRole("button", { name: "Stop" })).toBeNull();
+  expect(panel().getByRole("button", { name: "Stop" })).toBeEnabled();
+  fireEvent.click(panel().getByRole("button", { name: /Rerun/ }));
   expect(d.rerun).toHaveBeenCalledOnce();
   expect(useDebug.getState().active).toBe(2);
   const roots = useServicesTree.getState().roots;
@@ -97,7 +100,7 @@ it("shows debug output/state, pins actions, and does not rebuild the tree for st
   expect(useServicesTree.getState().roots).toBe(roots);
   act(() => useDebugRunSessions.setState({ serviceSessions: [{ ...d, status: "paused" }] }));
   expect(within(screen.getByRole("tree")).getByText("Suspended")).toBeTruthy();
-  fireEvent.click(toolbar().getByRole("button", { name: "Stop" }));
+  fireEvent.click(panel().getByRole("button", { name: "Stop" }));
   expect(d.stop).toHaveBeenCalledOnce();
 });
 
@@ -112,7 +115,7 @@ it("keeps the other parallel instance alive and then displays it", async () => {
   render(<ServicesTreeView />);
   select();
   expect(screen.getByRole("log")).toHaveTextContent("second instance");
-  fireEvent.click(toolbar().getByRole("button", { name: "Stop" }));
+  fireEvent.click(panel().getByRole("button", { name: "Stop" }));
   expect(second.stop).toHaveBeenCalledOnce();
   expect(first.stop).not.toHaveBeenCalled();
   act(() => useDebugRunSessions.setState({ serviceSessions: [first, { ...second, status: "terminated" }] }));
@@ -151,7 +154,10 @@ it("group Stop stops all roots but terminates a shared Maven process only once",
   useDebugRunSessions.setState({ serviceSessions: [first, second] });
   render(<ServicesTreeView />);
   fireEvent.mouseDown(within(screen.getByRole("tree")).getByText("Spring Boot").closest('[role="treeitem"]')!);
-  fireEvent.click(toolbar().getByRole("button", { name: "Stop All" }));
+  // Batch actions live in the context menu, not the tree toolbar: invoke the provider's action.
+  const group = useServicesTree.getState().roots[runServiceProvider.id]!.find((n) => n.key === "run:type:spring-boot")!;
+  const stopAll = runServiceProvider.actions!(group).find((a) => a.id === "stop-all")!;
+  stopAll.run();
   await vi.waitFor(() => expect(second.stop).toHaveBeenCalledOnce());
   expect(first.stop).toHaveBeenCalledExactlyOnceWith({ stopProcess: false });
   expect(second.stop).toHaveBeenCalledExactlyOnceWith();

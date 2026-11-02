@@ -165,6 +165,8 @@ export interface ConsoleViewProps {
   /** Controlled find bar (the Run toolbar button); without it ⌘F opens it locally. */
   findOpen?: boolean;
   onFindOpenChange?: (open: boolean) => void;
+  /** Reports the scrolling element (console strip buttons scroll by page). */
+  onScroller?: (el: HTMLDivElement | null) => void;
   "aria-label"?: string;
 }
 
@@ -180,6 +182,7 @@ export function ConsoleView({
   mybatisSql,
   findOpen: controlledFindOpen,
   onFindOpenChange,
+  onScroller,
   ...aria
 }: ConsoleViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -232,6 +235,12 @@ export function ConsoleView({
   useEffect(() => {
     virtualizer.measure();
   }, [softWrap, virtualizer]);
+
+  // The console strip's page-scroll buttons scroll this element.
+  useEffect(() => {
+    onScroller?.(scrollRef.current);
+    return () => onScroller?.(null);
+  }, [onScroller]);
 
   useLayoutEffect(() => {
     if (!follow || count === 0) return;

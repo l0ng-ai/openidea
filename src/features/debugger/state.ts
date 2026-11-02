@@ -57,6 +57,8 @@ export interface DebugSession {
   exitCode: number | null;
   /** What the adapter supports (fetched after start). */
   caps: DebugCapabilities | null;
+  /** Started from the Services tool window (its UI belongs there, not in the Debug window). */
+  origin?: "services";
 }
 
 export interface ConsoleLine {
@@ -248,6 +250,7 @@ export function publishContext() {
           startedAt: session.startedAt ?? 0,
           status: paused ? ("paused" as const) : session.status,
           processId: session.process,
+          origin: session.origin,
           rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
           stop: (options?: { stopProcess?: boolean }) => stopSession(session.id, options),
           show: () => {
@@ -409,6 +412,7 @@ const preparations = new Map<DebugSessionId, AbortController>();
 export async function startPreparedSession(
   config: RunConfig,
   prepare: (signal: AbortSignal, report: (text: string, kind?: "system" | "stderr") => void) => Promise<LaunchConfig>,
+  options: { origin?: "services" } = {},
 ): Promise<DebugSessionId | null> {
   const id = --preparationSeq as DebugSessionId;
   const controller = new AbortController();
@@ -416,14 +420,19 @@ export async function startPreparedSession(
   useDebug.setState((s) => ({
     sessions: {
       ...s.sessions,
-      [id]: blank(id, { name: config.name, adapter: config.debugAdapter ?? "", runConfig: config }),
+      [id]: blank(id, {
+        name: config.name,
+        adapter: config.debugAdapter ?? "",
+        runConfig: config,
+        origin: options.origin,
+      }),
     },
     console: { ...s.console, [id]: [] },
     active: id,
   }));
   publishContext();
   try {
-    if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
+    if (options.origin !== "services" && workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
     /* no workbench (tests) */
   }
@@ -434,7 +443,12 @@ export async function startPreparedSession(
     report(tx`Starting debugger for ${config.name}…` + "\n");
     const launch = await prepare(controller.signal, report);
     controller.signal.throwIfAborted();
-    return await startSession(launch, { runConfig: config, preparation: { id, signal: controller.signal } });
+    // Carry the origin into the real session, or its start re-opens the Debug window.
+    return await startSession(launch, {
+      runConfig: config,
+      preparation: { id, signal: controller.signal },
+      origin: options.origin,
+    });
   } catch (e) {
     if (controller.signal.aborted || isCancelled(e)) return null;
     report((e instanceof Error ? e.message : String(e)) + "\n", "stderr");
@@ -454,6 +468,8 @@ export async function startSession(
     process?: RunId | null;
     /** Rerun repeats the launch (false for attaching to a process that is gone afterwards). */
     rerunnable?: boolean;
+    /** Started from the Services tool window: its UI belongs there, not in the Debug window. */
+    origin?: "services";
   } = {},
 ): Promise<DebugSessionId | null> {
   if (!isTauri()) {
@@ -469,7 +485,7 @@ export async function startSession(
   });
   publishContext();
   try {
-    if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
+    if (options.origin !== "services" && workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
     // Workbench not ready (tests).
   }
@@ -513,6 +529,8 @@ export async function startSession(
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
             status: cur.status === "starting" ? "running" : cur.status,
+            // Explicit origin wins; a preparation or provisionally adopted session keeps its own.
+            origin: options.origin ?? cur.origin,
           },
         },
         active: id,
@@ -588,13 +606,13 @@ export async function rerunSession(id: DebugSessionId) {
   const root = rootOf(s);
   if (root.runConfig) {
     if (isLive(root)) await stopSession(root.id);
-    await executeAction("run.debugConfig", root.runConfig);
+    await executeAction("run.debugConfig", { config: root.runConfig, origin: root.origin });
     return;
   }
   const launch = root.launch;
   if (!launch) return;
   if (isLive(root)) await stopSession(root.id);
-  await startSession(launch);
+  await startSession(launch, { origin: root.origin });
 }
 
 async function loadCapabilities(id: DebugSessionId) {
@@ -866,7 +884,9 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       void loadFrames(id, event.threadId, true);
       const dbg = workflowSettings().debugger;
       try {
-        if (dbg.showOnBreakpoint) toolWindowService().show("debug");
+        // Services-owned sessions pause in the Services window, not the Debug window.
+        if (dbg.showOnBreakpoint && rootOf(useDebug.getState().sessions[id]!).origin !== "services")
+          toolWindowService().show("debug");
       } catch {
         // ignore
       }

@@ -130,7 +130,9 @@ export function ServicesTreeView() {
     });
   };
   const actions = [
-    ...selectionActions(selectedServices(selectedKeys, index), providers),
+    // The detail pane owns lifecycle actions (a run configuration's Run / Debug / Stop);
+    // the tree toolbar keeps batch and reorder actions only.
+    ...selectionActions(selectedServices(selectedKeys, index), providers).filter((a) => a.toolbar !== false),
     ...(selected && selectedKeys.size === 1 ? moveActions(selected.item) : []),
   ];
 
@@ -142,106 +144,125 @@ export function ServicesTreeView() {
       {providers.map((p) => (
         <ProviderRoots key={p.id} provider={p} />
       ))}
-      <div className={styles.toolbar} role="toolbar" aria-label={tx("Services actions")}>
-        <IconButton
-          ref={addRef}
-          data-services-add
-          icon="plus"
-          size="small"
-          iconSize={16}
-          action="services.addService"
-          onClick={() => showAddServiceMenu(addRef.current)}
-        />
-        <span className={styles.sep} />
-        <IconButton
-          icon="expand-all"
-          size="small"
-          iconSize={16}
-          title="Expand All"
-          disabled={!roots.length}
-          onClick={() => useServicesTree.setState({ expanded: new Set(expandableKeys(roots)) })}
-        />
-        <IconButton
-          icon="collapse-all"
-          size="small"
-          iconSize={16}
-          title="Collapse All"
-          disabled={!roots.length}
-          onClick={() => useServicesTree.setState({ expanded: new Set() })}
-        />
-        {actions.length > 0 && <span className={styles.sep} />}
-        {actions.map((a) => (
-          <IconButton
-            key={a.id}
-            icon={a.icon}
-            size="small"
-            iconSize={16}
-            title={a.title}
-            disabled={a.disabled}
-            onClick={a.run}
-          />
-        ))}
-      </div>
       {providers.map((p) => p.banner && <p.banner key={p.id} />)}
       {!roots.length ? (
-        <div className={styles.empty}>
-          <T>No services configured.</T>
-          <button type="button" className={styles.link} onClick={(e) => showAddServiceMenu(e.currentTarget)}>
-            <Icon name="plus" size={14} />
-            <T>Add service</T>
-            {add && <span className={styles.shortcut}>{add}</span>}
-          </button>
-        </div>
+        <>
+          <div className={styles.toolbar} role="toolbar" aria-label={tx("Services actions")}>
+            <IconButton
+              ref={addRef}
+              data-services-add
+              icon="plus"
+              size="small"
+              iconSize={16}
+              action="services.addService"
+              onClick={() => showAddServiceMenu(addRef.current)}
+            />
+          </div>
+          <div className={styles.empty}>
+            <T>No services configured.</T>
+            <button type="button" className={styles.link} onClick={(e) => showAddServiceMenu(e.currentTarget)}>
+              <Icon name="plus" size={14} />
+              <T>Add service</T>
+              {add && <span className={styles.shortcut}>{add}</span>}
+            </button>
+          </div>
+        </>
       ) : (
         <SplitGroup orientation="horizontal" className={styles.split}>
-          <SplitPanel defaultSize="40%" minSize="160px">
-            <div
-              className={styles.tree}
-              onFocus={(e) =>
-                setContext(SERVICES_VIEW_FOCUS, (e.target as HTMLElement).getAttribute("role") === "tree")
-              }
-              onBlur={() => setContext(SERVICES_VIEW_FOCUS, false)}
-            >
-              <Tree<ServiceTreeItem>
-                key={location}
-                reorder={reorder}
-                roots={roots}
-                getKey={(n) => n.key}
-                getLabel={(n) => n.label}
-                getChildren={(n) => n.children}
-                isExpandable={(n) => !!n.children?.length}
-                expanded={expanded}
-                onExpandedChange={(next) => useServicesTree.setState({ expanded: next })}
-                selected={selectedKeys}
-                onSelectionChange={(keys, lead) =>
-                  useServicesTree.setState({ selectedKeys: keys, selectedKey: keys.size ? (lead?.key ?? null) : null })
-                }
-                renderNode={(n, state) => <Row item={n} state={state} />}
-                onActivate={(n) => {
-                  const p = index.get(n.key);
-                  providers.find((x) => x.id === p?.provider)?.activate?.(n);
-                }}
-                onContextMenu={(n, keys, e) => {
-                  e.preventDefault();
-                  if (!n) {
-                    showContextMenu({ x: e.clientX, y: e.clientY }, addServiceMenu(providers));
-                    return;
-                  }
-                  useServicesTree.setState({ selectedKeys: keys, selectedKey: n.key });
-                  const items = selectionMenu(selectedServices(keys, index), providers);
-                  const moves = keys.size === 1 ? moveActions(n) : [];
-                  if (moves.length)
-                    items.push(
-                      { kind: "separator" },
-                      ...moves.map((a) => ({ label: a.title, icon: a.icon, disabled: a.disabled, run: a.run })),
-                    );
-
-                  if (items.length) showContextMenu({ x: e.clientX, y: e.clientY }, items);
-                }}
-                speedSearch
-                aria-label="Services"
+          <SplitPanel defaultSize="30%" minSize="160px">
+            {/* The toolbar lives in the tree pane, so the detail pane starts at the very top. */}
+            <div className={styles.treePane}>
+              <div className={styles.toolbar} role="toolbar" aria-label={tx("Services actions")}>
+                <IconButton
+                  ref={addRef}
+                  data-services-add
+                  icon="plus"
+                  size="small"
+                  iconSize={16}
+                  action="services.addService"
+                  onClick={() => showAddServiceMenu(addRef.current)}
+                />
+                <span className={styles.sep} />
+                <IconButton
+                  icon="expand-all"
+                  size="small"
+                  iconSize={16}
+                  title="Expand All"
+                  disabled={!roots.length}
+                  onClick={() => useServicesTree.setState({ expanded: new Set(expandableKeys(roots)) })}
+                />
+                <IconButton
+                  icon="collapse-all"
+                  size="small"
+                  iconSize={16}
+                  title="Collapse All"
+                  disabled={!roots.length}
+                  onClick={() => useServicesTree.setState({ expanded: new Set() })}
+                />
+                {actions.length > 0 && <span className={styles.sep} />}
+                {actions.map((a) => (
+                  <IconButton
+                    key={a.id}
+                    icon={a.icon}
+                    size="small"
+                    iconSize={16}
+                    title={a.title}
+                    disabled={a.disabled}
+                    onClick={a.run}
+                  />
+                ))}
+              </div>
+              <div
                 className={styles.tree}
-              />
+                onFocus={(e) =>
+                  setContext(SERVICES_VIEW_FOCUS, (e.target as HTMLElement).getAttribute("role") === "tree")
+                }
+                onBlur={() => setContext(SERVICES_VIEW_FOCUS, false)}
+              >
+                <Tree<ServiceTreeItem>
+                  key={location}
+                  reorder={reorder}
+                  roots={roots}
+                  getKey={(n) => n.key}
+                  getLabel={(n) => n.label}
+                  getChildren={(n) => n.children}
+                  isExpandable={(n) => !!n.children?.length}
+                  expanded={expanded}
+                  onExpandedChange={(next) => useServicesTree.setState({ expanded: next })}
+                  selected={selectedKeys}
+                  onSelectionChange={(keys, lead) =>
+                    useServicesTree.setState({
+                      selectedKeys: keys,
+                      selectedKey: keys.size ? (lead?.key ?? null) : null,
+                    })
+                  }
+                  renderNode={(n, state) => <Row item={n} state={state} />}
+                  onActivate={(n) => {
+                    const p = index.get(n.key);
+                    providers.find((x) => x.id === p?.provider)?.activate?.(n);
+                  }}
+                  onContextMenu={(n, keys, e) => {
+                    e.preventDefault();
+                    if (!n) {
+                      showContextMenu({ x: e.clientX, y: e.clientY }, addServiceMenu(providers));
+                      return;
+                    }
+                    useServicesTree.setState({ selectedKeys: keys, selectedKey: n.key });
+                    const items = selectionMenu(selectedServices(keys, index), providers);
+                    const moves = keys.size === 1 ? moveActions(n) : [];
+                    if (moves.length)
+                      items.push(
+                        { kind: "separator" },
+                        ...moves.map((a) => ({ label: a.title, icon: a.icon, disabled: a.disabled, run: a.run })),
+                      );
+
+                    if (items.length) showContextMenu({ x: e.clientX, y: e.clientY }, items);
+                  }}
+                  speedSearch
+                  aria-label="Services"
+                  className={styles.tree}
+                />
+              </div>
             </div>
           </SplitPanel>
           <SplitHandle />

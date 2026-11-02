@@ -13,7 +13,7 @@ import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { projectLocation, useRemote } from "@/platform/remote";
 import { tx, useT, useTxTemplate } from "@/platform/i18n";
-import { Button, EmptyState, T } from "@/ui";
+import { EmptyState } from "@/ui";
 import type { MenuItem } from "@/ui";
 import {
   toolWindowService,
@@ -25,9 +25,11 @@ import {
   type ServiceProviderContribution,
   type ServiceTreeItem,
 } from "@/workbench/contributions";
-import { CATEGORY_ORDER, categoryOf, commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
+import { useServicesTree } from "@/features/services/tree";
+import { CATEGORY_ORDER, categoryOf, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
 import { openUrl } from "./navigate";
-import { SessionPanel } from "./RunView";
+import { ConsoleStrip, ServiceSessionPanel } from "./ServiceSessionPanel";
+import styles from "./RunServices.module.css";
 import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
 import { pickServices } from "./serviceImport";
@@ -50,7 +52,21 @@ import {
   useServiceOrder,
   type ServiceOrder,
 } from "./serviceOrder";
-import styles from "./RunServices.module.css";
+
+/**
+ * "Show" of a Services session's exit notification (store.ts): opens the
+ * Services tool window on the configuration's node. Lives here so store.ts
+ * keeps its single (pre-existing) import of this module.
+ */
+export function showServicesSession(configId: string) {
+  try {
+    toolWindowService().show("services", true);
+    const key = CONFIG_PREFIX + configId;
+    useServicesTree.setState({ selectedKeys: new Set([key]), selectedKey: key });
+  } catch {
+    /* no workbench (tests) */
+  }
+}
 
 export const RUN_PROVIDER = "runConfigurations";
 const TYPE_PREFIX = "run:type:";
@@ -391,14 +407,14 @@ function run(r: Resolved) {
   if (debug) debug.rerun?.();
   else if (r.session?.run) {
     const s = r.session.run;
-    void startRun(s.config, s.id, s.baseConfig, { show: false });
-  } else if (r.config) void startRun(r.config, undefined, undefined, { show: false });
+    void startRun(s.config, s.id, s.baseConfig, { show: false, origin: "services" });
+  } else if (r.config) void startRun(r.config, undefined, undefined, { show: false, origin: "services" });
 }
 
 function debug(r: Resolved) {
   const session = serviceDebugger(r.session);
   if (session) session.rerun?.();
-  else if (r.config) void executeAction("run.debugConfig", r.config);
+  else if (r.config) void executeAction("run.debugConfig", { config: r.config, origin: "services" });
 }
 
 /** Run All / Restart All: starts the configurations of `kind` that can run, in display order. */
@@ -419,7 +435,7 @@ async function startAll(kind: string, restart: boolean): Promise<void> {
       const s = latest.get(c.id);
       if (s && liveServiceSession(s)) continue;
     }
-    await startRun(c, undefined, undefined, { show: false });
+    await startRun(c, undefined, undefined, { show: false, origin: "services" });
   }
 }
 
@@ -438,12 +454,21 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
       const s = latest.get(c.id);
       return !(s && liveServiceSession(s)) && !isDebugOnly(c);
     });
+    // Batch actions live in the context menu only; the tree toolbar keeps + / expand / reorder.
     return [
-      { id: "run-all", title: "Run All", icon: "run", disabled: !runnable, run: () => startAll(kind, false) },
+      {
+        id: "run-all",
+        title: "Run All",
+        icon: "run",
+        toolbar: false,
+        disabled: !runnable,
+        run: () => startAll(kind, false),
+      },
       {
         id: "restart-all",
         title: "Restart All",
         icon: "rerun",
+        toolbar: false,
         disabled: !entries.length,
         run: () => startAll(kind, true),
       },
@@ -451,16 +476,19 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
         id: "stop-all",
         title: "Stop All",
         icon: "stop",
+        toolbar: false,
         disabled: !running.length,
         run: () => void stopServiceSessions(running),
       },
     ];
   }
   const running = r.sessions.filter(liveServiceSession);
+  // The detail pane owns the lifecycle buttons; the tree toolbar keeps only batch and reorder actions.
   const stop = {
     id: "stop",
     title: "Stop",
     icon: "stop",
+    toolbar: false,
     disabled: !running.length,
     run: () => void stopServiceSessions(running),
   };
@@ -475,6 +503,7 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
             id: "open-browser",
             title: "Open in Browser",
             icon: "web",
+            toolbar: false,
             run: () => void openUrl(`http://localhost:${r.session!.run!.httpPort}`),
           },
         ]
@@ -484,10 +513,18 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
       id: "run",
       title: live ? "Rerun" : "Run",
       icon: live ? "rerun" : "run",
+      toolbar: false,
       disabled: debugging ? !debugging.rerun : isDebugOnly(r.config),
       run: () => run(r),
     },
-    { id: "debug", title: "Debug", icon: "debug", disabled: !!debugging && !debugging.rerun, run: () => debug(r) },
+    {
+      id: "debug",
+      title: "Debug",
+      icon: "debug",
+      toolbar: false,
+      disabled: !!debugging && !debugging.rerun,
+      run: () => debug(r),
+    },
     ...browser,
     stop,
     ...(isUpdatable(r.config)
@@ -496,6 +533,7 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
             id: "update",
             title: "Update Application",
             icon: "refresh",
+            toolbar: false,
             disabled: !live,
             run: () => showApplicationUpdate(r.session?.run?.id ?? (debugging ? `debug:${debugging.id}` : undefined)),
           },
@@ -533,20 +571,21 @@ function menu(item: ServiceTreeItem): MenuItem[] {
     const config = r.config;
     const session = r.session?.run;
     const debuggerSession = serviceDebugger(r.session) ?? r.session?.debug.at(-1);
-    items.push(
-      { kind: "separator" },
-      {
+    items.push({ kind: "separator" });
+    // Services-owned sessions stay in Services; only other sessions offer the Run / Debug windows.
+    if (session && session.origin !== "services")
+      items.push({
         label: "Show in Run Tool Window",
         icon: "toolwindow-run",
-        disabled: !session,
-        run: () => session && showOutput(session),
-      },
-      {
+        run: () => showOutput(session),
+      });
+    if (debuggerSession && debuggerSession.origin !== "services")
+      items.push({
         label: "Show in Debug Tool Window",
         icon: "toolwindow-debug",
-        disabled: !debuggerSession,
-        run: () => debuggerSession?.show(),
-      },
+        run: () => debuggerSession.show(),
+      });
+    items.push(
       { label: "Edit Configuration…", icon: "edit", run: () => void executeAction("run.editConfigs", config.id) },
       { label: "Remove from Services", icon: "close", run: () => hideConfig(config.kind, config.id) },
     );
@@ -557,84 +596,27 @@ function menu(item: ServiceTreeItem): MenuItem[] {
 function RunDetail({ item }: { item: ServiceTreeItem }) {
   // Re-render on session changes.
   useRun((s) => s.sessions);
-  const debugViews = useDebugRunSessions();
-  const Console = debugViews.Console;
   const t = useT();
   const txTemplate = useTxTemplate();
   const r = resolve(item);
   if (!r.config)
     return (
-      <EmptyState title={kindLabel(r.kind ?? "")}>
-        <div>
-          {item.children?.length
-            ? t("run.services.configurationCount", { count: item.children.length })
-            : txTemplate("No configurations of this type")}
+      <div className={styles.panel}>
+        <div className={styles.panelMain}>
+          <EmptyState title={kindLabel(r.kind ?? "")}>
+            <div>
+              {item.children?.length
+                ? t("run.services.configurationCount", { count: item.children.length })
+                : txTemplate("No configurations of this type")}
+            </div>
+          </EmptyState>
         </div>
-      </EmptyState>
-    );
-  // The configuration ran: its console, as in the Run tool window.
-  if (r.session?.run) {
-    const execution = r.session;
-    const d = serviceDebugger(execution);
-    return (
-      <SessionPanel
-        key={execution.run!.id}
-        session={execution.run!}
-        onRerun={d ? d.rerun : undefined}
-        onDebug={d ? d.rerun : undefined}
-        onStop={d ? () => void stopServiceSessions([execution]) : undefined}
-      />
-    );
-  }
-  const d = r.session?.debug[0];
-  if (d && Console)
-    return (
-      <div className={styles.debugConsole}>
-        <Console key={d.id} sessionId={d.id} />
+        {/* The strip is a permanent fixture of the pane; without a console its buttons idle. */}
+        <ConsoleStrip controls={null} />
       </div>
     );
-  return (
-    <div className={styles.detail}>
-      <dl className={styles.facts}>
-        <dt>
-          <T>Configuration</T>
-        </dt>
-        <dd>{r.config.name}</dd>
-        <dt>
-          <T>Type</T>
-        </dt>
-        <dd>
-          <T>{kindLabel(r.config.kind)}</T>
-        </dd>
-        {r.config.module && (
-          <>
-            <dt>
-              <T>Module</T>
-            </dt>
-            <dd>{r.config.module}</dd>
-          </>
-        )}
-        <dt>
-          <T>Command</T>
-        </dt>
-        <dd className={styles.mono}>{commandLine(r.config)}</dd>
-        <dt>
-          <T>Status</T>
-        </dt>
-        <dd>
-          <T>Not started</T>
-        </dd>
-      </dl>
-      <div className={styles.actions}>
-        <Button icon="run" disabled={isDebugOnly(r.config)} onClick={() => run(r)}>
-          Run
-        </Button>
-        <Button icon="debug" onClick={() => debug(r)}>
-          Debug
-        </Button>
-      </div>
-    </div>
-  );
+  // The configuration's detail: its toolbar and console, as in IDEA's Services window.
+  return <ServiceSessionPanel key={r.config.id} config={r.config} execution={r.session} />;
 }
 
 /** The leaf label of a kind: the registered type's own label, else its kind label. */

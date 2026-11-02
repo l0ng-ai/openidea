@@ -222,7 +222,8 @@
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  /* Main column + the right-edge control strip, docked like the run console's. */
+  flex-direction: row;
   min-height: 0;
 }
 
@@ -278,4 +279,22 @@
   margin: 0 14px 2px;
   border-bottom: 0;
   border-top: 1px solid var(--border);
+}
+
+/* The console's main column (output + REPL) beside IDEA's right-edge control strip. */
+.consoleMain {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.consoleStrip {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 3px;
+  border-left: 1px solid var(--border);
 }

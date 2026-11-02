@@ -104,7 +104,7 @@ async function buildFirst(build: RunConfig): Promise<boolean> {
 }
 
 /** Runs or debugs a production (adopting it as the selected temporary configuration). */
-export async function launchProduced(p: Produced, debug: boolean): Promise<void> {
+export async function launchProduced(p: Produced, debug: boolean, services?: boolean): Promise<void> {
   if (p.missing || !p.config) {
     reportMissing(p);
     return;
@@ -126,7 +126,7 @@ export async function launchProduced(p: Produced, debug: boolean): Promise<void>
       return;
     }
     if (!(await buildFirst(p.debug.build))) return;
-    await executeAction("debug.startConfig", { config: p.debug.config, origin: config });
+    await executeAction("debug.startConfig", { config: p.debug.config, origin: config, services });
     return;
   }
   await executeAction("run.debugConfig", config);

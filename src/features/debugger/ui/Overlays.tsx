@@ -365,13 +365,13 @@ function BreakpointsDialog() {
     const section = (label: string, list: DialogRow[]) => {
       if (list.length) out.push({ type: "section", key: `section:${label}`, label }, ...list);
     };
-    section("Line Breakpoints", lines);
+    section(tx("Line Breakpoints"), lines);
     section(
-      "Method Breakpoints",
+      tx("Method Breakpoints"),
       methods.map((bp) => ({ type: "special" as const, key: bp.id, bp })),
     );
     section(
-      "Field Watchpoints",
+      tx("Field Watchpoints"),
       fields.map((bp) => ({ type: "special" as const, key: bp.id, bp })),
     );
     return out;
@@ -572,7 +572,9 @@ function BreakpointDetail({ row, onGo }: { row: BpRow; onGo: () => void }) {
           <T>Remove</T>
         </Button>
       </div>
-      {st && <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? "Not verified")}</div>}
+      {st && (
+        <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? tx("Not verified"))}</div>
+      )}
       <BreakpointFields path={path} bp={bp} />
       <Checkbox
         checked={!!bp.temporary}
@@ -603,7 +605,9 @@ function SpecialDetail({ bp, onGo }: { bp: SpecialBreakpoint; onGo: () => void }
           <T>Remove</T>
         </Button>
       </div>
-      {st && <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? "Not verified")}</div>}
+      {st && (
+        <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? tx("Not verified"))}</div>
+      )}
       <Checkbox checked={bp.enabled} onChange={(enabled) => updateSpecial(bp.id, { enabled })} label="Enabled" />
       {bp.kind === "method" ? (
         <label className={styles.field}>

@@ -358,8 +358,8 @@ describe("group batch actions", () => {
     useRun.setState({ configs: [a, b, c], sessions: [session("s1", a, "running", 1)] });
     await action("run-all").run();
     expect(startRun.mock.calls).toEqual([
-      [b, undefined, undefined, { show: false }],
-      [c, undefined, undefined, { show: false }],
+      [b, undefined, undefined, { show: false, origin: "services" }],
+      [c, undefined, undefined, { show: false, origin: "services" }],
     ]);
   });
 
@@ -371,8 +371,8 @@ describe("group batch actions", () => {
     expect(stopServiceSessions).toHaveBeenCalledOnce();
     expect(stopServiceSessions.mock.calls[0]![0].map((s: { config: RunConfig }) => s.config.id)).toEqual(["a"]);
     expect(startRun.mock.calls).toEqual([
-      [a, undefined, undefined, { show: false }],
-      [b, undefined, undefined, { show: false }],
+      [a, undefined, undefined, { show: false, origin: "services" }],
+      [b, undefined, undefined, { show: false, origin: "services" }],
     ]);
   });
 });

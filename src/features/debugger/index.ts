@@ -39,16 +39,13 @@ import { DebuggerOverlays } from "./ui/Overlays";
 import { REMOTE_TYPES } from "./remote";
 
 export function activate(): () => void {
-  useDebugRunSessions.setState({
-    Console: lazyComponent(() => import("./ui/DebugConsole").then((m) => m.DebugServiceConsole)),
-  });
   loadWatches();
   publishContext();
   loadBreakpoints(useProject.getState().project?.root ?? null);
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
   loadSpecialBreakpoints(useProject.getState().project?.root ?? null);
   const disposers = [
-    () => useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null }),
+    () => useDebugRunSessions.setState({ sessions: [], serviceSessions: [] }),
     registerDebugActions(),
     // Remote JVM Debug, Go Remote, …: Run/Debug Configurations › Add New Configuration.
     ...REMOTE_TYPES.map(registerRunConfigType),
