@@ -221,6 +221,12 @@ pub fn sync_maven(
         args.extend(options.maven_options.iter().cloned());
         if options.offline {
             args.push("-o".into());
+        } else {
+            // Reading the model is not a build: IDEA resolves it from what is already in
+            // the local repository and does not re-check remote SNAPSHOTs (`-nsu`). Forcing
+            // the check asks every repository in the settings for each SNAPSHOT coordinate,
+            // and one that accepts the connection but never answers holds the whole pass.
+            args.push("-nsu".into());
         }
         if !options.profiles.is_empty() {
             args.push(format!("-P{}", options.profiles.join(",")));
@@ -297,6 +303,33 @@ pub fn sync_gradle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn maven_sync_reads_the_model_without_remote_snapshot_updates() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("pom.xml"), "<project><groupId>g</groupId><artifactId>a</artifactId></project>")
+            .unwrap();
+        let launcher = root.join("mvn");
+        std::fs::write(&launcher, "#!/bin/sh\nprintf '%s\\n' \"$@\" > actual-args\n").unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let options =
+            SyncOptions { maven_command: Some(launcher.to_string_lossy().into_owned()), ..SyncOptions::default() };
+        sync_maven(root, &root.join("cache"), &options, &CancellationToken::new(), &|_| {}).unwrap();
+        let args = std::fs::read_to_string(root.join("actual-args")).unwrap();
+        assert!(args.lines().any(|a| a == "-nsu"), "resolving the model skips remote SNAPSHOTs: {args}");
+        assert!(!args.lines().any(|a| a == "-o"), "not offline by default: {args}");
+        // Offline replaces it: Maven's own switch already skips the remote.
+        let offline =
+            SyncOptions { offline: true, maven_command: options.maven_command.clone(), ..SyncOptions::default() };
+        std::fs::remove_file(root.join("actual-args")).unwrap();
+        sync_maven(root, &root.join("cache"), &offline, &CancellationToken::new(), &|_| {}).unwrap();
+        let args = std::fs::read_to_string(root.join("actual-args")).unwrap();
+        assert!(args.lines().any(|a| a == "-o"), "{args}");
+        assert!(!args.lines().any(|a| a == "-nsu"), "{args}");
+    }
 
     #[cfg(unix)]
     #[test]
