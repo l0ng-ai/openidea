@@ -118,6 +118,7 @@ const EXT_LANG: Record<string, string> = {
   gd: "gdscript",
   go: "go",
   json: "json",
+  excalidraw: "json",
   md: "markdown",
   css: "css",
   html: "html",
@@ -212,7 +213,7 @@ const MEM_LANGUAGES: LanguageInfo[] = [
   {
     id: "json",
     name: "JSON",
-    extensions: ["json"],
+    extensions: ["json", "excalidraw"],
     uiMode: "JSON",
     lineComment: null,
     blockComment: null,

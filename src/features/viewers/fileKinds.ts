@@ -7,6 +7,7 @@ export const BINARY_KIND = "binary";
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif"]);
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd", "mkdn", "mdwn"]);
+const EXCALIDRAW_RE = /\.(excalidraw|excalidraw\.json)$/i;
 
 function extension(path: string): string {
   const name = path.slice(path.lastIndexOf("/") + 1);
@@ -17,6 +18,7 @@ function extension(path: string): string {
 export const isImagePath = (path: string) => IMAGE_EXTENSIONS.has(extension(path));
 export const isSvgPath = (path: string) => extension(path) === "svg";
 export const isMarkdownPath = (path: string) => MARKDOWN_EXTENSIONS.has(extension(path));
+export const isExcalidrawPath = (path: string) => EXCALIDRAW_RE.test(path);
 
 export const imageInput = (path: string): EditorInput => ({ kind: IMAGE_KIND, key: `image:${path}`, path });
 

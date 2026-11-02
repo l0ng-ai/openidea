@@ -62,4 +62,37 @@ describe("markdown preview rendering", () => {
     expect(previewOffsetForLine(blocks, 10.5, 400)).toBe(250);
     expect(previewOffsetForLine([], 3, 400)).toBe(0);
   });
+
+  it("renders fenced excalidraw code blocks as inline SVG diagrams", () => {
+    const md = [
+      "# Architecture",
+      "",
+      "```excalidraw",
+      JSON.stringify({
+        type: "excalidraw",
+        version: 2,
+        elements: [
+          {
+            id: "node-1",
+            type: "rectangle",
+            x: 20,
+            y: 30,
+            width: 140,
+            height: 60,
+            strokeColor: "#1e1e1e",
+            backgroundColor: "#a5d8ff",
+            fillStyle: "solid",
+            label: { text: "Gateway" },
+          },
+        ],
+      }),
+      "```",
+    ].join("\n");
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(md);
+    const block = root.querySelector<HTMLElement>("[data-excalidraw-block]");
+    expect(block).not.toBeNull();
+    expect(block?.querySelector("svg")).not.toBeNull();
+    expect(block?.textContent).toContain("Gateway");
+  });
 });
