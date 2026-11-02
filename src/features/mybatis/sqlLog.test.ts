@@ -7,9 +7,7 @@ describe("sqlFromMybatisLog", () => {
       "==>  Preparing: SELECT id, name FROM user WHERE id = ? AND status = ? AND name LIKE ?",
       "==> Parameters: 1(Long), 2(Integer), %a%(String)",
     ].join("\n");
-    expect(sqlFromMybatisLog(log)).toBe(
-      "SELECT id, name FROM user WHERE id = 1 AND status = 2 AND name LIKE '%a%';",
-    );
+    expect(sqlFromMybatisLog(log)).toBe("SELECT id, name FROM user WHERE id = 1 AND status = 2 AND name LIKE '%a%';");
   });
 
   it("turns null into NULL", () => {

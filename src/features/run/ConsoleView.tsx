@@ -406,17 +406,15 @@ export function ConsoleView({
                   });
                   return;
                 }
-                navigator.clipboard
-                  ?.writeText(sql)
-                  .catch(() =>
-                    notifications().notify({
-                      group: "run",
-                      level: "error",
-                      key: "mybatis-sql-copy",
-                      title: "MyBatis SQL",
-                      body: tx("Could not copy to the clipboard"),
-                    }),
-                  );
+                navigator.clipboard?.writeText(sql).catch(() =>
+                  notifications().notify({
+                    group: "run",
+                    level: "error",
+                    key: "mybatis-sql-copy",
+                    title: "MyBatis SQL",
+                    body: tx("Could not copy to the clipboard"),
+                  }),
+                );
               },
             },
           ]
