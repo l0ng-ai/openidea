@@ -222,10 +222,22 @@ fn merge(base: &mut Value, layer: Value) {
     }
 }
 
-/// Excludes project-relative Maven POM paths from JDTLS import, preserving user exclusions.
-pub fn configure_maven_import(cfg: &mut LanguageServerConfig, root: &Path, excluded_poms: &[PathBuf]) {
+/// Excludes project-relative Maven POM paths from JDTLS import, preserving user exclusions, and
+/// hands m2e the configured Maven user settings file.
+pub fn configure_maven_import(cfg: &mut LanguageServerConfig, root: &Path, excluded_poms: &[PathBuf], s: &Settings) {
     if cfg.name != "jdtls" {
         return;
+    }
+    // m2e resolves dependencies with its own Maven settings, which default to `~/.m2/settings.xml`:
+    // without this the IDE's `Settings › Build Tools › Maven` (user settings, and the local
+    // repository that file names) never reaches the language server, and every dependency of the
+    // project fails to resolve there while `mvn` builds it fine.
+    if let Some(file) = setting_path(root, &s.languages.java.maven.user_settings) {
+        let layer = json!({"java": {"configuration": {"maven": {"userSettings": file.to_string_lossy()}}}});
+        merge_init_options(cfg, json!({"settings": layer.clone()}));
+        if let Some(settings) = &mut cfg.settings {
+            merge(settings, layer);
+        }
     }
     let mut options =
         cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
@@ -860,8 +872,15 @@ mod maven_linkage_tests {
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
         merge_init_options(&mut cfg, json!({"settings":{"java":{"import":{"exclusions":["**/custom"]}}}}));
-        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()]);
+        let mut settings = Settings::default();
+        settings.languages.java.maven.user_settings = "/opt/maven/conf/settings.xml".into();
+        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()], &settings);
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        // m2e would otherwise read `~/.m2/settings.xml`, ignoring the IDE's Maven settings.
+        assert_eq!(
+            options.pointer("/settings/java/configuration/maven/userSettings").and_then(Value::as_str),
+            Some("/opt/maven/conf/settings.xml")
+        );
         let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
         assert!(exclusions.contains(&json!("**/custom")));
         assert!(exclusions.contains(&json!(tmp.path().join("a").to_string_lossy().replace('\\', "/"))));

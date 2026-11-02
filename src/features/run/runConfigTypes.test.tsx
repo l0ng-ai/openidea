@@ -90,6 +90,56 @@ describe("configuration types", () => {
     expect(runConfigTypes().map((t) => t.id)).toEqual(expect.arrayContaining(BUILTIN_TYPES.map((t) => t.id)));
   });
 
+  it("lets a Java application choose the module its classpath comes from", async () => {
+    const type = typeFor("spring-boot")!;
+    const original = withParams(newConfigOfType(type, []), { mainClass: "com.xteamsoft.framework.Start" });
+    const config: RunConfig = { ...original, module: "gateway" };
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    // A main class from a dependency has no source file to derive the module from.
+    expect(screen.getByRole("button", { name: "Module" }).textContent).toContain("gateway");
+    fireEvent.click(screen.getByRole("button", { name: "Module" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Project root" }));
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ module: "" }));
+  });
+
+  it("tells a module that is still to be derived from an explicit project root", () => {
+    const type = typeFor("spring-boot")!;
+    const original = withParams(newConfigOfType(type, []), { mainClass: "com.xteamsoft.framework.Start" });
+    const changed = vi.fn();
+    const { rerender } = render(
+      <ConfigForm config={original} all={[original]} type={type} errors={{}} onChange={changed} modifyRequest={0} />,
+    );
+    // Unset: the module is derived from the main class when the configuration is saved.
+    expect(screen.getByRole("button", { name: "Module" }).textContent).toContain("Derive from the main class");
+    rerender(
+      <ConfigForm
+        config={{ ...original, module: "" }}
+        all={[original]}
+        type={type}
+        errors={{}}
+        onChange={changed}
+        modifyRequest={0}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Module" }).textContent).toContain("Project root");
+  });
+
+  it("offers no classpath module outside Java applications", () => {
+    const config = cfg("plain");
+    render(
+      <ConfigForm
+        config={config}
+        all={[config]}
+        type={typeFor("shell")!}
+        errors={{}}
+        onChange={vi.fn()}
+        modifyRequest={0}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Module" })).toBeNull();
+  });
+
   it.each([
     ["maven", "mvn.cmd", ["clean", "test"]],
     ["maven", "MVN.CMD", ["verify"]],

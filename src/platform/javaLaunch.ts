@@ -132,11 +132,14 @@ export function jvmModuleDir(relPath: string, configs: readonly RunConfig[] = []
   return cwds[0] ?? "";
 }
 
-/** Recover the classpath module of configurations saved before it was stored separately. */
-export async function findJavaModule(config: RunConfig): Promise<string | null> {
-  if (config.module != null) return config.module;
+/**
+ * Module a configuration does not record, found through the source of its main
+ * class: `undefined` when that source is not in this project (the class may come
+ * from a dependency), or when several modules declare it.
+ */
+async function javaModuleFromSource(config: RunConfig): Promise<string | undefined> {
   const main = parseJavaArgs(config.args).mainClass;
-  if (!main) return null;
+  if (!main) return undefined;
   const outer = main.split("$")[0]!;
   const simple = outer.slice(outer.lastIndexOf(".") + 1);
   const pkg = outer.slice(0, Math.max(0, outer.lastIndexOf(".")));
@@ -144,6 +147,7 @@ export async function findJavaModule(config: RunConfig): Promise<string | null> 
   const matches = (await Promise.all(names.map((name) => call(commands.findFiles(name, 1000)))))
     .flat()
     .filter((file) => names.includes(file.relPath.split("/").pop()!));
+  if (!matches.length) return undefined;
   const configs = await call(commands.runConfigs());
   const modules = new Set<string>();
   for (const file of matches) {
@@ -151,12 +155,23 @@ export async function findJavaModule(config: RunConfig): Promise<string | null> 
     const sourcePackage = /^\s*package\s+([\w.]+)\s*[;\r\n]/m.exec(text)?.[1] ?? "";
     if (sourcePackage === pkg) modules.add(jvmModuleDir(file.relPath, configs));
   }
-  return modules.size === 1 ? [...modules][0]! : null;
+  return modules.size === 1 ? [...modules][0]! : undefined;
+}
+
+/**
+ * The classpath module of `config` (``""`` is the project root), or `undefined`
+ * when it cannot be determined: a module is never guessed, because one main class
+ * may be reachable from several of them, and the wrong one resolves the wrong
+ * classpath, which fails much later and in an unrelated place.
+ */
+export async function javaModule(config: RunConfig): Promise<string | undefined> {
+  if (config.module != null) return config.module;
+  return javaModuleFromSource(config);
 }
 
 export async function resolveJavaModule(config: RunConfig): Promise<string> {
-  const module = await findJavaModule(config);
-  if (module === null)
+  const module = await javaModule(config);
+  if (module === undefined)
     throw new Error(tx`Cannot determine the module for main class '${parseJavaArgs(config.args).mainClass}'`);
   return module;
 }

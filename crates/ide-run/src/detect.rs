@@ -533,14 +533,13 @@ fn detect_maven_build(root: &Path, dir: &Path, out: &mut Vec<RunConfig>) {
 
 // ---------------------------------------------------------------- spring boot
 
-/// Source files read per build when looking for `@SpringBootApplication` classes.
+/// Source files read per module when looking for `@SpringBootApplication` classes.
 const SPRING_SCAN_FILES: usize = 400;
 
 /// "Spring Boot" configurations for the `@SpringBootApplication` main classes of the
 /// modules of the build in `build` that apply the Spring Boot plugin:
 /// `java -cp ${classpath} <class>` in the module, the classpath resolved at launch.
 fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
-    let mut budget = SPRING_SCAN_FILES;
     let mut modules = vec![build.to_path_buf()];
     let mut level = vec![build.to_path_buf()];
     for _ in 0..NESTED_BUILD_DEPTH {
@@ -548,12 +547,12 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
         modules.extend(level.iter().cloned());
     }
     for module in modules {
-        if budget == 0 {
-            break;
-        }
-        if !applies_spring_boot(&module) {
+        if !applies_spring_boot(build, &module) {
             continue;
         }
+        // Per module: a big module without an application class must not use up the allowance of
+        // the modules after it, which is how a multi-module project ended up with one application.
+        let mut budget = SPRING_SCAN_FILES;
         let module_rel = (module != root).then(|| relative(root, &module).to_string_lossy().replace('\\', "/"));
         for class in spring_boot_classes(&module, &mut budget) {
             let simple = class.rsplit(['.', '$']).next().unwrap_or(&class).to_owned();
@@ -570,13 +569,34 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
     }
 }
 
-/// The module's own build applies the Spring Boot plugin, and it has main sources.
-fn applies_spring_boot(module: &Path) -> bool {
+/// The module's build applies the Spring Boot plugin, and it has main sources.
+fn applies_spring_boot(build: &Path, module: &Path) -> bool {
     if !["java", "kotlin"].iter().any(|l| module.join("src/main").join(l).is_dir()) {
         return false;
     }
     if let Some(pom) = read(&module.join("pom.xml")) {
-        return pom.contains("spring-boot-maven-plugin") && !pom.contains("<packaging>pom</packaging>");
+        if pom.contains("<packaging>pom</packaging>") {
+            return false;
+        }
+        if declares_spring_boot_plugin(&pom) {
+            return true;
+        }
+        // Maven inherits `<build><plugins>` from the parent pom, which is how a multi-module project
+        // usually declares the plugin once: the service modules do not repeat it.
+        let mut dir = module.parent();
+        while let Some(d) = dir {
+            if !d.starts_with(build) {
+                break;
+            }
+            if read(&d.join("pom.xml")).is_some_and(|text| declares_spring_boot_plugin(&text)) {
+                return true;
+            }
+            if d == build {
+                break;
+            }
+            dir = d.parent();
+        }
+        return false;
     }
     GRADLE_BUILDS.iter().filter_map(|n| read(&module.join(n))).any(|text| {
         text.lines().any(|l| {
@@ -586,6 +606,22 @@ fn applies_spring_boot(module: &Path) -> bool {
                 && !l.contains("apply false")
         })
     })
+}
+
+/// The pom declares the Spring Boot plugin where it takes effect: `<build><plugins>`. A declaration
+/// inside `<pluginManagement>` only defaults a version, so it does not make a module an application.
+fn declares_spring_boot_plugin(pom: &str) -> bool {
+    let mut rest = pom;
+    let mut outside = String::new();
+    while let Some(start) = rest.find("<pluginManagement>") {
+        outside.push_str(&rest[..start]);
+        rest = match rest[start..].find("</pluginManagement>") {
+            Some(end) => &rest[start + end + "</pluginManagement>".len()..],
+            None => "",
+        };
+    }
+    outside.push_str(rest);
+    outside.contains("spring-boot-maven-plugin")
 }
 
 /// Binary names of the `@SpringBootApplication` classes with a `main` under

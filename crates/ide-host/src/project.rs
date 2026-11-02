@@ -208,7 +208,7 @@ impl Host {
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
                 let excluded_poms = unlinked_maven_poms(root, &effective);
-                ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms);
+                ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms, &effective);
             }));
         }
         {
@@ -1142,7 +1142,7 @@ mod maven_linkage_tests {
             serde_json::json!({"name": "jdtls", "command": "jdtls"}),
         )
         .unwrap();
-        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms);
+        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms, &settings);
         let options = serde_json::to_value(server.initialization_options).unwrap();
         let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
         assert!(exclusions.contains(&serde_json::json!(tmp.path().join("a").to_string_lossy().replace('\\', "/"))));

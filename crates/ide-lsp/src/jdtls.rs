@@ -27,8 +27,10 @@ const READY_TIMEOUT: Duration = Duration::from_secs(240);
 /// an editor request; the user can always cancel the launch waiting on it.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
-/// How long to retry while the project is still being imported.
-const IMPORT_WAIT: Duration = Duration::from_secs(90);
+/// How long to retry while the project is still being imported. The first import of a large
+/// multi-module Maven project takes minutes (21 modules: ~140 s here), and m2e only registers the
+/// aggregator project at the very end, so this must cover it rather than a few seconds.
+const IMPORT_WAIT: Duration = Duration::from_secs(240);
 /// Compile errors listed with a launch; the rest are only counted.
 const MAX_LAUNCH_ERRORS: usize = 10;
 /// Build markers can be published just after `java/buildWorkspace` answers.
@@ -267,6 +269,9 @@ fn not_imported(e: &IdeError) -> bool {
         || m.contains("not a java project")
         || m.contains("no project")
         || m.contains("cannot find")
+        // `java.project.getClasspaths` fails this way while m2e is still importing: the temporary
+        // launch configuration names a Maven project the Eclipse workspace has not registered yet.
+        || m.contains("references non-existing project")
 }
 
 /// The java-debug bundle is not loaded into jdtls.
@@ -857,6 +862,10 @@ mod tests {
     fn error_classification() {
         let e = IdeError::invalid("Given URI does not belong to any Java project.");
         assert!(not_imported(&e));
+        // m2e names a project the workspace does not have yet, for the first seconds of an import.
+        assert!(not_imported(&IdeError::invalid(
+            "Launch configuration 1793342372874 references non-existing project knowledge."
+        )));
         assert!(missing_bundle(&IdeError::invalid("No delegateCommandHandler for vscode.java.startDebugSession")));
         assert!(!missing_bundle(&e));
     }

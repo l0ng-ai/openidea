@@ -186,6 +186,23 @@ describe("run configurations in Services", () => {
     expect(items[0]!.children!.map((c) => [c.label, c.detail, c.dim])).toEqual([["spring:app", undefined, true]]);
   });
 
+  it("shows the same-named applications of several modules apart", () => {
+    const app = (id: string, cwd: string | null): RunConfig => ({
+      ...config(id, "spring-boot"),
+      name: "Application",
+      cwd,
+    });
+    const items = runServiceItems(
+      [app("application:svc-a:com.acme.Application", "svc-a"), app("application:svc-b:com.acme.Application", "svc-b")],
+      [],
+      DEFAULT_TYPES,
+    );
+    expect(items[0]!.children!.map((c) => c.label)).toEqual(["Application (svc-a)", "Application (svc-b)"]);
+    // A name used once keeps the detected label.
+    const one = runServiceItems([app("application:api:com.acme.Application", "api")], [], DEFAULT_TYPES);
+    expect(one[0]!.children!.map((c) => c.label)).toEqual(["Application"]);
+  });
+
   it("shows the HTTP port of a running application instead of its state", () => {
     const app = config("spring:app", "spring-boot");
     const running = session("s1", app, "running", 1, { httpPort: 8080 });

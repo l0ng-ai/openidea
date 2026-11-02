@@ -321,6 +321,72 @@ fn a_root_build_disables_the_nested_scan() {
 }
 
 #[test]
+fn maven_inherits_the_spring_boot_plugin_from_the_parent_build() {
+    // Spring Cloud layout: the plugin is declared once in the parent `<build><plugins>`, so the
+    // service modules never repeat it and each still is its own application.
+    let parent = "<project><packaging>pom</packaging><modules><module>svc-a</module><module>svc-b</module></modules>\
+                  <build><plugins><plugin><groupId>org.springframework.boot</groupId>\
+                  <artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>";
+    let main = |pkg: &str, class: &str| {
+        format!(
+            "package {pkg};\n@SpringBootApplication\npublic class {class} {{\n  public static void main(String[] args) {{}}\n}}\n"
+        )
+    };
+    let dir = project(&[
+        ("pom.xml", parent),
+        ("svc-a/pom.xml", "<project><artifactId>svc-a</artifactId></project>"),
+        ("svc-b/pom.xml", "<project><artifactId>svc-b</artifactId></project>"),
+        ("svc-a/src/main/java/a/AApp.java", &main("a", "AApp")),
+        ("svc-b/src/main/java/b/BApp.java", &main("b", "BApp")),
+    ]);
+    let c = detect(dir.path());
+    assert!(ids(&c).contains(&"application:svc-a:a.AApp"), "{:?}", ids(&c));
+    assert!(ids(&c).contains(&"application:svc-b:b.BApp"), "{:?}", ids(&c));
+}
+
+#[test]
+fn plugin_management_alone_does_not_make_a_module_an_application() {
+    // PARENT_POM only defaults the plugin in `<pluginManagement>`: a module that does not declare
+    // it is a library, not an application.
+    let dir = project(&[
+        ("pom.xml", PARENT_POM),
+        ("app/pom.xml", "<project><artifactId>app</artifactId></project>"),
+        (
+            "app/src/main/java/demo/App.java",
+            "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n",
+        ),
+    ]);
+    let c = detect(dir.path());
+    assert!(!c.iter().any(|c| c.kind == "spring-boot"), "{:?}", ids(&c));
+}
+
+#[test]
+fn one_large_module_does_not_use_up_the_scan_allowance_of_the_others() {
+    // `aaa` alone has more sources than the per-module allowance; `zzz` after it must still be found.
+    let dir = tempfile::tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let p = dir.path().join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
+    };
+    write("pom.xml", BOOT_POM);
+    write("aaa/pom.xml", BOOT_POM);
+    for i in 0..450 {
+        write(
+            &format!("aaa/src/main/java/gen{}/Gen{i}.java", i % 20),
+            &format!("package gen{};\nclass Gen{i} {{}}\n", i % 20),
+        );
+    }
+    write("zzz/pom.xml", BOOT_POM);
+    write(
+        "zzz/src/main/java/z/ZApp.java",
+        "package z;\n@SpringBootApplication\npublic class ZApp {\n  public static void main(String[] args) {}\n}\n",
+    );
+    let c = detect(dir.path());
+    assert!(ids(&c).contains(&"application:zzz:z.ZApp"), "{:?}", ids(&c));
+}
+
+#[test]
 fn spring_boot_applications_need_the_plugin_and_a_main() {
     let main =
         "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n";
