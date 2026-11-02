@@ -110,9 +110,9 @@ describe("expanded main menu in a frameless title bar", () => {
   it("hides the right-hand toolbar while the menu is expanded and restores it on close", async () => {
     const platform = usePlatform.getState();
     const project = useProject.getState();
-    const menuModel = vi.spyOn(commands, "menuModel").mockResolvedValue([
-      { kind: "submenu", id: "file", label: "File", children: [] },
-    ]);
+    const menuModel = vi
+      .spyOn(commands, "menuModel")
+      .mockResolvedValue([{ kind: "submenu", id: "file", label: "File", children: [] }]);
     usePlatform.setState({ os: "windows", framelessTitleBar: true, overlayTitleBar: false });
     useProject.setState({ settings: { appearance: { mainMenuStyle: "hamburger" } } as Settings });
     try {
