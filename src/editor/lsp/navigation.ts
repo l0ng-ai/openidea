@@ -26,10 +26,12 @@ import {
 } from "@/platform/ipc";
 import {
   CONTRIBUTED_DEFINITION,
+  CONTRIBUTED_LINK_AT,
   activeEditor,
   contributedAt,
   whenSynced,
   type ContributedDefinition,
+  type ContributedLinkAt,
   type EditorDocContext,
 } from "@/editor/api";
 import { structure } from "@/editor/structure";
@@ -329,10 +331,12 @@ const linkField = StateField.define<LinkState | null>({
   ],
 });
 
-/** What ⌘-hover underlines: a whole link, URL or path (always navigable), else the word. */
+/** What ⌘-hover underlines: a whole contributed link, link, URL or path (always navigable), else the word. */
 function linkAt(view: EditorView, x: number, y: number): { from: number; to: number; link: boolean } | null {
   const pos = view.posAtCoords({ x, y }, false);
   if (pos == null) return null;
+  const own = contributedAt<ContributedLinkAt>(view.state, CONTRIBUTED_LINK_AT, pos)?.(view.state, pos);
+  if (own) return { from: own.from, to: own.to, link: true };
   const links = knownLinks(view);
   const ref = (links && linkReference(view.state.doc, links, pos)) ?? textReference(view.state.doc, pos);
   if (ref) return { from: ref.from, to: ref.to, link: true };
@@ -346,7 +350,10 @@ function linkAt(view: EditorView, x: number, y: number): { from: number; to: num
  */
 async function probeNavigation(view: EditorView, offset: number): Promise<{ info: NavInfo | null } | null> {
   const doc = docOf(view);
-  let navigable = !!contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
+  const rangeAt = contributedAt<ContributedLinkAt>(view.state, CONTRIBUTED_LINK_AT, offset);
+  let navigable =
+    !!contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset) &&
+    (!rangeAt || !!rangeAt(view.state, offset));
   if (!navigable && doc) {
     const pos = offsetToPos(view.state.doc, offset);
     try {

@@ -5,7 +5,8 @@
 use crate::state::AppState;
 use ide_core::{IdeError, IdeResult};
 use ide_plugin::{
-    ActiveTheme, CatalogPlugin, Invocation, Limits, PluginEvent, PluginHost, PluginInfo, PluginsSnapshot,
+    ActiveTheme, CatalogPlugin, Invocation, Limits, PluginEvent, PluginHost, PluginInfo, PluginNavigation,
+    PluginsSnapshot,
 };
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -127,6 +128,20 @@ pub async fn plugin_reload(state: State<'_, AppState>, id: String) -> IdeResult<
     blocking(move || host.reload(&id)).await
 }
 
+/// Where a plugin call runs: this window and its project (unsaved editor
+/// contents win over disk for `read-file`).
+fn project_invocation(window: &Window, state: &State<'_, AppState>) -> Invocation {
+    let project = state.project(window.label()).ok();
+    Invocation {
+        client: Some(window.label().to_owned()),
+        workspace_root: project.as_ref().map(|p| p.root.clone()),
+        buffer_text: project.map(|p| {
+            let documents = p.documents.clone();
+            Arc::new(move |path: &Path| documents.text_of(path)) as ide_plugin::BufferText
+        }),
+    }
+}
+
 /// Runs a plugin command in the context of this window's project.
 #[tauri::command]
 #[specta::specta]
@@ -138,16 +153,25 @@ pub async fn plugin_run_command(
     arg: Option<String>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
-    let project = state.project(window.label()).ok();
-    let invocation = Invocation {
-        client: Some(window.label().to_owned()),
-        workspace_root: project.as_ref().map(|p| p.root.clone()),
-        buffer_text: project.map(|p| {
-            let documents = p.documents.clone();
-            Arc::new(move |path: &Path| documents.text_of(path)) as ide_plugin::BufferText
-        }),
-    };
+    let invocation = project_invocation(&window, &state);
     blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
+}
+
+/// Runs code navigation provider `index` of `plugin_id` (`[[contributes.code-navigation]]`)
+/// for `file` (absolute) of this window's project: the links and gutter markers of
+/// the file, `None` when the provider does not apply to the project (no marker).
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_navigation(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    index: u32,
+    file: String,
+) -> IdeResult<Option<PluginNavigation>> {
+    let host = state.plugins.clone();
+    let invocation = project_invocation(&window, &state);
+    blocking(move || host.navigation(&plugin_id, index as usize, Path::new(&file), invocation)).await
 }
 
 /// The UI reports the focused editor's file (`active-file` for plugins).
