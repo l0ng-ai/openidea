@@ -25,6 +25,20 @@ pub fn should_group_new_project(
         }
 }
 
+/// The window a new project joins: the focused project window, else the last
+/// focused one, else the newest one. The open dialog can hold the focus, and the
+/// Welcome window is not a project window, but any open project can still host
+/// the new tab. `newest_first` lists the project window labels, newest first.
+pub fn anchor_label(
+    focused: Option<&str>,
+    last_focused: Option<&str>,
+    newest_first: &[String],
+    is_project: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let pick = |label: Option<&str>| label.filter(|l| is_project(l)).map(str::to_owned);
+    pick(focused).or_else(|| pick(last_focused)).or_else(|| newest_first.iter().find(|l| is_project(l)).cloned())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowGroup {
     pub members: Vec<String>,
@@ -144,6 +158,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn anchor_prefers_focused_then_last_focused_then_newest_project() {
+        let is_project = |label: &str| label != "welcome";
+        let newest_first = members(&["project-2", "project-1", "welcome"]);
+        assert_eq!(
+            anchor_label(Some("project-1"), Some("project-2"), &newest_first, is_project),
+            Some("project-1".into())
+        );
+        assert_eq!(
+            anchor_label(Some("welcome"), Some("project-2"), &newest_first, is_project),
+            Some("project-2".into())
+        );
+        assert_eq!(anchor_label(Some("welcome"), Some("welcome"), &newest_first, is_project), Some("project-2".into()));
+        assert_eq!(anchor_label(None, None, &newest_first, is_project), Some("project-2".into()));
+        assert_eq!(anchor_label(Some("welcome"), None, &members(&["welcome"]), is_project), None);
     }
 
     #[test]

@@ -47,18 +47,23 @@ fn changed(app: &AppHandle) {
     app.state::<AppState>().sink.emit(IdeEvent::WindowGroupsChanged);
 }
 
-fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
+/// Copies `from`'s frame onto `to`. On macOS a fullscreen source instead starts a
+/// transfer; the switch happens when the old window has exited (returns true).
+fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<bool> {
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
     let fullscreen = from.is_fullscreen().map_err(err)?;
     if fullscreen {
         #[cfg(target_os = "macos")]
-        crate::macos::transfer_fullscreen(from, to).map_err(err)?;
+        {
+            crate::macos::transfer_fullscreen(from).map_err(err)?;
+            return Ok(true);
+        }
         #[cfg(not(target_os = "macos"))]
         {
             from.set_fullscreen(false).map_err(err)?;
             to.set_fullscreen(true).map_err(err)?;
+            return Ok(false);
         }
-        return Ok(());
     }
     to.set_fullscreen(false).map_err(err)?;
     let maximized = from.is_maximized().map_err(err)?;
@@ -72,18 +77,29 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     } else {
         to.maximize().map_err(err)?;
     }
-    Ok(())
+    Ok(false)
 }
 
 pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
     let state = app.state::<WindowsState>();
     let previous = state.groups.lock().select(caller, target)?;
+    // A fullscreen transfer in flight owns the visual switch: the newest selection
+    // is presented when the old window has exited fullscreen.
+    #[cfg(target_os = "macos")]
+    {
+        if crate::macos::is_transferring(&state, &previous.members) {
+            changed(app);
+            return Ok(());
+        }
+    }
     let result = (|| {
         if previous.selected != target
             && let Some(from) = app.get_webview_window(&previous.selected)
+            && copy_frame(&from, &to)?
         {
-            copy_frame(&from, &to)?;
+            // The transfer's completion presents the group's current tab.
+            return Ok(());
         }
         to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
         to.show().map_err(|e| IdeError::internal(e.to_string()))?;
@@ -118,7 +134,14 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
 pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     state.groups.lock().join(anchor, new_window)?;
-    select(app, anchor, new_window)
+    select(app, anchor, new_window)?;
+    // While the anchor's fullscreen transfer runs, the new tab stays hidden;
+    // the transfer's completion presents it.
+    let transferring = state.fullscreen_transfers.lock().contains(anchor);
+    if transferring && let Some(window) = app.get_webview_window(new_window) {
+        let _ = window.hide();
+    }
+    Ok(())
 }
 
 pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
@@ -129,18 +152,26 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
     if members.len() < 2 || !members.iter().any(|label| label == caller) {
         return Err(IdeError::invalid("Open at least two project windows to create a window group"));
     }
+    let state = app.state::<WindowsState>();
     // Native fullscreen puts each window in a separate Space; leave it before grouping.
+    // A pending transfer would otherwise put the group back in fullscreen.
     for label in &members {
+        #[cfg(target_os = "macos")]
+        crate::macos::forget_transfer(&state, label);
         if let Some(window) = app.get_webview_window(label) {
             window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
         }
     }
-    app.state::<WindowsState>().groups.lock().merge(members, caller)?;
+    state.groups.lock().merge(members, caller)?;
     select(app, caller, caller)
 }
 
 pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
+    // A detached window's pending transfer never completes; drop it so the
+    // group's next tab is presented directly.
+    #[cfg(target_os = "macos")]
+    crate::macos::forget_transfer(&state, caller);
     let next = state.groups.lock().detach(caller);
     if let Some(next) = next {
         if let Some(window) = app.get_webview_window(&next) {

@@ -62,6 +62,9 @@ pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
     pub groups_restored: AtomicBool,
     pub groups_persist: tokio::sync::Mutex<()>,
+    /// macOS fullscreen transfers in flight, by source window label: a select that
+    /// finds one defers its visual part to the transfer's completion.
+    pub fullscreen_transfers: Mutex<std::collections::HashSet<String>>,
     launches: Mutex<HashMap<String, Launch>>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,

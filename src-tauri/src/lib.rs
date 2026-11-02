@@ -177,6 +177,9 @@ pub fn run() {
             {
                 titlebar::forget(window);
                 macos::forget_fullscreen(window.label());
+                if let Some(w) = window.try_state::<WindowsState>() {
+                    macos::forget_transfer(&w, window.label());
+                }
             }
             window_groups::destroyed(window.app_handle(), window.label());
             if let Some(settings) = window.app_handle().get_webview_window(&windows::settings_label(window.label())) {
