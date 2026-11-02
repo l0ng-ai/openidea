@@ -1,0 +1,13 @@
+id = "d"
+name = "D"
+extensions = ["d", "di"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+indent = { tab-size = 4, insert-spaces = true }
+ui-mode = "D"
+
+[[language-servers]]
+name = "serve-d"
+command = "serve-d"
+root-markers = ["dub.json", "dub.sdl", "dub.selections.json"]
+install-hint = "Install serve-d (https://github.com/symmetryinvestments/serve-d) and expose it as `serve-d`"

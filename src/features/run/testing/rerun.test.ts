@@ -103,6 +103,32 @@ describe("rerunFailedConfig", () => {
     expect(c.args).toEqual(["-q", "tests/test_x.py::TestC::test_y[1]", "tests/test_z.py::test_a"]);
   });
 
+  it("django: dotted labels in place of the run's target, options kept", () => {
+    const c = rerunFailedConfig(
+      cfg("django-test", ".venv/bin/python", ["manage.py", "test", "polls", "--keepdb", "-v", "2"]),
+      [["polls.tests", "QuestionTests", "test_a"], ["polls.tests", "BrokenSetupTests"], ["broken.tests"]],
+    )!;
+    expect(c.args).toEqual([
+      "manage.py",
+      "test",
+      "polls.tests.QuestionTests.test_a",
+      "polls.tests.BrokenSetupTests",
+      "broken.tests",
+      "--keepdb",
+      "-v",
+      "2",
+    ]);
+    // A configuration made in the form keeps its Target field in step.
+    const form = {
+      ...cfg("django-test", "uv", ["run", "python", "manage.py", "test", "polls"]),
+      params: { command: "uv", runnerArgs: "run python", target: "polls", settings: "", options: "" },
+    };
+    expect(rerunFailedConfig(form, [["polls.tests", "QuestionTests", "test_a"]])).toMatchObject({
+      args: ["run", "python", "manage.py", "test", "polls.tests.QuestionTests.test_a"],
+      params: { target: "polls.tests.QuestionTests.test_a" },
+    });
+  });
+
   it("go: -run with top-level names and packages", () => {
     const c = rerunFailedConfig(cfg("go", "go", ["test", "-v", "./..."]), [
       ["example.com/m/pkg", "TestAdd"],
@@ -152,6 +178,25 @@ describe("withTestReporting", () => {
     expect(withTestReporting(cfg("pytest", "uv", ["run", "pytest"])).args).toEqual(["run", "pytest", "-v"]);
     expect(withTestReporting(cfg("pytest", ".venv/bin/pytest", ["-q"])).args).toEqual(["-q"]);
     expect(withTestReporting(cfg("pytest", "pytest", ["-vv"])).args).toEqual(["-vv"]);
+    // Django prints one line per test from verbosity 2.
+    expect(withTestReporting(cfg("django-test", "python3", ["manage.py", "test", "--keepdb"])).args).toEqual([
+      "manage.py",
+      "test",
+      "--keepdb",
+      "-v",
+      "2",
+    ]);
+    expect(withTestReporting(cfg("django-test", "python3", ["manage.py", "test", "-v", "3"])).args).toEqual([
+      "manage.py",
+      "test",
+      "-v",
+      "3",
+    ]);
+    expect(withTestReporting(cfg("shell", "python3", ["manage.py", "test", "--verbosity=0"])).args).toEqual([
+      "manage.py",
+      "test",
+      "--verbosity=0",
+    ]);
     // A plain script run (no pytest) and other frameworks are left alone.
     expect(withTestReporting(cfg("python", "python3", ["main.py"])).args).toEqual(["main.py"]);
     expect(withTestReporting(cfg("cargo", "cargo", ["test"])).args).toEqual(["test"]);

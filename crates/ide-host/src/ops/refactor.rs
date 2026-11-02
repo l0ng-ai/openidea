@@ -1,7 +1,6 @@
 //! File move / rename refactoring: reference updates from the language
 //! servers, the move itself (one undoable step) and its undo.
 use crate::Host;
-use crate::apply_workspace_edit;
 use crate::rpc::Dispatcher;
 
 use ide_core::{IdeResult, RequestId, WorkspaceEdit};
@@ -26,7 +25,12 @@ pub async fn refactor_file_move_edits(
     let token = host.begin_request(request);
     let result = project.lsp.will_rename_files(&pairs(&moves), token).await;
     host.end_request(request);
-    result
+    let mut result = result?;
+    blocking(move || {
+        project.documents.prepare_workspace_edit(&mut result.edit)?;
+        Ok(result)
+    })
+    .await
 }
 
 /// Applies `edit` (from [`refactor_file_move_edits`], possibly empty), moves the
@@ -42,7 +46,7 @@ pub async fn refactor_move_files(
     let p = project.clone();
     let moved = moves.clone();
     let id = blocking(move || {
-        let apply = |e: &WorkspaceEdit| apply_workspace_edit(&p.documents, e);
+        let apply = |e: &WorkspaceEdit| p.documents.apply_file_move_edits(e);
         p.moves.perform(&p.documents, Some(&p.history), &moved, &edit, &label, &apply)
     })
     .await?;
@@ -77,13 +81,17 @@ pub async fn refactor_file_move_text_edits(
     let cancel = token.clone();
     let result = blocking(move || {
         let replacements = ide_workspace::text_refs::move_replacements(&project.root, &project.roots(), &moves);
-        let edit = ide_workspace::text_refs::find_text_occurrences(
+        let mut edit = ide_workspace::text_refs::find_text_occurrences(
             &project.root,
             &project.exclude_globs(),
             &replacements,
             &|| cancel.is_cancelled(),
         );
-        if cancel.is_cancelled() { Err(ide_core::IdeError::cancelled()) } else { Ok(edit) }
+        if cancel.is_cancelled() {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        project.documents.prepare_workspace_edit(&mut edit)?;
+        Ok(edit)
     })
     .await;
     host.end_request(request);

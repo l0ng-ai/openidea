@@ -5,12 +5,13 @@ import { goParser } from "./go";
 import { jsParser } from "./js";
 import { jvmParser } from "./jvm";
 import { pytestParser } from "./pytest";
+import { unittestParser } from "./unittest";
 import type { TestEvent, TestOutputParser } from "./types";
 
 export type { TestEvent, TestOutputParser, TestStatus } from "./types";
 export { parseDuration } from "./types";
 export { TestResults, nodeStatus, type TestNode } from "./results";
-export { cargoParser, goParser, jsParser, jvmParser, pytestParser };
+export { cargoParser, goParser, jsParser, jvmParser, pytestParser, unittestParser };
 
 /** Runs several parsers side by side (unknown tool: e.g. `make test`). */
 export function combinedParser(parsers: TestOutputParser[]): TestOutputParser {
@@ -20,7 +21,7 @@ export function combinedParser(parsers: TestOutputParser[]): TestOutputParser {
   };
 }
 
-export type Framework = "cargo" | "js" | "pytest" | "go" | "jvm" | "auto";
+export type Framework = "cargo" | "js" | "pytest" | "unittest" | "go" | "jvm" | "auto";
 
 export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args">): Framework {
   const cmd = [config.command, ...config.args].join(" ");
@@ -32,8 +33,12 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
     case "bun":
       return "js";
     case "pytest":
-    case "python":
       return "pytest";
+    case "python":
+      // `manage.py test` made as a Python configuration before the Django tests type existed.
+      return /\bmanage\.py test\b/.test(cmd) ? "unittest" : "pytest";
+    case "django-test":
+      return "unittest";
     case "go":
       return "go";
     case "gradle":
@@ -43,16 +48,17 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
   if (/\bcargo\b/.test(cmd)) return "cargo";
   if (/\b(jest|vitest|npm|pnpm|yarn|bun|npx|deno)\b/.test(cmd)) return "js";
   if (/\bpytest\b/.test(cmd)) return "pytest";
+  if (/\bmanage\.py test\b/.test(cmd)) return "unittest";
   if (/\bgo\s+test\b/.test(cmd)) return "go";
   if (/\b(gradlew?|mvnw?)\b/.test(cmd)) return "jvm";
   return "auto";
 }
 
 /**
- * Launch arguments that make a test run reportable per test: pytest prints
- * only progress dots by default, so passed tests would never reach the tree.
- * `-v` adds one line per test (live, like IDEA's runner) unless the user
- * chose a verbosity already.
+ * Launch arguments that make a test run reportable per test: pytest and
+ * Django print only progress dots by default, so passed tests would never
+ * reach the tree. `-v` (Django: `-v 2`) adds one line per test (live, like
+ * IDEA's runner) unless the user chose a verbosity already.
  */
 export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" | "args">>(config: T): T {
   if (frameworkFor(config) === "go" && config.args[0] === "test") {
@@ -63,6 +69,10 @@ export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" |
       ...config,
       args: ["test", "-json", ...args.slice(1), ...(boundary < 0 ? [] : config.args.slice(boundary))],
     };
+  }
+  if (frameworkFor(config) === "unittest") {
+    const chosen = config.args.some((a) => /^(-v|--verbosity)(=?\d)?$/.test(a));
+    return chosen ? config : { ...config, args: [...config.args, "-v", "2"] };
   }
   if (frameworkFor(config) !== "pytest") return config;
   const cmd = [config.command, ...config.args];
@@ -80,12 +90,14 @@ export function createTestParser(config: Pick<RunConfig, "kind" | "command" | "a
       return jsParser();
     case "pytest":
       return pytestParser();
+    case "unittest":
+      return unittestParser();
     case "go":
       return goParser();
     case "jvm":
       return jvmParser();
     default:
-      return combinedParser([cargoParser(), jsParser(), pytestParser(), goParser(), jvmParser()]);
+      return combinedParser([cargoParser(), jsParser(), pytestParser(), unittestParser(), goParser(), jvmParser()]);
   }
 }
 
