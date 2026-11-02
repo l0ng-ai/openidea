@@ -3619,6 +3619,8 @@ cancellable: boolean } |
 { type: "indexState"; indexing: boolean; files: number; symbols: number } | 
 /**  Git status / branch information should be refreshed. */
 { type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; status: ServerStatus; message: string | null } | 
+/**  A running server lacks a capability; the UI offers the managed tool as a replacement. */
+{ type: "languageServerWarning"; name: string; message: string; installTool: string } | 
 /**
  *  A stopped language server left the project's list (disabled in settings, or a
  *  fallback that a preferred server took over from again).

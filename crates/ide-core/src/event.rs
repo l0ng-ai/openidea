@@ -82,6 +82,12 @@ pub enum IdeEvent {
         status: ServerStatus,
         message: Option<String>,
     },
+    /// A running server lacks a capability; the UI offers the managed tool as a replacement.
+    LanguageServerWarning {
+        name: String,
+        message: String,
+        install_tool: String,
+    },
     /// A stopped language server left the project's list (disabled in settings, or a
     /// fallback that a preferred server took over from again).
     LanguageServerRemoved {

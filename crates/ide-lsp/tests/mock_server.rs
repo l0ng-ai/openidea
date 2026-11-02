@@ -21,6 +21,7 @@ use std::time::Duration;
 struct MockState {
     caps: Mutex<Value>,
     missing: std::sync::atomic::AtomicBool,
+    binary: Mutex<Option<PathBuf>>,
     launches: AtomicUsize,
     notifications: Mutex<Vec<(String, Value)>>,
     requests: Mutex<Vec<(String, Value)>>,
@@ -148,6 +149,18 @@ impl MockLauncher {
 }
 
 impl Launcher for MockLauncher {
+    fn launch_resolved(
+        &self,
+        config: &LanguageServerConfig,
+        root: &Path,
+        handler: Arc<dyn Handler>,
+        on_stderr: Box<dyn Fn(String) + Send + Sync>,
+        cancel: &ide_core::CancellationToken,
+    ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
+        self.launch_cancellable(config, root, handler, on_stderr, cancel)
+            .map(|peer| (peer, self.state(&config.name).binary.lock().clone()))
+    }
+
     fn launch(
         &self,
         config: &LanguageServerConfig,
@@ -2835,4 +2848,69 @@ async fn formatting_provider_selection_tracks_dynamic_registration() {
     .await
     .unwrap();
     assert!(!h.mgr.can_format(doc).await.unwrap());
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn apple_clangd_warns_for_tidy_config_once_across_languages_and_restarts() {
+    for language in ["c", "cpp", "objective-c", "objective-cpp"] {
+        let h = harness_for(language, "src", &[("clangd", incremental_caps())], &[]);
+        *h.launcher.state("clangd").binary.lock() = Some(PathBuf::from("/usr/bin/clangd"));
+        std::fs::write(h.root.join(".clang-tidy"), "Checks: '-*,modernize-use-nullptr'").unwrap();
+        h.open("main.src", "int *p = 0;");
+        eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. }))).await;
+        let id = h.mgr.servers()[0].id;
+        h.mgr.restart(id).await.unwrap();
+        h.wait_status("clangd", ServerStatus::Ready).await;
+        h.open("other.src", "int *p = 0;");
+        h.mgr.shutdown_all().await;
+        let events = h.events.lock();
+        let warnings: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::LanguageServerWarning { name, message, install_tool } => Some((name, message, install_tool)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(warnings.len(), 1, "{language}");
+        assert_eq!(warnings[0].0, "clangd");
+        assert!(warnings[0].1.contains(".clang-tidy"));
+        assert_eq!(warnings[0].2, "clangd");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn clang_tidy_warning_requires_apple_binary_and_a_config() {
+    for (binary, config) in [
+        ("/usr/bin/clangd", false),
+        ("/opt/homebrew/opt/llvm/bin/clangd", true),
+        ("/Users/me/Library/Application Support/openidea/tools/clangd/bin/clangd", true),
+    ] {
+        let h = harness_for("cpp", "cpp", &[("clangd", incremental_caps())], &[]);
+        *h.launcher.state("clangd").binary.lock() = Some(PathBuf::from(binary));
+        if config {
+            std::fs::write(h.root.join(".clang-tidy"), "Checks: '-*,modernize-use-nullptr'").unwrap();
+        }
+        h.open("main.cpp", "int *p = 0;");
+        h.wait_status("clangd", ServerStatus::Ready).await;
+        h.mgr.shutdown_all().await;
+        assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. })), "{binary}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn clang_tidy_config_for_a_later_opened_file_warns_on_a_running_server() {
+    let h = harness_for("cpp", "cpp", &[("clangd", incremental_caps())], &[]);
+    *h.launcher.state("clangd").binary.lock() = Some(PathBuf::from("/usr/bin/clangd"));
+    h.open("main.cpp", "int *p = 0;");
+    h.wait_status("clangd", ServerStatus::Ready).await;
+    assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. })));
+    std::fs::create_dir(h.root.join("nested")).unwrap();
+    std::fs::write(h.root.join("nested/.clang-tidy"), "Checks: '-*,modernize-use-nullptr'").unwrap();
+    h.open("nested/other.cpp", "int *p = 0;");
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::LanguageServerWarning { .. }))).await;
+    assert_eq!(h.mgr.servers().len(), 1);
+    h.mgr.shutdown_all().await;
 }
