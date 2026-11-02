@@ -163,6 +163,21 @@ fn interchangeable_servers_list_their_alternatives() {
 
 #[cfg(unix)]
 #[test]
+fn python_servers_name_uv_when_it_makes_the_virtualenv() {
+    let env = Env::new();
+    env.script(&env.sys, "uv", "exit 0");
+    let list = env.tools().list(&langs());
+    for name in ["basedpyright", "ty", "ruff"] {
+        let tool = find(&list, name);
+        assert_eq!(tool.install_method.as_deref(), Some("uv (virtualenv)"), "{name}");
+        assert!(tool.can_install, "{name}: uv alone is enough");
+    }
+    // debugpy's private copy is always made by `python -m pip`.
+    assert_eq!(find(&list, "debugpy").install_method.as_deref(), Some("pip (private copy)"));
+}
+
+#[cfg(unix)]
+#[test]
 fn detects_tools_on_path_with_versions() {
     let env = Env::new();
     env.script(&env.sys, "gopls", "echo 'golang.org/x/tools/gopls v0.16.1'");
