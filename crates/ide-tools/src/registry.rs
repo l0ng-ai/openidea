@@ -615,14 +615,14 @@ pub static TOOLS: &[ToolSpec] = &[
             source: ReleaseSource::GitHub { repo: "Kotlin/kotlin-lsp" },
             assets: &[
                 // Current releases (kotlin-server-*): the CLI distribution is a
-                // .tar.gz on POSIX and a .win.zip on Windows. x64 ships as the
+                // .sit on macOS, .tar.gz on Linux and .win.zip on Windows. x64 ships as the
                 // un-suffixed archive, aarch64 as `-aarch64`; the un-suffixed one
                 // comes first in the release notes, which is what the x64 pattern
                 // matches first. Without a matching rule the installer used to fall
                 // through to a loose `kotlin-*.zip` pattern and POSIX picked the
                 // Windows archive (#723).
-                rule(Mac, Arm64, "kotlin-server-*-aarch64.tar.gz"),
-                rule(Mac, X64, "kotlin-server-*.tar.gz"),
+                rule(Mac, Arm64, "kotlin-server-*-aarch64.sit"),
+                rule(Mac, X64, "kotlin-server-*.sit"),
                 rule(Linux, Arm64, "kotlin-server-*-aarch64.tar.gz"),
                 rule(Linux, X64, "kotlin-server-*.tar.gz"),
                 rule(Windows, X64, "kotlin-server-*.win.zip"),
@@ -1000,28 +1000,42 @@ mod tests {
     }
 
     /// The v263 kotlin-server-* release notes: the CLI distribution archives plus
-    /// the VS Code extension and .sit bundles; the Windows zip must never be picked
-    /// on POSIX and the aarch64 archive never on x64.
+    /// the VS Code extension and checksums; each platform must pick its native
+    /// distribution and the aarch64 archive must never be picked on x64.
     #[test]
-    fn kotlin_lsp_picks_the_posix_archive_not_the_windows_zip() {
+    fn kotlin_lsp_picks_the_native_archive_for_each_platform() {
         use crate::platform::{Platform, select_asset};
         let names = [
             "kotlin-server-0.0.27-mac-amd64.vsix",
+            "kotlin-server-0.0.27-mac-amd64.vsix.sha256",
             "kotlin-server-0.0.27-mac-aarch64.vsix",
+            "kotlin-server-0.0.27-mac-aarch64.vsix.sha256",
+            "kotlin-server-0.0.27-linux-amd64.vsix",
+            "kotlin-server-0.0.27-linux-amd64.vsix.sha256",
+            "kotlin-server-0.0.27-linux-aarch64.vsix",
+            "kotlin-server-0.0.27-linux-aarch64.vsix.sha256",
+            "kotlin-server-0.0.27-win-amd64.vsix",
+            "kotlin-server-0.0.27-win-amd64.vsix.sha256",
+            "kotlin-server-0.0.27-win-aarch64.vsix",
+            "kotlin-server-0.0.27-win-aarch64.vsix.sha256",
             "kotlin-server-263.7084.0.sit",
+            "kotlin-server-263.7084.0.sit.sha256",
             "kotlin-server-263.7084.0-aarch64.sit",
+            "kotlin-server-263.7084.0-aarch64.sit.sha256",
             "kotlin-server-263.7084.0.tar.gz",
             "kotlin-server-263.7084.0.tar.gz.sha256",
             "kotlin-server-263.7084.0-aarch64.tar.gz",
+            "kotlin-server-263.7084.0-aarch64.tar.gz.sha256",
             "kotlin-server-263.7084.0.win.zip",
             "kotlin-server-263.7084.0.win.zip.sha256",
             "kotlin-server-263.7084.0-aarch64.win.zip",
+            "kotlin-server-263.7084.0-aarch64.win.zip.sha256",
         ];
         let rules = find("kotlin-lsp").unwrap().asset_rules();
         let mac_arm = Platform { os: Mac, arch: Arm64 };
-        assert_eq!(select_asset(&names, rules, mac_arm), Some("kotlin-server-263.7084.0-aarch64.tar.gz"));
+        assert_eq!(select_asset(&names, rules, mac_arm), Some("kotlin-server-263.7084.0-aarch64.sit"));
         let mac_x64 = Platform { os: Mac, arch: X64 };
-        assert_eq!(select_asset(&names, rules, mac_x64), Some("kotlin-server-263.7084.0.tar.gz"));
+        assert_eq!(select_asset(&names, rules, mac_x64), Some("kotlin-server-263.7084.0.sit"));
         let linux_x64 = Platform { os: Linux, arch: X64 };
         assert_eq!(select_asset(&names, rules, linux_x64), Some("kotlin-server-263.7084.0.tar.gz"));
         let linux_arm = Platform { os: Linux, arch: Arm64 };
