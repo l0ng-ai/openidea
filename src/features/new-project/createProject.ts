@@ -32,9 +32,11 @@ export async function executeCreateProject(
   },
 ): Promise<string> {
   let targetPath = "";
+  let createGit = false;
 
   if (generatorId === "spring-boot") {
     const f = state.springBoot;
+    createGit = f.createGit;
     targetPath = resolvePath(f.location, f.name);
     await createDir(targetPath);
 
@@ -175,6 +177,7 @@ public class ${appClass} {
     await writeFile(`${targetPath}/.gitignore`, `target/\nbuild/\n.gradle/\n.idea/\n.openidea/\n*.class\n*.jar\n`);
   } else if (generatorId === "java" || generatorId === "kotlin") {
     const f = state.java;
+    createGit = f.createGit;
     targetPath = resolvePath(f.location, f.name);
     await createDir(targetPath);
     await createDir(`${targetPath}/src`);
@@ -221,11 +224,13 @@ public class ${appClass} {
     await writeFile(`${targetPath}/.gitignore`, `target/\nbuild/\n.gradle/\n.openidea/\n*.class\n`);
   } else if (generatorId === "empty") {
     const f = state.empty;
+    createGit = f.createGit;
     targetPath = resolvePath(f.location, f.name);
     await createDir(targetPath);
     await writeFile(`${targetPath}/.gitignore`, `.openidea/\n`);
   } else if (generatorId === "vite") {
     const f = state.vite;
+    createGit = f.createGit;
     targetPath = resolvePath(f.location, f.name);
     await createDir(targetPath);
     await createDir(`${targetPath}/src`);
@@ -266,6 +271,11 @@ public class ${appClass} {
     );
     await writeFile(`${targetPath}/src/main.${isTs ? "tsx" : "jsx"}`, `console.log("App initialized");\n`);
     await writeFile(`${targetPath}/.gitignore`, `node_modules/\ndist/\n.openidea/\n`);
+  }
+
+  // Initialize git repository if requested
+  if (createGit && isTauri()) {
+    await call(commands.vcsInit(targetPath)).catch(() => undefined);
   }
 
   // Open the newly created project in OpenIDEA
