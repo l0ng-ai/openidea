@@ -140,6 +140,22 @@
   display: flex;
   gap: 8px;
 }
+.split {
+  display: inline-flex;
+  align-items: stretch;
+}
+.split .splitMain {
+  min-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.split .splitMore {
+  min-width: 22px;
+  width: 22px;
+  padding: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
 .projectList {
   flex: 1;
   min-height: 0;

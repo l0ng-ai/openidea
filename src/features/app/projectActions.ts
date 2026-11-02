@@ -141,8 +141,14 @@ export function projectActions(): Action[] {
       title: "New Project…",
       category: "File",
       icon: "folder-open",
-      keywords: ["create project", "empty project", "git init"],
-      run: desktop(async () => showNewProject()),
+      keywords: ["create project", "empty project", "git init", "language"],
+      run: (e) => {
+        if (!isTauri()) {
+          notifications().notify({ level: "warning", title: "This needs the desktop app" });
+          return;
+        }
+        showNewProject(typeof e.arg === "string" ? e.arg : undefined);
+      },
     },
     {
       id: "file.renameProject",
