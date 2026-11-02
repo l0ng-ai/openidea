@@ -8,6 +8,7 @@ import { activate as projectTrust } from "./project-trust";
 import { activate as editor } from "@/editor/core";
 import { activate as editorLsp } from "@/editor/lsp";
 import { activate as welcome } from "./welcome";
+import { activate as newProject } from "./new-project";
 import { activate as projectTree } from "./project-tree";
 import { activate as search } from "./search";
 import { activate as dependencies } from "./dependencies";
@@ -53,6 +54,7 @@ const features: Array<[string, Activate]> = [
   ["editor-lsp", editorLsp],
   ["app", app],
   ["welcome", welcome],
+  ["new-project", newProject],
   ["project-tree", projectTree],
   ["search", search],
   ["code-insight", codeInsight],

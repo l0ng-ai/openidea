@@ -1,0 +1,45 @@
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.inputRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+}
+
+.browseBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-base, 4px);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: all var(--dur-fast, 120ms);
+}
+
+.browseBtn:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+
+.helperText {
+  font-size: var(--fs-tiny, 11px);
+  color: var(--fg-muted);
+  line-height: 1.4;
+  word-break: break-all;
+}
