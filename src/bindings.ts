@@ -310,6 +310,8 @@ export const commands = {
 	/**  Quits through every window's unsaved-changes check, then starts again. */
 	appRestart: () => __TAURI_INVOKE<void>("app_restart"),
 	indexStatus: () => typedError<IndexStatus, IdeError>(__TAURI_INVOKE("index_status")),
+	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
+	springRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("spring_route_sources")),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
 	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
 	markRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("mark_recent", { path })),
@@ -5311,6 +5313,11 @@ export type RevisionChange = {
 };
 
 export type RootKind = "source" | "test" | "resources" | "testResources" | "excluded";
+
+export type RouteSource = {
+	path: string,
+	text: string,
+};
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
 
