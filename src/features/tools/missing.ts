@@ -56,3 +56,31 @@ export function installMissingServerPrompts(): () => void {
     void promptInstall(e.name).catch(() => {});
   });
 }
+
+/** A system server that lacks a capability can be replaced by the managed tool. */
+export function installServerWarningPrompts(): () => void {
+  const prompted = new Set<string>();
+  return onIdeEvent("languageServerWarning", (e) => {
+    const key = `lsp-warning-${e.name}-${e.installTool}`;
+    if (prompted.has(key)) return;
+    prompted.add(key);
+    void (async () => {
+      if (!useTools.getState().loaded) await refreshTools();
+      const tool = toolByName(e.installTool);
+      notifications().notify({
+        group: "lsp",
+        level: "warning",
+        title: e.name,
+        body: tx(e.message),
+        key,
+        sticky: true,
+        actions: [
+          ...(tool?.canInstall
+            ? [{ label: "Install", run: () => void installTool(e.installTool, { notificationKey: key }) }]
+            : []),
+          { label: "Language Servers…", run: () => void executeAction("file.settings", SETTINGS_PAGE_ID) },
+        ],
+      });
+    })();
+  });
+}

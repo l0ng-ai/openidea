@@ -256,6 +256,13 @@ function persistTemporary() {
   );
 }
 
+/** IDEA's `isConfigurationFromContext` for an Application: the same main class of the same module. */
+function sameApplication(a: RunConfig, b: RunConfig): boolean {
+  if (!isJvmApplication(a) || !isJvmApplication(b)) return false;
+  const main = parseJavaArgs(a.args).mainClass;
+  return main !== null && main === parseJavaArgs(b.args).mainClass && (a.module ?? a.cwd) === (b.module ?? b.cwd);
+}
+
 /**
  * Selects the configuration for a gutter / context run: a saved or detected
  * configuration with the same id is reused, otherwise `config` becomes a
@@ -263,7 +270,10 @@ function persistTemporary() {
  */
 export function adoptTemporary(config: RunConfig): RunConfig {
   const state = useRun.getState();
-  const existing = state.configs.find((c) => c.id === config.id);
+  // IDEA's `findExistingConfiguration`: a configuration the user keeps for this context wins.
+  const existing =
+    state.configs.find((c) => c.id === config.id) ??
+    state.configs.find((c) => !state.temporary.includes(c.id) && sameApplication(c, config));
   if (existing && !state.temporary.includes(config.id)) {
     selectConfig(existing.id);
     return existing;
