@@ -8,6 +8,7 @@
 
 mod angular;
 mod caps;
+mod clang_tidy;
 mod convert;
 mod external_project;
 mod file_ops;
@@ -472,13 +473,16 @@ impl LspManager {
             if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
-            me.launcher.launch_cancellable(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)), &cancel)
+            me.launcher.launch_resolved(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)), &cancel)
         })
         .await
         .unwrap_or_else(|e| Err(LaunchError::Failed(e.to_string())));
 
         let peer = match launched {
-            Ok(peer) => peer,
+            Ok((peer, binary)) => {
+                *server.resolved_binary.write() = binary;
+                peer
+            }
             Err(LaunchError::Missing) => {
                 let cfg = server.effective_config();
                 let message =
@@ -587,6 +591,7 @@ impl LspManager {
                 }
             }
         }
+        self.check_clang_tidy(&server).await;
         server.refresh_busy_status(&self.sink);
         server.announce_ready(generation);
         self.spawn_supervisor(server, generation, peer);
@@ -810,6 +815,12 @@ impl LspManager {
         }
         for s in &servers {
             self.ensure_started(s);
+            if s.running().is_some()
+                && let Some(me) = self.me.upgrade()
+            {
+                let server = s.clone();
+                self.runtime.spawn(async move { me.check_clang_tidy(&server).await });
+            }
         }
     }
 
