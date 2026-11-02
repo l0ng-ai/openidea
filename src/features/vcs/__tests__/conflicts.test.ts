@@ -36,6 +36,19 @@ describe("parseConflicts", () => {
     expect(blockAt(blocks, 0)).toBeUndefined();
   });
 
+  it("locates the marker lines, without their terminators", () => {
+    const [a, b] = parseConflicts(text);
+    const lines = (block: typeof a) => block!.markers.map((m) => text.slice(m.from, m.to));
+    expect(lines(a)).toEqual(["<<<<<<< HEAD", "||||||| base", "=======", ">>>>>>> feature"]);
+    expect(lines(b)).toEqual(["<<<<<<< HEAD", "=======", ">>>>>>> feature"]);
+    const crlf = "<<<<<<< a\r\nx\r\n=======\r\ny\r\n>>>>>>> b\r\n";
+    expect(parseConflicts(crlf)[0]!.markers.map((m) => crlf.slice(m.from, m.to))).toEqual([
+      "<<<<<<< a",
+      "=======",
+      ">>>>>>> b",
+    ]);
+  });
+
   it("ignores unterminated markers", () => {
     expect(parseConflicts("<<<<<<< HEAD\nx\n=======\ny\n")).toEqual([]);
   });

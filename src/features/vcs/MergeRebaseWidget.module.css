@@ -1,0 +1,29 @@
+.widget {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.go,
+.abort {
+  --icon-color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.go {
+  background: var(--success);
+}
+.abort {
+  background: var(--danger);
+}
+.go:disabled,
+.abort:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

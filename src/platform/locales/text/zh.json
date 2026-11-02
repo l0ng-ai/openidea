@@ -5512,5 +5512,11 @@
   "App labels, modules or dotted test paths; empty runs every test": "应用标签、模块或以点分隔的测试路径；留空则运行全部测试",
   "Settings module": "设置模块",
   "Passed as --settings; empty keeps DJANGO_SETTINGS_MODULE or the default in manage.py": "作为 --settings 传入；留空则沿用 DJANGO_SETTINGS_MODULE 或 manage.py 中的默认值",
-  "e.g. --keepdb --parallel": "例如 --keepdb --parallel"
+  "e.g. --keepdb --parallel": "例如 --keepdb --parallel",
+  "File has unresolved merge conflicts": "文件存在未解决的合并冲突",
+  "Resolve conflicts…": "解决冲突…",
+  "Unresolved merge conflict marker": "未解决的合并冲突标记",
+  "Unresolved merge conflicts": "未解决的合并冲突",
+  "Reports the <<<<<<<, ======= and >>>>>>> lines a merge leaves in a file, whatever its language and whether or not a language server is installed.": "报告合并在文件中留下的 <<<<<<<、======= 和 >>>>>>> 行，与文件语言以及是否安装了语言服务器无关。",
+  "Merge/Rebase Widget": "合并/变基微件"
 }
