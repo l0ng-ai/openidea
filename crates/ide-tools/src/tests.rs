@@ -697,6 +697,8 @@ fn env_with_curl(body: &str) -> (Env, Http) {
 #[test]
 fn a_schannel_revocation_offline_failure_is_retried_best_effort() {
     let env = Env::new();
+    // The fake curl's `touch` needs the tools dir to exist; `Env::new` only makes `sys`.
+    fs::create_dir_all(&env.root).unwrap();
     let done = env.root.join("retried");
     let body = format!(
         "if [ -f {done} ]; then\n  printf hello\n  exit 0\nfi\necho '{msg}' >&2\ntouch {done}\nexit 35\n",
@@ -727,6 +729,8 @@ fn a_failed_revocation_retry_reports_the_original_schannel_error() {
 #[test]
 fn other_curl_failures_are_not_retried() {
     let env = Env::new();
+    // The fake curl's `>>` needs the tools dir to exist; `Env::new` only makes `sys`.
+    fs::create_dir_all(&env.root).unwrap();
     let count = env.root.join("invocations");
     let body = format!(
         "echo x >> {cnt}\necho 'curl: (6) Could not resolve host: example.org' >&2\nexit 6\n",
@@ -743,6 +747,8 @@ fn other_curl_failures_are_not_retried() {
 #[test]
 fn a_schannel_revocation_offline_failure_is_retried_when_downloading() {
     let env = Env::new();
+    // The fake curl's `touch` needs the tools dir to exist; `Env::new` only makes `sys`.
+    fs::create_dir_all(&env.root).unwrap();
     let done = env.root.join("retried");
     let dest = env.root.join("jdtls.tar.gz");
     let body = format!(

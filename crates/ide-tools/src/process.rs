@@ -216,14 +216,16 @@ impl Http {
         let mut first_err = String::new();
         loop {
             let (mut body, ok, err) = self.run_get(&extra, url, max_bytes, empty_on_404, cancel)?;
-            if ok {
-                if empty_on_404 && let Some(split) = body.iter().rposition(|b| *b == b'\n') {
-                    let code = &body[split + 1..];
-                    if code == b"404" {
-                        return Ok("[]".into());
-                    }
-                    body.truncate(split);
+            // `--fail` makes a 404 exit nonzero, but `--write-out` still appends the
+            // status as the last body line: classify the body before the exit status.
+            if empty_on_404 && let Some(split) = body.iter().rposition(|b| *b == b'\n') {
+                let code = &body[split + 1..];
+                if code == b"404" {
+                    return Ok("[]".into());
                 }
+                body.truncate(split);
+            }
+            if ok {
                 if let Some(max) = max_bytes
                     && body.len() as u64 > max
                 {
