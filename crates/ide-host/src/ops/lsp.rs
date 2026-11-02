@@ -163,7 +163,8 @@ pub async fn lsp_code_actions(
     only: Vec<String>,
 ) -> IdeResult<Vec<CodeAction>> {
     let project = host.project(window)?;
-    let version = project.documents.version(doc)?;
+    let documents = project.documents.clone();
+    let version = blocking(move || documents.version(doc)).await?;
     let actions = project.lsp.code_actions(doc, range, only).await?;
     prepare_actions(project, doc, version, actions).await
 }
@@ -178,7 +179,8 @@ pub async fn lsp_code_action_query(
     only: Vec<String>,
 ) -> IdeResult<CodeActionQuery> {
     let project = host.project(window)?;
-    let version = project.documents.version(doc)?;
+    let documents = project.documents.clone();
+    let version = blocking(move || documents.version(doc)).await?;
     let cancel = host.begin_request(request);
     let result = project.lsp.code_action_query(doc, range, only, cancel).await;
     host.end_request(request);
@@ -198,7 +200,8 @@ pub async fn lsp_resolve_code_action(
         return Ok(action);
     }
     let project = host.project(window)?;
-    let version = project.documents.version(doc)?;
+    let documents = project.documents.clone();
+    let version = blocking(move || documents.version(doc)).await?;
     let action = project.lsp.resolve_code_action(doc, action).await?;
     Ok(prepare_actions(project, doc, version, vec![action]).await?.remove(0))
 }
@@ -207,7 +210,8 @@ pub async fn lsp_resolve_code_action(
 pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action: CodeAction) -> IdeResult<()> {
     let project = host.project(window)?;
     let action = if action.edit.is_none() && action.command.is_none() {
-        let version = project.documents.version(doc)?;
+        let documents = project.documents.clone();
+        let version = blocking(move || documents.version(doc)).await?;
         let action = project.lsp.resolve_code_action(doc, action).await?;
         prepare_actions(project.clone(), doc, version, vec![action]).await?.remove(0)
     } else {
@@ -238,7 +242,8 @@ pub async fn lsp_rename(
     new_name: String,
 ) -> IdeResult<Renamed> {
     let project = host.project(window)?;
-    let version = project.documents.version(doc)?;
+    let documents = project.documents.clone();
+    let version = blocking(move || documents.version(doc)).await?;
     let cancel = host.begin_request(request);
     let result = project.lsp.rename(doc, pos, new_name, cancel).await;
     host.end_request(request);

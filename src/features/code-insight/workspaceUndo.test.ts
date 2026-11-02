@@ -4,8 +4,12 @@ import { provideNotificationService, type NotificationService } from "@/workbenc
 import { useProject } from "@/platform/project";
 import { installWorkspaceEditUndo } from "./workspaceUndo";
 
-const mocks = vi.hoisted(() => ({ undo: vi.fn(), synced: vi.fn() }));
-vi.mock("@/editor/api", () => ({ whenAllSynced: mocks.synced, workspaceEditHistory: mocks.undo }));
+const mocks = vi.hoisted(() => ({ undo: vi.fn(), synced: vi.fn(), history: vi.fn(() => () => {}) }));
+vi.mock("@/editor/api", () => ({
+  whenAllSynced: mocks.synced,
+  workspaceEditHistory: mocks.undo,
+  onWorkspaceEditHistory: mocks.history,
+}));
 
 let stop: () => void;
 let notices: Parameters<NotificationService["notify"]>[0][];

@@ -634,3 +634,22 @@ export function _provideWorkspaceHistory(run: (id: number, redo: boolean) => Pro
     if (workspaceHistory === run) workspaceHistory = null;
   };
 }
+
+export interface WorkspaceEditHistoryState {
+  id: number;
+  undone: boolean;
+}
+const workspaceHistoryListeners = new Set<(state: WorkspaceEditHistoryState) => void>();
+
+/** Successful workspace Undo/Redo, including commands invoked from an editor. */
+export function onWorkspaceEditHistory(listener: (state: WorkspaceEditHistoryState) => void): () => void {
+  workspaceHistoryListeners.add(listener);
+  return () => {
+    workspaceHistoryListeners.delete(listener);
+  };
+}
+
+/** @internal editor/core only. */
+export function _emitWorkspaceEditHistory(state: WorkspaceEditHistoryState) {
+  for (const listener of workspaceHistoryListeners) listener(state);
+}

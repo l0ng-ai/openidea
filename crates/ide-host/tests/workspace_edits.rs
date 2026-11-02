@@ -20,6 +20,7 @@ async fn preview_apply_and_grouped_undo_use_the_shared_host_commands() {
     let host = Host::new(HostConfig {
         config_dir: tmp.path().join("config"),
         data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("local-data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(move |_| sink.clone()),
@@ -61,4 +62,116 @@ async fn preview_apply_and_grouped_undo_use_the_shared_host_commands() {
     assert_eq!(std::fs::read_to_string(&second).unwrap(), "new\n");
     host.clear_workspace_edit_history_on_exit();
     assert_eq!(ops::lsp::undo_workspace_edit(&host, "main", id).await.unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn contended_version_reads_do_not_block_the_async_worker() {
+    use ide_core::{LanguageId, Pos, Range, RequestId};
+    use ide_workspace::documents::DocumentObserver;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct PausedWrite {
+        entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl DocumentObserver for PausedWrite {
+        fn changed(
+            &self,
+            _: ide_core::DocId,
+            _: &std::path::Path,
+            _: u32,
+            _: &[ide_text::AppliedChange],
+            _: &dyn Fn() -> String,
+        ) {
+            if let Some(entered) = self.entered.lock().take() {
+                let _ = entered.send(());
+                self.release.lock().recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+        }
+    }
+
+    for request_kind in 0..5 {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("main.txt");
+        std::fs::write(&file, "old").unwrap();
+        let host = Arc::new(Host::new(HostConfig {
+            config_dir: tmp.path().join("config"),
+            data_dir: tmp.path().join("data"),
+            local_data_dir: tmp.path().join("local-data"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+            owner: |window| window,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        }));
+        let project = host.open_light("main", &file).unwrap();
+        let doc = project.documents.open(&file).unwrap().id;
+        assert_eq!(project.documents.snapshot(doc).unwrap().language, LanguageId::plain_text());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        project.documents.add_observer(Arc::new(PausedWrite {
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        }));
+        let documents = project.documents.clone();
+        let writer = std::thread::spawn(move || {
+            documents
+                .apply_workspace_edit(
+                    &serde_json::from_value(json!({ "files": [{
+                "kind": "edit", "path": file, "edits": [{ "range": {
+                    "start": { "line": 0, "col": 0 }, "end": { "line": 0, "col": 3 }
+                }, "new_text": "new" }]
+            }] }))
+                    .unwrap(),
+                )
+                .unwrap();
+        });
+        entered_rx.await.unwrap();
+        let (heartbeat_tx, heartbeat_rx) = mpsc::channel();
+        // Always release the writer, even on the old blocking implementation.
+        let watchdog = std::thread::spawn(move || {
+            let responsive = heartbeat_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+            release_tx.send(()).unwrap();
+            responsive
+        });
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            let action =
+                || serde_json::from_value(json!({ "title": "test", "isPreferred": false, "server": 1 })).unwrap();
+            match request_kind {
+                0 => {
+                    let _ = ops::lsp::lsp_code_actions(&host, "main", doc, Range::point(Pos::new(0, 0)), vec![]).await;
+                }
+                1 => {
+                    let _ = ops::lsp::lsp_code_action_query(
+                        &host,
+                        "main",
+                        RequestId(1),
+                        doc,
+                        Range::point(Pos::new(0, 0)),
+                        vec![],
+                    )
+                    .await;
+                }
+                2 => {
+                    let _ = ops::lsp::lsp_resolve_code_action(&host, "main", doc, action()).await;
+                }
+                3 => {
+                    let _ = ops::lsp::lsp_apply_code_action(&host, "main", doc, action()).await;
+                }
+                _ => {
+                    let _ =
+                        ops::lsp::lsp_rename(&host, "main", RequestId(1), doc, Pos::new(0, 0), "other".into()).await;
+                }
+            }
+        });
+        started_rx.await.unwrap();
+        let _ = heartbeat_tx.send(());
+        task.await.unwrap();
+        writer.join().unwrap();
+        assert!(watchdog.join().unwrap(), "request {request_kind} blocked the only async worker");
+    }
 }

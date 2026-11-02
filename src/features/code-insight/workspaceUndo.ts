@@ -1,25 +1,31 @@
-import { whenAllSynced, workspaceEditHistory } from "@/editor/api";
+import { onWorkspaceEditHistory, whenAllSynced, workspaceEditHistory } from "@/editor/api";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 
-/** A single action restores every file of a workspace edit, including closed files. */
+/** The notification follows the same history state as editor Undo/Redo. */
 export function installWorkspaceEditUndo(): () => void {
-  return onIdeEvent("workspaceEditApplied", ({ id }) => {
-    const project = useProject.getState().project;
+  let current: { id: number; project: ReturnType<typeof useProject.getState>["project"]; undone: boolean } | null =
+    null;
+  const show = () => {
+    if (!current) return;
+    const entry = current;
+    const { id, project, undone } = entry;
     notifications().notify({
       level: "info",
-      title: "Refactoring applied",
+      title: undone ? "Refactoring undone" : "Refactoring applied",
       key: "refactor.workspaceEdit",
       actions: [
         {
-          label: "Undo",
+          label: undone ? "Redo" : "Undo",
           run: async () => {
             try {
               await whenAllSynced();
               if (project !== useProject.getState().project)
                 throw new Error("The project for this refactoring is no longer open");
-              await workspaceEditHistory(id);
+              if (current !== entry || current.undone !== undone) return;
+              if (undone) await workspaceEditHistory(id, true);
+              else await workspaceEditHistory(id);
             } catch (error) {
               notifications().notify({
                 level: "error",
@@ -31,5 +37,19 @@ export function installWorkspaceEditUndo(): () => void {
         },
       ],
     });
+  };
+  const stopApplied = onIdeEvent("workspaceEditApplied", ({ id }) => {
+    current = { id, project: useProject.getState().project, undone: false };
+    show();
   });
+  const stopHistory = onWorkspaceEditHistory(({ id, undone }) => {
+    if (!current || current.id !== id || current.project !== useProject.getState().project) return;
+    current = { ...current, undone };
+    show();
+  });
+  return () => {
+    stopApplied();
+    stopHistory();
+    current = null;
+  };
 }

@@ -106,8 +106,8 @@ fn stale(path: &Path) -> IdeError {
     IdeError::new(ErrorKind::OutOfSync, format!("{} changed; request the refactoring again", path.display()))
 }
 
-/// Resolve parent aliases while retaining the last component of resource operations.
-fn normalized(path: &Path) -> IdeResult<PathBuf> {
+/// Absolute lexical spelling, without resolving links that resource operations may replace.
+fn lexical_path(path: &Path) -> IdeResult<PathBuf> {
     let path = if path.is_absolute() { path.to_owned() } else { std::env::current_dir()?.join(path) };
     let mut clean = PathBuf::new();
     for part in path.components() {
@@ -119,6 +119,12 @@ fn normalized(path: &Path) -> IdeResult<PathBuf> {
             other => clean.push(other),
         }
     }
+    Ok(clean)
+}
+
+/// Resolve parent aliases while retaining the last component of resource operations.
+fn normalized(path: &Path) -> IdeResult<PathBuf> {
+    let clean = lexical_path(path)?;
     let Some(name) = clean.file_name() else { return Ok(clean) };
     let parent = clean.parent().expect("absolute path");
     let parent = dunce::canonicalize(parent).map_err(IdeError::from).or_else(|_| normalized(parent))?;
@@ -129,27 +135,83 @@ fn text_path(path: &Path) -> IdeResult<PathBuf> {
     dunce::canonicalize(path).map_err(IdeError::from).or_else(|_| normalized(path))
 }
 
+/// Resolve existing parent links one component at a time. Stop before entering
+/// any resource operation's namespace, even through another spelling or link chain.
+fn after_resources(path: &Path, changed: &[(PathBuf, PathBuf)], links: u32) -> IdeResult<PathBuf> {
+    if links > 40 {
+        return Err(IdeError::invalid("too many symbolic links in workspace edit"));
+    }
+    let path = lexical_path(path)?;
+    let parts: Vec<_> = path.components().collect();
+    let mut current = PathBuf::new();
+    for (index, part) in parts.iter().enumerate() {
+        current.push(part);
+        if let Some((_, resolved)) = changed.iter().find(|(original, _)| *original == current) {
+            let suffix: PathBuf = parts[index + 1..].iter().collect();
+            return Ok(if suffix.as_os_str().is_empty() { resolved.clone() } else { resolved.join(suffix) });
+        }
+        if index + 1 == parts.len() || !matches!(part, std::path::Component::Normal(_)) {
+            continue;
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let target = fs::read_link(&current)?;
+                let target = if target.is_absolute() { target } else { current.parent().expect("parent").join(target) };
+                let suffix: PathBuf = parts[index + 1..].iter().collect();
+                return after_resources(&target.join(suffix), changed, links + 1);
+            }
+            Err(error) if !matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {
+                return Err(error.into());
+            }
+            _ => {}
+        }
+        if let Ok(canonical) = dunce::canonicalize(&current) {
+            current = canonical;
+        }
+    }
+    Ok(current)
+}
+
 fn normalize_edit(edit: &WorkspaceEdit) -> IdeResult<WorkspaceEdit> {
-    let files = edit
-        .files
-        .iter()
-        .map(|file| {
-            Ok(match file {
-                FileEdit::Edit { path, edits, version } => {
-                    FileEdit::Edit { path: text_path(path)?.into(), edits: edits.clone(), version: *version }
-                }
-                FileEdit::Create { path, overwrite } => {
-                    FileEdit::Create { path: normalized(path)?.into(), overwrite: *overwrite }
-                }
-                FileEdit::Rename { from, to } => {
-                    FileEdit::Rename { from: normalized(from)?.into(), to: normalized(to)?.into() }
-                }
-                FileEdit::Delete { path, recursive } => {
-                    FileEdit::Delete { path: normalized(path)?.into(), recursive: *recursive }
-                }
-            })
-        })
-        .collect::<IdeResult<_>>()?;
+    // Later paths below a resource operation refer to its future filesystem
+    // state. Preserve that suffix, including links in the old directory tree.
+    let mut changed: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut files = Vec::new();
+    for file in &edit.files {
+        let resolve = |path: &Path, text: bool| -> IdeResult<PathBuf> {
+            if !changed.is_empty() {
+                return after_resources(path, &changed, 0);
+            }
+            if text { text_path(path) } else { normalized(path) }
+        };
+        let next = match file {
+            FileEdit::Edit { path, edits, version } => {
+                FileEdit::Edit { path: resolve(path, true)?.into(), edits: edits.clone(), version: *version }
+            }
+            FileEdit::Create { path, overwrite } => {
+                FileEdit::Create { path: resolve(path, false)?.into(), overwrite: *overwrite }
+            }
+            FileEdit::Rename { from, to } => {
+                FileEdit::Rename { from: resolve(from, false)?.into(), to: resolve(to, false)?.into() }
+            }
+            FileEdit::Delete { path, recursive } => {
+                FileEdit::Delete { path: resolve(path, false)?.into(), recursive: *recursive }
+            }
+        };
+        let resources: Vec<_> = match (file, &next) {
+            (FileEdit::Rename { from, to }, FileEdit::Rename { from: new_from, to: new_to }) => {
+                vec![(from, new_from), (to, new_to)]
+            }
+            (FileEdit::Create { path, .. }, FileEdit::Create { path: new, .. })
+            | (FileEdit::Delete { path, .. }, FileEdit::Delete { path: new, .. }) => vec![(path, new)],
+            _ => Vec::new(),
+        };
+        for (original, resolved) in resources {
+            changed.push((lexical_path(original)?, resolved.to_path_buf()));
+            changed.push((resolved.to_path_buf(), resolved.to_path_buf()));
+        }
+        files.push(next);
+    }
     Ok(WorkspaceEdit { files, preconditions: edit.preconditions.clone() })
 }
 
@@ -179,11 +241,6 @@ fn paths(edit: &WorkspaceEdit) -> IdeResult<Vec<PathBuf>> {
         }
         if path.parent().is_none() {
             return Err(IdeError::invalid("cannot refactor a filesystem root"));
-        }
-        if fs::symlink_metadata(&*path).is_ok_and(|m| !m.file_type().is_symlink())
-            && let Ok(canonical) = dunce::canonicalize(&*path)
-        {
-            *path = canonical;
         }
     }
     paths.sort();
@@ -247,10 +304,7 @@ fn hash_disk(hash: &mut blake3::Hasher, path: &Path) -> IdeResult<()> {
 }
 
 /// A reverted edit may leave the dirty flag set even when all saved bytes match.
-fn has_unsaved_changes(state: &DocState) -> IdeResult<bool> {
-    if !state.dirty {
-        return Ok(false);
-    }
+fn differs_from_disk(state: &DocState) -> IdeResult<bool> {
     let text = state.doc.text_for_save();
     let bytes = if state.native_to_ascii {
         ide_vfs::encode_properties_ascii(&text).into_bytes()
@@ -285,7 +339,7 @@ impl Documents {
                 for id in self.open_documents() {
                     self.with_doc(id, |state| {
                         let file = text_path(&state.path)?;
-                        if file.starts_with(path) && has_unsaved_changes(state)? {
+                        if state.dirty && file.starts_with(path) && differs_from_disk(state)? {
                             dirty.push((
                                 file,
                                 state.doc.text(),
@@ -582,7 +636,7 @@ impl Documents {
                         // In-place rename restores its temporary typing before the
                         // server request. A dirty flag alone can therefore describe
                         // a buffer whose encoded bytes already match the saved file.
-                        let unsaved = self.with_doc(info.id, |state| has_unsaved_changes(state))?;
+                        let unsaved = self.with_doc(info.id, |state| Ok(state.dirty && differs_from_disk(state)?))?;
                         self.apply_edits(info.id, edits)?;
                         // Do not save unrelated unsaved work as a side effect of a refactoring.
                         if !unsaved {
@@ -682,7 +736,8 @@ impl Documents {
                 state.disk_len = disk_len(&state.path);
                 let disk_failed =
                     text_path(&state.path).is_ok_and(|path| failed_paths.iter().any(|failed| path.starts_with(failed)));
-                self.set_dirty(*id, state, before.dirty || disk_failed);
+                let dirty = disk_failed || (before.dirty && differs_from_disk(state)?);
+                self.set_dirty(*id, state, dirty);
                 Ok(())
             });
             if let Err(error) = result {

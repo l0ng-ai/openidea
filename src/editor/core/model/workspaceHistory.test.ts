@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { redo, redoDepth, undo, undoDepth, history } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { workspaceEditHistory } from "@/editor/api";
+import { installWorkspaceEditUndo } from "@/features/code-insight/workspaceUndo";
+import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
@@ -41,8 +43,8 @@ afterEach(() => {
   manager.stop();
 });
 
-async function open(path: string) {
-  const slot = new EditorSlot(await manager.acquire(path), String(slots.length), host);
+async function open(path: string, from?: EditorSlot) {
+  const slot = new EditorSlot(await manager.acquire(path), String(slots.length), host, from ? { from } : undefined);
   slots.push(slot);
   return slot;
 }
@@ -138,4 +140,78 @@ it("supports direct CodeMirror Undo from an attached diff view", async () => {
   attached.destroy();
   attached = null;
   att.release();
+});
+
+it.each(["closed file", "new split"])("can redo after a %s opens following Undo", async (kind) => {
+  const a = await open("/p/A.java");
+  await rename();
+  await workspaceEditHistory(9);
+  const next = await open(kind === "closed file" ? "/p/B.java" : "/p/A.java", kind === "new split" ? a : undefined);
+  expect(next.currentState().doc.toString()).toBe("old");
+  historyStep(a, true);
+  await vi.waitFor(() => expect(commands.redoWorkspaceEdit).toHaveBeenCalledExactlyOnceWith(9));
+  await vi.waitFor(() => expect(next.currentState().doc.toString()).toBe("new"));
+  expect(undoDepth(next.currentState())).toBe(1);
+  expect(notify).not.toHaveBeenCalled();
+});
+
+it("keeps the refactoring notification in sync with editor Undo and Redo", async () => {
+  const notices: Parameters<NotificationService["notify"]>[0][] = [];
+  provideNotificationService({
+    notify: (n) => {
+      notices.push(n);
+    },
+  });
+  const stop = installWorkspaceEditUndo();
+  try {
+    const a = await open("/p/A.java");
+    await rename();
+    expect(notices.at(-1)?.actions?.[0]?.label).toBe("Undo");
+    historyStep(a);
+    await vi.waitFor(() => expect(notices.at(-1)?.actions?.[0]?.label).toBe("Redo"));
+    historyStep(a, true);
+    await vi.waitFor(() => expect(notices.at(-1)?.actions?.[0]?.label).toBe("Undo"));
+    await notices.at(-1)!.actions![0]!.run();
+    expect(notices.at(-1)?.actions?.[0]?.label).toBe("Redo");
+    await notices.at(-1)!.actions![0]!.run();
+    expect(a.currentState().doc.toString()).toBe("new");
+    expect(notices.at(-1)?.actions?.[0]?.label).toBe("Undo");
+  } finally {
+    stop();
+  }
+});
+
+it("rebuilds multiple redo markers in order when a closed file opens", async () => {
+  const a = await open("/p/A.java");
+  await rename();
+  await replace("alt");
+  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 10, paths: ["/p/A.java", "/p/B.java"] });
+  commands.undoWorkspaceEdit.mockImplementation(async (id: number) => {
+    await replace(id === 10 ? "new" : "old");
+    return { status: "ok", data: null };
+  });
+  commands.redoWorkspaceEdit.mockImplementation(async (id: number) => {
+    await replace(id === 10 ? "alt" : "new");
+    return { status: "ok", data: null };
+  });
+  await workspaceEditHistory(10);
+  await workspaceEditHistory(9);
+  const b = await open("/p/B.java");
+  expect(redoDepth(b.currentState())).toBe(2);
+  historyStep(b, true);
+  await vi.waitFor(() => expect(a.currentState().doc.toString()).toBe("new"));
+  historyStep(a, true);
+  await vi.waitFor(() => expect(b.currentState().doc.toString()).toBe("alt"));
+  expect(commands.redoWorkspaceEdit.mock.calls.map(([id]) => id)).toEqual([9, 10]);
+});
+
+it("refuses redo when a newly opened affected editor has newer typing", async () => {
+  await open("/p/A.java");
+  await rename();
+  await workspaceEditHistory(9);
+  const b = await open("/p/B.java");
+  b.dispatchLocal({ changes: { from: 3, insert: " own" }, userEvent: "input.type" });
+  await expect(workspaceEditHistory(9, true)).rejects.toThrow("Undo newer editor changes");
+  expect(commands.redoWorkspaceEdit).not.toHaveBeenCalled();
+  expect(b.currentState().doc.toString()).toBe("old own");
 });

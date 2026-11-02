@@ -2,7 +2,7 @@
 import { invertedEffects, isolateHistory, redo, undo } from "@codemirror/commands";
 import { EditorState, Prec, StateEffect, type Transaction, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { _provideWorkspaceHistory, isExternalChange } from "@/editor/api";
+import { _emitWorkspaceEditHistory, _provideWorkspaceHistory, isExternalChange } from "@/editor/api";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
@@ -36,6 +36,13 @@ export class WorkspaceHistory {
         this.records.clear();
         this.project = useProject.getState().project;
       }
+      // A new edit invalidates redo for any overlapping workspace transaction.
+      for (const [key, record] of this.records)
+        if (
+          record.undone &&
+          record.paths.some((path) => this.affects(paths, path) || paths.some((root) => root.startsWith(`${path}/`)))
+        )
+          this.records.delete(key);
       this.records.set(id, { paths, undone: false });
       while (this.records.size > 20) this.records.delete(this.records.keys().next().value!);
       for (const target of this.targets) if (this.affects(paths, target.path)) this.mark(target, id);
@@ -54,8 +61,14 @@ export class WorkspaceHistory {
 
   attach(target: WorkspaceHistoryTarget): () => void {
     this.targets.add(target);
-    for (const [id, record] of this.records) {
-      if (!record.undone && this.affects(record.paths, target.path)) this.mark(target, id);
+    const records = [...this.records].filter(([, record]) => this.affects(record.paths, target.path));
+    for (const [id] of records) this.mark(target, id);
+    // Build the same done/undone marker stacks as existing editors, without
+    // replaying any backend operation or changing the newly opened text.
+    for (const [id, record] of records.reverse()) {
+      if (!record.undone) continue;
+      const tr = this.step(target, id, false);
+      if (tr) target.dispatch(tr);
     }
     return () => this.targets.delete(target);
   }
@@ -148,6 +161,7 @@ export class WorkspaceHistory {
         if (tr) target.dispatch(tr);
       }
       record.undone = !forward;
+      _emitWorkspaceEditHistory({ id, undone: record.undone });
     } catch (error) {
       // A refused backend restore must leave the initiating editor's history intact.
       if (source && this.targets.has(source)) {

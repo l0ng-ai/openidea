@@ -321,6 +321,7 @@ fn rename_after_restoring_inplace_typing_saves_but_real_unsaved_work_stays_dirty
     let id = undo_id(&events);
     docs.undo_workspace_edit(id).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+    assert!(!docs.snapshot(info.id).unwrap().dirty, "restoring saved bytes must clear a stale dirty flag");
     docs.redo_workspace_edit(id).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
     assert!(!docs.snapshot(info.id).unwrap().dirty);
@@ -384,4 +385,79 @@ fn undo_accepts_typing_that_was_reverted_to_the_saved_refactoring() {
     assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
     assert_eq!(docs.snapshot(info.id).unwrap().text, "old");
     assert!(!docs.snapshot(info.id).unwrap().dirty);
+}
+
+#[cfg(unix)]
+#[test]
+fn replacing_a_symlink_then_editing_the_new_file_never_writes_its_old_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("precious.txt");
+    let link = tmp.path().join("new.txt");
+    std::fs::write(&target, "old target\n").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let (docs, events) = recorded_documents();
+    let target_doc = docs.open(&target).unwrap();
+    let mut edit = WorkspaceEdit {
+        files: vec![
+            FileEdit::Delete { path: link.clone().into(), recursive: false },
+            FileEdit::Create { path: link.clone().into(), overwrite: false },
+            FileEdit::Edit {
+                path: link.clone().into(),
+                version: None,
+                edits: vec![TextEdit { range: Range::point(Pos::new(0, 0)), new_text: "new file\n".into() }],
+            },
+        ],
+        ..Default::default()
+    };
+    docs.prepare_workspace_edit(&mut edit).unwrap();
+    docs.apply_workspace_edit(&edit).unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "old target\n");
+    assert_eq!(docs.snapshot(target_doc.id).unwrap().text, "old target\n");
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "new file\n");
+    assert!(!std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    let id = undo_id(&events);
+    docs.undo_workspace_edit(id).unwrap();
+    assert_eq!(std::fs::read_link(&link).unwrap(), target);
+    docs.redo_workspace_edit(id).unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "old target\n");
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "new file\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn replacing_a_directory_symlink_does_not_resolve_later_child_paths_through_its_old_target() {
+    for alias in 0..3 {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("precious");
+        let link = tmp.path().join("new");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("file.txt"), "old target\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let alternate = tmp.path().join("alternate");
+        std::os::unix::fs::symlink(tmp.path(), &alternate).unwrap();
+        let shortcut = tmp.path().join("shortcut");
+        std::os::unix::fs::symlink(&link, &shortcut).unwrap();
+        let edited = match alias {
+            0 => link.join("file.txt"),
+            1 => alternate.join("new/file.txt"),
+            _ => shortcut.join("file.txt"),
+        };
+        let docs = documents();
+        let mut edit = WorkspaceEdit {
+            files: vec![
+                FileEdit::Delete { path: link.clone().into(), recursive: false },
+                FileEdit::Create { path: link.join("file.txt").into(), overwrite: false },
+                FileEdit::Edit {
+                    path: edited.into(),
+                    version: None,
+                    edits: vec![TextEdit { range: Range::point(Pos::new(0, 0)), new_text: "new file\n".into() }],
+                },
+            ],
+            ..Default::default()
+        };
+        docs.prepare_workspace_edit(&mut edit).unwrap();
+        docs.apply_workspace_edit(&edit).unwrap();
+        assert_eq!(std::fs::read_to_string(target.join("file.txt")).unwrap(), "old target\n");
+        assert_eq!(std::fs::read_to_string(link.join("file.txt")).unwrap(), "new file\n");
+    }
 }
