@@ -96,9 +96,10 @@ describe("registry helpers", () => {
       named("zed", "Zed"),
       named("cline", "Cline"),
       named("amp-acp", "Amp"),
+      named("copilot", "GitHub Copilot"),
       named("bob", "Bob", "2.0.9"),
     ]);
-    expect(sorted.map((a) => a.name)).toEqual(["Bob", "Amp", "Cline", "Agoragentic", "Zed"]);
+    expect(sorted.map((a) => a.name)).toEqual(["Bob", "GitHub Copilot", "Amp", "Cline", "Agoragentic", "Zed"]);
   });
 
   it("drops a removed agent this system cannot install again", () => {
