@@ -16,9 +16,11 @@ import {
   Tabs,
   type MenuItem,
   type TabItem,
+  type TabsDnd,
 } from "@/ui";
 import {
   getSession,
+  moveTab,
   newTab,
   publishFocus,
   renameTab,
@@ -35,6 +37,13 @@ import { TerminalFindBar } from "./FindBar";
 import styles from "./Terminal.module.css";
 
 const TAB_PREFIX = "openidea-terminal";
+
+/** Dragging a tab reorders the sessions, like IDEA's terminal tabs. */
+const TAB_DND: TabsDnd = {
+  type: "application/x-openidea-terminal-tab",
+  payload: (id) => id,
+  onDrop: (id, index) => moveTab(id, index),
+};
 
 /** Full title when the label is trimmed, then the working directory. */
 function tabTooltip(tab: TerminalTab, sessions: Parameters<typeof tabTitle>[1]): string | undefined {
@@ -336,6 +345,7 @@ export function TerminalTabs() {
         onClose={(id) => void onClose(id)}
         onContextMenu={tabMenu}
         panelIdPrefix={TAB_PREFIX}
+        dnd={TAB_DND}
         trailing={
           <div className={styles.tabActions}>
             <IconButton icon="plus" size="small" action="terminal.new" title="New Tab" />
