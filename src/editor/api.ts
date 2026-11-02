@@ -317,6 +317,7 @@ export function editorCorner(view: EditorView): HTMLElement {
  */
 export const CONTRIBUTED_FORMAT = "openideaFormat";
 export const CONTRIBUTED_DEFINITION = "openideaDefinition";
+export const CONTRIBUTED_LINK_AT = "openideaLinkAt";
 export const CONTRIBUTED_HOVER = "openideaHover";
 
 /** Reformat Code: replacements for `range` (the selection) or the whole document. */
@@ -326,6 +327,12 @@ export type ContributedFormatter = (
 ) => Array<{ from: number; to: number; insert: string }>;
 /** Go to Declaration / ⌘-click: `true` when it handled `pos`. */
 export type ContributedDefinition = (view: EditorView, pos: number) => boolean;
+/**
+ * ⌘-hover: the range `CONTRIBUTED_DEFINITION` navigates from at `pos` (underlined
+ * whole), null where it would decline. Without it, every position of a document
+ * with a contributed definition counts as navigable.
+ */
+export type ContributedLinkAt = (state: EditorState, pos: number) => { from: number; to: number } | null;
 /** Hover and Quick Documentation: Markdown about the symbol at `pos`. */
 export type ContributedHover = (
   state: EditorState,

@@ -254,6 +254,20 @@ impl wit_host::Host for StoreData {
         Ok(sandbox::read_text(&real))
     }
 
+    fn list_dir(&mut self, path: String) -> wasmtime::Result<Result<Vec<wit_host::DirEntry>, String>> {
+        self.require(Permission::ProjectRead)?;
+        let Some(root) = self.invocation.workspace_root.clone() else {
+            return Ok(Err("no project is open".into()));
+        };
+        let real = match sandbox::resolve_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(sandbox::list_dir(&real).map(|entries| {
+            entries.into_iter().map(|e| wit_host::DirEntry { name: e.name, is_dir: e.is_dir }).collect()
+        }))
+    }
+
     fn insert_text(&mut self, text: String) -> wasmtime::Result<()> {
         self.require(Permission::EditorWrite)?;
         self.emit(PluginEvent::InsertText { plugin_id: self.plugin_id.clone(), text: clip(text, MAX_TEXT) });

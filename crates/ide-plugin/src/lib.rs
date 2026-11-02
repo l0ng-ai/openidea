@@ -15,14 +15,17 @@
 //! (dev plugins, loaded by [`PluginHost::sync_project`]).
 
 mod manifest;
+mod navigation;
 mod runtime;
 mod sandbox;
 mod theme;
 mod types;
 
 pub use manifest::{
-    API_VERSION, CommandDecl, Contributions, FileDecl, MANIFEST_FILE, Permission, PluginManifest, ThemeDecl,
+    API_VERSION, CodeNavigationDecl, CommandDecl, Contributions, FileDecl, MANIFEST_FILE, Permission, PluginManifest,
+    ThemeDecl,
 };
+pub use navigation::{PluginNavDiagnostic, PluginNavLink, PluginNavMarker, PluginNavTarget, PluginNavigation};
 pub use sandbox::resolve_in_root;
 pub use theme::{ThemeDef, ThemeKind};
 pub use types::*;
@@ -653,7 +656,36 @@ impl PluginHost {
                 .iter()
                 .map(|t| PluginTheme { id: t.id.clone(), name: t.name.clone(), kind: t.kind })
                 .collect(),
+            code_navigation: m.contributes.code_navigation.clone(),
         }
+    }
+
+    /// Runs code navigation provider `index` of plugin `id` for `file` of the
+    /// invocation's project: `None` when none of the provider's markers exists
+    /// there, else the links and markers the plugin's command returned (JSON,
+    /// see [`navigation`]). Whether `file` matches the provider's `files` globs
+    /// is the caller's business.
+    pub fn navigation(
+        &self,
+        id: &str,
+        index: usize,
+        file: &Path,
+        invocation: Invocation,
+    ) -> IdeResult<Option<PluginNavigation>> {
+        let plugin = self.get(id)?;
+        let decl =
+            plugin.manifest.contributes.code_navigation.get(index).cloned().ok_or_else(|| {
+                IdeError::not_found(format!("plugin {id:?} has no code navigation provider #{index}"))
+            })?;
+        let Some(root) = invocation.workspace_root.clone() else { return Ok(None) };
+        if !navigation::applies(&decl, &root) {
+            return Ok(None);
+        }
+        let arg = navigation::command_arg(file);
+        let json = self.run_command(id, &decl.command, Some(&arg), invocation)?.unwrap_or_default();
+        navigation::parse_navigation(&json, &root, file)
+            .map(Some)
+            .map_err(|e| IdeError::internal(format!("plugin {id:?}: {e}")))
     }
 }
 

@@ -866,6 +866,18 @@ export const commands = {
 	pluginReload: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_reload", { id })),
 	/**  Runs a plugin command in the context of this window's project. */
 	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg })),
+	/**
+	 *  Runs code navigation provider `index` of `plugin_id` (`[[contributes.code-navigation]]`)
+	 *  for `file` (absolute) of this window's project: the links and gutter markers of
+	 *  the file, `None` when the provider does not apply to the project (no marker).
+	 */
+	pluginNavigation: (pluginId: string, index: number, file: string) => typedError<{
+	links?: PluginNavLink[],
+	markers?: PluginNavMarker[],
+	diagnostics?: PluginNavDiagnostic[],
+	/**  Files (or directories) read; a change to one re-runs the command for the file. */
+	files?: string[],
+} | null, IdeError>(__TAURI_INVOKE("plugin_navigation", { pluginId, index, file })),
 	/**  The UI reports the focused editor's file (`active-file` for plugins). */
 	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
@@ -1832,6 +1844,25 @@ export type CodeEditingSettings = {
 export type CodeLens = {
 	range: Range,
 	command: Command | null,
+};
+
+/**
+ *  A code navigation provider: for a file matching `files`, the IDE runs
+ *  `command` with `{"file": "<absolute path>"}` and expects links and markers back.
+ */
+export type CodeNavigationDecl = {
+	/**  The plugin command to run (`run-command(command, Some(json))`). */
+	command: string,
+	/**
+	 *  Project-relative files or directories; the provider applies when one
+	 *  exists (`config/routes.rb`). Empty: applies to every project.
+	 */
+	markers?: string[],
+	/**
+	 *  Project-relative glob patterns (`*`, `**`, `?`) of the files the IDE
+	 *  asks about when an editor opens or saves them.
+	 */
+	files?: string[],
 };
 
 /**  Editor › Code Style (General tab + per-language overrides). */
@@ -4678,7 +4709,7 @@ export type PathCompletion = {
 
 /**  Capabilities a plugin must declare to use the gated host functions. */
 export type Permission = 
-/**  `workspace-root`, `read-file` (inside the project root only). */
+/**  `workspace-root`, `read-file`, `list-dir` (inside the project root only). */
 "project-read" | 
 /**  `active-file`. */
 "editor-read" | 
@@ -4710,12 +4741,74 @@ export type PluginInfo = {
 	commands: CommandDecl[],
 	languages: PluginLanguage[],
 	themes: PluginTheme[],
+	/**  Code navigation providers declared in the manifest (`plugin_navigation` runs them). */
+	codeNavigation: CodeNavigationDecl[],
 };
 
 export type PluginLanguage = {
 	id: string,
 	name: string,
 	extensions: string[],
+};
+
+export type PluginNavDiagnostic = {
+	/**  Absolute after parsing; default: the file the command was asked about. */
+	file?: string,
+	line: number,
+	message: string,
+};
+
+/**  A text range that navigates (Go to Declaration, ⌘-click, middle click). */
+export type PluginNavLink = {
+	/**  1-based line. */
+	line: number,
+	/**  0-based UTF-16 columns, `from` inclusive, `to` exclusive. */
+	from: number,
+	to: number,
+	/**  Title of the chooser when there are several targets. */
+	title?: string | null,
+	targets: PluginNavTarget[],
+};
+
+/**  A gutter icon on a line, opening its targets. */
+export type PluginNavMarker = {
+	/**  1-based line. */
+	line: number,
+	/**  `ui/icons` name (`file-html`, `db-table`, `web`…); unknown names get the default icon. */
+	icon?: string | null,
+	tooltip?: string | null,
+	/**  Title of the chooser when there are several targets. */
+	title?: string | null,
+	/**  May be empty: an informational icon (the tooltip says what is missing). */
+	targets?: PluginNavTarget[],
+};
+
+/**
+ *  Where a link or marker leads: a position in a file, or a table of the
+ *  project's database (opened in the Database tool window).
+ */
+export type PluginNavTarget = {
+	/**  Target file (absolute after parsing); exclusive with `table`. */
+	file?: string | null,
+	/**  1-based line in `file` (default: the first). */
+	line?: number | null,
+	/**  0-based UTF-16 column in `line` (default: the line start). */
+	col?: number | null,
+	/**  Database table; exclusive with `file`. */
+	table?: string | null,
+	/**  Schema of `table` (default: the data source's default schema). */
+	schema?: string | null,
+	/**  Label in the targets chooser (default: the file or table name). */
+	title?: string | null,
+};
+
+/**  What a plugin knows about one file. */
+export type PluginNavigation = {
+	links?: PluginNavLink[],
+	markers?: PluginNavMarker[],
+	diagnostics?: PluginNavDiagnostic[],
+	/**  Files (or directories) read; a change to one re-runs the command for the file. */
+	files?: string[],
 };
 
 export type PluginSource = 

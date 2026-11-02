@@ -36,6 +36,13 @@ interface types {
 interface host {
     use types.{log-level, notification-level};
 
+    /// One entry of a directory listing (`list-dir`).
+    record dir-entry {
+        name: string,
+        /// A directory (symbolic links are not followed: a link is neither).
+        is-dir: bool,
+    }
+
     /// Writes to the IDE log (tagged with the plugin id).
     log: func(level: log-level, message: string);
 
@@ -57,6 +64,11 @@ interface host {
     /// Reads a UTF-8 text file inside the project root (absolute, or relative
     /// to the root). Paths escaping the root are rejected. Requires `project-read`.
     read-file: func(path: string) -> result<string, string>;
+
+    /// Entries of a directory inside the project root (absolute, or relative
+    /// to the root), sorted by name, no recursion, at most 10 000. Paths
+    /// escaping the root are rejected. Requires `project-read`.
+    list-dir: func(path: string) -> result<list<dir-entry>, string>;
 
     /// Inserts text at the cursor of the active editor. Requires `editor-write`.
     insert-text: func(text: string);

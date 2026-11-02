@@ -38,6 +38,7 @@ import { activate as analysis } from "./analysis";
 import { activate as services } from "./services";
 import { activate as github } from "./github";
 import { activate as httpClient } from "./http-client";
+import { activate as codeNavigation } from "./code-navigation";
 import { activate as database } from "./database";
 import { activate as deployment } from "./deployment";
 import { activate as agents, activateSettingsPages as agentsPages } from "./agents";
@@ -82,6 +83,7 @@ const features: Array<[string, Activate]> = [
   ["services", services],
   ["github", github],
   ["http-client", httpClient],
+  ["code-navigation", codeNavigation],
   ["database", database],
   ["deployment", deployment],
   ["agents", agents],

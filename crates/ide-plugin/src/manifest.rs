@@ -12,7 +12,7 @@ pub const MANIFEST_FILE: &str = "plugin.toml";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum Permission {
-    /// `workspace-root`, `read-file` (inside the project root only).
+    /// `workspace-root`, `read-file`, `list-dir` (inside the project root only).
     ProjectRead,
     /// `active-file`.
     EditorRead,
@@ -65,6 +65,26 @@ pub struct Contributions {
     pub languages: Vec<FileDecl>,
     #[serde(default)]
     pub themes: Vec<ThemeDecl>,
+    /// Code navigation providers: links and gutter markers per file (see `navigation.rs`).
+    #[serde(default)]
+    pub code_navigation: Vec<CodeNavigationDecl>,
+}
+
+/// A code navigation provider: for a file matching `files`, the IDE runs
+/// `command` with `{"file": "<absolute path>"}` and expects links and markers back.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodeNavigationDecl {
+    /// The plugin command to run (`run-command(command, Some(json))`).
+    pub command: String,
+    /// Project-relative files or directories; the provider applies when one
+    /// exists (`config/routes.rb`). Empty: applies to every project.
+    #[serde(default)]
+    pub markers: Vec<String>,
+    /// Project-relative glob patterns (`*`, `**`, `?`) of the files the IDE
+    /// asks about when an editor opens or saves them.
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -217,6 +237,11 @@ mod tests {
         [[contributes.themes]]
         path = "themes/dark.json"
         editor-scheme = "themes/dark.scheme.json"
+
+        [[contributes.code-navigation]]
+        command = "navigation"
+        markers = ["config/routes.rb"]
+        files = ["config/routes.rb", "app/controllers/**/*.rb"]
     "#;
 
     #[test]
@@ -230,6 +255,10 @@ mod tests {
             vec![Path::new("dist/plugin.wasm"), Path::new("themes/dark.json"), Path::new("themes/dark.scheme.json")]
         );
         assert!(m.has(Permission::EditorWrite) && !m.has(Permission::EditorRead));
+        let nav = &m.contributes.code_navigation[0];
+        assert_eq!(nav.command, "navigation");
+        assert_eq!(nav.markers, ["config/routes.rb"]);
+        assert_eq!(nav.files, ["config/routes.rb", "app/controllers/**/*.rb"]);
     }
 
     #[test]
