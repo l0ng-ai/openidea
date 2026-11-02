@@ -43,6 +43,18 @@ pub trait Launcher: Send + Sync + 'static {
         self.launch(config, root, handler, on_stderr)
     }
 
+    /// Starts a server and reports its executable when the launcher runs a local process.
+    fn launch_resolved(
+        &self,
+        config: &LanguageServerConfig,
+        root: &Path,
+        handler: Arc<dyn Handler>,
+        on_stderr: Box<dyn Fn(String) + Send + Sync>,
+        cancel: &CancellationToken,
+    ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
+        self.launch_cancellable(config, root, handler, on_stderr, cancel).map(|peer| (peer, None))
+    }
+
     /// Whether `config` could start without a `Missing` error.
     fn available(&self, _config: &LanguageServerConfig, _root: &Path) -> bool {
         true
@@ -72,6 +84,17 @@ impl Launcher for ProcessLauncher {
         on_stderr: Box<dyn Fn(String) + Send + Sync>,
         cancel: &CancellationToken,
     ) -> Result<Peer, LaunchError> {
+        self.launch_resolved(config, root, handler, on_stderr, cancel).map(|(peer, _)| peer)
+    }
+
+    fn launch_resolved(
+        &self,
+        config: &LanguageServerConfig,
+        root: &Path,
+        handler: Arc<dyn Handler>,
+        on_stderr: Box<dyn Fn(String) + Send + Sync>,
+        cancel: &CancellationToken,
+    ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
         let search = server_search_path(config);
         let binary = ide_core::tool_path::find_command(&config.command, &search, root)
             .and_then(|b| resolve_rustup_proxy(&config.command, b));
@@ -87,10 +110,12 @@ impl Launcher for ProcessLauncher {
                 handler,
                 on_stderr,
                 cancel,
-            );
+            )
+            .map(|peer| (peer, None));
         }
         let binary = binary.ok_or(LaunchError::Missing)?;
         Peer::spawn(&binary.to_string_lossy(), &config.args, root, &env, handler, on_stderr)
+            .map(|peer| (peer, Some(binary.clone())))
             .map_err(|e| LaunchError::Failed(format!("failed to start {}: {e}", binary.display())))
     }
 
