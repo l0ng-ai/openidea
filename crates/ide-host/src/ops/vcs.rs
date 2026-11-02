@@ -23,4 +23,5 @@ pub async fn status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>> {
 }
 
 mod commands;
+mod safe_commit_file;
 pub use commands::*;

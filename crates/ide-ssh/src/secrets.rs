@@ -22,9 +22,23 @@ impl SecretFile {
         self.read().remove(key)
     }
 
+    /// Reads a secret without treating malformed or unreadable storage as empty.
+    pub fn get_checked(&self, key: &str) -> IdeResult<Option<String>> {
+        let _g = self.lock.lock();
+        Ok(self.read_checked()?.remove(key))
+    }
+
     pub fn set(&self, key: &str, secret: &str) -> IdeResult<()> {
         let _g = self.lock.lock();
         let mut all = self.read();
+        all.insert(key.to_owned(), secret.to_owned());
+        self.write(&all)
+    }
+
+    /// Atomically writes a secret only when existing storage can be read safely.
+    pub fn set_checked(&self, key: &str, secret: &str) -> IdeResult<()> {
+        let _g = self.lock.lock();
+        let mut all = self.read_checked()?;
         all.insert(key.to_owned(), secret.to_owned());
         self.write(&all)
     }
@@ -55,6 +69,14 @@ impl SecretFile {
         }
     }
 
+    fn read_checked(&self) -> IdeResult<BTreeMap<String, String>> {
+        match std::fs::read(&self.path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| IdeError::invalid("Saved secret file is invalid")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(_) => Err(IdeError::unavailable("Could not read saved secrets")),
+        }
+    }
+
     fn write(&self, all: &BTreeMap<String, String>) -> IdeResult<()> {
         let err = |e: std::io::Error| IdeError::unavailable(format!("saved passwords: {}: {e}", self.path.display()));
         if let Some(dir) = self.path.parent() {
@@ -74,6 +96,17 @@ impl SecretFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strict_read_and_write_refuse_corrupted_secret_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("secret.json");
+        std::fs::write(&path, b"bad json").unwrap();
+        let file = SecretFile::new(path.clone());
+        assert!(file.get_checked("provider").is_err());
+        assert!(file.set_checked("provider", "new").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"bad json");
+    }
 
     #[test]
     fn stores_and_forgets_secrets() {

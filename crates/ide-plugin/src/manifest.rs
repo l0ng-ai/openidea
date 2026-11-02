@@ -18,6 +18,8 @@ pub enum Permission {
     EditorRead,
     /// `insert-text`, `replace-selection`.
     EditorWrite,
+    /// Generate commit messages using the provider configured by the user.
+    AiCompletions,
 }
 
 impl Permission {
@@ -26,6 +28,7 @@ impl Permission {
             Permission::ProjectRead => "project-read",
             Permission::EditorRead => "editor-read",
             Permission::EditorWrite => "editor-write",
+            Permission::AiCompletions => "ai-completions",
         }
     }
 }
@@ -241,6 +244,14 @@ mod tests {
 
     fn err(src: &str) -> String {
         PluginManifest::parse(src).unwrap_err()
+    }
+
+    #[test]
+    fn declares_ai_completions_without_granting_arbitrary_network() {
+        let source = "id = \"writer\"\nname = \"Writer\"\nversion = \"1.0.0\"\nopenidea-api = \"0.1\"\npermissions = [\"ai-completions\"]";
+        let manifest = PluginManifest::parse(source).unwrap();
+        assert!(manifest.has(Permission::AiCompletions));
+        assert!(!manifest.has(Permission::ProjectRead));
     }
 
     #[test]

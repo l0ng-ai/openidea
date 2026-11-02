@@ -80,7 +80,12 @@ fn fixture(limits: Limits) -> Fixture {
 
 impl Fixture {
     fn inv(&self) -> Invocation {
-        Invocation { client: Some("main".into()), workspace_root: Some(self.project.clone()), buffer_text: None }
+        Invocation {
+            client: Some("main".into()),
+            workspace_root: Some(self.project.clone()),
+            buffer_text: None,
+            isolated: false,
+        }
     }
 
     fn run(&self, plugin: &str, cmd: &str, arg: Option<&str>) -> Result<Option<String>, String> {
@@ -146,7 +151,7 @@ fn read_file_is_confined_to_the_project() {
     assert!(err.contains("outside the project root"), "{err}");
     assert!(f.run("misbehave", "read", Some("/etc/hosts")).is_err());
     // Without a project there is nothing to read.
-    let inv = Invocation { client: None, workspace_root: None, buffer_text: None };
+    let inv = Invocation { client: None, workspace_root: None, buffer_text: None, isolated: false };
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), f.project.to_string_lossy());
@@ -509,4 +514,42 @@ fn restricted_dev_plugin_has_no_activation_registration() {
     assert!(f.run("hello", "word-count", None).is_err());
     f.host.sync_project(&f.project);
     assert!(f.host.list(Some(&f.project)).plugins.is_empty());
+}
+
+#[test]
+fn ai_session_rejects_untrusted_replacement_and_disable_reenable() {
+    let f = fixture(Limits::default());
+    let pkg = f._tmp.path().join("provider");
+    std::fs::create_dir_all(pkg.join("dist")).unwrap();
+    let manifest = std::fs::read_to_string(sample("hello").join("plugin.toml"))
+        .unwrap()
+        .replace("\"editor-write\"]", "\"editor-write\", \"ai-completions\"]");
+    std::fs::write(pkg.join("plugin.toml"), manifest).unwrap();
+    std::fs::copy(sample("hello").join("dist/plugin.wasm"), pkg.join("dist/plugin.wasm")).unwrap();
+    f.host.install_from_dir(&pkg).unwrap();
+    let session = f.host.authorize_ai("hello", &f.project).unwrap();
+    assert!(f.host.check_ai_session(&session).is_ok());
+    f.host.set_enabled("hello", false).unwrap();
+    f.host.set_enabled("hello", true).unwrap();
+    assert!(f.host.check_ai_session(&session).is_err());
+    let another = f.host.authorize_ai("hello", &f.project).unwrap();
+    f.host.install_from_dir(&pkg).unwrap();
+    assert!(f.host.check_ai_session(&another).is_err());
+}
+
+#[test]
+fn ai_invocation_cannot_access_project_or_editors() {
+    let f = fixture(Limits::default());
+    let pkg = f._tmp.path().join("provider");
+    std::fs::create_dir_all(pkg.join("dist")).unwrap();
+    let manifest = std::fs::read_to_string(sample("hello").join("plugin.toml"))
+        .unwrap()
+        .replace("\"editor-write\"]", "\"editor-write\", \"ai-completions\"]");
+    std::fs::write(pkg.join("plugin.toml"), manifest).unwrap();
+    std::fs::copy(sample("hello").join("dist/plugin.wasm"), pkg.join("dist/plugin.wasm")).unwrap();
+    f.host.install_from_dir(&pkg).unwrap();
+    f.take_events();
+    let session = f.host.authorize_ai("hello", &f.project).unwrap();
+    assert!(f.host.run_ai_command(&session, "insert-date", None).is_err());
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::InsertText { .. })));
 }

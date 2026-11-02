@@ -194,6 +194,40 @@ pub(crate) fn blob_at(repo: &gix::Repository, rel: &str, rev: &str) -> IdeResult
     blob_data(repo, entry.oid().to_owned()).map(Some)
 }
 
+/// Reads one selected Git snapshot, refusing symlink entries before accessing their blob.
+pub(crate) fn commit_blob_at(repo: &gix::Repository, rel: &str, rev: &str) -> IdeResult<Vec<u8>> {
+    let id = match rev {
+        ":0" => {
+            let index = repo.index_or_empty().map_err(gx)?;
+            let entry = index
+                .entry_by_path_and_stage(BStr::new(rel.as_bytes()), gix::index::entry::Stage::Unconflicted)
+                .ok_or_else(|| IdeError::not_found("File is absent in the index"))?;
+            if entry.mode == gix::index::entry::Mode::SYMLINK || entry.mode.is_submodule() {
+                return Err(IdeError::invalid("Selected Git entry is not a regular file"));
+            }
+            entry.id
+        }
+        "HEAD" => {
+            let tree = tree_of(repo, rev)?.ok_or_else(|| IdeError::not_found("HEAD is unavailable"))?;
+            let entry = tree
+                .lookup_entry_by_path(Path::new(rel))
+                .map_err(gx)?
+                .ok_or_else(|| IdeError::not_found("File is absent at HEAD"))?;
+            if entry.mode().is_link() || !entry.mode().is_blob_or_symlink() {
+                return Err(IdeError::invalid("Selected Git entry is not a regular file"));
+            }
+            entry.oid().to_owned()
+        }
+        _ => return Err(IdeError::invalid("Only HEAD and the staged index may be inspected")),
+    };
+    // Reject oversized blobs before materializing their contents. Missing objects
+    // fail here rather than silently triggering an unbounded fetch.
+    if repo.find_header(id).map_err(gx)?.size() > 16 * 1024 * 1024 {
+        return Err(IdeError::invalid("Selected file is too large"));
+    }
+    blob_data(repo, id)
+}
+
 /// A blob's bytes. Partial clones (`--filter=blob:none`) lack blobs until git
 /// fetches them on demand, which gix doesn't do, so a missing one is read
 /// through the git CLI.

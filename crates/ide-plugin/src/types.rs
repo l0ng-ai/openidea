@@ -151,6 +151,8 @@ pub struct Invocation {
     pub workspace_root: Option<PathBuf>,
     /// Unsaved editor contents win over disk for `read-file`.
     pub buffer_text: Option<BufferText>,
+    /// Pure data transformation: no project, editor, registration, or log access.
+    pub isolated: bool,
 }
 
 /// Per-call resource limits for plugin code.

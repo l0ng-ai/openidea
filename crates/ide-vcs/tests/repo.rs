@@ -1593,3 +1593,53 @@ fn restricted_conflict_preview_uses_host_owned_temporary_files() {
     assert!(versions.merged.unwrap().contains("<<<<<<<"));
     assert_eq!(std::fs::read_to_string(marker).unwrap(), "untouched");
 }
+
+#[test]
+fn revision_read_uses_requested_blob_and_rejects_missing_file() {
+    let f = Fixture::new();
+    f.write("change.dat", "text before\n");
+    f.commit_all("initial");
+    std::fs::write(f.path("change.dat"), b"binary\0bytes").unwrap();
+    f.git(&["add", "change.dat"]);
+    let repo = f.repo();
+    let path = f.path("change.dat");
+    assert_eq!(repo.commit_bytes_at(&path, "HEAD").unwrap(), b"text before\n");
+    assert_eq!(repo.commit_bytes_at(&path, ":0").unwrap(), b"binary\0bytes");
+    assert!(repo.commit_bytes_at(&f.path("missing"), "HEAD").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn revision_binary_probe_rejects_git_symlinks() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    symlink("../outside", f.path("link")).unwrap();
+    symlink("missing", f.path("dangling")).unwrap();
+    f.commit_all("links");
+    let repo = f.repo();
+    for path in [f.path("link"), f.path("dangling")] {
+        assert!(repo.commit_bytes_at(&path, "HEAD").is_err());
+        assert!(repo.commit_bytes_at(&path, ":0").is_err());
+    }
+}
+
+#[test]
+fn selected_revision_read_uses_one_snapshot_and_rejects_missing() {
+    let f = Fixture::new();
+    f.write("source.ts", "committed\n");
+    f.commit_all("initial");
+    f.write("source.ts", "index\n");
+    f.git(&["add", "source.ts"]);
+    let repo = f.repo();
+    assert_eq!(repo.commit_bytes_at(&f.path("source.ts"), "HEAD").unwrap(), b"committed\n");
+    assert_eq!(repo.commit_bytes_at(&f.path("source.ts"), ":0").unwrap(), b"index\n");
+    assert!(repo.commit_bytes_at(&f.path("missing"), "HEAD").is_err());
+}
+
+#[test]
+fn selected_revision_rejects_oversized_blob() {
+    let f = Fixture::new();
+    std::fs::write(f.path("large.dat"), vec![b'x'; 16 * 1024 * 1024 + 1]).unwrap();
+    f.commit_all("large");
+    assert!(f.repo().commit_bytes_at(&f.path("large.dat"), "HEAD").is_err());
+}

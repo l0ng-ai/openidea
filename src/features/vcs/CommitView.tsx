@@ -45,6 +45,7 @@ import {
 } from "./changes";
 import { applyStash, commitChanges, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
+import { CommitMessageGeneratorButton } from "./CommitMessageGeneratorButton";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
 import { messageHistory, setAmend, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
@@ -724,6 +725,7 @@ export function CommitMessageField({ included, runner }: { included: number; run
     <>
       <div className={styles.commitBar}>
         <Checkbox checked={amend} onChange={(v) => void setAmend(v)} label="Amend" />
+        <CommitMessageGeneratorButton included={included} />
         <IconButton
           ref={historyRef}
           icon="history"

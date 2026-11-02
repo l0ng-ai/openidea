@@ -574,6 +574,12 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         repo::blob_at(&self.gix()?, &self.rel_path(path)?, rev.unwrap_or("HEAD"))
     }
+
+    /// Reads one selected HEAD/index entry without dereferencing Git symlink entries.
+    pub fn commit_bytes_at(&self, path: &Path, rev: &str) -> IdeResult<Vec<u8>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        repo::commit_blob_at(&self.gix()?, &self.rel_path(path)?, rev)
+    }
     /// Stage selected decoded hunks, retaining the index encoding, BOM and line endings.
     pub fn stage_hunks(
         &self,

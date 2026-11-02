@@ -32,6 +32,7 @@ pub mod nav;
 pub mod notebook;
 pub mod perf;
 pub mod plugin;
+pub mod plugin_ai;
 pub mod profiler;
 pub mod refactor;
 pub mod run;
@@ -235,6 +236,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_branch_info,
         vcs::vcs_line_hunks,
         vcs::vcs_file_at,
+        vcs::vcs_read_commit_working_file,
+        vcs::vcs_read_commit_revision,
         vcs::vcs_blame,
         vcs::vcs_log,
         vcs::vcs_commit_files,
@@ -262,6 +265,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_conflict_versions,
         vcs::vcs_diff_text,
         vcs::vcs_diff_hunks,
+        vcs::vcs_build_partial_patch,
         vcs::vcs_stage_hunks,
         vcs::vcs_clone,
         vcs::vcs_init,
@@ -418,6 +422,11 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_set_active_file,
         plugin::plugin_set_theme,
         plugin::plugin_set_theme_frame,
+        plugin_ai::plugin_ai_settings_get,
+        plugin_ai::plugin_ai_settings_set,
+        plugin_ai::plugin_ai_project_prompt_get,
+        plugin_ai::plugin_ai_project_prompt_set,
+        plugin_ai::plugin_generate_commit_message,
         perf::app_metrics,
         perf::clear_caches,
         analysis::inspect_code,
