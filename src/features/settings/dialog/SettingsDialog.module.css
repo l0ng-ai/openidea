@@ -203,6 +203,11 @@
   background: var(--bg-dialog, var(--bg-elev));
   color: var(--fg);
 }
+/* Linux draws no shadow for a frameless window (Wayland/KDE give undecorated
+   windows no CSD), so mark its edge in CSS instead. */
+.windowEdge {
+  box-shadow: inset 0 0 0 1px var(--border-window);
+}
 .windowBody {
   flex: 1;
   min-height: 0;
