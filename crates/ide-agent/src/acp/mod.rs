@@ -145,6 +145,16 @@ impl Negotiated {
     pub fn meta(&self, pointer: &str) -> Option<&Value> {
         self.capabilities.get("_meta")?.pointer(pointer)
     }
+
+    /// First authentication method the agent can run over ACP (`type` absent or `"agent"`).
+    pub fn agent_auth_method(&self) -> Option<&str> {
+        self.auth_methods.iter().find_map(|m| {
+            let kind = m.get("type").and_then(Value::as_str).unwrap_or("agent");
+            (kind == "agent" && m.pointer("/_meta/terminal-auth").is_none())
+                .then(|| m.get("id").and_then(Value::as_str))
+                .flatten()
+        })
+    }
 }
 
 /// The client side of one agent connection: wraps the task's [`Handler`] and, once

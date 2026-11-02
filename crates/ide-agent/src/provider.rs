@@ -53,7 +53,13 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
         "Run `codex login` in a terminal.",
     ),
     ("gemini", "Gemini CLI", Driver::Acp, &["gemini", "--experimental-acp"], "Run `gemini` in a terminal and sign in."),
-    ("copilot", "GitHub Copilot", Driver::Acp, &["copilot", "--acp"], "Run `copilot` in a terminal and sign in."),
+    (
+        "copilot",
+        "GitHub Copilot",
+        Driver::Acp,
+        &["copilot-language-server", "--acp"],
+        "Sign in with GitHub when prompted, or run `copilot` in a terminal and sign in.",
+    ),
     ("cursor", "Cursor", Driver::Acp, &["cursor-agent", "acp"], "Run `cursor-agent login` in a terminal."),
     ("opencode", "OpenCode", Driver::Acp, &["opencode", "acp"], "Run `opencode auth login` in a terminal."),
     ("qwen", "Qwen Code", Driver::Acp, &["qwen", "--experimental-acp"], "Run `qwen` in a terminal and sign in."),
@@ -165,6 +171,7 @@ pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
             }
         };
         let env: Vec<(String, String)> = agent.env.into_iter().collect();
+        let command = migrate_copilot_command(&id, &agent.command, agent.registry.is_some());
         let source = match agent.registry {
             Some(r) => AgentSource::Registry { version: r.version, update: None },
             None => AgentSource::Custom,
@@ -172,7 +179,7 @@ pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
         let mut spec = ProviderSpec {
             name: agent.name.unwrap_or_else(|| id.clone()),
             driver: agent.driver,
-            command: agent.command,
+            command,
             args: agent.args,
             env,
             login_hint: "Sign in with the agent's own command line first.".into(),
@@ -188,6 +195,27 @@ pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
         }
     }
     specs
+}
+
+/// Switches a registry-installed `copilot` command to sibling `copilot-language-server`
+/// when present in the same `.bin` directory.
+fn migrate_copilot_command(id: &str, command: &str, from_registry: bool) -> String {
+    if id == "copilot" && from_registry {
+        let path = Path::new(command);
+        let name = path.file_name().and_then(|n| n.to_str());
+        let replacement = match name {
+            Some("copilot") => Some("copilot-language-server"),
+            Some("copilot.cmd") => Some("copilot-language-server.cmd"),
+            _ => None,
+        };
+        if let (Some(parent), Some(bin)) = (path.parent(), replacement) {
+            let candidate = parent.join(bin);
+            if candidate.exists() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    command.to_owned()
 }
 
 /// Whether `command` resolves to an executable (a path, or a name on `PATH`).
@@ -259,5 +287,19 @@ mod tests {
         let spec = load(Some(path.parent().unwrap())).into_iter().find(|s| s.id == "amp-acp").unwrap();
         assert_eq!(spec.source, AgentSource::Registry { version: "0.10.0".into(), update: None });
         assert!(toml::from_str::<CustomAgent>("command = \"x\"\n[registry]\nid = \"x\"\n").is_err());
+    }
+
+    #[test]
+    fn migrates_registry_copilot_command_when_language_server_exists_in_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let old_cmd = bin.join("copilot");
+        let new_cmd = bin.join("copilot-language-server");
+        std::fs::write(&old_cmd, "").unwrap();
+        assert_eq!(migrate_copilot_command("copilot", old_cmd.to_str().unwrap(), true), old_cmd.to_str().unwrap());
+        std::fs::write(&new_cmd, "").unwrap();
+        assert_eq!(migrate_copilot_command("copilot", old_cmd.to_str().unwrap(), true), new_cmd.to_str().unwrap());
+        assert_eq!(migrate_copilot_command("copilot", old_cmd.to_str().unwrap(), false), old_cmd.to_str().unwrap());
     }
 }

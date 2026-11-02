@@ -1197,10 +1197,20 @@ impl Task {
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
 
         let mut session = None;
+        let mut tried_auth = false;
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
-            let loaded: Result<Value, RpcError> =
-                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": [] }), None).await;
+            let load_params = json!({ "sessionId": &id, "cwd": &cwd_s, "mcpServers": [] });
+            let mut loaded: Result<Value, RpcError> = peer.request("session/load", load_params.clone(), None).await;
+            if let Err(ref e) = loaded
+                && is_auth_error(e)
+                && let Some(method_id) = init.agent_auth_method()
+            {
+                tried_auth = true;
+                if peer.request::<_, Value>("authenticate", json!({ "methodId": method_id }), None).await.is_ok() {
+                    loaded = peer.request("session/load", load_params, None).await;
+                }
+            }
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
             match loaded {
@@ -1212,15 +1222,22 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let v: Value = peer
-                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": [] }), None)
-                    .await
-                    .map_err(|e| match e {
-                        RpcError::Server { ref message, .. } if message.to_lowercase().contains("auth") => {
-                            format!("{} needs you to sign in. {}", spec.name, spec.login_hint)
-                        }
-                        e => self.describe(e),
-                    })?;
+                let new_params = json!({ "cwd": &cwd_s, "mcpServers": [] });
+                let mut created: Result<Value, RpcError> = peer.request("session/new", new_params.clone(), None).await;
+                if !tried_auth
+                    && let Err(ref e) = created
+                    && is_auth_error(e)
+                    && let Some(method_id) = init.agent_auth_method()
+                    && peer.request::<_, Value>("authenticate", json!({ "methodId": method_id }), None).await.is_ok()
+                {
+                    created = peer.request("session/new", new_params, None).await;
+                }
+                let v: Value = created.map_err(|e| match e {
+                    e if is_auth_error(&e) => {
+                        format!("{} needs you to sign in. {}", spec.name, spec.login_hint)
+                    }
+                    e => self.describe(e),
+                })?;
                 let id = v.get("sessionId").and_then(Value::as_str).ok_or("the agent returned no session")?.to_owned();
                 (id, v)
             }
@@ -1688,6 +1705,10 @@ fn retry_of(update: &Value, now: f64) -> Option<AgentRetry> {
         retry_at_ms: now + n("retryDelayMs").unwrap_or(0) as f64,
         error: update.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_owned),
     })
+}
+
+fn is_auth_error(err: &RpcError) -> bool {
+    matches!(err, RpcError::Server { code, message, .. } if *code == -32000 || message.to_lowercase().contains("auth"))
 }
 
 fn model_of(config: &[AgentConfigOption]) -> Option<String> {

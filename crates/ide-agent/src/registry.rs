@@ -170,6 +170,18 @@ fn parse(text: &str) -> IdeResult<Vec<Entry>> {
             if let Some(name) = provider::builtin_name(&e.id) {
                 e.name = name.to_owned();
             }
+            if e.id == "copilot" {
+                // Use `@github/copilot-language-server --acp` (`CLIProxyAgent`, matching
+                // JetBrains IntelliJ Air) so Copilot reuses the IDE's OAuth session in
+                // `~/.config/github-copilot/apps.json` and supports `authenticate("github_oauth")`.
+                e.distribution.binary.clear();
+                e.distribution.uvx = None;
+                e.distribution.npx = Some(Package {
+                    package: "@github/copilot-language-server@latest".into(),
+                    args: vec!["--acp".into()],
+                    env: BTreeMap::new(),
+                });
+            }
             e
         })
         .collect())
@@ -240,8 +252,12 @@ fn choose<'a>(entry: &'a Entry, platform: Platform, on_path: &dyn Fn(&str) -> bo
 }
 
 /// Registry ids that map to a shorter built-in provider id (`<config>/agents/<id>.toml`).
-const BUILTIN_ALIASES: &[(&str, &str)] =
-    &[("github-copilot-cli", "copilot"), ("qwen-code", "qwen"), ("mistral-vibe", "vibe")];
+const BUILTIN_ALIASES: &[(&str, &str)] = &[
+    ("github-copilot-cli", "copilot"),
+    ("github-copilot", "copilot"),
+    ("qwen-code", "qwen"),
+    ("mistral-vibe", "vibe"),
+];
 
 fn canonical_id(id: &str) -> &str {
     BUILTIN_ALIASES.iter().find_map(|&(alias, canonical)| (alias == id).then_some(canonical)).unwrap_or(id)
@@ -464,8 +480,68 @@ fn install_entry(
         registry: Some(RegistryRef { id: entry.id.clone(), version: entry.version.clone() }),
     };
     agent.write(&file)?;
+    if entry.id == "copilot"
+        && let Some(dir) = copilot_config_dir()
+    {
+        ensure_copilot_long_context(&dir);
+    }
     emit(InstallEvent::Line { text: format!("{} {} installed", entry.name, entry.version) });
     Ok(())
+}
+
+fn copilot_config_dir() -> Option<PathBuf> {
+    std::env::var_os("COPILOT_HOME").map(PathBuf::from).or_else(|| {
+        std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|h| Path::new(&h).join(".copilot"))
+    })
+}
+
+/// Ensures `"contextTier": "long_context"` is set in Copilot's `config.json` and
+/// `settings.json` so 1M-context models aren't capped at the 200k default tier over ACP.
+/// Existing `"contextTier"` values and leading `//` comments in `config.json` are preserved.
+fn ensure_copilot_long_context(copilot_dir: &Path) {
+    let _ = ensure_copilot_json_long_context(&copilot_dir.join("config.json"));
+    let _ = ensure_copilot_json_long_context(&copilot_dir.join("settings.json"));
+}
+
+fn ensure_copilot_json_long_context(path: &Path) -> IdeResult<()> {
+    let (header, mut obj) = if path.exists() {
+        let raw = fs::read_to_string(path)?;
+        let (header, body) = split_leading_line_comments(&raw);
+        let body = body.trim();
+        let map = if body.is_empty() {
+            serde_json::Map::new()
+        } else {
+            let Ok(serde_json::Value::Object(map)) = serde_json::from_str(body) else {
+                return Ok(());
+            };
+            map
+        };
+        (header.to_owned(), map)
+    } else {
+        (String::new(), serde_json::Map::new())
+    };
+    if obj.contains_key("contextTier") {
+        return Ok(());
+    }
+    obj.insert("contextTier".into(), serde_json::Value::String("long_context".into()));
+    let json = serde_json::to_string_pretty(&serde_json::Value::Object(obj))
+        .map_err(|e| IdeError::new(ErrorKind::Protocol, e.to_string()))?;
+    let content = format!("{header}{json}\n");
+    write_atomic(path, content.as_bytes())?;
+    Ok(())
+}
+
+fn split_leading_line_comments(s: &str) -> (&str, &str) {
+    let mut offset = 0;
+    for line in s.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            offset += line.len();
+        } else {
+            break;
+        }
+    }
+    s.split_at(offset)
 }
 
 pub(crate) fn verify_sha256(file: &Path, expected: &str) -> IdeResult<()> {
@@ -998,8 +1074,9 @@ mod tests {
         write_atomic(&p.cache_file, index.as_bytes()).unwrap();
         let spec = provider::load(Some(&p.agents_dir)).into_iter().find(|s| s.id == "copilot").unwrap();
         assert_eq!(spec.name, "GitHub Copilot");
-        assert_eq!(spec.login_hint, "Run `copilot` in a terminal and sign in.");
+        assert_eq!(spec.login_hint, "Sign in with GitHub when prompted, or run `copilot` in a terminal and sign in.");
         assert_eq!(spec.source, AgentSource::Registry { version: "1.0.104".into(), update: None });
+        assert_eq!(entries[0].distribution.npx.as_ref().unwrap().package, "@github/copilot-language-server@latest");
 
         let mut providers = vec![AgentProvider {
             id: spec.id,
@@ -1019,5 +1096,41 @@ mod tests {
         remove(&p, "github-copilot-cli").unwrap();
         let fallback = provider::load(Some(&p.agents_dir)).into_iter().find(|s| s.id == "copilot").unwrap();
         assert_eq!(fallback.source, AgentSource::Builtin);
+    }
+
+    #[test]
+    fn configures_copilot_long_context_without_overwriting_existing_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let copilot_dir = dir.path().join(".copilot");
+
+        // Creates config.json and settings.json when missing.
+        ensure_copilot_long_context(&copilot_dir);
+        let cfg: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(copilot_dir.join("config.json")).unwrap()).unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(copilot_dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(cfg["contextTier"], "long_context");
+        assert_eq!(settings["contextTier"], "long_context");
+
+        // Preserves leading `//` comments and existing keys in config.json.
+        let commented = "// User settings belong in settings.json.\n// This file is managed automatically.\n{\n  \"lastLoggedInUser\": \"alice\"\n}\n";
+        fs::write(copilot_dir.join("config.json"), commented).unwrap();
+        ensure_copilot_long_context(&copilot_dir);
+        let updated_raw = fs::read_to_string(copilot_dir.join("config.json")).unwrap();
+        assert!(
+            updated_raw
+                .starts_with("// User settings belong in settings.json.\n// This file is managed automatically.\n")
+        );
+        let (_, json_body) = split_leading_line_comments(&updated_raw);
+        let updated: serde_json::Value = serde_json::from_str(json_body).unwrap();
+        assert_eq!(updated["lastLoggedInUser"], "alice");
+        assert_eq!(updated["contextTier"], "long_context");
+
+        // Does not overwrite an explicit user preference.
+        fs::write(copilot_dir.join("settings.json"), "{\n  \"contextTier\": \"default\"\n}\n").unwrap();
+        ensure_copilot_long_context(&copilot_dir);
+        let preserved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(copilot_dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(preserved["contextTier"], "default");
     }
 }
