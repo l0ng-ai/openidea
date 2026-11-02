@@ -35,7 +35,7 @@ export interface SyncTransport {
 
 export interface SyncHost {
   /** Apply a change set (in local-text coordinates) to every view, annotated as remote. */
-  applyRemote(changes: ChangeSet): void;
+  applyRemote(changes: ChangeSet, workspaceEdit?: boolean): void;
   /** Called after a hard resync discarded local changes the backend never saw. */
   onDiscarded?(reason: unknown): void;
   /** Non-recoverable transport errors (logged by default). */
@@ -73,6 +73,7 @@ export function toTextChanges(cs: ChangeSet): TextChange[] {
 }
 
 interface RemotePatch {
+  workspaceEdit?: boolean;
   baseVersion: number;
   version: number;
   changes: TextChange[];
@@ -298,7 +299,7 @@ export class DocSync {
     }
     if (p.empty) return;
     this.localText = p.apply(this.localText);
-    this.host.applyRemote(p);
+    this.host.applyRemote(p, patch.workspaceEdit);
   }
 
   /** Last resort: adopt the backend text, dropping unacknowledged local changes. */
