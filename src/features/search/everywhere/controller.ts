@@ -18,6 +18,7 @@ import type {
 } from "@/platform/ipc";
 import type { SettingsSearchEntry } from "@/workbench/contributions";
 import { parseLocationQuery } from "../common/query";
+import { matchRoutes, routeIndex, type Route } from "./routes";
 import { passesFilter, type ResolvedFilter } from "./filters";
 import {
   ALL_TAB_LIMIT,
@@ -56,6 +57,8 @@ export interface SeDeps {
   now(): number;
   /** Whether `path` is in a root-based named scope ("Project Test Files" …). */
   inFileSet?(set: ProjectFileSet, path: string): boolean;
+  /** Spring endpoints of the project, for request-path matches. */
+  routes?(): Promise<Route[]>;
 }
 
 export interface SeRequest {
@@ -257,6 +260,9 @@ export class SeController {
         case "symbols":
           await this.startSymbols(id, gen, text, limit, req);
           break;
+        case "endpoints":
+          await this.startEndpoints(id, gen, text, limit, req);
+          break;
         case "actions": {
           const hits = matchActions(this.deps.actions(), text, {
             isEnabled: (a) => this.deps.isEnabled(a),
@@ -282,6 +288,19 @@ export class SeController {
       // Unavailable sources (no project, no index yet) simply contribute nothing.
       this.set(id, gen, [], false, false);
     }
+  }
+
+  /**
+   * Spring endpoints by request path (`/menu/search`), the way IDEA finds a controller
+   * method: the scan runs once per project, then the query is ranked in memory.
+   */
+  private async startEndpoints(id: SectionId, gen: number, text: string, limit: number, req: SeRequest) {
+    const root = this.deps.root();
+    // No project, no Tauri, or an older build: the section simply contributes nothing.
+    const routes = await (this.deps.routes ? this.deps.routes() : routeIndex(root)).catch((): Route[] => []);
+    const { items, hasMore } = matchRoutes(routes, text, limit);
+    const keep = this.scopeFilter(req);
+    this.set(id, gen, keep ? items.filter((i) => keep(i.path)) : items, hasMore, false);
   }
 
   private async startSymbols(id: "classes" | "symbols", gen: number, text: string, limit: number, req: SeRequest) {

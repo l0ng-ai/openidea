@@ -4,6 +4,7 @@ import { call, commands, nextRequestId, type LanguageInfo } from "@/platform/ipc
 import { inFileSet } from "@/platform/projectRoots";
 import { searchableSettings } from "@/workbench/contributions";
 import { projectRoot } from "../common/open";
+import { routeIndex } from "./routes";
 import { cancelRequest, streamSearch } from "../common/textSearch";
 import type { SeDeps } from "./controller";
 import { recentActions } from "./store";
@@ -33,6 +34,7 @@ export function ipcDeps(ctx: ContextKeys): SeDeps {
     root: projectRoot,
     now: () => performance.now(),
     inFileSet: (set, path) => inFileSet(set, path),
+    routes: () => routeIndex(projectRoot()),
   };
 }
 
