@@ -235,7 +235,7 @@ impl Default for GeneralSettings {
     fn default() -> Self {
         Self {
             reopen_last_project: true,
-            confirm_exit: false,
+            confirm_exit: true,
             open_project_in: "ask".into(),
             default_project_directory: String::new(),
             save_on_idle: false,
