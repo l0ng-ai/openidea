@@ -29,16 +29,15 @@ pub fn posix(rel: &Path) -> String {
 /// project root too), or absolute inside it as IntelliJ's deployment settings write it.
 fn local_folder(local: &str, project_root: &Path) -> PathBuf {
     let path = Path::new(local);
-    if path.is_absolute() {
-        if let Ok(rel) = path.strip_prefix(project_root) {
-            return project_root.join(rel);
-        }
-        // The same folder spelled differently (symlink, letter case).
-        if let (Ok(path), Ok(root)) = (path.canonicalize(), project_root.canonicalize())
-            && let Ok(rel) = path.strip_prefix(root)
-        {
-            return project_root.join(rel);
-        }
+    if let Ok(rel) = path.strip_prefix(project_root) {
+        return project_root.join(rel);
+    }
+    // The same folder spelled differently (symlink, letter case).
+    if path.is_absolute()
+        && let (Ok(path), Ok(root)) = (path.canonicalize(), project_root.canonicalize())
+        && let Ok(rel) = path.strip_prefix(root)
+    {
+        return project_root.join(rel);
     }
     let rel = local.trim_matches('/');
     if rel.is_empty() { project_root.to_path_buf() } else { project_root.join(rel) }
