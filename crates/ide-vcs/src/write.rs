@@ -89,15 +89,28 @@ pub(crate) fn blame(
         return Ok(uncommitted_lines(line_count));
     }
     // Restricted blame reads committed blobs only. Feeding working-tree bytes to
-    // Git's --contents path would run configured clean filters.
-    let out = if crate::execution_allowed() {
-        run(
-            r.root(),
-            &["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", revision, "--", &rel],
-            Some(&contents),
-        )?
+    // Git's --contents path would run configured clean filters, so it blames the
+    // revision plain. Git learned to combine `--contents` with a revision in 2.41;
+    // older releases reject the pair (`fatal: cannot use --contents with final
+    // commit object name`) and take the same plain path — the edited lines are
+    // marked uncommitted below either way (issue #755).
+    let contents_args = ["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", revision, "--", &rel];
+    let plain_args: &[&str] = if crate::execution_allowed() {
+        &["--literal-pathspecs", "blame", "--porcelain", revision, "--", &rel]
     } else {
-        run(r.root(), &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", revision, "--", &rel], None)?
+        &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", revision, "--", &rel]
+    };
+    let (out, contents_blame) = if crate::execution_allowed() {
+        let out = cli::run_raw(r.root(), &contents_args, Some(&contents))?;
+        if out.code == Some(0) {
+            (out, true)
+        } else if String::from_utf8_lossy(&out.stderr).contains("cannot use --contents") {
+            (run(r.root(), plain_args, None)?, false)
+        } else {
+            return Err(cli::failure(&contents_args, &out.stderr, &out.stdout, out.code));
+        }
+    } else {
+        (run(r.root(), plain_args, None)?, false)
     };
     let mut lines = crate::blame::parse_porcelain(&out.stdout_str());
     for line in &mut lines {
@@ -106,7 +119,7 @@ pub(crate) fn blame(
             line.summary = String::new();
         }
     }
-    if !crate::execution_allowed() {
+    if !contents_blame {
         let base = r.file_at(path, Some(revision), encoding)?.unwrap_or_default();
         for hunk in crate::diff::line_hunks(&base, &text).into_iter().rev() {
             let start = (hunk.old_start as usize).min(lines.len());
