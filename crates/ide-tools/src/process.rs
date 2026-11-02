@@ -4,47 +4,15 @@
 use crate::InstallEvent;
 use ide_core::error::ErrorKind;
 use ide_core::output_encoding::decode_tool_output;
+use ide_core::process::{kill_tree, own_group};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 pub type Emit<'a> = &'a dyn Fn(InstallEvent);
-
-/// Starts the child as the leader of its own process group, so [`kill`] reaches what it
-/// starts in turn (`npm` → `node`, `go install` → the compiler, `pip` → build backends).
-fn own_group(cmd: &mut Command) -> &mut Command {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    cmd
-}
-
-/// Kills the child and everything it started.
-fn kill(child: &mut Child) {
-    #[cfg(unix)]
-    if let Ok(pid) = i32::try_from(child.id()) {
-        // SAFETY: plain syscall; the child leads its own process group (`own_group`) and is not reaped yet.
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-        }
-    }
-    #[cfg(windows)]
-    {
-        let mut taskkill = Command::new("taskkill");
-        ide_core::process::prepare(&mut taskkill)
-            .args(["/T", "/F", "/PID", &child.id().to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let _ = taskkill.status();
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
 
 fn describe(cmd: &Command) -> String {
     let mut s = Path::new(cmd.get_program()).file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -100,7 +68,7 @@ pub fn run_collect(mut cmd: Command, cancel: &CancellationToken, emit: Emit) -> 
     let mut output = String::new();
     let status = loop {
         if cancel.is_cancelled() {
-            kill(&mut child);
+            kill_tree(&mut child);
             return Err(IdeError::cancelled());
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -144,7 +112,7 @@ pub fn run_quiet(mut cmd: Command, timeout: Duration) -> Option<(bool, String)> 
             Ok(Some(s)) => break s,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(15)),
             _ => {
-                kill(&mut child);
+                kill_tree(&mut child);
                 return None;
             }
         }
@@ -256,7 +224,7 @@ impl Http {
         });
         let status = loop {
             if cancel.is_cancelled() {
-                kill(&mut child);
+                kill_tree(&mut child);
                 return Err(IdeError::cancelled());
             }
             match child.try_wait()? {
@@ -308,7 +276,7 @@ impl Http {
         let mut last_bytes = 0;
         let status = loop {
             if cancel.is_cancelled() {
-                kill(&mut child);
+                kill_tree(&mut child);
                 let _ = std::fs::remove_file(dest);
                 return Err(IdeError::cancelled());
             }
@@ -413,7 +381,7 @@ pub(crate) fn run_input(
         }
     };
     if result.is_err() {
-        kill(&mut child);
+        kill_tree(&mut child);
     }
     result?;
     let output = output.unwrap()?;
