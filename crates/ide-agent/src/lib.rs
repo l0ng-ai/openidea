@@ -14,6 +14,7 @@ mod model;
 mod native;
 mod provider;
 pub mod registry;
+pub mod security;
 mod skills;
 mod timeline;
 mod worktree;
@@ -35,6 +36,9 @@ use std::time::Duration;
 
 /// Receives the events of one project's tasks.
 pub type AgentSink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
+
+/// Returns the active command execution security policy for the project.
+pub type SecurityHook = Arc<dyn Fn() -> ide_core::settings::AgentSecuritySettings + Send + Sync>;
 
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
@@ -91,6 +95,7 @@ struct Shared {
     runtime: tokio::runtime::Handle,
     connector: Connector,
     sink: RwLock<Option<AgentSink>>,
+    security: RwLock<Option<SecurityHook>>,
     known: Mutex<HashMap<String, Known>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -273,6 +278,7 @@ impl AgentManager {
             runtime,
             connector,
             sink: RwLock::new(None),
+            security: RwLock::new(None),
             known: Mutex::new(known),
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -311,6 +317,11 @@ impl AgentManager {
         let mut tasks: Vec<AgentTask> = self.tasks.read().values().map(|t| t.state.lock().task.clone()).collect();
         tasks.sort_by(|a, b| b.updated_ms.total_cmp(&a.updated_ms));
         tasks
+    }
+
+    /// Sets the callback used to read the active command execution security policy.
+    pub fn set_security_hook(&self, hook: SecurityHook) {
+        *self.shared.security.write() = Some(hook);
     }
 
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
@@ -1536,6 +1547,42 @@ impl Task {
                     .collect()
             })
             .unwrap_or_default();
+        if let Some(hook) = self.shared.security.read().clone()
+            && let Some(command) = security::extract_command(params)
+        {
+            match security::evaluate_command(&command, &hook()) {
+                security::PolicyDecision::Blocked(pattern) => {
+                    let reject = options.iter().find(|o| o.kind.starts_with("reject")).cloned();
+                    let _ = self.push_entry(AgentEntry::Permission {
+                        id,
+                        title,
+                        options,
+                        chosen: Some(format!("Blocked by policy ({pattern})")),
+                    });
+                    return match reject {
+                        Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option.id } }),
+                        None => json!({ "outcome": { "outcome": "cancelled" } }),
+                    };
+                }
+                security::PolicyDecision::Allowed => {
+                    if let Some(allow) = options
+                        .iter()
+                        .find(|o| o.kind == "allow_once")
+                        .or_else(|| options.iter().find(|o| o.kind.starts_with("allow")))
+                        .cloned()
+                    {
+                        let _ = self.push_entry(AgentEntry::Permission {
+                            id,
+                            title,
+                            options,
+                            chosen: Some(format!("{} (whitelisted)", allow.name)),
+                        });
+                        return json!({ "outcome": { "outcome": "selected", "optionId": allow.id } });
+                    }
+                }
+                security::PolicyDecision::AskUser => {}
+            }
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let entry = self.push_entry(AgentEntry::Permission { id, title, options: options.clone(), chosen: None });
         self.permissions.lock().insert(id, tx);

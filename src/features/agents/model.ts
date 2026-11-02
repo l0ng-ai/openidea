@@ -9,6 +9,8 @@ export const TOOL_WINDOW = "agents";
 export const TASK_DRAG = "application/x-openidea-agent-task";
 /** Settings › Tools › Agents: the ACP Registry. */
 export const REGISTRY_PAGE = "tools.agents";
+/** Settings › Tools › Agents › Command Execution Policy. */
+export const POLICY_PAGE = "tools.agents.policy";
 
 export const sessionKey = (task: string) => `agent:${task}`;
 

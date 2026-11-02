@@ -389,3 +389,37 @@ impl Default for ExternalTool {
         }
     }
 }
+
+/// Tools › Agents: Command Execution Policy (whitelist and blacklist patterns).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSecuritySettings {
+    /// Commands or patterns (`git status*`, `pwd`) automatically approved without prompting.
+    pub allowed_commands: Vec<String>,
+    /// Commands or patterns (`rm -rf *`, `mkfs*`) automatically rejected.
+    pub blocked_commands: Vec<String>,
+}
+
+impl Default for AgentSecuritySettings {
+    fn default() -> Self {
+        Self {
+            allowed_commands: vec![
+                "git status*".into(),
+                "git diff*".into(),
+                "git log*".into(),
+                "pwd".into(),
+                "ls*".into(),
+                "cargo check*".into(),
+            ],
+            blocked_commands: vec![
+                "rm -rf *".into(),
+                "rm -rf /".into(),
+                "mkfs*".into(),
+                "dd *".into(),
+                ":(){ :|:& };:".into(),
+                "shutdown*".into(),
+                "reboot*".into(),
+            ],
+        }
+    }
+}

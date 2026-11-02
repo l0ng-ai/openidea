@@ -18,7 +18,7 @@ import {
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
+import { HOME_KIND, POLICY_PAGE, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
@@ -26,14 +26,25 @@ import { taskActions } from "./taskActions";
 
 /** Settings › Tools › Agents (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: REGISTRY_PAGE,
-    title: "Agents",
-    group: "Tools",
-    order: 500,
-    keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
-    component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
-  });
+  const disposers = [
+    registerSettingsPage({
+      id: REGISTRY_PAGE,
+      title: "Agents",
+      group: "Tools",
+      order: 500,
+      keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
+      component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
+    }),
+    registerSettingsPage({
+      id: POLICY_PAGE,
+      title: "Command Execution Policy",
+      order: 10,
+      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
+      projectScope: true,
+      component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
+    }),
+  ];
+  return () => disposers.reverse().forEach((d) => d());
 }
 
 export function activate(): () => void {
