@@ -1,6 +1,7 @@
 /** Registers the built-in pages as ordinary settings-page contributions and indexes their labels. */
 import { registerSettingsPage, type SettingsPageContribution } from "@/workbench/contributions";
 import { BEHAVIOR_PAGES } from "./behavior";
+import { AI_COMMIT_SETTINGS_PAGE } from "./aiCommitSettings";
 import { BUILTIN_PAGES as CORE_PAGES } from "./builtins";
 import { DEPLOYMENT_PAGES } from "./deployment";
 import { EDITOR_PAGES, codeStyleLanguagePages } from "./editor";
@@ -22,6 +23,7 @@ const BUILTIN_PAGES = [
   ...DEPLOYMENT_PAGES,
   ...RUN_TARGET_PAGES,
   ...TOOLS_PAGES,
+  AI_COMMIT_SETTINGS_PAGE,
   ...SSH_PAGES,
   ...LANGUAGE_PAGES,
 ];

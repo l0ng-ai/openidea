@@ -53,6 +53,7 @@ All paths are relative to the package directory and may not leave it.
 | `project-read` | `workspace-root`, `read-file` (project root only) |
 | `editor-read`  | `active-file`                                     |
 | `editor-write` | `insert-text`, `replace-selection`                |
+| `ai-completions` | Participate in AI commit-message generation using the user-configured provider |
 
 `log`, `register-command`, `show-notification`, `register-language` and
 `register-theme` are always available. Calling a gated function without its
@@ -149,6 +150,17 @@ Any language with component-model tooling works (e.g. `componentize-py`,
 `run-command` receives an optional string argument: `executeAction("plugin.hello.insert-date", "arg")`
 from another feature, or nothing when run from Search Everywhere / a shortcut.
 Returning `Err(msg)` shows _"<title> failed: msg"_; the plugin keeps running.
+
+### AI commit-message providers
+
+Plugins declaring `ai-completions` may implement two internal commands. They do
+not need to register these commands in the action list. `build-request` receives
+JSON with `diff`, `model`, `temperature`, and `systemPrompt` and returns an
+OpenAI-compatible request body as JSON. `parse-response` receives the provider
+response JSON and returns the generated message. The host sends the request in
+the background to the user's configured provider; the provider URL and API key
+are not passed to the plugin. The commit window supplies only the selected
+changes and discards the result if the selection or message changes in flight.
 
 ### Sandbox and limits
 

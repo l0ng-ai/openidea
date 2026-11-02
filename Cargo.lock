@@ -4211,6 +4211,7 @@ dependencies = [
 name = "ide-host"
 version = "0.1.33"
 dependencies = [
+ "cap-primitives",
  "dirs 6.0.0",
  "dunce",
  "encoding_rs",

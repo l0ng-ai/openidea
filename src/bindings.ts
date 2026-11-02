@@ -443,6 +443,10 @@ export const commands = {
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
+	/**  Reads selected worktree content once without following symlinks. */
+	vcsReadCommitWorkingFile: (path: string) => typedError<CommitWorkingFile, IdeError>(__TAURI_INVOKE("vcs_read_commit_working_file", { path })),
+	/**  Reads a selected Git entry once without interpreting symlinks as file content. */
+	vcsReadCommitRevision: (path: string, rev: string) => typedError<CommitWorkingFile, IdeError>(__TAURI_INVOKE("vcs_read_commit_revision", { path, rev })),
 	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
@@ -484,6 +488,8 @@ export const commands = {
 	vcsDiffText: (path: string, staged: boolean) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_diff_text", { path, staged })),
 	/**  Line hunks between two arbitrary texts (diff viewer, commit dialog). */
 	vcsDiffHunks: (oldText: string, newText: string) => __TAURI_INVOKE<LineHunk[]>("vcs_diff_hunks", { oldText, newText }),
+	/**  Builds a patch containing only the selected hunk indices for a repository-relative path. */
+	vcsBuildPartialPatch: (path: string, oldText: string, newText: string, selected: number[]) => __TAURI_INVOKE<string>("vcs_build_partial_patch", { path, oldText, newText, selected }),
 	/**
 	 *  Stages only the selected hunks of a file's working-tree changes.
 	 *  Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
@@ -873,6 +879,16 @@ export const commands = {
 	 *  which new windows open in before their page loads.
 	 */
 	pluginSetThemeFrame: (color: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_theme_frame", { color })),
+	/**  Returns settings without revealing the saved provider key. */
+	pluginAiSettingsGet: () => typedError<PluginAiSettings, IdeError>(__TAURI_INVOKE("plugin_ai_settings_get")),
+	/**  Saves settings and optionally replaces or clears the provider key. */
+	pluginAiSettingsSet: (settings: PluginAiConfig, apiKey: string | null) => typedError<PluginAiSettings, IdeError>(__TAURI_INVOKE("plugin_ai_settings_set", { settings, apiKey })),
+	/**  Reads the current project's override without exposing provider credentials. */
+	pluginAiProjectPromptGet: () => typedError<ProjectPrompt, IdeError>(__TAURI_INVOKE("plugin_ai_project_prompt_get")),
+	/**  Saves the override in app data, keyed by project root; empty uses the global prompt. */
+	pluginAiProjectPromptSet: (prompt: string) => typedError<ProjectPrompt, IdeError>(__TAURI_INVOKE("plugin_ai_project_prompt_set", { prompt })),
+	/**  Runs the authorized provider in the current project, keeping the API key out of the plugin and UI. */
+	pluginGenerateCommitMessage: (pluginId: string, diff: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_generate_commit_message", { pluginId, diff })),
 	/**
 	 *  Snapshot of process memory and subsystem sizes, summed over all projects.
 	 *  Async: the process walk runs on the blocking pool, not the main thread.
@@ -1943,6 +1959,12 @@ export type CommitSettings = {
 	bodyLimit?: number,
 	showRightMargin?: boolean,
 	wrapAtMargin?: boolean,
+};
+
+/**  Bounded worktree content captured without following symlinks in any path component. */
+export type CommitWorkingFile = {
+	binary: boolean,
+	text: string,
 };
 
 export type CompareResult = {
@@ -4672,7 +4694,26 @@ export type Permission =
 /**  `active-file`. */
 "editor-read" | 
 /**  `insert-text`, `replace-selection`. */
-"editor-write";
+"editor-write" | 
+/**  Generate commit messages using the provider configured by the user. */
+"ai-completions";
+
+/**  Provider settings are global. Secrets live only in the private secret store. */
+export type PluginAiConfig = {
+	baseUrl: string,
+	model: string,
+	temperature: number | null,
+	systemPrompt: string,
+};
+
+/**  Safe settings view returned to the UI; it never contains the API key. */
+export type PluginAiSettings = {
+	baseUrl: string,
+	model: string,
+	temperature: number | null,
+	systemPrompt: string,
+	hasApiKey: boolean,
+};
 
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
@@ -4942,6 +4983,12 @@ export type ProjectInfo_Serialize = {
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
+};
+
+/**  Project prompt and whether a project is available in the current window. */
+export type ProjectPrompt = {
+	available: boolean,
+	prompt: string,
 };
 
 export type ProjectRoots = {

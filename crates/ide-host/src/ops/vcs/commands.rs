@@ -204,6 +204,70 @@ pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<S
     .await
 }
 
+/// Bounded worktree content captured without following symlinks in any path component.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitWorkingFile {
+    pub binary: bool,
+    pub text: String,
+}
+
+/// Returns one safe worktree snapshot for commit-message generation.
+pub async fn vcs_read_commit_working_file(host: &Host, window: &str, path: PathBuf) -> IdeResult<CommitWorkingFile> {
+    let project = host.project(window)?;
+    blocking(move || {
+        project.with_repo_of(&path, |repo| {
+            let bytes = super::safe_commit_file::read_working_bytes(repo.root(), &path)?;
+            let defaults = project.documents.file_defaults();
+            let selected = project
+                .documents
+                .by_path(&path)
+                .map(|id| project.documents.snapshot(id))
+                .transpose()?
+                .map(|info| info.encoding);
+            let (mut text, binary) =
+                ide_vfs::decode_commit_bytes(&bytes, defaults.fallback_for(&path), selected.as_deref())?;
+            if !binary && project.documents.native_to_ascii_for(&path) {
+                text = ide_vfs::decode_properties_escapes(&text);
+            }
+            Ok(CommitWorkingFile { binary, text: ide_text::normalize_line_endings(&text).into_owned() })
+        })
+    })
+    .await
+}
+
+/// Reads one HEAD/index snapshot, refusing Git symlinks and decoding the same bytes checked for binary content.
+pub async fn vcs_read_commit_revision(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+    rev: String,
+) -> IdeResult<CommitWorkingFile> {
+    let project = host.project(window)?;
+    blocking(move || {
+        project.with_repo_of(&path, |repo| {
+            let bytes = repo.commit_bytes_at(&path, &rev)?;
+            if bytes.len() > 16 * 1024 * 1024 {
+                return Err(ide_core::IdeError::invalid("Selected file is too large"));
+            }
+            let defaults = project.documents.file_defaults();
+            let selected = project
+                .documents
+                .by_path(&path)
+                .map(|id| project.documents.snapshot(id))
+                .transpose()?
+                .map(|info| info.encoding);
+            let (mut text, binary) =
+                ide_vfs::decode_commit_bytes(&bytes, defaults.fallback_for(&path), selected.as_deref())?;
+            if !binary && project.documents.native_to_ascii_for(&path) {
+                text = ide_vfs::decode_properties_escapes(&text);
+            }
+            Ok(CommitWorkingFile { binary, text: ide_text::normalize_line_endings(&text).into_owned() })
+        })
+    })
+    .await
+}
+
 pub async fn vcs_blame(
     host: &Host,
     window: &str,

@@ -1,0 +1,18 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 720px;
+}
+
+.prompt {
+  width: 100%;
+  min-height: 110px;
+  resize: vertical;
+  font: inherit;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}

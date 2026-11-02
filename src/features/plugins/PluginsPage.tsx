@@ -48,10 +48,11 @@ const STATUS: Record<PluginStatus, { label: string; tone: "success" | "accent" |
   failed: { label: "Failed", tone: "danger" },
 };
 
-export const PERMISSION_TEXT: Record<Permission, string> = {
+export const PERMISSION_TEXT: Record<Permission | "ai-completions", string> = {
   "project-read": "Read files inside the open project",
   "editor-read": "See which file is open in the editor",
   "editor-write": "Insert text into the active editor",
+  "ai-completions": "Send selected changes to the configured AI provider to generate a commit message",
 };
 
 export const NO_REPOSITORY = "There is no online plugin repository";
@@ -286,7 +287,9 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
             <ul className={styles.items}>
               {plugin.permissions.map((p) => (
                 <li key={p} className={styles.item}>
-                  <span className={styles.itemMain}>{PERMISSION_TEXT[p] ?? p}</span>
+                  <span className={styles.itemMain}>
+                    <T>{PERMISSION_TEXT[p] ?? p}</T>
+                  </span>
                   <span className={styles.mono}>{p}</span>
                 </li>
               ))}
@@ -475,7 +478,9 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
           <ul className={styles.items}>
             {entry.permissions.map((p) => (
               <li key={p} className={styles.item}>
-                <span className={styles.itemMain}>{PERMISSION_TEXT[p] ?? p}</span>
+                <span className={styles.itemMain}>
+                  <T>{PERMISSION_TEXT[p] ?? p}</T>
+                </span>
                 <span className={styles.mono}>{p}</span>
               </li>
             ))}

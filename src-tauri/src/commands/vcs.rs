@@ -50,6 +50,29 @@ pub async fn vcs_file_at(
     ide_host::ops::vcs::vcs_file_at(&state.host, window.label(), path, rev).await
 }
 
+/// Reads selected worktree content once without following symlinks.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_read_commit_working_file(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> IdeResult<CommitWorkingFile> {
+    ide_host::ops::vcs::vcs_read_commit_working_file(&state.host, window.label(), path).await
+}
+
+/// Reads a selected Git entry once without interpreting symlinks as file content.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_read_commit_revision(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    rev: String,
+) -> IdeResult<CommitWorkingFile> {
+    ide_host::ops::vcs::vcs_read_commit_revision(&state.host, window.label(), path, rev).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_blame(
@@ -332,6 +355,14 @@ pub async fn vcs_diff_text(
 #[specta::specta]
 pub fn vcs_diff_hunks(state: State<'_, AppState>, old_text: String, new_text: String) -> Vec<LineHunk> {
     ide_host::ops::vcs::vcs_diff_hunks(&state.host, "", old_text, new_text)
+}
+
+/// Builds a patch containing only the selected hunk indices for a repository-relative path.
+#[tauri::command]
+#[specta::specta]
+pub fn vcs_build_partial_patch(path: String, old_text: String, new_text: String, selected: Vec<u32>) -> String {
+    let selected = selected.into_iter().map(|index| index as usize).collect::<Vec<_>>();
+    ide_vcs::build_partial_patch(&path, &old_text, &new_text, &selected)
 }
 
 /// Stages only the selected hunks of a file's working-tree changes.
@@ -702,4 +733,23 @@ pub async fn vcs_compare_paths(
     request: RequestId,
 ) -> IdeResult<ide_vcs::CompareResult> {
     ide_host::ops::vcs::vcs_compare_paths(&state.host, window.label(), paths, revision, repositories, request).await
+}
+
+#[cfg(test)]
+mod partial_patch_command_tests {
+    use super::vcs_build_partial_patch;
+
+    #[test]
+    fn selected_hunks_exclude_other_changes() {
+        let old = "one\ntwo\nthree\nfour\n".to_owned();
+        let new = "changed-one\ntwo\nthree\nchanged-four\n".to_owned();
+        let patch = vcs_build_partial_patch("file.ts".into(), old, new, vec![0]);
+        assert!(patch.contains("+changed-one"));
+        assert!(!patch.contains("+changed-four"));
+    }
+
+    #[test]
+    fn empty_selection_produces_no_patch() {
+        assert!(vcs_build_partial_patch("file.ts".into(), "a\n".into(), "b\n".into(), vec![]).is_empty());
+    }
 }

@@ -18,7 +18,14 @@ import {
   pluginActions,
   startPluginBridge,
 } from "../bridge";
-import { catalogState, filterCatalog, filterPlugins, NO_REPOSITORY, PluginsPage } from "../PluginsPage";
+import {
+  catalogState,
+  filterCatalog,
+  filterPlugins,
+  NO_REPOSITORY,
+  PERMISSION_TEXT,
+  PluginsPage,
+} from "../PluginsPage";
 import {
   compareVersions,
   refreshPlugins,
@@ -30,6 +37,11 @@ import {
 } from "../store";
 
 type Note = Parameters<NotificationService["notify"]>[0];
+
+it("explains that AI commit plugins send the selected changes to the configured provider", () => {
+  expect((PERMISSION_TEXT as Record<string, string>)["ai-completions"]).toContain("selected changes");
+  expect((PERMISSION_TEXT as Record<string, string>)["ai-completions"]).toContain("configured AI provider");
+});
 let notes: Note[];
 let backend: PluginsBackend;
 let view: EditorView | null = null;

@@ -140,6 +140,7 @@ pub async fn plugin_run_command(
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
     let invocation = Invocation {
+        isolated: false,
         client: Some(window.label().to_owned()),
         workspace_root: project.as_ref().map(|p| p.root.clone()),
         buffer_text: project.map(|p| {

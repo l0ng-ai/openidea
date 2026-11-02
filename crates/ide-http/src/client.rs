@@ -26,6 +26,10 @@ pub fn with_proxy(builder: reqwest::ClientBuilder, proxy: &ProxySettings) -> req
 
 /// A client for `proxy`.
 pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
+    build_with_redirects(proxy, true)
+}
+
+fn build_with_redirects(proxy: &ProxySettings, follow_redirects: bool) -> IdeResult<reqwest::Client> {
     use rustls_platform_verifier::BuilderVerifierExt;
     let fail = |e: String| IdeError::internal(format!("HTTP client: {e}"));
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -35,11 +39,67 @@ pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
         .with_platform_verifier()
         .map_err(|e| fail(e.to_string()))?
         .with_no_client_auth();
-    let builder = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
         .connect_timeout(Duration::from_secs(30))
         .user_agent(concat!("OpenIDEA-HttpClient/", env!("CARGO_PKG_VERSION")));
+    if !follow_redirects {
+        builder = builder.redirect(reqwest::redirect::Policy::none());
+    }
     with_proxy(builder, proxy).build().map_err(|e| fail(e.to_string()))
+}
+
+/// Validates a provider base URL and returns its OpenAI-compatible completion endpoint.
+pub fn plugin_completion_endpoint(base: &str) -> IdeResult<String> {
+    let mut url = reqwest::Url::parse(base.trim()).map_err(|_| IdeError::invalid("Invalid AI provider URL"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(IdeError::invalid("AI provider URL must be HTTP(S) without credentials, query or fragment"));
+    }
+    let path = url.path().trim_end_matches('/');
+    let endpoint =
+        if path.ends_with("/v1") { format!("{path}/chat/completions") } else { format!("{path}/v1/chat/completions") };
+    url.set_path(&endpoint);
+    Ok(url.to_string())
+}
+
+/// Sends plugin-generated JSON to the user-configured provider without forwarding credentials across redirects.
+/// The provider response is bounded, and errors intentionally exclude URLs, bodies and credentials.
+pub async fn post_plugin_json(url: &str, api_key: &str, body: &str) -> IdeResult<String> {
+    post_plugin_json_via(&ide_core::proxy_settings::proxy(), url, api_key, body).await
+}
+
+async fn post_plugin_json_via(proxy: &ProxySettings, url: &str, api_key: &str, body: &str) -> IdeResult<String> {
+    const MAX_RESPONSE: usize = 1_048_576;
+    let client = build_with_redirects(proxy, false)?;
+    let mut response = client
+        .post(url)
+        .bearer_auth(api_key)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_owned())
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(|_| IdeError::unavailable("AI provider request failed"))?;
+    if !response.status().is_success() {
+        return Err(IdeError::unavailable(format!("AI provider returned HTTP {}", response.status().as_u16())));
+    }
+    if response.content_length().is_some_and(|length| length > MAX_RESPONSE as u64) {
+        return Err(IdeError::invalid("AI provider response is too large"));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| IdeError::unavailable("AI provider response failed"))? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE {
+            return Err(IdeError::invalid("AI provider response is too large"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).map_err(|_| IdeError::invalid("AI provider response is not UTF-8"))
 }
 
 /// The client for the current proxy settings, rebuilt when they change.
@@ -183,5 +243,74 @@ mod tests {
         assert!(!e.message.is_empty());
         let e = get(&manual(0), "http://example.invalid/").await.unwrap_err();
         assert!(e.message.contains("port"), "{}", e.message);
+    }
+}
+
+#[cfg(test)]
+mod plugin_completion_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+
+    /// Run a single loopback endpoint and return its full request headers.
+    fn endpoint(status: &str, body: &str, location: Option<&str>) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let status = status.to_owned();
+        let body = body.to_owned();
+        let location = location.map(str::to_owned);
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                headers.push_str(&line);
+            }
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().ok()).flatten()
+                })
+                .unwrap_or(0);
+            let mut request_body = vec![0; length];
+            reader.read_exact(&mut request_body).unwrap();
+            let location = location.map_or(String::new(), |value| format!("Location: {value}\r\n"));
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{location}Connection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            format!("{headers}\n{}", String::from_utf8_lossy(&request_body))
+        });
+        (format!("http://{address}/v1/chat/completions"), handle)
+    }
+
+    #[tokio::test]
+    async fn plugin_request_sends_json_and_authorization() {
+        let (url, server) = endpoint("200 OK", r#"{"choices":[]}"#, None);
+        let proxy = ProxySettings { mode: ProxyMode::None, ..Default::default() };
+        let response = post_plugin_json_via(&proxy, &url, "dummy-test-key", r#"{"model":"test"}"#).await.unwrap();
+        assert_eq!(response, r#"{"choices":[]}"#);
+        let request = server.join().unwrap().to_lowercase();
+        assert!(request.contains("authorization: bearer dummy-test-key"));
+        assert!(request.contains(r#"{"model":"test"}"#));
+    }
+
+    #[tokio::test]
+    async fn plugin_request_does_not_follow_redirect_or_leak_response() {
+        let (url, server) = endpoint("302 Found", "private-body", Some("https://example.invalid"));
+        let proxy = ProxySettings { mode: ProxyMode::None, ..Default::default() };
+        let error = post_plugin_json_via(&proxy, &url, "dummy-test-key", "{}").await.unwrap_err().message;
+        server.join().unwrap();
+        assert!(!error.contains("dummy-test-key"));
+        assert!(!error.contains("private-body"));
+        assert!(error.contains("302"));
     }
 }

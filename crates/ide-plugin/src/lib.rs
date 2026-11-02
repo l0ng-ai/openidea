@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 const STATE_FILE: &str = "state.json";
@@ -78,6 +79,15 @@ struct LoadedPlugin {
     registrations: Arc<Mutex<Registrations>>,
     meta: Mutex<Meta>,
     runtime: Mutex<Option<Runtime>>,
+    generation: AtomicU64,
+}
+
+/// A single authorized provider instance; replacement and disable invalidate it.
+#[derive(Clone)]
+pub struct AiPluginSession {
+    id: String,
+    plugin: Arc<LoadedPlugin>,
+    generation: u64,
 }
 
 impl LoadedPlugin {
@@ -111,6 +121,52 @@ pub struct PluginHost {
 }
 
 impl PluginHost {
+    /// Authorizes one active provider visible to the project.
+    pub fn authorize_ai(&self, id: &str, project: &Path) -> IdeResult<AiPluginSession> {
+        let _guard = self.lifecycle.lock();
+        let plugin = self.get(id)?;
+        if plugin.dev_root.as_deref().is_some_and(|root| root != project)
+            || !plugin.manifest.has(Permission::AiCompletions)
+            || plugin.meta.lock().status != PluginStatus::Active
+        {
+            return Err(IdeError::new(
+                ide_core::error::ErrorKind::PermissionDenied,
+                "Plugin is not authorized for AI completions",
+            ));
+        }
+        let generation = plugin.generation.load(Ordering::Acquire);
+        Ok(AiPluginSession { id: id.to_owned(), plugin, generation })
+    }
+
+    fn check_ai_session_locked(&self, session: &AiPluginSession) -> IdeResult<()> {
+        let plugin = self.get(&session.id)?;
+        if !Arc::ptr_eq(&plugin, &session.plugin)
+            || plugin.generation.load(Ordering::Acquire) != session.generation
+            || plugin.meta.lock().status != PluginStatus::Active
+            || !plugin.manifest.has(Permission::AiCompletions)
+        {
+            return Err(IdeError::unavailable("The AI provider changed during generation"));
+        }
+        Ok(())
+    }
+
+    /// Checks whether the authorized instance is still active and unchanged.
+    pub fn check_ai_session(&self, session: &AiPluginSession) -> IdeResult<()> {
+        let _guard = self.lifecycle.lock();
+        self.check_ai_session_locked(session)
+    }
+
+    /// Runs an internal provider command without project, editor or host-side effects.
+    pub fn run_ai_command(
+        &self,
+        session: &AiPluginSession,
+        command: &str,
+        arg: Option<&str>,
+    ) -> IdeResult<Option<String>> {
+        let _guard = self.lifecycle.lock();
+        self.check_ai_session_locked(session)?;
+        self.run_command(&session.id, command, arg, Invocation { isolated: true, ..Default::default() })
+    }
     /// Creates the host; call [`load_all`](Self::load_all) to load installed plugins.
     pub fn new(plugins_dir: PathBuf, sink: Arc<dyn PluginEventSink>, limits: Limits) -> IdeResult<Self> {
         std::fs::create_dir_all(&plugins_dir)?;
@@ -506,6 +562,7 @@ impl PluginHost {
             static_regs,
             meta: Mutex::new(Meta { status: PluginStatus::Disabled, error: None }),
             runtime: Mutex::new(None),
+            generation: AtomicU64::new(0),
         });
         {
             let mut plugins = self.plugins.write();
@@ -567,6 +624,7 @@ impl PluginHost {
     }
 
     fn stop(&self, plugin: &LoadedPlugin) {
+        plugin.generation.fetch_add(1, Ordering::AcqRel);
         if let Some(mut rt) = plugin.runtime.lock().take() {
             rt.deactivate();
         }

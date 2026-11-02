@@ -142,6 +142,7 @@ impl WasiView for StoreData {
 
 impl StoreData {
     fn require(&self, p: Permission) -> wasmtime::Result<()> {
+        self.require_interactive()?;
         if self.permissions.contains(&p) {
             Ok(())
         } else {
@@ -149,6 +150,14 @@ impl StoreData {
                 "permission denied: add \"{}\" to `permissions` in plugin.toml",
                 p.as_str()
             )))
+        }
+    }
+
+    fn require_interactive(&self) -> wasmtime::Result<()> {
+        if self.invocation.isolated {
+            Err(wasmtime::Error::msg("host access is unavailable in an isolated plugin invocation"))
+        } else {
+            Ok(())
         }
     }
 
@@ -180,6 +189,7 @@ impl wit_types::Host for StoreData {}
 
 impl wit_host::Host for StoreData {
     fn log(&mut self, level: LogLevel, message: String) -> wasmtime::Result<()> {
+        self.require_interactive()?;
         let id = &self.plugin_id;
         let message = clip(message, MAX_TEXT);
         match level {
@@ -193,6 +203,7 @@ impl wit_host::Host for StoreData {
     }
 
     fn register_command(&mut self, id: String, title: String, category: Option<String>) -> wasmtime::Result<()> {
+        self.require_interactive()?;
         validate_command_id(&id).map_err(wasmtime::Error::msg)?;
         let title = clip(title, MAX_TITLE);
         if title.trim().is_empty() {
@@ -215,6 +226,7 @@ impl wit_host::Host for StoreData {
         title: String,
         body: String,
     ) -> wasmtime::Result<()> {
+        self.require_interactive()?;
         let level = match level {
             wit_types::NotificationLevel::Info => NotificationLevel::Info,
             wit_types::NotificationLevel::Warning => NotificationLevel::Warning,
@@ -267,6 +279,7 @@ impl wit_host::Host for StoreData {
     }
 
     fn register_language(&mut self, definition: String) -> wasmtime::Result<Result<(), String>> {
+        self.require_interactive()?;
         Ok(parse_language(&definition).map(|cfg| {
             self.registrations.lock().add_language(cfg);
             self.effects.commands_changed = true;
@@ -274,6 +287,7 @@ impl wit_host::Host for StoreData {
     }
 
     fn register_theme(&mut self, definition: String) -> wasmtime::Result<Result<(), String>> {
+        self.require_interactive()?;
         Ok(ThemeDef::parse(&definition).map(|theme| {
             self.effects.themes_changed.push(theme.id.clone());
             self.registrations.lock().add_theme(theme);
@@ -379,13 +393,14 @@ impl Runtime {
         f: impl FnOnce(&bindings::Plugin, &mut Store<StoreData>) -> wasmtime::Result<R>,
     ) -> Result<(R, CallEffects), CallError> {
         arm(&mut self.store, &self.limits).map_err(|e| CallError::Trap(e.to_string()))?;
+        let isolated = invocation.isolated;
         self.store.data_mut().invocation = invocation;
         let result = f(&self.plugin, &mut self.store);
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
         let effects = std::mem::take(&mut data.effects);
         let stderr = data.drain_stderr();
-        if !stderr.trim().is_empty() {
+        if !isolated && !stderr.trim().is_empty() {
             tracing::info!(plugin = %data.plugin_id, "stderr: {}", stderr.trim_end());
         }
         match result {
@@ -393,8 +408,11 @@ impl Runtime {
             Err(e) => {
                 let mut msg = describe_trap(&e, &self.limits);
                 // Typically the panic message: "panicked at src/lib.rs:1:2:\nboom".
-                let detail: Vec<&str> =
-                    stderr.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("note:")).collect();
+                let detail: Vec<&str> = if isolated {
+                    Vec::new()
+                } else {
+                    stderr.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("note:")).collect()
+                };
                 if !detail.is_empty() {
                     let tail = detail[detail.len().saturating_sub(4)..].join("\n");
                     msg = format!("{msg}\n{}", clip(tail, 1024));

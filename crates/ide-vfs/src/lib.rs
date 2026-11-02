@@ -351,6 +351,36 @@ pub fn detect_encoding(bytes: &[u8], fallback: Option<&str>) -> &'static encodin
     }
 }
 
+/// Decode already-opened bytes using the editor's binary and encoding rules.
+pub fn decode_commit_bytes(bytes: &[u8], fallback: Option<&str>, selected: Option<&str>) -> IdeResult<(String, bool)> {
+    let (text, detected, has_bom, binary) = encoding::decode(bytes);
+    if let Some(label) = selected {
+        let encoding = encoding_rs::Encoding::for_label(label.trim().as_bytes())
+            .ok_or_else(|| IdeError::invalid("Unknown document encoding"))?;
+        if binary && encoding != encoding_rs::UTF_16LE && encoding != encoding_rs::UTF_16BE {
+            return Ok((String::new(), true));
+        }
+        let body = match encoding_rs::Encoding::for_bom(bytes) {
+            Some((bom, length)) if bom == encoding => &bytes[length..],
+            _ => bytes,
+        };
+        return Ok((encoding.decode_without_bom_handling(body).0.into_owned(), false));
+    }
+    if binary {
+        return Ok((String::new(), true));
+    }
+    if !has_bom
+        && detected != encoding_rs::UTF_8
+        && detected != encoding_rs::UTF_16LE
+        && detected != encoding_rs::UTF_16BE
+    {
+        if let Some(encoding) = fallback.and_then(|value| encoding_rs::Encoding::for_label(value.trim().as_bytes())) {
+            return Ok((encoding.decode_without_bom_handling(bytes).0.into_owned(), false));
+        }
+    }
+    Ok((text, false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +426,26 @@ mod assertions {
     fn types_are_thread_safe() {
         send_sync::<super::Watcher>();
         send_sync::<super::FsBatch>();
+    }
+}
+
+#[cfg(test)]
+mod commit_bytes_tests {
+    #[test]
+    fn decode_commit_bytes_detects_binary_and_utf16() {
+        let (text, binary) = super::decode_commit_bytes(b"hello\r\n", None, None).unwrap();
+        assert_eq!(text, "hello\r\n");
+        assert!(!binary);
+        let (_, binary) = super::decode_commit_bytes(b"\x89PNG\0binary", None, None).unwrap();
+        assert!(binary);
+        let (text, binary) = super::decode_commit_bytes(b"\xff\xfeh\0i\0", None, None).unwrap();
+        assert_eq!(text, "hi");
+        assert!(!binary);
+        let (text, binary) = super::decode_commit_bytes(b"\xd6\xd0", None, Some("gbk")).unwrap();
+        assert_eq!(text, "中");
+        assert!(!binary);
+        let (text, binary) = super::decode_commit_bytes(b"a\0", None, Some("utf-16le")).unwrap();
+        assert_eq!(text, "a");
+        assert!(!binary);
     }
 }
