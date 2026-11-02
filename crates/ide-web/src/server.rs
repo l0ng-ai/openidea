@@ -233,7 +233,8 @@ async fn resolve(shared: &Shared, target: &str) -> Response {
         return NOT_FOUND;
     }
     let Some(key) = segments.next().and_then(dec) else { return NOT_FOUND };
-    let Some(mut file) = shared.roots.read().get(&key).cloned() else { return NOT_FOUND };
+    let Some(root) = shared.roots.read().get(&key).cloned() else { return NOT_FOUND };
+    let mut file = root.clone();
     let mut trailing_slash = true;
     for seg in segments {
         trailing_slash = seg.is_empty();
@@ -245,17 +246,28 @@ async fn resolve(shared: &Shared, target: &str) -> Response {
             _ => return NOT_FOUND,
         }
     }
-    let Ok(meta) = tokio::fs::metadata(&file).await else { return NOT_FOUND };
+    let Ok(mut meta) = tokio::fs::metadata(&file).await else { return NOT_FOUND };
     if meta.is_dir() {
         // Relative URLs in an index page resolve against the directory.
         if !trailing_slash {
             return Response::Redirect(format!("{path}/"));
         }
         file.push("index.html");
-        return match tokio::fs::metadata(&file).await {
-            Ok(m) if m.is_file() => Response::File { path: file, len: m.len() },
-            _ => NOT_FOUND,
-        };
+        let Ok(m) = tokio::fs::metadata(&file).await else { return NOT_FOUND };
+        if !m.is_file() {
+            return NOT_FOUND;
+        }
+        meta = m;
+    }
+    // Symlinks must not serve anything outside the served root (a committed
+    // `x -> /` would leak the whole disk): compare the real paths, so links
+    // inside the root keep working while links out are refused.
+    let (Ok(real_file), Ok(real_root)) = tokio::join!(tokio::fs::canonicalize(&file), tokio::fs::canonicalize(&root))
+    else {
+        return NOT_FOUND;
+    };
+    if !real_file.starts_with(&real_root) {
+        return NOT_FOUND;
     }
     Response::File { path: file, len: meta.len() }
 }
@@ -351,5 +363,45 @@ mod tests {
         let ub = server.url_for(Some(&a), &b.join("p.html")).await.unwrap();
         assert!(ua.ends_with("/site/p.html") && ub.ends_with("/site-2/p.html"), "{ua} {ub}");
         assert_eq!(server.url_for(None, &a.join("q.html")).await.unwrap(), ua.replace("p.html", "q.html"));
+    }
+
+    fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        {
+            if target.is_dir() {
+                std::os::windows::fs::symlink_dir(target, link)
+            } else {
+                std::os::windows::fs::symlink_file(target, link)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn symlinks_may_not_leave_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("index.html"), "<h1>hi</h1>").unwrap();
+        std::fs::write(dir.path().join("secret.txt"), "SECRET").unwrap();
+        let outside_file = symlink(&dir.path().join("secret.txt"), &root.join("leak")).is_ok();
+        let outside_dir = symlink(&dir.path(), &root.join("rootlink")).is_ok();
+        let inside = symlink(&root.join("index.html"), &root.join("copy.html")).is_ok();
+        if !(outside_file && outside_dir && inside) {
+            eprintln!("skipped: this account cannot create symlinks");
+            return;
+        }
+
+        let server = WebServer::new();
+        let url = server.url_for(Some(&root), &root.join("index.html")).await.unwrap();
+        let base = url.trim_end_matches("/index.html");
+        // Links out of the root are refused, links inside it keep working.
+        assert!(get(&format!("{base}/leak"), None).await.starts_with("HTTP/1.1 404"));
+        assert!(get(&format!("{base}/rootlink/secret.txt"), None).await.starts_with("HTTP/1.1 404"));
+        let page = get(&format!("{base}/copy.html"), None).await;
+        assert!(page.starts_with("HTTP/1.1 200") && page.ends_with("<h1>hi</h1>"));
     }
 }
