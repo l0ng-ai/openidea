@@ -569,8 +569,7 @@ export class DocModel {
 
   save(reason: "explicit" | "auto"): Promise<void> {
     const run = async () => {
-      if (this.closed || this.meta.readOnly) return;
-      if (reason === "auto" && !this.meta.dirty) return;
+      if (this.closed || this.meta.readOnly || !this.meta.dirty) return;
       const slot = this.primarySlot();
       if (reason === "explicit") {
         for (const p of _saveParticipants()) {
@@ -764,7 +763,7 @@ export class DocumentManager {
     for (const m of this.byPath.values()) m.applySettings();
   }
 
-  /** Saves every document; failures are notified, and an explicit Save All also rejects with them. */
+  /** Saves dirty documents; failures are notified, and an explicit Save All also rejects with them. */
   async saveAll(reason: "explicit" | "auto") {
     const errors: unknown[] = [];
     await Promise.all(
