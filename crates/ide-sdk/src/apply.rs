@@ -620,10 +620,10 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
-            "python" | "pytest" => {
+            "python" | "pytest" | "django-test" => {
                 if let Some(py) = &explicit_python {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
-                    if c.kind == "python" && (runner || is_python_command(&c.command)) {
+                    if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
                             // `uv run python …` → `<interpreter> …`
                             let skip = if c.args.get(1).is_some_and(|a| is_python_command(a)) { 2 } else { 1 };

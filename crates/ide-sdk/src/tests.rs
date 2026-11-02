@@ -152,6 +152,8 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("pytest", "uv", &["run", "pytest", "-x"]),
         run("npm", "npm", &["run", "dev"]),
         run("shell", "python3", &["x.py"]),
+        run("django-test", "uv", &["run", "python", "manage.py", "test"]),
+        run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].command, "/opt/py/bin/python3");
@@ -161,6 +163,11 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[2].args, ["-m", "pytest", "-x"]);
     assert_eq!(configs[3].command, "pnpm");
     assert_eq!(configs[4].command, "python3", "shell configs are left alone");
+    // Django tests run on the selected interpreter, like `manage.py runserver`.
+    assert_eq!(configs[5].command, "/opt/py/bin/python3");
+    assert_eq!(configs[5].args, ["manage.py", "test"]);
+    assert_eq!(configs[6].command, "/opt/py/bin/python3");
+    assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
 }
 
 fn fake_jdk(dir: &Path) {
