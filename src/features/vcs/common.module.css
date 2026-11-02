@@ -283,6 +283,13 @@
   background: var(--bg-list-selected);
 }
 
+.comparisonDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
+.comparisonDialog .comparison {
+  flex: 1 1 auto;
+}
 .comparison {
   display: flex;
   height: min(520px, 65vh);

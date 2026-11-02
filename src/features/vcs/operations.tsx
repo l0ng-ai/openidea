@@ -614,6 +614,8 @@ export function ChangesBetweenDialog({
       title={files ? `${title} — ${count}` : title}
       onClose={onClose}
       width={input ? 1100 : 680}
+      resizable="both"
+      className={styles.comparisonDialog}
       buttons={[
         {
           label: "Show Diff",
