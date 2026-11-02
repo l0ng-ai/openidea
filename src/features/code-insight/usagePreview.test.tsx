@@ -17,14 +17,17 @@ describe("UsagePreview", () => {
     );
     await waitFor(() => expect(container.querySelector(".tok-keyword")?.textContent).toBe("const"));
     expect(container.querySelector("mark")?.textContent).toBe("foo");
+    expect(container.querySelector("mark")?.childElementCount).toBe(0);
     expect(container.textContent).toBe("const x = foo();");
   });
 
-  it("colours a usage inside a doc comment as a comment", async () => {
+  it("keeps comment colours outside the match and the search foreground inside it", async () => {
     const { container } = render(
       <UsagePreview usage={{ path: "/p/a.ts", line: 1, col: 8, endCol: 11, text: " * Uses foo()" }} />,
     );
-    await waitFor(() => expect(container.querySelector("mark .tok-comment")?.textContent).toBe("foo"));
+    await waitFor(() => expect(container.querySelector(".tok-comment")?.textContent).toBe("* Uses "));
+    expect(container.querySelector("mark")?.textContent).toBe("foo");
+    expect(container.querySelector("mark")?.childElementCount).toBe(0);
   });
 });
 
