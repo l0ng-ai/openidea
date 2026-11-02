@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { AgentProvider, AgentRegistry, InstallEvent, RegistryAgent, RequestId } from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { iconMarkup } from "@/ui/icons";
 import { MessagesHost } from "@/workbench/messages";
 import { AgentRegistryPage } from "./AgentRegistryPage";
 import { ADD_AGENT, providerOptions } from "./providerOptions";
@@ -142,6 +143,17 @@ describe("agent picker", () => {
 });
 
 describe("Agents settings page", () => {
+  it("shows the built-in Copilot name and icon in its registry row", async () => {
+    const backend = new FakeBackend();
+    backend.registry = { agents: [agent({ id: "copilot", name: "GitHub Copilot" })], warning: null };
+    render(<AgentRegistryPage backend={backend} />);
+    const copilot = await screen.findByRole("listitem", { name: "GitHub Copilot" });
+    const expected = document.createElement("div");
+    expected.innerHTML = iconMarkup("agent-copilot")!;
+    expect(copilot.querySelector("svg")?.innerHTML).toBe(expected.querySelector("svg")?.innerHTML);
+    expect(copilot.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  });
+
   it("lists registry agents, says they are third-party, and searches them", async () => {
     const backend = new FakeBackend();
     render(<AgentRegistryPage backend={backend} />);
