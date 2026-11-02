@@ -71,10 +71,21 @@ export function parseJavaArgs(args: readonly string[]): JavaCommandLine {
   return { vmArgs, mainClass: null, programArgs: [], classpath, explicitClasspath };
 }
 
+/**
+ * VM options a launch adds for the console, as IDEA's Spring Boot configurations do: the
+ * console renders ANSI colours, but Spring only detects a terminal, and the process runs on pipes.
+ * Kept out when the configuration sets the property itself.
+ */
+export function consoleVmArgs(config: Pick<RunConfig, "kind" | "args">): string[] {
+  if (config.kind !== "spring-boot") return [];
+  const own = parseJavaArgs(config.args).vmArgs.some((a) => a.startsWith("-Dspring.output.ansi.enabled="));
+  return own ? [] : ["-Dspring.output.ansi.enabled=always"];
+}
+
 /** The configuration with its placeholders and launcher resolved. */
 export function resolveJavaCommand(config: RunConfig, info: JavaLaunchInfo): RunConfig {
   const cp = info.classPaths.join(info.pathListSeparator);
-  const args: string[] = [];
+  const args: string[] = [...consoleVmArgs(config)];
   if (info.modulePaths.length && !config.args.some((a) => a === "-p" || a === "--module-path"))
     args.push("--module-path", info.modulePaths.join(info.pathListSeparator));
   args.push(...config.args.map((a) => (a === CLASSPATH || a === TEST_CLASSPATH ? cp : a)));

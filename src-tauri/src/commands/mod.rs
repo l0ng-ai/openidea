@@ -298,6 +298,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_changelists_save,
         vcs::vcs_write_patch,
         term::term_spawn,
+        term::term_store_image,
         term::term_write,
         term::term_resize,
         term::term_kill,

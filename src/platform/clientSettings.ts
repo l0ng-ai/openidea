@@ -77,6 +77,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "run.confirmTerminate",
   "run.showOnStart",
   "vcs.showDirtyDirectories",
+  "vcs.git.inlineBlame",
   "vcs.git.showPushDialog",
   "vcs.git.pushDialogOnlyProtected",
   "vcs.git.combineStashAndShelf",
