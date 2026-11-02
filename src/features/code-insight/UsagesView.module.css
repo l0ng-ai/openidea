@@ -129,6 +129,27 @@
 .preview :global(.tok-variableName.tok-definition) {
   color: var(--syn-function);
 }
+/* The token colours above outrank the inherited match foreground, leaving syntax colours
+   on the search-match background; reapply the match foreground to tokens inside it. */
+.preview .match :global(.tok-keyword),
+.preview .match :global(.tok-modifier),
+.preview .match :global(.tok-controlKeyword),
+.preview .match :global(.tok-operatorKeyword),
+.preview .match :global(.tok-string),
+.preview .match :global(.tok-string2),
+.preview .match :global(.tok-number),
+.preview .match :global(.tok-bool),
+.preview .match :global(.tok-atom),
+.preview .match :global(.tok-typeName),
+.preview .match :global(.tok-className),
+.preview .match :global(.tok-namespace),
+.preview .match :global(.tok-comment),
+.preview .match :global(.tok-meta),
+.preview .match :global(.tok-macroName),
+.preview .match :global(.tok-propertyName),
+.preview .match :global(.tok-variableName.tok-definition) {
+  color: var(--fg-search-match, inherit);
+}
 
 .note {
   min-width: 0;
