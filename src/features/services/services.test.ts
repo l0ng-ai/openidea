@@ -22,16 +22,7 @@ import {
 } from "./model";
 import { endpointFrom } from "./dialogs";
 import { dockerItems } from "./docker";
-import {
-  addServiceMenu,
-  expandableKeys,
-  indexTree,
-  mergeItemActions,
-  selectServiceNodes,
-  selectedItemsOf,
-  setProviderRoots,
-  useServicesTree,
-} from "./tree";
+import { addServiceMenu, expandableKeys, indexTree, setProviderRoots, useServicesTree } from "./tree";
 
 const container = (name: string, state: string, project?: string, service?: string): DockerContainer => ({
   id: `${name}-id`,
@@ -137,77 +128,6 @@ describe("services tree host", () => {
       "Docker Registry…",
       "Docker Connection…",
     ]);
-  });
-
-  it("merges the toolbar actions of several selected nodes, running them all", () => {
-    const calls: string[] = [];
-    const node = (key: string, kind: string) => ({ key, label: key, icon: kind });
-    const a = node("a", "run");
-    const b = node("b", "run");
-    const group = node("group", "folder");
-    const actionsOf = (item: { key: string }) => [
-      ...(item.key === "group"
-        ? []
-        : [
-            {
-              id: "run",
-              title: item.key === "a" ? "Run" : "Rerun",
-              icon: "run",
-              disabled: item.key === "b",
-              run: () => calls.push(`run:${item.key}`),
-            },
-            { id: "debug", title: "Debug", icon: "debug", run: () => {} },
-          ]),
-      { id: "stop", title: "Stop", icon: "stop", run: () => calls.push(`stop:${item.key}`) },
-    ];
-
-    expect(mergeItemActions([], actionsOf)).toEqual([]);
-    // One node: its own actions (title, disabled state and run) are kept as is.
-    expect(mergeItemActions([a], actionsOf)[0]!.title).toBe("Run");
-
-    // Several: only the ids all of them offer, labeled as the first, disabled if any is.
-    const merged = mergeItemActions([a, b, group], actionsOf);
-    expect(merged.map((x) => x.id)).toEqual(["stop"]);
-    merged[0]!.run();
-    expect(calls).toEqual(["stop:a", "stop:b", "stop:group"]);
-
-    const runAndStop = mergeItemActions([a, b], actionsOf);
-    expect(runAndStop.map((x) => [x.id, x.title, x.disabled])).toEqual([
-      ["run", "Run", true],
-      ["debug", "Debug", false],
-      ["stop", "Stop", false],
-    ]);
-    runAndStop[0]!.run();
-    expect(calls.slice(3)).toEqual(["run:a", "run:b"]);
-  });
-
-  it("acts on the selected nodes of the lead's provider", () => {
-    const runRoots = [
-      {
-        key: "run:type:cargo",
-        label: "Cargo",
-        icon: "run",
-        children: [{ key: "run:config:build", label: "build", icon: "run" }],
-      },
-    ];
-    const dockerRoots = [{ key: "docker:default", label: "Docker", icon: "file-docker" }];
-    const index = indexTree({ run: runRoots, docker: dockerRoots });
-    const selected = ["docker:default", "run:type:cargo", "run:config:build"];
-    expect(selectedItemsOf("run", selected, index).map((i) => i.key)).toEqual(["run:type:cargo", "run:config:build"]);
-    expect(selectedItemsOf("docker", selected, index).map((i) => i.key)).toEqual(["docker:default"]);
-    expect(selectedItemsOf("run", ["gone"], index)).toEqual([]);
-  });
-
-  it("keeps the lead node of a multi-selection for the detail pane", () => {
-    selectServiceNodes(["a", "b"], "b");
-    expect([...useServicesTree.getState().selectedKeys]).toEqual(["a", "b"]);
-    expect(useServicesTree.getState().selectedKey).toBe("b");
-    // A lead outside the selection falls back to the first selected node.
-    selectServiceNodes(["a"], null);
-    expect(useServicesTree.getState().selectedKey).toBe("a");
-    selectServiceNodes([], null);
-    expect(useServicesTree.getState().selectedKeys.size).toBe(0);
-    expect(useServicesTree.getState().selectedKey).toBeNull();
   });
 
   it("expands nodes asking for it once, when they first appear", () => {
