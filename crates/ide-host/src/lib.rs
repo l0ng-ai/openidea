@@ -24,7 +24,7 @@ use ide_language::{LanguageRegistry, Syntax};
 use ide_run::ProcessManager;
 use ide_terminal::TerminalManager;
 use ide_workspace::SettingsStore;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -73,6 +73,8 @@ pub struct Host {
     pub environment: environment::Environment,
     /// The HTTP proxy's saved password (see `proxy.rs`).
     proxy_password: ide_ssh::secrets::SecretFile,
+    /// The proxy password when it could not be saved (no credential store).
+    proxy_session_password: Mutex<Option<String>>,
     pub(crate) sink_for: SinkFactory,
     owner: fn(&str) -> &str,
     pub runtime: tokio::runtime::Handle,
@@ -101,6 +103,7 @@ impl Host {
         let host = Self {
             trust: trust::TrustStore::load(&config_dir, &data_dir),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
+            proxy_session_password: Mutex::default(),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
             environment: environment::Environment::new(project_environment, local_data_dir.clone()),

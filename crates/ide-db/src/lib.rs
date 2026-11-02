@@ -1072,6 +1072,7 @@ mod tests {
     use std::path::Path;
 
     fn manager(dir: &Path) -> DbManager {
+        ide_ssh::secrets::testing::use_memory_store();
         let data = dir.join("data");
         let ssh = Arc::new(SshManager::new(data.join("ssh-passwords.json")));
         DbManager::new(dir.join("project"), data.join("db-passwords.json"), data.join("db-history.json"), ssh)

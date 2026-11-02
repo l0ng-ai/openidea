@@ -43,6 +43,7 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_proxy_applies_and_the_password_is_saved_apart() {
+    ide_ssh::secrets::testing::use_memory_store();
     let tmp = tempfile::tempdir().unwrap();
     let host = host(tmp.path());
     assert_eq!(proxy().mode, ProxyMode::Auto);

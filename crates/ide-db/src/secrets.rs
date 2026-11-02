@@ -55,6 +55,7 @@ mod tests {
 
     #[test]
     fn keeps_projects_apart_and_drops_empty_ones() {
+        ide_ssh::secrets::testing::use_memory_store();
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("db-passwords.json");
         let a = SecretStore::new(file.clone(), Path::new("/p/a"));
