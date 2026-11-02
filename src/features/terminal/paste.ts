@@ -25,6 +25,7 @@ function pathsText(paths: readonly string[], target: TerminalPasteTarget): strin
         return `"${path}"`;
       }
       if (shell === "powershell" || shell === "pwsh") return `'${path.replaceAll("'", "''")}'`;
+      if (shell === "fish") return `'${path.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
       return `'${path.replaceAll("'", "'\\''")}'`;
     })
     .join(" ");

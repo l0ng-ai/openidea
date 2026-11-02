@@ -441,7 +441,12 @@ it("reads file URI lists without relying on a native file-list backend", async (
 it.each([
   { shell: "pwsh", path: "C:\\Users\\a'b $c\\image.png", expected: "'C:\\Users\\a''b $c\\image.png'" },
   { shell: "powershell", path: "C:\\a b\\image.png", expected: "'C:\\a b\\image.png'" },
+  { shell: "zsh", path: "/tmp/a'b $中文.png", expected: "'/tmp/a'\\''b $中文.png'" },
+  { shell: "bash", path: "/tmp/a'b $中文.png", expected: "'/tmp/a'\\''b $中文.png'" },
+  { shell: "fish", path: "/tmp/a'b $中文.png", expected: "'/tmp/a\\'b $中文.png'" },
+  { shell: "fish", path: "/tmp/a\\\\b\\'中文.png", expected: "'/tmp/a\\\\\\\\b\\\\\\'中文.png'" },
   { shell: "cmd", path: "C:\\a&b\\image.png", expected: '"C:\\a&b\\image.png"' },
+  { shell: "cmd.exe", path: "C:\\a b $中文\\image.png", expected: '"C:\\a b $中文\\image.png"' },
 ])("quotes a stored path for $shell", async ({ shell, path, expected }) => {
   vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: path });
   const host = document.createElement("div");
