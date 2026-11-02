@@ -82,3 +82,24 @@ test("preserves all lines in a drag selection across virtual windows", async ({ 
   expect(text).toContain("output 250\noutput 251");
   expect(text).toContain("output 284");
 });
+
+test("Select All takes the whole buffer, not just the mounted rows", async ({ page }) => {
+  const log = await consoleOutput(page);
+  await page.evaluate(() => {
+    (window as unknown as { copied: string[] }).copied = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text: string) => (window as unknown as { copied: string[] }).copied.push(text) },
+    });
+  });
+  await log.focus();
+  await page.keyboard.press("Meta+A");
+  // Selection stays inside the console: nothing from the workbench behind it is selected.
+  const selected = await page.evaluate(() => window.getSelection()?.toString() ?? "");
+  expect(selected).not.toContain("Project");
+  await page.keyboard.press("Meta+C");
+  const [copied] = await page.evaluate(() => (window as unknown as { copied: string[] }).copied);
+  expect(copied?.split("\n")).toHaveLength(500);
+  expect(copied).toContain("output 0\n");
+  expect(copied).toMatch(/output 499$/);
+});
