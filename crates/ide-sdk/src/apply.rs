@@ -88,6 +88,9 @@ pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
 pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, String> {
     match jdk_setting(root, &s.languages.java.jdtls_jdk) {
         None => Ok(None),
+        Some(Ok(jdk)) if !ide_core::java_runtime::supports_java_bundles(&jdk.home) => {
+            Err(crate::java::server_jdk_incomplete_message(&jdk, jdk.major.max(crate::java::JDTLS_MIN_JAVA)))
+        }
         Some(Ok(jdk)) => Ok(Some(jdk)),
         Some(Err(p)) => Err(format!(
             "The language server JDK {} is not a JDK home (Settings › Languages & Frameworks › Java).",
