@@ -45,16 +45,6 @@ IDEA analyses Python more deeply, so "ready" doesn't mean the same work on
 both sides. Both are measured from the outside, the same way: see
 [`perf/compare`](perf/compare) to run it on your machine and projects.
 
-## Diff viewer
-
-The built-in side-by-side diff viewer recognizes unchanged, reindented and edited
-moved blocks. Moved code has a dotted underline and a link to its location on the
-other side; edited moves also show their internal word changes. The toolbar reports
-moved blocks and whitespace-only changes. Edited moves require unique unchanged
-anchors, strong token similarity and an unambiguous counterpart. Heavy rewrites,
-ambiguous matches and large approximate comparisons retain ordinary highlighting.
-Staging and revert use the original line hunks. No external tool is required.
-
 ## License
 
 [Apache 2.0](LICENSE). Bundled third-party assets are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
