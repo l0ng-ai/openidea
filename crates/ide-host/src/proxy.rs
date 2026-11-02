@@ -14,7 +14,8 @@ impl Host {
     pub fn with_proxy_password(&self, mut settings: Settings) -> Settings {
         // A password typed into settings.toml by hand counts too, unless one was saved.
         let session = || self.proxy_session_password.lock().clone();
-        if let Some(password) = self.proxy_password.get(PASSWORD_KEY).or_else(session) {
+        // The session copy is the latest write that could not be saved.
+        if let Some(password) = session().or_else(|| self.proxy_password.get(PASSWORD_KEY)) {
             settings.proxy.password = password;
         }
         settings
@@ -98,6 +99,8 @@ mod tests {
             project_environment: false,
         });
         let path = tmp.path().join("data/proxy-password.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"httpProxy": "old"}"#).unwrap();
         host.proxy_password = SecretFile::with_vault(path, |v| serde_json::from_value(v).ok(), Arc::new(NoStore));
 
         let left = host.take_proxy_password("proxy.password", serde_json::json!("s3cret")).unwrap();

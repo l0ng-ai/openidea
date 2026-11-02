@@ -171,9 +171,18 @@ impl SecretFile {
                 self.write_logged(&index);
             }
             Contents::Plaintext(mut old, _) => {
-                if old.remove(key).is_some() {
-                    self.write_logged(&old);
+                if old.remove(key).is_none() {
+                    return;
                 }
+                // A move halfway may have copied it already.
+                if let Some(id) = self.pending_id()
+                    && let Err(e) = self.vault.delete(&service(&id), key)
+                    && !matches!(e, StoreError::NoEntry)
+                {
+                    tracing::warn!("saved passwords: could not forget {key}: {e}");
+                    return;
+                }
+                self.write_logged(&old);
             }
         }
     }
@@ -207,12 +216,23 @@ impl SecretFile {
     /// An unreadable file is renamed rather than overwritten (it may index
     /// credentials, or hold secrets); the store starts over.
     fn set_aside(&self, why: &str) -> Contents {
-        let aside = self.path.with_extension("json.unreadable");
+        let aside = self.path.with_extension(format!("json.unreadable-{}", new_id()));
         tracing::warn!("saved passwords: {}: {why}; moved to {}", self.path.display(), aside.display());
         if let Err(e) = std::fs::rename(&self.path, &aside) {
-            tracing::warn!("saved passwords: {}: {e}", aside.display());
+            // Not overwritten either: nothing is saved until it can be moved.
+            return Contents::Plaintext(BTreeMap::new(), format!("{}: {e}", self.path.display()));
         }
         Contents::Index(Index { id: new_id(), keys: BTreeSet::new() })
+    }
+
+    fn pending_path(&self) -> PathBuf {
+        self.path.with_extension("json.migrating")
+    }
+
+    /// The id of a move that has not finished (see [`SecretFile::migrate`]).
+    fn pending_id(&self) -> Option<String> {
+        let id = std::fs::read_to_string(self.pending_path()).ok()?;
+        Some(id.trim().to_owned()).filter(|id| !id.is_empty())
     }
 
     /// Moves an older version's secrets to the credential store, key by key; a secret
@@ -224,10 +244,10 @@ impl SecretFile {
         if !self.vault.available() {
             return Contents::Plaintext(old, "no credential store".into());
         }
-        let pending = self.path.with_extension("json.migrating");
-        let id = match std::fs::read_to_string(&pending) {
-            Ok(id) if !id.trim().is_empty() => id.trim().to_owned(),
-            _ => {
+        let pending = self.pending_path();
+        let id = match self.pending_id() {
+            Some(id) => id,
+            None => {
                 let id = new_id();
                 if let Err(e) = std::fs::write(&pending, &id) {
                     return Contents::Plaintext(old, format!("{}: {e}", pending.display()));
@@ -425,6 +445,21 @@ mod tests {
     }
 
     #[test]
+    fn forgetting_during_a_pending_move_forgets_the_copy_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("git-credentials.json");
+        std::fs::write(&path, OLD).unwrap();
+        let vault = Arc::new(FakeVault::default());
+        vault.fail("https://b.example", platform);
+
+        let file = with_fake(&path, &vault);
+        file.delete("https://a.example");
+        vault.heal();
+        assert_eq!(file.keys(), ["https://b.example"]);
+        assert_eq!(vault.secrets(), ["me\nold-b"]);
+    }
+
+    #[test]
     fn a_secret_the_store_refuses_for_good_is_forgotten_and_does_not_block_saving() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("git-credentials.json");
@@ -502,7 +537,9 @@ mod tests {
         let file = with_fake(&path, &vault);
         assert_eq!(file.keys(), Vec::<String>::new());
         file.set("a", "pw").unwrap();
-        assert_eq!(std::fs::read_to_string(path.with_extension("json.unreadable")).unwrap(), "{ not json");
+        std::fs::write(&path, "{ not json either").unwrap();
+        assert_eq!(file.keys(), Vec::<String>::new());
+        assert_eq!(files_containing(tmp.path(), "{ not json").len(), 2, "both kept, neither overwritten");
     }
 
     #[test]
