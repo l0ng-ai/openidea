@@ -16,6 +16,13 @@ pub struct Jdk {
     pub home: PathBuf,
 }
 
+pub(crate) fn server_jdk_incomplete_message(jdk: &Jdk, min_java: u32) -> String {
+    format!(
+        "The language server JDK ({}) must be a full JDK with jdk.compiler, jdk.jdi and jdk.unsupported for Java language support and debugging. jdtls needs JDK {min_java} or newer. Download JDK {min_java}, choose a full JDK in {SERVER_JDK_SETTING}, or set it to Auto.",
+        jdk.home.display()
+    )
+}
+
 /// `JAVA_VERSION="21.0.3"` (or `"1.8.0_372"`) from a JDK's `release` file.
 pub fn parse_release(release: &str) -> Option<u32> {
     let line = release.lines().find_map(|l| l.trim().strip_prefix("JAVA_VERSION="))?;
@@ -199,7 +206,7 @@ pub const JDTLS_MIN_JAVA: u32 = 21;
 
 /// The JDK to run jdtls with: the first found that is new enough (`JAVA_HOME` wins).
 pub fn jdtls_runtime(jdks: &[Jdk], min_java: u32) -> Option<&Jdk> {
-    jdks.iter().find(|j| j.major >= min_java)
+    jdks.iter().find(|j| j.major >= min_java && ide_core::java_runtime::supports_java_bundles(&j.home))
 }
 
 /// The Java version the jdtls that `cfg` launches needs: the highest any of its
@@ -421,6 +428,9 @@ pub fn configure_jdtls(
     if !cfg.env.contains_key("JAVA_HOME") {
         let runtime = match server_jdk {
             Some(jdk) if jdk.major < min_java => Err(server_jdk_too_old_message(jdk, min_java)),
+            Some(jdk) if !ide_core::java_runtime::supports_java_bundles(&jdk.home) => {
+                Err(server_jdk_incomplete_message(jdk, min_java))
+            }
             Some(jdk) => Ok(jdk),
             None => jdtls_runtime(jdks, min_java).ok_or_else(|| missing_runtime_message(jdks, min_java)),
         };
@@ -430,6 +440,10 @@ pub fn configure_jdtls(
             }
             Err(e) => cfg.launch_error = Some(e),
         }
+    } else if let Some(jdk) = cfg.env.get("JAVA_HOME").and_then(|home| jdk_at(Path::new(home)))
+        && !ide_core::java_runtime::supports_java_bundles(&jdk.home)
+    {
+        cfg.launch_error = Some(server_jdk_incomplete_message(&jdk, min_java));
     }
     let mut runtimes = runtimes(&project_jdks);
     if let Some(project) = project_jdk.or_else(|| pick_jdk(&project_jdks, project_java_version(server_root))) {
@@ -573,6 +587,19 @@ fn parse_java_version(v: &str) -> Option<u32> {
 mod tests {
     use super::*;
 
+    fn test_jdk(root: &Path, major: u32, name: &str) -> Jdk {
+        let home = root.join(name.trim_start_matches('/'));
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(
+            home.join("release"),
+            format!("JAVA_VERSION=\"{major}\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n"),
+        )
+        .unwrap();
+        std::fs::write(java_executable(&home), "").unwrap();
+        std::fs::write(home.join("bin").join(crate::exe("javac")), "").unwrap();
+        Jdk { major, home }
+    }
+
     #[test]
     fn unmanaged_source_models_have_separate_jdtls_workspaces() {
         let data = tempfile::tempdir().unwrap();
@@ -599,8 +626,13 @@ mod tests {
         let project_root = data.path().join("tools/jdks");
         let project_home = project_root.join("temurin-21");
         std::fs::create_dir_all(project_home.join("bin")).unwrap();
-        std::fs::write(project_home.join("release"), "JAVA_VERSION=\"21.0.1\"\n").unwrap();
+        std::fs::write(
+            project_home.join("release"),
+            "JAVA_VERSION=\"21.0.1\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+        )
+        .unwrap();
         std::fs::write(java_executable(&project_home), "").unwrap();
+        std::fs::write(project_home.join("bin").join(crate::exe("javac")), "").unwrap();
         let project = jdk_at(&project_home).unwrap();
         let discover = || jdk_homes(&project_root).filter_map(|home| jdk_at(&home)).collect::<Vec<_>>();
         let installed = discover();
@@ -608,8 +640,13 @@ mod tests {
         assert!(jdtls_runtime(&runtime_candidates(&installed, data.path()), 25).is_none());
         let home = language_server_runtimes_dir(data.path()).join("temurin-25");
         std::fs::create_dir_all(home.join("bin")).unwrap();
-        std::fs::write(home.join("release"), "JAVA_VERSION=\"25.0.1\"\n").unwrap();
+        std::fs::write(
+            home.join("release"),
+            "JAVA_VERSION=\"25.0.1\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+        )
+        .unwrap();
         std::fs::write(java_executable(&home), "").unwrap();
+        std::fs::write(home.join("bin").join(crate::exe("javac")), "").unwrap();
         let candidates = runtime_candidates(&installed, data.path());
         assert_eq!(jdtls_runtime(&candidates, 25).unwrap().major, 25);
         assert_eq!(jdtls_runtime(&candidates, 21), Some(&project));
@@ -629,10 +666,46 @@ mod tests {
     }
 
     #[test]
+    fn jdtls_rejects_jre_for_auto_explicit_and_managed_runtimes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jre = test_jdk(tmp.path(), 25, "jre");
+        std::fs::write(jre.home.join("release"), "JAVA_VERSION=\"25\"\nMODULES=\"java.base java.compiler\"\n").unwrap();
+        let jdk = test_jdk(tmp.path(), 25, "jdk");
+        let installed = [jre.clone(), jdk.clone()];
+        assert_eq!(jdtls_runtime(&installed, 25), Some(&jdk));
+        assert!(jdtls_runtime(std::slice::from_ref(&jre), 25).is_none());
+        let managed = language_server_runtimes_dir(tmp.path()).join("temurin-25");
+        std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        std::fs::rename(&jre.home, &managed).unwrap();
+        assert!(jdtls_runtime(&runtime_candidates(&[], tmp.path()), 25).is_none());
+        let jre = jdk_at(&managed).unwrap();
+        for env_override in [false, true] {
+            let mut cfg: LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+            if env_override {
+                cfg.env.insert("JAVA_HOME".into(), jre.home.to_string_lossy().into_owned());
+            }
+            configure_jdtls(&mut cfg, tmp.path(), tmp.path(), &installed[1..], None, Some(&jre), 25, &[], None);
+            let err = cfg.launch_error.unwrap();
+            assert!(
+                err.contains("full JDK with jdk.compiler, jdk.jdi and jdk.unsupported")
+                    && err.contains("Download JDK 25")
+                    && err.contains(SERVER_JDK_SETTING),
+                "{err}"
+            );
+        }
+        std::fs::write(
+            managed.join("release"),
+            "JAVA_VERSION=\"25\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+        )
+        .unwrap();
+        assert!(jdtls_runtime(&runtime_candidates(&[], tmp.path()), 25).is_some());
+    }
+
+    #[test]
     fn implicit_compiler_default_matches_project_pick_with_duplicate_versions() {
-        let installed =
-            [Jdk { major: 21, home: PathBuf::from("/jdk21a") }, Jdk { major: 21, home: PathBuf::from("/jdk21b") }];
-        let server = Jdk { major: 25, home: PathBuf::from("/custom-server-runtime") };
+        let fixtures = tempfile::tempdir().unwrap();
+        let installed = [test_jdk(fixtures.path(), 21, "/jdk21a"), test_jdk(fixtures.path(), 21, "/jdk21b")];
+        let server = test_jdk(fixtures.path(), 25, "/custom-server-runtime");
         let mut cfg: LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &installed, None, Some(&server), 25, &[], None);
         let opts = serde_json::to_value(cfg.initialization_options.unwrap()).unwrap();
@@ -642,7 +715,7 @@ mod tests {
                 "name": "JavaSE-21", "path": pick_jdk(&installed, None).unwrap().home, "default": true
             }])
         );
-        assert_eq!(cfg.env["JAVA_HOME"], "/custom-server-runtime");
+        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("custom-server-runtime").to_string_lossy());
     }
 
     #[test]
@@ -655,15 +728,16 @@ mod tests {
 
     #[test]
     fn jdtls_workspace_and_runtimes() {
+        let fixtures = tempfile::tempdir().unwrap();
         if cfg!(windows) {
             return; // Unix paths and shells
         }
         let mut cfg: LanguageServerConfig = toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap();
         let jdks = [
-            Jdk { major: 25, home: PathBuf::from("/jdk25") },
-            Jdk { major: 21, home: PathBuf::from("/jdk21a") },
-            Jdk { major: 21, home: PathBuf::from("/jdk21b") },
-            Jdk { major: 8, home: PathBuf::from("/jdk8") },
+            test_jdk(fixtures.path(), 25, "/jdk25"),
+            test_jdk(fixtures.path(), 21, "/jdk21a"),
+            test_jdk(fixtures.path(), 21, "/jdk21b"),
+            test_jdk(fixtures.path(), 8, "/jdk8"),
         ];
         let bundles = [PathBuf::from("/tools/java-debug/bin/com.microsoft.java.debug.plugin.jar")];
         configure_jdtls(
@@ -690,11 +764,15 @@ mod tests {
         );
         let opts = serde_json::to_value(cfg.initialization_options.clone().unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
-        assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": "/jdk8" }));
-        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": "/jdk21a" }));
-        assert_eq!(rt[2], json!({ "name": "JavaSE-25", "path": "/jdk25", "default": true }));
+        assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": fixtures.path().join("jdk8") }));
+        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": fixtures.path().join("jdk21a") }));
+        assert_eq!(rt[2], json!({ "name": "JavaSE-25", "path": fixtures.path().join("jdk25"), "default": true }));
         assert_eq!(opts["bundles"], json!(["/tools/java-debug/bin/com.microsoft.java.debug.plugin.jar"]));
-        assert_eq!(cfg.env["JAVA_HOME"], "/jdk25", "first JDK new enough to run jdtls");
+        assert_eq!(
+            cfg.env["JAVA_HOME"],
+            fixtures.path().join("jdk25").to_string_lossy(),
+            "first JDK new enough to run jdtls"
+        );
         assert_eq!(cfg.launch_error, None);
 
         // Deterministic (reconfigure compares configs) and idempotent.
@@ -713,7 +791,7 @@ mod tests {
         assert_eq!(cfg, before);
 
         // The project JDK is the default runtime, and runs the server when new enough.
-        let project = Jdk { major: 21, home: PathBuf::from("/jdk21b") };
+        let project = test_jdk(fixtures.path(), 21, "/jdk21b");
         let mut cfg: LanguageServerConfig = toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap();
         configure_jdtls(
             &mut cfg,
@@ -728,8 +806,8 @@ mod tests {
         );
         let opts = serde_json::to_value(cfg.initialization_options.clone().unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
-        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": "/jdk21b", "default": true }));
-        assert_eq!(cfg.env["JAVA_HOME"], "/jdk21b");
+        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": fixtures.path().join("jdk21b"), "default": true }));
+        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("jdk21b").to_string_lossy());
 
         let mut other: LanguageServerConfig = toml::from_str("name = \"pyright\"\ncommand = \"x\"").unwrap();
         configure_jdtls(
@@ -836,8 +914,9 @@ mod tests {
 
     #[test]
     fn jdtls_needs_a_new_enough_jdk_to_run() {
+        let fixtures = tempfile::tempdir().unwrap();
         let jdtls = || -> LanguageServerConfig { toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap() };
-        let old = [Jdk { major: 17, home: PathBuf::from("/jdk17") }, Jdk { major: 8, home: PathBuf::from("/jdk8") }];
+        let old = [test_jdk(fixtures.path(), 17, "/jdk17"), test_jdk(fixtures.path(), 8, "/jdk8")];
         let mut cfg = jdtls();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &old, None, None, JDTLS_MIN_JAVA, &[], None);
         assert!(!cfg.env.contains_key("JAVA_HOME"));
@@ -856,7 +935,7 @@ mod tests {
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &old, None, None, JDTLS_MIN_JAVA, &[], None);
         assert_eq!((cfg.env["JAVA_HOME"].as_str(), cfg.launch_error), ("/custom", None));
 
-        let mixed = [old[0].clone(), Jdk { major: 21, home: PathBuf::from("/jdk21") }];
+        let mixed = [old[0].clone(), test_jdk(fixtures.path(), 21, "/jdk21")];
         assert_eq!(jdtls_runtime(&mixed, 21).unwrap().major, 21);
 
         // A jdtls whose bundles need 25 doesn't start on 21, and says what it needs.
@@ -869,11 +948,12 @@ mod tests {
 
     #[test]
     fn issue_49_jdtls_needs_25_with_8_17_21_installed() {
+        let fixtures = tempfile::tempdir().unwrap();
         let jdtls = || -> LanguageServerConfig { toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap() };
         let installed = [
-            Jdk { major: 21, home: PathBuf::from("/jdk21") },
-            Jdk { major: 17, home: PathBuf::from("/jdk17") },
-            Jdk { major: 8, home: PathBuf::from("/jdk8") },
+            test_jdk(fixtures.path(), 21, "/jdk21"),
+            test_jdk(fixtures.path(), 17, "/jdk17"),
+            test_jdk(fixtures.path(), 8, "/jdk8"),
         ];
         let mut cfg = jdtls();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &installed, None, None, 25, &[], None);
@@ -882,12 +962,11 @@ mod tests {
         assert!(err.contains("Download JDK 25"), "{err}");
 
         // Once a JDK 25 has been downloaded, Auto runs jdtls on it.
-        let downloaded =
-            [installed.as_slice(), &[Jdk { major: 25, home: PathBuf::from("/tools/jdks/temurin-25") }]].concat();
+        let downloaded = [installed.as_slice(), &[test_jdk(fixtures.path(), 25, "/tools/jdks/temurin-25")]].concat();
         let mut cfg = jdtls();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &downloaded, None, None, 25, &[], None);
         assert_eq!(cfg.launch_error, None);
-        assert_eq!(cfg.env["JAVA_HOME"], Path::new("/tools/jdks/temurin-25").to_string_lossy());
+        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("tools/jdks/temurin-25").to_string_lossy());
     }
 
     #[test]
@@ -924,8 +1003,9 @@ mod tests {
 
     #[test]
     fn jdtls_runs_on_the_chosen_server_jdk() {
+        let fixtures = tempfile::tempdir().unwrap();
         let jdtls = || -> LanguageServerConfig { toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap() };
-        let jdk = |major: u32, home: &str| Jdk { major, home: PathBuf::from(home) };
+        let jdk = |major: u32, home: &str| test_jdk(fixtures.path(), major, home);
         let installed = [jdk(25, "/jdk25"), jdk(21, "/jdk21"), jdk(17, "/jdk17")];
         let project = jdk(17, "/jdk17");
         let run = |server: Option<&Jdk>, min_java: u32| {
@@ -946,18 +1026,25 @@ mod tests {
 
         // Project on JDK 17, server on the chosen 21: each keeps its own JDK.
         let cfg = run(Some(&jdk(21, "/jdk21")), JDTLS_MIN_JAVA);
-        assert_eq!((cfg.env["JAVA_HOME"].as_str(), cfg.launch_error), ("/jdk21", None));
+        assert_eq!(
+            (cfg.env["JAVA_HOME"].clone(), cfg.launch_error),
+            (fixtures.path().join("jdk21").to_string_lossy().into_owned(), None)
+        );
         let opts = serde_json::to_value(cfg.initialization_options.unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
-        assert_eq!(rt[0], json!({ "name": "JavaSE-17", "path": "/jdk17", "default": true }), "still compiles on 17");
+        assert_eq!(
+            rt[0],
+            json!({ "name": "JavaSE-17", "path": fixtures.path().join("jdk17"), "default": true }),
+            "still compiles on 17"
+        );
 
         // Not set: the first installed JDK new enough, as before.
-        assert_eq!(run(None, JDTLS_MIN_JAVA).env["JAVA_HOME"], "/jdk25");
+        assert_eq!(run(None, JDTLS_MIN_JAVA).env["JAVA_HOME"], fixtures.path().join("jdk25").to_string_lossy());
 
         // A chosen JDK outside the scanned locations.
         let own = jdk(25, "/opt/own-jdk");
         let cfg = run(Some(&own), 25);
-        assert_eq!(cfg.env["JAVA_HOME"], "/opt/own-jdk");
+        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("opt/own-jdk").to_string_lossy());
 
         // Too old for this jdtls: the user's choice is not overridden, it is explained.
         let cfg = run(Some(&jdk(21, "/jdk21")), 25);
