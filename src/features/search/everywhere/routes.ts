@@ -27,6 +27,16 @@ const HTTP_METHODS = new Set(["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "
 
 let cached: { root: string; promise: Promise<Route[]> } | null = null;
 
+/** Whether `path` is a source a mapping can live in (a Java or Kotlin file). */
+export function isRouteSource(path: string): boolean {
+  return /\.(java|kt|kts)$/i.test(path);
+}
+
+/** Forgets the index, so the next search rescans the project. */
+export function clearRouteIndex() {
+  cached = null;
+}
+
 /** The project's routes, scanned once per project and kept in memory. */
 export function routeIndex(root: string | null): Promise<Route[]> {
   if (!root) return Promise.resolve([]);

@@ -8,6 +8,7 @@ import { activeEditor, registerEditorContribution } from "@/editor/api";
 import { executeAction, registerActions } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { onIdeEvent } from "@/platform/ipc";
+import { clearRouteIndex, isRouteSource } from "./everywhere/routes";
 import { useProject } from "@/platform/project";
 import { EDIT_SCOPES_ACTION } from "@/platform/search";
 import { isVirtualUri } from "@/platform/virtualDocs";
@@ -519,6 +520,11 @@ export function activate(): void | (() => void) {
       // A directory scope pointed into the previous project.
       if (useFindPopup.getState().scopeTab === "directory")
         useFindPopup.setState({ scopeTab: "project", directory: "" });
+    }),
+    // A mapping edited on disk invalidates the request-path index: the next search
+    // rescans the project instead of answering from what it used to look like.
+    onIdeEvent("fsChanged", (e) => {
+      if ([...e.created, ...e.modified, ...e.removed].some((p) => isRouteSource(String(p)))) clearRouteIndex();
     }),
     onIdeEvent("fsChanged", (e) => {
       if (!e.removed.length) return;
