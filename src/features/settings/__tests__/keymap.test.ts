@@ -29,12 +29,19 @@ import {
   copyName,
   deleteKeymap,
   duplicateKeymap,
+  importKeymap,
   keymapName,
   renameKeymap,
   validateKeymapName,
   withCustomOverrides,
   type KeymapDraft,
 } from "../keymap/model";
+import {
+  parseIdeaKeystroke,
+  parseIdeaMouseShortcut,
+  parseKeymapXml,
+  resolveIdeaParent,
+} from "@/platform/keymapXml";
 import { buildKeymapTree } from "../keymap/KeymapPage";
 import { groupPath } from "../keymap/groups";
 import { registerLspActions } from "@/editor/lsp/actions";
@@ -339,5 +346,119 @@ describe("applyKeymapSettings", () => {
     await Promise.resolve();
     expect(run).toHaveBeenCalledOnce();
     uninstall();
+  });
+});
+
+describe("IntelliJ keymap XML import", () => {
+  it("resolves IDEA parent names to built-in presets", () => {
+    expect(resolveIdeaParent("Mac OS X")).toBe("intellij-classic-macos");
+    expect(resolveIdeaParent("Mac OS X 10.5+")).toBe("intellij-macos");
+    expect(resolveIdeaParent("macOS")).toBe("intellij-macos");
+    expect(resolveIdeaParent("$default")).toBe("intellij-windows");
+    expect(resolveIdeaParent("Eclipse (Mac OS X)")).toBe("eclipse-macos");
+    expect(resolveIdeaParent("Eclipse")).toBe("eclipse-windows");
+    expect(resolveIdeaParent("VSCode OSX")).toBe("vscode-macos");
+    expect(resolveIdeaParent("VSCode")).toBe("vscode-windows");
+    expect(resolveIdeaParent("Sublime Text (Mac OS X)")).toBe("intellij-macos");
+    expect(resolveIdeaParent("Sublime Text")).toBe("intellij-windows");
+    expect(resolveIdeaParent(null)).toBe(defaultPreset());
+  });
+
+  it("parses IDEA keystrokes and mouse shortcuts into canonical bindings", () => {
+    expect(parseIdeaKeystroke("shift meta w")).toBe("Shift+Meta+W");
+    expect(parseIdeaKeystroke("ctrl alt shift N")).toBe("Ctrl+Alt+Shift+N");
+    expect(parseIdeaKeystroke("meta BACK_SPACE")).toBe("Meta+Backspace");
+    expect(parseIdeaKeystroke("meta OPEN_BRACKET")).toBe("Meta+[");
+    expect(parseIdeaKeystroke("meta CLOSE_BRACKET")).toBe("Meta+]");
+    expect(parseIdeaKeystroke("ctrl BACK_QUOTE")).toBe("Ctrl+`");
+    expect(parseIdeaKeystroke("shift F10")).toBe("Shift+F10");
+    expect(parseIdeaMouseShortcut("meta button1")).toBe("Meta+Button1");
+    expect(parseIdeaMouseShortcut("button4")).toBe("Button4");
+    expect(parseIdeaMouseShortcut("button2")).toBeNull();
+  });
+
+  it("parses a custom IDEA keymap XML inheriting from Mac OS X (IntelliJ Classic)", () => {
+    const xml = `<keymap version="1" name="Mac OS X copy" parent="Mac OS X">
+  <action id="Arrangement.Rule.Add">
+    <keyboard-shortcut first-keystroke="ctrl enter" />
+  </action>
+  <action id="CloseAllEditorsButActive">
+    <keyboard-shortcut first-keystroke="shift meta w" />
+  </action>
+  <action id="CloseContent">
+    <keyboard-shortcut first-keystroke="meta f4" />
+    <keyboard-shortcut first-keystroke="meta w" />
+  </action>
+  <action id="Generate">
+    <keyboard-shortcut first-keystroke="ctrl enter" />
+  </action>
+  <action id="NewElement">
+    <keyboard-shortcut first-keystroke="ctrl enter" />
+  </action>
+  <action id="ReopenClosedTab">
+    <keyboard-shortcut first-keystroke="shift meta t" />
+  </action>
+  <action id="Run" />
+  <action id="Back">
+    <keyboard-shortcut first-keystroke="meta open_bracket" />
+    <mouse-shortcut keystroke="button4" />
+  </action>
+  <action id="GotoDeclaration">
+    <keyboard-shortcut first-keystroke="meta b" second-keystroke="meta d" />
+  </action>
+</keymap>`;
+    const parsed = parseKeymapXml(xml, "fallback");
+    expect(parsed.keymap.name).toBe("Mac OS X copy");
+    expect(parsed.keymap.parent).toBe("intellij-classic-macos");
+    expect(parsed.keymap.overrides["editor.closeOtherTabs"]).toEqual(["Shift+Meta+W"]);
+    expect(parsed.keymap.overrides["editor.closeTab"]).toEqual(["Meta+F4", "Meta+W"]);
+    expect(parsed.keymap.overrides["toolwindow.closeContent"]).toEqual(["Meta+F4", "Meta+W"]);
+    expect(parsed.keymap.overrides["code.generate"]).toEqual(["Ctrl+Enter"]);
+    expect(parsed.keymap.overrides["project.newFile"]).toEqual(["Ctrl+Enter"]);
+    expect(parsed.keymap.overrides["editor.reopenClosedTab"]).toEqual(["Shift+Meta+T"]);
+    expect(parsed.keymap.overrides["run.run"]).toEqual([]);
+    expect(parsed.keymap.overrides["navigate.back"]).toEqual(["Meta+[", "Button4"]);
+    expect(parsed.keymap.overrides["navigate.declaration"]).toEqual(["Meta+B Meta+D"]);
+
+    // Verify resolved bindings inherit IntelliJ Classic (⇧⌘N for GotoFile) plus overrides
+    const draft: KeymapDraft = {
+      preset: parsed.keymap.parent,
+      overrides: parsed.keymap.overrides,
+    };
+    expect(resolveBindings(draft, "navigate.gotoFile")).toEqual(["Shift+Meta+N"]);
+    expect(resolveBindings(draft, "editor.closeOtherTabs")).toEqual(["Shift+Meta+W"]);
+    expect(resolveBindings(draft, "run.run")).toEqual([]);
+  });
+
+  it("rejects invalid XML or non-keymap roots", () => {
+    expect(() => parseKeymapXml("<not-xml", "x")).toThrow("Invalid IntelliJ keymap XML");
+    expect(() => parseKeymapXml("<scheme name='Darcula'/>", "x")).toThrow(
+      "Invalid IntelliJ keymap XML",
+    );
+  });
+
+  it("imports custom keymaps with overwrite or keep-both collision handling", () => {
+    const imported = {
+      name: "Mac OS X copy",
+      parent: "intellij-classic-macos" as const,
+      overrides: { "editor.closeOtherTabs": ["Meta+Shift+W"] },
+    };
+    const first = importKeymap({}, imported, false);
+    expect(first.id).toBe("custom.mac-os-x-copy");
+    expect(first.customs[first.id]).toEqual(imported);
+
+    const updated = {
+      name: "Mac OS X copy",
+      parent: "intellij-macos" as const,
+      overrides: { "editor.closeTab": ["Meta+W"] },
+    };
+    const overwritten = importKeymap(first.customs, updated, true);
+    expect(overwritten.id).toBe("custom.mac-os-x-copy");
+    expect(overwritten.customs[overwritten.id]).toEqual(updated);
+
+    const keptBoth = importKeymap(first.customs, updated, false);
+    expect(keptBoth.id).toBe("custom.mac-os-x-copy-2");
+    expect(keptBoth.customs[keptBoth.id]?.name).toBe("Mac OS X copy (2)");
+    expect(keptBoth.customs["custom.mac-os-x-copy"]).toEqual(imported);
   });
 });

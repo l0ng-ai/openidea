@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { isValidBinding } from "../keymap";
+import { intellijClassicMacos } from "./intellij-classic-macos";
 import { intellijMacos } from "./intellij-macos";
 import { intellijWindows } from "./intellij-windows";
 
@@ -89,7 +91,7 @@ describe("IDEA keymap parity", () => {
     expect(ids.indexOf(earlier), `${earlier} before ${later}`).toBeLessThan(ids.indexOf(later));
   };
 
-  it.each([intellijMacos, intellijWindows])("lets scoped actions win shared keys", (km) => {
+  it.each([intellijMacos, intellijClassicMacos, intellijWindows])("lets scoped actions win shared keys", (km) => {
     order(km, "code.splitLine", "http.runRequest");
     order(km, "code.splitLine", "db.execute");
     order(km, "editor.copyPath", "project.copyAbsolutePath");
@@ -104,5 +106,27 @@ describe("IDEA keymap parity", () => {
     order(km, "find.inFile", "vcs.log.goToRef");
     // Inline (text editor only) wins over New Branch.
     order(km, "vcs.newBranch", "refactor.inline");
+  });
+
+  it("ships IntelliJ Classic (macOS) matching IDEA's Mac OS X.xml", () => {
+    expect(Object.keys(intellijMacos).filter((id) => !(id in intellijClassicMacos))).toEqual([]);
+    for (const keys of Object.values(intellijClassicMacos)) {
+      for (const k of keys) expect(isValidBinding(k)).toBe(true);
+    }
+    expect(intellijClassicMacos["navigate.gotoFile"]).toEqual(["Meta+Shift+N"]);
+    expect(intellijClassicMacos["navigate.gotoClass"]).toEqual(["Meta+N"]);
+    expect(intellijClassicMacos["navigate.gotoSymbol"]).toEqual(["Meta+Alt+Shift+N"]);
+    expect(intellijClassicMacos["navigate.gotoLine"]).toEqual(["Meta+G"]);
+    expect(intellijClassicMacos["project.newFile"]).toEqual(["Ctrl+N", "Ctrl+Enter"]);
+    expect(intellijClassicMacos["code.generate"]).toEqual(["Ctrl+N", "Ctrl+Enter"]);
+    expect(intellijClassicMacos["editor.closeTab"]).toEqual(["Meta+F4"]);
+    expect(intellijClassicMacos["find.inPath"]).toEqual(["Ctrl+Shift+F"]);
+    expect(intellijClassicMacos["find.replaceInPath"]).toEqual(["Ctrl+Shift+R"]);
+    expect(intellijClassicMacos["find.next"]).toEqual(["F3", "Ctrl+L"]);
+    expect(intellijClassicMacos["find.previous"]).toEqual(["Shift+F3", "Ctrl+Shift+L"]);
+    expect(intellijClassicMacos["find.replaceInFile"]).toEqual(["Meta+R"]);
+    expect(intellijClassicMacos["run.run"]).toEqual(["Shift+F10"]);
+    expect(intellijClassicMacos["run.debug"]).toEqual(["Shift+F9"]);
+    expect(intellijClassicMacos["toolwindow.project"]).toEqual(["Meta+1"]);
   });
 });
