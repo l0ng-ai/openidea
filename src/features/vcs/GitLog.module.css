@@ -63,6 +63,35 @@
   flex: 1;
   min-height: 0;
 }
+.branchRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.branchLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.branchCurrent {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.branchSync {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.branchIncoming {
+  color: var(--accent);
+}
+.branchOutgoing {
+  color: var(--success);
+}
 
 /* filters */
 .filters {

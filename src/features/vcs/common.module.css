@@ -110,20 +110,38 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
-/* Push dialogs: the list fills the body so a resizable window shows more rows. */
-.pushTreeWrap {
+/* Both panes grow with the resizable Push dialog; neither owns the push selection. */
+.pushReview {
   flex: 1;
-  min-height: 220px;
+  min-height: 260px;
+  height: min(440px, 60vh);
   display: flex;
-  flex-direction: column;
   padding: 14px;
 }
-.pushListWrap {
+.pushCommits,
+.pushPreview {
   flex: 1;
-  min-height: 180px;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 0 14px 14px;
+}
+.pushPreview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.pushPreviewBar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 6px;
+}
+.pushDiff {
+  flex: 1;
+  height: min(640px, 75vh);
+  min-height: 240px;
+  overflow: hidden;
 }
 .cloneDirRow {
   display: flex;
