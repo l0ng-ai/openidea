@@ -144,6 +144,7 @@ const ICONS = {
   "proj-gin": "openidea/projectTypes/gin",
   "proj-echo": "openidea/projectTypes/echo",
   "proj-fiber": "openidea/projectTypes/fiber",
+  "proj-goravel": "openidea/projectTypes/goravel",
   "proj-spring": "openidea/projectTypes/spring",
   "proj-ktor": "openidea/projectTypes/ktor",
   "proj-aspnet": "openidea/projectTypes/aspnet",

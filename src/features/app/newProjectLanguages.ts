@@ -92,6 +92,7 @@ const GROUPS: readonly GroupSpec[] = [
       ["gin", "Gin", "main.go", "proj-gin"],
       ["echo", "Echo", "main.go", "proj-echo"],
       ["fiber", "Fiber", "main.go", "proj-fiber"],
+      ["goravel", "Goravel", "main.go", "proj-goravel"],
     ],
   },
   {
@@ -173,6 +174,7 @@ const GROUPS: readonly GroupSpec[] = [
       ["c", "C", "main.c"],
       ["csharp", "C#", "Program.cs"],
       ["cpp", "C++", "main.cpp"],
+      ["d", "D", "main.d"],
       ["fsharp", "F#", "Program.fs"],
       ["go", "Go", "main.go"],
       ["go.mod", "Go Module", "go.mod"],
@@ -244,6 +246,7 @@ const GROUPS: readonly GroupSpec[] = [
       ["log", "Log", "app.log"],
       ["makefile", "Makefile", "Makefile"],
       ["markdown", "Markdown", "README.md"],
+      ["asciidoc", "AsciiDoc", "README.adoc"],
       ["plaintext", "Plain Text", "notes.txt"],
       ["terraform", "Terraform", "main.tf"],
       ["terraform-vars", "Terraform Variables", "variables.tfvars"],

@@ -622,6 +622,220 @@ export const webProjectBuilders: Record<string, Build> = {
     `,
     ),
   ],
+  goravel: (n) => {
+    const mod = `example.com/${n.slug}`;
+    return [
+      file(
+        "go.mod",
+        `module ${mod}\n\ngo 1.25.0\n\nrequire (\n\tgithub.com/goravel/framework v1.18.0\n\tgithub.com/goravel/gin v1.18.0\n\tgithub.com/stretchr/testify v1.11.1\n)\n`,
+      ),
+      file("artisan", `#!/usr/bin/env bash\ngo run . artisan "$@"\n`),
+      file(
+        ".env.example",
+        `
+        APP_NAME=${n.slug}
+        APP_ENV=local
+        APP_KEY=
+        APP_DEBUG=true
+        APP_URL=http://localhost
+        APP_HOST=127.0.0.1
+        APP_PORT=3000
+      `,
+      ),
+      file(".gitignore", "/vendor/\n.env\n"),
+      file(
+        "main.go",
+        `
+        package main
+
+        import "${mod}/bootstrap"
+
+        func main() {
+            bootstrap.Boot().Start()
+        }
+      `,
+      ),
+      file(
+        "bootstrap/app.go",
+        `
+        package bootstrap
+
+        import (
+            contractsfoundation "github.com/goravel/framework/contracts/foundation"
+            "github.com/goravel/framework/foundation"
+
+            "${mod}/config"
+            "${mod}/routes"
+        )
+
+        func Boot() contractsfoundation.Application {
+            return foundation.Setup().
+                WithRouting(func() {
+                    routes.Web()
+                }).
+                WithProviders(Providers).
+                WithConfig(config.Boot).
+                Create()
+        }
+      `,
+      ),
+      file(
+        "bootstrap/providers.go",
+        `
+        package bootstrap
+
+        import (
+            "github.com/goravel/framework/contracts/foundation"
+            "github.com/goravel/framework/http"
+            "github.com/goravel/framework/log"
+            "github.com/goravel/framework/route"
+            "github.com/goravel/framework/testing"
+            "github.com/goravel/gin"
+        )
+
+        func Providers() []foundation.ServiceProvider {
+            return []foundation.ServiceProvider{
+                &log.ServiceProvider{},
+                &http.ServiceProvider{},
+                &route.ServiceProvider{},
+                &gin.ServiceProvider{},
+                &testing.ServiceProvider{},
+            }
+        }
+      `,
+      ),
+      file(
+        "config/app.go",
+        `
+        package config
+
+        import "${mod}/app/facades"
+
+        func Boot() {}
+
+        func init() {
+            config := facades.Config()
+            config.Add("app", map[string]any{
+                "name":   config.Env("APP_NAME", "${n.slug}"),
+                "env":    config.Env("APP_ENV", "local"),
+                "debug":  config.Env("APP_DEBUG", true),
+                "key":    config.Env("APP_KEY", ""),
+                "locale": "en",
+            })
+        }
+      `,
+      ),
+      file(
+        "config/http.go",
+        `
+        package config
+
+        import (
+            "github.com/goravel/framework/contracts/route"
+            ginfacades "github.com/goravel/gin/facades"
+
+            "${mod}/app/facades"
+        )
+
+        func init() {
+            config := facades.Config()
+            config.Add("http", map[string]any{
+                "default": "gin",
+                "drivers": map[string]any{
+                    "gin": map[string]any{
+                        "route": func() (route.Route, error) {
+                            return ginfacades.Route("gin"), nil
+                        },
+                    },
+                },
+                "url":  config.Env("APP_URL", "http://localhost"),
+                "host": config.Env("APP_HOST", "127.0.0.1"),
+                "port": config.Env("APP_PORT", "3000"),
+            })
+        }
+      `,
+      ),
+      file(
+        "app/facades/app.go",
+        `
+        package facades
+
+        import (
+            contractsfoundation "github.com/goravel/framework/contracts/foundation"
+            "github.com/goravel/framework/foundation"
+        )
+
+        func App() contractsfoundation.Application {
+            return foundation.App
+        }
+      `,
+      ),
+      file(
+        "app/facades/config.go",
+        `
+        package facades
+
+        import "github.com/goravel/framework/contracts/config"
+
+        func Config() config.Config {
+            return App().MakeConfig()
+        }
+      `,
+      ),
+      file(
+        "app/facades/route.go",
+        `
+        package facades
+
+        import "github.com/goravel/framework/contracts/route"
+
+        func Route() route.Route {
+            return App().MakeRoute()
+        }
+      `,
+      ),
+      file(
+        "routes/web.go",
+        `
+        package routes
+
+        import (
+            "net/http"
+
+            contractshttp "github.com/goravel/framework/contracts/http"
+
+            "${mod}/app/facades"
+        )
+
+        func Web() {
+            facades.Route().Get("/", func(ctx contractshttp.Context) contractshttp.Response {
+                return ctx.Response().String(http.StatusOK, "${n.slug}")
+            })
+        }
+      `,
+      ),
+      file(
+        "tests/test_case.go",
+        `
+        package tests
+
+        import (
+            "github.com/goravel/framework/testing"
+
+            "${mod}/bootstrap"
+        )
+
+        func init() {
+            bootstrap.Boot()
+        }
+
+        type TestCase struct {
+            testing.TestCase
+        }
+      `,
+      ),
+    ];
+  },
   spring: (n) => [
     file(
       "pom.xml",

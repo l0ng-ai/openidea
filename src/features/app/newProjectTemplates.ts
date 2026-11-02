@@ -2504,6 +2504,30 @@ const BUILDERS: Record<string, Build> = {
     ),
     ignore(".zig-cache/", "zig-out/"),
   ],
+  d: (n) => [
+    file(
+      "dub.json",
+      JSON.stringify(
+        { authors: [n.slug], description: n.slug, license: "MIT", name: n.slug, targetType: "executable" },
+        null,
+        2,
+      ),
+    ),
+    file(
+      "source/app.d",
+      `
+      module app;
+
+      import std.stdio;
+
+      void main()
+      {
+          writeln("${n.slug}");
+      }
+    `,
+    ),
+    file(".gitignore", ".dub/\n"),
+  ],
   "objective-c": () => [
     file(
       "Makefile",
@@ -3009,6 +3033,7 @@ const BUILDERS: Record<string, Build> = {
   ],
   http: () => [file("api.http", `GET https://example.com/ HTTP/1.1\n`)],
   markdown: (n) => [file("README.md", `# ${n.pascal}\n\n${n.raw}\n`)],
+  asciidoc: (n) => [file("README.adoc", `= ${n.pascal}\n:toc:\n\nHello, world!\n`)],
   latex: (n) => [
     file(
       "main.tex",

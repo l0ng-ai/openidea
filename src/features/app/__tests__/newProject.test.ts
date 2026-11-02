@@ -167,6 +167,10 @@ describe("File › New Project…", () => {
     expect(starterFiles("gin", "demo").find((file) => file.path === "go.mod")?.contents).toContain(
       "github.com/gin-gonic/gin",
     );
+    expect(starterFiles("goravel", "demo").find((file) => file.path === "go.mod")?.contents).toContain(
+      "github.com/goravel/framework v1.18.0",
+    );
+    expect(starterFiles("goravel", "demo").some((file) => file.path === "routes/web.go")).toBe(true);
     expect(starterFiles("spring", "demo").some((file) => file.contents.includes("spring-boot-starter-web"))).toBe(true);
     expect(starterFiles("ktor", "demo").some((file) => file.contents.includes("ktor-server-netty"))).toBe(true);
     expect(starterFiles("aspnet", "demo").some((file) => file.contents.includes("Microsoft.NET.Sdk.Web"))).toBe(true);

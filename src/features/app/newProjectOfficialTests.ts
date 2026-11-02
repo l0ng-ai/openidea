@@ -94,6 +94,7 @@ export function officialCase(kindId: string, names: Names): OfficialCase | null 
     gin: { path: "main_test.go", marker: "httptest" },
     echo: { path: "main_test.go", marker: "httptest" },
     fiber: { path: "main_test.go", marker: "newApp().Test" },
+    goravel: { path: "tests/feature/home_test.go", marker: "AssertOk" },
     spring: { path: "src/test/java/com/example/ApplicationTests.java", marker: "@SpringBootTest" },
     ktor: { path: "src/test/kotlin/com/example/ApplicationTest.kt", marker: "testApplication" },
     aspnet: { path: "tests/HomeTests.cs", marker: "WebApplicationFactory" },
@@ -602,6 +603,38 @@ function extras(kindId: string, names: Names): StarterFile[] {
               if recorder.Body.String() != "${slug}" {
                   t.Fatalf("body %s", recorder.Body.String())
               }
+          }
+        `,
+        ),
+      ];
+    case "goravel":
+      return [
+        file(
+          "tests/feature/home_test.go",
+          `
+          package feature
+
+          import (
+              "testing"
+
+              "github.com/stretchr/testify/suite"
+
+              "example.com/${slug}/tests"
+          )
+
+          type HomeTestSuite struct {
+              suite.Suite
+              tests.TestCase
+          }
+
+          func TestHomeTestSuite(t *testing.T) {
+              suite.Run(t, new(HomeTestSuite))
+          }
+
+          func (s *HomeTestSuite) TestIndex() {
+              response, err := s.Http(s.T()).Get("/")
+              s.Nil(err)
+              response.AssertOk()
           }
         `,
         ),
