@@ -28,3 +28,22 @@ test("the scrollbar thumb drags even where overview marks cover it (#752)", asyn
   await page.mouse.move(x, box.y + box.height - 20);
   await expect(editor.locator(".cm-openidea-overview")).not.toHaveClass(/cm-openidea-overview-onThumb/);
 });
+
+test("the scrollbar thumb shows over a mark the height of the lane (#1014)", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  await editor.locator(".cm-content").click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText(Array.from({ length: 400 }, (_, i) => `val mark${i} = ${i}`).join("\n"));
+  await page.keyboard.press("Meta+f");
+  await page.getByRole("textbox", { name: "Find" }).fill("mark");
+  await expect(editor.locator(".cm-openidea-overviewMark").first()).toBeVisible();
+  const thumb = editor.locator(".cm-openidea-overviewThumb");
+  await expect(thumb).toBeVisible();
+  // Drawn last in the lane, so it paints over every mark.
+  expect(await thumb.evaluate((t) => t.nextElementSibling)).toBeNull();
+  const scroller = editor.locator(".cm-scroller");
+  const top = async () => (await thumb.boundingBox())!.y;
+  const before = await top();
+  await scroller.evaluate((s) => (s.scrollTop = s.scrollHeight));
+  await expect.poll(top).toBeGreaterThan(before + 100);
+});
