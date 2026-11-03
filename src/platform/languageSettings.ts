@@ -25,6 +25,36 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
+/** An external formatter (Prettier, oxfmt) and the languages it formats. */
+interface ExternalFormatterValid {
+  path: string;
+  languages: string[];
+  prefer: boolean;
+  runOnSave: boolean;
+}
+
+const DEFAULT_FORMATTER: ExternalFormatterValid = {
+  path: "",
+  languages: [
+    "markdown",
+    "yaml",
+    "css",
+    "scss",
+    "less",
+    "html",
+    "graphql",
+    "javascript",
+    "javascriptreact",
+    "typescript",
+    "typescriptreact",
+    "json",
+    "jsonc",
+    "vue",
+  ],
+  prefer: false,
+  runOnSave: false,
+};
+
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
   ruby: { interpreter: string };
@@ -44,7 +74,8 @@ export interface LanguagesValid {
     modules: { env: Record<string, string>; autoVendor: boolean };
   };
   typescript: { version: string };
-  prettier: { path: string; languages: string[]; prefer: boolean; runOnSave: boolean };
+  prettier: ExternalFormatterValid;
+  oxfmt: ExternalFormatterValid;
   java: {
     jdk: string;
     jdtlsJdk: string;
@@ -87,27 +118,8 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
-  prettier: {
-    path: "",
-    languages: [
-      "markdown",
-      "yaml",
-      "css",
-      "scss",
-      "less",
-      "html",
-      "graphql",
-      "javascript",
-      "javascriptreact",
-      "typescript",
-      "typescriptreact",
-      "json",
-      "jsonc",
-      "vue",
-    ],
-    prefer: false,
-    runOnSave: false,
-  },
+  prettier: DEFAULT_FORMATTER,
+  oxfmt: DEFAULT_FORMATTER,
   java: {
     jdk: "",
     jdtlsJdk: "",
@@ -164,6 +176,19 @@ const folders = (v: unknown): string[] =>
 const folderKey = (stored: string) => (stored === "." ? "" : stored);
 const storedFolder = (rel: string) => normalizeFolder(rel) || ".";
 
+function validateFormatter(raw: unknown): ExternalFormatterValid {
+  const d = DEFAULT_FORMATTER;
+  const f = obj(raw);
+  return {
+    path: text(f.path, d.path),
+    languages: Array.isArray(f.languages)
+      ? [...new Set(f.languages.filter((v): v is string => typeof v === "string"))]
+      : d.languages,
+    prefer: bool(f.prefer, d.prefer),
+    runOnSave: bool(f.runOnSave, d.runOnSave),
+  };
+}
+
 export function validateLanguages(raw: unknown): LanguagesValid {
   const d = DEFAULT_LANGUAGES;
   const l = obj(raw);
@@ -176,7 +201,6 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const tags = obj(go.buildTags);
   const modules = obj(go.modules);
   const ts = obj(l.typescript);
-  const prettier = obj(l.prettier);
   const java = obj(l.java);
   const maven = obj(java.maven);
   const gradle = obj(java.gradle);
@@ -215,14 +239,8 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       },
     },
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
-    prettier: {
-      path: text(prettier.path, d.prettier.path),
-      languages: Array.isArray(prettier.languages)
-        ? [...new Set(prettier.languages.filter((v): v is string => typeof v === "string"))]
-        : d.prettier.languages,
-      prefer: bool(prettier.prefer, d.prettier.prefer),
-      runOnSave: bool(prettier.runOnSave, d.prettier.runOnSave),
-    },
+    prettier: validateFormatter(l.prettier),
+    oxfmt: validateFormatter(l.oxfmt),
     java: {
       jdk: text(java.jdk, d.java.jdk),
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),

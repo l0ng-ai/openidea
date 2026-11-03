@@ -53,6 +53,16 @@ describe("languages settings", () => {
     expect(validateLanguages({ prettier: { languages: [] } }).prettier.languages).toEqual([]);
   });
 
+  it("gives oxfmt the same opt-in settings as Prettier, kept apart from them", () => {
+    expect(validateLanguages({}).oxfmt).toEqual(DEFAULT_LANGUAGES.prettier);
+    const v = validateLanguages({
+      prettier: { runOnSave: true },
+      oxfmt: { path: " ./bin/oxfmt ", languages: ["typescript", null, "typescript"], prefer: true },
+    });
+    expect(v.oxfmt).toEqual({ path: "./bin/oxfmt", languages: ["typescript"], prefer: true, runOnSave: false });
+    expect(v.prettier).toMatchObject({ runOnSave: true, prefer: false, path: "" });
+  });
+
   it("leaves the Markdown preview font size unset (editor font) and keeps a set one in 8..72", () => {
     expect(validateLanguages({}).markdown).toEqual({ previewFontSize: null });
     expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown).toEqual({ previewFontSize: 72 });
@@ -89,6 +99,7 @@ describe("language pages", () => {
       "Python Interpreter",
       "PHP",
       "Prettier",
+      "oxfmt",
       "Ruby",
       "Rust",
       "TypeScript",

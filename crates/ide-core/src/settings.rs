@@ -547,7 +547,8 @@ pub struct LanguagesSettings {
     pub rust: RustSettings,
     pub go: GoSettings,
     pub typescript: TypeScriptSettings,
-    pub prettier: PrettierSettings,
+    pub prettier: ExternalFormatterSettings,
+    pub oxfmt: ExternalFormatterSettings,
     pub java: JavaSettings,
     pub ruby: RubySettings,
     pub markdown: MarkdownSettings,
@@ -561,18 +562,46 @@ pub struct MarkdownSettings {
     pub preview_font_size: Option<u32>,
 }
 
+impl LanguagesSettings {
+    pub fn formatter(&self, tool: ExternalFormatter) -> &ExternalFormatterSettings {
+        match tool {
+            ExternalFormatter::Prettier => &self.prettier,
+            ExternalFormatter::Oxfmt => &self.oxfmt,
+        }
+    }
+}
+
+/// A formatter that runs outside the language servers, with its own settings group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum ExternalFormatter {
+    Prettier,
+    Oxfmt,
+}
+
+impl ExternalFormatter {
+    /// The name of the tool in the tool registry.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Prettier => "prettier",
+            Self::Oxfmt => "oxfmt",
+        }
+    }
+}
+
+/// An external formatter (Prettier, oxfmt) and the languages it formats.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
-pub struct PrettierSettings {
+pub struct ExternalFormatterSettings {
     /// Empty path: project node_modules, managed installation, then PATH.
     pub path: String,
     pub languages: Vec<String>,
-    /// Prefer Prettier even when a language server offers formatting.
+    /// Prefer this formatter even when a language server offers formatting.
     pub prefer: bool,
     pub run_on_save: bool,
 }
 
-impl Default for PrettierSettings {
+impl Default for ExternalFormatterSettings {
     fn default() -> Self {
         Self {
             path: String::new(),

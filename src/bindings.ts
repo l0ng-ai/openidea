@@ -3097,6 +3097,19 @@ export type ExpressionAt = {
 	hasError: boolean,
 };
 
+/**  A formatter that runs outside the language servers, with its own settings group. */
+export type ExternalFormatter = "prettier" | "oxfmt";
+
+/**  An external formatter (Prettier, oxfmt) and the languages it formats. */
+export type ExternalFormatterSettings = {
+	/**  Empty path: project node_modules, managed installation, then PATH. */
+	path?: string,
+	languages?: string[],
+	/**  Prefer this formatter even when a language server offers formatting. */
+	prefer?: boolean,
+	runOnSave?: boolean,
+};
+
 /**  Tools › External Tools entry. */
 export type ExternalTool = {
 	id?: string,
@@ -3286,6 +3299,8 @@ export type FormatOptions = {
 	tabSize: number,
 	insertSpaces: boolean,
 	onSave?: boolean,
+	/**  External formatter to run whatever the settings select. */
+	tool?: ExternalFormatter | null,
 };
 
 /**  One occurrence of a duplicated code fragment. */
@@ -4126,7 +4141,8 @@ export type LanguagesSettings = {
 	rust?: RustSettings,
 	go?: GoSettings,
 	typescript?: TypeScriptSettings,
-	prettier?: PrettierSettings,
+	prettier?: ExternalFormatterSettings,
+	oxfmt?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
@@ -4889,15 +4905,6 @@ export type PreparedRequest = {
 	url: string,
 	headers: ([string, string])[],
 	body: string | null,
-};
-
-export type PrettierSettings = {
-	/**  Empty path: project node_modules, managed installation, then PATH. */
-	path?: string,
-	languages?: string[],
-	/**  Prefer Prettier even when a language server offers formatting. */
-	prefer?: boolean,
-	runOnSave?: boolean,
 };
 
 /**  Memory of one row of the breakdown. */
