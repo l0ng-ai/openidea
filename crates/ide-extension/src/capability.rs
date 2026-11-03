@@ -230,13 +230,18 @@ mod tests {
             "net:crates.io",
             "net:*.github.com",
             "process:cargo",
-            "fs.read:/etc",
         ] {
             assert_eq!(s.parse::<Capability>().unwrap().to_string(), s);
         }
-        // An absolute program path is the platform's.
-        let git = if cfg!(windows) { r"process:C:\Program Files\Git\bin\git.exe" } else { "process:/usr/bin/git" };
-        assert_eq!(git.parse::<Capability>().unwrap().to_string(), git);
+        // Absolute paths are the platform's.
+        let (git, etc) = if cfg!(windows) {
+            (r"process:C:\Program Files\Git\bin\git.exe", r"fs.read:C:\Windows")
+        } else {
+            ("process:/usr/bin/git", "fs.read:/etc")
+        };
+        for s in [git, etc] {
+            assert_eq!(s.parse::<Capability>().unwrap().to_string(), s);
+        }
         assert_eq!("project-read".parse::<Capability>().unwrap(), Capability::ProjectRead);
         assert!("net:".parse::<Capability>().is_err());
         assert!("net:a b".parse::<Capability>().is_err());
