@@ -2036,6 +2036,11 @@ export type Commit = {
 	refs: string[],
 	/**  Committer time (Log › View Options › Commit Timestamp). */
 	commitTimeMs?: number | null,
+	/**
+	 *  Per parent, under a user or text filter: the link passes commits the filter hides
+	 *  (`parents` then name the nearest shown ancestors). Empty when no parent is rewritten.
+	 */
+	dashed?: boolean[],
 };
 
 /**  Commit Options (IDEA's commit options popup). */
