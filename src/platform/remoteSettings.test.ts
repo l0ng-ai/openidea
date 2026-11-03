@@ -41,7 +41,13 @@ beforeEach(() => {
     cmd === "remote_invoke" ? JSON.stringify(remote) : local,
   );
   Object.assign(window, { __TAURI_INTERNALS__: { invoke, transformCallback: () => 1 } });
-  enableRemote({ target: { kind: "ssh", config: "test" }, root: "/remote", host: "test", commands: [...served] });
+  enableRemote({
+    target: { kind: "ssh", config: "test" },
+    root: "/remote",
+    host: "test",
+    os: "linux",
+    commands: [...served],
+  });
 });
 afterEach(() => {
   disableRemote();

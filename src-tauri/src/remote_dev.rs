@@ -58,6 +58,8 @@ pub struct Connection {
     pub target: RemoteTarget,
     pub root: String,
     pub host: String,
+    /// The server's `std::env::consts::OS`: where the project's commands run.
+    pub os: String,
     pub commands: Vec<String>,
     /// Streaming arguments by connection-wide id: the frontend channel and the id
     /// it expects (each webview numbers its own, and a settings window shares this
@@ -454,6 +456,7 @@ pub async fn remote_connect(
         target: target.clone(),
         root: root.clone(),
         host: host.clone(),
+        os: info.os.clone(),
         commands: commands.clone(),
         channels,
         next_channel: std::sync::atomic::AtomicU64::new(1),
@@ -469,6 +472,8 @@ pub struct RemoteSession {
     pub target: RemoteTarget,
     pub root: String,
     pub host: String,
+    /// `linux`, `macos` or `windows`: the OS the project's commands run on.
+    pub os: String,
     pub commands: Vec<String>,
 }
 
@@ -481,6 +486,7 @@ pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<Remo
         target: c.target.clone(),
         root: c.root.clone(),
         host: c.host.clone(),
+        os: c.os.clone(),
         commands: c.commands.clone(),
     })
 }

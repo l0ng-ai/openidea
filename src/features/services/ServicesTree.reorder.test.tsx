@@ -131,7 +131,13 @@ describe("service reordering integration", () => {
     fireEvent.click(screen.getByRole("button", { name: "Move Up" }));
     act(() =>
       useRemote.setState({
-        session: { root: "/services", target: { kind: "ssh", config: "host" }, host: "host", commands: [] },
+        session: {
+          root: "/services",
+          target: { kind: "ssh", config: "host" },
+          host: "host",
+          os: "linux",
+          commands: [],
+        },
       }),
     );
     expect(names()).toEqual(["Spring Boot", "Gateway", "Portal", "npm", "Web", "Worker", "Docker"]);

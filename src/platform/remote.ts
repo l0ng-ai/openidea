@@ -19,6 +19,7 @@ import {
 } from "./ipc";
 import { isClientSetting, overlayClientSettings } from "./clientSettings";
 import type { Settings } from "./ipc";
+import { usePlatform } from "./platformInfo";
 import { useProject } from "./project";
 
 interface RemoteState {
@@ -127,6 +128,11 @@ export function isRemoteWindow(): boolean {
   return useRemote.getState().session !== null;
 }
 
+/** The OS this window's commands run on: the remote server's, else this desktop's (`usePlatform`). */
+export function hostOs(): string {
+  return useRemote.getState().session?.os ?? usePlatform.getState().os;
+}
+
 /** Re-attaches after a reload (the backend keeps the connection per window). */
 export async function restoreRemote(): Promise<RemoteSession | null> {
   if (!isTauri()) return null;
@@ -152,7 +158,7 @@ export async function connectRemote(target: RemoteTarget, path: string) {
   });
   try {
     const r = await call(commands.remoteConnect(target, path, onProgress));
-    enableRemote({ target: r.target, root: r.root, host: r.host, commands: r.commands });
+    enableRemote({ target: r.target, root: r.root, host: r.host, os: r.os, commands: r.commands });
     if (takeLegacyRemoteTrust(r.target, path, r.host)) {
       const status = await call(commands.projectTrustStatus(r.root));
       if (!status.decided) await call(commands.projectTrustSet(r.root, true, false));

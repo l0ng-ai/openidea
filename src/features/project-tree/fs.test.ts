@@ -17,6 +17,7 @@ beforeEach(() => {
       target: { kind: "ssh", config: "s" },
       root: "/remote",
       host: "host",
+      os: "linux",
       commands: ["fs_copy", "cancel_request"],
     },
   });

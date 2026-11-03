@@ -6,14 +6,14 @@
  */
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import { CLASSPATH, parseJavaArgs, TEST_CLASSPATH } from "@/platform/javaLaunch";
-import { isRemoteWindow } from "@/platform/remote";
+import { hostOs } from "@/platform/remote";
 import type { RunConfigTypeContribution, RunConfigTypeField } from "@/workbench/contributions";
 import { formatArgs, parseArgs } from "./configs";
 import { commandName } from "./commandName";
 import { updatePolicyDefaults, updatePolicyFields } from "./updatePolicies";
 
-/** Whether commands run on Windows: a remote window runs them on its Linux / macOS server, not on this desktop. */
-export const isWindows = () => !isRemoteWindow() && typeof navigator !== "undefined" && /win/i.test(navigator.platform);
+/** Whether this window's commands run on Windows: the remote server's OS in a remote window, else the desktop's. */
+export const isWindows = () => hostOs() === "windows";
 
 /** VM options / program arguments as typed; on Windows a backslash is a path separator. */
 export const splitJvmArgs = (text: string | undefined, windows = isWindows()) => parseArgs(text ?? "", windows);

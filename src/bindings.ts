@@ -1042,6 +1042,8 @@ export const commands = {
 	target: RemoteTarget,
 	root: string,
 	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
 	commands: string[],
 } | null>("remote_current"),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
@@ -5264,6 +5266,8 @@ export type RemoteSession = {
 	target: RemoteTarget,
 	root: string,
 	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
 	commands: string[],
 };
 
