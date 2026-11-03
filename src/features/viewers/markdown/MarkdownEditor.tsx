@@ -20,7 +20,7 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { FloatingToolbar, selectableText } from "@/ui";
-import { useLiveMarkdown } from "./live";
+import { setPreviewScroll, useLiveMarkdown } from "./live";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn, subscribeTheme, themeKey } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
@@ -85,6 +85,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const diagrams = useRef<Node[]>([]);
   const [diagramsDrawn, setDiagramsDrawn] = useState(0);
+  const [imagesLoaded, setImagesLoaded] = useState(0);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.
   useLayoutEffect(() => {
@@ -117,7 +118,15 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
         return;
       }
       imageUrl(target.path).then(
-        (url) => live && (img.src = url),
+        (url) => {
+          if (!live) return;
+          img.src = url;
+          if (img.complete) {
+            setImagesLoaded((n) => n + 1);
+          } else {
+            img.onload = () => live && setImagesLoaded((n) => n + 1);
+          }
+        },
         () => live && img.classList.add(styles.blocked!),
       );
     });
@@ -133,16 +142,47 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     };
   }, [html, path]);
 
-  // Scroll sync: editor → preview.
+  // Track preview scroll position so it can be restored when switching tabs.
+  const scrollFrame = useRef(0);
+  const onScroll = () => {
+    if (scrollFrame.current) return;
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = 0;
+      if (ref.current) setPreviewScroll(path, ref.current.scrollTop);
+    });
+  };
+
   useLayoutEffect(() => {
     const root = ref.current;
-    if (!root || !sync) return;
+    return () => {
+      cancelAnimationFrame(scrollFrame.current);
+      if (root) setPreviewScroll(path, root.scrollTop);
+    };
+  }, [path]);
+
+  // Scroll sync / restore:
+  // - In preview mode: restores previously saved preview scroll position.
+  // - In split mode: syncs from editor's `topLine`.
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    if (!sync) {
+      const saved = useLiveMarkdown.getState()[path]?.previewScrollTop;
+      if (saved != null) {
+        root.scrollTop = saved;
+      }
+      return;
+    }
     const blocks = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((el) => ({
       line: Number(el.dataset.line),
       top: el.offsetTop,
     }));
-    root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocks, topLine, root.scrollHeight);
-  }, [html, topLine, scrollSeq, sync, diagramsDrawn]);
+    const offset =
+      topLine <= 0
+        ? (useLiveMarkdown.getState()[path]?.previewScrollTop ?? 0)
+        : previewOffsetForLine(blocks, topLine, root.scrollHeight);
+    root.scrollTop = offset;
+  }, [html, topLine, scrollSeq, sync, diagramsDrawn, imagesLoaded, path]);
 
   const onClick = (e: MouseEvent) => {
     const a = (e.target as Element).closest("a");
@@ -170,6 +210,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       tabIndex={-1}
       role="document"
       aria-label={tx("Markdown preview")}
+      onScroll={onScroll}
       onClick={onClick}
       dangerouslySetInnerHTML={{ __html: html }}
     />

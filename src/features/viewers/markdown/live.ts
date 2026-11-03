@@ -17,6 +17,8 @@ export interface LiveMarkdown {
   scrollSeq: number;
   /** The editor's font zoom in px; the preview scales its text by the same amount. */
   fontZoom: number;
+  /** Last recorded scroll position of the preview pane (in px), restored across tab switches. */
+  previewScrollTop?: number;
 }
 
 export const useLiveMarkdown = create<Record<string, LiveMarkdown | undefined>>(() => ({}));
@@ -28,6 +30,10 @@ function publish(path: string, patch: Partial<LiveMarkdown>) {
     const prev = s[path] ?? { text: "", topLine: 0, scrollSeq: 0, fontZoom: 0 };
     return { [path]: { ...prev, ...patch } };
   });
+}
+
+export function setPreviewScroll(path: string, scrollTop: number) {
+  publish(path, { previewScrollTop: scrollTop });
 }
 
 function topLineOf(view: EditorView): number {
@@ -57,6 +63,7 @@ function livePlugin(path: string) {
       update(u: ViewUpdate) {
         const zoom = u.state.field(fontZoom, false) ?? 0;
         if (zoom !== (u.startState.field(fontZoom, false) ?? 0)) publish(path, { fontZoom: zoom });
+        if (u.geometryChanged || u.viewportChanged) this.onScroll();
         if (!u.docChanged) return;
         clearTimeout(this.timer);
         this.timer = setTimeout(() => publish(path, { text: this.view.state.doc.toString() }), TEXT_DELAY);
