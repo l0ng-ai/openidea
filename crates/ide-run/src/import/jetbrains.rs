@@ -11,7 +11,7 @@
 
 use super::{
     Entry, Found, SkipReason, command_name, config, env_var, normalize, path_from, project_python, relative_to,
-    split_args, working_dir,
+    working_dir,
 };
 use crate::RunConfig;
 use ide_core::IdeResult;
@@ -253,13 +253,22 @@ impl Cx<'_> {
         }
     }
 
+    /// Words of a parameters field, split like IDEA's `ParametersListUtil.parse`.
     fn words(&self, value: Option<&str>) -> Res<Vec<String>> {
-        Ok(self.text(value)?.map(|v| split_args(&v)).unwrap_or_default())
+        self.words_quoted(value, Quotes::Double)
+    }
+
+    fn words_quoted(&self, value: Option<&str>, quotes: Quotes) -> Res<Vec<String>> {
+        Ok(self.text(value)?.map(|v| parse_params(&v, quotes)).unwrap_or_default())
     }
 
     /// Words of a command line, paths inside the project relative to `dir`.
     fn args(&self, value: Option<&str>, dir: &Path) -> Res<Vec<String>> {
-        Ok(self.words(value)?.into_iter().map(|a| path_from(self.root, a, dir)).collect())
+        self.args_quoted(value, Quotes::Double, dir)
+    }
+
+    fn args_quoted(&self, value: Option<&str>, quotes: Quotes, dir: &Path) -> Res<Vec<String>> {
+        Ok(self.words_quoted(value, quotes)?.into_iter().map(|a| path_from(self.root, a, dir)).collect())
     }
 
     /// The working directory (absolute) and the configuration's `cwd`.
@@ -499,7 +508,8 @@ impl Cx<'_> {
         {
             args.extend(["-k".to_owned(), keywords]);
         }
-        args.extend(self.args(field("_new_additionalArguments").as_deref(), &dir)?);
+        // Single quotes group words here too (`PyTestsShared.kt:671`).
+        args.extend(self.args_quoted(field("_new_additionalArguments").as_deref(), Quotes::Single, &dir)?);
         let mut rc = config(name, "pytest", exe, args, Some("debugpy"));
         rc.cwd = cwd.map(Into::into);
         rc.is_test = true;
@@ -659,11 +669,11 @@ impl Cx<'_> {
             // Run directly, the script is the program: `./run.sh`, so it isn't looked up on the PATH.
             let path = if interpreter.is_empty() { dot_slash(path) } else { path };
             let (command, args) = if interpreter.is_empty() {
-                (path.clone(), split_args(&options))
+                (path.clone(), parse_params(&options, Quotes::Double))
             } else {
-                let mut args = split_args(&interpreter_options);
+                let mut args = parse_params(&interpreter_options, Quotes::Double);
                 args.push(path.clone());
-                args.extend(split_args(&options));
+                args.extend(parse_params(&options, Quotes::Double));
                 (interpreter.clone(), args)
             };
             params.extend([
@@ -693,9 +703,56 @@ impl Cx<'_> {
     }
 }
 
-/// A relative path as a program: `run.sh` → `./run.sh` (`../x` and absolute paths stay).
+/// Which quotes group words in a parameters field.
+#[derive(Clone, Copy)]
+enum Quotes {
+    Double,
+    Single,
+}
+
+/// IDEA's `ParametersListUtil.parse`: words split at whitespace, grouped by quotes (dropped);
+/// a backslash escapes only a quote, so Windows paths (`C:\p\out`) keep theirs.
+fn parse_params(line: &str, quotes: Quotes) -> Vec<String> {
+    let is_quote = |c: char| c == '"' || (matches!(quotes, Quotes::Single) && c == '\'');
+    let mut out = Vec::new();
+    let mut token = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut non_empty = false;
+    let mut chars = line.trim().chars().peekable();
+    while let Some(c) = chars.next() {
+        if quote.map_or(is_quote(c), |q| q == c) {
+            if !escaped {
+                quote = if quote.is_some() { None } else { Some(c) };
+                non_empty = true;
+                continue;
+            }
+            escaped = false;
+        } else if c.is_whitespace() && quote.is_none() {
+            if !token.is_empty() || non_empty {
+                out.push(std::mem::take(&mut token));
+                non_empty = false;
+            }
+            continue;
+        } else if c == '\\'
+            && let Some(&next) = chars.peek()
+            && quote.map_or(is_quote(next), |q| q == next)
+        {
+            escaped = true;
+            continue;
+        }
+        token.push(c);
+    }
+    if !token.is_empty() || non_empty {
+        out.push(token);
+    }
+    out
+}
+
+/// A relative path as a program: `run.sh` → `./run.sh` (`../x` and rooted paths stay; `/opt/x`
+/// has no drive on Windows but isn't relative either).
 fn dot_slash(path: String) -> String {
-    if Path::new(&path).is_absolute() || path.starts_with("./") || path.starts_with("../") {
+    if Path::new(&path).has_root() || path.starts_with("./") || path.starts_with("../") {
         path
     } else {
         format!("./{path}")
@@ -774,6 +831,16 @@ mod tests {
         );
         assert_eq!(split_env_files("", ':').count(), 0);
         assert_eq!(PATH_SEPARATOR, if cfg!(windows) { ';' } else { ':' });
+    }
+
+    #[test]
+    fn parameters_split_like_idea() {
+        let p = |s: &str| parse_params(s, Quotes::Double);
+        assert_eq!(p(r"--out C:\p\out \\srv\share"), [r"--out", r"C:\p\out", r"\\srv\share"]);
+        assert_eq!(p(r#" a "b c" "" d\"e "f\"g" "#), ["a", "b c", "", r#"d"e"#, r#"f"g"#]);
+        assert_eq!(p("'a b'"), ["'a", "b'"]);
+        assert_eq!(parse_params("-k 'a b' \"c d\"", Quotes::Single), ["-k", "a b", "c d"]);
+        assert!(p("   ").is_empty());
     }
 
     #[test]
