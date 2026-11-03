@@ -805,11 +805,15 @@ Pattern: clean<TaskName>: Cleans the output files of a task.
         std::fs::write(ws.join("shop/settings.gradle"), "rootProject.name = 'shop'\ninclude 'app'").unwrap();
         std::fs::write(ws.join("lib/settings.gradle"), "include 'core'").unwrap();
         let root = ws.join("shop");
-        let dir = |d: &str| ws.join(d).to_string_lossy().into_owned();
         // In evaluation order, as the init script prints it: nested builds first.
         let line = |path: &str, d: &str, build: Option<&str>| {
-            let build = build.map(|b| format!(r#","build":"{b}""#)).unwrap_or_default();
-            format!("@openidea-model\t{{\"path\":\"{path}\",\"dir\":\"{}\"{build}}}\n", dir(d))
+            let project = ReportedProject {
+                path: path.into(),
+                dir: ws.join(d).to_string_lossy().into_owned(),
+                build: build.map(Into::into),
+                ..ReportedProject::default()
+            };
+            format!("{MODEL_LINE}{}\n", serde_json::to_string(&project).unwrap())
         };
         let out = [
             line(":lib", "lib", Some(":lib")),

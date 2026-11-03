@@ -530,23 +530,40 @@ mod tests {
         std::fs::write(root.join("settings.gradle"), "rootProject.name = 'Shop'\n['billing'].each { includeFlat it }")
             .unwrap();
         std::fs::write(billing.join("modules/core/build.gradle"), "apply plugin: 'java'").unwrap();
-        let line = |path: &str, dir: String, extra: &str| {
-            format!("@openidea-model\t{{\"path\":\"{path}\",\"dir\":{}{extra}}}\n", serde_json::json!(dir))
-        };
+        // Built with serde: a Windows path holds backslashes, which raw JSON text would leave unescaped.
+        let line = |p: ReportedProject| format!("@openidea-model\t{}\n", serde_json::to_string(&p).unwrap());
         let (r, b) = (root.display().to_string(), billing.display().to_string());
-        let sets = format!(
-            r#","java":21,"sourceSets":[{{"name":"main","test":false,"src":["{b}/modules/core/src/main/java"],"res":["{b}/modules/core/src/main/resources"]}},{{"name":"test","test":true,"src":["{b}/modules/core/src/main/java","{b}/modules/core/src/test/java"],"res":[]}}]"#
-        );
+        let core_src = |p: &str| format!("{b}/modules/core/src/{p}");
+        let set = |name: &str, test: bool, src: &[&str], res: &[&str]| gradle::ReportedSourceSet {
+            name: name.into(),
+            test,
+            src: src.iter().map(|p| core_src(p)).collect(),
+            res: res.iter().map(|p| core_src(p)).collect(),
+        };
         // A settings script's own println comes first; task listing lines follow.
         let out = format!(
             "configuring billing\n{}{}{}@openidea-model\t{{broken\n\nOther tasks\n-----------\nbilling:core:jar\n",
-            line(":", r.clone(), ""),
-            line(":billing", b.clone(), r#","java":17"#),
-            line(":billing:core", format!("{b}/modules/core"), &sets),
+            line(ReportedProject { path: ":".into(), dir: r.clone(), ..ReportedProject::default() }),
+            line(ReportedProject {
+                path: ":billing".into(),
+                dir: b.clone(),
+                java: Some(17),
+                ..ReportedProject::default()
+            }),
+            line(ReportedProject {
+                path: ":billing:core".into(),
+                dir: format!("{b}/modules/core"),
+                java: Some(21),
+                source_sets: vec![
+                    set("main", false, &["main/java"], &["main/resources"]),
+                    set("test", true, &["main/java", "test/java"], &[]),
+                ],
+                ..ReportedProject::default()
+            }),
         );
         let projects = parse_reported_projects(&out);
         assert_eq!(projects.len(), 3, "the malformed line is skipped");
-        let src = |p: &str| PathBuf::from(format!("{b}/modules/core/src/{p}"));
+        let src = |p: &str| PathBuf::from(core_src(p));
         assert_eq!(
             gradle::reported_source_roots(&projects),
             [
