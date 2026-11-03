@@ -5017,6 +5017,9 @@
   "Window group": "窗口组",
   "Select Project Tab": "选择项目标签页",
   "Close Project Tab": "关闭项目标签页",
+  "Close Other Project Tabs": "关闭其他项目标签页",
+  "Close Project Tabs to the Left": "关闭左侧项目标签页",
+  "Close Project Tabs to the Right": "关闭右侧项目标签页",
   "Reorder Project Tabs": "重新排列项目标签页",
   "Close {name}": "关闭 {name}",
   "Tomcat Server": "Tomcat 服务器",
@@ -5559,4 +5562,5 @@
   "select files from a single git repository to shelve": "请一次只选择同一个 Git 仓库中的文件以搁置更改",
   "Installing…": "正在安装…",
   "C# project files are missing. In Unity, select an external script editor in Preferences > External Tools, then regenerate project files.": "缺少 C# 项目文件。请在 Unity 的 Preferences > External Tools 中选择外部脚本编辑器，然后重新生成项目文件。"
+  "External file changes sync may be slow": "外部文件更改同步可能较慢"
 }

@@ -90,6 +90,8 @@ pub struct WindowsState {
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
+    /// Project tabs closing one by one (Close Other Tabs and friends).
+    pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
     restart: AtomicBool,
 }
@@ -137,7 +139,9 @@ impl WindowsState {
 
     pub fn set_quitting(&self, on: bool) {
         self.quitting.store(on, Ordering::SeqCst);
-        if !on {
+        if on {
+            *self.tab_closes.lock() = None;
+        } else {
             self.restart.store(false, Ordering::SeqCst);
         }
     }

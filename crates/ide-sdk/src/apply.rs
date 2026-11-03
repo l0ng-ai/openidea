@@ -769,6 +769,47 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     }
 }
 
+/// `config` as it should be saved: without what [`apply_to_run_configs`] derives from
+/// settings, so a configuration read from the run list, edited and saved keeps following
+/// Languages & Frameworks instead of freezing today's toolchain (and the IDE's whole
+/// `PATH`) into `run.toml`. A value counts as derived when applying settings to the
+/// configuration without it produces it again: an environment entry (`PATH`,
+/// `VIRTUAL_ENV`, `JAVA_HOME`, `GOROOT`, …) or an absolute command its bare name
+/// resolves to (the project interpreter, a toolchain's `cargo` / `go`, Maven's `mvn`).
+pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConfig {
+    let applied = |c: &RunConfig| {
+        let mut c = c.clone();
+        apply_to_run_configs(std::slice::from_mut(&mut c), root, s);
+        c
+    };
+    let mut out = config.clone();
+    // Until nothing changes: some entries are derived only once others are gone
+    // (the virtualenv's `PATH` is added only without `VIRTUAL_ENV`).
+    while let Some(key) = out
+        .env
+        .iter()
+        .find(|(key, value)| {
+            let mut probe = out.clone();
+            probe.env.remove(*key);
+            applied(&probe).env.get(*key) == Some(*value)
+        })
+        .map(|(key, _)| key.clone())
+    {
+        out.env.remove(&key);
+    }
+    let path = Path::new(&config.command);
+    if path.is_absolute()
+        && let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned())
+    {
+        let mut probe = out.clone();
+        probe.command = name.clone();
+        if applied(&probe).command == config.command {
+            out.command = name;
+        }
+    }
+    out
+}
+
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
