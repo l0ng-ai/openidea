@@ -301,17 +301,11 @@ impl AgentManager {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
         let list = specs
             .iter()
-            .map(|p| AgentProvider {
-                id: p.id.clone(),
-                name: p.name.clone(),
-                command: std::iter::once(p.command.as_str())
-                    .chain(p.args.iter().map(String::as_str))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                installed: provider::installed(&p.command),
-                config: self.shared.known_config(&p.id),
-                commands: self.shared.known_commands(&p.id),
-                source: p.source.clone(),
+            .map(|p| {
+                let mut info = provider::describe(p);
+                info.config = self.shared.known_config(&p.id);
+                info.commands = self.shared.known_commands(&p.id);
+                info
             })
             .collect();
         let mut prev = self.shared.providers.write();
@@ -323,6 +317,15 @@ impl AgentManager {
         });
         *prev = specs;
         list
+    }
+
+    /// Overrides built-in `id`'s command with `command` (the driver and arguments stay
+    /// the built-in's) through its agent file, or returns it to auto-detection with `None`.
+    pub fn set_builtin_command(&self, id: &str, command: Option<String>) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::set_builtin_command(&dir, id, command.as_deref())
     }
 
     /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.

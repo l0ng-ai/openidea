@@ -122,6 +122,7 @@ pub async fn sdk_python_pip(
     on_output: Channel<String>,
 ) -> IdeResult<()> {
     host.require_trust(window)?;
+    let project_root = host.project(window).ok().map(|p| p.root.clone());
     let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         let send = |line: String| {
@@ -130,7 +131,7 @@ pub async fn sdk_python_pip(
         if uninstall {
             ide_sdk::python::uninstall_package(&python, &requirement, &cancel, &send)
         } else {
-            ide_sdk::python::install_package(&python, &requirement, upgrade, &cancel, &send)
+            ide_sdk::python::install_package(&python, &requirement, upgrade, project_root.as_deref(), &cancel, &send)
         }
     })
     .await

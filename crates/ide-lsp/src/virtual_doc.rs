@@ -60,6 +60,9 @@ pub fn title(uri: &str, decompiled: bool) -> String {
 
 /// Where the document comes from, e.g. the jar path of a `jdt://` class.
 pub fn description(uri: &str) -> Option<String> {
+    if scheme(uri) == "jar" {
+        return crate::library_source::parse(uri).map(|e| e.jar.to_string_lossy().into_owned());
+    }
     if scheme(uri) != "jdt" {
         return None;
     }

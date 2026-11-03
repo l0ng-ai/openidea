@@ -411,6 +411,49 @@ fn pip_list_output_is_parsed() {
     assert_eq!(pkgs[0].version, "2.32.0");
 }
 
+/// A directory whose `typing.py` breaks any interpreter that imports it from there.
+fn shadowing_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("typing.py"), "raise ImportError('shadowed stdlib')\n").unwrap();
+    std::fs::write(dir.path().join("logging.py"), "raise ImportError('shadowed stdlib')\n").unwrap();
+    dir
+}
+
+#[test]
+fn venv_creation_ignores_modules_in_the_working_directory() {
+    let Some(python) = crate::exec::which("python3") else { return };
+    let shadow = shadowing_dir();
+    // Precondition: without isolation the shadowing module is picked up.
+    let plain =
+        std::process::Command::new(&python).args(["-c", "import typing"]).current_dir(shadow.path()).output().unwrap();
+    assert!(!plain.status.success());
+    let target = tempfile::tempdir().unwrap();
+    let location = target.path().join(".venv");
+    // `--without-pip` keeps the test fast; the stdlib imports of `venv` still happen.
+    let mut args = crate::python::venv_args(&location);
+    args.push("--without-pip".into());
+    crate::exec::stream(&python, &args, Some(shadow.path()), &[], &Default::default(), &|_| {}).unwrap();
+    assert!(location.join("pyvenv.cfg").is_file());
+}
+
+#[test]
+fn neutral_dir_is_fresh_and_empty() {
+    let a = crate::python::neutral_dir().unwrap();
+    let b = crate::python::neutral_dir().unwrap();
+    assert_ne!(a.path(), b.path());
+    assert_eq!(std::fs::read_dir(a.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn relative_requirements_resolve_against_the_project() {
+    use crate::python::resolve_requirement;
+    let root = Path::new("/work/app");
+    assert_eq!(resolve_requirement("requests==2.0", Some(root)).unwrap(), "requests==2.0");
+    assert_eq!(resolve_requirement("./pkg", Some(root)).unwrap(), root.join("./pkg").to_string_lossy());
+    assert_eq!(resolve_requirement(".[dev]", Some(root)).unwrap(), root.join(".[dev]").to_string_lossy());
+    assert!(resolve_requirement("../lib", None).is_err());
+}
+
 #[test]
 fn excluded_folders_become_anchored_globs() {
     let mut s = Settings::default();
@@ -1040,6 +1083,39 @@ fn node_on_the_search_path_keeps_its_version_manager_as_source() {
     assert_eq!(source("/home/me/.local/share/fnm/node-versions/v24/installation/bin/node"), "fnm");
     assert_eq!(source("/home/me/.local/bin/node"), "path");
     assert_eq!(source("/usr/bin/node"), "system");
+}
+
+#[test]
+fn php_sources_and_selected_interpreter() {
+    let home = Path::new("/home/me");
+    let source = |p: &str| crate::discover::php_source(Path::new(p), Some(home));
+    assert_eq!(source("/home/me/.phpbrew/php/php-8.3.1/bin/php"), "phpbrew");
+    assert_eq!(source("/home/me/.config/herd-lite/bin/php"), "herd");
+    assert_eq!(source("/opt/homebrew/opt/php@8.2/bin/php"), "homebrew");
+    assert_eq!(source("/home/me/bin/php"), "path");
+
+    if cfg!(windows) {
+        return; // Unix paths
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    assert_eq!(crate::apply::php_dir(tmp.path(), &s), None);
+    s.languages.php.interpreter = "/opt/php82/bin/php".into();
+    assert_eq!(crate::apply::php_dir(tmp.path(), &s), Some("/opt/php82/bin".into()));
+    let mut configs = vec![
+        run("php", "php", &["artisan", "serve"]),
+        run("phpunit", "vendor/bin/phpunit", &[]),
+        run("composer", "composer", &["run-script", "test"]),
+        run("npm", "npm", &["run", "dev"]),
+    ];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].command, "/opt/php82/bin/php");
+    // Scripts with a `#!/usr/bin/env php` shebang find the selected PHP first on `PATH`.
+    for c in &configs[..3] {
+        assert!(c.env["PATH"].starts_with("/opt/php82/bin"), "{}: {:?}", c.kind, c.env.get("PATH"));
+    }
+    assert_eq!(configs[1].command, "vendor/bin/phpunit");
+    assert!(configs[3].env.get("PATH").is_none_or(|p| !p.contains("php82")));
 }
 
 #[test]

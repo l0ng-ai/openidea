@@ -548,7 +548,7 @@ let revealSeq = 0;
 export function revealPath(path: string, focus = false) {
   const { expanded } = get();
   const project = get().root;
-  const root = project && isSameOrInside(path, project) ? project : project ? extraRootOf(path) : null;
+  const root = project ? (memberRootOf(path) ?? (isSameOrInside(path, project) ? project : extraRootOf(path))) : null;
   if (!root) return false;
   // Library folders sit below group nodes (External Libraries › SDK), keyed in their own namespace.
   const model = currentModel();
@@ -568,6 +568,16 @@ export function revealPath(path: string, focus = false) {
   return true;
 }
 
+/**
+ * The linked workspace project containing `path`, if any (the innermost one). A
+ * workspace's root is its own directory; its projects are separate top-level roots.
+ */
+function memberRootOf(path: string): string | null {
+  let found: string | null = null;
+  for (const m of get().members ?? []) if (isSameOrInside(path, m) && (!found || m.length > found.length)) found = m;
+  return found;
+}
+
 /** The contributed folder (scratches, a library root…) containing `path`, if any. */
 export function extraRootOf(path: string): string | null {
   for (const r of extraFolders(projectViewRoots(useProjectViewRoots.getState().roots)))
@@ -583,7 +593,7 @@ export function modeShows(path: string): boolean {
     case "project":
       return true;
     case "projectFiles":
-      return isSameOrInside(path, root);
+      return memberRootOf(path) !== null || (!get().members && isSameOrInside(path, root));
     case "scratches":
       return projectViewRoots(useProjectViewRoots.getState().roots).some(
         (r) => r.scope === "scratches" && r.path !== undefined && isSameOrInside(path, r.path),
