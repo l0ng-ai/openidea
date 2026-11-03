@@ -85,7 +85,7 @@ mod runtime {
     }
 
     fn key(label: &str) -> &str {
-        if crate::windows::is_settings_window(label) { "settings" } else { label }
+        crate::windows::mapped_window_label(label)
     }
 
     pub fn prepare(app: &AppHandle, config: &mut WindowConfig) -> bool {

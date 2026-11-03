@@ -144,6 +144,13 @@ export async function connectRemote(sshConfig: string, path: string) {
   });
   try {
     const r = await call(commands.remoteConnect(sshConfig, path, onProgress));
+    if (isTauri()) {
+      try {
+        await call(commands.windowEnterProject());
+      } catch {
+        /* ignore in tests/unsupported */
+      }
+    }
     enableRemote({ sshConfig: r.sshConfig, root: r.root, host: r.host, commands: r.commands });
     if (takeLegacyRemoteTrust(r.sshConfig, path, r.host)) {
       const status = await call(commands.projectTrustStatus(r.root));

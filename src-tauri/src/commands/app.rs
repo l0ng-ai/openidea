@@ -110,6 +110,9 @@ pub fn close_project(window: Window, state: State<'_, AppState>) {
     crate::windows::close_settings_window(window.app_handle(), window.label());
     let _ = crate::window_groups::detach(window.app_handle(), window.label());
     state.close_project(window.label());
+    if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+        let _ = crate::windows::enter_welcome(window.app_handle(), &w);
+    }
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn(async move {
         let _ = crate::window_groups::persist(&app).await;

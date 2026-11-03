@@ -16,6 +16,7 @@ pub struct AppState {
     pub host: Arc<Host>,
     pub startup: Startup,
     pub recent: RecentProjects,
+    pub window_geometries: parking_lot::RwLock<crate::windows::AppWindowGeometries>,
     /// WASM plugins (`ide-plugin`), shared by all windows.
     pub plugins: Arc<ide_plugin::PluginHost>,
     /// The built-in web server (Open In › Browser, the editor's browser bar).
@@ -97,6 +98,7 @@ impl AppState {
         }));
         Ok(Self {
             recent: RecentProjects::load(&config_dir),
+            window_geometries: parking_lot::RwLock::new(crate::windows::AppWindowGeometries::load(&config_dir)),
             askpass: start_askpass(&app),
             sink: global_sink,
             plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
