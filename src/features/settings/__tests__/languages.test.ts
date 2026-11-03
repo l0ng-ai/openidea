@@ -35,6 +35,14 @@ describe("languages settings", () => {
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
   });
 
+  it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {
+    expect(validateSettings({}).languages.ruby.interpreter).toBe("");
+    expect(validateLanguages({ ruby: { interpreter: 42 } }).ruby.interpreter).toBe("");
+    const settings = validateSettings({ languages: { ruby: { interpreter: " /opt/ruby/bin/ruby " } } });
+    expect(settings.languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
+    expect(validateSettings(settings).languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
+  });
+
   it("keeps Prettier opt-in on save and normalizes its enabled languages", () => {
     expect(validateLanguages({}).prettier).toMatchObject({ prefer: false, runOnSave: false, path: "" });
     expect(
@@ -43,6 +51,16 @@ describe("languages settings", () => {
       }).prettier,
     ).toEqual({ path: "./bin/prettier", languages: ["markdown"], prefer: true, runOnSave: true });
     expect(validateLanguages({ prettier: { languages: [] } }).prettier.languages).toEqual([]);
+  });
+
+  it("leaves the Markdown preview font size unset (editor font) and keeps a set one in 8..72", () => {
+    expect(validateLanguages({}).markdown).toEqual({ previewFontSize: null });
+    expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown).toEqual({ previewFontSize: 72 });
+    expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown).toEqual({ previewFontSize: null });
+  });
+
+  it("keeps the Markdown page global, like IDEA's application-level setting", () => {
+    expect(LANGUAGE_PAGES.find((p) => p.id === "languages.markdown")).not.toHaveProperty("projectScope");
   });
 
   it("marks folders with one role each", () => {
@@ -66,9 +84,12 @@ describe("language pages", () => {
     expect(langs.children.map((n) => n.title)).toEqual([
       "Go",
       "Java",
+      "Markdown",
       "Node.js",
       "Python Interpreter",
+      "PHP",
       "Prettier",
+      "Ruby",
       "Rust",
       "TypeScript",
     ]);

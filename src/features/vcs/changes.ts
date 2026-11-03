@@ -268,6 +268,20 @@ export function buildChangeTree(
   return roots;
 }
 
+export function changeGroupPaths(roots: readonly ChangeNode[], path: string): string[] {
+  const group = roots.find((node) => node.files.some((file) => stripSlash(file.path) === path));
+  if (!group) return [path];
+  const paths: string[] = [];
+  const walk = (nodes: readonly ChangeNode[]) => {
+    for (const node of nodes) {
+      if (node.type === "file" && node.path) paths.push(node.path);
+      else walk(node.children ?? []);
+    }
+  };
+  walk([group]);
+  return paths;
+}
+
 export interface CommitPlan {
   stage: string[];
   unstage: string[];

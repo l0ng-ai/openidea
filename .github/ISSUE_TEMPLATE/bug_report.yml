@@ -1,0 +1,75 @@
+name: Bug report
+description: Something in OpenIDEA doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Keep logs and error messages exactly as they appear.
+
+        One problem per issue, please. If you have several, open one issue for each.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you start
+      options:
+        - label: I searched [existing issues](https://github.com/l0ng-ai/openidea/issues?q=is%3Aissue) and this hasn't been reported yet.
+          required: true
+        - label: I'm on the [latest release](https://github.com/l0ng-ai/openidea/releases/latest), or I noted below that I can't update.
+          required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Open **About OpenIDEA** (macOS: OpenIDEA menu; Windows/Linux: Help menu), click **Copy Info**, and paste it here. Also mention the project type if it matters (e.g. Gradle multi-module, Spring Boot, Go workspace) and whether you use remote development.
+      render: text
+      placeholder: |
+        About OpenIDEA
+        Version: 0.1.33
+        Build: ...
+        Platform: macOS aarch64
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Start from opening OpenIDEA or a project. A small sample project or snippet helps a lot.
+      placeholder: |
+        1. Open a Gradle project whose settings.gradle includes modules in a loop
+        2. Open the Gradle tool window
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: A link to a small public repository, or the smallest files/snippet that trigger the problem. Optional, but it's the fastest way to get a fix.
+      placeholder: https://github.com/you/repro-project
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead. Screenshots or a recording are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Use **Help → Show Log in Finder / Explorer / Files** to find `openidea.log` and paste the lines around the problem, or attach the file. Include console output or error messages too. Check for tokens or passwords before posting.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else, such as whether it worked in an earlier version.

@@ -14,6 +14,8 @@ interface CommitState {
   /** Commit Options › Run Git hooks. */
   runHooks: boolean;
   groupByDir: boolean;
+  /** Whether the Git window's Local Changes tab previews the selection's diff. */
+  diffPreview: boolean;
   /** User overrides of the inclusion checkboxes (absolute path → state). */
   checks: Map<string, CheckState>;
   /** Changed blocks left out of the commit (absolute path → `hunkKeys`) of `hunks` files. */
@@ -42,6 +44,7 @@ export const useCommit = create<CommitState>(() => ({
   author: "",
   runHooks: true,
   groupByDir: readBool("openidea.vcs.groupByDir", false),
+  diffPreview: readBool("openidea.vcs.diffPreview", true),
   checks: new Map(),
   excludedHunks: new Map(),
   selection: [],
@@ -66,6 +69,15 @@ export function setGroupByDir(v: boolean) {
   useCommit.setState({ groupByDir: v });
   try {
     localStorage.setItem("openidea.vcs.groupByDir", String(v));
+  } catch {
+    // ignore
+  }
+}
+
+export function setDiffPreview(v: boolean) {
+  useCommit.setState({ diffPreview: v });
+  try {
+    localStorage.setItem("openidea.vcs.diffPreview", String(v));
   } catch {
     // ignore
   }

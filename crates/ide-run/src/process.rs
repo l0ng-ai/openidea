@@ -333,7 +333,7 @@ impl ProcessManager {
             return Err(IdeError::invalid("input cannot be redirected from a file when emulating a terminal"));
         }
         let mut env = launch_env(root, config)?;
-        if matches!(config.kind.as_str(), "python" | "pytest") {
+        if matches!(config.kind.as_str(), "python" | "pytest" | "django-test") {
             crate::python_path::extend(&mut env.vars, &options.python_paths, !env.clear)?;
         }
         let on_output: OutputFn = Arc::from(on_output);
@@ -761,7 +761,7 @@ fn launch_env(root: &Path, config: &RunConfig) -> IdeResult<LaunchEnv> {
         let paths: Vec<PathBuf> = extras.env_files.iter().map(|f| resolve_cwd(root, Some(Path::new(f)))).collect();
         crate::envfile::load(&paths, &base).map_err(|e| IdeError::not_found(format!("cannot read .env file: {e}")))?
     };
-    if matches!(config.kind.as_str(), "python" | "pytest")
+    if matches!(config.kind.as_str(), "python" | "pytest" | "django-test")
         && !config.env.contains_key("PYTHONUNBUFFERED")
         && !vars.contains_key("PYTHONUNBUFFERED")
     {

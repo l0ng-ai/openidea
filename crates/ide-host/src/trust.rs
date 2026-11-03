@@ -135,9 +135,7 @@ impl crate::Host {
                     for request in requests {
                         self.cancel_request(request);
                     }
-                    for session in self.debugger.sessions(Some(&window)) {
-                        let _ = self.debugger.stop(session.id).await;
-                    }
+                    self.debugger.stop_key(&window).await;
                 }
             }
             project.lsp.reconfigure().await;
@@ -211,6 +209,10 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "menu_model"
             | "menu_configure"
             | "menu_set_disabled"
+            | "prepare_workspace_edit"
+            | "apply_workspace_edit"
+            | "undo_workspace_edit"
+            | "redo_workspace_edit"
             | "lsp_servers"
             | "lsp_resend_diagnostics"
             | "recent_projects"

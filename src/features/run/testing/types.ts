@@ -42,3 +42,31 @@ export function parseDuration(text: string | undefined): number | undefined {
   }
   return matched ? Math.round(total * 1000) / 1000 : undefined;
 }
+
+/**
+ * Stdout of a runner that prints machine-readable records (`go test -json`, PHPUnit `--teamcity`):
+ * feeds complete, unsplit lines to the test parser and returns each line's console text.
+ */
+export class TestStdout {
+  private pending = "";
+  constructor(
+    private readonly feedLine: (line: string) => void,
+    private readonly display: (line: string) => string,
+  ) {}
+  feed(text: string): string {
+    this.pending += text;
+    const lines = this.pending.split("\n");
+    this.pending = lines.pop()!;
+    return lines.map((line) => this.line(line)).join("");
+  }
+  end(): string {
+    const pending = this.pending;
+    this.pending = "";
+    return pending ? this.line(pending) : "";
+  }
+  private line(raw: string): string {
+    const line = raw.replace(/\r$/, "");
+    this.feedLine(line);
+    return this.display(line);
+  }
+}

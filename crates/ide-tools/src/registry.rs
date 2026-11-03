@@ -234,6 +234,28 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "pyrefly",
+        display: "Pyrefly (Python)",
+        kind: LanguageServer,
+        commands: &["pyrefly"],
+        method: Method::PipVenv { package: "pyrefly" },
+        fallback: None,
+        version: ver("pyrefly"),
+        homepage: "https://pyrefly.org",
+        needs: &[],
+    },
+    ToolSpec {
+        name: "ruff",
+        display: "Ruff",
+        kind: LanguageServer,
+        commands: &["ruff"],
+        method: Method::PipVenv { package: "ruff" },
+        fallback: None,
+        version: ver("ruff"),
+        homepage: "https://docs.astral.sh/ruff/",
+        needs: &[],
+    },
+    ToolSpec {
         name: "bash-language-server",
         display: "Bash Language Server",
         kind: LanguageServer,
@@ -615,13 +637,15 @@ pub static TOOLS: &[ToolSpec] = &[
         display: "Lombok (jdtls agent)",
         kind: Plugin,
         commands: &["lombok.jar"],
-        // Equinox removed getModuleClassLoader(boolean), breaking lombok.config lookup.
-        // Return to Maven Central once an official release includes lombok#4059.
+        // Equinox removed getModuleClassLoader(boolean), breaking lombok.config lookup (lombok#4059);
+        // ECJ 3.46.200 keeps the constructor call in a constructor's statements, which
+        // @SneakyThrows / @NonNull must not wrap or precede (lombok#4089).
+        // Return to Maven Central once an official release includes both.
         // Source commit, build instructions and checksum: plugins/lombok/README.md.
         method: Method::Bundled {
-            filename: "lombok-1.18.48-openidea.1.jar",
-            version: "1.18.48-openidea.1",
-            bytes: include_bytes!("../../../plugins/lombok/lombok-1.18.48-openidea.1.jar"),
+            filename: "lombok-1.18.48-openidea.2.jar",
+            version: "1.18.48-openidea.2",
+            bytes: include_bytes!("../../../plugins/lombok/lombok-1.18.48-openidea.2.jar"),
         },
         fallback: None,
         version: V,

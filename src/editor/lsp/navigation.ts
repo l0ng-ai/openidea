@@ -47,8 +47,9 @@ import {
   type DeclarationTarget,
 } from "./syntaxFallback";
 import { showHint, showPendingHint } from "./hint";
+import { outsideProjectReason } from "./outsideProject";
 import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
-import { identifierAt, readManyFileLines } from "./files";
+import { readManyFileLines, targetLabel } from "./files";
 import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
 import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
@@ -111,7 +112,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
         run: () => navigateTo(l),
       };
     // Server targets: the declared name (speed search matches it), file and line after it.
-    const name = identifierAt(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
+    const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
     return {
       id: `${i}`,
       label: name ?? basename(l.path),
@@ -198,7 +199,16 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
       ((await gotoWebReference(view, doc, pos, offset)) || (await followReferenceAt(view, doc, offset)))
     )
       return;
-    showHint(view, serverDown ? `${NOT_FOUND[kind]}: no language server is running for this file` : NOT_FOUND[kind]);
+    // The server only checks this file's syntax: say why instead of just "not found".
+    const reason = serverDown ? null : outsideProjectReason(doc.path);
+    showHint(
+      view,
+      serverDown
+        ? `${NOT_FOUND[kind]}: no language server is running for this file`
+        : reason
+          ? `${tx(NOT_FOUND[kind])}. ${tx(reason)}`
+          : NOT_FOUND[kind],
+    );
     return;
   }
   // IDEA: ⌘B on a declaration shows its usages.

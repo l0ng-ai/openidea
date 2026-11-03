@@ -10,7 +10,7 @@ import { basename, isTypeKind, relDir, symbolDisplayName } from "../common/open"
 import { byScore, matchText } from "../common/rank";
 
 export type SeTab = "all" | "classes" | "files" | "symbols" | "actions" | "text";
-export type SectionId = "recent" | "recentActions" | "classes" | "files" | "symbols" | "actions" | "text";
+export type SectionId = "recent" | "recentActions" | "classes" | "files" | "symbols" | "endpoints" | "actions" | "text";
 
 export const TABS: ReadonlyArray<{ id: SeTab; label: string }> = [
   { id: "all", label: "All" },
@@ -27,6 +27,7 @@ export const SECTION_ORDER: readonly SectionId[] = [
   "classes",
   "files",
   "symbols",
+  "endpoints",
   "actions",
   "text",
 ];
@@ -37,6 +38,7 @@ export const SECTION_TITLES: Record<SectionId, string> = {
   classes: "Classes",
   files: "Files",
   symbols: "Symbols",
+  endpoints: "Endpoints",
   actions: "Actions",
   text: "Text",
 };
@@ -55,7 +57,7 @@ export function sectionsFor(tab: SeTab, emptyQuery: boolean): SectionId[] {
         return [];
     }
   }
-  return tab === "all" ? ["classes", "files", "symbols", "actions", "text"] : [tab];
+  return tab === "all" ? ["classes", "files", "symbols", "endpoints", "actions", "text"] : [tab];
 }
 
 export const ALL_TAB_LIMIT = 6;
@@ -90,6 +92,8 @@ export interface SymbolItem {
   indices: number[];
   /** From the language server rather than the index. */
   lsp?: boolean;
+  /** Pre-computed relevance (endpoints: the request path matched `n` segments up). */
+  score?: number;
 }
 
 export interface ActionItem {
@@ -376,7 +380,7 @@ export function textItems(path: string, rel: string, matches: readonly LineMatch
 // Rows
 
 /** Sections the All tab mixes into one relevance-ordered list. */
-const MIXED: readonly SectionId[] = ["classes", "files", "symbols", "actions", "text"];
+const MIXED: readonly SectionId[] = ["classes", "files", "symbols", "endpoints", "actions", "text"];
 
 /**
  * Weight of a text hit: a literal substring in a line ranks below name
@@ -391,6 +395,7 @@ export function itemWeight(item: SeItem, query: string): number {
     case "file":
       return name(item.name) ?? (name(item.rel) ?? 0) - 200;
     case "symbol":
+      if (item.score !== undefined) return item.score;
       return name(item.name) ?? (item.container ? name(`${item.container}.${item.name}`) : undefined) ?? 0;
     case "action":
     case "setting":

@@ -209,7 +209,12 @@ mod tests {
         let program = Path::new(command.get_program()).file_stem().unwrap().to_string_lossy().into_owned();
         assert_eq!(program, "node");
         let script: Vec<_> = command.get_args().collect();
-        assert_eq!(script, [root.join("node_modules/oxfmt/bin/oxfmt").as_os_str()]);
+        // Compare components: `package_bin` joins the manifest's `bin` entry
+        // (`bin/oxfmt`) onto a platform path, so separators differ on Windows.
+        assert_eq!(
+            Path::new(&script[0]).components().collect::<Vec<_>>(),
+            root.join("node_modules/oxfmt/bin/oxfmt").components().collect::<Vec<_>>()
+        );
 
         let config = FormatterConfig { tool: "prettier".into(), parser: "typescript".into(), range: true };
         let args = arguments("oxfmt", &config, &file, 4, false, Some((3, 9)));

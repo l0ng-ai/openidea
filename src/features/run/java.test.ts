@@ -252,6 +252,21 @@ describe("java command lines", () => {
     ).toEqual(["--module-path", "/m/x.jar"]);
   });
 
+  it("colours a Spring Boot console unless the configuration sets the property", () => {
+    const boot = (args: string[]) => ({
+      ...applicationConfig({ className: "a.Main" }, "src/main/java/a/Main.java"),
+      kind: "spring-boot" as const,
+      args,
+    });
+    expect(resolveJavaCommand(boot(["-Xmx1g", "a.Main"]), info).args[0]).toBe("-Dspring.output.ansi.enabled=always");
+    expect(resolveJavaCommand(boot(["-Dspring.output.ansi.enabled=never", "a.Main"]), info).args).toEqual([
+      "-Dspring.output.ansi.enabled=never",
+      "a.Main",
+    ]);
+    const plain = applicationConfig({ className: "a.Main" }, "src/main/java/a/Main.java");
+    expect(resolveJavaCommand(plain, info).args).not.toContain("-Dspring.output.ansi.enabled=always");
+  });
+
   it("joins arguments for java-debug and reads JDWP's port", () => {
     expect(joinJavaArgs(["a", "b c", 'q"'])).toBe('a "b c" "q\\""');
     expect(jdwpListeningPort("Listening for transport dt_socket at address: 50123")).toBe(50123);
@@ -378,6 +393,25 @@ describe("temporary configurations", () => {
     const used = adoptTemporary(applicationConfig({ className: "a.Main" }, "src/main/java/a/Main.java"));
     expect(used.name).toBe("Mine");
     expect(useRun.getState().temporary).toEqual([]);
+  });
+
+  it("reuse a configuration of the same main class and module, whatever its id", () => {
+    const own = (module: string) =>
+      cfg({
+        id: `user:${module}`,
+        kind: "spring-boot",
+        name: `Mine ${module}`,
+        args: ["-Xmx1g", "-cp", "${classpath}", "a.Main"],
+        module,
+        detected: false,
+      });
+    useRun.setState({ configs: [own("other"), own("app")] });
+    expect(adoptTemporary(applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java")).name).toBe(
+      "Mine app",
+    );
+    expect(useRun.getState().temporary).toEqual([]);
+    const fresh = adoptTemporary(applicationConfig({ className: "a.Other" }, "app/src/main/java/a/Other.java"));
+    expect(useRun.getState().temporary).toEqual([fresh.id]);
   });
 
   it("offer Save in the chooser while selected", async () => {
