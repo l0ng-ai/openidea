@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
+import { installRepeatedDoubleClick } from "@/platform/doubleClick";
 import { getContext } from "@/platform/context";
 import { provideEditorService, registerProjectViewRoot, type EditorService } from "@/workbench/contributions";
 import { activate } from "./index";
@@ -211,29 +212,34 @@ describe("ProjectView", () => {
   });
 
   it("toggles folders once for each rapid double-click pair", async () => {
-    const { row, rows } = setup();
-    await waitFor(() => expect(rows()).toContain("README.md"));
-    act(() => setViewOption("singleClickExpand", true));
-    const content = () => row("src").querySelector("[data-project-path]")!;
-    const click = (detail: number) => {
-      fireEvent.mouseDown(row("src"), { detail });
-      fireEvent.click(content(), { detail });
-    };
-    click(1);
-    click(2);
-    fireEvent.doubleClick(content(), { detail: 2 });
-    await waitFor(() => expect(rows()).toContain("App.kt"));
-    click(3);
-    click(4);
-    fireEvent.doubleClick(content(), { detail: 4 });
-    expect(rows()).not.toContain("App.kt");
-
-    act(() => setViewOption("singleClickExpand", false));
-    click(5);
-    click(6);
-    expect(rows()).not.toContain("App.kt");
-    fireEvent.doubleClick(content(), { detail: 6 });
-    await waitFor(() => expect(rows()).toContain("App.kt"));
+    const uninstall = installRepeatedDoubleClick();
+    try {
+      const { row, rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      const content = () => row("src").querySelector("[data-project-path]")!;
+      // WebKit fires `dblclick` only for the second click of a burst, never for the 4th or 6th.
+      const burst = (clicks: number) => {
+        for (let detail = 1; detail <= clicks; detail++) {
+          fireEvent.mouseDown(row("src"), { detail });
+          fireEvent.click(content(), { detail });
+          if (detail === 2) fireEvent.doubleClick(content(), { detail });
+        }
+      };
+      // Double-click mode toggles once per pair; single-click mode once per odd click.
+      let expanded = false;
+      for (const singleClickExpand of [false, true]) {
+        act(() => setViewOption("singleClickExpand", singleClickExpand));
+        for (const clicks of [2, 4, 6, 3, 5]) {
+          burst(clicks);
+          const toggles = singleClickExpand ? Math.ceil(clicks / 2) : Math.floor(clicks / 2);
+          if (toggles % 2) expanded = !expanded;
+          await waitFor(() => expect(rows().includes("App.kt")).toBe(expanded));
+        }
+      }
+    } finally {
+      uninstall();
+      act(() => setViewOption("singleClickExpand", false));
+    }
   });
 
   it("cancels a new file when its name field loses focus", async () => {

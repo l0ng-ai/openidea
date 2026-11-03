@@ -355,9 +355,10 @@ pub async fn vcs_clone(
     request: RequestId,
     url: String,
     dest: PathBuf,
+    depth: Option<u32>,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_clone(&state.host, "", request, url, dest, crate::commands::sender(on_output)).await
+    ide_host::ops::vcs::vcs_clone(&state.host, "", request, url, dest, depth, crate::commands::sender(on_output)).await
 }
 
 /// `git init` in `dir` (File › New Project… "Create Git repository").

@@ -2,7 +2,7 @@
 import type { ReactNode } from "react";
 import { create } from "zustand";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
-import { tx } from "@/platform/i18n";
+import { txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import type { NotificationService } from "./contributions";
 
@@ -197,6 +197,7 @@ export const notificationServiceImpl: NotificationService = {
 export function installNotifyEvents(): () => void {
   return onIdeEvent(
     "notify",
-    (e) => void notify({ level: e.level, title: tx(e.title), body: e.body ? tx(e.body) : undefined }),
+    // Backend text may carry values (paths, names); `{name}` catalog templates translate it.
+    (e) => void notify({ level: e.level, title: txTemplate(e.title), body: e.body ? txTemplate(e.body) : undefined }),
   );
 }

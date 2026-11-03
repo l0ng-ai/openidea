@@ -56,9 +56,9 @@ fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads()
             let info = tools.info("lombok", &[]).unwrap();
             let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
             assert_eq!(info.status, ToolStatus::Installed);
-            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.1"));
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.2"));
             assert_eq!(info.path, Some(path.clone().into()));
-            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.1.jar");
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.2.jar");
             assert!(!info.can_install && !info.can_uninstall);
             assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
             assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");
@@ -698,4 +698,18 @@ fn rust_analyzer_managed_copy_survives_rustup_becoming_available() {
     }
     env.tools().uninstall("rust-analyzer", &langs()).unwrap();
     assert!(!env.root.join("rust-analyzer").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn python_probes_run_in_an_empty_private_directory() {
+    let env = Env::new();
+    // A stand-in interpreter that reports where it was started.
+    env.script(&env.sys, "python3", "pwd; ls -A");
+    let tools = env.tools();
+    let python = tools.python().unwrap();
+    let out = tools.python_command(&python).output().unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    let dir = env.root.join(".python-cwd");
+    assert_eq!(out.trim(), dir.canonicalize().unwrap().to_string_lossy());
 }

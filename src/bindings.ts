@@ -87,6 +87,11 @@ export const commands = {
 	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**
+	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
+	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
+	 */
+	agentSetCommand: (id: string, command: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_command", { id, command })),
+	/**
 	 *  Agents of the ACP Registry this machine can run, with what is installed; the list
 	 *  saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 	 */
@@ -499,7 +504,7 @@ export const commands = {
 	 */
 	vcsStageHunks: (path: string, hunks: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_hunks", { path, hunks })),
 	/**  Clones a repository (Get from VCS). Works without an open project. */
-	vcsClone: (request: RequestId, url: string, dest: string, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, onOutput })),
+	vcsClone: (request: RequestId, url: string, dest: string, depth: number | null, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, depth, onOutput })),
 	/**  `git init` in `dir` (File › New Project… "Create Git repository"). */
 	vcsInit: (dir: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_init", { dir })),
 	/**
@@ -972,17 +977,8 @@ export const commands = {
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
 	dbSources: () => typedError<DataSource[], IdeError>(__TAURI_INVOKE("db_sources")),
 	dbSaveSources: (sources: DataSource[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
-	/**
-	 *  Remembers the password of data source `id` for the session, and in the OS
-	 *  saved passwords when `save` (`None` forgets it).
-	 */
 	dbSetPassword: (id: string, password: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_password", { id, password, save })),
-	/**  Remembers the SSH password / key passphrase of a data source (see `db_set_password`). */
 	dbSetSshSecret: (id: string, secret: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_ssh_secret", { id, secret, save })),
-	/**
-	 *  Trusts the SSH host key that made the last connection of `id` fail with
-	 *  "Unknown SSH host key" (records it in `~/.ssh/known_hosts`).
-	 */
 	dbTrustSshHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_trust_ssh_host", { id })),
 	/**  Test Connection: connects with `config` as edited (not necessarily saved). */
 	sshTest: (config: SshConfiguration, secret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("ssh_test", { config, secret })),
@@ -1017,7 +1013,7 @@ export const commands = {
 	remotePath: string,
 	webUrl: string | null,
 } | null, IdeError>(__TAURI_INVOKE("deploy_info", { path, server })),
-	deployServerRoot: (server: string) => typedError<string, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
+	deployServerRoot: (server: string) => typedError<DeploymentRoot, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
 	remoteList: (connection: FsConnection, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_list", { connection, path })),
 	deployTestConnection: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path })),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
@@ -1053,51 +1049,33 @@ export const commands = {
 	 *  (and the project's `remoteEnv` on a remote host); running ones keep theirs.
 	 */
 	envReload: () => typedError<EnvReloaded, IdeError>(__TAURI_INVOKE("env_reload")),
-	/**  Test Connection: connects with unsaved settings and returns the server version. */
 	dbTest: (source: DataSource, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
-	/**  Connects (fails with `permissionDenied` when the password is missing or wrong). */
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
-	/**  Databases of the server of data source `id` (PostgreSQL); connect to one as `<id>:<database>`. */
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbSchemas: (id: string) => typedError<string[], IdeError>(__TAURI_INVOKE("db_schemas", { id })),
 	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
 	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
-	/**  The DDL of table or view `table` (Go to DDL, Generate DDL). */
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
-	/**  The routines and sequences of `schema` (the tree's `routines` / `sequences`). */
 	dbSchemaObjects: (id: string, schema: string) => typedError<DbSchemaObjects, IdeError>(__TAURI_INVOKE("db_schema_objects", { id, schema })),
-	/**  The definition of a routine, trigger or sequence (Go to DDL, Quick Documentation). */
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
-	/**  Explain Plan: the execution plan of `statement` on `id`, without running it. */
 	dbExplain: (request: RequestId, id: string, statement: string) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement })),
-	/**  The statements data source `id` ran, newest first (Browse Query History). */
 	dbHistory: (id: string) => typedError<DbHistoryEntry[], IdeError>(__TAURI_INVOKE("db_history", { id })),
-	/**  Removes statements from the query history of `id` (`None`: all of them). */
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
-	/**  Tables, columns and foreign keys for SQL completion. */
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
-	/**  Writes exported result data (CSV, JSON, SQL…) to `path`. */
+	/**
+	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
+	 *  desktop shell: the path comes from a local save dialog, and a remote
+	 *  window exports through its local fs commands instead.
+	 */
 	dbExportFile: (path: string, text: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_export_file", { path, text })),
-	/**
-	 *  Switches a data source between auto-commit and manual commit (leaving
-	 *  manual mode rolls back what was not committed).
-	 */
 	dbSetManualCommit: (id: string, manual: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_manual_commit", { id, manual })),
-	/**  Commits or rolls back the open transaction of a manual-commit data source. */
 	dbFinishTransaction: (id: string, commit: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_finish_transaction", { id, commit })),
-	/**  Statements a console runs: the selection's (`from < to`) or the one at the caret (`from`). */
 	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
-	/**
-	 *  Runs `statements` in order on data source `id`, stopping at the first
-	 *  error. Cancel with `cancel_request(request)`.
-	 */
 	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, maxRows })),
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
-	/**  Submits the table editor's changes in one transaction; returns the rows changed. */
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
-	/**  The query console file of data source `id` (`<appData>/consoles/db/<id>/console.sql`), created on first use. */
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
 };
 
@@ -1145,6 +1123,9 @@ export type AgentCommand = {
 	/**  What to type after the command, when it takes input. */
 	hint: string | null,
 };
+
+/**  Why the executable cannot be changed in built-in agent settings. */
+export type AgentCommandReadOnlyReason = "packageRunner" | "registry" | "customAgent";
 
 /**  A setting chosen for a new task, by [`AgentConfigOption::id`]. */
 export type AgentConfigChoice = {
@@ -1278,6 +1259,15 @@ export type AgentProvider = {
 	name: string,
 	/**  The command line that starts its ACP server. */
 	command: string,
+	/**  Executable and arguments actually launched, without flattening paths containing spaces. */
+	program: string,
+	args: string[],
+	defaultProgram: string | null,
+	defaultArgs: string[],
+	loginHint: string | null,
+	commandOverridden: boolean,
+	commandEditable: boolean,
+	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
 	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
@@ -1394,6 +1384,8 @@ export type AppInfo = {
 	version: string,
 	platform: string,
 	configDir: IpcPath,
+	/**  Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
+	wayland: boolean,
 };
 
 export type AppMetrics = {
@@ -2388,6 +2380,7 @@ export type DbSslMode = "disable" | "prefer" | "require" |
 /**  [`DbSslMode::VerifyCa`], and check that the certificate names the host. */
 "verifyFull";
 
+/**  One statement of a console run. */
 export type DbStatementOutcome = {
 	statement: SqlStatement,
 	result: DbQueryResult | null,
@@ -2515,12 +2508,18 @@ export type DeploymentCoverage = {
 };
 
 export type DeploymentMapping = {
-	/**  Project-relative folder; empty = the project root. */
+	/**  Project-relative folder, or absolute inside the project; empty = the project root. */
 	local?: string,
 	/**  Remote folder, relative to the server root (a leading `/` is the root too). */
 	deployment?: string,
 	/**  Web path, relative to the server's URL. */
 	web?: string,
+};
+
+/**  Resolved root and project mappings of the Remote Host browser. */
+export type DeploymentRoot = {
+	root: string,
+	mappings: ResolvedMapping[],
 };
 
 /**  A deployment filesystem and how project folders map onto it. */
@@ -3076,6 +3075,19 @@ export type ExpressionAt = {
 	hasError: boolean,
 };
 
+/**  A formatter that runs outside the language servers, with its own settings group. */
+export type ExternalFormatter = "prettier" | "oxfmt";
+
+/**  An external formatter (Prettier, oxfmt) and the languages it formats. */
+export type ExternalFormatterSettings = {
+	/**  Empty path: project node_modules, managed installation, then PATH. */
+	path?: string,
+	languages?: string[],
+	/**  Prefer this formatter even when a language server offers formatting. */
+	prefer?: boolean,
+	runOnSave?: boolean,
+};
+
 /**  Tools › External Tools entry. */
 export type ExternalTool = {
 	id?: string,
@@ -3265,6 +3277,8 @@ export type FormatOptions = {
 	tabSize: number,
 	insertSpaces: boolean,
 	onSave?: boolean,
+	/**  External formatter to run whatever the settings select. */
+	tool?: ExternalFormatter | null,
 };
 
 /**  One occurrence of a duplicated code fragment. */
@@ -4115,12 +4129,15 @@ export type LanguageServerSettings_Serialize = {
 export type LanguagesSettings = {
 	python?: PythonSettings,
 	node?: NodeSettings,
+	php?: PhpSettings,
 	rust?: RustSettings,
 	go?: GoSettings,
 	typescript?: TypeScriptSettings,
-	prettier?: PrettierSettings,
+	prettier?: ExternalFormatterSettings,
+	oxfmt?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
+	markdown?: MarkdownSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -4349,6 +4366,12 @@ export type ManifestDependency = {
 	/**  UTF-16 offsets of the string's contents (quotes excluded). */
 	from: number,
 	to: number,
+};
+
+/**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
+export type MarkdownSettings = {
+	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
+	previewFontSize?: number | null,
 };
 
 export type Markup = {
@@ -4710,6 +4733,11 @@ export type Permission =
 /**  `insert-text`, `replace-selection`. */
 "editor-write";
 
+export type PhpSettings = {
+	/**  `php` CLI executable; empty = the one on `PATH`. */
+	interpreter?: string,
+};
+
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
 /**  Plugins, their status or their commands changed: re-fetch `plugin_list`. */
@@ -4869,15 +4897,6 @@ export type PreparedRequest = {
 	url: string,
 	headers: ([string, string])[],
 	body: string | null,
-};
-
-export type PrettierSettings = {
-	/**  Empty path: project node_modules, managed installation, then PATH. */
-	path?: string,
-	languages?: string[],
-	/**  Prefer Prettier even when a language server offers formatting. */
-	prefer?: boolean,
-	runOnSave?: boolean,
 };
 
 /**  Memory of one row of the breakdown. */
@@ -5331,6 +5350,12 @@ export type RequestId = number;
 /**  `git reset` modes offered by Reset Current Branch to Here. */
 export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 
+/**  A mapping resolved by the backend for the Remote Host browser. */
+export type ResolvedMapping = {
+	local: IpcPath,
+	deployment: string,
+};
+
 export type ReviewEvent = "approve" | "requestChanges" | "comment";
 
 /**  A file changed across several commits: its content at `before` ↔ at `after`. */
@@ -5587,6 +5612,8 @@ export type Sdk = {
 
 /**  What [`detect`] looks for. */
 export type SdkKind = "python" | "node" | 
+/**  `php` CLI executables. */
+"php" | 
 /**  npm / pnpm / yarn executables. */
 "packageManager" | "rust" | "go" | "typeScript" | 
 /**  JDK homes. */

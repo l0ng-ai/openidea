@@ -276,3 +276,44 @@ describe("Go test targets", () => {
     });
   });
 });
+
+describe("php (PHPUnit)", () => {
+  const src = [
+    "<?php", // 0
+    "namespace App\\Tests;",
+    "use PHPUnit\\Framework\\TestCase;",
+    "final class CalcTest extends TestCase", // 3
+    "{",
+    "    public function testAdd(): void {}", // 5
+    "    #[Test]",
+    "    public function subtracts(): void {}", // 7
+    "    /** @test */",
+    "    public function multiplies(): void {}", // 9
+    "    public function helper(): void {}",
+    "    private function testHidden(): void {}",
+    "}",
+    "class Helper {}",
+    "    public function testNotInTestClass() {}",
+  ].join("\n");
+
+  it("finds test classes and test methods", () => {
+    expect(pick(detectRunTargets(src, "tests/CalcTest.php"))).toEqual([
+      [3, "suite", "CalcTest"],
+      [5, "test", "CalcTest/testAdd"],
+      [7, "test", "CalcTest/subtracts"],
+      [9, "test", "CalcTest/multiplies"],
+    ]);
+  });
+
+  it("ignores files that are not tests", () => {
+    expect(detectRunTargets(src, "src/Calc.php")).toEqual([]);
+  });
+
+  it("runs a method with --filter ahead of the file", () => {
+    const phpunit = cfg({ id: "phpunit", kind: "phpunit", command: "vendor/bin/phpunit" });
+    const target = detectRunTargets(src, "tests/CalcTest.php")[1]!;
+    const run = targetConfig(target, "tests/CalcTest.php", [phpunit], src);
+    expect(run?.args).toEqual(["--filter", "/(CalcTest::testAdd( with data set .*)?)$/", "tests/CalcTest.php"]);
+    expect(run?.command).toBe("vendor/bin/phpunit");
+  });
+});
