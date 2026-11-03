@@ -1151,7 +1151,9 @@ function PermissionLine({ task, entry }: { task: AgentTask; entry: Extract<Agent
   return (
     <div className={styles.permissionLine}>
       <Icon name={!entry.chosen ? "warning" : entry.chosen === "Cancelled" ? "minus" : "check"} size={13} />
-      <span className={styles.permissionTitle}>{shortTitle(task, entry.title)}</span>
+      <span className={styles.permissionTitle} title={shortTitle(task, entry.title)}>
+        {shortTitle(task, entry.title)}
+      </span>
       <span className={styles.muted}>{entry.chosen ?? <T>Waiting for your answer</T>}</span>
     </div>
   );
@@ -1171,15 +1173,14 @@ function PermissionBanner({ task, entries }: { task: AgentTask; entries: AgentEn
   return (
     <div className={styles.banner} role="alert" aria-label={entry.title}>
       <Icon name="warning" size={16} />
-      <span className={styles.bannerText} title={entry.title}>
-        {shortTitle(task, entry.title)}
+      <span className={styles.bannerText}>{shortTitle(task, entry.title)}</span>
+      <span className={styles.bannerActions}>
+        {entry.options.map((o) => (
+          <button key={o.id} type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(o.id)}>
+            {o.name}
+          </button>
+        ))}
       </span>
-      <span className={styles.bannerSpacer} />
-      {entry.options.map((o) => (
-        <button key={o.id} type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(o.id)}>
-          {o.name}
-        </button>
-      ))}
     </div>
   );
 }

@@ -10,7 +10,11 @@ import { disconnect, useAgents } from "./store";
 import { taskActions } from "./taskActions";
 import styles from "./Session.module.css";
 
-const backend = vi.hoisted(() => ({ entries: new Map<string, AgentEntry[]>(), changes: [] as AgentChange[] }));
+const backend = vi.hoisted(() => ({
+  entries: new Map<string, AgentEntry[]>(),
+  changes: [] as AgentChange[],
+  answers: [] as Array<[string, number, string | null]>,
+}));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   commands: {
@@ -20,6 +24,10 @@ vi.mock("@/platform/ipc", async (original) => ({
     }),
     agentChanges: async () => ({ status: "ok", data: backend.changes }),
     vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
+    agentRespond: async (task: string, permission: number, option: string | null) => {
+      backend.answers.push([task, permission, option]);
+      return { status: "ok", data: null };
+    },
   },
 }));
 vi.mock("@tauri-apps/api/webview", () => ({
@@ -90,6 +98,40 @@ beforeEach(() => {
     homeOpen: false,
     tasks: new Map([task("A"), task("B")].map((t) => [t.id, t])),
     entries: new Map(backend.entries),
+  });
+});
+
+describe("a pending question", () => {
+  it("shows the whole question in the banner, with every answer, and sends the chosen one", async () => {
+    const question =
+      'Scenario 4 ("follows the TR") still leaves the "About your request" section empty after two rewrites.\nHow should we continue?';
+    const entries: AgentEntry[] = [
+      {
+        type: "permission",
+        id: 7,
+        title: question,
+        options: [
+          { id: "a", name: "Ship it as is and record it (Recommended)", kind: "allow_once" },
+          { id: "b", name: "Detect the request in code", kind: "allow_once" },
+          { id: "c", name: "Skip", kind: "reject_once" },
+        ],
+        chosen: null,
+      },
+    ];
+    backend.entries.set("A", entries);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const banner = await screen.findByRole("alert", { name: question });
+    expect(banner.querySelector(`.${styles.bannerText}`)?.textContent).toBe(question);
+    const answers = within(banner.querySelector<HTMLElement>(`.${styles.bannerActions}`)!).getAllByRole("button");
+    expect(answers.map((b) => b.textContent)).toEqual([
+      "Ship it as is and record it (Recommended)",
+      "Detect the request in code",
+      "Skip",
+    ]);
+    fireEvent.click(answers[1]!);
+    await waitFor(() => expect(backend.answers).toEqual([["A", 7, "b"]]));
   });
 });
 
