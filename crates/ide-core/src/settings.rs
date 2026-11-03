@@ -59,6 +59,28 @@ pub struct Settings {
     /// Build, Execution, Deployment › Run Targets.
     pub run_targets: Vec<RunTarget>,
     pub cmake: CMakeSettings,
+    /// Tools › Agents › Chat.
+    pub agents: AgentSettings,
+}
+
+/// What the meters in an agent task's header show.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSettings {
+    /// Context window use.
+    pub show_context_usage: bool,
+    /// Time the agent spent on the task.
+    pub show_work_time: bool,
+    /// The account's usage-limit windows (Claude's 5-hour and weekly limits).
+    pub show_usage_limits: bool,
+    /// What the session has cost so far, as the agent reports it.
+    pub show_cost: bool,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self { show_context_usage: true, show_work_time: true, show_usage_limits: true, show_cost: false }
+    }
 }
 
 /// Absent profiles retain automatic discovery for existing projects.
@@ -192,6 +214,7 @@ impl Default for Settings {
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),
+            agents: AgentSettings::default(),
         }
     }
 }
@@ -763,6 +786,19 @@ pub struct GradleSettings {
     pub home: String,
     /// Empty = Gradle's default user home.
     pub user_home: String,
+    /// IDEA's "Build and run using": who builds and launches an Application main.
+    pub run_using: GradleRunUsing,
+}
+
+/// IDEA's "Build and run using" for Gradle builds; IDEA defaults to Gradle.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GradleRunUsing {
+    /// A `JavaExec` task on the source set's runtime classpath (`gradleRun.gradle`).
+    #[default]
+    Gradle,
+    /// The Java language server's classpath, launched by OpenIDEA.
+    Ide,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -905,6 +941,20 @@ mod tests {
     }
 
     #[test]
+    fn agent_meters_default_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true}}"#).unwrap();
+        assert!(old.agents.show_cost);
+        assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
+        assert!(!Settings::default().agents.show_cost);
+        let mut settings = Settings::default();
+        settings.agents.show_usage_limits = false;
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["agents"]["showUsageLimits"], false);
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.agents, settings.agents);
+    }
+
+    #[test]
     fn main_menu_style_defaults_and_round_trips() {
         let old: Settings = serde_json::from_str(r#"{"appearance":{"compactMode":true}}"#).unwrap();
         assert_eq!(old.appearance.main_menu_style, "hamburger");
@@ -989,6 +1039,7 @@ mod gradle_settings_tests {
                 distribution,
                 home: "/gradle".into(),
                 user_home: "/cache/gradle".into(),
+                run_using: GradleRunUsing::Ide,
             };
             let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);

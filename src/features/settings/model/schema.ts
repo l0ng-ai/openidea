@@ -7,7 +7,7 @@
 import { validateCMake } from "@/platform/cmakeSettings";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
 import { validateFileTypeOverrides, validateFileTypes, type FileTypeAssociations } from "@/platform/fileTypes";
-import type { LanguageServerSettings, Settings } from "@/platform/ipc";
+import type { AgentSettings, LanguageServerSettings, Settings } from "@/platform/ipc";
 import {
   DEFAULT_LANGUAGES,
   DEFAULT_PROJECT_STRUCTURE,
@@ -92,6 +92,8 @@ export interface ValidSettings extends WorkflowSettings {
   tools: Record<string, { path: string }>;
   /** Settings › Language Servers, by server name (as the backend sends them). */
   languageServers: Record<string, LanguageServerEntry>;
+  /** Tools › Agents › Chat: the meters in an agent task's header. */
+  agents: Required<AgentSettings>;
 }
 
 /** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
@@ -158,6 +160,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
   tools: {},
   languageServers: {},
+  agents: { showContextUsage: true, showWorkTime: true, showUsageLimits: true, showCost: false },
   ...DEFAULT_WORKFLOW,
 };
 
@@ -201,6 +204,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
   const a = obj(root.appearance);
   const e = obj(root.editor);
   const f = obj(root.files);
+  const agents = obj(root.agents);
   const overrides = bindingMap(root.keymapOverrides);
   const customKeymaps: Record<string, CustomKeymapSettings> = {};
   for (const [id, raw] of Object.entries(obj(root.customKeymaps))) {
@@ -270,6 +274,12 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     languageServers: Object.fromEntries(
       Object.entries(obj(root.languageServers)).map(([name, ls]) => [name, obj(ls) as LanguageServerEntry]),
     ),
+    agents: {
+      showContextUsage: bool(agents.showContextUsage, d.agents.showContextUsage),
+      showWorkTime: bool(agents.showWorkTime, d.agents.showWorkTime),
+      showUsageLimits: bool(agents.showUsageLimits, d.agents.showUsageLimits),
+      showCost: bool(agents.showCost, d.agents.showCost),
+    },
     ...validateWorkflow(root),
   };
 }

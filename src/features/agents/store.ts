@@ -8,6 +8,7 @@ import type {
   AgentEntry,
   AgentEvent,
   AgentImage,
+  AgentLimit,
   AgentProvider,
   AgentTask,
   Isolation,
@@ -37,6 +38,8 @@ export interface Draft {
   /** Settings chosen for the next task, by option id (reset when the agent changes). */
   config: Record<string, string>;
   isolation: Isolation;
+  /** The user picked `isolation`: otherwise a task runs in the local checkout. */
+  isolationChosen?: boolean;
   /** `null`: the current branch. */
   base: string | null;
 }
@@ -59,6 +62,8 @@ interface AgentsState {
   /** Scroll position and follow-output preference by conversation, shared by both hosts. */
   scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
+  /** The usage limits each agent last reported for its account, by provider. */
+  limits: Map<string, AgentLimit[]>;
   draft: Draft;
   composers: Map<string, ComposerDraft>;
   /** The composer typed in last: where "Send to Agent" adds references. */
@@ -96,7 +101,16 @@ function save(key: string, value: unknown) {
   }
 }
 
-const fallbackDraft: Draft = { provider: "claude", config: {}, isolation: "worktree", base: null };
+const fallbackDraft: Draft = { provider: "claude", config: {}, isolation: "local", base: null };
+
+/**
+ * The saved New Task settings. A worktree is used only when the user picked it: drafts
+ * saved before that choice was recorded carried the old default (`worktree`) instead.
+ */
+export function savedDraft(saved: Partial<Draft>): Draft {
+  const draft = { ...fallbackDraft, ...saved };
+  return draft.isolationChosen ? draft : { ...draft, isolation: "local" };
+}
 
 export const useAgents = create<AgentsState>(() => ({
   loaded: false,
@@ -106,7 +120,8 @@ export const useAgents = create<AgentsState>(() => ({
   entries: new Map(),
   changes: new Map(),
   providers: [],
-  draft: { ...fallbackDraft, ...load<Partial<Draft>>(DRAFT_KEY, {}) },
+  limits: new Map(),
+  draft: savedDraft(load<Partial<Draft>>(DRAFT_KEY, {})),
   composers: new Map(),
   lastComposer: HOME,
   history: load<string[]>(HISTORY_KEY, []),
@@ -259,6 +274,10 @@ function onEvent(e: AgentEvent) {
     }
     case "providers": {
       void refreshProviders();
+      break;
+    }
+    case "limits": {
+      useAgents.setState({ limits: new Map(s.limits).set(e.provider, e.limits) });
       break;
     }
     case "entry": {

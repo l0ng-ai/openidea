@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isOutsideWindow, startPointerDrag } from "./pointerDrag";
+import { dropZoneAt, isOutsideWindow, startPointerDrag } from "./pointerDrag";
 
 const fire = (type: string, buttons: number, x = 0, y = 0) =>
   window.dispatchEvent(new MouseEvent(type, { bubbles: true, buttons, clientX: x, clientY: y }));
@@ -50,6 +50,17 @@ describe("startPointerDrag with a reordered macOS tap", () => {
 });
 
 const viewport = { left: 0, top: 0, right: 1280, bottom: 800 };
+
+describe("dropZoneAt", () => {
+  const rect = { left: 100, top: 100, width: 400, height: 200 };
+  it("picks the nearest edge within its outer quarter, else the middle", () => {
+    expect(dropZoneAt(300, 200, rect)).toBe("center");
+    expect(dropZoneAt(110, 200, rect)).toBe("left");
+    expect(dropZoneAt(490, 200, rect)).toBe("right");
+    expect(dropZoneAt(300, 110, rect)).toBe("top");
+    expect(dropZoneAt(300, 290, rect)).toBe("bottom");
+  });
+});
 
 describe("isOutsideWindow", () => {
   it("treats the viewport interior as inside (issue #454: drag a tab out)", () => {
