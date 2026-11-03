@@ -57,6 +57,9 @@ describe("coverageSupports", () => {
     expect(coverageSupports(cfg("pnpm", ["run", "dev"]))).toBe(false);
     expect(coverageSupports(cfg("/v/bin/python3", ["-m", "pytest"]))).toBe(true);
     expect(coverageSupports(cfg("uv", ["run", "pytest"]))).toBe(true);
+    expect(coverageSupports(cfg("/v/bin/ruby", ["-Ilib", "test/a_test.rb"]))).toBe(true);
+    expect(coverageSupports(cfg("bundle", ["exec", "rspec"], { isTest: true }))).toBe(true);
+    expect(coverageSupports(cfg("bundle", ["exec", "rake", "db:migrate"]))).toBe(false);
     expect(coverageSupports(cfg("make", ["test"]))).toBe(false);
   });
 });
