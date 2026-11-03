@@ -14,7 +14,8 @@ import { EMPTY_TREE, patchTree, useDeployment } from "./store";
 
 const errorText = (e: unknown) => txTemplate(e instanceof Error ? e.message : String(e));
 
-const sourceKey = (server: DeploymentServerValid) => JSON.stringify([deploymentConnection(server), server.rootPath]);
+const sourceKey = (server: DeploymentServerValid) =>
+  JSON.stringify([deploymentConnection(server), server.rootPath, server.mappings, useProject.getState().project?.root]);
 
 const tree = (server: string) => useDeployment.getState().trees[server] ?? EMPTY_TREE;
 
@@ -46,7 +47,7 @@ export async function loadFolder(server: DeploymentServerValid, path: string) {
   }
 }
 
-/** Resolves the server root once per session and lists it. */
+/** Resolves the server root and mappings, then lists the root. */
 export async function ensureRoot(server: DeploymentServerValid, force = false) {
   const source = sourceKey(server);
   if (tree(server.id).source !== source) patchTree(server.id, { ...EMPTY_TREE, source });
@@ -54,15 +55,15 @@ export async function ensureRoot(server: DeploymentServerValid, force = false) {
   if (current.root && !force && current.listings[current.root]) return;
   patchTree(server.id, { error: null });
   try {
-    const root =
+    const resolved =
       current.root && !force
-        ? current.root
+        ? { root: current.root, mappings: current.mappings }
         : await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
             call(commands.deployServerRoot(server.id)),
           );
     if (tree(server.id).source !== source) return;
-    patchTree(server.id, { root });
-    await loadFolder(server, root);
+    patchTree(server.id, resolved);
+    await loadFolder(server, resolved.root);
   } catch (e) {
     if (tree(server.id).source !== source) return;
     patchTree(server.id, { error: errorText(e) });
@@ -158,12 +159,14 @@ export async function deleteEntries(server: DeploymentServerValid, entries: Remo
 /** Downloads mapped entries to their local paths; unmapped ones are reported. */
 export async function downloadToProject(server: DeploymentServerValid, entries: RemoteEntry[]) {
   const projectRoot = useProject.getState().project?.root;
-  const root = tree(server.id).root;
-  if (!projectRoot || !root) return;
+  if (!projectRoot) return;
+  await ensureRoot(server, true);
+  const { root, mappings } = tree(server.id);
+  if (!root || tree(server.id).error) return;
   const locals: string[] = [];
   const unmapped: string[] = [];
   for (const e of entries) {
-    const local = localPathForRemote(e.path, root, server.mappings, projectRoot);
+    const local = localPathForRemote(e.path, mappings);
     if (local) locals.push(local);
     else unmapped.push(remoteName(e.path));
   }
