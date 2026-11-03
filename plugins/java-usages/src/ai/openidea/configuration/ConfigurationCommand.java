@@ -27,9 +27,23 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
     private static final String VALUE = "org.springframework.beans.factory.annotation.Value";
     private static final String RESOLVER = "org.springframework.core.env.PropertyResolver";
     private static final int MAX_UNITS = 20_000, MAX_ENTRIES = 100_000, MAX_BYTES = 2 * 1024 * 1024;
-    private static final AtomicLong REVISION = new AtomicLong();
+    private static final AtomicLong REVISION = new AtomicLong(), GENERATION = new AtomicLong();
     private static final Map<String, Index> CACHE = new LinkedHashMap<>();
-    static { JavaCore.addElementChangedListener(event -> REVISION.incrementAndGet(), ElementChangedEvent.POST_CHANGE | ElementChangedEvent.POST_RECONCILE); }
+    /** Unsaved edits are covered by the working-copy digest, so reconciles never
+     * invalidate. Opening/closing a working copy (F_PRIMARY_WORKING_COPY) and
+     * non-Java resources, reported as F_CONTENT on a project, root or package
+     * (configuration files are parsed by the client; metadata files carry their
+     * own stamps), do not change the index either. */
+    private static final int IGNORED_FLAGS = IJavaElementDelta.F_CHILDREN | IJavaElementDelta.F_PRIMARY_WORKING_COPY
+            | IJavaElementDelta.F_AST_AFFECTED | IJavaElementDelta.F_FINE_GRAINED;
+    static { JavaCore.addElementChangedListener(event -> { if (affects(event.getDelta())) REVISION.incrementAndGet(); }, ElementChangedEvent.POST_CHANGE); }
+    static boolean affects(IJavaElementDelta delta) {
+        int flags = delta.getFlags() & ~IGNORED_FLAGS;
+        if (delta.getElement().getElementType() < IJavaElement.COMPILATION_UNIT) flags &= ~IJavaElementDelta.F_CONTENT;
+        if (delta.getKind() != IJavaElementDelta.CHANGED || flags != 0) return true;
+        for (IJavaElementDelta child : delta.getAffectedChildren()) if (affects(child)) return true;
+        return false;
+    }
 
     private record Entry(String name, String handle, Location location, boolean relaxed) {}
     private record FileStamp(java.nio.file.attribute.FileTime modified, long size) {}
@@ -38,7 +52,7 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         catch (java.io.IOException e) { return new FileStamp(null, -1); }
     }
     private record Index(long revision, String workingCopies, List<Entry> entries, List<String> roots,
-            Map<Path, FileStamp> files, boolean incomplete, int parsed) {}
+            Map<Path, FileStamp> files, boolean incomplete, int parsed, long generation) {}
 
     @Override
     public Object executeCommand(String command, List<Object> args, IProgressMonitor monitor) throws Exception {
@@ -108,7 +122,7 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         }
         return Map.of("locations", locations, "keys", keys, "roots", index.roots,
                 "incomplete", index.incomplete || locations.size() >= 2000,
-                "parsedUnits", index.parsed, "revision", index.revision);
+                "parsedUnits", index.parsed, "revision", index.revision, "generation", index.generation);
     }
 
     private static boolean sameUri(String a, String b) {
@@ -156,9 +170,12 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         for (ICompilationUnit copy : JavaCore.getWorkingCopies(null)) copies.put(copy.getPrimary().getHandleIdentifier(), copy);
         for (ICompilationUnit copy : JavaCore.getWorkingCopies(JavaLanguageServerPlugin.getInstance().getWorkingCopyOwner()))
             copies.put(copy.getPrimary().getHandleIdentifier(), copy);
+        // Only unsaved contents differ from what the Java model reports for disk,
+        // so merely opening or closing an editor keeps the snapshot.
         var digest = java.security.MessageDigest.getInstance("SHA-256");
         for (var entry : copies.entrySet()) {
             check(monitor);
+            if (!entry.getValue().hasUnsavedChanges()) continue;
             digest.update(entry.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             String source = entry.getValue().getSource();
             if (source != null) digest.update(source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -209,7 +226,7 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         // Return project locations as well; the client excludes nested independent modules.
         roots.add(project.getProject().getLocationURI().toString());
         builder.metadataDirectory(project.getProject().getLocation().toFile().toPath().resolve("src/main/resources"), project);
-        Index result = new Index(revision, workingCopies, List.copyOf(builder.entries), List.copyOf(roots), Map.copyOf(builder.files), builder.incomplete, builder.parsed);
+        Index result = new Index(revision, workingCopies, List.copyOf(builder.entries), List.copyOf(roots), Map.copyOf(builder.files), builder.incomplete, builder.parsed, GENERATION.incrementAndGet());
         CACHE.remove(id);
         while (!CACHE.isEmpty() && (CACHE.size() >= 8 ||
                 CACHE.values().stream().mapToInt(value -> value.entries.size()).sum() + result.entries.size() > MAX_ENTRIES))

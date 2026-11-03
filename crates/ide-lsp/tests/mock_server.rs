@@ -3035,7 +3035,40 @@ async fn configuration_extension_failure_preserves_native_java_navigation() {
             "start": {"line": 0, "character": 1}, "end": {"line": 0, "character": 6}
         }}),
     );
-    let result = h.mgr.goto(doc, Pos::new(0, 2), GotoKind::Definition).await.unwrap();
+    let result = h.mgr.goto(doc, Pos::new(0, 12), GotoKind::Definition).await.unwrap();
     assert_eq!(result.len(), 1);
+    assert_eq!(s.requested("workspace/executeCommand").len(), 1);
     assert_eq!(s.requested("textDocument/definition").len(), 1);
+}
+
+/// The configuration command indexes the whole project, so Go to Definition (and
+/// every Ctrl+hover probe) consults it only inside a key argument; ordinary Java
+/// symbols in a Spring file go straight to JDT.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_definition_consults_configuration_only_inside_key_arguments() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let text = "class A {\n  @Value(\"${app.port}\") int port;\n  String a() { return env.getProperty(Keys.HOST) + x.getValue(); }\n}\n";
+    let (doc, path) = h.open("A.java", text);
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    s.respond("workspace/executeCommand", json!({"locations": [], "keys": [], "roots": []}));
+    s.respond(
+        "textDocument/definition",
+        json!({"uri": uri_of(&path), "range": {
+            "start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 7}
+        }}),
+    );
+    // Field type, field name, method name, the lookup's receiver and name, another call.
+    for pos in [Pos::new(1, 24), Pos::new(1, 28), Pos::new(2, 9), Pos::new(2, 22), Pos::new(2, 28), Pos::new(2, 53)] {
+        assert_eq!(h.mgr.goto(doc, pos, GotoKind::Definition).await.unwrap().len(), 1, "{pos:?}");
+    }
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    assert_eq!(s.requested("textDocument/definition").len(), 6);
+    // Inside a placeholder and a constant lookup key: configuration first, JDT as fallback.
+    for pos in [Pos::new(1, 13), Pos::new(2, 41)] {
+        h.mgr.goto(doc, pos, GotoKind::Definition).await.unwrap();
+    }
+    assert_eq!(s.requested("workspace/executeCommand").len(), 2);
 }
