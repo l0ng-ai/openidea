@@ -203,8 +203,8 @@
   background: var(--bg-dialog, var(--bg-elev));
   color: var(--fg);
 }
-/* Linux draws no shadow for a frameless window (Wayland/KDE give undecorated
-   windows no CSD), so mark its edge in CSS instead. */
+/* Linux: on Wayland GTK draws the frameless window's shadow (`decorate_csd` in
+   windows.rs), but frameless X11 windows have none, so mark the edge in CSS. */
 .windowEdge {
   position: relative;
 }
