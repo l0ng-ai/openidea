@@ -1,4 +1,5 @@
 /** Agents of the ACP Registry: listing, install / update / remove (`agent_registry_*`). */
+import { open } from "@tauri-apps/plugin-dialog";
 import { Channel } from "@tauri-apps/api/core";
 import type {
   AgentProvider,
@@ -21,6 +22,7 @@ export interface RegistryBackend {
 export interface CommandsBackend {
   providers(): Promise<AgentProvider[]>;
   set(id: string, command: string | null): Promise<void>;
+  chooseExecutable(title: string, current?: string): Promise<string | null>;
 }
 
 export const tauriRegistry: RegistryBackend = {
@@ -38,6 +40,10 @@ export const tauriRegistry: RegistryBackend = {
 
 export const tauriCommands: CommandsBackend = {
   providers: () => call(commands.agentProviders()),
+  chooseExecutable: async (title, current) => {
+    const picked = await open({ title, defaultPath: current || undefined, directory: false, multiple: false });
+    return typeof picked === "string" ? picked : null;
+  },
   set: async (id, command) => {
     await call(commands.agentSetCommand(id, command));
   },

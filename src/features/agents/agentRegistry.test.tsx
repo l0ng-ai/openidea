@@ -136,6 +136,14 @@ describe("agent picker", () => {
   const provider = (p: Partial<AgentProvider> & Pick<AgentProvider, "id" | "source">): AgentProvider => ({
     name: p.id,
     command: p.id,
+    program: p.id,
+    args: [],
+    defaultProgram: p.id,
+    defaultArgs: [],
+    loginHint: null,
+    commandOverridden: false,
+    commandEditable: true,
+    commandReadOnlyReason: null,
     installed: true,
     config: [],
     commands: [],
@@ -165,10 +173,15 @@ describe("agent picker", () => {
 });
 
 describe("Agents settings page", () => {
+  const renderRegistry = (...args: Parameters<typeof render>) => {
+    const result = render(...args);
+    fireEvent.click(screen.getByRole("tab", { name: "ACP Registry" }));
+    return result;
+  };
   it("shows the built-in Copilot name and icon in its registry row", async () => {
     const backend = new FakeBackend();
     backend.registry = { agents: [agent({ id: "copilot", name: "GitHub Copilot" })], warning: null };
-    render(<AgentRegistryPage backend={backend} />);
+    renderRegistry(<AgentRegistryPage backend={backend} />);
     const copilot = await screen.findByRole("listitem", { name: "GitHub Copilot" });
     const expected = document.createElement("div");
     expected.innerHTML = iconMarkup("agent-copilot")!;
@@ -178,7 +191,7 @@ describe("Agents settings page", () => {
 
   it("lists registry agents, says they are third-party, and searches them", async () => {
     const backend = new FakeBackend();
-    render(<AgentRegistryPage backend={backend} />);
+    renderRegistry(<AgentRegistryPage backend={backend} />);
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
     expect(screen.getByText(/third-party software/)).toBeInTheDocument();
     expect(within(row("Amp")).getByRole("button", { name: "Install" })).toBeEnabled();
@@ -197,7 +210,7 @@ describe("Agents settings page", () => {
   it("installs with progress, then reports the change", async () => {
     const backend = new FakeBackend();
     const onChanged = vi.fn();
-    render(<AgentRegistryPage onChanged={onChanged} backend={backend} />);
+    renderRegistry(<AgentRegistryPage onChanged={onChanged} backend={backend} />);
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
     fireEvent.click(within(row("Amp")).getByRole("button", { name: "Install" }));
     expect(backend.installs).toEqual(["amp-acp"]);
@@ -216,7 +229,7 @@ describe("Agents settings page", () => {
   it("asks before installing an agent whose download has no checksum", async () => {
     const backend = new FakeBackend();
     backend.registry = { agents: [{ ...AMP, noChecksum: true }], warning: null };
-    render(
+    renderRegistry(
       <>
         <AgentRegistryPage backend={backend} />
         <MessagesHost />
@@ -240,7 +253,7 @@ describe("Agents settings page", () => {
 
   it("installs an agent with a checksum without asking", async () => {
     const backend = new FakeBackend();
-    render(
+    renderRegistry(
       <>
         <AgentRegistryPage backend={backend} />
         <MessagesHost />
@@ -255,7 +268,7 @@ describe("Agents settings page", () => {
 
   it("shows why an install failed, and cancels one when the page closes", async () => {
     const backend = new FakeBackend();
-    const { unmount } = render(<AgentRegistryPage backend={backend} />);
+    const { unmount } = renderRegistry(<AgentRegistryPage backend={backend} />);
     await waitFor(() => expect(row("Cline")).toBeInTheDocument());
     fireEvent.click(within(row("Cline")).getByRole("button", { name: "Update" }));
     await act(async () => backend.fail(new IpcError({ kind: "unavailable", message: "npm is required" })));
@@ -273,7 +286,7 @@ describe("Agents settings page", () => {
   it("removes an installed agent", async () => {
     const backend = new FakeBackend();
     const onChanged = vi.fn();
-    render(<AgentRegistryPage onChanged={onChanged} backend={backend} />);
+    renderRegistry(<AgentRegistryPage onChanged={onChanged} backend={backend} />);
     await waitFor(() => expect(row("fast-agent")).toBeInTheDocument());
     fireEvent.click(within(row("fast-agent")).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(within(row("fast-agent")).getByRole("button", { name: "Install" })).toBeEnabled());
@@ -284,12 +297,12 @@ describe("Agents settings page", () => {
   it("falls back to the saved list with a warning, and reports a registry it cannot load", async () => {
     const backend = new FakeBackend();
     backend.registry = { agents: AGENTS, warning: "Could not reach the ACP Registry" };
-    const { unmount } = render(<AgentRegistryPage backend={backend} />);
+    const { unmount } = renderRegistry(<AgentRegistryPage backend={backend} />);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Could not reach the ACP Registry"));
     unmount();
 
     backend.list.mockRejectedValueOnce(new IpcError({ kind: "io", message: "offline" }));
-    render(<AgentRegistryPage backend={backend} />);
+    renderRegistry(<AgentRegistryPage backend={backend} />);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the ACP Registry: offline"));
   });
 });
@@ -298,10 +311,20 @@ class FakeCommands implements CommandsBackend {
   list: AgentProvider[] = [];
   saved: [string, string | null][] = [];
   providers = vi.fn(async () => this.list);
+  chooseExecutable = vi.fn(async () => "/chosen/agent");
   async set(id: string, command: string | null) {
     this.saved.push([id, command]);
     // What the agent list shows after the override takes effect.
-    this.list = this.list.map((p) => (p.id === id ? { ...p, command: command ?? p.id } : p));
+    this.list = this.list.map((p) =>
+      p.id === id
+        ? {
+            ...p,
+            program: command ?? p.defaultProgram!,
+            command: command ?? p.defaultProgram!,
+            commandOverridden: command != null && command !== p.defaultProgram,
+          }
+        : p,
+    );
   }
 }
 
@@ -309,13 +332,21 @@ const claudeProvider = (command: string): AgentProvider => ({
   id: "claude",
   name: "Claude Code",
   command,
+  program: command,
+  args: [],
+  defaultProgram: "claude",
+  defaultArgs: [],
+  loginHint: "Run `claude` in a terminal and sign in.",
+  commandOverridden: command !== "claude",
+  commandEditable: true,
+  commandReadOnlyReason: null,
   installed: true,
   config: [],
   commands: [],
   source: { kind: "builtin" },
 });
 
-describe("Claude Code command override", () => {
+describe("Built-in executable overrides", () => {
   let dispose = () => {};
   beforeEach(() => openSettings(REGISTRY_PAGE));
   afterEach(() => {
@@ -332,17 +363,17 @@ describe("Claude Code command override", () => {
       component: () => <RegistryPage backend={backend} commandBackend={commands} onChanged={onChanged} />,
     });
     render(<SettingsDialog />);
-    return screen.findByRole("region", { name: "Claude Code command" });
+    return screen.findByRole("region", { name: "Claude Code executable" });
   };
   const apply = () => screen.getByRole("button", { name: "Apply" });
-  const field = () => screen.getByRole("textbox", { name: "Claude Code command" });
+  const field = () => screen.getByRole("textbox", { name: "Executable" });
 
-  it("is hidden when providers cannot be read (no trusted project)", async () => {
+  it("reports when providers cannot be read (no trusted project)", async () => {
     const commands = new FakeCommands();
     commands.providers.mockRejectedValue(new IpcError({ kind: "unavailable", message: "restricted" }));
     render(<AgentRegistryPage backend={new FakeBackend()} commandBackend={commands} />);
-    await waitFor(() => expect(row("Amp")).toBeInTheDocument());
-    expect(screen.queryByRole("region", { name: "Claude Code command" })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("restricted"));
+    expect(screen.queryByRole("textbox", { name: "Executable" })).toBeNull();
   });
 
   it.each(["Apply", "OK"])("stages a binary path and writes it only on %s", async (button) => {
@@ -351,32 +382,43 @@ describe("Claude Code command override", () => {
     const onChanged = vi.fn();
     const section = await openCommands(commands, onChanged);
     expect(apply()).toBeDisabled();
-    expect(field()).toHaveValue("claude");
+    expect(field()).toHaveValue("");
     expect(within(section).queryByRole("button", { name: "Save" })).toBeNull();
     fireEvent.change(field(), { target: { value: "D:\\tools\\claude.exe" } });
     expect(commands.saved).toEqual([]);
     expect(onChanged).not.toHaveBeenCalled();
     expect(apply()).toBeEnabled();
-    expect(within(section).queryByText("Custom command")).toBeNull();
+    expect(screen.queryByRole("option", { name: /Claude Code Custom/ })).toBeNull();
 
     await act(async () => fireEvent.click(screen.getByRole("button", { name: button })));
     expect(commands.saved).toEqual([["claude", "D:\\tools\\claude.exe"]]);
     expect(onChanged).toHaveBeenCalledOnce();
     if (button === "Apply") {
-      expect(within(section).getByText("Custom command")).toBeInTheDocument();
+      expect(screen.getByRole("option", { name: /Claude Code Custom/ })).toBeInTheDocument();
       expect(apply()).toBeDisabled();
     } else expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("Cancel discards command edits without writing", async () => {
     const commands = new FakeCommands();
-    commands.list = [claudeProvider("/saved/claude")];
+    commands.list = [
+      claudeProvider("/saved/claude"),
+      {
+        ...claudeProvider("codex"),
+        id: "codex",
+        name: "Codex",
+        defaultProgram: "codex",
+        commandOverridden: false,
+      },
+    ];
     await openCommands(commands);
     fireEvent.change(field(), { target: { value: "/unsaved/claude" } });
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Codex Found" }));
+    fireEvent.change(field(), { target: { value: "/unsaved/codex" } });
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(commands.saved).toEqual([]);
     act(() => openSettings(REGISTRY_PAGE));
-    expect(await screen.findByRole("textbox", { name: "Claude Code command" })).toHaveValue("/saved/claude");
+    expect(await screen.findByRole("textbox", { name: "Executable" })).toHaveValue("/saved/claude");
     expect(apply()).toBeDisabled();
   });
 
@@ -388,12 +430,12 @@ describe("Claude Code command override", () => {
     else fireEvent.click(within(section).getByRole("button", { name: "Reset" }));
     expect(field()).toHaveValue("");
     expect(commands.saved).toEqual([]);
-    expect(within(section).getByText("Custom command")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Claude Code Custom/ })).toBeInTheDocument();
     expect(apply()).toBeEnabled();
     await act(async () => fireEvent.click(apply()));
     expect(commands.saved).toEqual([["claude", null]]);
-    expect(field()).toHaveValue("claude");
-    expect(within(section).queryByText("Custom command")).toBeNull();
+    expect(field()).toHaveValue("");
+    expect(screen.queryByRole("option", { name: /Claude Code Custom/ })).toBeNull();
     expect(apply()).toBeDisabled();
   });
 
@@ -422,12 +464,12 @@ describe("Claude Code command override", () => {
       expect(apply()).toBeEnabled();
       if (mounted) {
         act(() => selectPage(REGISTRY_PAGE));
-        expect(await screen.findByRole("textbox", { name: "Claude Code command" })).toHaveValue("/custom/claude");
+        expect(await screen.findByRole("textbox", { name: "Executable" })).toHaveValue("/custom/claude");
       }
       await act(async () => fireEvent.click(apply()));
       act(() => selectPage(REGISTRY_PAGE));
-      expect(await screen.findByRole("textbox", { name: "Claude Code command" })).toHaveValue("/custom/claude");
-      expect(screen.getByText("Custom command")).toBeInTheDocument();
+      expect(await screen.findByRole("textbox", { name: "Executable" })).toHaveValue("/custom/claude");
+      expect(screen.getByRole("option", { name: /Claude Code Custom/ })).toBeInTheDocument();
       expect(commands.saved).toEqual([["claude", "/custom/claude"]]);
       expect(apply()).toBeDisabled();
     } finally {
@@ -439,17 +481,87 @@ describe("Claude Code command override", () => {
     const commands = new FakeCommands();
     commands.list = [claudeProvider("claude")];
     const set = vi.spyOn(commands, "set").mockRejectedValueOnce(new Error("Read-only configuration"));
-    const section = await openCommands(commands);
+    await openCommands(commands);
     fireEvent.change(field(), { target: { value: " /custom/claude " } });
     await act(async () => fireEvent.click(apply()));
     expect(screen.getByRole("status")).toHaveTextContent("Read-only configuration");
     expect(field()).toHaveValue(" /custom/claude ");
-    expect(within(section).queryByText("Custom command")).toBeNull();
+    expect(screen.queryByRole("option", { name: /Claude Code Custom/ })).toBeNull();
     expect(apply()).toBeEnabled();
     await act(async () => fireEvent.click(apply()));
     expect(set).toHaveBeenCalledTimes(2);
     expect(commands.saved).toEqual([["claude", "/custom/claude"]]);
     expect(field()).toHaveValue("/custom/claude");
-    expect(within(section).getByText("Custom command")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Claude Code Custom/ })).toBeInTheDocument();
+  });
+  it.each(["Apply", "OK"])("lists built-ins and writes two independent edits on %s", async (button) => {
+    const commands = new FakeCommands();
+    commands.list = [
+      claudeProvider("claude"),
+      {
+        ...claudeProvider("codex"),
+        id: "codex",
+        name: "Codex",
+        defaultProgram: "codex",
+        commandOverridden: false,
+        args: ["app-server"],
+        defaultArgs: ["app-server"],
+        installed: false,
+      },
+    ];
+    const changed = vi.fn();
+    await openCommands(commands, changed);
+    expect(screen.getByRole("option", { name: "Claude Code Found" })).toBeInTheDocument();
+    const codex = screen.getByRole("option", { name: "Codex Not found" });
+    fireEvent.change(field(), { target: { value: "/custom/claude" } });
+    fireEvent.mouseDown(codex);
+    expect(screen.getByText("codex app-server")).toBeInTheDocument();
+    expect(field()).toHaveAttribute("placeholder", "Auto-detect (codex)");
+    fireEvent.change(field(), { target: { value: "/custom/codex" } });
+    expect(commands.saved).toEqual([]);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: button })));
+    expect(commands.saved).toEqual([
+      ["claude", "/custom/claude"],
+      ["codex", "/custom/codex"],
+    ]);
+    expect(changed).toHaveBeenCalledTimes(2);
+    if (button === "Apply") expect(screen.getByRole("option", { name: "Codex Custom" })).toBeInTheDocument();
+  });
+
+  it.each(["packageRunner", "registry"] as const)("keeps %s built-ins visible and read-only", async (reason) => {
+    const commands = new FakeCommands();
+    commands.list = [
+      {
+        ...claudeProvider("npx"),
+        id: "claude-acp",
+        name: "Claude Code (ACP)",
+        defaultProgram: "npx",
+        defaultArgs: ["-y", "adapter"],
+        commandEditable: false,
+        commandReadOnlyReason: reason,
+        source: reason === "registry" ? { kind: "registry", version: "1", update: null } : { kind: "builtin" },
+      },
+    ];
+    render(<AgentRegistryPage backend={new FakeBackend()} commandBackend={commands} />);
+    expect(await screen.findByText("npx -y adapter")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Executable" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Browse…" })).toBeNull();
+    expect(
+      screen.getByText(
+        reason === "packageRunner" ? /runs through a package runner/ : /installed from the ACP Registry/,
+      ),
+    ).toBeInTheDocument();
+    expect(commands.saved).toEqual([]);
+  });
+
+  it("stages a browsed executable", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    await openCommands(commands);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Browse…" })));
+    expect(field()).toHaveValue("/chosen/agent");
+    expect(commands.saved).toEqual([]);
+    await act(async () => fireEvent.click(apply()));
+    expect(commands.saved).toEqual([["claude", "/chosen/agent"]]);
   });
 });

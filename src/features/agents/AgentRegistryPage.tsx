@@ -8,7 +8,7 @@ import type { AgentRegistry, RegistryAgent, RequestId } from "@/bindings";
 import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
-import { Badge, Button, Icon, ProgressBar, SearchField, Spinner, T } from "@/ui";
+import { Badge, Button, Icon, ProgressBar, SearchField, Spinner, T, Tabs } from "@/ui";
 import { confirm } from "@/workbench/messages";
 import { providerIcon } from "./model";
 import {
@@ -23,6 +23,7 @@ import {
   type CommandsBackend,
   type RegistryBackend,
 } from "./registry";
+import { BuiltinAgents } from "./BuiltinAgents";
 import styles from "./AgentRegistry.module.css";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -44,6 +45,29 @@ export function AgentRegistryPage({
   backend?: RegistryBackend;
   commandBackend?: CommandsBackend;
 }) {
+  const [tab, setTab] = useState("builtin");
+  return (
+    <div className={styles.body}>
+      <Tabs
+        variant="compact"
+        items={[
+          { id: "builtin", label: tx("Built-in") },
+          { id: "registry", label: tx("ACP Registry") },
+        ]}
+        activeId={tab}
+        onSelect={setTab}
+        aria-label={tx("Agents")}
+      />
+      {tab === "builtin" ? (
+        <BuiltinAgents backend={commandBackend} onChanged={onChanged} />
+      ) : (
+        <RegistryList backend={backend} onChanged={onChanged} />
+      )}
+    </div>
+  );
+}
+
+function RegistryList({ backend, onChanged }: { backend: RegistryBackend; onChanged?: () => void }) {
   const [registry, setRegistry] = useState<AgentRegistry | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -138,7 +162,6 @@ export function AgentRegistryPage({
 
   return (
     <div className={styles.body}>
-      <ClaudeCommand backend={commandBackend} onChanged={onChanged} />
       <SearchField
         autoFocus
         value={query}
@@ -191,61 +214,6 @@ export function AgentRegistryPage({
         )}
       </div>
     </div>
-  );
-}
-
-/** The launch command is staged with the rest of the Settings dialog. */
-function ClaudeCommand({ backend, onChanged }: { backend: CommandsBackend; onChanged?: () => void }) {
-  const [loaded, setLoaded] = useState<string | null>(null);
-  const form = useSettingsForm();
-  const { value, current, set, saving } = form.useExternal("claude.command", loaded ?? "", async (value) => {
-    const command = value.trim() || null;
-    await backend.set("claude", command);
-    onChanged?.();
-    return command ?? "claude";
-  });
-
-  useEffect(() => {
-    let live = true;
-    backend
-      .providers()
-      .then((providers) => {
-        const claude = providers.find((p) => p.id === "claude");
-        if (live && claude) setLoaded(claude.command);
-      })
-      .catch(() => {}); // no trusted project: the section stays hidden
-    return () => {
-      live = false;
-    };
-  }, [backend]);
-
-  if (loaded == null) return null;
-
-  return (
-    <section className={styles.command} aria-label="Claude Code command">
-      <div className={styles.commandTitleLine}>
-        <span className={styles.commandName}>Claude Code</span>
-        {current !== "claude" && <Badge>{tx("Custom command")}</Badge>}
-      </div>
-      <p className={styles.commandHint}>
-        <T>
-          The Claude Code binary to run; a full path when it is not on your PATH. Clear the field and apply to find
-          `claude` on your PATH again.
-        </T>
-      </p>
-      <div className={styles.commandRow}>
-        <Input
-          mono
-          value={value}
-          disabled={saving}
-          onChange={(e) => set(e.target.value)}
-          aria-label="Claude Code command"
-        />
-        <Button size="small" disabled={saving || !value || value === "claude"} onClick={() => set("")}>
-          {tx("Reset")}
-        </Button>
-      </div>
-    </section>
   );
 }
 

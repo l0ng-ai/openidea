@@ -1,0 +1,74 @@
+.split {
+  display: flex;
+  flex: 1;
+  min-height: 320px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+.master {
+  flex: 0 0 240px;
+  border-right: 1px solid var(--border);
+}
+.agentRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 10px;
+}
+.agentName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.details {
+  flex: 1;
+  min-width: 0;
+  padding: 20px;
+  overflow: auto;
+}
+.title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-strong);
+}
+.title h3 {
+  margin: 0;
+  font-size: var(--fs-input-large);
+}
+.launch {
+  display: block;
+  margin: 8px 0 24px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.label {
+  display: block;
+  margin-bottom: 6px;
+}
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.controls > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.hint {
+  margin: 8px 0 16px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.error {
+  color: var(--danger);
+  white-space: pre-wrap;
+}
