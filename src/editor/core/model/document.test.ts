@@ -6,6 +6,7 @@ import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
 import { DocumentManager, ModifiedRanges, saveCleanupChanges, useDocMeta } from "./document";
 import { EditorSlot, type SlotHost } from "./slot";
+import { formatOptionsOf } from "@/editor/lsp/format";
 
 const host: SlotHost = {
   onFocus: () => {},
@@ -37,6 +38,24 @@ function setup(files: Record<string, string>, settings = {}) {
 afterEach(() => useDocMeta.setState({}, true));
 
 describe("DocumentManager + slots", () => {
+  it("gives a new slot the Code Style indent for Reformat Code, not the detected one", async () => {
+    const settings = {
+      editor: {
+        codeStyle: {
+          languages: { java: { useTab: true, tabSize: 1, indent: 1 } },
+          detectIndents: true,
+          editorconfig: false,
+        },
+      },
+    };
+    const { manager } = setup({ "/p/A.java": "class A {\n    int x;\n}\n" }, settings);
+    const model = await manager.acquire("/p/A.java");
+    const first = new EditorSlot(model, "t1", host);
+    const split = new EditorSlot(model, "t2", host, { from: first });
+    for (const slot of [first, split])
+      expect(formatOptionsOf(slot.currentState())).toEqual({ tabSize: 1, insertSpaces: false });
+  });
+
   it("shares one document between split slots and syncs edits to the backend", async () => {
     const { backend, manager, frame } = setup({ "/p/a.txt": "hello\n" });
     const model = await manager.acquire("/p/a.txt");
