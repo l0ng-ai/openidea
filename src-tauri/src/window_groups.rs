@@ -65,6 +65,10 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     if !maximized {
         to.unmaximize().map_err(err)?;
         to.set_position(from.outer_position().map_err(err)?).map_err(err)?;
+        // `set_size` excludes GTK's CSD shadow, which tao's inner size includes on Wayland.
+        #[cfg(target_os = "linux")]
+        let size = crate::linux_window_state::content_size(&from.as_ref().window()).map_err(err)?;
+        #[cfg(not(target_os = "linux"))]
         let size = from.inner_size().map_err(err)?;
         #[cfg(target_os = "linux")]
         crate::linux_window_state::normal_size_requested(to.app_handle(), to.label(), size);
