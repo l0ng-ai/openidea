@@ -1,0 +1,21 @@
+diff --git a/src/core/lombok/eclipse/handlers/HandleBuilder.java b/src/core/lombok/eclipse/handlers/HandleBuilder.java
+index 64a3fa9..6ebaaaf 100755
+--- a/src/core/lombok/eclipse/handlers/HandleBuilder.java
++++ b/src/core/lombok/eclipse/handlers/HandleBuilder.java
+@@ -493,10 +493,13 @@ public class HandleBuilder extends EclipseAnnotationHandler<Builder> {
+ 		if (!checkBuilderClassNameAnnotationConflict("Builder", "lombok.Builder", job.builderClassName, ast, annotationNode)) return;
+ 		
+ 		if (fillParametersFrom != null) {
+-			for (EclipseNode param : fillParametersFrom.down()) {
+-				if (param.getKind() != Kind.ARGUMENT) continue;
++			// ECJ has not populated the implicit arguments of a compact record constructor yet.
++			boolean compactConstructor = parent.get() instanceof ConstructorDeclaration
++				&& isRecord(job.parentType) && (parent.get().bits & IsCanonicalConstructor) != 0;
++			for (EclipseNode param : (compactConstructor ? job.parentType : fillParametersFrom).down()) {
++				if (compactConstructor ? !isRecordField(param) : param.getKind() != Kind.ARGUMENT) continue;
+ 				BuilderFieldData bfd = new BuilderFieldData();
+-				Argument arg = (Argument) param.get();
++				AbstractVariableDeclaration arg = (AbstractVariableDeclaration) param.get();
+ 				
+ 				Annotation[] copyableAnnotations = findCopyableAnnotations(param);
+ 				
