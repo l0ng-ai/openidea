@@ -1819,10 +1819,17 @@ fn official_mybatis_navigates_between_interface_and_xml() {
         text: text.into(),
     };
     let jdoc = doc(&java_path, "java", java);
-    // The first call indexes the XML files; on a slow machine that can run past
-    // the edit-path budget (the answer is dropped, the index kept).
-    let _ = f.host.provide_line_markers(&jdoc);
-    let markers = f.host.provide_line_markers(&jdoc);
+    // The first call indexes the XML files; on a slow machine that runs past the
+    // edit-path budget, so the answer is dropped (the index is kept) and calls
+    // queued behind it are skipped. The editor asks again; so does this.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let markers = loop {
+        let markers = f.host.provide_line_markers(&jdoc);
+        if !markers.is_empty() || Instant::now() > deadline {
+            break markers;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert_eq!(markers.len(), 1, "{markers:?}");
     let target = markers[0].1.target.clone().unwrap();
     assert_eq!((target.path, target.range.start), (xml_path.clone(), ide_core::Pos::new(1, 14)));
