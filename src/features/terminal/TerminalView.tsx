@@ -6,15 +6,18 @@ import { ToolWindowHeader, useOwnToolWindowHeader } from "@/workbench/toolwindow
 import { usePlatform } from "@/platform/platformInfo";
 import { commands, isTauri } from "@/platform/ipc";
 import {
+  dropZoneAt,
   IconButton,
   Input,
   Menu,
   Popup,
+  registerDropTarget,
   showContextMenu,
   SplitGroup,
   SplitHandle,
   SplitPanel,
   Tabs,
+  type DropEdge,
   type MenuItem,
   type TabItem,
 } from "@/ui";
@@ -22,9 +25,11 @@ import {
   activateGroup,
   activeSession,
   getSession,
+  groupDropIndex,
   groupTabs,
   layoutGroups,
   moveTab,
+  moveTabToSplit,
   newTab,
   publishFocus,
   renameTab,
@@ -173,15 +178,50 @@ function TabGroup({ group, corners }: { group: string; corners: Corners | null }
   const activeTab = useTerminals((s) => s.activeTab);
   const tabs = useMemo(() => groupTabs(allTabs, group), [allTabs, group]);
   const active = tabs.find((t) => t.id === activeTab);
+
+  // A tab dropped on this group, like an editor tab on a pane: an edge of the terminal
+  // splits off a new group, the middle (and the header's empty part) joins at the end.
+  // The strip, the innermost target, still picks the exact slot.
+  const ref = useRef<HTMLDivElement>(null);
+  const panelsRef = useRef<HTMLDivElement>(null);
+  const [dropZone, setDropZone] = useState<DropEdge | "center" | null>(null);
+  const focusRaf = useRef(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const zoneAt = (id: string, x: number, y: number): DropEdge | "center" | null => {
+      const { tabs } = useTerminals.getState();
+      const rect = panelsRef.current?.getBoundingClientRect();
+      const zone = rect && y >= rect.top ? dropZoneAt(x, y, rect) : "center";
+      if (zone === "center") return groupDropIndex(tabs, id, group) === null ? null : zone;
+      const tab = tabs.find((t) => t.id === id);
+      return tab && (tab.group !== group || groupTabs(tabs, group).length > 1) ? zone : null;
+    };
+    return registerDropTarget(el, {
+      accepts: (type) => type === TAB_MIME,
+      over: (data, x, y) => setDropZone(zoneAt(data.payload, x, y)),
+      leave: () => setDropZone(null),
+      drop: (data, x, y) => {
+        setDropZone(null);
+        const zone = zoneAt(data.payload, x, y);
+        if (!zone) return;
+        if (zone === "center") moveTab(data.payload, group, groupTabs(useTerminals.getState().tabs, group).length);
+        else moveTabToSplit(data.payload, group, zone);
+        focusActiveTab(focusRaf);
+      },
+    });
+  }, [group]);
+
   return (
-    <div className={styles.group}>
+    <div ref={ref} className={styles.group}>
       {corners && (
         <ToolWindowHeader title={corners.title === group} actions={corners.actions === group} closeTarget={!!active}>
           <GroupTabs group={group} />
         </ToolWindowHeader>
       )}
       {active && <TerminalFindBar sessionKey={active.session} />}
-      <div className={styles.panels}>
+      <div ref={panelsRef} className={styles.panels}>
+        {dropZone && <div className={clsx(styles.dropZone, styles[`drop-${dropZone}`])} />}
         {tabs.map((t) => (
           <div
             key={t.id}
