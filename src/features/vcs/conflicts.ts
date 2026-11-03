@@ -154,39 +154,3 @@ export function mergeTitles(sides: MergeSides | null | undefined): { yours: stri
       };
   }
 }
-
-/** An unresolved conflict in the merge editor's result: `from`–`to` holds the base text. */
-export interface ResultConflict {
-  from: number;
-  to: number;
-  /** The user's side ("Accept Yours"). */
-  ours: string;
-  base: string | null;
-  theirs: string;
-}
-
-/**
- * The merge editor's starting result, as IDEA shows it: the merged text with every
- * conflict block replaced by its base section, so no markers appear. `reversed` swaps
- * the sides of marker sections written in git's order (a rebase).
- */
-export function initialResult(merged: string, reversed = false): { text: string; conflicts: ResultConflict[] } {
-  const conflicts: ResultConflict[] = [];
-  let text = "";
-  let pos = 0;
-  for (const b of parseConflicts(merged)) {
-    text += merged.slice(pos, b.from);
-    const base = b.base ?? "";
-    const from = text.length;
-    text += base;
-    conflicts.push({
-      from,
-      to: text.length,
-      ours: reversed ? b.theirs : b.ours,
-      base: b.base,
-      theirs: reversed ? b.ours : b.theirs,
-    });
-    pos = b.to;
-  }
-  return { text: text + merged.slice(pos), conflicts };
-}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blockAt, initialResult, mergeTitles, parseConflicts, resolveAll, resolutionText } from "../conflicts";
+import { blockAt, mergeTitles, parseConflicts, resolveAll, resolutionText } from "../conflicts";
 
 const text = [
   "keep\n",
@@ -82,25 +82,5 @@ describe("mergeTitles", () => {
       theirs: "Changes from feature",
     });
     expect(mergeTitles(null)).toEqual({ yours: "Your version", theirs: "Theirs (incoming)" });
-  });
-});
-
-describe("initialResult", () => {
-  const merged = "a\n<<<<<<< yours\nmine\n||||||| base\nold\n=======\nhers\n>>>>>>> theirs\nz\n";
-
-  it("replaces each conflict with its base text, without markers", () => {
-    const { text, conflicts } = initialResult(merged);
-    expect(text).toBe("a\nold\nz\n");
-    expect(conflicts).toEqual([{ from: 2, to: 6, ours: "mine\n", base: "old\n", theirs: "hers\n" }]);
-    expect(resolutionText(conflicts[0]!, "ours")).toBe("mine\n");
-  });
-
-  it("swaps marker sides written in git's order during a rebase", () => {
-    const { conflicts } = initialResult(merged, true);
-    expect(conflicts[0]).toMatchObject({ ours: "hers\n", theirs: "mine\n" });
-  });
-
-  it("keeps text without conflicts as is", () => {
-    expect(initialResult("x\n")).toEqual({ text: "x\n", conflicts: [] });
   });
 });

@@ -77,7 +77,7 @@ export async function attachDocument(manager: DocumentManager, path: string): Pr
         for (const tr of u.transactions) if (tr.docChanged && !isExternalChange(tr)) model.onLocal(tr.changes, target);
       }),
     ],
-    save: () => model.save("explicit"),
+    save: (options) => model.save(options?.exact ? "exact" : "explicit"),
     release: () => {
       if (released) return;
       released = true;
