@@ -62,13 +62,24 @@ fn detected_and_saved(
     all
 }
 
+/// Saves the user configurations. They come from [`configs`], toolchains applied, so what
+/// settings derived is dropped again: only the user's own choices reach `run.toml`.
 pub fn save_configs(
     host: &Host,
     window: &str,
     configs: &[RunConfig],
     removed_detected_ids: &[String],
 ) -> IdeResult<()> {
-    ide_run::save_user_configs_with_removals(&host.project(window)?.root, configs, removed_detected_ids)
+    let project = host.project(window)?;
+    let settings = project.settings.effective();
+    let configs: Vec<RunConfig> = configs
+        .iter()
+        .map(|c| match c.kind.as_str() {
+            "gradle" => c.clone(),
+            _ => ide_sdk::apply::without_derived(c, &project.root, &settings),
+        })
+        .collect();
+    ide_run::save_user_configs_with_removals(&project.root, &configs, removed_detected_ids)
 }
 
 pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit<OutputChunk>) -> IdeResult<RunInfo> {

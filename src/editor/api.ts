@@ -433,7 +433,7 @@ export function _emitEditorEvent(e: EditorEvent) {
 // --- save participants ----------------------------------------------------------
 
 /**
- * Runs before a document is written (format on save, organise imports…).
+ * Runs before a modified document is written (format on save, organise imports…).
  * Participants may edit the document through `handle.view` (normal
  * transactions); editor/core waits for them, then trims whitespace / adds the
  * final newline per settings, flushes the edit pipeline and saves. `handle`
@@ -622,4 +622,38 @@ export function codePreviewExtensions(path: string): Promise<Extension> {
 /** @internal editor/core only. */
 export function _provideCodePreview(provider: ((path: string) => Promise<Extension>) | null) {
   codePreviewProvider = provider;
+}
+
+let workspaceHistory: ((id: number, redo: boolean) => Promise<void>) | null = null;
+
+/** Undo/redo a refactoring through the same history used by editor commands. */
+export function workspaceEditHistory(id: number, redo = false): Promise<void> {
+  return workspaceHistory ? workspaceHistory(id, redo) : Promise.reject(new Error("Editor history is unavailable"));
+}
+
+/** @internal editor/core only. */
+export function _provideWorkspaceHistory(run: (id: number, redo: boolean) => Promise<void>): () => void {
+  workspaceHistory = run;
+  return () => {
+    if (workspaceHistory === run) workspaceHistory = null;
+  };
+}
+
+export interface WorkspaceEditHistoryState {
+  id: number;
+  undone: boolean;
+}
+const workspaceHistoryListeners = new Set<(state: WorkspaceEditHistoryState) => void>();
+
+/** Successful workspace Undo/Redo, including commands invoked from an editor. */
+export function onWorkspaceEditHistory(listener: (state: WorkspaceEditHistoryState) => void): () => void {
+  workspaceHistoryListeners.add(listener);
+  return () => {
+    workspaceHistoryListeners.delete(listener);
+  };
+}
+
+/** @internal editor/core only. */
+export function _emitWorkspaceEditHistory(state: WorkspaceEditHistoryState) {
+  for (const listener of workspaceHistoryListeners) listener(state);
 }

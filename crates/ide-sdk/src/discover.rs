@@ -21,6 +21,7 @@ pub fn detect(kind: SdkKind, root: Option<&Path>) -> Vec<Sdk> {
         SdkKind::TypeScript => typescript(root),
         SdkKind::Jdk => jdk(),
         SdkKind::Maven => maven(),
+        SdkKind::Ruby => crate::ruby::detect(root),
     };
     if let Some(root) = root {
         pinned_first(&mut out, kind, root);
@@ -35,6 +36,7 @@ fn tool_of(kind: SdkKind) -> Option<Tool> {
         SdkKind::Go => Some(Tool::Go),
         SdkKind::Jdk => Some(Tool::Java),
         SdkKind::Maven => Some(Tool::Maven),
+        SdkKind::Ruby => Some(Tool::Ruby),
         SdkKind::PackageManager | SdkKind::Rust | SdkKind::TypeScript => None,
     }
 }
@@ -50,7 +52,7 @@ fn pinned_first(sdks: &mut Vec<Sdk>, kind: SdkKind, root: &Path) {
 }
 
 /// Runs `f` over `items` on scoped threads (version queries spawn processes).
-fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> Option<R> + Sync) -> Vec<R> {
+pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> Option<R> + Sync) -> Vec<R> {
     std::thread::scope(|s| {
         let handles: Vec<_> = items.iter().map(|item| s.spawn(|| f(item))).collect();
         handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
@@ -227,7 +229,7 @@ fn pyvenv_version(python: &Path) -> Option<String> {
     })
 }
 
-fn subdirs(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn subdirs(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> =
         std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
     out.sort();

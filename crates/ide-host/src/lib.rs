@@ -181,6 +181,7 @@ impl Host {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }
+            project.documents.clear_workspace_edit_history();
             project.agents.shutdown();
             project.notebooks.stop_admission();
             // What the closing window started goes with it — the builds and searches it
@@ -258,6 +259,13 @@ impl Host {
         );
     }
 
+    /// Called before desktop exit, which may bypass document destructors.
+    pub fn clear_workspace_edit_history_on_exit(&self) {
+        for project in self.projects() {
+            project.documents.clear_workspace_edit_history();
+        }
+    }
+
     /// Stops what this host started: notebook kernels, language servers, agents, runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
     pub async fn shutdown(&self) {
@@ -269,6 +277,7 @@ impl Host {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }
+            project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
             project.agents.shutdown();
         }

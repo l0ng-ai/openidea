@@ -1323,6 +1323,41 @@ export function runAnythingProviderList(): RunAnythingProvider[] {
 }
 
 // ---------------------------------------------------------------------------
+// Project endpoints supplied by framework features for request-path search.
+
+export interface EndpointEntry {
+  /** `GET`, `POST`, … */
+  method: string;
+  /** Class-level and method-level mapping joined; `{var}` kept. */
+  url: string;
+  controller: string;
+  methodName: string;
+  path: string;
+  rel: string;
+  line: number;
+  col: number;
+}
+
+export interface EndpointProvider {
+  id: string;
+  endpoints(root: string): Promise<EndpointEntry[]>;
+}
+
+const endpointProviders = new Map<string, EndpointProvider>();
+
+export function registerEndpointProvider(p: EndpointProvider): () => void {
+  endpointProviders.set(p.id, p);
+  return () => {
+    if (endpointProviders.get(p.id) === p) endpointProviders.delete(p.id);
+  };
+}
+
+export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
+  if (!root) return [];
+  return (await Promise.all([...endpointProviders.values()].map((p) => p.endpoints(root)))).flat();
+}
+
+// ---------------------------------------------------------------------------
 // Status bar info text (IDEA's status bar message, e.g. "3 of 12" after Next
 // Occurrence). Cleared by the next message or after a while.
 

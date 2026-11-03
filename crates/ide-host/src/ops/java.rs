@@ -59,7 +59,7 @@ async fn resolve_launch(
         .map_err(|e| IdeError::internal(e.to_string()))?
     };
     let external_build = if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
-    let mut info = project.lsp.java_launch(&module, test, build && !delegated, cancel).await?;
+    let mut info = project.lsp.java_launch(&module, test, build && !delegated, delegated, cancel).await?;
     let lsp_ms = started.elapsed().as_millis();
     let tools_root = ide_tools::app_root(&host.data_dir);
     let cancel = cancel.clone();

@@ -27,6 +27,7 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
 
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
+  ruby: { interpreter: string };
   node: { interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
   rust: {
     toolchain: string;
@@ -84,6 +85,7 @@ export type FolderListKey =
 
 export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
+  ruby: { interpreter: "" },
   node: { interpreter: "", packageManager: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
@@ -165,6 +167,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const d = DEFAULT_LANGUAGES;
   const l = obj(raw);
   const py = obj(l.python);
+  const ruby = obj(l.ruby);
   const node = obj(l.node);
   const rust = obj(l.rust);
   const go = obj(l.go);
@@ -180,6 +183,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       interpreter: text(py.interpreter, d.python.interpreter),
       activateVirtualenv: bool(py.activateVirtualenv, d.python.activateVirtualenv),
     },
+    ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     node: {
       interpreter: text(node.interpreter, d.node.interpreter),
       packageManager: oneOf(node.packageManager, ["", "npm", "pnpm", "yarn", "bun"] as const, d.node.packageManager),

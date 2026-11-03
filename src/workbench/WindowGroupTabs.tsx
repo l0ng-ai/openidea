@@ -61,13 +61,26 @@ export function WindowGroupTabs() {
             }}
             onContextMenu={(e) => {
               e.preventDefault();
+              const index = tabs.indexOf(tab);
               showContextMenu(e, [
                 {
                   label: "Move Tab to New Window",
                   disabled: !tab.current,
                   run: () => executeAction("window.detachTab"),
                 },
+                { kind: "separator" },
                 { label: "Close Tab", run: () => executeAction("window.closeTab", tab.label) },
+                { label: "Close Other Tabs", run: () => executeAction("window.closeOtherTabs", tab.label) },
+                {
+                  label: "Close Tabs to the Left",
+                  disabled: index <= 0,
+                  run: () => executeAction("window.closeTabsToLeft", tab.label),
+                },
+                {
+                  label: "Close Tabs to the Right",
+                  disabled: index >= tabs.length - 1,
+                  run: () => executeAction("window.closeTabsToRight", tab.label),
+                },
               ]);
             }}
           >

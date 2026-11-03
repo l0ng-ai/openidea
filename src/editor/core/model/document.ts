@@ -62,6 +62,7 @@ import {
 import { setMethodLines, softWrapActive } from "../cm/prefs";
 import type { EditorSlot } from "./slot";
 import { tx } from "@/platform/i18n";
+import { WorkspaceHistory } from "./workspaceHistory";
 
 export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
 
@@ -261,7 +262,7 @@ export class DocModel {
         snapshot: () => manager.backend.snapshot(this.doc),
       },
       {
-        applyRemote: (cs) => this.applyRemote(cs),
+        applyRemote: (cs, grouped) => this.applyRemote(cs, grouped),
         onDiscarded: () =>
           manager.notify({
             level: "warning",
@@ -344,14 +345,14 @@ export class DocModel {
     this.scheduleRefresh();
   }
 
-  private applyRemote(cs: ChangeSet) {
+  private applyRemote(cs: ChangeSet, grouped = false) {
     this.modified.map(cs);
     this.changeCounter++;
     const primary = this.primarySlot();
     for (const s of this.slots)
-      s.applyExternal(cs, [remoteChange.of(true), Transaction.addToHistory.of(s === primary)]);
+      s.applyExternal(cs, [remoteChange.of(true), Transaction.addToHistory.of(!grouped && s === primary)]);
     // Without a tab, the first attached view keeps backend edits (Replace in Files…) undoable.
-    let first = !primary;
+    let first = !grouped && !primary;
     for (const a of this.attachments) {
       a.applyExternal(cs, [remoteChange.of(true), Transaction.addToHistory.of(first)]);
       first = false;
@@ -404,6 +405,19 @@ export class DocModel {
     return this.indentOverride ?? effectiveIndent(this.settings(), this.info, this.editorconfig, this.detectedIndent);
   }
 
+  /**
+   * Indentation explicit reformat requests use (`formatIndentFacet`): with an
+   * explicit per-language Tabs and Indents override, the Code Style without the
+   * file's detected indents — the override must reach the formatter, or the
+   * language server keeps its own style. Without an override formatting keeps
+   * the editor's indent.
+   */
+  formatIndent() {
+    const lang = this.info ? prefsOf(this.settings()).codeStyle.languages[this.info.id] : undefined;
+    if (!lang || (lang.useTab === undefined && lang.tabSize === undefined && lang.indent === undefined)) return null;
+    return effectiveIndent(this.settings(), this.info, this.editorconfig, null);
+  }
+
   /** Soft wraps toggled for this file (wins over settings until the file is closed). */
   softWrapOverride: boolean | null = null;
 
@@ -428,7 +442,7 @@ export class DocModel {
     const indent = this.effectiveIndent();
     this.setMeta({ indent: { tabSize: indent.tabSize, insertSpaces: indent.insertSpaces } });
     const effects = [
-      compartments.indent.reconfigure(indentExtension(indent)),
+      compartments.indent.reconfigure(indentExtension(indent, this.formatIndent())),
       compartments.wrap.reconfigure(wrapExtension(editor, this.path, this.softWrapOverride)),
       compartments.sticky.reconfigure(stickyExtension(editor)),
       compartments.font.reconfigure(fontExtension(editor)),
@@ -568,8 +582,7 @@ export class DocModel {
 
   save(reason: "explicit" | "auto"): Promise<void> {
     const run = async () => {
-      if (this.closed || this.meta.readOnly) return;
-      if (reason === "auto" && !this.meta.dirty) return;
+      if (this.closed || this.meta.readOnly || !this.meta.dirty) return;
       const slot = this.primarySlot();
       if (reason === "explicit") {
         for (const p of _saveParticipants()) {
@@ -625,6 +638,12 @@ export interface ManagerHost {
 }
 
 export class DocumentManager {
+  readonly workspaceHistory = new WorkspaceHistory(
+    async () => {
+      await Promise.all([...this.byPath.values()].map((m) => m.sync.whenIdle()));
+    },
+    (n) => this.notify(n),
+  );
   readonly byPath = new Map<string, DocModel>();
   readonly byId = new Map<DocId, DocModel>();
   private opening = new Map<string, Promise<DocModel>>();
@@ -647,6 +666,7 @@ export class DocumentManager {
 
   start() {
     this.disposers.push(
+      this.workspaceHistory.start(),
       this.backend.onPatched((e) => this.byId.get(e.doc)?.sync.remote(e)),
       this.backend.onLanguage?.((e) => this.byId.get(e.doc)?.setLanguage(e.language, e.uiMode)) ?? (() => {}),
       this.backend.onDirty((e) => {
@@ -756,7 +776,7 @@ export class DocumentManager {
     for (const m of this.byPath.values()) m.applySettings();
   }
 
-  /** Saves every document; failures are notified, and an explicit Save All also rejects with them. */
+  /** Saves dirty documents; failures are notified, and an explicit Save All also rejects with them. */
   async saveAll(reason: "explicit" | "auto") {
     const errors: unknown[] = [];
     await Promise.all(

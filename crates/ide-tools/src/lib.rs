@@ -555,6 +555,15 @@ impl Tools {
         if managed || self.method_missing(spec.method).is_some() { fallback } else { spec.method }
     }
 
+    /// [`Method::label`], naming the installer that will actually run: a virtualenv is
+    /// made with uv when it is on `PATH` (see `install_venv`).
+    fn method_label(&self, method: Method) -> &'static str {
+        match method {
+            Method::PipVenv { .. } if self.which("uv").is_some() => "uv (virtualenv)",
+            m => m.label(),
+        }
+    }
+
     /// Requirement check for installing `spec` right now.
     fn unavailable_reason(&self, spec: &ToolSpec) -> Option<String> {
         self.method_missing(self.install_method(spec))
@@ -639,7 +648,7 @@ impl Tools {
             status,
             path: path.map(Into::into),
             version,
-            install_method: Some(self.install_method(spec).label().to_string()),
+            install_method: Some(self.method_label(self.install_method(spec)).to_string()),
             can_install: unavailable_reason.is_none() && !bundled,
             unavailable_reason,
             can_uninstall,
@@ -811,7 +820,9 @@ impl Tools {
         let result = (|| {
             std::fs::create_dir_all(&self.root)?;
             let method = self.install_method(spec);
-            emit(InstallEvent::Line { text: format!("Installing {} via {}…", spec.display, method.label()) });
+            emit(InstallEvent::Line {
+                text: format!("Installing {} via {}…", spec.display, self.method_label(method)),
+            });
             match method {
                 Method::Bundled { .. } => {
                     bundled::install(&self.root, spec)?;

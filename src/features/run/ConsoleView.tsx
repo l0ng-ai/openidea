@@ -187,6 +187,7 @@ export function ConsoleView({
   ...aria
 }: ConsoleViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
   const lines = model.lines;
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
@@ -391,9 +392,30 @@ export function ConsoleView({
     scrolledMatch.current = key;
   }, [findOpen, activeMatch, rowOfLine, rows, virtualizer]);
 
+  /** Rows are virtualized, so "everything" is a selection of the container, not of the mounted rows. */
+  const selectAll = () => {
+    const inner = innerRef.current;
+    if (inner) window.getSelection()?.selectAllChildren(inner);
+  };
+  const allSelected = () => {
+    const inner = innerRef.current;
+    const s = window.getSelection();
+    return (
+      !!inner &&
+      !!s &&
+      !s.isCollapsed &&
+      s.anchorNode === inner &&
+      s.focusNode === inner &&
+      s.anchorOffset === 0 &&
+      s.focusOffset === inner.childNodes.length
+    );
+  };
+  /** The selected text; after Select All the whole buffer, including rows that are not mounted. */
+  const selectedOutput = () => (allSelected() ? model.text() : (window.getSelection()?.toString() ?? ""));
+
   const onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
-    const selection = window.getSelection()?.toString() ?? "";
+    const selection = selectedOutput();
     showContextMenu(e, [
       {
         label: "Copy",
@@ -402,6 +424,7 @@ export function ConsoleView({
         disabled: !selection,
         run: () => void navigator.clipboard?.writeText(selection).catch(() => undefined),
       },
+      { label: "Select All", shortcut: formatBinding(hostBinding("Meta+A")), run: selectAll },
       ...(mybatisSql && selection.includes("==>  Preparing")
         ? [
             {
@@ -454,7 +477,12 @@ export function ConsoleView({
       openFind();
       return;
     }
-    if (copySelectionOnKeyDown(e)) return;
+    if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      selectAll();
+      return;
+    }
+    if (copySelectionOnKeyDown(e, selectedOutput)) return;
     if (!input) return;
     if (e.key === "d" && e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
@@ -540,10 +568,16 @@ export function ConsoleView({
         onScroll={onScroll}
         onContextMenu={onContextMenu}
         onKeyDown={onKeyDown}
+        onCopy={(e) => {
+          // Native copy (menu, macOS) would take only the mounted rows.
+          if (!allSelected()) return;
+          e.preventDefault();
+          e.clipboardData.setData("text/plain", model.text());
+        }}
         onPaste={onPaste}
         data-autofocus=""
       >
-        <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+        <div ref={innerRef} className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
           {items.map((item) => {
             const row = rows[item.index];
             if (!row) {
