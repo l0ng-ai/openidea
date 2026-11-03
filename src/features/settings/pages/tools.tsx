@@ -1,7 +1,7 @@
 /**
- * Tools pages: Terminal, Actions on Save and External Tools. Consumed by the
- * terminal feature, the editor save participants and the run feature
- * (External Tools actions).
+ * Tools pages: Terminal, Actions on Save, External Tools and Agents › Chat. Consumed
+ * by the terminal feature, the editor save participants, the run feature
+ * (External Tools actions) and the agent task editor.
  */
 
 import { FontPicker } from "../components/FontPicker";
@@ -621,6 +621,35 @@ export const TOOLS_PAGES: PageSpec[] = [
         ],
       },
       { options: [{ kind: "custom", label: "Save", component: ActionsOnSaveNote }] },
+    ],
+  },
+  {
+    // Under Settings › Tools › Agents (the agents feature registers `tools.agents`).
+    id: "tools.agents.chat",
+    title: "Chat",
+    group: TOOLS_GROUP,
+    order: 0,
+    keywords: ["agent", "claude", "codex", "usage", "quota", "rate limit", "cost", "tokens", "meter"],
+    sections: [
+      {
+        title: "Shown Below the Prompt",
+        options: [
+          { kind: "toggle", key: "agents.showContextUsage", label: "Context window usage" },
+          { kind: "toggle", key: "agents.showWorkTime", label: "Time spent on the task" },
+          {
+            kind: "toggle",
+            key: "agents.showUsageLimits",
+            label: "Usage limits",
+            hint: "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)",
+          },
+          {
+            kind: "toggle",
+            key: "agents.showCost",
+            label: "Session cost",
+            hint: "What the session has cost so far, as the agent reports it (API pricing, also shown on subscriptions)",
+          },
+        ],
+      },
     ],
   },
   {

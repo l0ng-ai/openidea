@@ -1014,6 +1014,39 @@ fn streamed_text_is_not_sent_twice() {
 }
 
 #[test]
+fn rate_limits_and_cost() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), false);
+    let info = json!({"status": "allowed", "rateLimitType": "five_hour", "unifiedWindows": {
+        "five_hour": {"utilization": 0.19, "resetsAt": 100, "status": "allowed"},
+        "seven_day": {"utilization": 0.09, "resetsAt": 200, "status": "allowed"},
+    }});
+    let limits = t.on_rate_limit(&info).unwrap();
+    assert_eq!(limits.session, "s");
+    assert_eq!(limits.update["sessionUpdate"], crate::LIMITS_UPDATE);
+    let windows: Vec<(&str, i64, f64)> = limits.update["limits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["window"].as_str().unwrap(),
+                l["usedPercent"].as_f64().unwrap().round() as i64,
+                l["resetsMs"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(windows, [("five_hour", 19, 100_000.0), ("seven_day", 9, 200_000.0)]);
+    // Older versions report the window that applies, alone.
+    let single = t.on_rate_limit(&json!({"rateLimitType": "seven_day", "utilization": 0.5})).unwrap();
+    assert_eq!(single.update["limits"], json!([{"window": "seven_day", "usedPercent": 50.0, "resetsMs": null}]));
+    assert_eq!(t.on_rate_limit(&json!({"status": "allowed", "resetsAt": 100})), None, "no utilization, no update");
+
+    t.used = Some(10);
+    let usage = t.on_result(&json!({"total_cost_usd": 0.5, "modelUsage": {"x": {"contextWindow": 1000}}}));
+    assert_eq!(usage[0].update["cost"], json!({"amount": 0.5, "currency": "USD"}));
+}
+
+#[test]
 fn tool_calls_plans_and_subagents() {
     let mut t = Translator::new("s", PathBuf::from("/w"), true);
     let assistant = |parent: Value, content: Value| json!({"type": "assistant", "parent_tool_use_id": parent, "message": {"id": "m", "model": "x", "content": content}});

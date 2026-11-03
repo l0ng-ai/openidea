@@ -145,7 +145,16 @@ impl Handler for FakeAgent {
                     json!({"sessionUpdate": "available_commands_update",
                     "availableCommands": [{"name": "review", "description": "Review", "input": {"hint": "focus"}}]}),
                 );
-                self.update(&session, json!({"sessionUpdate": "usage_update", "used": 50, "size": 1000}));
+                self.update(
+                    &session,
+                    json!({"sessionUpdate": "usage_update", "used": 50, "size": 1000,
+                    "cost": {"amount": 0.25, "currency": "USD"}}),
+                );
+                self.update(
+                    &session,
+                    json!({"sessionUpdate": LIMITS_UPDATE,
+                    "limits": [{"window": "five_hour", "usedPercent": 19.0, "resetsMs": 5000.0}]}),
+                );
                 self.update(&session, json!({"sessionUpdate": "session_info_update", "title": "Lexer fix"}));
                 self.say(&session, "Hi");
                 self.update(
@@ -358,6 +367,10 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
         assert_eq!((modes.via, modes.current.as_deref()), (AgentConfigVia::Mode, Some("ask")));
         assert_eq!(t.commands.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["review"]);
         assert_eq!(t.usage.as_ref().map(|u| (u.used, u.size)), Some((50, 1000)));
+        assert_eq!(
+            t.usage.as_ref().and_then(|u| u.cost.clone()),
+            Some(AgentCost { amount: 0.25, currency: "USD".into() })
+        );
         assert_eq!(t.title, "Lexer fix", "the agent's title replaces the prompt's first line");
     }
     mgr.set_config(&task.id, "mode", "code".into()).await.unwrap();
@@ -369,6 +382,18 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
         let events = events.lock();
         assert!(
             events.iter().any(|e| matches!(e, AgentEvent::Task { task } if task.status == AgentStatus::NeedsInput))
+        );
+        let limits = events.iter().find_map(|e| match e {
+            AgentEvent::Limits { provider, limits } => Some((provider.as_str(), limits.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            limits,
+            Some((
+                task.provider.as_str(),
+                vec![AgentLimit { window: "five_hour".into(), used_percent: 19.0, resets_ms: Some(5000.0) }]
+            )),
+            "an agent's usage limits are its provider's"
         );
         let last_entry = events.iter().rev().find_map(|e| match e {
             AgentEvent::Entry { index, entry, .. } if !matches!(entry, AgentEntry::User { .. }) => {
@@ -770,6 +795,18 @@ fn retry_updates_become_a_countdown() {
         Some(AgentRetry { attempt: 2, max_retries: Some(10), retry_at_ms: 2500.0, error: None })
     );
     assert_eq!(retry_of(&json!({"sessionUpdate": RETRY_UPDATE}), 0.0), None, "no attempt");
+}
+
+#[test]
+fn usage_limits_and_cost_skip_what_is_malformed() {
+    let limits = config::limits_of(&json!({"sessionUpdate": LIMITS_UPDATE, "limits": [
+        {"window": "seven_day", "usedPercent": 140.0},
+        {"window": "", "usedPercent": 10.0},
+        {"window": "five_hour"},
+    ]}));
+    assert_eq!(limits, [AgentLimit { window: "seven_day".into(), used_percent: 100.0, resets_ms: None }]);
+    let usage = config::usage_of(&json!({"used": 1, "size": 2, "cost": {"amount": -1.0, "currency": "USD"}}));
+    assert_eq!(usage.map(|u| u.cost), Some(None), "a negative cost is dropped, the context use kept");
 }
 
 #[tokio::test(flavor = "multi_thread")]

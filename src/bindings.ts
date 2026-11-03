@@ -1185,6 +1185,12 @@ export type AgentConfigVia =
 "model";
 
 /**  One item of a task's conversation. */
+export type AgentCost = {
+	amount: number,
+	/**  ISO 4217 code, e.g. `USD`. */
+	currency: string,
+};
+
 export type AgentEntry = { type: "user"; text: string; 
 /**  Names of the files and images sent with it. */
 attachments: string[]; 
@@ -1229,6 +1235,8 @@ export type AgentEvent =
 { type: "truncated"; task: string; length: number } | 
 /**  Entry `index` of `task` (of its subagent `subagent`) was added or replaced. */
 { type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry } | 
+/**  An agent reported the usage limits of its account (shared by every task of `provider`). */
+{ type: "limits"; provider: string; limits: AgentLimit[] } | 
 /**  The installed or configured agent providers changed. */
 { type: "providers" };
 
@@ -1237,6 +1245,16 @@ export type AgentImage = {
 	/**  Base64, without a `data:` prefix. */
 	data: string,
 	name: string | null,
+};
+
+/**  One usage-limit window of an agent's account. */
+export type AgentLimit = {
+	/**  The window as the agent names it: `five_hour`, `seven_day`, `seven_day_opus`… */
+	window: string,
+	/**  Share of the window used, 0–100. */
+	usedPercent: number,
+	/**  When the window resets (ms since the epoch), if the agent said. */
+	resetsMs: number | null,
 };
 
 export type AgentPermissionOption = {
@@ -1320,6 +1338,18 @@ export type AgentRetry = {
 	error: string | null,
 };
 
+/**  What the meters under an agent task's composer show. */
+export type AgentSettings = {
+	/**  Context window use. */
+	showContextUsage?: boolean,
+	/**  Time the agent spent on the task. */
+	showWorkTime?: boolean,
+	/**  The account's usage-limit windows (Claude's 5-hour and weekly limits). */
+	showUsageLimits?: boolean,
+	/**  What the session has cost so far, as the agent reports it. */
+	showCost?: boolean,
+};
+
 /**  Where an agent comes from. */
 export type AgentSource = { kind: "builtin" } | 
 /**  Defined by the user in `<config>/agents/<id>.toml`. */
@@ -1401,6 +1431,8 @@ export type AgentUsage = {
 	used: number,
 	/**  Size of the context window. */
 	size: number,
+	/**  What the session has cost so far (ACP `usage_update.cost`), when the agent reports it. */
+	cost?: AgentCost | null,
 };
 
 export type AppInfo = {
@@ -5760,6 +5792,8 @@ export type Settings_Deserialize = {
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets?: RunTarget[],
 	cmake?: CMakeSettings_Deserialize,
+	/**  Tools › Agents › Chat. */
+	agents?: AgentSettings,
 };
 
 export type Settings_Serialize = {
@@ -5816,6 +5850,8 @@ export type Settings_Serialize = {
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets: RunTarget[],
 	cmake: CMakeSettings_Serialize,
+	/**  Tools › Agents › Chat. */
+	agents: AgentSettings,
 };
 
 export type Severity = "error" | "warning" | "info" | "hint";
