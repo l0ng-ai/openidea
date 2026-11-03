@@ -8,6 +8,12 @@
 //!
 //! Language servers find managed tools once [`extend_process_path`] has put
 //! [`tools_bin_dirs`] on the process `PATH` at startup.
+//!
+//! GitHub API downloads prefer `GITHUB_TOKEN`, then `GH_TOKEN`, then the active
+//! `github.com` account from `gh auth token --hostname github.com`. The CLI is
+//! optional; absent credentials retain anonymous downloads. Tokens are passed
+//! to curl over stdin, never stored in tool manifests or command arguments, and
+//! are not sent to other download origins. CLI lookup is cancellable and bounded.
 
 pub mod archive;
 mod bundled;
