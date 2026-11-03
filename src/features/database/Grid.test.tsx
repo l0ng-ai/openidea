@@ -2,7 +2,8 @@ import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { registerActions } from "@/platform/actions";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CELL_PREVIEW_LIMIT, cellPreview, Grid } from "./Grid";
+import { Grid } from "./Grid";
+import { CELL_PREVIEW_LIMIT, cellPreview } from "./cellPreview";
 import { exportData } from "./export";
 
 vi.mock("@tanstack/react-virtual", () => ({

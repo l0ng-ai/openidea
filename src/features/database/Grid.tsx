@@ -10,6 +10,7 @@ import { Dialog, Icon, showContextMenu, type MenuItem } from "@/ui";
 import { parseDelimited, toCsv, toTsv, type Cell } from "./model";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { CELL_PREVIEW_LIMIT, cellPreview } from "./cellPreview";
 
 export interface GridColumn {
   name: string;
@@ -67,17 +68,6 @@ interface Sel {
   c0: number;
   r1: number;
   c1: number;
-}
-
-export const CELL_PREVIEW_LIMIT = 1000;
-
-/** Bound text layout without changing the underlying value or splitting a surrogate pair. */
-export function cellPreview(value: string): string {
-  if (value.length <= CELL_PREVIEW_LIMIT) return value;
-  let end = CELL_PREVIEW_LIMIT;
-  const last = value.charCodeAt(end - 1);
-  if (last >= 0xd800 && last <= 0xdbff) end--;
-  return value.slice(0, end) + "\u2026";
 }
 
 const ROW_H = 24;
