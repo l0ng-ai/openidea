@@ -3,7 +3,7 @@
  * name only appears in the trailing `ok`/`FAIL` line, so events are buffered
  * per package and emitted under it once that line arrives.
  */
-import { parseDuration, type TestEvent, type TestOutputParser } from "./types";
+import { parseDuration, TestStdout, type TestEvent, type TestOutputParser } from "./types";
 
 const RUN_RE = /^=== (?:RUN|CONT|PAUSE)\s+(\S+)/;
 const RESULT_RE = /^\s*--- (PASS|FAIL|SKIP): (\S+) \(([\d.]+s)\)/;
@@ -164,24 +164,11 @@ export function goParser(): TestOutputParser {
 }
 
 /** Decode stdout for the console while feeding complete, unsplit JSON records to the test parser. */
-export class GoTestOutput {
-  private pending = "";
-  constructor(private readonly feedLine: (line: string) => void) {}
-  feed(text: string): string {
-    this.pending += text;
-    const lines = this.pending.split("\n");
-    this.pending = lines.pop()!;
-    return lines.map((line) => this.line(line)).join("");
-  }
-  end(): string {
-    const pending = this.pending;
-    this.pending = "";
-    return pending ? this.line(pending) : "";
-  }
-  private line(raw: string): string {
-    const line = raw.replace(/\r$/, "");
-    this.feedLine(line);
-    const event = goJsonEvent(line);
-    return event ? (event.Output ?? "") : line + "\n";
+export class GoTestOutput extends TestStdout {
+  constructor(feedLine: (line: string) => void) {
+    super(feedLine, (line) => {
+      const event = goJsonEvent(line);
+      return event ? (event.Output ?? "") : line + "\n";
+    });
   }
 }

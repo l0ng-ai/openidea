@@ -6,10 +6,11 @@
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
-import { Icon, showContextMenu, type MenuItem } from "@/ui";
+import { Dialog, Icon, showContextMenu, type MenuItem } from "@/ui";
 import { parseDelimited, toCsv, toTsv, type Cell } from "./model";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { CELL_PREVIEW_LIMIT, cellPreview } from "./cellPreview";
 
 export interface GridColumn {
   name: string;
@@ -103,7 +104,7 @@ export function Grid(props: GridProps) {
     window.addEventListener("mouseup", stop);
     return () => window.removeEventListener("mouseup", stop);
   }, []);
-  const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
+  const [editing, setEditing] = useState<{ row: number; col: number; text: string; dialog: boolean } | null>(null);
   const columnKey = columns.map((c) => c.name).join("\u0000");
   const [widths, setWidths] = useState<number[]>([]);
   const [numeric, setNumeric] = useState<boolean[]>([]);
@@ -171,7 +172,8 @@ export function Grid(props: GridProps) {
 
   const startEdit = (row: number, col: number) => {
     if (!editable || props.rowState?.(row) === "deleted") return;
-    setEditing({ row, col, text: value(row, col) ?? "" });
+    const text = value(row, col) ?? "";
+    setEditing({ row, col, text, dialog: text.length > CELL_PREVIEW_LIMIT });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -302,6 +304,29 @@ export function Grid(props: GridProps) {
       onPaste={onPaste}
       onContextMenu={onContextMenu}
     >
+      {editing?.dialog && (
+        <Dialog
+          open
+          title={tx`Edit ${columns[editing.col]!.name}`}
+          width={720}
+          onClose={() => setEditing(null)}
+          buttons={[
+            { label: "Cancel", role: "cancel", onClick: () => setEditing(null) },
+            { label: "Apply", role: "default", onClick: commit },
+          ]}
+        >
+          <textarea
+            className={styles.largeCellEditor}
+            aria-label={`Edit ${columns[editing.col]!.name}`}
+            value={editing.text}
+            spellCheck={false}
+            wrap="soft"
+            onContextMenu={(e) => e.stopPropagation()}
+            onChange={(e) => setEditing({ ...editing, text: e.target.value })}
+            onKeyDown={(e) => e.stopPropagation()}
+          />
+        </Dialog>
+      )}
       <div className={styles.gridInner} style={{ width: totalWidth, height: virtualizer.getTotalSize() + ROW_H }}>
         <div className={clsx(styles.gridRow, styles.gridHeader)} style={{ gridTemplateColumns: template }} role="row">
           <div className={styles.rowNumber} />
@@ -368,7 +393,7 @@ export function Grid(props: GridProps) {
                 {state === "inserted" ? "+" : (props.rowNumber?.(r) ?? firstRowNumber + r)}
               </div>
               {columns.map((_, c) => {
-                if (editing && editing.row === r && editing.col === c) {
+                if (editing && !editing.dialog && editing.row === r && editing.col === c) {
                   return (
                     <input
                       key={c}
@@ -407,7 +432,11 @@ export function Grid(props: GridProps) {
                     onDoubleClick={() => startEdit(r, c)}
                     title={val != null && val.length > 40 ? val.slice(0, 2000) : undefined}
                   >
-                    {val === null ? <span className={styles.null}>&lt;null&gt;</span> : displayed(val, !!numeric[c])}
+                    {val === null ? (
+                      <span className={styles.null}>&lt;null&gt;</span>
+                    ) : (
+                      cellPreview(displayed(val, !!numeric[c]))
+                    )}
                   </div>
                 );
               })}

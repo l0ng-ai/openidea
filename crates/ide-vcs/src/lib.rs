@@ -297,6 +297,9 @@ pub struct ShelvedChangeList {
     pub time_ms: f64,
     /// Branch checked out when the changes were shelved.
     pub branch: Option<String>,
+    /// Repository owning the patch; absent in legacy shelves.
+    #[serde(default)]
+    pub repo: Option<ide_core::IpcPath>,
     /// Repository-relative paths.
     pub files: Vec<ChangedFile>,
 }
