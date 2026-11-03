@@ -405,7 +405,7 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
                 let mut progress = s.progress.lock();
                 let id =
                     if done { progress.remove(&pid) } else { Some(*progress.entry(pid).or_insert_with(TaskId::next)) };
-                (id, str_("title").unwrap_or_else(|| s.name.clone()))
+                (id, str_("title").map(|t| ide_core::task::display_title(&t)).unwrap_or_else(|| s.name.clone()))
             };
             let Some(id) = id else { return };
             s.owner.sink.emit(IdeEvent::Task {
