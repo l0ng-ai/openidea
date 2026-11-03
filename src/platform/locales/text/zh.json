@@ -4346,7 +4346,6 @@
   "SSH configuration:": "SSH 配置：",
   "Connect through:": "连接方式：",
   "Connect through": "连接方式",
-  "WSL": "WSL",
   "WSL distribution:": "WSL 发行版：",
   "WSL distribution": "WSL 发行版",
   "Project runs on {label}": "项目运行于 {label}",
