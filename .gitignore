@@ -10,6 +10,9 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+# Plugin components are checked in (plugins/build.sh --check keeps them current).
+!plugins/official/*/dist
+!crates/ide-plugin/tests/fixtures/*/dist
 *.local
 
 # Editor directories and files

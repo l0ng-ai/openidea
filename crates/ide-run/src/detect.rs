@@ -40,6 +40,7 @@ pub(crate) fn detect_with_profiles(
     detect_make(root, &mut out);
     detect_just(root, &mut out);
     detect_godot(root, &mut out);
+    crate::external::detect(root, &mut out);
 
     let mut seen = HashSet::new();
     out.retain(|c| seen.insert(c.id.clone()));

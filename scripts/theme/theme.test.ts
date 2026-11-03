@@ -14,7 +14,8 @@ const read = (p: string) => readFileSync(p, "utf8");
 const css = read("src/styles/tokens.css");
 const groups = themeTokenGroups(css);
 const sets = tokenSets(groups);
-const TEMPLATE = "templates/theme-plugin";
+// The official Harbor Night theme, where new themes start (`openidea-plugin new --template theme`).
+const TEMPLATE = "plugins/official/harbor-night";
 const themeSrc = read(`${TEMPLATE}/themes/harbor-night.theme.json`);
 const schemeSrc = read(`${TEMPLATE}/themes/harbor-night.scheme.json`);
 const theme = JSON.parse(stripJsonComments(themeSrc)) as { id: string; kind: string; tokens: Record<string, string> };
@@ -47,7 +48,7 @@ describe("theme token reference", () => {
 describe("theme plugin template", () => {
   it("sets every UI token in the theme file and every editor token in the scheme file", () => {
     // A failure here means tokens.css gained (or lost) a themeable token:
-    // add it to templates/theme-plugin/themes/*.json, then run pnpm gen:theme-docs.
+    // add it to plugins/official/harbor-night/themes/*.json, then run pnpm gen:theme-docs.
     expect(sorted(Object.keys(theme.tokens))).toEqual(sorted(sets.ui));
     expect(sorted(Object.keys(scheme.tokens))).toEqual(sorted(sets.scheme));
   });

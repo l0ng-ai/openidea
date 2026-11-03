@@ -21,6 +21,7 @@ import {
   Annotation,
   Compartment,
   Facet,
+  type ChangeSpec,
   StateEffect,
   type EditorState,
   type Extension,
@@ -585,12 +586,32 @@ export function isLibraryPath(path: string): boolean {
  */
 export interface DocumentAttachment {
   path: string;
+  /** The backend document (for document-scoped commands). */
+  doc: number;
   /** Current document text; build the view's state from it. */
   text(): string;
   readOnly: boolean;
   /** Add to the view (one view at a time). */
   extension: Extension;
   save(options?: { exact?: boolean }): Promise<void>;
+  /** Resolves once local edits have reached the backend. */
+  synced(): Promise<void>;
+  /** Unsaved changes. */
+  dirty(): boolean;
+  /**
+   * Undo / redo of the document's history: the text editor tab's when one
+   * shows the file (backend edits are recorded there), else this view's.
+   * Returns whether anything changed.
+   */
+  undo(): boolean;
+  redo(): boolean;
+  /**
+   * Applies a change made by this view's owner as one edit of the document's
+   * history (where `undo` works): the text editor tab's when one shows the
+   * file, so Undo there reverts it too; else this view's. The view receives
+   * it like any other change of the document, before this returns.
+   */
+  edit(changes: ChangeSpec, userEvent?: string): void;
   /** Detach; the document closes when nothing else shows it. */
   release(): void;
 }

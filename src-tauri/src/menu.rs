@@ -169,6 +169,8 @@ const SEP: Entry = Entry::Separator;
 /// [`Entry::Dynamic`] slots the frontend fills.
 pub const DYNAMIC_TOOL_WINDOWS: &str = "toolWindows";
 pub const DYNAMIC_LAYOUTS: &str = "toolWindowLayouts";
+/// Tools › entries of plugins (`[[contributes.menus]] menu = "tools"`).
+pub const DYNAMIC_PLUGIN_TOOLS: &str = "pluginTools";
 
 /// The menu bar for `os`. Labels are English defaults; the frontend replaces
 /// them with `menu.<id>` strings from the active locale catalog.
@@ -725,6 +727,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             ),
             SEP,
             act("vim.toggle", "Vim"),
+            Entry::Dynamic(DYNAMIC_PLUGIN_TOOLS),
         ],
     ));
 
@@ -1484,7 +1487,7 @@ mod tests {
             let spec = spec(os);
             let mut found = Vec::new();
             slots(&spec, &mut found);
-            assert_eq!(found, [DYNAMIC_TOOL_WINDOWS, DYNAMIC_LAYOUTS], "{os:?}");
+            assert_eq!(found, [DYNAMIC_TOOL_WINDOWS, DYNAMIC_PLUGIN_TOOLS, DYNAMIC_LAYOUTS], "{os:?}");
             assert!(!action_ids(&spec).iter().any(|id| {
                 id.starts_with("toolwindow.")
                     && *id != "toolwindow.hideAll"

@@ -18,6 +18,7 @@ import {
   profileLabel,
   profileLocation,
   seenDiagnosticCodes,
+  useProducerNames,
   validateProfileName,
   type CustomProfiles,
   type InspectionLevel,
@@ -65,8 +66,10 @@ import {
 } from "./inspectionsModel";
 import styles from "./Inspections.module.css";
 import { tx } from "@/platform/i18n";
+import { onLanguageListChanged, useLanguageListVersion } from "@/platform/languageList";
 
 let languagesCache: LanguageServers[] | null = null;
+onLanguageListChanged(() => (languagesCache = null));
 
 async function loadLanguages(): Promise<LanguageServers[]> {
   if (languagesCache) return languagesCache;
@@ -78,6 +81,7 @@ async function loadLanguages(): Promise<LanguageServers[]> {
 
 function useLanguages(): LanguageServers[] {
   const [langs, setLangs] = useState<LanguageServers[]>(() => languagesCache ?? []);
+  const version = useLanguageListVersion((s) => s.version);
   useEffect(() => {
     let alive = true;
     void loadLanguages().then(
@@ -87,7 +91,7 @@ function useLanguages(): LanguageServers[] {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [version]);
   return langs;
 }
 
@@ -132,9 +136,10 @@ function InspectionsPage() {
 
   const languages = useLanguages();
   const seen = useMemo(() => seenDiagnosticCodes(), []);
+  const producerNames = useProducerNames((s) => s.names);
   const tree = useMemo(
-    () => buildInspectionTree(languages, seen, [ideOverrides, projectOverrides]),
-    [languages, seen, ideOverrides, projectOverrides],
+    () => buildInspectionTree(languages, seen, [ideOverrides, projectOverrides], producerNames),
+    [languages, seen, ideOverrides, projectOverrides, producerNames],
   );
   const [query, setQuery] = useState("");
   const roots = useMemo(() => filterInspectionTree(tree, query), [tree, query]);

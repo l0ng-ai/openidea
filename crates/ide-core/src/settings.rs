@@ -61,6 +61,9 @@ pub struct Settings {
     pub cmake: CMakeSettings,
     /// Tools › Agents › Chat.
     pub agents: AgentSettings,
+    /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
+    #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
+    pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
 /// What the meters in an agent task's header show.
@@ -215,6 +218,7 @@ impl Default for Settings {
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),
             agents: AgentSettings::default(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -323,7 +327,8 @@ impl Default for NotificationGroupSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppearanceSettings {
-    /// `dark` | `light` | `system` | `dark-hc` (high-contrast dark)
+    /// A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
+    /// "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
     pub theme: String,
     pub accent: String,
     pub ui_font_size: f32,
@@ -332,6 +337,8 @@ pub struct AppearanceSettings {
     pub sync_with_os: bool,
     pub preferred_light_theme: String,
     pub preferred_dark_theme: String,
+    /// A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons.
+    pub file_icon_theme: String,
     /// IDE zoom in percent (50–300).
     pub zoom: u32,
     /// Apply `ui_font_family` / `ui_font_size` (otherwise the theme's).
@@ -386,6 +393,7 @@ impl Default for AppearanceSettings {
             sync_with_os: false,
             preferred_light_theme: "light".into(),
             preferred_dark_theme: "dark".into(),
+            file_icon_theme: String::new(),
             zoom: 100,
             use_custom_font: false,
             ui_font_family: "Inter".into(),

@@ -1,0 +1,171 @@
+id = "openidea.string-tools"
+name = "String Tools"
+version = "0.1.0"
+description = "Case conversion (camelCase, snake_case, kebab-case…), encoding (Base64, URL, HTML, JSON), line sorting and more, on every selection at once."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: 26 commands in four groups."
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+# The commands are declared below, so Find Action and the keymap list them
+# before the code is ever loaded; it loads on the first one run.
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["editor.read", "editor.write"]
+
+[[contributes.commands]]
+id = "camel-case"
+title = "String Tools: To camelCase"
+category = "String Tools › Case"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "pascal-case"
+title = "String Tools: To PascalCase"
+category = "String Tools › Case"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "snake-case"
+title = "String Tools: To snake_case"
+category = "String Tools › Case"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "screaming-snake-case"
+title = "String Tools: To SCREAMING_SNAKE_CASE"
+category = "String Tools › Case"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "kebab-case"
+title = "String Tools: To kebab-case"
+category = "String Tools › Case"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "dot-case"
+title = "String Tools: To dot.case"
+category = "String Tools › Case"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "title-case"
+title = "String Tools: To Title Case"
+category = "String Tools › Case"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "upper-case"
+title = "String Tools: To UPPER CASE"
+category = "String Tools › Case"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "lower-case"
+title = "String Tools: To lower case"
+category = "String Tools › Case"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "toggle-case"
+title = "String Tools: Toggle Case"
+category = "String Tools › Case"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "base64-encode"
+title = "String Tools: Encode Base64"
+category = "String Tools › Encode"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "base64-decode"
+title = "String Tools: Decode Base64"
+category = "String Tools › Encode"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "url-encode"
+title = "String Tools: URL-Encode"
+category = "String Tools › Encode"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "url-decode"
+title = "String Tools: URL-Decode"
+category = "String Tools › Encode"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "html-escape"
+title = "String Tools: Escape HTML"
+category = "String Tools › Encode"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "html-unescape"
+title = "String Tools: Unescape HTML"
+category = "String Tools › Encode"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "json-escape"
+title = "String Tools: Escape as JSON String"
+category = "String Tools › Encode"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "sort-lines"
+title = "String Tools: Sort Lines"
+category = "String Tools › Lines"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "sort-lines-desc"
+title = "String Tools: Sort Lines Descending"
+category = "String Tools › Lines"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "reverse-lines"
+title = "String Tools: Reverse Lines"
+category = "String Tools › Lines"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "unique-lines"
+title = "String Tools: Remove Duplicate Lines"
+category = "String Tools › Lines"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "trim-lines"
+title = "String Tools: Trim Lines"
+category = "String Tools › Lines"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "reverse"
+title = "String Tools: Reverse Text"
+category = "String Tools › Other"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "swap-quotes"
+title = "String Tools: Swap Quotes (' ↔ \")"
+category = "String Tools › Other"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "increment"
+title = "String Tools: Increment Numbers"
+category = "String Tools › Other"
+when = "editorFocus"
+
+[[contributes.commands]]
+id = "decrement"
+title = "String Tools: Decrement Numbers"
+category = "String Tools › Other"
+when = "editorFocus"
