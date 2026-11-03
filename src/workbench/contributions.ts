@@ -1211,6 +1211,24 @@ export function occurrenceNavigator(toolWindow: string): OccurrenceNavigator | n
   return occurrenceNavigators.get(toolWindow)?.at(-1) ?? null;
 }
 
+// ---------------------------------------------------------------------------
+// Edit › Undo / Redo outside text fields and editors
+
+/** Undo / Redo for `focused` in a view with its own history (Project view file operations); true when handled. */
+export type UndoHandler = (command: "undo" | "redo", focused: Element) => boolean;
+
+const undoHandlers = new Set<UndoHandler>();
+
+export function registerUndoHandler(handler: UndoHandler): () => void {
+  undoHandlers.add(handler);
+  return () => void undoHandlers.delete(handler);
+}
+
+/** Offers Undo / Redo to the registered views, latest first. */
+export function runUndoHandlers(command: "undo" | "redo", focused: Element): boolean {
+  return [...undoHandlers].reverse().some((h) => h(command, focused));
+}
+
 /** Registers `nav` (the latest render's) for `toolWindow` while the calling view is mounted. */
 export function useOccurrenceNavigator(toolWindow: string, nav: OccurrenceNavigator["go"]) {
   const latest = useRef(nav);
