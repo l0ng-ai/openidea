@@ -32,6 +32,7 @@ import { registerActionsOnSave, registerFormatOnSave, registerLspActions } from 
 import { lspTheme } from "./theme";
 import { inspectionWidgetExtension } from "./inspectionWidget";
 import { unresolvedReferences } from "./fileReferences";
+import { syntaxErrorsExtension } from "./syntaxErrors";
 import { spellingExtension } from "./spelling";
 import { DocumentationWindow, LspPopups, UsagesStatus } from "./Popups";
 import { DOCUMENTATION_WINDOW } from "./docs";
@@ -58,6 +59,7 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
     usagesLensExtension(),
     autoImportExtension(),
     unresolvedReferences(),
+    syntaxErrorsExtension(),
     spellingExtension(),
   ];
 }

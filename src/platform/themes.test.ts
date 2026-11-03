@@ -1,8 +1,24 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { BUILTIN_THEMES, isBuiltinTheme, themeKind } from "./themes";
+import {
+  addContributedTheme,
+  BUILTIN_THEMES,
+  isBuiltinTheme,
+  isThemeAvailable,
+  parsePluginThemeRef,
+  pluginThemeRef,
+  themeChoices,
+  themeKind,
+  useContributedThemes,
+} from "./themes";
 import { _setSchemeSource, effectiveScheme, schemeCss, schemeTokens, themeScheme } from "./colorScheme";
-import { applyThemeAttributes, resolveTheme, resolveThemeId } from "@/workbench/theme";
+import {
+  applyThemeAttributes,
+  resolveTheme,
+  resolveThemeChoice,
+  resolveThemeId,
+  themeSelectOptions,
+} from "@/workbench/theme";
 import { validateSettings } from "@/features/settings/model/schema";
 import { applyPluginTheme } from "@/features/plugins/bridge";
 
@@ -72,5 +88,41 @@ describe("built-in palettes", () => {
     expect(root.dataset.contrast).toBe("high");
     applyThemeAttributes("solarized-dark", root);
     expect(root.dataset.contrast).toBeUndefined();
+  });
+});
+
+describe("plugin themes", () => {
+  const ref = pluginThemeRef("acme.night", "night");
+  afterEach(() => {
+    useContributedThemes.setState({ themes: [] });
+    localStorage.removeItem("openidea.themeKinds");
+  });
+
+  it("are settings values like the built-in ones, in every picker while their plugin is live", () => {
+    const a = { theme: ref, preferredLightTheme: "light", preferredDarkTheme: ref };
+    expect(validateSettings({ appearance: a }).appearance).toMatchObject(a);
+    expect(resolveThemeChoice(a, false)).toBe(ref);
+    expect(resolveThemeChoice({ ...a, syncWithOs: true }, false)).toBe(ref);
+    expect(resolveThemeChoice({ ...a, syncWithOs: true }, true)).toBe("light");
+
+    const remove = addContributedTheme({ id: ref, label: "Night", kind: "dark", origin: "Acme" });
+    expect(isThemeAvailable(ref)).toBe(true);
+    expect(themeChoices().at(-1)).toMatchObject({ id: ref, label: "Night" });
+    expect(themeSelectOptions(themeChoices(), ref).at(-1)).toEqual({ value: ref, label: "Night", detail: "Acme" });
+    // Its tokens apply over the default of its kind.
+    expect(resolveThemeId(a, false)).toBe("dark");
+
+    remove();
+    expect(isThemeAvailable(ref)).toBe(false);
+    // Its plugin off: the base of the kind it had shows, and the pickers keep it listed.
+    expect(resolveThemeId(a, false)).toBe("dark");
+    expect(themeSelectOptions(themeChoices(), ref).at(-1)).toMatchObject({ value: ref, label: "night" });
+  });
+
+  it("parse only well-formed references", () => {
+    expect(parsePluginThemeRef(ref)).toEqual({ pluginId: "acme.night", themeId: "night" });
+    for (const bad of ["plugin:", "plugin:/night", "plugin:acme/", "acme/night", 3])
+      expect(parsePluginThemeRef(bad)).toBeNull();
+    expect(validateSettings({ appearance: { theme: "plugin:/x" } }).appearance.theme).toBe("light");
   });
 });

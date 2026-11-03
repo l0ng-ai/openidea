@@ -32,12 +32,12 @@ import type { PageSpec } from "./spec";
 import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
 import { tx, useT } from "@/platform/i18n";
+import { BUILTIN_THEMES, useContributedIconThemes } from "@/platform/themes";
+import { originDetail, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
 
-import { BUILTIN_THEMES } from "@/platform/themes";
+const BUILTIN_THEME_LABELS = BUILTIN_THEMES.map((t) => t.label);
 
 export const APPEARANCE_GROUP = "Appearance & Behavior";
-
-const THEMES: SelectOption<ConcreteTheme>[] = BUILTIN_THEMES.map((t) => ({ value: t.id, label: t.label }));
 
 /** Checkbox bound to a key, optionally disabled. */
 function BoundToggle({ k, label, hint, disabled }: { k: string; label: string; hint?: ReactNode; disabled?: boolean }) {
@@ -60,10 +60,17 @@ function ThemeRow() {
   const [open, setOpen] = useState(false);
   const gear = useRef<HTMLButtonElement>(null);
   const matched = useLabelMatch("Sync with OS");
+  const choices = useThemeChoices();
   const shown: ConcreteTheme = theme === "system" ? "light" : theme;
   return (
     <Row label="Theme">
-      <Select<ConcreteTheme> value={shown} options={THEMES} onChange={setTheme} aria-label="Theme" disabled={sync} />
+      <Select<ConcreteTheme>
+        value={shown}
+        options={themeSelectOptions(choices, shown)}
+        onChange={setTheme}
+        aria-label="Theme"
+        disabled={sync}
+      />
       <span className={clsx(styles.inline, matched && styles.matched)}>
         <Checkbox
           checked={sync}
@@ -97,13 +104,18 @@ function ThemeRow() {
           <Row label="Preferred theme for light OS mode">
             <Select<ConcreteTheme>
               value={light}
-              options={THEMES}
+              options={themeSelectOptions(choices, light)}
               onChange={setLight}
               aria-label="Preferred light theme"
             />
           </Row>
           <Row label="Preferred theme for dark OS mode">
-            <Select<ConcreteTheme> value={dark} options={THEMES} onChange={setDark} aria-label="Preferred dark theme" />
+            <Select<ConcreteTheme>
+              value={dark}
+              options={themeSelectOptions(choices, dark)}
+              onChange={setDark}
+              aria-label="Preferred dark theme"
+            />
           </Row>
         </div>
       </Popup>
@@ -124,6 +136,28 @@ function ColorSchemeRow() {
     <Indented>
       <Row label="Editor color scheme">
         <Select value={scheme} options={options} onChange={setScheme} aria-label="Editor color scheme" />
+      </Row>
+    </Indented>
+  );
+}
+
+/** Plugins' file icon themes; the row shows once one is installed (or still selected). */
+function FileIconThemeRow() {
+  const [value, setValue] = useSetting<string>("appearance.fileIconTheme");
+  const themes = useContributedIconThemes((s) => s.themes);
+  if (!themes.length && !value) return null;
+  const options: SelectOption[] = [
+    { value: "", label: "Default" },
+    ...[...themes]
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .map((t) => ({ value: t.id, label: t.label, detail: originDetail(t) })),
+  ];
+  if (value && !themes.some((t) => t.id === value))
+    options.push({ value, label: value.slice(value.indexOf("/") + 1), detail: "Plugin not enabled" });
+  return (
+    <Indented>
+      <Row label="File icon theme">
+        <Select value={value ?? ""} options={options} onChange={setValue} aria-label="File icon theme" />
       </Row>
     </Indented>
   );
@@ -529,7 +563,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Theme",
-            keywords: ["Sync with OS", ...BUILTIN_THEMES.map((t) => t.label), "preferred theme"],
+            keywords: ["Sync with OS", ...BUILTIN_THEME_LABELS, "preferred theme"],
             component: ThemeRow,
           },
           {
@@ -537,6 +571,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             label: "Editor color scheme",
             keywords: ["Theme default", "scheme"],
             component: ColorSchemeRow,
+          },
+          {
+            kind: "custom",
+            label: "File icon theme",
+            keywords: ["icons", "file icons", "icon theme"],
+            component: FileIconThemeRow,
           },
           { kind: "custom", label: "Accent colour", keywords: ["accent color", "highlight"], component: AccentRow },
           { kind: "custom", label: "Different tool window background", component: ToolWindowBackgroundRow },

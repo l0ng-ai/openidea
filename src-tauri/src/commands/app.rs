@@ -126,14 +126,8 @@ pub fn close_project(window: Window, state: State<'_, AppState>) {
 #[specta::specta]
 pub fn languages(state: State<'_, AppState>) -> Vec<LanguageInfo> {
     state.note_ipc();
-    let mut out: Vec<LanguageInfo> = state.languages.all().iter().map(LanguageInfo::from).collect();
-    // Plugin-contributed languages; built-in definitions win on id clashes.
-    for lang in state.plugins.languages() {
-        if !out.iter().any(|l| l.id == lang.id) {
-            out.push(LanguageInfo::from(&lang));
-        }
-    }
-    out
+    // Includes plugin languages (built-in definitions win on id clashes).
+    state.languages.all().iter().map(LanguageInfo::from).collect()
 }
 
 /// Effective settings for the window's project, or global settings without one.

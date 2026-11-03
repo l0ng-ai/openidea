@@ -61,6 +61,9 @@ pub struct Settings {
     pub cmake: CMakeSettings,
     /// Tools › Agents › Chat.
     pub agents: AgentSettings,
+    /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
+    #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
+    pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
 /// What the meters in an agent task's header show.
@@ -154,6 +157,16 @@ pub struct LanguageServerSettings {
     pub languages: Vec<String>,
     /// Files marking a workspace root for a server defined here (`pyproject.toml`).
     pub root_markers: Vec<String>,
+    /// Replaces the definition's `features`: what the server is used for
+    /// (`code-action`, `hover`, …); an empty list means everything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub features: Option<Vec<String>>,
+    /// Replaces the definition's `code-action-kinds` (`refactor`); an empty
+    /// list keeps every kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub code_action_kinds: Option<Vec<String>>,
 }
 
 impl Default for LanguageServerSettings {
@@ -167,6 +180,8 @@ impl Default for LanguageServerSettings {
             settings: None,
             languages: Vec::new(),
             root_markers: Vec::new(),
+            features: None,
+            code_action_kinds: None,
         }
     }
 }
@@ -215,6 +230,7 @@ impl Default for Settings {
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),
             agents: AgentSettings::default(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -323,7 +339,8 @@ impl Default for NotificationGroupSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppearanceSettings {
-    /// `dark` | `light` | `system` | `dark-hc` (high-contrast dark)
+    /// A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
+    /// "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
     pub theme: String,
     pub accent: String,
     pub ui_font_size: f32,
@@ -332,6 +349,8 @@ pub struct AppearanceSettings {
     pub sync_with_os: bool,
     pub preferred_light_theme: String,
     pub preferred_dark_theme: String,
+    /// A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons.
+    pub file_icon_theme: String,
     /// IDE zoom in percent (50–300).
     pub zoom: u32,
     /// Apply `ui_font_family` / `ui_font_size` (otherwise the theme's).
@@ -386,6 +405,7 @@ impl Default for AppearanceSettings {
             sync_with_os: false,
             preferred_light_theme: "light".into(),
             preferred_dark_theme: "dark".into(),
+            file_icon_theme: String::new(),
             zoom: 100,
             use_custom_font: false,
             ui_font_family: "Inter".into(),
@@ -786,6 +806,19 @@ pub struct GradleSettings {
     pub home: String,
     /// Empty = Gradle's default user home.
     pub user_home: String,
+    /// IDEA's "Build and run using": who builds and launches an Application main.
+    pub run_using: GradleRunUsing,
+}
+
+/// IDEA's "Build and run using" for Gradle builds; IDEA defaults to Gradle.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GradleRunUsing {
+    /// A `JavaExec` task on the source set's runtime classpath (`gradleRun.gradle`).
+    #[default]
+    Gradle,
+    /// The Java language server's classpath, launched by OpenIDEA.
+    Ide,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
@@ -1026,6 +1059,7 @@ mod gradle_settings_tests {
                 distribution,
                 home: "/gradle".into(),
                 user_home: "/cache/gradle".into(),
+                run_using: GradleRunUsing::Ide,
             };
             let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
             assert_eq!(restored.languages.java.gradle, settings.languages.java.gradle);

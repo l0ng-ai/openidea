@@ -1,0 +1,17 @@
+id = "openidea.mybatis"
+name = "MyBatis Navigator"
+version = "0.1.0"
+description = "Jumps between MyBatis mapper interfaces and their XML statements (gutter arrows and Go to Definition), completes statement ids and #{parameters}."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: navigation both ways, line markers, id and parameter completion."
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["project.read"]
+
+[[contributes.providers]]
+kinds = ["definition", "line-markers", "completion"]
+languages = ["java", "xml"]

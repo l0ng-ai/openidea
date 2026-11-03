@@ -896,6 +896,8 @@ export interface ProjectViewRootContribution extends ProjectViewRootEntry {
   order?: number;
   /** Which project view mode lists it besides "Project" ("Scratches and Consoles"). */
   scope?: "scratches";
+  /** Listed above the project folder (IDEA's module group of the build). */
+  beforeProject?: boolean;
 }
 
 export const useProjectViewRoots = create<{ roots: Map<string, ProjectViewRootContribution> }>(() => ({
@@ -938,6 +940,26 @@ export type ContextMenuId =
   | "stopProcess"
   | "selectIn"
   | "new";
+
+/**
+ * Entries of the native main menu's open slots (src-tauri/src/menu.rs
+ * `Entry::Dynamic`), e.g. `pluginTools` at the end of Tools: each runs `action`.
+ */
+export interface MenuSlotItem {
+  action: string;
+  arg?: string | null;
+  label: string;
+}
+
+export const useMenuSlotItems = create<{ slots: Record<string, MenuSlotItem[]> }>(() => ({ slots: {} }));
+
+export function registerMenuSlotItem(slot: string, item: MenuSlotItem): () => void {
+  useMenuSlotItems.setState((s) => ({ slots: { ...s.slots, [slot]: [...(s.slots[slot] ?? []), item] } }));
+  return () =>
+    useMenuSlotItems.setState((s) => ({
+      slots: { ...s.slots, [slot]: (s.slots[slot] ?? []).filter((i) => i !== item) },
+    }));
+}
 
 export interface MenuGroupContext {
   /** Files / directories the menu is for (absolute paths; a virtual URI for virtual documents). */
@@ -1096,6 +1118,8 @@ export interface RunConfigTypeField {
   validate?(value: string, params: Readonly<Record<string, string>>): string | null;
   /** Shown under the control. */
   hint?: string;
+  /** A text field holding a path: a button next to it picks a file or a directory (absolute path). */
+  browse?: "file" | "directory" | ((params: Readonly<Record<string, string>>) => "file" | "directory");
 }
 
 export interface RunConfigTypeContribution {
@@ -1187,6 +1211,24 @@ export function registerOccurrenceNavigator(toolWindow: string, nav: OccurrenceN
 
 export function occurrenceNavigator(toolWindow: string): OccurrenceNavigator | null {
   return occurrenceNavigators.get(toolWindow)?.at(-1) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Edit › Undo / Redo outside text fields and editors
+
+/** Undo / Redo for `focused` in a view with its own history (Project view file operations); true when handled. */
+export type UndoHandler = (command: "undo" | "redo", focused: Element) => boolean;
+
+const undoHandlers = new Set<UndoHandler>();
+
+export function registerUndoHandler(handler: UndoHandler): () => void {
+  undoHandlers.add(handler);
+  return () => void undoHandlers.delete(handler);
+}
+
+/** Offers Undo / Redo to the registered views, latest first. */
+export function runUndoHandlers(command: "undo" | "redo", focused: Element): boolean {
+  return [...undoHandlers].reverse().some((h) => h(command, focused));
 }
 
 /** Registers `nav` (the latest render's) for `toolWindow` while the calling view is mounted. */

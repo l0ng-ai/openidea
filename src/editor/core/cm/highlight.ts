@@ -18,6 +18,8 @@ function token(
     fontWeight: `var(--syn-${name}-bold, ${defaults.bold ?? "inherit"})`,
     backgroundColor: `var(--syn-${name}-bg, transparent)`,
     textDecoration: `var(--syn-${name}-effect, ${defaults.effect ?? "none"})`,
+    // WebKit takes a decoration with a style or colour only through the prefixed property.
+    WebkitTextDecoration: `var(--syn-${name}-effect, ${defaults.effect ?? "none"})`,
   };
 }
 

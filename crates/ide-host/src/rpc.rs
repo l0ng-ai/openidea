@@ -9,7 +9,10 @@
 //! * server → client notification `event` `{ window, event }` (an `IdeEvent`
 //!   for that window, or every window when `window` is null);
 //! * server → client notification `channel` `{ id, data }`: one value of a
-//!   streaming argument.
+//!   streaming argument;
+//! * server → client notification `plugin` `{ window, event }` and request
+//!   `plugin_secret` `{ plugin, name }` → `string | null`: code plugins of the
+//!   remote project (`plugins::remote_host`).
 
 use crate::Host;
 use crate::ops::{self, Emit};

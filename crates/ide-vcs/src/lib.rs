@@ -92,6 +92,11 @@ pub struct Commit {
     /// Committer time (Log › View Options › Commit Timestamp).
     #[serde(default)]
     pub commit_time_ms: f64,
+    /// Per parent, under a user or text filter: the link passes commits the filter hides
+    /// (`parents` then name the nearest shown ancestors). Empty when no parent is rewritten.
+    #[serde(default)]
+    #[specta(optional)]
+    pub dashed: Vec<bool>,
 }
 
 /// Order of the Git Log (Graph Options › Sort).

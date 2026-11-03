@@ -334,6 +334,7 @@ export function registerVcsActions(): () => void {
           useCommit.getState().groupByDir,
           useChangelists.getState().state,
           state.roots,
+          useCommit.getState().groupByStaging,
         );
         for (const path of paths.slice(0, 5)) {
           const siblings = changeGroupPaths(tree, path);

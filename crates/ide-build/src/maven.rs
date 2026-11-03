@@ -460,6 +460,8 @@ const MAX_PARENT_DEPTH: usize = 10;
 
 struct Resolver {
     local_repo: Option<PathBuf>,
+    /// The chosen profiles (`-P` entries; `!id` / `-id` deactivates).
+    profiles: Vec<String>,
     poms: HashMap<PathBuf, Option<RawPom>>,
     contexts: HashMap<PathBuf, Inherited>,
 }
@@ -484,8 +486,16 @@ pub fn local_repository_of(settings: &Path) -> Option<PathBuf> {
 }
 
 impl Resolver {
-    fn new(local_repo: Option<PathBuf>) -> Self {
-        Self { local_repo, poms: HashMap::new(), contexts: HashMap::new() }
+    fn new(local_repo: Option<PathBuf>, profiles: &[String]) -> Self {
+        Self { local_repo, profiles: profiles.to_vec(), poms: HashMap::new(), contexts: HashMap::new() }
+    }
+
+    /// The active profiles of a POM: the chosen ones, and the `activeByDefault` ones not turned
+    /// off while none of the POM's other profiles is chosen (Maven's rule).
+    fn active<'a>(&self, profiles: &'a [RawProfile]) -> impl Iterator<Item = &'a RawProfile> {
+        let chosen = |id: &str| profile_choice(&self.profiles, id);
+        let any_chosen = profiles.iter().any(|p| chosen(&p.id) == Some(true));
+        profiles.iter().filter(move |p| chosen(&p.id).unwrap_or(p.active_by_default && !any_chosen))
     }
 
     fn pom(&mut self, path: &Path) -> Option<RawPom> {
@@ -550,7 +560,7 @@ impl Resolver {
         if pom.compiler_release.is_some() {
             ctx.compiler_release = pom.compiler_release.clone();
         }
-        for p in pom.profiles.iter().filter(|p| p.active_by_default) {
+        for p in self.active(&pom.profiles) {
             merge_by(&mut ctx.properties, &p.properties, |(k, _)| k.clone());
             merge_by(&mut ctx.deps, &p.deps, RawDep::key);
             merge_plugins(&mut ctx.plugins, &p.plugins);
@@ -666,7 +676,7 @@ pub(crate) fn launch_inputs(
         }
         Some(())
     }
-    let mut resolver = Resolver::new(local_repo.or_else(default_local_repo));
+    let mut resolver = Resolver::new(local_repo.or_else(default_local_repo), &[]);
     let mut out = Vec::new();
     for project in projects {
         let dir = root.join(&project.dir);
@@ -1055,8 +1065,32 @@ pub fn load(root: &Path) -> MavenModel {
     load_with_repo(root, default_local_repo())
 }
 
+/// [`load`] with the chosen `profiles` (`-P` entries; `!id` deactivates): their modules,
+/// dependencies and properties are part of the model, those turned off are not.
+pub fn load_with_profiles(root: &Path, profiles: &[String]) -> MavenModel {
+    load_with(root, default_local_repo(), profiles)
+}
+
 pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenModel {
-    let mut resolver = Resolver::new(local_repo);
+    load_with(root, local_repo, &[])
+}
+
+/// The `-P` entries' choice for profile `id`: on, off (`!id` / `-id`), or none (the last wins).
+fn profile_choice(chosen: &[String], id: &str) -> Option<bool> {
+    chosen.iter().rev().find_map(|c| {
+        let c = c.trim();
+        if c == id {
+            Some(true)
+        } else if c.strip_prefix('!').or_else(|| c.strip_prefix('-')) == Some(id) {
+            Some(false)
+        } else {
+            None
+        }
+    })
+}
+
+pub(crate) fn load_with(root: &Path, local_repo: Option<PathBuf>, profiles: &[String]) -> MavenModel {
+    let mut resolver = Resolver::new(local_repo, profiles);
     let mut model = MavenModel::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     // (pom, aggregated)
@@ -1076,7 +1110,7 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
         let i = |s: &str| interpolate(s, &props);
 
         let mut module_names: Vec<String> = pom.modules.clone();
-        for p in pom.profiles.iter().filter(|p| p.active_by_default) {
+        for p in resolver.active(&pom.profiles) {
             module_names.extend(p.modules.iter().cloned());
         }
         let mut modules: Vec<PathBuf> = Vec::new();
@@ -1206,6 +1240,40 @@ impl UnlinkedProjects {
 
     pub fn poms(&self) -> impl Iterator<Item = &str> {
         self.poms.iter().map(String::as_str)
+    }
+
+    /// The POMs the Java language server should import when an unlinked POM is a module of a
+    /// linked reactor, else `None` (excluding the unlinked directories is enough then).
+    ///
+    /// jdtls imports an aggregator together with all of its modules, whatever its import
+    /// exclusions say, so a reactor keeping an unlinked module is left out; its other linked
+    /// modules are listed on their own. Such an aggregator (`pom` packaging) has no sources.
+    pub fn import_poms(&self, model: &MavenModel) -> Option<Vec<String>> {
+        let linked: Vec<&MavenProject> = model.projects.iter().filter(|p| !self.contains(&p.pom)).collect();
+        if !linked.iter().any(|p| p.modules.iter().any(|m| self.contains(m))) {
+            return None;
+        }
+        let by_pom: std::collections::HashMap<String, &MavenProject> =
+            model.projects.iter().map(|p| (normalized_pom(&p.pom), p)).collect();
+        // Whether `pom`'s module tree reaches an unlinked POM.
+        let reaches_unlinked = |pom: &str| {
+            let mut seen = std::collections::HashSet::new();
+            let mut pending = vec![normalized_pom(pom)];
+            while let Some(pom) = pending.pop() {
+                if !seen.insert(pom.clone()) {
+                    continue;
+                }
+                let Some(project) = by_pom.get(&pom) else { continue };
+                for module in &project.modules {
+                    if self.contains(module) {
+                        return true;
+                    }
+                    pending.push(normalized_pom(module));
+                }
+            }
+            false
+        };
+        Some(linked.into_iter().filter(|p| !reaches_unlinked(&p.pom)).map(|p| normalized_pom(&p.pom)).collect())
     }
 
     pub fn filter(&self, model: &mut MavenModel) {
@@ -1666,6 +1734,52 @@ mod tests {
     }
 
     #[test]
+    fn chosen_profiles_bring_their_modules_and_dependencies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>
+              <modules><module>core</module></modules>
+              <profiles>
+                <profile><id>flink-1.17</id><activation><activeByDefault>true</activeByDefault></activation>
+                  <modules><module>flink-1.17</module></modules></profile>
+                <profile><id>flink-1.20</id><modules><module>flink-1.20</module></modules>
+                  <dependencies><dependency><groupId>org.apache.flink</groupId><artifactId>flink-core</artifactId><version>1.20.0</version></dependency></dependencies>
+                </profile>
+              </profiles>
+            </project>"#,
+        );
+        for m in ["core", "flink-1.17", "flink-1.20"] {
+            write(
+                root,
+                &format!("{m}/pom.xml"),
+                &format!(
+                    "<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent><artifactId>{m}</artifactId></project>"
+                ),
+            );
+        }
+        let dirs = |m: &MavenModel| m.projects.iter().map(|p| p.dir.clone()).collect::<Vec<_>>();
+        let flink = |m: &MavenModel, dir: &str| {
+            m.projects.iter().find(|p| p.dir == dir).unwrap().dependencies.iter().any(|d| d.artifact_id == "flink-core")
+        };
+
+        let default = load_with(root, None, &[]);
+        assert_eq!(dirs(&default), ["", "core", "flink-1.17"]);
+        assert!(!flink(&default, "core"));
+
+        // Choosing another profile of the POM turns its activeByDefault one off (as `-P` does).
+        let chosen = load_with(root, None, &["flink-1.20".into()]);
+        assert_eq!(dirs(&chosen), ["", "core", "flink-1.20"]);
+        assert!(flink(&chosen, "core"), "a module inherits the chosen profile's dependencies");
+
+        let both = load_with(root, None, &["flink-1.20".into(), "flink-1.17".into()]);
+        assert_eq!(dirs(&both), ["", "core", "flink-1.17", "flink-1.20"]);
+        assert_eq!(dirs(&load_with(root, None, &["!flink-1.17".into()])), ["", "core"]);
+    }
+
+    #[test]
     fn profiles_of_a_parent_pom_are_inherited() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -1992,5 +2106,52 @@ mod linkage_tests {
         let mut restored = original.clone();
         UnlinkedProjects::from_model(&original, &MavenSettings::default()).filter(&mut restored);
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn language_server_imports_reactor_modules_individually_once_one_is_unlinked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // r ─┬─ x
+        //    ├─ y ─┬─ y/y1
+        //    │     └─ y/y2
+        //    └─ z          other/ is a separate root.
+        for (dir, modules) in [
+            ("r", "<modules><module>x</module><module>y</module><module>z</module></modules>"),
+            ("r/x", ""),
+            ("r/y", "<modules><module>y1</module><module>y2</module></modules>"),
+            ("r/y/y1", ""),
+            ("r/y/y2", ""),
+            ("r/z", ""),
+            ("other", ""),
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(
+                root.join(dir).join("pom.xml"),
+                format!("<project><artifactId>{dir}</artifactId>{modules}</project>"),
+            )
+            .unwrap();
+        }
+        let model = load_with_repo(root, None);
+        let cases: [(&[&str], Option<&[&str]>); 5] = [
+            // Nothing unlinked, or whole roots: the import exclusions do it.
+            (&[], None),
+            (&["other/pom.xml"], None),
+            (&["r/pom.xml"], None),
+            // A module of a linked reactor: every other linked POM, minus the aggregators above it.
+            (&["r/y/y1/pom.xml"], Some(&["other/pom.xml", "r/x/pom.xml", "r/y/y2/pom.xml", "r/z/pom.xml"])),
+            (&["./r/y/pom.xml"], Some(&["other/pom.xml", "r/x/pom.xml", "r/z/pom.xml"])),
+        ];
+        for (unlinked, expected) in cases {
+            let settings = MavenSettings {
+                unlinked_projects: unlinked.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            };
+            let mut poms = UnlinkedProjects::from_model(&model, &settings).import_poms(&model);
+            if let Some(poms) = &mut poms {
+                poms.sort();
+            }
+            assert_eq!(poms, expected.map(|e| e.iter().map(|s| s.to_string()).collect::<Vec<_>>()), "{unlinked:?}");
+        }
     }
 }

@@ -226,7 +226,16 @@ describe("Tabs drag & drop", () => {
       .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
       .map((el) => el.textContent);
   const pointer = (el: Element | Window, type: string, x: number) =>
-    fireEvent(el, new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 12 }));
+    fireEvent(
+      el,
+      new MouseEvent(type, {
+        bubbles: true,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        clientX: x,
+        clientY: 12,
+      }),
+    );
 
   it("moves the other tabs out of the way while a tab is dragged, like IDEA (#1052)", () => {
     render(<Strip label="Terminal sessions" initial={["Local", "Local (2)", "Local (3)"]} />);

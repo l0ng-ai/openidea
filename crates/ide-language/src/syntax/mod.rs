@@ -2,6 +2,7 @@
 
 mod cache;
 mod configuration;
+mod external;
 mod folding;
 mod grammars;
 mod highlight;
@@ -14,6 +15,7 @@ mod web;
 use crate::{FoldRange, LanguageConfig, LanguageRegistry, SymbolTag};
 pub use cache::{MAX_CACHED_TREES, SyntaxCache, SyntaxCacheStats};
 pub use configuration::ConfigurationKey;
+pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, set_external_syntax};
 use grammars::{SPECS, Spec};
 pub use highlight::{SyntaxHighlightKind, SyntaxHighlights};
 use ide_core::{LanguageId, OutlineItem, Pos, Range};

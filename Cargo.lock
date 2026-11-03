@@ -4182,6 +4182,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-extension"
+version = "0.1.35"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "ed25519-dalek",
+ "ide-core",
+ "parking_lot",
+ "semver",
+ "serde",
+ "serde_json",
+ "specta",
+ "specta-typescript",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "zip",
+]
+
+[[package]]
 name = "ide-fonts"
 version = "0.1.35"
 dependencies = [
@@ -4210,9 +4230,13 @@ dependencies = [
 name = "ide-host"
 version = "0.1.35"
 dependencies = [
+ "base64 0.22.1",
+ "criterion",
  "dirs 6.0.0",
  "dunce",
  "encoding_rs",
+ "getrandom 0.3.4",
+ "globset",
  "ide-agent",
  "ide-analysis",
  "ide-build",
@@ -4220,12 +4244,15 @@ dependencies = [
  "ide-coverage",
  "ide-dap",
  "ide-db",
+ "ide-docker",
+ "ide-extension",
  "ide-http",
  "ide-index",
  "ide-jsonrpc",
  "ide-language",
  "ide-lsp",
  "ide-notebook",
+ "ide-plugin",
  "ide-remote",
  "ide-run",
  "ide-sdk",
@@ -4239,7 +4266,9 @@ dependencies = [
  "ide-vcs",
  "ide-vfs",
  "ide-workspace",
+ "ignore",
  "parking_lot",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",
@@ -4247,10 +4276,12 @@ dependencies = [
  "specta-typescript",
  "tempfile",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]
@@ -4316,6 +4347,7 @@ dependencies = [
  "blake3",
  "criterion",
  "ide-core",
+ "ide-extension",
  "ide-text",
  "parking_lot",
  "regex-lite",
@@ -4417,19 +4449,20 @@ dependencies = [
 name = "ide-plugin"
 version = "0.1.35"
 dependencies = [
+ "blake3",
  "ide-core",
- "ide-language",
+ "ide-extension",
  "parking_lot",
+ "semver",
  "serde",
  "serde_json",
  "specta",
  "tempfile",
  "thiserror 2.0.21",
- "toml 0.9.12+spec-1.1.0",
+ "tokio",
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
- "zip",
 ]
 
 [[package]]
@@ -6150,6 +6183,7 @@ dependencies = [
 name = "openidea"
 version = "0.1.35"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "block2 0.6.2",
  "dirs 6.0.0",
@@ -6164,6 +6198,7 @@ dependencies = [
  "ide-dap",
  "ide-db",
  "ide-docker",
+ "ide-extension",
  "ide-fonts",
  "ide-github",
  "ide-host",
@@ -6195,6 +6230,8 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-web-kit 0.3.2",
  "parking_lot",
+ "percent-encoding",
+ "security-framework",
  "serde",
  "serde_json",
  "specta",

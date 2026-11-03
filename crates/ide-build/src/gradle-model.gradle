@@ -1,0 +1,40 @@
+// OpenIDEA Gradle sync: prints each project as Gradle evaluated it, one JSON line per project.
+// Read by `ide_build::gradle::parse_reported_projects`. Dependencies are not resolved: the
+// Java language server reads the classpath itself, and resolving is the slow part of an import.
+import groovy.json.JsonOutput
+
+def canon = { File f -> f.canonicalPath }
+// Init scripts also run in included builds and buildSrc, whose projects reuse `:`, `:core`…:
+// the identity path (`:lib:core`, `:buildSrc`) tells them apart and addresses their tasks
+// from the root build. Internal API, hence the fallback.
+def identity = { Project p -> try { p.identityPath.toString() } catch (ignored) { p.path } }
+
+def describe = { Project p ->
+    def m = [path: identity(p), dir: canon(p.projectDir), buildDir: canon(p.layout.buildDirectory.get().asFile)]
+    if (p.gradle.parent != null) m.build = identity(p.rootProject)
+    def sets = p.extensions.findByName('sourceSets')
+    if (sets != null) {
+        // Test source sets as IDEA classifies them: `test`, test fixtures, JVM test suites,
+        // and sets whose folders the `idea` plugin lists as test sources.
+        def suites = [] as Set
+        try { p.extensions.findByName('testing')?.suites?.each { suites << it.sources.name } } catch (ignored) {}
+        def ideaTests = [] as Set
+        try { p.extensions.findByName('idea')?.module?.testSources?.files?.each { ideaTests << canon(it) } } catch (ignored) {}
+        m.sourceSets = sets.collect { s ->
+            def res = s.resources.srcDirs.collect(canon)
+            def src = s.allSource.srcDirs.collect(canon) - res
+            def test = s.name == 'test' || s.name == 'testFixtures' || suites.contains(s.name) ||
+                s.name.endsWith('Test') || s.name.endsWith('Tests') ||
+                (!src.isEmpty() && src.every { ideaTests.contains(it) })
+            [name: s.name, test: test, src: src, res: res]
+        }
+    }
+    try {
+        def java = p.extensions.findByName('java')
+        def lv = java?.toolchain?.languageVersion?.getOrNull()
+        m.java = lv != null ? lv.asInt() : (java?.targetCompatibility?.majorVersion as Integer)
+    } catch (ignored) {}
+    println '@openidea-model\t' + JsonOutput.toJson(m)
+}
+
+gradle.projectsEvaluated { g -> g.rootProject.allprojects { describe(it) } }

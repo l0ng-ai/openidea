@@ -259,6 +259,25 @@ export function effectiveScheme(
   return themeScheme(root);
 }
 
+/** Light or dark: a built-in scheme's theme kind, a custom scheme's parent (null: unknown). */
+export function schemeKind(id: string | undefined, customs: CustomColorSchemes = {}): "light" | "dark" | null {
+  if (isBuiltinTheme(id)) return themeKind(id);
+  return (id && customSchemes(customs)[id]?.parent) || null;
+}
+
+/**
+ * The scheme setting once the IDE theme has turned `kind`, or null to keep it: a chosen scheme
+ * of the other kind gives way to the theme's own, so a light theme doesn't keep a dark editor.
+ */
+export function schemeAfterThemeChange(
+  setting: string | undefined,
+  kind: "light" | "dark",
+  customs: CustomColorSchemes = {},
+): string | null {
+  const current = schemeKind(setting, customs);
+  return current && current !== kind ? "theme-default" : null;
+}
+
 /** Scheme belonging to the active IDE theme (`data-theme` / `data-contrast`). */
 export function themeScheme(
   root: HTMLElement | null = typeof document !== "undefined" ? document.documentElement : null,

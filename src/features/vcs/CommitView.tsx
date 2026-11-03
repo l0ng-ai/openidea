@@ -37,12 +37,13 @@ import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   aggregateCheck,
   buildChangeTree,
-  changeGroupPaths,
   checkOf,
   filesOf,
+  groupFileNodes,
   ignoreTargets,
   isPartiallyStaged,
   planCommit,
+  stagingSide,
   toggledCheck,
   type ChangeNode,
 } from "./changes";
@@ -50,7 +51,15 @@ import { applyStash, commitChanges, dropStash, showUnstashDialog, stashChanges }
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
-import { messageHistory, setAmend, setDiffPreview, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
+import {
+  messageHistory,
+  setAmend,
+  setDiffPreview,
+  setGroupByDir,
+  setGroupByStaging,
+  useCommit,
+  type CommitTab,
+} from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
@@ -169,9 +178,9 @@ const bottomLeft = (el: HTMLElement) => {
 /** Opens a file's diff; F7 continues through the other files of its group, in tree order. */
 function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
   if (n.type !== "file" || !n.path) return;
-  const paths = changeGroupPaths(roots, n.path);
-  const items = paths.map((p) => workingDiffData(p));
-  void openDiff(withChain(items, Math.max(0, paths.indexOf(n.path))), { preview: true });
+  const nodes = groupFileNodes(roots, n);
+  const items = nodes.map((f) => workingDiffData(f.path!, undefined, stagingSide(f.group, f.files[0]!)));
+  void openDiff(withChain(items, Math.max(0, nodes.indexOf(n))), { preview: true });
 }
 
 /** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
@@ -384,6 +393,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
+  const groupByStaging = useCommit((s) => s.groupByStaging);
   const diffPreview = useCommit((s) => s.diffPreview);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
@@ -398,8 +408,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const repos = useVcs((s) => s.roots);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos),
-    [status, root, groupByDir, lists, repos],
+    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging),
+    [status, root, groupByDir, lists, repos, groupByStaging],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -471,6 +481,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             showContextMenu(bottomLeft(viewRef.current), [
               { kind: "header", label: "Group By" },
               { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+              { label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) },
               ...(mode === "local"
                 ? [
                     { kind: "separator" } as const,

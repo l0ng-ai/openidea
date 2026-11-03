@@ -5,14 +5,21 @@
  */
 import type { RunConfig } from "@/platform/ipc";
 import { CLASSPATH, TEST_CLASSPATH, jvmModuleDir } from "@/platform/javaLaunch";
-import { isTestPath } from "@/platform/languageSettings";
+import { isTestPath, rootFor } from "@/platform/languageSettings";
 import { currentRoots } from "@/platform/projectRoots";
 import { simpleClassName } from "./jvmTargets";
 
 export { jvmModuleDir } from "@/platform/javaLaunch";
 
-/** In a test source root (detected or marked in Project Structure), or Maven's `src/test`. */
-const isTestSource = (relPath: string) => /(^|\/)src\/test\//.test(relPath) || isTestPath(currentRoots(), relPath);
+/**
+ * In a test source root, as IDEA's `getClasspathType` decides: the root holding the file
+ * (synced from Gradle, detected or marked in Project Structure) wins; `src/test` only
+ * while no root is known for the file.
+ */
+const isTestSource = (relPath: string) => {
+  const roots = currentRoots();
+  return rootFor(roots, relPath) ? isTestPath(roots, relPath) : /(^|\/)src\/test\//.test(relPath);
+};
 
 /** Temporary "Application" configuration that runs `className` (a binary name). */
 export function applicationConfig(

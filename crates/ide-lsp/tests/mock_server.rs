@@ -225,9 +225,12 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         install_hint: Some(format!("install {name}")),
         connect: None,
         fallback: false,
+        features: Vec::new(),
+        code_action_kinds: Vec::new(),
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        pinned: None,
     }
 }
 
@@ -786,6 +789,30 @@ async fn progress_tasks_and_busy_status() {
     assert_eq!(tasks[0], ("Indexing".into(), None, Some(0.0), false));
     assert_eq!(tasks[1], ("Indexing".into(), Some("3/10".into()), Some(0.3), false));
     assert!(tasks[2].3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn progress_titled_with_an_executable_path_shows_the_program_name() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    let title = "/Users/thomas/Library/Application Support/mbx/bin/cargo check";
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "begin", "title": title } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "report", "message": "tauri_plugin (lib)" } }))
+        .unwrap();
+    peer.notify("$/progress", json!({ "token": "fc", "value": { "kind": "end" } })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { done: true, .. }))).await;
+    let titles: Vec<String> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Task { title, .. } => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, ["cargo check"; 3]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1722,6 +1749,64 @@ async fn code_action_query_without_listed_kinds() {
     let q = h.mgr.code_action_query(doc, rng(0, 0, 0, 0), vec![], ide_core::CancellationToken::new()).await.unwrap();
     assert!(q.actions.is_empty());
     assert_eq!(q.advertised_kinds, None, "`codeActionProvider` without `codeActionKinds` may return any kind");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn features_limit_what_a_server_is_used_for() {
+    // A refactoring-only server listed first, announcing everything the main one does.
+    let h = harness_configured("mock", "mk", &[("rope", incremental_caps()), ("main", incremental_caps())], |cfg| {
+        if cfg.name == "rope" {
+            cfg.features = vec!["code-action".into()];
+            cfg.code_action_kinds = vec!["refactor".into()];
+        }
+    });
+    let (doc, path) = h.open("a.mk", "let x = 1;\n");
+    for name in ["rope", "main"] {
+        h.wait_status(name, ServerStatus::Ready).await;
+    }
+    let (rope, main) = (h.launcher.state("rope"), h.launcher.state("main"));
+    for s in [&rope, &main] {
+        s.respond("textDocument/hover", json!({ "contents": "x" }));
+        s.respond("textDocument/formatting", json!([]));
+    }
+
+    h.mgr.hover(doc, Pos::new(0, 4), Default::default()).await.unwrap();
+    assert_eq!(main.requested("textDocument/hover").len(), 1);
+    h.mgr
+        .format(doc, None, FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None })
+        .await
+        .unwrap();
+    assert_eq!(main.requested("textDocument/formatting").len(), 1);
+    assert!(rope.requested("textDocument/hover").is_empty() && rope.requested("textDocument/formatting").is_empty());
+
+    rope.respond(
+        "textDocument/codeAction",
+        json!([
+            { "title": "Organize imports", "kind": "source.organizeImports" },
+            { "title": "Extract variable", "kind": "refactor.extract.variable" },
+            { "title": "Run", "command": "mock.run" }
+        ]),
+    );
+    main.respond("textDocument/codeAction", json!([{ "title": "Fix", "kind": "quickfix" }]));
+    let q = h.mgr.code_action_query(doc, rng(0, 8, 0, 9), vec![], ide_core::CancellationToken::new()).await.unwrap();
+    let mut titles: Vec<&str> = q.actions.iter().map(|a| a.title.as_str()).collect();
+    titles.sort();
+    assert_eq!(titles, ["Extract variable", "Fix"], "rope's other kinds and bare commands are dropped");
+
+    let diag =
+        json!([{ "range": {"start":{"line":0,"character":4},"end":{"line":0,"character":5}}, "message": "unused" }]);
+    rope.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "diagnostics": diag }))
+        .unwrap();
+    main.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "diagnostics": diag }))
+        .unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Diagnostics { source, .. } if source == "main"))
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::Diagnostics { source, .. } if source == "rope")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
