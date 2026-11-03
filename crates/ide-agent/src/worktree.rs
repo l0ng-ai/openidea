@@ -50,12 +50,20 @@ pub(crate) fn create(project_root: &Path, worktrees_dir: &Path, title: &str, bas
 
 /// `git worktree remove --force -- <path>`. When git no longer recognizes the
 /// worktree (a pruned registration, a moved repository, a deleted `.git` file)
-/// it fails with "is not a working tree" — the folder is still ours, so it is
-/// removed directly to keep the task deletable; a stale registration prunes later.
-pub(crate) fn remove(project_root: &Path, path: &Path) -> IdeResult<()> {
+/// it fails with "is not a working tree". A folder under `worktrees_dir` is still
+/// ours, so it is removed directly to keep the task deletable (a stale
+/// registration prunes later); anything else keeps git's error.
+pub(crate) fn remove(project_root: &Path, worktrees_dir: &Path, path: &Path) -> IdeResult<()> {
     let repo = repo_at(project_root)?;
-    if repo.remove_worktree(path, true).is_ok() || !path.exists() {
+    let err = match repo.remove_worktree(path, true) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    if !path.exists() {
         return Ok(());
+    }
+    if !path.starts_with(worktrees_dir) || path == worktrees_dir {
+        return Err(err);
     }
     std::fs::remove_dir_all(path).map_err(|e| IdeError::internal(e.to_string()))
 }
@@ -161,7 +169,7 @@ mod tests {
         assert!(snapshot(&dir).unwrap().is_empty());
         assert_eq!(file_at(&dir, &dir.join("a.txt"), "HEAD").unwrap(), None);
         assert!(create(&dir, &tmp.path().join("wt"), "Edit A", None).is_err());
-        assert!(remove(&dir, &dir).is_err());
+        assert!(remove(&dir, tmp.path(), &dir).is_err());
     }
 
     fn git(dir: &Path, args: &[&str]) {
@@ -210,7 +218,7 @@ mod tests {
 
         // A second task with the same title gets its own worktree.
         assert_eq!(create(&repo, &tmp.path().join("wt"), "Edit A", None).unwrap().branch, "agent/edit-a-2");
-        remove(&repo, &created.path).unwrap();
+        remove(&repo, &tmp.path().join("wt"), &created.path).unwrap();
         assert!(!created.path.exists());
     }
 
@@ -228,13 +236,20 @@ mod tests {
         let created = create(&repo, &tmp.path().join("wt"), "Edit A", None).unwrap();
         let registration = repo.join(".git/worktrees").join(created.path.file_name().unwrap());
         std::fs::remove_dir_all(registration).unwrap();
-        remove(&repo, &created.path).unwrap();
+        remove(&repo, &tmp.path().join("wt"), &created.path).unwrap();
         assert!(!created.path.exists());
 
         // A deleted `.git` file in the worktree itself.
         let created = create(&repo, &tmp.path().join("wt"), "Edit B", None).unwrap();
         std::fs::remove_file(created.path.join(".git")).unwrap();
-        remove(&repo, &created.path).unwrap();
+        remove(&repo, &tmp.path().join("wt"), &created.path).unwrap();
         assert!(!created.path.exists());
+
+        // A folder outside the worktrees directory is never deleted by hand.
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("keep.txt"), "x\n").unwrap();
+        assert!(remove(&repo, &tmp.path().join("wt"), &elsewhere).is_err());
+        assert!(elsewhere.join("keep.txt").exists());
     }
 }
