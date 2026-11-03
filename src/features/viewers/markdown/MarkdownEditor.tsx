@@ -22,7 +22,7 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { FloatingToolbar, selectableText } from "@/ui";
-import { setPreviewLine, useLiveMarkdown } from "./live";
+import { publishPreviewTop, setPreviewLine, useLiveMarkdown } from "./live";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn, subscribeTheme, themeKey } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
@@ -160,6 +160,25 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     if (!root || !sync) return;
     root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocksOf(root), topLine, root.scrollHeight);
   }, [html, topLine, scrollSeq, sync, diagramsDrawn]);
+
+  // The preview's own scroll offset: tab switches and mode toggles unmount the
+  // preview, so Preview Only would otherwise start over at the top. Writes made
+  // by the split sync above are captured too — the last visible position wins.
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const onScroll = () => publishPreviewTop(path, root.scrollTop);
+    root.addEventListener("scroll", onScroll, { passive: true });
+    return () => root.removeEventListener("scroll", onScroll);
+  }, [path]);
+
+  // Restore it on mount; in split mode the sync effect positions the preview.
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root || sync) return;
+    const saved = useLiveMarkdown.getState()[path]?.previewTop ?? 0;
+    if (saved > 0) root.scrollTop = saved;
+  }, [path, sync]);
 
   // Preview only: go where the hidden editor's caret was sent (Structure, Go to Symbol…).
   useLayoutEffect(() => {

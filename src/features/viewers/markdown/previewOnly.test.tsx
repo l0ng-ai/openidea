@@ -105,6 +105,13 @@ describe("Markdown Preview only", () => {
     expect(useLiveMarkdown.getState()[path]?.previewLine).toBe(15);
   });
 
+  it("reports the restored line when shown again after a remount", () => {
+    act(() => useLiveMarkdown.setState((s) => ({ [path]: { ...s[path]!, previewTop: 205 } })));
+    const el = preview();
+    expect(el.scrollTop).toBe(205);
+    expect(useLiveMarkdown.getState()[path]?.previewLine).toBe(20);
+  });
+
   it("leaves the split preview to the editor's scroll sync", () => {
     act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "split" } })));
     const el = preview();

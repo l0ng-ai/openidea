@@ -19,6 +19,8 @@ export interface LiveMarkdown {
   scrollSeq: number;
   /** The editor's font zoom in px; the preview scales its text by the same amount. */
   fontZoom: number;
+  /** The preview div's own scrollTop, kept so Preview Only survives a remount. */
+  previewTop: number;
   /** 0-based caret line, set when the caret moves without an edit (navigation). */
   caretLine: number;
   /** Bumped with `caretLine`, so going to the same place again still scrolls. */
@@ -41,9 +43,15 @@ function publish(path: string, patch: Partial<LiveMarkdown>) {
       caretLine: 0,
       caretSeq: 0,
       previewLine: null,
+      previewTop: 0,
     };
     return { [path]: { ...prev, ...patch } };
   });
+}
+
+/** Records the preview's own scroll offset, published by the preview's scroll listener. */
+export function publishPreviewTop(path: string, top: number) {
+  publish(path, { previewTop: top });
 }
 
 function topLineOf(view: EditorView): number {

@@ -30,6 +30,7 @@ describe("selectable read-only surfaces", () => {
           caretLine: 0,
           caretSeq: 0,
           previewLine: null,
+          previewTop: 0,
         },
       }),
     );
