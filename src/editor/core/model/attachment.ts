@@ -11,6 +11,7 @@ import {
   documentSynced,
   isExternalChange,
   remoteChange,
+  transientChange,
   type DocumentAttachment,
   type TextEditorHandle,
 } from "@/editor/api";
@@ -74,7 +75,9 @@ export async function attachDocument(manager: DocumentManager, path: string): Pr
       documentSynced.of(() => model.sync.whenIdle()),
       EditorView.updateListener.of((u) => {
         if (released || model.closed) return;
-        for (const tr of u.transactions) if (tr.docChanged && !isExternalChange(tr)) model.onLocal(tr.changes, target);
+        for (const tr of u.transactions)
+          if (tr.docChanged && !isExternalChange(tr) && !tr.annotation(transientChange))
+            model.onLocal(tr.changes, target);
       }),
     ],
     save: (options) => model.save(options?.exact ? "exact" : "explicit"),
