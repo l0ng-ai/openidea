@@ -5779,5 +5779,10 @@
   "File icon theme": "文件图标主题",
   "Plugin not enabled": "插件未启用",
   "Problems the {plugin} plugin reports. Severity \"As reported\" keeps the level the plugin assigns; a code below can override it.": "{plugin} 插件报告的问题。严重性“按报告”保留插件分配的级别；下方的代码可以覆盖它。",
-  "The plugin system is a preview: its API and the plugins may still change.": "插件系统目前是预览版：API 和插件都可能还会变化。"
+  "The plugin system is a preview: its API and the plugins may still change.": "插件系统目前是预览版：API 和插件都可能还会变化。",
+  "'{expected}' expected": "缺少 '{expected}'",
+  "Unexpected token": "意外的标记",
+  "Syntax": "语法",
+  "Syntax errors": "语法错误",
+  "Reports code the built-in parser cannot read, in files no language server checks (none is configured for the language, or it is not installed, stopped or crashed). A running language server reports syntax errors itself.": "报告内置解析器无法解析的代码，仅针对没有语言服务器检查的文件（该语言未配置语言服务器，或未安装、已停止、已崩溃）。语言服务器运行时由它自己报告语法错误。"
 }
