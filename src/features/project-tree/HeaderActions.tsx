@@ -62,8 +62,15 @@ export const SORT_LABELS: Array<[SortKey, string]> = [
 /** View options in the header's "⋮" menu (IDEA: Project › Options › Appearance / Behavior). */
 export function useProjectHeaderMenu(): MenuItem[] {
   const options = useProjectTree((s) => s.options);
+  const unity = useProjectTree((s) => s.mode === "unity");
   return [
     { kind: "header", label: "Appearance" },
+    ...(unity
+      ? [
+          option("showUnityMeta", "Show Meta Files", options),
+          option("showUnityGenerated", "Show Generated Files", options),
+        ]
+      : []),
     ...OPTION_LABELS.slice(0, 5).map(([key, label]) => option(key, label, options)),
     { kind: "separator" },
     ...SORT_LABELS.map(([sortBy, label]): MenuItem => ({

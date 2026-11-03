@@ -48,6 +48,21 @@ async fn opens_unity_without_generated_solutions_and_excludes_caches_from_the_in
     let unity = ops::project::info(&project).unity.unwrap();
     assert_eq!(unity.solutions, ["Game.sln"]);
     assert_eq!(unity.projects, ["Assembly-CSharp.csproj"]);
+
+    // Desktop commands and remote RPC share these host operations.
+    let original = root.join("Assets/Scripts/Player.cs");
+    let renamed = root.join("Assets/Scripts/Hero.cs");
+    let copied = root.join("Assets/Scripts/HeroCopy.cs");
+    let meta = ide_workspace::unity::assets::meta_path;
+    let original_metadata = "fileFormatVersion: 2\nguid: 11111111111111111111111111111111\n";
+    std::fs::write(meta(&original), original_metadata).unwrap();
+    ops::fs::rename(&host, original.clone(), renamed.clone()).await.unwrap();
+    assert!(!original.exists() && !meta(&original).exists());
+    assert_eq!(std::fs::read_to_string(meta(&renamed)).unwrap(), original_metadata);
+    ops::fs::copy(&host, renamed.clone(), copied.clone()).await.unwrap();
+    assert!(copied.exists());
+    assert_ne!(std::fs::read_to_string(meta(&copied)).unwrap(), original_metadata);
+    assert_eq!(std::fs::read_to_string(meta(&renamed)).unwrap(), original_metadata);
     host.close_project("main");
 
     let ordinary = base.join("ConsoleApp");

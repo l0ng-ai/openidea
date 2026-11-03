@@ -84,8 +84,22 @@ export function leadNode(): ProjectNode | null {
 
 /** Selected paths without entries nested in other selected folders. */
 export function topLevelPaths(nodes: ProjectNode[] = selectedNodes()): string[] {
-  const paths = nodes.map((n) => n.path);
+  const paths = assetPaths(nodes.map((n) => n.path));
   return paths.filter((p) => !paths.some((q) => q !== p && isInside(p, q)));
+}
+
+/** A visible sidecar is already included by the backend asset operation. */
+function assetPaths(paths: string[]): string[] {
+  const { root, unity } = get();
+  if (!root || !unity) return paths;
+  return paths.filter(
+    (p) => !(isInside(p, joinPath(root, "Assets")) && p.endsWith(".meta") && paths.includes(p.slice(0, -5))),
+  );
+}
+
+function isUnityAssetFolder(path: string): boolean {
+  const { root, unity } = get();
+  return !!(root && unity && isSameOrInside(path, joinPath(root, "Assets")));
 }
 
 /** Folder that receives new / pasted items: the selected folder or the selected file's parent. */
@@ -667,13 +681,15 @@ export async function transfer(
   name?: string,
   source: "project" | "local" = "project",
 ): Promise<string | boolean> {
+  paths = assetPaths(paths);
   if (mode === "move") return moveInto(paths, target);
   const { root } = get();
   if (!root) return false;
   const fs = projectFs(root);
   await loadDir(target);
   const taken = new Set(siblingsOf(target).map((n) => (caseInsensitive ? n.toLowerCase() : n)));
-  const isTaken = (n: string) => taken.has(caseInsensitive ? n.toLowerCase() : n);
+  const hasName = (n: string) => taken.has(caseInsensitive ? n.toLowerCase() : n);
+  const isTaken = (n: string) => hasName(n) || (isUnityAssetFolder(target) && hasName(`${n}.meta`));
   const touched = new Set<string>([target]);
   const errors: string[] = [];
   let first: string | null = null;
@@ -726,6 +742,7 @@ export async function transfer(
  * the options last used in the Move dialog). Refuses to overwrite.
  */
 async function moveInto(paths: string[], target: string): Promise<boolean> {
+  paths = assetPaths(paths);
   await loadDir(target);
   const taken = new Set(siblingsOf(target).map((n) => (caseInsensitive ? n.toLowerCase() : n)));
   const errors: string[] = [];

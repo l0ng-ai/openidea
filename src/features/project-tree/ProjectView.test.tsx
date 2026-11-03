@@ -95,6 +95,34 @@ function setup() {
 }
 
 describe("ProjectView", () => {
+  it("toggles Unity metadata and generated files independently in the rendered tree", async () => {
+    fs = new MemoryFs(
+      {
+        "/w/acme/Assets/Player.cs": "code",
+        "/w/acme/Assets/Player.cs.meta": "metadata",
+        "/w/acme/Library/cache": "cache",
+        "/w/acme/Game.sln": "",
+      },
+      ROOT,
+    );
+    setProjectFsForTests(fs, ROOT);
+    initProjectTree(ROOT, "Game", null, { editorVersion: "6000.0.62f1", projects: [], solutions: [] });
+    const { rows } = setup();
+    act(() => useProjectTree.setState({ expanded: new Set([ROOT, `${ROOT}/Assets`]) }));
+    await waitFor(() => expect(rows()).toContain("Player.cs"));
+    expect(rows()).not.toContain("Player.cs.meta");
+    expect(rows()).not.toContain("Library");
+    act(() => setViewOption("showUnityMeta", true));
+    await waitFor(() => expect(rows()).toContain("Player.cs.meta"));
+    expect(rows()).not.toContain("Game.sln");
+    act(() => setViewOption("showUnityGenerated", true));
+    await waitFor(() => expect(rows()).toContain("Game.sln"));
+    expect(rows()).toContain("Library");
+    act(() => setViewOption("showUnityMeta", false));
+    expect(rows()).not.toContain("Player.cs.meta");
+    expect(rows()).toContain("Library");
+  });
+
   it("shows Unity version and generation guidance, then updates when project files arrive", async () => {
     initProjectTree(ROOT, "Game", null, { editorVersion: "6000.0.62f1", projects: [], solutions: [] });
     const { row } = setup();

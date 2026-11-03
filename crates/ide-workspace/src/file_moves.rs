@@ -120,6 +120,8 @@ impl FileMoves {
         if moves.is_empty() {
             return Err(IdeError::invalid("nothing to move"));
         }
+        let expanded = crate::unity::assets::expand_moves(moves)?;
+        let moves = expanded.as_slice();
         for m in moves {
             if !m.from.exists() {
                 return Err(IdeError::not_found(format!("{} does not exist", m.from.display())));
@@ -145,16 +147,9 @@ impl FileMoves {
             restore(documents, &paths, &before);
             return Err(e);
         }
-        let mut done: Vec<&FileMove> = Vec::new();
-        for m in moves {
-            if let Err(e) = ide_vfs::rename(&m.from, &m.to) {
-                for d in done.iter().rev() {
-                    let _ = ide_vfs::rename(&d.to, &d.from);
-                }
-                restore(documents, &paths, &before);
-                return Err(e);
-            }
-            done.push(m);
+        if let Err(e) = crate::unity::assets::move_files(moves) {
+            restore(documents, &paths, &before);
+            return Err(e);
         }
         let mut edited = Vec::with_capacity(paths.len());
         for (p, before) in paths.iter().zip(before) {
@@ -196,27 +191,21 @@ impl FileMoves {
                 .ok_or_else(|| IdeError::not_found("the refactoring can no longer be undone"))?;
             records.remove(i)
         };
-        for m in &record.moves {
-            if !m.to.exists() {
-                return Err(IdeError::not_found(format!("{} no longer exists", m.to.display())));
-            }
-            if m.from.exists() {
-                return Err(IdeError::new(
-                    ide_core::error::ErrorKind::AlreadyExists,
-                    format!("{} exists again", m.from.display()),
-                ));
-            }
+        let back: Vec<_> =
+            record.moves.iter().rev().map(|m| FileMove { from: m.to.clone(), to: m.from.clone() }).collect();
+        if let Err(e) = crate::unity::assets::move_files(&back) {
+            self.records.lock().push(record);
+            return Err(e);
         }
-        let mut outcome = UndoOutcome::default();
-        for m in record.moves.iter().rev() {
-            ide_vfs::rename(&m.to, &m.from)?;
-            outcome.moves.push(FileMove { from: m.to.clone(), to: m.from.clone() });
-        }
-        let back: Vec<FileMove> = outcome.moves.clone();
+        let mut outcome = UndoOutcome { moves: back.clone(), conflicts: Vec::new() };
         for f in &record.edited {
             let path = moved_path(&f.path, &back);
             match read_text(documents, &path) {
-                Ok(now) if now == f.after => write_text(documents, &path, &f.before)?,
+                Ok(now) if now == f.after => {
+                    if write_text(documents, &path, &f.before).is_err() {
+                        outcome.conflicts.push(path.into());
+                    }
+                }
                 Ok(now) if now == f.before => {}
                 _ => outcome.conflicts.push(path.into()),
             }

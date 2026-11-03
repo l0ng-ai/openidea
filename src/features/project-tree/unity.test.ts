@@ -62,7 +62,10 @@ describe("Unity project view", () => {
     const options = { ...DEFAULT_TREE_OPTIONS, unityRoot: "/game" };
     const entries = [entry("/game/Assets/Library", true), entry("/game/Assets/P.cs.meta"), entry("/other/P.cs.meta")];
     expect(visibleEntries(entries, options).map((e) => e.path)).toEqual(["/game/Assets/Library", "/other/P.cs.meta"]);
-    expect(visibleEntries(entries, { ...options, showHidden: true })).toHaveLength(3);
+    expect(visibleEntries(entries, { ...options, showHidden: true })).toHaveLength(2);
+    expect(visibleEntries(entries, { ...options, showUnityMeta: true })).toHaveLength(3);
+    expect(visibleEntries(files, { ...options, showUnityGenerated: true }).map((e) => e.name)).toContain("Library");
+    expect(visibleEntries(files, { ...options, showUnityGenerated: true }).map((e) => e.name)).toContain("Game.sln");
     expect(visibleEntries(files, DEFAULT_TREE_OPTIONS)).toHaveLength(files.length);
   });
 
