@@ -13,6 +13,8 @@ export type HierarchyMode = "call" | "type";
 export interface HierarchyNode {
   id: string;
   item: HierarchyItem;
+  /** Symbols from the first displayed item through this node. */
+  lineage: ReadonlySet<string>;
 }
 
 export interface HierarchyRoot {
@@ -107,19 +109,35 @@ export function childId(parent: string, item: HierarchyItem): string {
   return `${parent}/${item.path}:${p.line}:${p.col}:${item.name}`;
 }
 
-function setChildren(generation: number, parent: string, items: HierarchyItem[], note: string | null) {
+function itemKey(item: HierarchyItem): string {
+  const p = item.selectionRange.start;
+  return `${item.path}:${p.line}:${p.col}`;
+}
+
+function setChildren(
+  generation: number,
+  parent: string,
+  items: HierarchyItem[],
+  note: string | null,
+  lineage: ReadonlySet<string> = new Set(),
+) {
   const s = useHierarchy.getState();
   if (s.generation !== generation) return;
   const seen = new Set<string>();
   const nodes: HierarchyNode[] = [];
+  const children = new Map(s.children);
   for (const item of items) {
     const id = childId(parent, item);
     if (seen.has(id)) continue;
     seen.add(id);
-    nodes.push({ id, item });
+    const key = itemKey(item);
+    const cycle = lineage.has(key);
+    nodes.push({ id, item, lineage: new Set(lineage).add(key) });
+    if (cycle) children.set(id, []);
   }
+  children.set(parent, nodes);
   useHierarchy.setState({
-    children: new Map(s.children).set(parent, nodes),
+    children,
     ...(note ? { notes: new Map(s.notes).set(parent, note) } : {}),
   });
 }
@@ -183,13 +201,14 @@ async function enclosingRoot(c: CaretContext, mode: HierarchyMode): Promise<Hier
   }
 }
 export async function loadChildren(node: HierarchyNode) {
+  if (useHierarchy.getState().children.has(node.id)) return;
   const { mode, direction, generation } = useHierarchy.getState();
   const at = node.item.selectionRange.start;
   try {
     const { items, incomplete } = await withDocument(node.item.path, (doc) =>
       request(mode, doc, at.line, at.col, direction),
     );
-    setChildren(generation, node.id, items, incomplete && incompleteNote(incomplete, node.item.name));
+    setChildren(generation, node.id, items, incomplete && incompleteNote(incomplete, node.item.name), node.lineage);
   } catch (e) {
     if (useHierarchy.getState().generation !== generation) return;
     useHierarchy.setState((st) => ({

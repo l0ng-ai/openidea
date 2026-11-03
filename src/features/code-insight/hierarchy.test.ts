@@ -54,6 +54,7 @@ const callHierarchy = vi.fn((): { items: HierarchyItem[]; incomplete: References
   incomplete: null,
 }));
 const cancelRequest = vi.fn(async () => undefined);
+const hierarchyPositions = new Set(["2:7", "10:7", "20:7"]);
 
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
@@ -66,7 +67,8 @@ vi.mock("@/platform/ipc", async (orig) => {
       cancelRequest,
       lspCallHierarchy: async (_request: number, _doc: number, pos: { line: number; col: number }) => {
         // The server prepares a hierarchy only on the method name.
-        if (pos.line !== 2 || pos.col !== 7) throw new real.IpcError({ kind: "notFound", message: "No symbol" });
+        if (!hierarchyPositions.has(`${pos.line}:${pos.col}`))
+          throw new real.IpcError({ kind: "notFound", message: "No symbol" });
         return callHierarchy();
       },
     },
@@ -83,6 +85,7 @@ vi.mock("./ipc", async (orig) => ({
 const {
   enclosingDeclaration,
   hierarchyTarget,
+  loadChildren,
   refreshHierarchy,
   resetHierarchy,
   showHierarchy,
@@ -142,5 +145,29 @@ describe("hierarchy", () => {
     resetHierarchy();
     expect(cancelRequest).toHaveBeenCalledTimes(1);
     answer({ items: [item("stale")], incomplete: null });
+  });
+
+  it("stops expanding when a call hierarchy reaches an ancestor", async () => {
+    const a = item("a");
+    const b = { ...item("b"), path: "/p/Other.java", selectionRange: range(20, 7, 20, 8) };
+    callHierarchy
+      .mockReturnValueOnce({ items: [a], incomplete: null })
+      .mockReturnValueOnce({ items: [b], incomplete: null })
+      .mockReturnValueOnce({ items: [a], incomplete: null })
+      .mockReturnValueOnce({ items: [b], incomplete: null });
+
+    useHierarchy.setState({ mode: "call", direction: "incoming" });
+    await showHierarchy("call");
+    const firstA = useHierarchy.getState().children.get(ROOT_ID)![0]!;
+    await loadChildren(firstA);
+    const childB = useHierarchy.getState().children.get(firstA.id)![0]!;
+    await loadChildren(childB);
+    const repeatedA = useHierarchy.getState().children.get(childB.id)![0]!;
+    const requests = callHierarchy.mock.calls.length;
+
+    await loadChildren(repeatedA);
+
+    expect(callHierarchy).toHaveBeenCalledTimes(requests);
+    expect(useHierarchy.getState().children.get(repeatedA.id)).toEqual([]);
   });
 });
