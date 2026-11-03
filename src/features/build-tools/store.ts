@@ -238,11 +238,14 @@ async function setLinked(root: string, pom: string, linked: boolean) {
 
 export async function unlinkProjects(pom: string | null) {
   const { root, model } = useBuild.getState();
-  if (!root || !pom || !model?.maven?.projects.some((p) => p.pom === pom && !p.aggregated)) return;
+  const project = model?.maven?.projects.find((p) => p.pom === pom);
+  if (!root || !pom || !project) return;
   if (
     !(await confirm({
       title: "Unlink Maven projects?",
-      message: "Remove this project and its modules from Maven? Files will remain in the Project view.",
+      message: project.aggregated
+        ? "Remove this module and its submodules from Maven? The Java language server stops importing them, so they no longer use memory. Files will remain in the Project view; add the pom.xml again to restore them."
+        : "Remove this project and its modules from Maven? Files will remain in the Project view.",
       ok: "Unlink",
     }))
   )

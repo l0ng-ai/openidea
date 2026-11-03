@@ -133,6 +133,7 @@
   "Unlink Maven Projects": "取消链接 Maven 项目",
   "Unlink Maven projects?": "取消链接 Maven 项目？",
   "Remove this project and its modules from Maven? Files will remain in the Project view.": "从 Maven 中移除此项目及其模块？文件将保留在项目视图中。",
+  "Remove this module and its submodules from Maven? The Java language server stops importing them, so they no longer use memory. Files will remain in the Project view; add the pom.xml again to restore them.": "从 Maven 中移除此模块及其子模块？Java 语言服务器将不再导入它们，也就不再为它们占用内存。文件将保留在项目视图中；重新添加其 pom.xml 即可恢复。",
   "Unlink": "取消链接",
   "(does not exist)": "（不存在）",
   ", e.g.": "，例如",
