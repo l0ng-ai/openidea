@@ -247,3 +247,26 @@ describe("Maven / Gradle: VM options of the forked JVM", () => {
     await expect(gradle().prepareLaunch!(remote)).rejects.toThrow(/run targets/);
   });
 });
+
+describe("build wrapper per execution host", () => {
+  const platform = vi.spyOn(globalThis.navigator, "platform", "get");
+  const wrapperCommand = (type: "gradle" | "maven") =>
+    typeFor(type)!.commandLine({ wrapper: "true", tasks: "test" })!.command;
+
+  beforeEach(() => registerBuiltinTypes());
+  afterEach(async () => (await import("@/platform/remote")).disableRemote());
+
+  it("uses the .bat / .cmd wrappers only for a local Windows desktop", () => {
+    platform.mockReturnValue("Win32");
+    expect([wrapperCommand("gradle"), wrapperCommand("maven")]).toEqual(["gradlew.bat", "mvnw.cmd"]);
+  });
+
+  it.each([
+    { kind: "wsl", distro: "Ubuntu" },
+    { kind: "ssh", config: "box" },
+  ] as const)("uses the Unix wrappers in a remote window ($kind) opened from Windows", async (target) => {
+    platform.mockReturnValue("Win32");
+    (await import("@/platform/remote")).enableRemote({ target, root: "/home/me/app", host: "h", commands: [] });
+    expect([wrapperCommand("gradle"), wrapperCommand("maven")]).toEqual(["./gradlew", "./mvnw"]);
+  });
+});
