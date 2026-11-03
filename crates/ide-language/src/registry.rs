@@ -22,6 +22,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("dockerfile", include_str!("../../../languages/dockerfile.toml")),
     ("dotenv", include_str!("../../../languages/dotenv.toml")),
     ("elixir", include_str!("../../../languages/elixir.toml")),
+    ("erb", include_str!("../../../languages/erb.toml")),
     ("erlang", include_str!("../../../languages/erlang.toml")),
     ("fsharp", include_str!("../../../languages/fsharp.toml")),
     ("gitattributes", include_str!("../../../languages/gitattributes.toml")),
@@ -520,6 +521,7 @@ mod tests {
         "MsGenny",
         "Vue",
         "Angular Template",
+        "ERB",
     ];
 
     fn reg() -> LanguageRegistry {
@@ -553,7 +555,7 @@ mod tests {
     fn alternative_servers_are_fallbacks() {
         let reg = reg();
         for (lang, servers) in [
-            ("python", vec!["basedpyright", "pyright", "ty"]),
+            ("python", vec!["basedpyright", "pyright", "ty", "pyrefly"]),
             ("typescript", vec!["vtsls", "typescript-language-server"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
@@ -610,7 +612,7 @@ mod tests {
         let cfg = reg.get(&LanguageId::new("python")).unwrap();
         let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
         // After the fallbacks: hover, rename and symbols stay with the type checker.
-        assert_eq!(names, ["basedpyright", "pyright", "ty", "ruff"]);
+        assert_eq!(names, ["basedpyright", "pyright", "ty", "pyrefly", "ruff"]);
         let ruff = cfg.language_servers.iter().find(|s| s.name == "ruff").unwrap();
         assert_eq!((ruff.command.as_str(), ruff.args.as_slice()), ("ruff", ["server".to_string()].as_slice()));
         assert!(ruff.require_root_marker && !ruff.fallback);
@@ -776,6 +778,7 @@ mod tests {
             ("AppDelegate.m", "objective-c"),
             ("a.rb", "ruby"),
             ("Gemfile", "ruby"),
+            ("show.html.erb", "erb"),
             ("index.php", "php"),
             ("init.lua", "lua"),
             ("main.dart", "dart"),

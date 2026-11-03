@@ -251,6 +251,46 @@ async fn ruff_next_to_basedpyright_end_to_end() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires pyrefly on PATH"]
+async fn pyrefly_python_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let path = root.join("example.py");
+    let source = "def greet(name: str) -> str:\n    return name\n\nresult = greet('Ada')\nbad: int = 'wrong'\n";
+    std::fs::write(&path, source).unwrap();
+    // Pyrefly only reports type errors in projects with a Pyrefly configuration.
+    std::fs::write(root.join("pyrefly.toml"), "").unwrap();
+    let mut python = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("python")).unwrap();
+    python.language_servers.retain(|server| server.name == "pyrefly");
+    assert_eq!(python.language_servers.len(), 1);
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![python]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("python"), 1, source);
+    retry("pyrefly ready", Duration::from_secs(30), || {
+        let status = last_status(&events, "pyrefly");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+            panic!("pyrefly failed: {msg:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+    let defs = retry("pyrefly definition", Duration::from_secs(30), || {
+        let mgr = mgr.clone();
+        async move { mgr.goto(doc, Pos::new(3, 10), GotoKind::Definition).await.ok().filter(|d| !d.is_empty()) }
+    })
+    .await;
+    assert_eq!(defs[0].path, path);
+    assert_eq!(defs[0].range.start.line, 0);
+    retry("pyrefly diagnostics", Duration::from_secs(30), || {
+        let found = events.lock().iter().any(
+            |event| matches!(event, IdeEvent::Diagnostics { source, items, .. } if source == "pyrefly" && !items.is_empty()),
+        );
+        async move { found.then_some(()) }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires rust-analyzer"]
 async fn rust_analyzer_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
