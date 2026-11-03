@@ -5,7 +5,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 360px;
+  max-width: min(720px, calc(100vw - 32px));
   padding: 6px 10px;
   border-radius: var(--radius-tooltip, 6px);
   background: var(--bg-tooltip);
@@ -15,17 +15,23 @@
   font-size: var(--fs-ui);
   line-height: 16px;
   pointer-events: none;
-  white-space: nowrap;
   opacity: 0;
 }
 .tooltip[data-placed] {
   opacity: 1;
   transition: opacity var(--dur-fast) var(--ease);
 }
+/* Long paths wrap inside the bubble; the shortcut stays on one line. */
+.text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .shortcut {
   font-family: var(--font-keys);
   font-size: var(--fs-ui);
   color: color-mix(in srgb, var(--fg-tooltip) 62%, transparent);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
