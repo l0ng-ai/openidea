@@ -220,6 +220,15 @@ export function parseRemoteLocation(location: string): { target: RemoteTarget; p
   return { target, path: rest.slice(slash) };
 }
 
+/**
+ * The remote project a saved location stands for: a `ssh://` / `wsl://` location, or a
+ * `\\wsl.localhost\<distro>\…` folder remembered before WSL projects existed (it is a WSL
+ * project, not a network folder). `null` for a plain local path.
+ */
+export async function resolveRemoteLocation(location: string): Promise<{ target: RemoteTarget; path: string } | null> {
+  return parseRemoteLocation(location) ?? (await commands.wslResolve(location).catch(() => null));
+}
+
 /** The location of this window's project: remote, else its local root. */
 export function projectLocation(root: string | null | undefined): string | null {
   if (!root) return null;

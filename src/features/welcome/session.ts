@@ -7,7 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { commands, isCancelled, isTauri, type Settings } from "@/platform/ipc";
 import { openProject, startupLaunchHandled, useProject } from "@/platform/project";
-import { connectRemote, parseRemoteLocation, projectLocation } from "@/platform/remote";
+import { connectRemote, projectLocation, resolveRemoteLocation } from "@/platform/remote";
 import { notifications } from "@/workbench/contributions";
 
 const SESSION_KEY = "openidea.session.openProject";
@@ -117,7 +117,7 @@ async function reopen(path: string) {
   const name = path.slice(path.lastIndexOf("/") + 1) || path;
   useSession.setState({ reopening: path });
   try {
-    const remote = parseRemoteLocation(path);
+    const remote = await resolveRemoteLocation(path);
     if (remote) await connectRemote(remote.target, remote.path);
     else await openProject(path);
   } catch (e) {

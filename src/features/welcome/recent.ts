@@ -9,6 +9,7 @@ import {
   parseRemoteLocation,
   recentRemotes,
   remoteLocation,
+  resolveRemoteLocation,
   sameTarget,
   targetName,
 } from "@/platform/remote";
@@ -108,7 +109,7 @@ export async function openRecent(project: Pick<RecentProject, "path" | "name">):
     });
     return false;
   }
-  const remote = parseRemoteLocation(project.path);
+  const remote = await resolveRemoteLocation(project.path);
   if (remote) return openRemote(project, remote);
   const current = useProject.getState().project;
   if (current?.root === project.path) return true;
