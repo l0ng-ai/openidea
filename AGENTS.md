@@ -1,7 +1,7 @@
 # OpenIDEA — contributor guide
 
 Rust + Tauri 2 desktop IDE with full-featured, multi-language code intelligence.
-UI reference: dark, low-contrast greys, one cool accent
+Visual style: dark, low-contrast greys, one cool accent
 (`src/styles/tokens.css` is the source of truth for colours and metrics).
 
 ## Layout
@@ -18,6 +18,11 @@ UI reference: dark, low-contrast greys, one cool accent
 - `src/ui/` — design-system primitives. `src/features/<name>/` — one feature each,
   exporting `activate()` registered in `src/features/index.ts`.
 - `languages/<id>.toml` — language definitions (detection, comments, LSP, DAP).
+- `crates/ide-host` — the `openidea-server` binary for remote development.
+- `wit/` — plugin interface definitions; `plugins/` — sample and bundled plugins;
+  `templates/` — plugin starter templates.
+- `e2e/` — Playwright UI tests (`pnpm e2e`). `fixtures/` — sample projects per language
+  for manual and automated testing.
 
 ## Rules
 
@@ -31,7 +36,9 @@ UI reference: dark, low-contrast greys, one cool accent
   and services. All user-invocable behaviour is an action with a stable id; default
   shortcuts live in `src/platform/keymaps/`.
 - Styling: CSS Modules + tokens only (no hex literals in components). Inline SVG
-  icons via `ui/icons`, never emoji. Real `<button>`/`<input>`; `aria-label` on icon buttons.
+  icons from `src/ui/icons.tsx`, never emoji. Real `<button>`/`<input>`; `aria-label` on icon buttons.
+- User-visible text goes through the text catalog: add every new string to both
+  `src/platform/locales/text/en.json` and `zh.json` (`textCatalog.test.ts` enforces it).
 - Keep comments sparse and purposeful; match surrounding style.
 - For GUI verification, prefer Tauri MCP; use Computer Use only when Tauri MCP is
   unavailable or cannot cover the required checks.
@@ -56,14 +63,26 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
   this worktree's running MCP bridges and actual ports.
 - `pnpm build` — typecheck + bundle frontend.
 - `cargo nextest run --workspace` (or `cargo test`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`.
-- `pnpm test`, `pnpm lint`, `pnpm typecheck`, `pnpm gen:bindings`.
+- `pnpm test`, `pnpm e2e`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm typecheck`,
+  `pnpm gen:bindings`.
 - `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion
   benches vs budgets). Budgets: `perf/budgets.json`.
+
+## Before opening a PR
+
+Run what CI runs for the parts you touched:
+
+- Rust: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo nextest run --workspace`. After changing IPC types, run `pnpm gen:bindings` and
+  commit `src/bindings.ts`; CI fails if it differs.
+- Frontend: `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm test`,
+  `pnpm build`, and `pnpm e2e` for UI flows.
+- UI or runtime behaviour: verify in the running app (`.agents/skills/verify`).
 
 ## Pitfalls
 
 - Run a subset of frontend tests with `pnpm vitest run <path>`. `pnpm test -- <path>` ignores
-  the filter and runs the whole suite (~180 files, several minutes).
+  the filter and runs the whole suite, which takes several minutes.
 - Don't run clippy while iterating: `pnpm tauri dev` compiles anyway. Run
   `cargo fmt --all` + `cargo clippy -p <crate> --all-targets -- -D warnings` once, right
   before committing. A cold build cache can take around 5 minutes. Run long checks one at

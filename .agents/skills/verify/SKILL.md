@@ -7,22 +7,21 @@ description: Build, launch and drive the OpenIDEA desktop app through the Tauri 
 
 ## Launch
 
-- Other sessions often run their own instance (single-instance plugin: a second plain launch only
-  focuses theirs). Check `pgrep -fl target/debug/openidea` and use a second instance of your own:
-  `pnpm exec vite --port <free port> --strictPort` (background), then
-  `pnpm tauri dev --no-watch --config '{"build":{"devUrl":"http://localhost:<port>","beforeDevCommand":""},"identifier":"ai.l0ng.openidea.verify-<task>"}'`
-  (background, log into your task's scratch subdirectory). The own `identifier` keeps app data apart.
-- The MCP bridge port auto-increments from 9223; take yours from your log line
-  `MCP Bridge plugin initialized ... on 127.0.0.1:<port>` and pass it as `appIdentifier` on every
-  `mcp__tauri__*` call. The MCP server is shared between sessions: never `driver_session stop` without
-  an `appIdentifier`, and re-check `document.title` / `location.href` before acting if anything looks off.
-- Make sure the binary contains the change: an already running app from the same worktree may be an
-  older build — rebuild (restart `tauri dev`) after Rust changes. Frontend-only changes can reuse a
-  built binary by pointing its Vite at the worktree.
+- Run the app from the worktree that holds the change: `pnpm tauri dev` in the background, logging
+  into your task's scratch subdirectory. Use `pnpm dev:app` instead when your checks call
+  `window.__TAURI__` from `execute_js`. The wrapper gives each worktree its own app identity, data,
+  settings and Vite port, so other worktrees and the installed app don't interfere. If it reports a
+  session already running for this worktree, reuse that one.
+- Once the app is up, `pnpm dev:status` lists this worktree's MCP bridges. Pass the reported
+  `appIdentifier` (the port) on every `mcp__tauri__*` call. The MCP server is shared between
+  sessions: never `driver_session stop` without an `appIdentifier`, and re-check `document.title` /
+  `location.href` before acting if anything looks off.
+- Make sure the binary contains the change: a session already running for this worktree may be an
+  older build. Restart it after Rust changes; frontend changes reload through Vite.
 - After the app restarts, `driver_session start` again for your port (a stale session says "Already connected").
-- `tauri dev` can exit while the app keeps running (seen after Rust rebuilds). Then Vite is gone and any
-  webview reload shows an empty `#root`. Check `pgrep -fl vite`; kill the orphan app and restart.
-- Kill everything you started when done (app, `tauri dev`, Vite) and nothing else.
+- If the `pnpm tauri dev` process exits while the app window stays open, Vite is gone and any webview
+  reload shows an empty `#root`. Stop that app and start the session again.
+- Stop everything you started when done and nothing else; never use process-name kills.
 
 ## Driving
 
