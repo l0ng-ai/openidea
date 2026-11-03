@@ -413,4 +413,6 @@ pub enum AgentEvent {
         index: u32,
         entry: AgentEntry,
     },
+    /// The installed or configured agent providers changed.
+    Providers,
 }

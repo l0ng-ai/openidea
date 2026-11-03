@@ -314,8 +314,23 @@ impl AgentManager {
                 source: p.source.clone(),
             })
             .collect();
-        *self.shared.providers.write() = specs;
+        let mut prev = self.shared.providers.write();
+        let mut probes = self.shared.probes.lock();
+        probes.retain(|id, _| {
+            let old = prev.iter().find(|p| &p.id == id);
+            let new = specs.iter().find(|p| &p.id == id);
+            matches!((old, new), (Some(a), Some(b)) if a.command == b.command && a.args == b.args && a.env == b.env)
+        });
+        *prev = specs;
         list
+    }
+
+    /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
+    pub fn reload_providers(&self) {
+        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
+        *self.shared.providers.write() = specs;
+        self.shared.probes.lock().clear();
+        self.shared.emit(AgentEvent::Providers);
     }
 
     /// The slash commands to complete for `provider`, in `task`'s directory or (without one)
