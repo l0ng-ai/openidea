@@ -192,6 +192,13 @@ export const remoteChange = Annotation.define<boolean>();
 export const mirroredChange = Annotation.define<boolean>();
 
 /**
+ * A temporary change that must not reach the document model or the backend
+ * (an IME composition's preedit, which the feature removes again when the
+ * composition ends).
+ */
+export const transientChange = Annotation.define<boolean>();
+
+/**
  * Provided by editor/core per editor: resolves once the editor's local edits
  * reached the backend document. Language-server requests read the backend's
  * copy, so position-based requests that edit (format, rename) await it first.

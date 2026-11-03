@@ -2,7 +2,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
-import type { AgentChange, AgentEntry, AgentImage, AgentRetry, AgentTask, AgentUsage } from "@/bindings";
+import type { AgentChange, AgentEntry, AgentImage, AgentLimit, AgentRetry, AgentTask, AgentUsage } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -28,7 +28,7 @@ import { isImeKey } from "@/platform/ime";
 import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
-import { canSend, emptyDraft, retryParts, usageLabel, workTime } from "./composerModel";
+import { canSend, costLabel, emptyDraft, limitLabel, retryParts, usageLabel, workTime } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
@@ -287,17 +287,41 @@ function Header({
   );
 }
 
-/** Context use (when the agent reports it) and the time spent on the task. */
+/**
+ * Context use, usage limits and cost (when the agent reports them) and the time spent on
+ * the task, each as Settings › Tools › Agents › Chat allows.
+ */
 function Meters({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const tx = useTx();
+  const show = useProject((s) => s.settings?.agents);
   const busy = isBusy(task.status);
   const now = useNow(busy ? 1000 : 60_000);
-  const usage = task.usage;
-  const work = entries ? workTime(entries, busy ? now : null) : 0;
+  const usage = show?.showContextUsage !== false ? task.usage : null;
+  const reported = useAgents((s) => s.limits.get(task.provider));
+  const limits = show?.showUsageLimits !== false ? (reported ?? []) : [];
+  const cost = show?.showCost === true ? task.usage?.cost : null;
+  const work = show?.showWorkTime !== false && entries ? workTime(entries, busy ? now : null) : 0;
   return (
     <span className={styles.meters}>
       {usage && <Usage usage={usage} />}
+      {limits.map((l) => (
+        <Limit key={l.window} limit={l} now={now} />
+      ))}
+      {cost && <span title={tx("What the session has cost so far, as the agent reports it")}>{costLabel(cost)}</span>}
       {work >= 1000 && <span title={tx("Time the agent spent on this task")}>{formatDuration(work)}</span>}
+    </span>
+  );
+}
+
+/** A usage-limit window: "5h 19%", when it resets in the tooltip. */
+function Limit({ limit, now }: { limit: AgentLimit; now: number }) {
+  const label = limitLabel(limit, now);
+  return (
+    <span className={styles.meter} title={label.detail} aria-label={label.detail}>
+      <span className={styles.usageBar} aria-hidden>
+        <span style={{ width: `${label.percent}%` }} />
+      </span>
+      {label.short}
     </span>
   );
 }

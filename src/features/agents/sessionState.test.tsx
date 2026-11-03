@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
+import { useProject } from "@/platform/project";
 import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
 import { SessionEditor } from "./SessionEditor";
@@ -225,5 +226,38 @@ describe("session state across tasks and hosts", () => {
     expect(stream().scrollTop).toBe(230);
     act(() => disconnect());
     expect(useAgents.getState().scrollPositions.size).toBe(0);
+  });
+});
+
+describe("meters in the task header", () => {
+  afterEach(() => {
+    useProject.setState({ settings: null });
+    useAgents.setState({ limits: new Map() });
+  });
+
+  it("shows the provider's usage limits by default and each meter as Settings › Tools › Agents › Chat allows", async () => {
+    const reported: AgentTask = {
+      ...task("A"),
+      usage: { used: 24_000, size: 200_000, cost: { amount: 0.42, currency: "USD" } },
+    };
+    const limits = [
+      { window: "five_hour", usedPercent: 19, resetsMs: null },
+      { window: "seven_day", usedPercent: 9.4, resetsMs: null },
+    ];
+    useAgents.setState({ tasks: new Map([["A", reported]]), limits: new Map([["codex", limits]]) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    expect(screen.getByText("12%")).toBeInTheDocument();
+    expect(screen.getByText("5h 19%")).toBeInTheDocument();
+    expect(screen.getByText("7d 9%")).toBeInTheDocument();
+    expect(screen.queryByText("$0.42")).toBeNull();
+    act(() =>
+      useProject.setState({
+        settings: { agents: { showContextUsage: false, showUsageLimits: false, showCost: true } },
+      }),
+    );
+    expect(screen.queryByText("12%")).toBeNull();
+    expect(screen.queryByText("5h 19%")).toBeNull();
+    expect(screen.getByText("$0.42")).toBeInTheDocument();
   });
 });

@@ -318,10 +318,12 @@ export function TitleBar({
       <div className={styles.drag} data-tauri-drag-region />
       {!minimal && (
         <>
-          {toolbar && shown.right.map(entry)}
-          <div className={styles.tools}>
-            <GearButton customize={menu} />
-          </div>
+          {toolbar && !menuExpanded && shown.right.map(entry)}
+          {!menuExpanded && (
+            <div className={styles.tools}>
+              <GearButton customize={menu} />
+            </div>
+          )}
         </>
       )}
       {frameless && <WindowControls dialog={dialog} />}

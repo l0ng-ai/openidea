@@ -497,12 +497,14 @@ impl Host {
             ide_agent::AgentPaths {
                 project_root: root.to_path_buf(),
                 store_dir: self.data_dir.join("agents").join(project_key),
-                // Outside the app data dir: its path has spaces on macOS, which trips up build scripts.
-                worktrees_dir: dirs::home_dir()
-                    .unwrap_or_else(|| self.data_dir.clone())
-                    .join(".openidea")
-                    .join("worktrees")
-                    .join(project_key),
+                worktrees_dir: agent_worktrees_dir(root, || {
+                    // Outside the app data dir: its path has spaces on macOS, which trips up build scripts.
+                    dirs::home_dir()
+                        .unwrap_or_else(|| self.data_dir.clone())
+                        .join(".openidea")
+                        .join("worktrees")
+                        .join(project_key)
+                }),
                 models_file: self.data_dir.join("agents").join("models.json"),
                 custom_agents_dir: Some(self.config_dir.join("agents")),
                 home_dir: dirs::home_dir(),
@@ -1015,6 +1017,20 @@ fn content_root_watcher(
     .ok()
 }
 
+/// Where agent tasks create their worktrees: next to the project, `<parent>/<name>.worktrees`,
+/// so they sit on the project's drive and outside its tree (not indexed, watched or shown in
+/// its git status); `fallback` for a project at a filesystem root.
+fn agent_worktrees_dir(root: &Path, fallback: impl FnOnce() -> PathBuf) -> PathBuf {
+    match (root.parent(), root.file_name()) {
+        (Some(parent), Some(name)) => {
+            let mut dir = name.to_os_string();
+            dir.push(".worktrees");
+            parent.join(dir)
+        }
+        _ => fallback(),
+    }
+}
+
 pub(crate) fn unlinked_maven_poms(root: &Path, settings: &ide_core::settings::Settings) -> Vec<PathBuf> {
     ide_build::maven::UnlinkedProjects::load(root, &settings.languages.java.maven).poms().map(PathBuf::from).collect()
 }
@@ -1355,5 +1371,19 @@ mod workspace_edit_tests {
         .unwrap();
         assert_eq!(std::fs::read_to_string(real).unwrap(), "sum_values();\n");
         assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
+    }
+}
+
+#[cfg(test)]
+mod agent_worktree_tests {
+    use super::agent_worktrees_dir;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn agent_worktrees_sit_next_to_the_project() {
+        let fallback = || PathBuf::from("/home/me/.openidea/worktrees/key");
+        let project = Path::new("/work").join("acme-api");
+        assert_eq!(agent_worktrees_dir(&project, fallback), Path::new("/work").join("acme-api.worktrees"));
+        assert_eq!(agent_worktrees_dir(Path::new("/"), fallback), fallback());
     }
 }

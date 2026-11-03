@@ -17,6 +17,8 @@ import {
   toPrompt,
   retryParts,
   usageLabel,
+  limitLabel,
+  costLabel,
   workTime,
 } from "./composerModel";
 import {
@@ -149,6 +151,28 @@ describe("agent composer", () => {
 describe("usage meters", () => {
   it("formats token counts", () => {
     expect(usageLabel({ used: 83_100, size: 1_000_000 }).detail).toBe("83.1k / 1M tokens");
+  });
+
+  it("names usage-limit windows and says when they reset", () => {
+    const hour = 3_600_000;
+    expect(limitLabel({ window: "five_hour", usedPercent: 19.4, resetsMs: 2 * hour + 51 * 60_000 }, 0)).toEqual({
+      short: "5h 19%",
+      percent: 19,
+      detail: "5-hour limit: 19% used, resets in 2h 51m",
+    });
+    expect(limitLabel({ window: "seven_day", usedPercent: 120, resetsMs: 5 * 24 * hour + 3 * hour }, 0).detail).toBe(
+      "Weekly limit: 100% used, resets in 5d 3h",
+    );
+    expect(limitLabel({ window: "spend_limit", usedPercent: 7, resetsMs: null }, 0)).toEqual({
+      short: "spend_limit 7%",
+      percent: 7,
+      detail: "spend_limit: 7% used",
+    });
+  });
+
+  it("formats the session cost", () => {
+    expect(costLabel({ amount: 0.4231, currency: "USD" })).toBe("$0.42");
+    expect(costLabel({ amount: 1.5, currency: "credits" })).toBe("1.50 credits");
   });
 
   it("adds up the time spent on turns", () => {
