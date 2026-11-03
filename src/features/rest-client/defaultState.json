@@ -1,0 +1,594 @@
+{
+  "version": 1,
+  "theme": "light",
+  "workspaceName": "My Workspace",
+  "activeRail": "collections",
+  "sidebarCollapsed": false,
+  "sidebarFilter": "",
+  "activeEnvId": "env-jsonplaceholder",
+  "activeTabId": "tab-get-users",
+  "activeConfigTab": "params",
+  "activeResTab": "body",
+  "resViewMode": "pretty",
+  "jsonFolded": false,
+  "environments": [
+    {
+      "id": "env-jsonplaceholder",
+      "name": "Production - JSONPlaceholder",
+      "variables": [
+        {
+          "enabled": true,
+          "key": "baseUrl",
+          "value": "https://jsonplaceholder.typicode.com",
+          "description": "Live REST Test API"
+        },
+        {
+          "enabled": true,
+          "key": "authUrl",
+          "value": "https://dummyjson.com",
+          "description": "DummyJSON Auth & Products API"
+        },
+        {
+          "enabled": true,
+          "key": "userId",
+          "value": "1",
+          "description": "Sample User ID"
+        },
+        {
+          "enabled": true,
+          "key": "apiKey",
+          "value": "pm_live_98a7bc65d43e21",
+          "description": "Demo API Key"
+        },
+        {
+          "enabled": true,
+          "key": "bearerToken",
+          "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.demo_payload",
+          "description": "Sample JWT Token"
+        }
+      ]
+    },
+    {
+      "id": "env-dummyjson",
+      "name": "Staging - DummyJSON API",
+      "variables": [
+        {
+          "enabled": true,
+          "key": "baseUrl",
+          "value": "https://dummyjson.com",
+          "description": "DummyJSON Root"
+        },
+        {
+          "enabled": true,
+          "key": "authUrl",
+          "value": "https://dummyjson.com",
+          "description": "Auth Server"
+        },
+        {
+          "enabled": true,
+          "key": "userId",
+          "value": "2",
+          "description": "Staging User ID"
+        },
+        {
+          "enabled": true,
+          "key": "apiKey",
+          "value": "staging_key_12345",
+          "description": "Staging Key"
+        }
+      ]
+    },
+    {
+      "id": "env-local",
+      "name": "Localhost Development",
+      "variables": [
+        {
+          "enabled": true,
+          "key": "baseUrl",
+          "value": "http://localhost:3000/api",
+          "description": "Local Dev Server"
+        },
+        {
+          "enabled": true,
+          "key": "userId",
+          "value": "1",
+          "description": "Local User ID"
+        }
+      ]
+    }
+  ],
+  "collections": [
+    {
+      "id": "col-users",
+      "name": "User Management API",
+      "expanded": true,
+      "requests": [
+        {
+          "id": "req-get-users",
+          "name": "GET /users",
+          "method": "GET",
+          "url": "{{baseUrl}}/users?_limit=5",
+          "params": [
+            {
+              "enabled": true,
+              "key": "_limit",
+              "value": "5",
+              "description": "Limit number of returned users"
+            }
+          ],
+          "auth": {
+            "type": "none",
+            "bearer": "",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "X-API-Key",
+            "apiKeyVal": "{{apiKey}}",
+            "apiKeyIn": "header"
+          },
+          "headers": [
+            {
+              "enabled": true,
+              "key": "Accept",
+              "value": "application/json",
+              "description": "Expected response format"
+            },
+            {
+              "enabled": true,
+              "key": "X-Client-Platform",
+              "value": "Postman-Desktop-Clone",
+              "description": "Custom tracking header"
+            }
+          ],
+          "body": {
+            "mode": "none",
+            "rawLang": "json",
+            "raw": "",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "// Runs before sending the HTTP request\nconsole.log(\"Preparing GET /users request...\");",
+            "postResponse": "pm.test(\"Status code is 200 OK\", () => {\n  pm.expect(pm.response.code).toBe(200);\n});\n\npm.test(\"Response is a non-empty array of users\", () => {\n  const data = pm.response.json();\n  pm.expect(Array.isArray(data)).toBe(true);\n  pm.expect(data.length).toBeGreaterThan(0);\n});"
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        },
+        {
+          "id": "req-get-user-by-id",
+          "name": "GET /users/:id",
+          "method": "GET",
+          "url": "{{baseUrl}}/users/{{userId}}",
+          "params": [],
+          "auth": {
+            "type": "bearer",
+            "bearer": "{{bearerToken}}",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "",
+            "apiKeyVal": "",
+            "apiKeyIn": "header"
+          },
+          "headers": [
+            {
+              "enabled": true,
+              "key": "Accept",
+              "value": "application/json",
+              "description": ""
+            }
+          ],
+          "body": {
+            "mode": "none",
+            "rawLang": "json",
+            "raw": "",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "",
+            "postResponse": "pm.test(\"Status code is 200\", () => {\n  pm.expect(pm.response.code).toBe(200);\n});\npm.test(\"User object contains email\", () => {\n  const user = pm.response.json();\n  pm.expect( Boolean(user.email) ).toBe(true);\n});"
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        },
+        {
+          "id": "req-post-user",
+          "name": "POST /users",
+          "method": "POST",
+          "url": "{{baseUrl}}/users",
+          "params": [],
+          "auth": {
+            "type": "apikey",
+            "bearer": "",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "X-API-Key",
+            "apiKeyVal": "{{apiKey}}",
+            "apiKeyIn": "header"
+          },
+          "headers": [
+            {
+              "enabled": true,
+              "key": "Content-Type",
+              "value": "application/json",
+              "description": "JSON payload"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "rawLang": "json",
+            "raw": "{\n  \"name\": \"Ada Lovelace\",\n  \"username\": \"ada_analytical\",\n  \"email\": \"ada@ analytical-engine.org\",\n  \"role\": \"Principal Architect\"\n}",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "",
+            "postResponse": "pm.test(\"Status code is 201 Created\", () => {\n  pm.expect(pm.response.code).toBe(201);\n});"
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        },
+        {
+          "id": "req-put-user",
+          "name": "PUT /users/:id",
+          "method": "PUT",
+          "url": "{{baseUrl}}/users/{{userId}}",
+          "params": [],
+          "auth": {
+            "type": "none",
+            "bearer": "",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "",
+            "apiKeyVal": "",
+            "apiKeyIn": "header"
+          },
+          "headers": [
+            {
+              "enabled": true,
+              "key": "Content-Type",
+              "value": "application/json",
+              "description": ""
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "rawLang": "json",
+            "raw": "{\n  \"id\": 1,\n  \"name\": \"Ada Lovelace (Updated)\",\n  \"email\": \"ada.updated@analytical.org\"\n}",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "",
+            "postResponse": "pm.test(\"Status code is 200 OK\", () => {\n  pm.expect(pm.response.code).toBe(200);\n});"
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        },
+        {
+          "id": "req-delete-user",
+          "name": "DELETE /users/:id",
+          "method": "DELETE",
+          "url": "{{baseUrl}}/users/{{userId}}",
+          "params": [],
+          "auth": {
+            "type": "none",
+            "bearer": "",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "",
+            "apiKeyVal": "",
+            "apiKeyIn": "header"
+          },
+          "headers": [],
+          "body": {
+            "mode": "none",
+            "rawLang": "json",
+            "raw": "",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "",
+            "postResponse": "pm.test(\"Status code is 200 OK\", () => {\n  pm.expect(pm.response.code).toBe(200);\n});"
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "col-auth",
+      "name": "Authentication API",
+      "expanded": true,
+      "requests": [
+        {
+          "id": "req-auth-login",
+          "name": "POST /auth/login",
+          "method": "POST",
+          "url": "{{authUrl}}/auth/login",
+          "params": [],
+          "auth": {
+            "type": "none",
+            "bearer": "",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "",
+            "apiKeyVal": "",
+            "apiKeyIn": "header"
+          },
+          "headers": [
+            {
+              "enabled": true,
+              "key": "Content-Type",
+              "value": "application/json",
+              "description": "Auth credentials"
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "rawLang": "json",
+            "raw": "{\n  \"username\": \"emilys\",\n  \"password\": \"emilyspass\",\n  \"expiresInMins\": 30\n}",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "console.log(\"Authenticating against DummyJSON Auth endpoint...\");",
+            "postResponse": "pm.test(\"Login returns accessToken\", () => {\n  const body = pm.response.json();\n  pm.expect(Boolean(body.accessToken || body.token)).toBe(true);\n  if (body.accessToken) {\n    pm.environment.set(\"bearerToken\", body.accessToken);\n  }\n});"
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        },
+        {
+          "id": "req-auth-register",
+          "name": "POST /auth/register",
+          "method": "POST",
+          "url": "{{authUrl}}/users/add",
+          "params": [],
+          "auth": {
+            "type": "none",
+            "bearer": "",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "",
+            "apiKeyVal": "",
+            "apiKeyIn": "header"
+          },
+          "headers": [
+            {
+              "enabled": true,
+              "key": "Content-Type",
+              "value": "application/json",
+              "description": ""
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "rawLang": "json",
+            "raw": "{\n  \"firstName\": \"Grace\",\n  \"lastName\": \"Hopper\",\n  \"age\": 38,\n  \"email\": \"grace.hopper@navy.mil\"\n}",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "",
+            "postResponse": "pm.test(\"User registered successfully\", () => {\n  pm.expect(pm.response.code).toBe(201);\n});"
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        },
+        {
+          "id": "req-auth-refresh",
+          "name": "POST /auth/refresh",
+          "method": "POST",
+          "url": "{{baseUrl}}/posts",
+          "params": [],
+          "auth": {
+            "type": "bearer",
+            "bearer": "{{bearerToken}}",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "",
+            "apiKeyVal": "",
+            "apiKeyIn": "header"
+          },
+          "headers": [
+            {
+              "enabled": true,
+              "key": "Content-Type",
+              "value": "application/json",
+              "description": ""
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "rawLang": "json",
+            "raw": "{\n  \"refreshToken\": \"{{bearerToken}}\",\n  \"expiresInMins\": 60\n}",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "",
+            "postResponse": ""
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "col-products",
+      "name": "Product API",
+      "expanded": true,
+      "requests": [
+        {
+          "id": "req-get-products",
+          "name": "GET /products",
+          "method": "GET",
+          "url": "{{authUrl}}/products?limit=5",
+          "params": [
+            {
+              "enabled": true,
+              "key": "limit",
+              "value": "5",
+              "description": "Max products per page"
+            }
+          ],
+          "auth": {
+            "type": "none",
+            "bearer": "",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "",
+            "apiKeyVal": "",
+            "apiKeyIn": "header"
+          },
+          "headers": [
+            {
+              "enabled": true,
+              "key": "Accept",
+              "value": "application/json",
+              "description": ""
+            }
+          ],
+          "body": {
+            "mode": "none",
+            "rawLang": "json",
+            "raw": "",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "",
+            "postResponse": "pm.test(\"Status code is 200 OK\", () => {\n  pm.expect(pm.response.code).toBe(200);\n});\npm.test(\"Contains products list\", () => {\n  const res = pm.response.json();\n  pm.expect(Array.isArray(res.products)).toBe(true);\n});"
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        },
+        {
+          "id": "req-get-product-id",
+          "name": "GET /products/:id",
+          "method": "GET",
+          "url": "{{authUrl}}/products/1",
+          "params": [],
+          "auth": {
+            "type": "none",
+            "bearer": "",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "",
+            "apiKeyVal": "",
+            "apiKeyIn": "header"
+          },
+          "headers": [],
+          "body": {
+            "mode": "none",
+            "rawLang": "json",
+            "raw": "",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "",
+            "postResponse": ""
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        },
+        {
+          "id": "req-post-product",
+          "name": "POST /products",
+          "method": "POST",
+          "url": "{{authUrl}}/products/add",
+          "params": [],
+          "auth": {
+            "type": "none",
+            "bearer": "",
+            "username": "",
+            "password": "",
+            "apiKeyKey": "",
+            "apiKeyVal": "",
+            "apiKeyIn": "header"
+          },
+          "headers": [
+            {
+              "enabled": true,
+              "key": "Content-Type",
+              "value": "application/json",
+              "description": ""
+            }
+          ],
+          "body": {
+            "mode": "raw",
+            "rawLang": "json",
+            "raw": "{\n  \"title\": \"Mechanical Developer Keyboard\",\n  \"price\": 189,\n  \"category\": \"peripherals\"\n}",
+            "formData": [],
+            "urlencoded": [],
+            "graphqlQuery": "",
+            "graphqlVars": "{}"
+          },
+          "scripts": {
+            "preRequest": "",
+            "postResponse": ""
+          },
+          "settings": {
+            "timeout": 15000,
+            "followRedirects": true,
+            "disableCache": false
+          }
+        }
+      ]
+    }
+  ],
+  "tabs": [],
+  "history": [],
+  "consoleLogs": []
+}

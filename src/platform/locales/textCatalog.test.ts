@@ -116,6 +116,8 @@ const UNTRANSLATED = new Set<string>([
   "CodeLLDB",
   "CodeLLDB (Rust, C, C++)",
   "CSV",
+  "HTML",
+  "XML",
   "debugpy",
   "debugpy (Python)",
   "Delve",

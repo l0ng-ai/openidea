@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode, type CSSProperties } from "react";
 import clsx from "clsx";
 import { Icon, type IconName } from "./icons";
 import { Popup } from "./Popup";
@@ -28,6 +28,7 @@ export interface SelectProps<V extends string = string> {
   /** `ghost` renders as plain text + chevron (title bar widgets). */
   variant?: "framed" | "ghost";
   className?: string;
+  style?: CSSProperties;
   "aria-label"?: string;
   /** Custom trigger content. */
   renderValue?: (option: SelectOption<V> | undefined) => ReactNode;
@@ -57,6 +58,7 @@ export function Select<V extends string = string>({
   disabled,
   variant = "framed",
   className,
+  style,
   renderValue,
   searchable = false,
   ...aria
@@ -171,6 +173,7 @@ export function Select<V extends string = string>({
         aria-label={tx(aria["aria-label"])}
         disabled={disabled}
         className={clsx(styles.trigger, styles[variant], className)}
+        style={style}
         onClick={() => (open ? setOpen(false) : openPopup())}
         onKeyDown={(e) => {
           if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {

@@ -39,6 +39,7 @@ import { activate as services } from "./services";
 import { activate as github } from "./github";
 import { activate as httpClient } from "./http-client";
 import { activate as database } from "./database";
+import { activate as restClient } from "./rest-client";
 import { activate as deployment } from "./deployment";
 import { activate as agents, activateSettingsPages as agentsPages } from "./agents";
 import { activate as vim, activateSettingsPages as vimPages } from "./vim";
@@ -83,6 +84,7 @@ const features: Array<[string, Activate]> = [
   ["github", github],
   ["http-client", httpClient],
   ["database", database],
+  ["rest-client", restClient],
   ["deployment", deployment],
   ["agents", agents],
   ["vim", vim],

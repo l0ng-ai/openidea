@@ -285,6 +285,12 @@
   position: relative;
   display: flex;
 }
+.stripeIconText {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
 .stripeLabel {
   max-width: 100%;
   font-size: var(--fs-stripe-label);

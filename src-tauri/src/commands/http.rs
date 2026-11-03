@@ -1,6 +1,7 @@
 use crate::state::AppState;
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
-use ide_http::{HistoryEntry, HttpExchange, HttpRequestBlock};
+use ide_http::{HistoryEntry, HttpExchange, HttpRequestBlock, HttpResponse, PreparedRequest};
+use std::time::Duration;
 use tauri::{State, Window};
 
 /// The requests of an `.http` file (gutter run icons, Run All).
@@ -83,4 +84,17 @@ pub fn http_history_clear(window: Window, state: State<'_, AppState>) -> IdeResu
 #[specta::specta]
 pub async fn proxy_check_connection(proxy: ide_core::settings::ProxySettings, url: String) -> IdeResult<String> {
     ide_http::client::check_connection(&proxy, &url, &ide_core::CancellationToken::new()).await
+}
+
+/// Sends an arbitrary request (REST client) without CORS/preflight constraints.
+#[tauri::command]
+#[specta::specta]
+pub async fn http_request(req: PreparedRequest, timeout_ms: Option<u64>) -> IdeResult<HttpResponse> {
+    use ide_core::CancellationToken;
+    let cancel = CancellationToken::new();
+    let fut = ide_http::exec::execute(&req, &cancel);
+    match tokio::time::timeout(Duration::from_millis(timeout_ms.unwrap_or(30_000)), fut).await {
+        Ok(r) => r,
+        Err(_) => Err(IdeError::new(ide_core::error::ErrorKind::Io, "request timed out".to_string())),
+    }
 }
