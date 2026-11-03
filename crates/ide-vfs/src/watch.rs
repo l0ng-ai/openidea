@@ -277,6 +277,15 @@ impl DirState {
                 self.watch_tree(path, true, &mut discovered);
             }
         }
+        // VCS metadata directories (`.git`, `.git/worktrees/<name>`) need
+        // watches too: a worktree registered in the main gitdir writes its
+        // entry below `.git/worktrees`, and the events in a gitdir created
+        // during this batch would otherwise never be seen.
+        for path in &batch.vcs {
+            if !self.watched.lock().contains(path) && path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                self.watch_tree(path, false, &mut discovered);
+            }
+        }
         for path in &batch.removed {
             self.unwatch_tree(path);
         }
@@ -415,7 +424,11 @@ impl EventFilter {
         let idx = comps.iter().position(|c| *c == ".git")?;
         let rest = &comps[idx + 1..];
         Some(match rest {
-            [one] => *one == "HEAD" || *one == "index" || *one == "packed-refs",
+            // `refs` and `worktrees` are directories whose creation is itself a
+            // registration event (`git init`, the first `git worktree add`);
+            // they must surface even though the depth below them is handled
+            // separately.
+            [one] => matches!(one.to_str(), Some("HEAD" | "index" | "packed-refs" | "refs" | "worktrees" | "info")),
             [first, ..] => {
                 let metadata = *first == "refs"
                     // Linked-worktree gitdirs: a worktree added or removed below
@@ -707,6 +720,12 @@ mod tests {
         // Linked-worktree gitdir metadata below the main repository.
         assert_eq!(g(".git/worktrees/wt/HEAD"), Some(true));
         assert_eq!(g(".git/worktrees/wt/index.lock"), Some(false));
+        // The depth-1 directories themselves: `git init` or the first
+        // `git worktree add` creates them in an already-watched gitdir.
+        assert_eq!(g(".git/refs"), Some(true));
+        assert_eq!(g(".git/worktrees"), Some(true));
+        assert_eq!(g(".git/info"), Some(true));
+        assert_eq!(g(".git/objects"), Some(false));
     }
 
     #[test]
@@ -878,6 +897,51 @@ mod tests {
         std::fs::write(root.join("src/after-drop.txt"), "x").unwrap();
         std::thread::sleep(Duration::from_millis(400));
         assert_eq!(batches.lock().len(), n, "no events after drop");
+    }
+
+    #[test]
+    fn per_directory_mode_follows_worktree_registrations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        for d in ["wt", ".git/refs/heads"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // The worktree's gitfile is written before any watch on the worktree
+        // directory could register it — the same window a real
+        // `git worktree add` runs into.
+        std::fs::write(root.join("wt/.git"), "gitdir: ../.git/worktrees/wt\n").unwrap();
+        let batches: Arc<Mutex<Vec<FsBatch>>> = Arc::default();
+        let sink: SharedSink = Arc::new(|_e: IdeEvent| {});
+        let watcher = {
+            let batches = batches.clone();
+            Watcher::start_with(
+                &root,
+                Vec::new(),
+                sink,
+                Box::new(move |b| batches.lock().push(b.clone())),
+                WatchMode::PerDirectory,
+            )
+            .unwrap()
+        };
+        // Registering the worktree in the main gitdir surfaces as VCS metadata
+        // (the deepest directory itself may be created before its parent gains
+        // a watch, so `.git/worktrees` is the event that reliably fires)...
+        std::fs::create_dir_all(root.join(".git/worktrees/wt")).unwrap();
+        assert!(
+            wait_for(&batches, |b| b.iter().any(|b| b.vcs.contains(&root.join(".git/worktrees")))),
+            "{:?}",
+            batches.lock()
+        );
+        // ...and the registered gitdir gains a watch, so writes inside it are
+        // seen even though nothing reported the directory itself.
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::write(root.join(".git/worktrees/wt/HEAD"), "ref: refs/heads/topic\n").unwrap();
+        assert!(
+            wait_for(&batches, |b| b.iter().any(|b| b.vcs.contains(&root.join(".git/worktrees/wt/HEAD")))),
+            "{:?}",
+            batches.lock()
+        );
+        drop(watcher);
     }
 
     #[test]
