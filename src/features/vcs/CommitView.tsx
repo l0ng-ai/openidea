@@ -32,6 +32,7 @@ import {
   T,
 } from "@/ui";
 import { editorService } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   aggregateCheck,
   buildChangeTree,
@@ -47,10 +48,11 @@ import { applyStash, commitChanges, dropStash, showUnstashDialog, stashChanges }
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
 import { moveToChangelist } from "./changelistsUi";
-import { messageHistory, setAmend, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
+import { messageHistory, setAmend, setDiffPreview, setGroupByDir, useCommit, type CommitTab } from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
-import { openDiff, withChain, workingDiffData } from "./diffInput";
+import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
+import { DiffEditor } from "./DiffEditor";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
@@ -345,6 +347,37 @@ function ChangesPanel() {
 }
 
 /**
+ * The Git window's Local Changes tab: a diff preview beside the tree when
+ * bottom-docked, below it when side-docked (off via View Options › Show Diff Preview).
+ */
+export function LocalChangesView() {
+  const preview = useCommit((s) => s.diffPreview);
+  const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
+  const anchor = useToolWindowLayout((s) => s.placements.git?.anchor ?? "bottom");
+  return (
+    <SplitGroup orientation={anchor === "bottom" ? "horizontal" : "vertical"} className={styles.split}>
+      <SplitPanel defaultSize="50%" minSize="20%">
+        <ChangesTree mode="local" />
+      </SplitPanel>
+      {preview && (
+        <>
+          <SplitHandle />
+          <SplitPanel defaultSize="50%" minSize="120px">
+            {path ? (
+              <DiffEditor input={diffInput(workingDiffData(path))} />
+            ) : (
+              <EmptyState>
+                <T>Select a file to preview its changes</T>
+              </EmptyState>
+            )}
+          </SplitPanel>
+        </>
+      )}
+    </SplitGroup>
+  );
+}
+
+/**
  * The change tree with its toolbar. `commit`: the Commit tool window's (inclusion
  * checkboxes); `local`: the Git tool window's Local Changes tab of the modal commit
  * interface (no checkboxes, a Commit… button); `dialog`: the Commit dialog's.
@@ -353,6 +386,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
+  const diffPreview = useCommit((s) => s.diffPreview);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
   const checkboxes = mode !== "local";
@@ -438,6 +472,12 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             showContextMenu(bottomLeft(viewRef.current), [
               { kind: "header", label: "Group By" },
               { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+              ...(mode === "local"
+                ? [
+                    { kind: "separator" } as const,
+                    { label: "Show Diff Preview", checked: diffPreview, run: () => setDiffPreview(!diffPreview) },
+                  ]
+                : []),
             ])
           }
         />

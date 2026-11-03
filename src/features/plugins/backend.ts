@@ -5,6 +5,7 @@
  */
 import { Channel } from "@tauri-apps/api/core";
 import type { ActiveTheme, CatalogPlugin, PluginEvent, PluginInfo, PluginsSnapshot } from "@/bindings";
+import { tx } from "@/platform/i18n";
 import { call, commands, IpcError, isTauri } from "@/platform/ipc";
 
 export interface PluginsBackend {
@@ -21,7 +22,8 @@ export interface PluginsBackend {
   /** The selected theme's resolved frame colour (`#rrggbb[aa]`), which new windows open in. */
   setThemeFrame(color: string | null): Promise<void>;
   /** Folder picker; `null` when cancelled. */
-  pickFolder(): Promise<string | null>;
+  /** A package to install: a `.zip`, or the `plugin.toml` of a folder. */
+  pickPackage(): Promise<string | null>;
   /** Subscribes to backend plugin events (this window only). */
   onEvent(handler: (e: PluginEvent) => void): () => void;
 }
@@ -45,9 +47,13 @@ export const tauriPluginsBackend: PluginsBackend = {
   setThemeFrame: async (color) => {
     await call(commands.pluginSetThemeFrame(color));
   },
-  pickFolder: async () => {
+  pickPackage: async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const picked = await open({ directory: true, multiple: false, title: "Install Plugin from Disk" });
+    const picked = await open({
+      multiple: false,
+      title: tx("Install Plugin from Disk"),
+      filters: [{ name: tx("Plugin package"), extensions: ["zip", "toml"] }],
+    });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
   onEvent: (handler) => {
@@ -247,7 +253,7 @@ export function createMemoryPluginsBackend(
       return t;
     },
     setThemeFrame: async () => {},
-    pickFolder: async () => null,
+    pickPackage: async () => null,
     onEvent: (handler) => {
       listeners.add(handler);
       return () => void listeners.delete(handler);

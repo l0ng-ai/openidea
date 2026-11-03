@@ -165,6 +165,13 @@ fn parse(text: &str) -> IdeResult<Vec<Entry>> {
         .into_iter()
         .filter_map(|v| serde_json::from_value::<Entry>(v).ok())
         .filter(|e| safe_segment(&e.id) && safe_segment(&e.version))
+        .map(|mut e| {
+            e.id = canonical_id(&e.id).to_owned();
+            if let Some(name) = provider::builtin_name(&e.id) {
+                e.name = name.to_owned();
+            }
+            e
+        })
         .collect())
 }
 
@@ -232,11 +239,16 @@ fn choose<'a>(entry: &'a Entry, platform: Platform, on_path: &dyn Fn(&str) -> bo
     None
 }
 
-/// Registry agents that are built-in ones under another id.
-const BUILTIN_ALIASES: &[&str] = &["github-copilot-cli", "qwen-code", "mistral-vibe"];
+/// Registry ids that map to a shorter built-in provider id (`<config>/agents/<id>.toml`).
+const BUILTIN_ALIASES: &[(&str, &str)] =
+    &[("github-copilot-cli", "copilot"), ("qwen-code", "qwen"), ("mistral-vibe", "vibe")];
+
+fn canonical_id(id: &str) -> &str {
+    BUILTIN_ALIASES.iter().find_map(|&(alias, canonical)| (alias == id).then_some(canonical)).unwrap_or(id)
+}
 
 fn is_builtin(id: &str) -> bool {
-    provider::is_builtin(id) || BUILTIN_ALIASES.contains(&id)
+    provider::is_builtin(canonical_id(id))
 }
 
 fn on_path(command: &str) -> bool {
@@ -387,6 +399,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Installs (or updates to) the registry's current version of `id`, streaming progress
 /// through `emit`, and points the agent file at it.
 pub fn install(paths: &RegistryPaths, id: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
+    let id = canonical_id(id);
     // The saved index is what the user picked from; fetch only when there is none.
     let text = match fs::read_to_string(&paths.cache_file) {
         Ok(text) => text,
@@ -618,6 +631,7 @@ fn install_uv(
 
 /// Deletes a registry agent's file and installed files.
 pub fn remove(paths: &RegistryPaths, id: &str) -> IdeResult<()> {
+    let id = canonical_id(id);
     if !safe_segment(id) {
         return Err(IdeError::invalid(format!("invalid agent id {id}")));
     }
@@ -945,5 +959,65 @@ mod tests {
         assert_eq!(err.kind, ErrorKind::AlreadyExists);
         assert!(remove(&p, "amp-acp").is_err());
         assert!(p.agent_file("amp-acp").exists());
+    }
+
+    #[test]
+    fn maps_github_copilot_cli_to_builtin_copilot_and_tracks_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        let index = r#"{"agents":[
+            {"id":"github-copilot-cli","name":"Copilot","version":"1.0.105",
+             "description":"GitHub's AI pair programmer",
+             "distribution":{"npx":{"package":"@github/copilot@1.0.105","args":["--acp"]}}}
+        ]}"#;
+        let entries = parse(index).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0].id.as_str(), entries[0].name.as_str()), ("copilot", "GitHub Copilot"));
+
+        let shown = visible(&p, &entries, MAC_ARM, &|c| c == "npm" || c == "node");
+        assert_eq!(shown.len(), 1);
+        assert_eq!(
+            (shown[0].id.as_str(), shown[0].name.as_str(), shown[0].installed.as_deref()),
+            ("copilot", "GitHub Copilot", None)
+        );
+
+        CustomAgent {
+            name: Some("GitHub Copilot".into()),
+            driver: Driver::Acp,
+            command: "/data/tools/copilot/1.0.104/node_modules/.bin/copilot".into(),
+            args: vec!["--acp".into()],
+            env: BTreeMap::new(),
+            registry: Some(RegistryRef { id: "copilot".into(), version: "1.0.104".into() }),
+        }
+        .write(&p.agent_file("copilot"))
+        .unwrap();
+
+        let shown = visible(&p, &entries, MAC_ARM, &|c| c == "npm" || c == "node");
+        assert_eq!((shown[0].installed.as_deref(), shown[0].update), (Some("1.0.104"), true));
+
+        write_atomic(&p.cache_file, index.as_bytes()).unwrap();
+        let spec = provider::load(Some(&p.agents_dir)).into_iter().find(|s| s.id == "copilot").unwrap();
+        assert_eq!(spec.name, "GitHub Copilot");
+        assert_eq!(spec.login_hint, "Run `copilot` in a terminal and sign in.");
+        assert_eq!(spec.source, AgentSource::Registry { version: "1.0.104".into(), update: None });
+
+        let mut providers = vec![AgentProvider {
+            id: spec.id,
+            name: spec.name,
+            command: spec.command,
+            installed: true,
+            config: vec![],
+            commands: vec![],
+            source: spec.source,
+        }];
+        mark_updates(&p, &mut providers);
+        assert_eq!(
+            providers[0].source,
+            AgentSource::Registry { version: "1.0.104".into(), update: Some("1.0.105".into()) }
+        );
+
+        remove(&p, "github-copilot-cli").unwrap();
+        let fallback = provider::load(Some(&p.agents_dir)).into_iter().find(|s| s.id == "copilot").unwrap();
+        assert_eq!(fallback.source, AgentSource::Builtin);
     }
 }
