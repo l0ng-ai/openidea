@@ -596,6 +596,10 @@ function simple(
   return { name: s.file, scope: "file", config: fileConfig(s, kind, t.command, args(t.command, t.name), debugAdapter) };
 }
 
+/** `-I<dir>` for each Sources root of the project (the project root itself is already the cwd). */
+const rubyLoadPath = (roots: readonly { path: string; kind: string }[]): string[] =>
+  roots.filter((r) => r.kind === "source" && r.path !== "").map((r) => `-I${r.path}`);
+
 const hasGoMain = (content?: string) => content === undefined || /^\s*package\s+main\b/m.test(content);
 const hasRustMain = (content?: string) =>
   content === undefined || /^(?:pub\s+)?(?:async\s+)?fn\s+main\s*\(/m.test(content);
@@ -798,6 +802,8 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
       };
     }
     case "ruby":
+      // Sources roots go on the load path (`-Ilib`), as `rake test` does; paths are project-relative.
+      return simple(lang, s, env, lang, () => [...(s.inProject ? rubyLoadPath(currentRoots()) : []), s.arg]);
     case "php":
     case "perl":
     case "lua":
