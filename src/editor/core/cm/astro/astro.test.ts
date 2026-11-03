@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { EditorState } from "@codemirror/state";
@@ -132,11 +132,18 @@ describe("Astro components", () => {
   });
 
   it("keeps a well-indented component unchanged when it is pasted", () => {
-    const state = EditorState.create({
-      extensions: [astro(), indentUnit.of("  "), EditorState.tabSize.of(2), pasteReindentFilter("indentEachLine")],
-    });
-    const pasted = state.update({ changes: { from: 0, insert: LAYOUT }, userEvent: "input.paste" }).state;
-    expect(pasted.doc.toString()).toBe(LAYOUT);
+    // CodeMirror parses for at most 20 ms per transaction and indents with the partial tree.
+    // A frozen clock lets a slow CI runner parse the whole paste.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const state = EditorState.create({
+        extensions: [astro(), indentUnit.of("  "), EditorState.tabSize.of(2), pasteReindentFilter("indentEachLine")],
+      });
+      const pasted = state.update({ changes: { from: 0, insert: LAYOUT }, userEvent: "input.paste" }).state;
+      expect(pasted.doc.toString()).toBe(LAYOUT);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("is generated from astro.grammar", () => {
