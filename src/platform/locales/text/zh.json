@@ -5912,5 +5912,9 @@
   "Delete shelved changes “{name}”": "删除搁置的更改“{name}”",
   "Rename shelved changes": "重命名搁置的更改",
   "Passed to the agent process, replacing variables of the same name. Changes apply to new sessions.": "传给智能体进程，覆盖同名变量。对新会话生效。",
-  "Expected NAME=value: {pair}": "应为 NAME=value：{pair}"
+  "Expected NAME=value: {pair}": "应为 NAME=value：{pair}",
+  "Statement in {file}": "语句位于 {file}",
+  "Mapper method in {file}": "Mapper 方法位于 {file}",
+  "Choose Statement of {name} ({count} found)": "选择 {name} 的语句（找到 {count} 个）",
+  "Choose Mapper Method of {name} ({count} found)": "选择 {name} 的 Mapper 方法（找到 {count} 个）"
 }

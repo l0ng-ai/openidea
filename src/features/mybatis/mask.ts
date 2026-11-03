@@ -48,6 +48,14 @@ export function lineAt(text: string, offset: number): number {
   return line;
 }
 
+/** 0-based UTF-16 column of `offset` inside its line. */
+export function colAt(text: string, offset: number): number {
+  const at = Math.min(offset, text.length);
+  let i = at - 1;
+  while (i >= 0 && text[i] !== "\n") i--;
+  return at - i - 1;
+}
+
 /**
  * Spans of the `spans` delimiters that are not inside another span. Used for
  * Java: `//`, `/* *\/`, `"""text blocks"""`, `"..."`, `'c'`.

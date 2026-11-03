@@ -352,6 +352,7 @@ const ICONS = {
   "gutter-implementing": "gutter/implementingMethod",
   "gutter-overridden": "gutter/overridenMethod",
   "gutter-overriding": "gutter/overridingMethod",
+  "gutter-mybatis": "openidea/mybatis/mapperJump",
   stop: "run/stop",
   rerun: "run/rerun",
   "rerun-filled": "run/rerun_stroke",
