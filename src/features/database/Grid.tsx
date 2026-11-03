@@ -307,7 +307,7 @@ export function Grid(props: GridProps) {
       {editing?.dialog && (
         <Dialog
           open
-          title={`Edit ${columns[editing.col]!.name}`}
+          title={tx`Edit ${columns[editing.col]!.name}`}
           width={720}
           onClose={() => setEditing(null)}
           buttons={[

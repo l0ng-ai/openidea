@@ -1,4 +1,5 @@
 {
+  "Edit {name}": "编辑 {name}",
   "Kotlin bridge requires a Maven build root": "Kotlin 桥接需要 Maven 构建根目录",
   "Kotlin bridge bundle is unavailable": "Kotlin 桥接扩展不可用",
   "Kotlin bridge command did not acknowledge its library snapshot": "Kotlin 桥接命令未确认类库更新",
