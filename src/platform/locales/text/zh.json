@@ -6061,5 +6061,9 @@
   "Make abstract": "设为抽象",
   "Keep abstract": "保留抽象声明",
   "Methods pulled up to an interface are declared abstract there.": "上拉到接口的方法将在接口中声明为抽象方法。",
-  "The file changed; open the dialog again": "文件已更改，请重新打开对话框"
+  "The file changed; open the dialog again": "文件已更改，请重新打开对话框",
+  "Statement in {file}": "语句位于 {file}",
+  "Mapper method in {file}": "Mapper 方法位于 {file}",
+  "Choose Statement of {name} ({count} found)": "选择 {name} 的语句（找到 {count} 个）",
+  "Choose Mapper Method of {name} ({count} found)": "选择 {name} 的 Mapper 方法（找到 {count} 个）"
 }

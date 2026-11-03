@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blankOut, lineAt, scanJava, scanXml, type MaskSource } from "./mask";
+import { blankOut, colAt, lineAt, scanJava, scanXml, type MaskSource } from "./mask";
 
 /** `text` with every masked run shown as `#`. */
 function masked(text: string, ranges: MaskSource): string {
@@ -100,5 +100,14 @@ describe("lineAt", () => {
     expect(lineAt(text, 0)).toBe(0);
     expect(lineAt(text, 2)).toBe(1);
     expect(lineAt(text, 6)).toBe(2);
+  });
+
+  it("counts the column from the start of its line", () => {
+    const text = "a\nbb\nccc";
+    expect(colAt(text, 0)).toBe(0);
+    expect(colAt(text, 2)).toBe(0);
+    expect(colAt(text, 4)).toBe(2);
+    expect(colAt(text, 6)).toBe(1);
+    expect(colAt(text, text.length)).toBe(3);
   });
 });
