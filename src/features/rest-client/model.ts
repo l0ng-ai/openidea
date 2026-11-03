@@ -121,10 +121,6 @@ export interface RestState {
 
 const STORAGE_KEY = "OPENIDEA_REST_CLIENT_STATE_V1";
 
-function asState(value: unknown): RestState {
-  return value as RestState;
-}
-
 export function createDefaultState(): RestState {
   const def = structuredClone(defaultState) as unknown as RestState;
 
@@ -634,5 +630,3 @@ export function colorizeHtml(text: string): string {
   }
   return out;
 }
-
-export { asState };
