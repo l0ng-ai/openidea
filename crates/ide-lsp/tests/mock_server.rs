@@ -1201,6 +1201,40 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn open_java_files_are_checked_again_after_a_project_update() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, a) = h.open("A.java", "class A {}");
+    let (_, b) = h.open("B.java", "class B {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let refreshed = || {
+        let mut uris: Vec<Value> = state
+            .requested("workspace/executeCommand")
+            .iter()
+            .filter(|p| p["command"] == "java.project.refreshDiagnostics")
+            .map(|p| {
+                assert_eq!(p["arguments"][1], "thisFile");
+                p["arguments"][0].clone()
+            })
+            .collect();
+        uris.sort_by_key(|u| u.to_string());
+        uris
+    };
+    // Other status messages leave the documents alone.
+    state
+        .peer()
+        .notify("language/status", json!({ "type": "Message", "message": "Updating project configurations..." }))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(refreshed().is_empty());
+
+    state.peer().notify("language/status", json!({ "type": "ProjectStatus", "message": "OK" })).unwrap();
+    let mut expected = vec![json!(uri_of(&a)), json!(uri_of(&b))];
+    expected.sort_by_key(|u| u.to_string());
+    eventually(|| refreshed() == expected).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     // Preferred installed: the alternative is never started.
     let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
