@@ -521,11 +521,15 @@ impl LspManager {
     }
 
     /// Builds (when asked), then resolves the classpath and JDK of the module at `module`.
+    /// The classpath queries take the module's workspace scheduling rule like the build
+    /// commands do, so they run under the build lock; pass `build_lock_held` when the caller
+    /// already holds it (the delegated external build), or the wait would deadlock.
     pub async fn java_launch(
         &self,
         module: &Path,
         test: bool,
         build: bool,
+        build_lock_held: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<JavaLaunchInfo> {
         let build = if build { Some(self.java_build(module, cancel).await?) } else { None };
@@ -538,14 +542,23 @@ impl LspManager {
             }
             _ => (Vec::new(), 0),
         };
-        let cp = self.java_classpath(module, test, cancel).await?;
-        let java_home = match self.java_vm_location(module, cancel).await {
-            Ok(home) => home,
-            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-            Err(e) => {
-                tracing::debug!("java.project.getSettings: {e}");
+        let (cp, java_home) = {
+            let (server, _) = self.jdtls(module, cancel).await?;
+            let _lock = if build_lock_held {
                 None
-            }
+            } else {
+                Some(cancellable_wait(cancel, server.java_build_lock.lock()).await?)
+            };
+            let cp = self.java_classpath(module, test, cancel).await?;
+            let java_home = match self.java_vm_location(module, cancel).await {
+                Ok(home) => home,
+                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                Err(e) => {
+                    tracing::debug!("java.project.getSettings: {e}");
+                    None
+                }
+            };
+            (cp, java_home)
         };
         Ok(JavaLaunchInfo {
             build,
