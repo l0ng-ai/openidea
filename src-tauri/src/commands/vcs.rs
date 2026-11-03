@@ -675,10 +675,11 @@ pub async fn vcs_shelf_diff(
 pub async fn vcs_shelf_import(
     window: Window,
     state: State<'_, AppState>,
+    repo: Option<PathBuf>,
     name: String,
     patch: String,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_shelf_import(&state.host, window.label(), name, patch).await
+    ide_host::ops::vcs::vcs_shelf_import(&state.host, window.label(), repo, name, patch).await
 }
 
 #[tauri::command]

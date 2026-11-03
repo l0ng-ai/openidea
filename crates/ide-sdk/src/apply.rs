@@ -78,7 +78,7 @@ fn jdk_setting(root: &Path, value: &str) -> Option<Result<crate::java::Jdk, Path
 /// The project JDK (`languages.java.jdk`), else the JDK the project pins for mise / asdf.
 pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
     match jdk_setting(root, &s.languages.java.jdk) {
-        Some(jdk) => jdk.inspect_err(|p| tracing::warn!("project JDK {} is not a JDK home", p.display())).ok(),
+        Some(jdk) => jdk.inspect_err(|p| tracing::warn!("project JDK {}", not_a_jdk(p))).ok(),
         None => pinned::pinned_install(root, Tool::Java).and_then(|(dir, _)| pinned::jdk_in_install(&dir)),
     }
 }
@@ -88,11 +88,23 @@ pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
 pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, String> {
     match jdk_setting(root, &s.languages.java.jdtls_jdk) {
         None => Ok(None),
+        Some(Ok(jdk)) if !ide_core::java_runtime::supports_java_bundles(&jdk.home) => {
+            Err(crate::java::server_jdk_incomplete_message(&jdk, jdk.major.max(crate::java::JDTLS_MIN_JAVA)))
+        }
         Some(Ok(jdk)) => Ok(Some(jdk)),
-        Some(Err(p)) => Err(format!(
-            "The language server JDK {} is not a JDK home (Settings › Languages & Frameworks › Java).",
-            p.display()
-        )),
+        Some(Err(p)) => {
+            Err(format!("The language server JDK {} (Settings › Languages & Frameworks › Java).", not_a_jdk(&p)))
+        }
+    }
+}
+
+/// Why the configured JDK path `p` is not used: gone (e.g. a version manager removed
+/// it on upgrade) or not a JDK.
+fn not_a_jdk(p: &Path) -> String {
+    if p.exists() {
+        format!("{} is not a JDK home", p.display())
+    } else {
+        format!("{} does not exist; choose another JDK or clear the setting to detect one", p.display())
     }
 }
 
@@ -617,10 +629,10 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
-            "python" | "pytest" => {
+            "python" | "pytest" | "django-test" => {
                 if let Some(py) = &explicit_python {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
-                    if c.kind == "python" && (runner || is_python_command(&c.command)) {
+                    if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
                             // `uv run python …` → `<interpreter> …`
                             let skip = if c.args.get(1).is_some_and(|a| is_python_command(a)) { 2 } else { 1 };

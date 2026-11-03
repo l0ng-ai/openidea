@@ -53,6 +53,8 @@ pub struct TerminalInfo {
 }
 
 struct Session {
+    /// The window that opened it: closing that window's project closes its terminals.
+    key: String,
     info: TerminalInfo,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -83,6 +85,7 @@ impl TerminalManager {
     pub fn spawn(
         &self,
         options: TerminalOptions,
+        key: String,
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
     ) -> IdeResult<TerminalInfo> {
@@ -121,6 +124,7 @@ impl TerminalManager {
         let info = TerminalInfo { id, title: shell_title(&shell), pid: child.process_id() };
         let exited = Arc::new(AtomicBool::new(false));
         let session = Arc::new(Session {
+            key,
             info: info.clone(),
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
@@ -158,6 +162,15 @@ impl TerminalManager {
             .lock()
             .resize(pty_size(cols, rows))
             .map_err(|e| IdeError::internal(format!("resize failed: {e}")))
+    }
+
+    /// Closes the terminals `key` opened: the project of that window is closing.
+    pub fn kill_key(&self, key: &str) {
+        let ids: Vec<TerminalId> =
+            self.sessions.lock().iter().filter(|(_, s)| s.key == key).map(|(id, _)| *id).collect();
+        for id in ids {
+            let _ = self.kill(id);
+        }
     }
 
     pub fn kill(&self, id: TerminalId) -> IdeResult<()> {
@@ -636,6 +649,7 @@ mod tests {
             .manager
             .spawn(
                 opts,
+                "test".into(),
                 h.sink.clone(),
                 Box::new(move |s| {
                     let _ = tx.send(s);
@@ -793,7 +807,7 @@ mod tests {
         let h = harness();
         let (other_sink, other_events) = channel_sink();
         let (mine, _rx) = spawn_collect(&h, sh("exit 1"));
-        let theirs = h.manager.spawn(sh("exit 2"), other_sink, Box::new(|_| {})).expect("spawn");
+        let theirs = h.manager.spawn(sh("exit 2"), "other".into(), other_sink, Box::new(|_| {})).expect("spawn");
         match h.events.recv_timeout(Duration::from_secs(10)).expect("exit event") {
             IdeEvent::TerminalExited { terminal, code } => assert_eq!((terminal, code), (mine.id, Some(1))),
             e => panic!("unexpected {e:?}"),

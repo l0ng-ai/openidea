@@ -87,6 +87,44 @@ it("finds the source module for an old saved configuration without a module", as
   expect(ipc.runStart).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/outside/modules" }), expect.anything());
 });
 
+it.each([["-cp", "lib/*"], []])("colours Spring Boot runs without classpath resolution (%j)", async (...classpath) => {
+  const args = ["-Xmx256m", ...classpath, "a.Main", "--spring.profiles.active=dev"];
+  const boot = { ...config, kind: "spring-boot", args };
+  const session = await startRun(boot);
+  expect(session?.status).toBe("running");
+  expect(ipc.runStart).toHaveBeenCalledWith(
+    expect.objectContaining({ args: ["-Dspring.output.ansi.enabled=always", ...args] }),
+    expect.anything(),
+  );
+  expect(ipc.javaResolveLaunch).not.toHaveBeenCalled();
+  expect(boot.args).toBe(args);
+  expect(args).not.toContain("-Dspring.output.ansi.enabled=always");
+});
+
+it.each(["never", "detect", "always"])("preserves an explicit Spring Boot console setting (%s)", async (value) => {
+  const args = [`-Dspring.output.ansi.enabled=${value}`, "-cp", "lib/*", "a.Main"];
+  await startRun({ ...config, kind: "spring-boot", args });
+  expect(ipc.runStart).toHaveBeenCalledWith(expect.objectContaining({ args }), expect.anything());
+  expect(ipc.javaResolveLaunch).not.toHaveBeenCalled();
+});
+
+it("keeps plain Java runs with an explicit classpath free of Spring Boot options", async () => {
+  const args = ["-cp", "lib/*", "a.Main"];
+  await startRun({ ...config, args });
+  expect(ipc.runStart).toHaveBeenCalledWith(expect.objectContaining({ args }), expect.anything());
+  expect(ipc.javaResolveLaunch).not.toHaveBeenCalled();
+});
+
+it("adds the Spring Boot console option once when resolving the module classpath", async () => {
+  await startRun({ ...config, kind: "spring-boot", module: "app" });
+  expect(ipc.runStart).toHaveBeenCalledWith(
+    expect.objectContaining({
+      args: ["-Dspring.output.ansi.enabled=always", "-cp", "/p/app/target/classes", "a.Main"],
+    }),
+    expect.anything(),
+  );
+});
+
 it("keeps an explicitly stored root module", async () => {
   expect(await findJavaModule({ ...config, module: "", cwd: "sibling" })).toBe("");
   expect(ipc.findFiles).not.toHaveBeenCalled();
