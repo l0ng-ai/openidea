@@ -85,6 +85,7 @@ const UNTRANSLATED = new Set<string>([
   "Cargo",
   "CMake",
   "Prettier",
+  "oxfmt",
   "IntelliJ IDEA",
   // Go environment variables and placeholder values
   "CGO",

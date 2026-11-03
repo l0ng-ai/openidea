@@ -4,7 +4,7 @@
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
 import { GoPage, JavaPage, NodePage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
-import { PrettierPage } from "../languages/PrettierPage";
+import { OxfmtPage, PrettierPage } from "../languages/FormatterPage";
 import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
 import { GoBuildTagsPage, GO_BUILD_TAG_SECTIONS } from "../languages/GoBuildTags";
@@ -117,6 +117,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 403.5,
     keywords: ["formatter", "prettier", "markdown", "yaml", "css", "format on save", "node_modules"],
     component: PrettierPage,
+  },
+  {
+    id: "languages.oxfmt",
+    projectScope: true,
+    defaultScope: "project",
+    title: "oxfmt",
+    group: LANGUAGES_GROUP,
+    order: 403.6,
+    keywords: ["formatter", "oxfmt", "oxc", ".oxfmtrc.json", "format on save", "node_modules"],
+    component: OxfmtPage,
   },
   {
     id: "languages.ruby",

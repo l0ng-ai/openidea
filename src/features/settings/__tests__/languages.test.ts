@@ -53,6 +53,16 @@ describe("languages settings", () => {
     expect(validateLanguages({ prettier: { languages: [] } }).prettier.languages).toEqual([]);
   });
 
+  it("gives oxfmt the same opt-in settings as Prettier, kept apart from them", () => {
+    expect(validateLanguages({}).oxfmt).toEqual(DEFAULT_LANGUAGES.prettier);
+    const v = validateLanguages({
+      prettier: { runOnSave: true },
+      oxfmt: { path: " ./bin/oxfmt ", languages: ["typescript", null, "typescript"], prefer: true },
+    });
+    expect(v.oxfmt).toEqual({ path: "./bin/oxfmt", languages: ["typescript"], prefer: true, runOnSave: false });
+    expect(v.prettier).toMatchObject({ runOnSave: true, prefer: false, path: "" });
+  });
+
   it("marks folders with one role each", () => {
     expect(normalizeFolder("./src/main/")).toBe("src/main");
     let ps = validateProjectStructure({ sourceRoots: ["src/", "src", 3], excluded: ["/dist"] });
@@ -77,6 +87,7 @@ describe("language pages", () => {
       "Node.js",
       "Python Interpreter",
       "Prettier",
+      "oxfmt",
       "Ruby",
       "Rust",
       "TypeScript",
