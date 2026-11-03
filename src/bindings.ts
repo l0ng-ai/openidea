@@ -4122,6 +4122,7 @@ export type LanguagesSettings = {
 	prettier?: PrettierSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
+	markdown?: MarkdownSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -4350,6 +4351,12 @@ export type ManifestDependency = {
 	/**  UTF-16 offsets of the string's contents (quotes excluded). */
 	from: number,
 	to: number,
+};
+
+/**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
+export type MarkdownSettings = {
+	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
+	previewFontSize?: number | null,
 };
 
 export type Markup = {

@@ -5373,6 +5373,8 @@
   "Pull Request branch update failed": "拉取请求分支更新失败",
   "#{n} on {branch}": "#{n} 位于 {branch}",
   "Markdown Images": "Markdown 图片",
+  "Preview font size": "预览字号",
+  "Also used by Markdown cells in Jupyter notebooks. Defaults to the editor font size, independent of the UI font size.": "同时用于 Jupyter 笔记本中的 Markdown 单元格。默认跟随编辑器字号，与 UI 字号相互独立。",
   "Image folder": "图片文件夹",
   "Relative to the Markdown file.": "相对于 Markdown 文件。",
   "Image name pattern": "图片名称格式",
