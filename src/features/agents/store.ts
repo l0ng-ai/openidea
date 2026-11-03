@@ -257,6 +257,10 @@ function onEvent(e: AgentEvent) {
       scheduleChanges(e.task);
       break;
     }
+    case "providers": {
+      void refreshProviders();
+      break;
+    }
     case "entry": {
       if (
         !e.subagent &&

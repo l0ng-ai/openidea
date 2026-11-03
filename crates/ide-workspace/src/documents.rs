@@ -821,6 +821,17 @@ impl Documents {
     /// Re-checks open file buffers, including files outside the watched roots.
     /// Call from a blocking worker; unchanged files only need their metadata.
     pub fn sync_from_disk(&self) {
+        self.sync_open_documents(false);
+    }
+
+    /// Refreshes clean buffers after an IDE operation rewrites files. Such an
+    /// operation can preserve both file length and the timestamp's millisecond.
+    /// The open document's selected codec is retained.
+    pub fn sync_after_disk_change(&self) {
+        self.sync_open_documents(true);
+    }
+
+    fn sync_open_documents(&self, force_clean: bool) {
         let slots: Vec<Slot> = self.registry.lock().docs.values().map(|e| e.slot.clone()).collect();
         let paths: Vec<PathBuf> = slots
             .iter()
@@ -830,13 +841,17 @@ impl Documents {
                     .then(|| st.path.clone())
             })
             .collect();
-        self.on_disk_changed(&paths);
+        self.reload_from_disk(&paths, force_clean);
     }
 
     /// Re-reads from disk after an external change. Clean documents reload
     /// silently; dirty ones are left alone and reported via `IdeEvent::Notify`.
     /// Changes matching our own last save are ignored.
     pub fn on_disk_changed(&self, paths: &[PathBuf]) {
+        self.reload_from_disk(paths, false);
+    }
+
+    fn reload_from_disk(&self, paths: &[PathBuf], force_clean: bool) {
         for path in paths {
             let Some(id) = self.by_path(path) else { continue };
             let result = self.with_doc(id, |st| {
@@ -845,7 +860,7 @@ impl Documents {
                 }
                 let Ok(meta) = std::fs::metadata(&st.path) else { return Ok(()) };
                 let mtime = ide_vfs::mtime_ms(&meta);
-                if mtime == st.disk_mtime && meta.len() == st.disk_len {
+                if mtime == st.disk_mtime && meta.len() == st.disk_len && (!force_clean || st.dirty) {
                     return Ok(());
                 }
                 if st.dirty {
@@ -863,9 +878,14 @@ impl Documents {
                     });
                     return Ok(());
                 }
-                let defaults = self.file_defaults();
-                let loaded = Self::load_with_defaults(&st.path, &defaults)?;
-                st.native_to_ascii = defaults.native_to_ascii_for(&st.path);
+                let loaded = if force_clean {
+                    Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?
+                } else {
+                    let defaults = self.file_defaults();
+                    let loaded = Self::load_with_defaults(&st.path, &defaults)?;
+                    st.native_to_ascii = defaults.native_to_ascii_for(&st.path);
+                    loaded
+                };
                 st.disk_mtime = loaded.mtime_ms;
                 st.disk_len = disk_len(&st.path);
                 if loaded.binary || st.binary {

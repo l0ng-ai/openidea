@@ -57,6 +57,37 @@ fn fixture() -> Fixture {
     Fixture { _tmp: tmp, root, docs, events, rec }
 }
 
+#[test]
+fn own_disk_changes_preserve_the_open_documents_encoding() {
+    let f = fixture();
+    let path = f.root.join("query.sql");
+    let original = "SELECT '中文';\r\n";
+    fs::write(&path, ide_vfs::encode(original, "gbk", false).unwrap()).unwrap();
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    f.docs.set_file_defaults(defaults.clone());
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "gbk");
+    defaults.project_fallback = "windows-1252".into();
+    f.docs.set_file_defaults(defaults);
+    f.docs.sync_after_disk_change();
+    let unchanged = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!(unchanged.text, doc.text);
+    assert_eq!(unchanged.encoding, "gbk");
+    assert!(!unchanged.dirty);
+    let changed = "SELECT '世界';\r\n";
+    let bytes = ide_vfs::encode(changed, "gbk", false).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    f.docs.sync_after_disk_change();
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!(reloaded.text, changed.replace("\r\n", "\n"));
+    assert_eq!(reloaded.encoding, "gbk");
+    assert_eq!(reloaded.line_ending, LineEnding::CrLf);
+    assert!(!reloaded.dirty);
+    f.docs.save_all().unwrap();
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
 fn change(from: u32, to: u32, insert: &str) -> ChangeSet {
     ChangeSet { changes: vec![TextChange { from, to, insert: insert.into() }] }
 }
