@@ -4244,6 +4244,7 @@ dependencies = [
  "ide-coverage",
  "ide-dap",
  "ide-db",
+ "ide-docker",
  "ide-extension",
  "ide-http",
  "ide-index",

@@ -77,4 +77,17 @@ describe("Find Action › Import Run Configurations from .vscode/launch.json", (
     expect(ipc.runImportConfigs).not.toHaveBeenCalled();
     expect(notes.at(-1)).toMatchObject({ level: "info", title: "This project has no .vscode/launch.json" });
   });
+
+  it("imports JetBrains run configurations the same way", async () => {
+    ipc.runImportSources.mockImplementation(async () => ok(["vscode"]));
+    await act(() => executeAction("run.importJetbrains"));
+    expect(useRun.getState().editorOpen).toBe(false);
+    expect(notes.at(-1)).toMatchObject({ title: "This project has no JetBrains run configurations (.run, .idea)" });
+
+    ipc.runImportSources.mockImplementation(async () => ok(["jetbrains"]));
+    render(<EditConfigsOverlay />);
+    await act(() => executeAction("run.importJetbrains"));
+    expect(await screen.findByRole("treeitem", { name: /^Django/ })).toBeInTheDocument();
+    expect(ipc.runImportConfigs).toHaveBeenCalledWith("jetbrains", []);
+  });
 });

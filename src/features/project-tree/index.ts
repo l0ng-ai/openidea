@@ -12,6 +12,7 @@ import {
   registerOverlay,
   registerProjectViewRoot,
   registerToolWindow,
+  registerUndoHandler,
   useLocalChanges,
   useProjectViewRoots,
 } from "@/workbench/contributions";
@@ -22,7 +23,7 @@ import { NewPopupHost } from "./NewPopup";
 import { RefactoringPreviewHost } from "./RefactoringPreview";
 import { ProjectHeaderActions, useProjectHeaderMenu, useProjectTitleMenu } from "./HeaderActions";
 import { loadHomeDir } from "./home";
-import { selectedNodes } from "./operations";
+import { selectedNodes, undoLastFileOperation } from "./operations";
 import { ProjectView } from "./ProjectView";
 import {
   applyFsChange,
@@ -157,6 +158,14 @@ export function activate(): () => void {
     registerOverlay({ id: "project.refactoringPreview", component: RefactoringPreviewHost }),
     registerOverlay({ id: "project.newPopup", component: NewPopupHost }),
     registerProjectActions(),
+    // Edit › Undo while the Project view has focus.
+    registerUndoHandler(
+      (command, focused) =>
+        command === "undo" &&
+        focused.getAttribute("role") === "tree" &&
+        !!focused.closest("[data-project-view]") &&
+        undoLastFileOperation(),
+    ),
     provideProjectViewSelection(() =>
       selectedNodes()
         .filter((n) => !n.group)

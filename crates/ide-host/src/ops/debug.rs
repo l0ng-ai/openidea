@@ -188,6 +188,19 @@ pub async fn debug_stop(host: &Host, _window: &str, session: DebugSessionId) -> 
     host.debugger.stop(session).await
 }
 
+/// The adapter's completions for an expression being typed in the frame `frame_id`.
+pub async fn debug_completions(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    frame_id: Option<i64>,
+    text: String,
+    line: u32,
+    column: u32,
+) -> IdeResult<Vec<ide_dap::DebugCompletion>> {
+    host.debugger.completions(session, frame_id, text, line, column).await
+}
+
 /// Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`.
 pub async fn debug_evaluate_in(
     host: &Host,
@@ -376,6 +389,18 @@ pub(crate) fn register(d: &mut Dispatcher) {
         .await
     });
     d.add("debug_stop", |c| async move { debug_stop(&c.host, &c.window, c.arg("session")?).await });
+    d.add("debug_completions", |c| async move {
+        debug_completions(
+            &c.host,
+            &c.window,
+            c.arg("session")?,
+            c.arg("frameId")?,
+            c.arg("text")?,
+            c.arg("line")?,
+            c.arg("column")?,
+        )
+        .await
+    });
     d.add("debug_evaluate_in", |c| async move {
         debug_evaluate_in(
             &c.host,

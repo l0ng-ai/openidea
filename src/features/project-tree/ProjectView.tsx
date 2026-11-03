@@ -60,7 +60,6 @@ import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
-import { lastFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import {
   cancelEditing,
   checkEditingName,
@@ -77,6 +76,7 @@ import {
   paste,
   refreshOsClipboard,
   targetFolder,
+  undoLastFileOperation,
 } from "./operations";
 import { isInside, nameOf, parentOf, splitExtension, tildify } from "./paths";
 import {
@@ -111,7 +111,7 @@ export function showNewPopup(): boolean {
   const lead = treeHandle.current?.leadKey();
   const row = lead ? document.querySelector<HTMLElement>(`[data-project-key="${CSS.escape(lead)}"]`) : null;
   const rect = (
-    row ?? document.querySelector<HTMLElement>('[role="tree"][aria-label="Project"]')
+    row ?? document.querySelector<HTMLElement>('[data-project-view] [role="tree"]')
   )?.getBoundingClientRect();
   if (!rect) return false;
   openNewPopup({ x: rect.left + 24, y: rect.bottom }, newMenuItems(targetFolder()));
@@ -705,8 +705,7 @@ export function ProjectView() {
         openMoveDialog();
         break;
       case "Meta+Z":
-        if (lastFileRefactoring()) void undoFileRefactoring();
-        else handled = false;
+        handled = undoLastFileOperation();
         break;
       case "Meta+C":
         copySelection(false);
@@ -767,6 +766,7 @@ export function ProjectView() {
     <div
       ref={containerRef}
       className={styles.view}
+      data-project-view=""
       {...OWNS_FILE_DROP}
       onKeyDown={onKeyDown}
       // The native Edit menu may take ⌘C/⌘X/⌘V before the keymap sees them; it then sends DOM clipboard events.

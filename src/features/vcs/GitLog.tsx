@@ -59,6 +59,7 @@ import {
   setLogBranches,
   setLogFilters,
   toggleCommitSelection,
+  toggleRepository,
   updateLogOptions,
   useGitLog,
 } from "./logStore";
@@ -699,7 +700,7 @@ function FilterBar() {
                 repositories.map((repo) => ({
                   label: repoName(repo),
                   checked: filters.repositories?.includes(repo) ?? false,
-                  run: () => setLogFilters({ repositories: [repo] }),
+                  run: () => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) }),
                 })),
               ),
             onClear: () => setLogFilters({ repositories: [] }),
