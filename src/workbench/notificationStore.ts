@@ -175,6 +175,11 @@ export function clearNotifications() {
   useNotifications.setState({ items: [] });
 }
 
+/** A project switch drops the previous project's notifications; app-wide ones (updates) stay. */
+export function clearProjectNotifications() {
+  useNotifications.setState((s) => ({ items: s.items.filter((x) => x.group === "updates") }));
+}
+
 /** The list was seen: everything is read and no longer shown as a balloon. */
 export function markAllNotificationsRead() {
   useNotifications.setState((s) => ({
