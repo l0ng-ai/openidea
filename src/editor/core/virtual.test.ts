@@ -10,6 +10,15 @@ vi.mock("@/platform/virtualDocs", async (importOriginal) => {
   return {
     ...actual,
     virtualDocument: vi.fn(async (uri: string): Promise<VirtualDocument> => {
+      if (uri.startsWith("csharp:"))
+        return {
+          uri,
+          text: "namespace UnityEngine;\npublic class MonoBehaviour {}\n",
+          languageId: "csharp",
+          title: "UnityEngine.MonoBehaviour.cs",
+          description: "UnityEngine.CoreModule",
+          decompiled: true,
+        };
       if (uri !== JDT && uri !== "file:///p/target/classes/Lib.class") throw new Error(`no contents for ${uri}`);
       return {
         uri,
@@ -48,6 +57,29 @@ const activeTab = () => {
 };
 
 describe("virtual editor input", () => {
+  it("opens C# assembly definitions as read-only C# tabs at their source location", async () => {
+    const uri = "csharp:/Game/Game.csproj/decompiled/UnityEngine.MonoBehaviour.cs";
+    const text = "namespace UnityEngine;\npublic class MonoBehaviour {}\n";
+    const backend = createMemoryBackend({ [uri]: text });
+    ctrl = new EditorController(backend);
+    ctrl.start();
+    await ctrl.openFile(uri, { selection: { line: 1, col: 13, endLine: 1, endCol: 26 }, focus: false });
+    const tab = activeTab();
+    expect(tab.input).toMatchObject({
+      kind: "virtual",
+      path: uri,
+      data: { decompiled: true, description: "UnityEngine.CoreModule" },
+    });
+    const slot = ctrl.slotFor(tab.id)!;
+    expect(slot.model.ctx()).toMatchObject({ language: "csharp", readOnly: true, virtual: true });
+    await expect(backend.edit(slot.model.doc, 0, [])).rejects.toMatchObject({ kind: "permissionDenied" });
+    const sel = slot.currentState().selection.main;
+    expect(slot.currentState().sliceDoc(sel.from, sel.to)).toBe("MonoBehaviour");
+    await ctrl.openFile(uri, { focus: false });
+    expect(Object.values(useTabs.getState().panes).flatMap((p) => p.tabs)).toHaveLength(1);
+    expect(JSON.stringify(serializeSession(useTabs.getState(), {}))).not.toContain("csharp:");
+  });
+
   it("describes a library class as a text input keyed by its URI", () => {
     const input = virtualInput({ uri: JDT, title: "Lib.class", description: "/m2/lib-1.0.jar", decompiled: true });
     expect(input).toMatchObject({ kind: "virtual", key: `virtual:${JDT}`, path: JDT });

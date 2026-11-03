@@ -86,6 +86,11 @@ hides generated folders and `.meta` files. Its options menu has independent
 provides the full directory tree. Unity caches and build output are excluded from indexing and search by
 default, independently of `.gitignore`.
 
+C# code insight uses Unity's generated `.sln` / `.csproj` references. With
+`csharp-ls` running, navigating to a compiled type such as `MonoBehaviour` opens
+its decompiled C# source in a read-only tab, with the originating assembly shown
+above the editor. Navigation within that source can open further library types.
+
 The Unity title bar disables Run: start the project in Unity Editor. Debug and
 the Debug shortcut open **Attach to Unity Process**. Open the project in Unity,
 enable **Preferences > External Tools > Editor Attaching** and switch Unity's
