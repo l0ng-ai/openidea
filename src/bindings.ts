@@ -585,6 +585,10 @@ export const commands = {
 	/**  Configuration templates: per-type defaults applied to new configurations. */
 	runTemplates: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_templates")),
 	runSaveTemplates: (templates: RunConfig_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_templates", { templates })),
+	/**  Project files run configurations can be imported from (`.vscode/launch.json`). */
+	runImportSources: () => typedError<RunImportSource[], IdeError>(__TAURI_INVOKE("run_import_sources")),
+	/**  Configurations read from `source`, not saved; names already in `existing` are skipped. */
+	runImportConfigs: (source: RunImportSource, existing: RunConfig_Deserialize[]) => typedError<RunImport_Serialize, IdeError>(__TAURI_INVOKE("run_import_configs", { source, existing })),
 	/**  The environment runs inherit when "Include system environment variables" is on. */
 	runSystemEnv: () => __TAURI_INVOKE<{ [key in string]: string }>("run_system_env"),
 	runStart: (config: RunConfig_Deserialize, onOutput: Channel<OutputChunk>) => typedError<RunInfo, IdeError>(__TAURI_INVOKE("run_start", { config, onOutput })),
@@ -3702,6 +3706,20 @@ export type IdentifierOccurrence = {
 
 export type IgnoreDestination = "gitignore" | "localExclude";
 
+export type ImportedRunConfig = ImportedRunConfig_Serialize | ImportedRunConfig_Deserialize;
+
+export type ImportedRunConfig_Deserialize = {
+	config: RunConfig_Deserialize,
+	/**  Keys of the source entry with no equivalent here (`preLaunchTask`, `justMyCode`…). */
+	ignored: string[],
+};
+
+export type ImportedRunConfig_Serialize = {
+	config: RunConfig_Serialize,
+	/**  Keys of the source entry with no equivalent here (`preLaunchTask`, `justMyCode`…). */
+	ignored: string[],
+};
+
 export type IndentConfig = IndentConfig_Serialize | IndentConfig_Deserialize;
 
 export type IndentConfig_Deserialize = {
@@ -5490,6 +5508,32 @@ export type RunExtras_Serialize = {
 /**  A process started from a run configuration. */
 export type RunId = number;
 
+/**  What an import found: configurations to add and entries left out, with the reason. */
+export type RunImport = RunImport_Serialize | RunImport_Deserialize;
+
+/**  A project file run configurations can be imported from. */
+export type RunImportSource = 
+/**  VS Code's `.vscode/launch.json`. */
+"vscode";
+
+/**  What an import found: configurations to add and entries left out, with the reason. */
+export type RunImport_Deserialize = {
+	source: RunImportSource,
+	/**  The file read, relative to the project root. */
+	file: string,
+	imported: ImportedRunConfig_Deserialize[],
+	skipped: SkippedRunConfig[],
+};
+
+/**  What an import found: configurations to add and entries left out, with the reason. */
+export type RunImport_Serialize = {
+	source: RunImportSource,
+	/**  The file read, relative to the project root. */
+	file: string,
+	imported: ImportedRunConfig_Serialize[],
+	skipped: SkippedRunConfig[],
+};
+
 export type RunInfo = {
 	id: RunId,
 	configId: string,
@@ -5839,6 +5883,29 @@ export type SignatureHelp = {
 	signatures: Signature[],
 	activeSignature: number,
 	activeParameter: number,
+};
+
+export type SkipReason = 
+/**  A configuration with this name already exists. */
+{ kind: "nameTaken" } | 
+/**  The debugger type (`type`) has no equivalent here, e.g. `cppdbg`. */
+{ kind: "unsupportedType"; type: string } | 
+/**  A `request` other than `launch` and `attach`. */
+{ kind: "unsupportedRequest"; request: string } | 
+/**  An attach other than to a host and port (to a process id, or listening for it). */
+{ kind: "unsupportedAttach" } | 
+/**  Uses a variable only known when VS Code starts it (`${file}`, `${input:…}`, `${command:…}`). */
+{ kind: "variable"; variable: string } | 
+/**  No program, module or command. */
+{ kind: "nothingToRun" } | 
+/**  A compound member that is neither imported nor an existing configuration. */
+{ kind: "missingMember"; member: string } | 
+/**  Not an object with a name. */
+{ kind: "invalid" };
+
+export type SkippedRunConfig = {
+	name: string,
+	reason: SkipReason,
 };
 
 /**  Editor › General › Smart Keys. */

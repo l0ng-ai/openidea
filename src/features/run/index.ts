@@ -5,7 +5,7 @@
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext } from "@/platform/context";
-import { onIdeEvent, type RunConfig } from "@/platform/ipc";
+import { call, commands, onIdeEvent, type RunConfig, type RunImportSource } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, type MenuItem } from "@/ui";
@@ -405,6 +405,27 @@ export function activate(): () => void {
             chooserOpen: false,
             editTarget: typeof arg === "string" ? arg : null,
           });
+        },
+      },
+      {
+        id: "run.importVscodeLaunch",
+        title: "Import Run Configurations from .vscode/launch.json",
+        category: "Run",
+        when: "projectOpen",
+        keywords: ["launch.json", "vscode", "visual studio code", "debug configuration"],
+        run: async () => {
+          const sources = await call(commands.runImportSources()).catch((): RunImportSource[] => []);
+          if (!sources.includes("vscode")) {
+            notifications().notify({
+              group: "run",
+              level: "info",
+              title: "This project has no .vscode/launch.json",
+              key: "run-import",
+            });
+            return;
+          }
+          await ensureConfigs();
+          useRun.setState({ editorOpen: true, chooserOpen: false, editTarget: null, editImport: "vscode" });
         },
       },
       {

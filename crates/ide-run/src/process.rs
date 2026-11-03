@@ -784,14 +784,19 @@ fn launch_env(root: &Path, config: &RunConfig) -> IdeResult<LaunchEnv> {
     Ok(LaunchEnv { clear: !extras.include_system_env, vars })
 }
 
+/// What a run inherits with "Include system environment variables" on: this process's
+/// variables and the login shell's ones it lacks.
+pub(crate) fn inherited_env() -> BTreeMap<String, String> {
+    let mut vars = crate::system_env();
+    vars.extend(
+        ide_core::process::shell_env().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))),
+    );
+    vars
+}
+
 pub(crate) fn resolved_env(root: &Path, config: &RunConfig) -> IdeResult<BTreeMap<String, String>> {
     let env = launch_env(root, config)?;
-    let mut vars = if env.clear { BTreeMap::new() } else { crate::system_env() };
-    if !env.clear {
-        vars.extend(
-            ide_core::process::shell_env().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))),
-        );
-    }
+    let mut vars = if env.clear { BTreeMap::new() } else { inherited_env() };
     vars.extend(env.vars);
     Ok(vars)
 }
