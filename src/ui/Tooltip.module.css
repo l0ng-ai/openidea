@@ -6,7 +6,6 @@
   align-items: center;
   gap: 8px;
   max-width: min(720px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
   padding: 6px 10px;
   border-radius: var(--radius-tooltip, 6px);
   background: var(--bg-tooltip);
@@ -14,7 +13,7 @@
   box-shadow: var(--shadow-tooltip);
   color: var(--fg-tooltip);
   font-size: var(--fs-ui);
-  line-height: 18px;
+  line-height: 16px;
   pointer-events: none;
   opacity: 0;
 }
@@ -22,11 +21,10 @@
   opacity: 1;
   transition: opacity var(--dur-fast) var(--ease);
 }
+/* Long paths wrap inside the bubble; the shortcut stays on one line. */
 .text {
   min-width: 0;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  word-break: break-word;
 }
 .shortcut {
   font-family: var(--font-keys);
