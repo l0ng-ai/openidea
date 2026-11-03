@@ -109,8 +109,9 @@ There is no build step. The package *is* the folder.
 1. Copy `templates/theme-plugin` and rename `id`, `name` and the theme files.
 2. Edit the colours. Keep `kind` truthful (`light` for light backgrounds).
 3. **Install:** *Settings › Plugins › ⚙ › Install Plugin from Disk…* (or the
-   *Install Plugin from Disk…* action) and pick the package's `plugin.toml`, or
-   a `.zip` of the folder. The manifest and the files it references are copied to
+   *Install Plugin from Disk…* action) and pick the package folder, or
+   *Install Plugin from Package File…* and pick its `plugin.toml` or a `.zip` of
+   the folder. The manifest and the files it references are copied to
    `<app-data>/plugins/<id>/`.
 4. **Apply:** in *Settings › Plugins*, select the plugin and press *Apply* next
    to the theme. *Use Default Theme* switches back.

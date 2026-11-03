@@ -141,7 +141,31 @@ fn safe_path(name: &str) -> Option<PathBuf> {
     (!name.is_empty() && p.components().all(|c| matches!(c, Component::Normal(_)))).then(|| p.to_path_buf())
 }
 
-/// Extracts the package `archive` into the empty directory `dest`, refusing
+/// Archiver metadata at the top of an archive, not part of a package
+/// (`__MACOSX/…`, `.DS_Store`, AppleDouble `._…` files).
+fn archiver_metadata(name: &str) -> bool {
+    let top = name.split('/').next().unwrap_or_default();
+    top == "__MACOSX" || top == ".DS_Store" || (top.starts_with("._") && top.len() > 2)
+}
+
+/// Where the package is inside an archive: at its root (`.oiplugin`, or a zip
+/// of the package's contents) or in its only folder (a zip of the package
+/// folder). `None` when neither holds a manifest.
+fn package_prefix(names: &[String]) -> Option<String> {
+    if names.iter().any(|n| n == MANIFEST_FILE) {
+        return Some(String::new());
+    }
+    let mut tops = names.iter().filter(|n| !archiver_metadata(n)).map(|n| n.split('/').next().unwrap_or_default());
+    let top = tops.next()?;
+    if tops.any(|t| t != top) {
+        return None;
+    }
+    let prefix = format!("{top}/");
+    names.iter().any(|n| *n == format!("{prefix}{MANIFEST_FILE}")).then_some(prefix)
+}
+
+/// Extracts the package `archive` (an `.oiplugin`, or a `.zip` of a package
+/// folder or of its contents) into the empty directory `dest`, refusing
 /// paths leaving it, links, and oversized contents.
 pub fn unpack(archive: &Path, dest: &Path) -> Result<Unpacked, String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
@@ -150,6 +174,17 @@ pub fn unpack(archive: &Path, dest: &Path) -> Result<Unpacked, String> {
     if zip.len() > MAX_ENTRIES {
         return Err(format!("more than {MAX_ENTRIES} files"));
     }
+    let mut names = Vec::with_capacity(zip.len());
+    for i in 0..zip.len() {
+        let entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        if !entry.is_dir() {
+            names.push(entry.name().map_err(|e| e.to_string())?.into_owned());
+        }
+    }
+    // An IntelliJ plugin or any other zip: say what is missing rather than fail later.
+    let prefix = package_prefix(&names).ok_or_else(|| {
+        format!("{} is not an OpenIDEA plugin: no {MANIFEST_FILE} at its root or in its only folder", archive.display())
+    })?;
     std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
     let (mut files, mut signature, mut total, mut manifest) = (Vec::new(), None, 0u64, false);
     for i in 0..zip.len() {
@@ -157,11 +192,16 @@ pub fn unpack(archive: &Path, dest: &Path) -> Result<Unpacked, String> {
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().map_err(|e| e.to_string())?.into_owned();
-        if entry.is_symlink() {
-            return Err(format!("{name}: links are not allowed in packages"));
+        let full = entry.name().map_err(|e| e.to_string())?.into_owned();
+        // Outside the package folder there is only archiver metadata (`package_prefix` checked).
+        let Some(name) = full.strip_prefix(&prefix).map(str::to_owned) else { continue };
+        if archiver_metadata(&name) {
+            continue;
         }
-        let rel = safe_path(&name).ok_or_else(|| format!("invalid path {name:?} in package"))?;
+        if entry.is_symlink() {
+            return Err(format!("{full}: links are not allowed in packages"));
+        }
+        let rel = safe_path(&name).ok_or_else(|| format!("invalid path {full:?} in package"))?;
         let mut bytes = Vec::new();
         entry.by_ref().take(MAX_TOTAL - total + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
         total += bytes.len() as u64;
@@ -374,5 +414,52 @@ mod tests {
         assert!(err.contains("invalid path"), "{err}");
         assert!(!tmp.path().join("outside.txt").exists());
         assert!(Index::parse(r#"{"format": 2}"#).is_err());
+    }
+
+    fn zip_of(path: &Path, entries: &[(&str, &str)]) {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, body) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn a_zip_holds_the_package_at_its_root_or_in_its_only_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = "id = \"acme.tools\"";
+        let at_root = tmp.path().join("root.zip");
+        zip_of(&at_root, &[(MANIFEST_FILE, manifest), ("dist/plugin.wasm", "w"), (".DS_Store", "x")]);
+        let got = unpack(&at_root, &tmp.path().join("a")).unwrap();
+        assert_eq!(got.files, [PathBuf::from("dist/plugin.wasm")]);
+
+        // What zipping the folder in Finder makes: the folder plus `__MACOSX`.
+        let folder = tmp.path().join("folder.zip");
+        zip_of(
+            &folder,
+            &[
+                ("acme-tools/plugin.toml", manifest),
+                ("acme-tools/dist/plugin.wasm", "w"),
+                ("__MACOSX/acme-tools/._plugin.toml", "x"),
+            ],
+        );
+        let dest = tmp.path().join("b");
+        let got = unpack(&folder, &dest).unwrap();
+        assert_eq!(got.files, [PathBuf::from("dist/plugin.wasm")]);
+        assert!(dest.join(MANIFEST_FILE).is_file());
+        assert!(!dest.join("__MACOSX").exists() && !dest.join("acme-tools").exists());
+
+        // Two folders, a manifest one level too deep, or none (an IntelliJ plugin): not a package.
+        for (name, entries) in [
+            ("two.zip", &[("a/plugin.toml", manifest), ("b/x.txt", "x")][..]),
+            ("deep.zip", &[("a/b/plugin.toml", manifest)][..]),
+            ("intellij.zip", &[("my-plugin/lib/my-plugin.jar", "jar")][..]),
+        ] {
+            let path = tmp.path().join(name);
+            zip_of(&path, entries);
+            let err = unpack(&path, &tmp.path().join(name).with_extension("out")).unwrap_err();
+            assert!(err.contains("is not an OpenIDEA plugin"), "{name}: {err}");
+        }
     }
 }

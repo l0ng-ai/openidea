@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EditorSelection, EditorState } from "@codemirror/state";
@@ -270,6 +270,35 @@ describe("store", () => {
     expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night");
     await selectPluginTheme(null, null);
     expect(usePlugins.getState().activeTheme).toBeNull();
+  });
+
+  it("installs from a folder, its plugin.toml, or a package file unpacked first", async () => {
+    setConsentPrompt(async () => ({ optional: [] }));
+    for (const [picked, unpacked] of [
+      ["plugins/hello", null],
+      ["plugins/hello/plugin.toml", null],
+      ["C:\\plugins\\hello\\Plugin.TOML", null],
+      ["/downloads/hello.zip", "/downloads/hello.zip"],
+      ["/downloads/hello-1.0.0.oiplugin", "/downloads/hello-1.0.0.oiplugin"],
+    ] as const) {
+      const unpack = vi.fn(async () => "plugins/hello");
+      const preview = vi.fn();
+      const backend = createMemoryPluginsBackend([], sampleCatalog());
+      setPluginsBackend({
+        ...backend,
+        unpackPackage: unpack,
+        previewInstall: (path) => {
+          preview(path);
+          return backend.previewInstall("plugins/hello");
+        },
+        installDir: (_path, consent) => backend.installDir("plugins/hello", consent),
+      });
+      expect(await installFromDisk(picked)).toBe("hello");
+      expect(unpack.mock.calls).toEqual(unpacked ? [[unpacked]] : []);
+      const folder = unpacked ? "plugins/hello" : picked.replace(/[\\/]plugin\.toml$/i, "");
+      expect(preview).toHaveBeenCalledWith(folder);
+      usePlugins.setState({ plugins: [] });
+    }
   });
 
   it("asks for consent before installing and passes the answer on", async () => {

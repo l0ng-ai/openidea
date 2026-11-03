@@ -24,6 +24,7 @@ import type {
   Viewport,
   WorkbenchEvent,
 } from "@/bindings";
+import { tx } from "@/platform/i18n";
 import { call, commands, IpcError, isTauri } from "@/platform/ipc";
 
 export interface PluginsBackend {
@@ -63,11 +64,11 @@ export interface PluginsBackend {
   setMarketUrl(url: string | null): Promise<void>;
   /** Downloads and checks a marketplace plugin; the folder to install from. */
   marketDownload(id: string): Promise<string>;
-  /** Unpacks a `.oiplugin` package file; the folder to install from. */
+  /** Unpacks a package file (`.oiplugin` or `.zip`); the folder to install from. */
   unpackPackage(path: string): Promise<string>;
   /** Goes back to the version the last update replaced. */
   rollBack(id: string): Promise<PluginInfo>;
-  /** File picker for a package file; `null` when cancelled. */
+  /** File picker for a package: an `.oiplugin`, a `.zip` or a folder's `plugin.toml`; `null` when cancelled. */
   pickPackage(): Promise<string | null>;
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
@@ -159,8 +160,8 @@ export const tauriPluginsBackend: PluginsBackend = {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({
       multiple: false,
-      title: "Install Plugin from Package File",
-      filters: [{ name: "OpenIDEA plugin", extensions: ["oiplugin"] }],
+      title: tx("Install Plugin from Package File"),
+      filters: [{ name: tx("Plugin package"), extensions: ["oiplugin", "zip", "toml"] }],
     });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },

@@ -636,7 +636,9 @@ granted, and starts the approved program.
 ## 7. Installing and developing
 
 - **Install:** Settings › Plugins › _Install Plugin from Disk…_ (a package
-  folder) or _Install Plugin from Package File…_ (a `.oiplugin`). The install
+  folder) or _Install Plugin from Package File…_ (a `.oiplugin`, a `.zip` with
+  the package at its root or in its only folder, or a folder's `plugin.toml`;
+  a zip without a `plugin.toml` there, such as an IntelliJ plugin, is refused). The install
   page lists every capability and whether the package is signed by a publisher
   the marketplace trusts; nothing is copied until you accept.
 - **Versions:** installed plugins live in `<app-data>/plugins/<id>/<version>/`

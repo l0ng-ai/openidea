@@ -13,7 +13,7 @@ import type {
 } from "@/bindings";
 import { activeEditor } from "@/editor/api";
 import { notifications } from "@/workbench/contributions";
-import { pluginsBackend } from "./backend";
+import { pluginsBackend, type PluginsBackend } from "./backend";
 
 export const SETTINGS_PAGE_ID = "plugins";
 
@@ -256,22 +256,32 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+/** The folder to install from for what the user picked; `.oiplugin` / `.zip` files are unpacked. */
+async function packageFolder(backend: PluginsBackend, picked: string): Promise<string> {
+  const lower = picked.toLowerCase();
+  if (lower.endsWith(".oiplugin") || lower.endsWith(".zip")) return backend.unpackPackage(picked);
+  // A folder's manifest stands for the folder.
+  const manifest = /[\\/]plugin\.toml$/i.exec(picked);
+  return manifest ? picked.slice(0, manifest.index) : picked;
+}
+
 /**
- * Asks for a plugin folder (containing plugin.toml), shows what it may do,
- * and installs it with the user's consent. Returns the new plugin id.
+ * Asks for a plugin (a folder, its `plugin.toml`, or an `.oiplugin` / `.zip`
+ * package file), shows what it may do, and installs it with the user's
+ * consent. Returns the new plugin id.
  */
 export async function installFromDisk(path?: string, packageFile = false): Promise<string | null> {
   const backend = pluginsBackend();
   let dir: string | null = path ?? null;
   try {
     dir ??= packageFile ? await backend.pickPackage() : await backend.pickFolder();
-    // A package file (`.oiplugin`) is unpacked first; signed ones are checked on the install page.
-    if (dir?.endsWith(".oiplugin")) dir = await backend.unpackPackage(dir);
+    // Package files are unpacked first; signed ones are checked on the install page.
+    if (dir) dir = await packageFolder(backend, dir);
   } catch (e) {
     notifications().notify({
       group: "plugins",
       level: "error",
-      title: packageFile ? "Could not open the package" : "Could not open the folder picker",
+      title: packageFile ? "Could not open the package" : "Could not open the file picker",
       body: errorText(e),
     });
     return null;

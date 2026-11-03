@@ -152,7 +152,7 @@ impl PluginHost {
         Ok(dir)
     }
 
-    /// Unpacks a package file (`.oiplugin`) next to the downloads; returns the folder.
+    /// Unpacks a package file (`.oiplugin`, or a `.zip` of a package) next to the downloads; returns the folder.
     pub fn unpack_package(&self, archive: &Path) -> IdeResult<PathBuf> {
         let stem = archive.file_stem().and_then(|s| s.to_str()).unwrap_or("package");
         let dir = self.plugins_dir.join(DOWNLOADS).join(format!("{stem}-{}", std::process::id()));

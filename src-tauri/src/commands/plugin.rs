@@ -498,7 +498,7 @@ pub async fn plugin_market_download(state: State<'_, AppState>, id: String) -> I
     blocking(move || host.download_market_plugin(&id)).await
 }
 
-/// Unpacks a package file (`.oiplugin`); returns the folder for the install page.
+/// Unpacks a package file (`.oiplugin` or `.zip`); returns the folder for the install page.
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_unpack_package(state: State<'_, AppState>, path: PathBuf) -> IdeResult<PathBuf> {

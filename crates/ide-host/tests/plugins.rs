@@ -2116,3 +2116,50 @@ fn official_excalidraw_installs_and_serves_its_page() {
     assert!(f.host.languages().iter().any(|l| l.id.as_str() == "excalidraw"));
     assert_eq!(f.host.assets("openidea.excalidraw", "fileIcon/excalidraw/").unwrap().len(), 2);
 }
+
+/// Zips `dir` as an archiver does: the folder itself at the top, plus macOS metadata.
+fn zip_folder(dir: &Path, out: &Path) {
+    use std::io::Write;
+    let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(out).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    let mut stack = vec![(dir.to_path_buf(), name.clone())];
+    while let Some((real, rel)) = stack.pop() {
+        for entry in std::fs::read_dir(&real).unwrap().flatten() {
+            let (path, rel) = (entry.path(), format!("{rel}/{}", entry.file_name().to_string_lossy()));
+            if path.is_dir() {
+                stack.push((path, rel));
+            } else {
+                zip.start_file(rel, options).unwrap();
+                zip.write_all(&std::fs::read(&path).unwrap()).unwrap();
+            }
+        }
+    }
+    zip.start_file(format!("__MACOSX/{name}/._plugin.toml"), options).unwrap();
+    zip.write_all(b"metadata").unwrap();
+    zip.finish().unwrap();
+}
+
+#[test]
+fn a_zipped_plugin_folder_installs_like_the_folder() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let archive = tmp.path().join("language-toy.zip");
+    zip_folder(&sample("language-toy"), &archive);
+
+    let dir = f.host.unpack_package(&archive).unwrap();
+    let preview = f.host.preview_install(&dir).unwrap();
+    assert_eq!(preview.id, "language-toy");
+    assert!(preview.unsigned);
+    let info = f.host.install_from_dir(&dir, &Consent::all()).unwrap();
+    assert_eq!(info.id, "language-toy");
+    assert_eq!(f.host.languages().len(), 1);
+
+    // A zip that isn't an OpenIDEA plugin says so.
+    let other = tmp.path().join("intellij-plugin.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&other).unwrap());
+    zip.start_file("my-plugin/lib/my-plugin.jar", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.finish().unwrap();
+    let err = f.host.unpack_package(&other).unwrap_err().message;
+    assert!(err.contains("is not an OpenIDEA plugin"), "{err}");
+}
