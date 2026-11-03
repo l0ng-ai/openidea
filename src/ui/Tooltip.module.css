@@ -15,7 +15,8 @@
   font-size: var(--fs-ui);
   line-height: 16px;
   pointer-events: none;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   opacity: 0;
 }
 .tooltip[data-placed] {
