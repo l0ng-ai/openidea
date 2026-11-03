@@ -1956,6 +1956,7 @@
   "Select JDK Home Directory": "选择 JDK 主目录",
   "Select Local Repository": "选择本地仓库",
   "Select Maven Home Directory": "选择 Maven 主目录",
+  "Select Search Directory": "选择查找目录",
   "Select Maven settings.xml": "选择 Maven settings.xml",
   "Select Next Tab": "选择下一个标签页",
   "Select Opened File": "选择已打开的文件",
