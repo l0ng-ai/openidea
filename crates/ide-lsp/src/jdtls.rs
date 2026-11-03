@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 
 const SERVER: &str = "jdtls";
 
+pub(crate) mod configuration;
 mod formatter;
+pub(crate) mod reserved_names;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
@@ -520,11 +522,15 @@ impl LspManager {
     }
 
     /// Builds (when asked), then resolves the classpath and JDK of the module at `module`.
+    /// The classpath queries take the module's workspace scheduling rule like the build
+    /// commands do, so they run under the build lock; pass `build_lock_held` when the caller
+    /// already holds it (the delegated external build), or the wait would deadlock.
     pub async fn java_launch(
         &self,
         module: &Path,
         test: bool,
         build: bool,
+        build_lock_held: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<JavaLaunchInfo> {
         let build = if build { Some(self.java_build(module, cancel).await?) } else { None };
@@ -537,14 +543,23 @@ impl LspManager {
             }
             _ => (Vec::new(), 0),
         };
-        let cp = self.java_classpath(module, test, cancel).await?;
-        let java_home = match self.java_vm_location(module, cancel).await {
-            Ok(home) => home,
-            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-            Err(e) => {
-                tracing::debug!("java.project.getSettings: {e}");
+        let (cp, java_home) = {
+            let (server, _) = self.jdtls(module, cancel).await?;
+            let _lock = if build_lock_held {
                 None
-            }
+            } else {
+                Some(cancellable_wait(cancel, server.java_build_lock.lock()).await?)
+            };
+            let cp = self.java_classpath(module, test, cancel).await?;
+            let java_home = match self.java_vm_location(module, cancel).await {
+                Ok(home) => home,
+                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                Err(e) => {
+                    tracing::debug!("java.project.getSettings: {e}");
+                    None
+                }
+            };
+            (cp, java_home)
         };
         Ok(JavaLaunchInfo {
             build,
@@ -647,6 +662,24 @@ impl LspManager {
             tracing::debug!("vscode.java.updateDebugSettings: {e}");
         }
         parse_port(&v).ok_or_else(|| IdeError::new(ErrorKind::Protocol, format!("unexpected debug server port: {v}")))
+    }
+}
+
+impl LspManager {
+    /// JDT LS aborted its import with `message`: when reserved Windows device names
+    /// below `root` are the cause, say which (once). The walk runs off the RPC thread.
+    pub(crate) fn report_import_failure(&self, root: PathBuf, message: String) {
+        let Some(me) = self.me.upgrade() else { return };
+        self.runtime.spawn_blocking(move || {
+            let Some(body) = reserved_names::import_failure_hint(&root, &message, cfg!(windows)) else { return };
+            if me.first_message(SERVER, &body) {
+                me.sink().emit(ide_core::IdeEvent::Notify {
+                    level: ide_core::event::NotifyLevel::Error,
+                    title: "Java project import failed".into(),
+                    body: Some(body),
+                });
+            }
+        });
     }
 }
 

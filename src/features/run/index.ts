@@ -45,6 +45,7 @@ import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
+import { npmGutter } from "./npmGutter";
 import { runGutter } from "./runGutter";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
 import { clearRuntimeCache } from "./runtimes";
@@ -283,6 +284,7 @@ export function activate(): () => void {
     listenForApplicationDeactivation(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
+    registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
     registerMenuGroup({
       id: "run.context",
       menus: ["editor", "projectView", "editorTab"],
@@ -538,7 +540,14 @@ export function activate(): () => void {
     }),
     // Detected configs carry the selected toolchains (interpreter, JDK, Maven home and options).
     onIdeEvent("settingsChanged", (e) => {
-      if (e.key === "languages" || e.key.startsWith("languages.")) scheduleReload();
+      if (
+        !e.key ||
+        e.key === "languages" ||
+        e.key.startsWith("languages.") ||
+        e.key === "cmake" ||
+        e.key.startsWith("cmake.")
+      )
+        scheduleReload();
     }),
   );
 

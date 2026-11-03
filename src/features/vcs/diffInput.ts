@@ -6,6 +6,7 @@ import { baseName, effectiveKind } from "./model";
 import { readWorkingText } from "./ops";
 import { renamedFromPath } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
+import { repositoryPath } from "./repositoryPaths";
 
 export type DiffSide =
   /** File content at a git revision (`HEAD`, `:0` = index, a commit id, `<id>^`). */
@@ -144,7 +145,7 @@ export function workingDiffData(path: string, line?: number): DiffData {
 
 /** A path of the selected repository's log (repository-relative) made absolute. */
 function joinRoot(rel: string, root = currentRepoRoot()): string {
-  return root ? `${root}/${rel}` : rel;
+  return repositoryPath(root, rel);
 }
 
 /** Diff of one file changed by `commit` (first parent ↔ commit). */

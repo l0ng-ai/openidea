@@ -48,7 +48,12 @@ import { badgeKind } from "@/ui/symbolKind";
 import { contextMenuItems, menuGroupContext, newMenuItems } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
 import { presentationIcon, useJvmPresentation } from "@/platform/filePresentation";
-import { moduleFolderIcon, useProjectPresentation, type BuildPresentation } from "@/platform/projectPresentation";
+import {
+  isModuleFolder,
+  moduleFolderIcon,
+  useProjectPresentation,
+  type BuildPresentation,
+} from "@/platform/projectPresentation";
 import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
 import { useHomeDir } from "./home";
@@ -270,6 +275,8 @@ const Row = memo(function Row({
     node.dir || node.placeholder || node.icon
       ? iconFor(node, roots, root, build, detected)
       : presentationIcon(node.path, file, roots, root, build.spring);
+  const moduleFolder =
+    node.dir && !node.placeholder && !!root && isModuleFolder(relativePath(root, node.path), node.root, build.modules);
   const isEditing =
     !!editing && (node.placeholder ? editing.kind === "new" : editing.kind === "rename" && editing.key === node.key);
   const faded = node.ignored || deco.faded;
@@ -310,6 +317,8 @@ const Row = memo(function Row({
               node.root && styles.rootName,
               // Only the project itself is bold (IDEA); contributed roots like Scratches are not.
               node.root && !node.icon && styles.rootLabel,
+              // Maven / Gradle module folders are bold too, as in IDEA.
+              moduleFolder && styles.moduleLabel,
               faded && !deco.color && styles.excluded,
               deco.error && styles.error,
             )}
@@ -529,10 +538,11 @@ export function ProjectView() {
   const dragged = useRef(false);
 
   const onRowClick = useCallback((node: ProjectNode, e: ReactMouseEvent) => {
-    if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.detail > 1) return;
+    if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
     if (node.placeholder || dragged.current) return;
     const { options: o, editing: ed } = useProjectTree.getState();
     if (ed) return;
+    if (e.detail > 1 && !(node.dir && o.singleClickExpand && e.detail % 2 === 1)) return;
     if (node.dir) {
       if (o.singleClickExpand) toggleExpanded(node);
       return;

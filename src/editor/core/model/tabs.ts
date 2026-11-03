@@ -113,6 +113,7 @@ export interface OpenTabOptions {
   /** Insert at this index instead of after the active tab. */
   index?: number;
   activate?: boolean;
+  preservePreview?: boolean;
 }
 
 export function openTab(
@@ -152,7 +153,7 @@ export function openTab(
     tabs.splice(index, 0, tab);
   }
   let active = pane.active;
-  if (!tab.preview && tabs.some((t) => t.preview)) {
+  if (!tab.preview && !opts.preservePreview && tabs.some((t) => t.preview)) {
     // A new regular editor closes the preview tab (IDEA trims previews on every open).
     const previews = new Set(tabs.filter((t) => t.preview).map((t) => t.id));
     tabs.splice(0, tabs.length, ...tabs.filter((t) => !previews.has(t.id)));

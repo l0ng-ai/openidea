@@ -24,6 +24,7 @@ import { debugUnsupportedReason, launchConfigFor } from "./launch";
 import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
 import {
   activeSession,
+  resumeExecution,
   evaluate,
   isLive,
   rerunSession,
@@ -89,7 +90,10 @@ function breakpointPathAllowed(path: string): boolean {
 export function runToLine(path: string, line: number) {
   const t = pausedTarget();
   if (t && breakpointPathAllowed(path))
-    void report("Run to Cursor failed", call(commands.debugRunTo(t.s.id, t.thread, path, line, false)));
+    void report(
+      "Run to Cursor failed",
+      resumeExecution(t.s.id, () => call(commands.debugRunTo(t.s.id, t.thread, path, line, false))),
+    );
 }
 
 function notSupported(what: string, s: DebugSession) {
@@ -115,15 +119,17 @@ async function smartStepInto() {
   if (!t) return;
   const frame = selectedFrame(t.s);
   if (!frame || !sessionSupports("stepInTargets", t.s)) {
-    await call(commands.debugStep(t.s.id, t.thread, "into"));
+    await resumeExecution(t.s.id, () => call(commands.debugStep(t.s.id, t.thread, "into")));
     return;
   }
   const targets = pausedLineTargets(await call(commands.debugStepInTargets(t.s.id, frame.id)));
   if (targets.length <= 1) {
-    await call(
-      targets[0]
-        ? commands.debugStepInTarget(t.s.id, t.thread, targets[0].id)
-        : commands.debugStep(t.s.id, t.thread, "into"),
+    await resumeExecution(t.s.id, () =>
+      call(
+        targets[0]
+          ? commands.debugStepInTarget(t.s.id, t.thread, targets[0].id)
+          : commands.debugStep(t.s.id, t.thread, "into"),
+      ),
     );
     return;
   }
@@ -291,7 +297,9 @@ async function startConfig(arg: unknown) {
     await startJavaConfig(config, root, origin ?? config);
     return;
   }
-  const launch = launchConfigFor(config, root);
+  const dotnet = config.kind === "dotnet" && config.debugAdapter === "netcoredbg";
+  const prepared = dotnet ? await call(commands.runDotnetResolve(config, true)) : config;
+  const launch = launchConfigFor(prepared, root);
   if (!launch) {
     notifications().notify({
       group: "run",
@@ -317,7 +325,11 @@ export function registerDebugActions(): () => void {
     when: paused,
     run: () => {
       const t = pausedTarget();
-      if (t) void report(title, call(commands.debugStep(t.s.id, t.thread, kind)));
+      if (t)
+        void report(
+          title,
+          resumeExecution(t.s.id, () => call(commands.debugStep(t.s.id, t.thread, kind))),
+        );
     },
   });
 
@@ -400,7 +412,11 @@ export function registerDebugActions(): () => void {
       when: paused,
       run: () => {
         const t = pausedTarget();
-        if (t) void report("Resume failed", call(commands.debugResume(t.s.id, t.thread)));
+        if (t)
+          void report(
+            "Resume failed",
+            resumeExecution(t.s.id, () => call(commands.debugResume(t.s.id, t.thread))),
+          );
       },
     },
     {
@@ -432,7 +448,11 @@ export function registerDebugActions(): () => void {
       when: paused,
       run: () => {
         const t = pausedTarget();
-        if (t) void report("Force Step Over failed", call(commands.debugForceStepOver(t.s.id, t.thread)));
+        if (t)
+          void report(
+            "Force Step Over failed",
+            resumeExecution(t.s.id, () => call(commands.debugForceStepOver(t.s.id, t.thread))),
+          );
       },
     },
     {
@@ -445,7 +465,11 @@ export function registerDebugActions(): () => void {
       when: paused,
       run: () => {
         const t = pausedTarget();
-        if (t) void report("Force Step Into failed", call(commands.debugStep(t.s.id, t.thread, "into")));
+        if (t)
+          void report(
+            "Force Step Into failed",
+            resumeExecution(t.s.id, () => call(commands.debugStep(t.s.id, t.thread, "into"))),
+          );
       },
     },
     {
@@ -484,7 +508,10 @@ export function registerDebugActions(): () => void {
           notSupported("Reset Frame", t.s);
           return;
         }
-        void report("Reset Frame failed", call(commands.debugRestartFrame(t.s.id, frame.id)));
+        void report(
+          "Reset Frame failed",
+          resumeExecution(t.s.id, () => call(commands.debugRestartFrame(t.s.id, frame.id))),
+        );
       },
     },
     {
@@ -531,7 +558,10 @@ export function registerDebugActions(): () => void {
         const t = pausedTarget();
         const c = cursor();
         if (t && c && breakpointPathAllowed(c.path))
-          void report("Run to Cursor failed", call(commands.debugRunTo(t.s.id, t.thread, c.path, c.line, false)));
+          void report(
+            "Run to Cursor failed",
+            resumeExecution(t.s.id, () => call(commands.debugRunTo(t.s.id, t.thread, c.path, c.line, false))),
+          );
       },
     },
     {
@@ -545,7 +575,10 @@ export function registerDebugActions(): () => void {
         const t = pausedTarget();
         const c = cursor();
         if (t && c && breakpointPathAllowed(c.path))
-          void report("Force Run to Cursor failed", call(commands.debugRunTo(t.s.id, t.thread, c.path, c.line, true)));
+          void report(
+            "Force Run to Cursor failed",
+            resumeExecution(t.s.id, () => call(commands.debugRunTo(t.s.id, t.thread, c.path, c.line, true))),
+          );
       },
     },
     {

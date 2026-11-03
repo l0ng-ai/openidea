@@ -6,6 +6,7 @@ use crate::{
 use ide_core::{IdeError, IdeEvent, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager, WebviewWindow};
@@ -51,8 +52,13 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
     let fullscreen = from.is_fullscreen().map_err(err)?;
     if fullscreen {
-        from.set_fullscreen(false).map_err(err)?;
-        to.set_fullscreen(true).map_err(err)?;
+        #[cfg(target_os = "macos")]
+        crate::macos::transfer_fullscreen(from, to).map_err(err)?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            from.set_fullscreen(false).map_err(err)?;
+            to.set_fullscreen(true).map_err(err)?;
+        }
         return Ok(());
     }
     to.set_fullscreen(false).map_err(err)?;
@@ -60,6 +66,10 @@ fn copy_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
     if !maximized {
         to.unmaximize().map_err(err)?;
         to.set_position(from.outer_position().map_err(err)?).map_err(err)?;
+        // `set_size` excludes GTK's CSD shadow, which tao's inner size includes on Wayland.
+        #[cfg(target_os = "linux")]
+        let size = crate::linux_window_state::content_size(&from.as_ref().window()).map_err(err)?;
+        #[cfg(not(target_os = "linux"))]
         let size = from.inner_size().map_err(err)?;
         #[cfg(target_os = "linux")]
         crate::linux_window_state::normal_size_requested(to.app_handle(), to.label(), size);
@@ -107,6 +117,13 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     }
     changed(app);
     result
+}
+
+#[cfg(target_os = "macos")]
+pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
+    let state = app.state::<WindowsState>();
+    state.groups.lock().join(anchor, new_window)?;
+    select(app, anchor, new_window)
 }
 
 pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
@@ -158,6 +175,82 @@ pub fn destroyed(app: &AppHandle, caller: &str) {
         });
     }
     changed(app);
+    let advance = state.tab_closes.lock().as_mut().is_some_and(|batch| {
+        let closing = batch.pending.front().is_some_and(|l| l == caller);
+        if closing {
+            batch.pending.pop_front();
+        }
+        closing
+    });
+    if advance {
+        close_next(app);
+    }
+}
+
+/// Tabs left to close; the first one is closing now.
+pub struct TabCloses {
+    keep: String,
+    pending: VecDeque<String>,
+}
+
+/// Closes `labels` one at a time so each project's unsaved-changes prompt is shown in turn, then selects `keep`.
+pub fn close_tabs(app: &AppHandle, caller: &str, keep: &str, labels: Vec<String>) -> IdeResult<()> {
+    let state = app.state::<WindowsState>();
+    let members = state
+        .groups
+        .lock()
+        .group(caller)
+        .map(|g| g.members.clone())
+        .ok_or_else(|| IdeError::not_found("This window is not grouped"))?;
+    if !members.iter().any(|m| m == keep) {
+        return Err(IdeError::invalid("The window is not in this group"));
+    }
+    let pending = members.into_iter().filter(|m| m != keep && labels.contains(m)).collect();
+    *state.tab_closes.lock() = Some(TabCloses { keep: keep.to_owned(), pending });
+    close_next(app);
+    Ok(())
+}
+
+/// The closing tab's project vetoed (its unsaved-changes prompt was cancelled): leave the rest open.
+pub fn cancel_close(app: &AppHandle, caller: &str) {
+    let state = app.state::<WindowsState>();
+    let mut batch = state.tab_closes.lock();
+    if batch.as_ref().is_some_and(|b| b.pending.front().is_some_and(|l| l == caller)) {
+        *batch = None;
+    }
+}
+
+fn close_next(app: &AppHandle) {
+    let state = app.state::<WindowsState>();
+    loop {
+        let next = {
+            let mut batch = state.tab_closes.lock();
+            let Some(b) = batch.as_mut() else { return };
+            match b.pending.front() {
+                Some(label) => Ok(label.clone()),
+                None => Err(batch.take().unwrap().keep),
+            }
+        };
+        match next {
+            Ok(label) => {
+                if let Some(window) = app.get_webview_window(&label) {
+                    windows::focus(&window);
+                    if window.close().is_ok() {
+                        return;
+                    }
+                }
+                if let Some(b) = state.tab_closes.lock().as_mut() {
+                    b.pending.pop_front();
+                }
+            }
+            Err(keep) => {
+                if let Some(window) = app.get_webview_window(&keep) {
+                    windows::focus(&window);
+                }
+                return;
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -235,7 +328,7 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
             } else if path.is_dir() {
                 let window = match windows::find_project_window(app, path) {
                     Some(w) => w,
-                    None => windows::create_window(app, Some(path.clone()))?,
+                    None => windows::create_restored_window(app, path.clone())?,
                 };
                 Some(window.label().to_owned())
             } else {

@@ -614,7 +614,7 @@ fn shelf_diff_and_scoped_operations_preserve_siblings() {
     assert!(!shelf::list(&shelf).unwrap()[0].files.iter().any(|f| f.path == "b.txt"));
     shelf::delete_path(&shelf, &entry.id, Some(QUOTED)).unwrap();
     assert!(shelf::selected_patch(&shelf, &entry.id, Some("a.txt")).is_ok());
-    shelf::import_patch(&shelf, "imported", &patch).unwrap();
+    shelf::import_patch(&shelf, "imported", &patch, None).unwrap();
     assert_eq!(shelf::list(&shelf).unwrap().len(), 2);
     assert_eq!(fx.read("a.txt"), "local edits\n");
 }
@@ -629,7 +629,7 @@ fn shelf_imported_rename_diff_and_last_file_delete() {
     fx.git(&["reset", "--hard", "HEAD"]);
     let repo = fx.repo();
     let shelf = fx._tmp.path().join("shelf");
-    shelf::import_patch(&shelf, "rename", &patch).unwrap();
+    shelf::import_patch(&shelf, "rename", &patch, None).unwrap();
     let id = &shelf::list(&shelf).unwrap()[0].id;
     let diffs = shelf::diff_files(&repo, &shelf, id).unwrap();
     assert_eq!(diffs.len(), 1);
@@ -655,7 +655,7 @@ fn shelf_new_renames_keep_self_contained_sides_and_plain_imports_keep_scope() {
     assert_eq!(diffs.iter().find(|f| f.path == "old.txt").unwrap().before.as_deref(), Some("renamed content\n"));
     assert_eq!(diffs.iter().find(|f| f.path == "new.txt").unwrap().after.as_deref(), Some("renamed content\n"));
     let plain = "--- a/one.txt\n+++ b/one.txt\n@@ -1 +1 @@\n--- removed\n+++ added\n--- a/two.txt\n+++ b/two.txt\n@@ -1 +1 @@\n-old\n+new\n";
-    shelf::import_patch(&shelf, "plain", plain).unwrap();
+    shelf::import_patch(&shelf, "plain", plain, None).unwrap();
     let selected = shelf::selected_patch(&shelf, "plain", Some("one.txt")).unwrap();
     assert!(selected.contains("--- removed\n+++ added"));
     assert!(!selected.contains("two.txt"));

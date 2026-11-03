@@ -89,7 +89,7 @@ fn write_text(documents: &Documents, path: &Path, text: &str) -> IdeResult<()> {
 fn edited_paths(edit: &WorkspaceEdit) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for f in &edit.files {
-        if let FileEdit::Edit { path, edits } = f
+        if let FileEdit::Edit { path, edits, .. } = f
             && !edits.is_empty()
             && !out.iter().any(|p| p == path)
         {
@@ -245,17 +245,7 @@ mod tests {
     }
 
     fn apply(documents: &Documents) -> impl Fn(&WorkspaceEdit) -> IdeResult<()> + '_ {
-        move |edit| {
-            for f in &edit.files {
-                if let FileEdit::Edit { path, edits } = f {
-                    let doc = documents.open(path)?.id;
-                    documents.apply_edits(doc, edits)?;
-                    documents.save(doc)?;
-                    documents.close(doc);
-                }
-            }
-            Ok(())
-        }
+        move |edit| documents.apply_file_move_edits(edit)
     }
 
     #[test]
@@ -272,8 +262,10 @@ mod tests {
         let edit = WorkspaceEdit {
             files: vec![FileEdit::Edit {
                 path: root.join("main.ts").into(),
+                version: None,
                 edits: vec![TextEdit { range: Range::new(Pos::new(0, 21), Pos::new(0, 22)), new_text: "b".into() }],
             }],
+            ..Default::default()
         };
         let id = moves.perform(&docs, Some(&history), &mv, &edit, "Move", &apply(&docs)).unwrap();
         assert!(root.join("b/util.ts").exists() && !root.join("a").exists());
@@ -303,13 +295,16 @@ mod tests {
             files: vec![
                 FileEdit::Edit {
                     path: root.join("Foo.java").into(),
+                    version: None,
                     edits: vec![TextEdit { range: Range::new(Pos::new(0, 6), Pos::new(0, 9)), new_text: "Bar".into() }],
                 },
                 FileEdit::Edit {
                     path: root.join("Use.java").into(),
+                    version: None,
                     edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "Bar".into() }],
                 },
             ],
+            ..Default::default()
         };
         let mv = vec![FileMove { from: root.join("Foo.java").into(), to: root.join("Bar.java").into() }];
         let id = moves.perform(&docs, None, &mv, &edit, "Rename", &apply(&docs)).unwrap();

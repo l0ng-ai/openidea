@@ -16,6 +16,7 @@ pub mod clipboard;
 pub mod coverage;
 pub mod db;
 pub mod debug;
+pub mod dependencies;
 pub mod deploy;
 pub mod doc;
 pub mod docker;
@@ -76,6 +77,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window_group::window_group_select,
         window_group::window_group_detach,
         window_group::window_group_close,
+        window_group::window_group_close_tabs,
+        window_group::window_group_cancel_close,
         window_group::window_group_reorder,
         window_group::window_group_restore,
         app::light_edit_open,
@@ -181,6 +184,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         caches::caches_schedule_invalidation,
         caches::app_restart,
         nav::index_status,
+        nav::spring_route_sources,
         nav::find_files,
         nav::find_symbols,
         nav::mark_recent,
@@ -190,6 +194,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::fs_resolve_reference,
         nav::path_completions,
         nav::web_unresolved_references,
+        dependencies::dependency_versions,
         spell::spell_check,
         spell::spell_suggest,
         search::search_start,
@@ -225,6 +230,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_resend_diagnostics,
         lsp::lsp_restart,
         lsp::apply_workspace_edit,
+        lsp::prepare_workspace_edit,
+        lsp::undo_workspace_edit,
+        lsp::redo_workspace_edit,
         lsp::lsp_execute_command,
         lsp::lsp_resolve_command,
         lsp::lsp_execute_code_action,
@@ -296,6 +304,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_changelists_save,
         vcs::vcs_write_patch,
         term::term_spawn,
+        term::term_store_image,
         term::term_write,
         term::term_resize,
         term::term_kill,
@@ -303,6 +312,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         term::term_default_shell,
         term::term_available_shells,
         run::run_configs,
+        run::run_dotnet_resolve,
         run::run_save_configs,
         run::run_templates,
         run::run_save_templates,

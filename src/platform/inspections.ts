@@ -222,6 +222,9 @@ export interface BuiltinInspection {
 export const SPELLING_PRODUCER = "spelling";
 export const SPELLING_INSPECTION = "builtin:spelling";
 
+export const DEPENDENCY_PRODUCER = "dependency-versions";
+export const DEPENDENCY_INSPECTION = "builtin:dependency-versions";
+
 /** IDEA's Typo options: which parts of source files are checked (plain text always is). */
 export const SPELLING_OPTIONS = {
   code: "processCode",
@@ -231,6 +234,14 @@ export const SPELLING_OPTIONS = {
 
 /** Checks the IDE runs itself (not a language server). */
 export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
+  {
+    id: DEPENDENCY_INSPECTION,
+    producer: DEPENDENCY_PRODUCER,
+    name: "Newer dependency version available",
+    group: "Cargo",
+    description: "Reports newer crate versions that Cargo.toml requirements do not already allow.",
+    defaultLevel: "weakWarning",
+  },
   {
     id: "builtin:file-references",
     producer: "file-references",

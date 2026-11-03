@@ -56,6 +56,7 @@ async fn serves_projects_files_documents_search_and_runs() {
     let host = Arc::new(Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
@@ -87,6 +88,40 @@ async fn serves_projects_files_documents_search_and_runs() {
     }
     let call = Invoke { window: "unknown".into(), cmd: "coverage_collect".into(), args: json!({}) };
     assert!(peer.request::<_, Value>("invoke", call, None).await.is_err());
+    // Manual workspace edits remain available in Restricted Mode, like doc/fs
+    // editing. They do not ask a language server to execute project commands.
+    let manual = project.join("src/manual.txt");
+    std::fs::write(&manual, "old").unwrap();
+    let edit = json!({ "files": [{ "kind": "edit", "path": manual, "edits": [{
+        "range": { "start": { "line": 0, "col": 0 }, "end": { "line": 0, "col": 3 } },
+        "new_text": "new"
+    }] }] });
+    let edit = invoke(&peer, "prepare_workspace_edit", json!({ "edit": edit })).await.unwrap();
+    assert_eq!(edit["preconditions"].as_array().unwrap().len(), 1);
+    invoke(&peer, "apply_workspace_edit", json!({ "edit": edit })).await.unwrap();
+    until("workspace edit history", || {
+        client.events.lock().iter().any(|event| matches!(event.event, ide_core::IdeEvent::WorkspaceEditApplied { .. }))
+    })
+    .await;
+    let undo_id = client
+        .events
+        .lock()
+        .iter()
+        .find_map(|event| match &event.event {
+            ide_core::IdeEvent::WorkspaceEditApplied { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&manual).unwrap(), "new");
+    invoke(&peer, "undo_workspace_edit", json!({ "id": undo_id })).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&manual).unwrap(), "old");
+    invoke(&peer, "redo_workspace_edit", json!({ "id": undo_id })).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&manual).unwrap(), "new");
+    assert_eq!(invoke(&peer, "project_current", json!({})).await.unwrap()["trusted"], false);
+    for command in ["lsp_execute_command", "lsp_apply_code_action"] {
+        let error = invoke(&peer, command, json!({})).await.unwrap_err();
+        assert!(error.message.contains("Restricted Mode"), "{command}: {error:?}");
+    }
     invoke(&peer, "project_trust_set", json!({"path": project, "trusted": true, "folder": false})).await.unwrap();
     let current = invoke(&peer, "project_current", json!({})).await.unwrap();
     assert_eq!(current["name"], "demo");
@@ -261,6 +296,7 @@ async fn local_deployment_runs_on_the_project_host() {
     let host = Arc::new(Host::new(HostConfig {
         config_dir: tmp.path().join("config"),
         data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_slot.clone(), Some(w.to_owned()))),
@@ -328,6 +364,7 @@ async fn properties_conversion_through_remote_dispatch_without_a_remote_host() {
     let host = Arc::new(Host::new(HostConfig {
         config_dir: tmp.path().join("config"),
         data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("data"),
         languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
         syntax: Arc::default(),
         sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),

@@ -112,7 +112,7 @@ impl Host {
         let project_key = project_key(&root);
         let index = ProjectIndex::open(
             &root,
-            &self.data_dir.join("index").join(&project_key),
+            &self.local_data_dir.join("index").join(&project_key),
             index_roots(&root, extra_roots.clone()),
             excludes.clone(),
             languages.clone(),
@@ -127,7 +127,7 @@ impl Host {
         {
             let settings = settings.clone();
             let root = root.clone();
-            let data_dir = self.data_dir.clone();
+            let data_dir = self.local_data_dir.clone();
             let config_dir = self.config_dir.clone();
             let sink = sink.clone();
             let formatter_problem = std::sync::Mutex::new(None);
@@ -214,7 +214,7 @@ impl Host {
         {
             let settings = settings.clone();
             let root = root.clone();
-            let data_dir = self.data_dir.clone();
+            let data_dir = self.local_data_dir.clone();
             let sink = sink.clone();
             lsp.set_prepare_hook(Box::new(move |cfg, _, cancel| {
                 let effective = settings.effective();
@@ -255,8 +255,8 @@ impl Host {
 
         let kotlin_bridge = crate::kotlin_bridge::KotlinBridge::new(
             root.clone(),
-            self.data_dir.join("cache").join(&project_key).join("build"),
-            &self.data_dir,
+            self.local_data_dir.join("cache").join(&project_key).join("build"),
+            &self.local_data_dir,
             settings.clone(),
             lsp.clone(),
             sink.clone(),
@@ -325,15 +325,35 @@ impl Host {
                             sink.emit(IdeEvent::ProjectRootsChanged { root: root.clone().into() });
                         }
                     }
-                    // A repository was cloned / initialised / removed below the project: its
-                    // `.git/HEAD` (the watcher reports nothing else of `.git`) appeared or went.
+                    // A repository was cloned / initialised / removed below the project:
+                    // its `.git/HEAD` appeared or went. A linked worktree's `.git` is a
+                    // plain gitfile, and that file is the only marker written inside the
+                    // worktree itself, so the `.git` path counts too.
                     let known = repos.read().roots();
-                    let git_dirs = changed.iter().chain(&batch.removed).chain(&batch.vcs).any(|p| {
-                        let Some(dir) = p.ends_with(".git/HEAD").then(|| p.parent().and_then(Path::parent)).flatten()
-                        else {
-                            return false;
+                    let mut git_dirs = changed.iter().chain(&batch.removed).chain(&batch.vcs).any(|p| {
+                        let dir = if p.ends_with(".git/HEAD") {
+                            p.parent().and_then(Path::parent)
+                        } else if p.ends_with(".git") {
+                            p.parent()
+                        } else {
+                            None
                         };
-                        known.iter().any(|r| r == dir) != p.is_file()
+                        let Some(dir) = dir else { return false };
+                        known.iter().any(|r| r == dir) != p.exists()
+                    });
+                    // A linked worktree was registered or unregistered in the main
+                    // gitdir: `git worktree add` / `remove` creates or deletes
+                    // `.git/worktrees/<name>`. Its own gitfile is written before the
+                    // watcher can watch the new directory, so this entry is what
+                    // Linux per-directory watchers see.
+                    git_dirs |= batch.vcs.iter().any(|p| {
+                        let rest: Vec<_> = p
+                            .components()
+                            .skip_while(|c| c.as_os_str() != ".git")
+                            .skip(1) // the `.git` component itself
+                            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                            .collect();
+                        matches!(rest.as_slice(), [first, ..] if first == "worktrees" && rest.len() <= 2)
                     });
                     if git_dirs {
                         scan_repositories(&root, &repos, &settings, &sink);
@@ -345,6 +365,13 @@ impl Host {
                 }),
             )?
         };
+        if let Some(reason) = watcher.polling() {
+            sink.emit(IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Warning,
+                title: "External file changes sync may be slow".into(),
+                body: Some(reason.into()),
+            });
+        }
 
         // Scratch files live outside the project; watch them too so the
         // Project view and open editors follow changes made there.
@@ -385,7 +412,7 @@ impl Host {
 
         let (db, http_history, agents) = self.project_services(&root, &project_key);
         let notebooks = crate::notebook::NotebookService::new(
-            self.data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
+            self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
         );
         ide_agent::registry::maintain(crate::ops::agent::registry_paths(self));
@@ -404,9 +431,9 @@ impl Host {
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
             detected_roots,
-            cache_dir: self.data_dir.join("cache").join(&project_key),
+            cache_dir: self.local_data_dir.join("cache").join(&project_key),
             java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
-                self.data_dir.join("cache").join(&project_key).join("build"),
+                self.local_data_dir.join("cache").join(&project_key).join("build"),
             )),
             db,
             http_history,
@@ -509,11 +536,11 @@ impl Host {
         let project_key = project_key(&dir);
         let (db, http_history, agents) = self.project_services(&dir, &project_key);
         let notebooks = crate::notebook::NotebookService::new(
-            self.data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
+            self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
         );
         let project = Arc::new(Project {
-            trusted: Arc::new(AtomicBool::new(true)),
+            trusted: Arc::new(AtomicBool::new(false)),
             sink,
             languages,
             settings,
@@ -526,9 +553,9 @@ impl Host {
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
             detected_roots: Arc::default(),
-            cache_dir: self.data_dir.join("cache").join(&project_key),
+            cache_dir: self.local_data_dir.join("cache").join(&project_key),
             java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
-                self.data_dir.join("cache").join(&project_key).join("build"),
+                self.local_data_dir.join("cache").join(&project_key).join("build"),
             )),
             db,
             http_history,
@@ -682,17 +709,24 @@ impl Project {
         self.with_repo_at(None, f)
     }
 
+    pub(crate) fn with_disk_sync<T>(&self, f: impl FnOnce() -> IdeResult<T>) -> IdeResult<T> {
+        let result = f();
+        // Failed operations can also leave changed files (for example merge conflicts).
+        self.documents.sync_after_disk_change();
+        result
+    }
+
     /// Runs a VCS operation that rewrites the working tree (checkout, merge,
     /// rebase, pull, reset, stash, rollback): Local History gets a label and a
     /// snapshot of every locally changed file before, and a label after.
-    /// `None` runs `f` like [`with_repo`](Self::with_repo) (operations that keep the working tree).
+    /// Clean buffers follow the resulting files before returning; `None` omits the history labels.
     pub fn with_repo_recorded<T>(
         &self,
         at: Option<&Path>,
         operation: Option<&str>,
         f: impl FnOnce(&Repo) -> IdeResult<T>,
     ) -> IdeResult<T> {
-        let Some(name) = operation else { return self.with_repo_at(at, f) };
+        let Some(name) = operation else { return self.with_disk_sync(|| self.with_repo_at(at, f)) };
         self.history_label(&format!("Before {name}"));
         if let Ok(changed) = self.with_repo_at(at, |r| r.status()) {
             for file in changed.iter().take(HISTORY_BATCH_LIMIT) {
@@ -701,7 +735,7 @@ impl Project {
                 }
             }
         }
-        let result = self.with_repo_at(at, f);
+        let result = self.with_disk_sync(|| self.with_repo_at(at, f));
         self.history_label(&format!("After {name}"));
         result
     }
@@ -881,37 +915,7 @@ impl Project {
 
 /// Applies a multi-file edit through the document layer so open editors update live.
 pub fn apply_workspace_edit(documents: &Documents, edit: &ide_core::WorkspaceEdit) -> IdeResult<()> {
-    use ide_core::FileEdit;
-    let mut edit = edit.clone();
-    edit.deduplicate();
-    for file in &edit.files {
-        match file {
-            FileEdit::Edit { path, edits } => {
-                // Files not open in an editor are opened transiently and closed again.
-                let (doc, transient) = match documents.by_path(path) {
-                    Some(doc) => (doc, false),
-                    None => (documents.open(path)?.id, true),
-                };
-                let result = documents.apply_edits(doc, edits).and_then(|_| documents.save(doc));
-                if transient {
-                    documents.close(doc);
-                }
-                result?;
-            }
-            FileEdit::Create { path, overwrite } => {
-                if path.exists() {
-                    if *overwrite {
-                        ide_vfs::save_text(path, "", "utf-8", false)?;
-                    }
-                } else {
-                    ide_vfs::create_file(path)?;
-                }
-            }
-            FileEdit::Rename { from, to } => ide_vfs::rename(from, to)?,
-            FileEdit::Delete { path, .. } => ide_vfs::delete(path)?,
-        }
-    }
-    Ok(())
+    documents.apply_workspace_edit(edit)
 }
 
 /// Files the watcher reports per batch that Local History snapshots.
@@ -1253,10 +1257,14 @@ mod workspace_edit_tests {
         let doc = documents.open(&alias).unwrap();
         let changes = |path: PathBuf| FileEdit::Edit {
             path: path.into(),
+            version: None,
             edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "sum_values".into() }],
         };
-        apply_workspace_edit(&documents, &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)] })
-            .unwrap();
+        apply_workspace_edit(
+            &documents,
+            &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)], ..Default::default() },
+        )
+        .unwrap();
         assert_eq!(std::fs::read_to_string(real).unwrap(), "sum_values();\n");
         assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
     }

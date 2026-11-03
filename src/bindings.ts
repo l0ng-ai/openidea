@@ -23,6 +23,10 @@ export const commands = {
 	windowGroupSelect: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_select", { label })),
 	windowGroupDetach: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach")),
 	windowGroupClose: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close", { label })),
+	/**  Closes several project tabs one by one (each asks about its own unsaved changes), then selects `keep`. */
+	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
+	/**  This window kept its project open (unsaved-changes prompt cancelled); stops a batch close. */
+	windowGroupCancelClose: () => __TAURI_INVOKE<void>("window_group_cancel_close"),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
 	/**
@@ -310,6 +314,8 @@ export const commands = {
 	/**  Quits through every window's unsaved-changes check, then starts again. */
 	appRestart: () => __TAURI_INVOKE<void>("app_restart"),
 	indexStatus: () => typedError<IndexStatus, IdeError>(__TAURI_INVOKE("index_status")),
+	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
+	springRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("spring_route_sources")),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
 	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
 	markRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("mark_recent", { path })),
@@ -327,6 +333,7 @@ export const commands = {
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
 	/**  Paths in an HTML document or stylesheet that name no existing file. */
 	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError>(__TAURI_INVOKE("web_unresolved_references", { doc })),
+	dependencyVersions: (doc: DocId, offset: number | null, request: RequestId) => typedError<DependencyVersions[], IdeError>(__TAURI_INVOKE("dependency_versions", { doc, offset, request })),
 	/**
 	 *  Misspelt words in the comments, string literals and declared names of
 	 *  `doc` that `scope` includes (all of its text for prose). Cancel with
@@ -423,6 +430,9 @@ export const commands = {
 	lspRestart: (server: ServerId) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_restart", { server })),
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
+	prepareWorkspaceEdit: (edit: WorkspaceEdit) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("prepare_workspace_edit", { edit })),
+	undoWorkspaceEdit: (id: number) => typedError<null, IdeError>(__TAURI_INVOKE("undo_workspace_edit", { id })),
+	redoWorkspaceEdit: (id: number) => typedError<null, IdeError>(__TAURI_INVOKE("redo_workspace_edit", { id })),
 	/**
 	 *  Runs a server command (`workspace/executeCommand`), e.g. a completion item's
 	 *  follow-up command. Edits the server requests arrive via `workspace/applyEdit`.
@@ -540,7 +550,7 @@ export const commands = {
 	vcsShelfRename: (id: string, name: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_rename", { id, name })),
 	vcsShelfPatch: (id: string, path: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id, path })),
 	vcsShelfDiff: (id: string) => typedError<ShelfDiffFile[], IdeError>(__TAURI_INVOKE("vcs_shelf_diff", { id })),
-	vcsShelfImport: (name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { name, patch })),
+	vcsShelfImport: (repo: string | null, name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { repo, name, patch })),
 	vcsChangelistsLoad: () => typedError<ChangelistState, IdeError>(__TAURI_INVOKE("vcs_changelists_load")),
 	vcsChangelistsSave: (changelists: ChangelistState) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_changelists_save", { changelists })),
 	/**  Create Patch › Save to file. */
@@ -550,6 +560,7 @@ export const commands = {
 	 *  to start the shell takes tens of milliseconds, a frozen UI if run there.
 	 */
 	termSpawn: (options: TerminalOptions, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("term_spawn", { options, onOutput })),
+	termStoreImage: (id: TerminalId, data: number[], mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
 	termWrite: (id: TerminalId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("term_write", { id, data })),
 	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
 	termKill: (id: TerminalId) => typedError<null, IdeError>(__TAURI_INVOKE("term_kill", { id })),
@@ -564,6 +575,7 @@ export const commands = {
 	termAvailableShells: () => __TAURI_INVOKE<string[]>("term_available_shells"),
 	/**  Detected configs followed by user-defined ones (user ids win on conflict). */
 	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
+	runDotnetResolve: (config: RunConfig_Deserialize, debug: boolean) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_dotnet_resolve", { config, debug })),
 	runSaveConfigs: (configs: RunConfig_Deserialize[], removedDetectedIds: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("run_save_configs", { configs, removedDetectedIds })),
 	/**  Configuration templates: per-type defaults applied to new configurations. */
 	runTemplates: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_templates")),
@@ -845,7 +857,7 @@ export const commands = {
 	 */
 	pluginList: () => typedError<PluginsSnapshot, IdeError>(__TAURI_INVOKE("plugin_list")),
 	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
-	/**  Installs the plugin package in `path` (a folder with `plugin.toml`). */
+	/**  Installs the plugin package at `path`: a folder, its `plugin.toml`, or a `.zip` of the folder. */
 	pluginInstallDir: (path: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_install_dir", { path })),
 	/**
 	 *  Plugin packages available locally for installation: `<resources>/plugins`
@@ -1208,7 +1220,9 @@ export type AgentEvent =
 /**  The task's conversation was cut to its first `length` entries (turns rolled back). */
 { type: "truncated"; task: string; length: number } | 
 /**  Entry `index` of `task` (of its subagent `subagent`) was added or replaced. */
-{ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry };
+{ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry } | 
+/**  The installed or configured agent providers changed. */
+{ type: "providers" };
 
 export type AgentImage = {
 	mimeType: string,
@@ -1376,6 +1390,8 @@ export type AppInfo = {
 	version: string,
 	platform: string,
 	configDir: IpcPath,
+	/**  Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
+	wayland: boolean,
 };
 
 export type AppMetrics = {
@@ -1639,6 +1655,30 @@ export type ByteRange = {
 	total: number,
 };
 
+export type CMakeProfile = {
+	name?: string,
+	buildType?: string,
+	generator?: string,
+	cmakeArgs?: string[],
+	/**  Empty uses cmake-build-<lowercase build type>. */
+	buildDir?: string,
+	buildArgs?: string[],
+	env?: { [key in string]: string },
+};
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings = CMakeSettings_Serialize | CMakeSettings_Deserialize;
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings_Deserialize = {
+	profiles?: CMakeProfile[] | null,
+};
+
+/**  Absent profiles retain automatic discovery for existing projects. */
+export type CMakeSettings_Serialize = {
+	profiles?: CMakeProfile[] | null,
+};
+
 export type CallHierarchy = {
 	items: HierarchyItem[],
 	incomplete: ReferencesIncomplete | null,
@@ -1656,7 +1696,7 @@ export type CatalogPlugin = {
 	authors: string[],
 	homepage: string | null,
 	changeNotes: string | null,
-	/**  Package directory; install with `install_from_dir(path)`. */
+	/**  Package directory; install with `install_from_path(path)`. */
 	path: IpcPath,
 	hasCode: boolean,
 	permissions: Permission[],
@@ -2444,6 +2484,17 @@ export type DeletedBranch = {
 	unmerged: boolean,
 };
 
+export type DependencyUpdate = {
+	latest: string,
+	replacement: string,
+};
+
+export type DependencyVersions = {
+	dependency: ManifestDependency,
+	versions: string[],
+	update: DependencyUpdate | null,
+};
+
 /**  Where a local file is deployed. */
 export type DeployedPath = {
 	server: string,
@@ -3048,7 +3099,9 @@ export type FileCoverage = {
 	branchesCovered: number,
 };
 
-export type FileEdit = { kind: "edit"; path: IpcPath; edits: TextEdit[] } | { kind: "create"; path: IpcPath; overwrite: boolean } | { kind: "rename"; from: IpcPath; to: IpcPath } | { kind: "delete"; path: IpcPath; recursive: boolean };
+export type FileEdit = { kind: "edit"; path: IpcPath; edits: TextEdit[]; 
+/**  LSP TextDocumentEdit version; null/unversioned edits use content preconditions. */
+version?: number | null } | { kind: "create"; path: IpcPath; overwrite: boolean } | { kind: "rename"; from: IpcPath; to: IpcPath } | { kind: "delete"; path: IpcPath; recursive: boolean };
 
 export type FileEntry = {
 	name: string,
@@ -3312,6 +3365,8 @@ export type GitOperation =
 { op: "interactiveRebase"; base: string | null; entries: RebaseEntry[] };
 
 export type GitSettings = {
+	/**  Show blame after the current editor line. */
+	inlineBlame?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
 	/**  Default of Update Project: `merge` | `rebase`. */
@@ -3561,9 +3616,13 @@ export type IdeEvent =
  *  The backend changed a document (reload from disk, formatting, refactoring).
  *  The UI applies `changes` on top of `base_version`, yielding `version`.
  */
-{ type: "docPatched"; doc: DocId; baseVersion: number; version: number; changes: TextChange[] } | 
+{ type: "docPatched"; doc: DocId; baseVersion: number; version: number; changes: TextChange[]; 
+/**  Part of a grouped transaction; the editor must not record a file-local undo. */
+workspaceEdit?: boolean } | 
 /**  A document's dirty flag changed (saved / modified externally). */
 { type: "docDirty"; doc: DocId; dirty: boolean } | 
+/**  A complete workspace edit can be undone as one operation. */
+{ type: "workspaceEditApplied"; id: number; paths: IpcPath[] } | 
 /**
  *  An open document's language changed (Settings › File Types, Override File
  *  Type), or its UI mode (a framework's root marker appeared or went).
@@ -3581,6 +3640,8 @@ cancellable: boolean } |
 { type: "indexState"; indexing: boolean; files: number; symbols: number } | 
 /**  Git status / branch information should be refreshed. */
 { type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; status: ServerStatus; message: string | null } | 
+/**  A running server lacks a capability; the UI offers the managed tool as a replacement. */
+{ type: "languageServerWarning"; name: string; message: string; installTool: string } | 
 /**
  *  A stopped language server left the project's list (disabled in settings, or a
  *  fallback that a preferred server took over from again).
@@ -4043,6 +4104,7 @@ export type LanguagesSettings = {
 	typescript?: TypeScriptSettings,
 	prettier?: PrettierSettings,
 	java?: JavaSettings,
+	ruby?: RubySettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -4263,6 +4325,14 @@ export type MainToolbarSettings = {
 	right?: string[],
 	/**  Widgets the user removed. */
 	hidden?: string[],
+};
+
+export type ManifestDependency = {
+	package: string,
+	requirement: string,
+	/**  UTF-16 offsets of the string's contents (quotes excluded). */
+	from: number,
+	to: number,
 };
 
 export type Markup = {
@@ -5262,6 +5332,16 @@ export type RevisionChange = {
 
 export type RootKind = "source" | "test" | "resources" | "testResources" | "excluded";
 
+export type RouteSource = {
+	path: string,
+	text: string,
+};
+
+export type RubySettings = {
+	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
+	interpreter?: string,
+};
+
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
 
 export type RunConfig_Deserialize = {
@@ -5470,7 +5550,7 @@ export type SdkKind = "python" | "node" |
 /**  JDK homes. */
 "jdk" | 
 /**  Maven homes. */
-"maven";
+"maven" | "ruby";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
@@ -5635,6 +5715,7 @@ export type Settings_Deserialize = {
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets?: RunTarget[],
+	cmake?: CMakeSettings_Deserialize,
 };
 
 export type Settings_Serialize = {
@@ -5690,6 +5771,7 @@ export type Settings_Serialize = {
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets: RunTarget[],
+	cmake: CMakeSettings_Serialize,
 };
 
 export type Severity = "error" | "warning" | "info" | "hint";
@@ -5715,6 +5797,8 @@ export type ShelvedChangeList = {
 	timeMs: number | null,
 	/**  Branch checked out when the changes were shelved. */
 	branch: string | null,
+	/**  Repository owning the patch; absent in legacy shelves. */
+	repo?: IpcPath | null,
 	/**  Repository-relative paths. */
 	files: ChangedFile[],
 };
@@ -6421,6 +6505,13 @@ export type Workspace = Workspace_Serialize | Workspace_Deserialize;
 /**  Edits to many files, applied atomically from the user's point of view. */
 export type WorkspaceEdit = {
 	files: FileEdit[],
+	/**  Content fingerprints captured before presenting an edit for confirmation. */
+	preconditions?: WorkspaceEditPrecondition[],
+};
+
+export type WorkspaceEditPrecondition = {
+	path: IpcPath,
+	hash: string,
 };
 
 export type WorkspaceSymbol = {
