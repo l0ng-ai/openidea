@@ -371,8 +371,8 @@ pub async fn vcs_init(state: State<'_, AppState>, dir: PathBuf) -> IdeResult<()>
 /// executable when `path` is empty.
 #[tauri::command]
 #[specta::specta]
-pub async fn vcs_git_version(state: State<'_, AppState>, path: String) -> IdeResult<GitExecutableInfo> {
-    ide_host::ops::vcs::vcs_git_version(&state.host, "", path).await
+pub async fn vcs_git_version(window: Window, state: State<'_, AppState>, path: String) -> IdeResult<GitExecutableInfo> {
+    ide_host::ops::vcs::vcs_git_version(&state.host, window.label(), path).await
 }
 
 /// The auto-detected git executable (shown as the field's placeholder).
