@@ -114,8 +114,3 @@ export function parseMapperXml(text: string): MapperXml {
   }
   return out;
 }
-
-/** All statement ids of the four tags, in document order (duplicates kept). */
-export function statementIds(xml: MapperXml): Set<string> {
-  return new Set(xml.statements.map((s) => s.id));
-}

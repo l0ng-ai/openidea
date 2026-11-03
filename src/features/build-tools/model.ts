@@ -128,23 +128,6 @@ export function mavenRoots(model: MavenModel): BuildNode[] {
   return out;
 }
 
-/** Run configurations of a Maven project: `maven` configs whose directory is the project's. */
-export function mavenRunConfigs(project: MavenProject, configs: readonly RunConfig[]): RunConfig[] {
-  return configs.filter((c) => c.kind === "maven" && normalizeDir(c.cwd) === project.dir);
-}
-
-/** Run configurations of a Gradle build: every `gradle` config. */
-export function gradleRunConfigs(configs: readonly RunConfig[]): RunConfig[] {
-  return configs.filter((c) => c.kind === "gradle");
-}
-
-function normalizeDir(cwd: string | null | undefined): string {
-  return (cwd ?? "")
-    .replace(/\\/g, "/")
-    .replace(/^\.\/?/, "")
-    .replace(/\/+$/, "");
-}
-
 export function mavenChildren(node: BuildNode, model: MavenModel): BuildNode[] | undefined {
   switch (node.kind) {
     case "profiles":
