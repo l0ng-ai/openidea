@@ -1407,6 +1407,8 @@
   "Other revisions (comma-separated):": "其他修订（逗号分隔）：",
   "Otherwise line breakpoints can only be set in files of languages that have a debugger.": "否则只能在有调试器的语言文件中设置行断点。",
   "Outgoing commits": "传出的提交",
+  "1 outgoing commit": "1 个传出提交",
+  "Files to push": "待推送的文件",
   "Output": "输出",
   "Override IDE shortcuts": "覆盖 IDE 快捷键",
   "Override Members": "重写成员",

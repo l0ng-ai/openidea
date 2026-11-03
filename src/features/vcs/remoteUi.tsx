@@ -1,16 +1,17 @@
 /** Update Project and Push dialogs. */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { BranchInfo, Commit, PushTags, RemoteOp } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
-import { Checkbox, Dialog, Input, List, Select, Spinner, T, Tree } from "@/ui";
+import { Checkbox, Dialog, Input, Select, Spinner, SplitGroup, SplitHandle, SplitPanel, T, Tree } from "@/ui";
 import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
 import { allRepos, lastRemoteFailure, runRemote, saveAll } from "./ops";
 import { currentRepo, refreshNow, repoName, useVcs } from "./store";
+import { PushPreview } from "./PushPreview";
 import styles from "./common.module.css";
 
 /** Update Project…: the options dialog, or (Confirmation › Show options before Update off) the default method right away. */
@@ -87,12 +88,28 @@ function UpdateDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-const logOf = (branch: string, limit: number, range: string | null = null, repo = currentRepo()) =>
-  call(commands.vcsLog(repo, { branch, path: null, author: null, text: null, range, skip: 0, limit }));
+async function logOf(
+  branch: string,
+  limit: number,
+  range: string | null = null,
+  repo = currentRepo(),
+  isCurrent: () => boolean = () => true,
+): Promise<Commit[]> {
+  const commits: Commit[] = [];
+  // A preview must cover the whole push, including changes older than the first log page.
+  while (isCurrent()) {
+    const page = await call(
+      commands.vcsLog(repo, { branch, path: null, author: null, text: null, range, skip: commits.length, limit }),
+    );
+    commits.push(...page);
+    if (page.length < limit) return commits;
+  }
+  return commits;
+}
 
-/** Outgoing commits of the current branch: `@{u}..HEAD`, or recent HEAD history without an upstream. */
+/** Outgoing commits of the current branch: `@{u}..HEAD`, or HEAD history for a new branch; paged by `logOf`. */
 export function outgoingQuery(upstream: string | null): { branch: string; range: string | null; limit: number } {
-  return upstream ? { branch: "HEAD", range: "@{u}..HEAD", limit: 1000 } : { branch: "HEAD", range: null, limit: 50 };
+  return { branch: "HEAD", range: upstream ? "@{u}..HEAD" : null, limit: 1000 };
 }
 
 export interface PushTarget {
@@ -141,6 +158,7 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
   const [repos, setRepos] = useState<RepoPush[] | null>(null);
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [force, setForce] = useState(false);
   const [pushTags, setPushTags] = useState(false);
@@ -153,7 +171,7 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
       roots.map(async (root) => {
         const branch = await call(commands.vcsBranchInfo(root));
         const q = outgoingQuery(branch.upstream);
-        const commits = branch.head ? await logOf(q.branch, q.limit, q.range, root) : [];
+        const commits = branch.head ? await logOf(q.branch, q.limit, q.range, root, () => alive) : [];
         return { root, branch, commits };
       }),
     ).then((results) => {
@@ -182,6 +200,7 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
   const targetOf = (r: RepoPush) =>
     r.branch.upstream ? r.branch.upstream.slice(r.branch.upstream.indexOf("/") + 1) : r.branch.head!;
   const picked = (repos ?? []).filter((r) => checked.has(r.root));
+  const outgoingCount = picked.reduce((n, r) => n + r.commits.length, 0);
   const push = async () => {
     onClose();
     for (const r of picked) {
@@ -204,13 +223,23 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
     repo,
     children: repo.commits.map((commit) => ({ key: `${repo.root}:${commit.id}`, repo, commit })),
   }));
+  // Selection reviews files only; the checkboxes remain the authority for what gets pushed.
+  const preview = useMemo(
+    () =>
+      (repos ?? []).flatMap((r) => {
+        const all = selected.has(r.root) || (!selected.size && checked.has(r.root));
+        const commits = all ? r.commits : r.commits.filter((c) => selected.has(`${r.root}:${c.id}`));
+        return commits.length ? [{ repo: r.root, commits }] : [];
+      }),
+    [repos, selected, checked],
+  );
 
   return (
     <Dialog
       open
       title="Push Commits"
       onClose={onClose}
-      width={620}
+      width={980}
       resizable="both"
       footerStart={
         <>
@@ -239,67 +268,79 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.pushTreeWrap}>
-        {error ? (
-          <div className={styles.error}>{error}</div>
-        ) : !repos ? (
-          <div className={styles.empty}>
-            <Spinner size={14} />
-          </div>
-        ) : (
-          <Tree<PushNode>
-            roots={nodes}
-            getKey={(n) => n.key}
-            getLabel={(n) => (n.commit ? n.commit.summary : repoName(n.repo.root))}
-            getChildren={(n) => n.children}
-            isExpandable={(n) => !!n.children?.length}
-            expanded={new Set(nodes.map((n) => n.key).filter((k) => !collapsed.has(k)))}
-            onExpandedChange={(_next, node, open) =>
-              setCollapsed((c) => {
-                const s = new Set(c);
-                if (open) s.delete(node.key);
-                else s.add(node.key);
-                return s;
-              })
-            }
-            rowHeight={22}
-            aria-label="Outgoing commits"
-            className={styles.boxList}
-            empty={
-              <span>
-                <T>Everything is up to date</T>
-              </span>
-            }
-            renderNode={(n) =>
-              n.commit ? (
-                <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
-                  <span className={styles.commitHash}>{n.commit.shortId}</span>
-                  <span className={styles.commitSubject}>{n.commit.summary}</span>
-                  <span className={styles.commitMeta}>{n.commit.author}</span>
-                  <span className={styles.commitMeta}>{formatTime(n.commit.timeMs)}</span>
+      <div className={styles.pushReview}>
+        <SplitGroup orientation="horizontal" className={styles.grow}>
+          <SplitPanel id="commits" defaultSize="58%" minSize="220px">
+            <div className={styles.pushCommits}>
+              <div className={styles.pushPreviewBar}>
+                <span className={styles.hint}>
+                  {outgoingCount === 1 ? tx("1 outgoing commit") : tx`${outgoingCount} outgoing commits`}
                 </span>
+              </div>
+              {error ? (
+                <div className={styles.error}>{error}</div>
+              ) : !repos ? (
+                <div className={styles.empty}>
+                  <Spinner size={14} />
+                </div>
               ) : (
-                <span
-                  className={styles.commitRow}
-                  style={{ flex: 1, padding: 0 }}
-                  // A row click toggles the checkbox, like before; only the chevron collapses.
-                  onClick={(e) => {
-                    if (!(e.target as HTMLElement | null)?.closest?.("label")) toggle(n.repo.root);
-                  }}
-                >
-                  <Checkbox
-                    checked={checked.has(n.repo.root)}
-                    onChange={() => toggle(n.repo.root)}
-                    label={repoName(n.repo.root)}
-                  />
-                  <span className={styles.commitMeta}>
-                    {n.repo.branch.head} → {n.repo.branch.upstream ?? tx("new remote branch")}
-                  </span>
-                </span>
-              )
-            }
-          />
-        )}
+                <Tree<PushNode>
+                  roots={nodes}
+                  getKey={(n) => n.key}
+                  getLabel={(n) => (n.commit ? n.commit.summary : repoName(n.repo.root))}
+                  getChildren={(n) => n.children}
+                  isExpandable={(n) => !!n.children?.length}
+                  expanded={new Set(nodes.map((n) => n.key).filter((k) => !collapsed.has(k)))}
+                  onExpandedChange={(_next, node, open) =>
+                    setCollapsed((c) => {
+                      const s = new Set(c);
+                      if (open) s.delete(node.key);
+                      else s.add(node.key);
+                      return s;
+                    })
+                  }
+                  rowHeight={22}
+                  aria-label="Outgoing commits"
+                  className={styles.boxList}
+                  selected={selected}
+                  onSelectionChange={setSelected}
+                  multiSelect
+                  empty={
+                    <span>
+                      <T>Everything is up to date</T>
+                    </span>
+                  }
+                  renderNode={(n) =>
+                    n.commit ? (
+                      <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
+                        <span className={styles.commitHash}>{n.commit.shortId}</span>
+                        <span className={styles.commitSubject}>{n.commit.summary}</span>
+                        <span className={styles.commitMeta}>{n.commit.author}</span>
+                        <span className={styles.commitMeta}>{formatTime(n.commit.timeMs)}</span>
+                      </span>
+                    ) : (
+                      <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
+                        <Checkbox
+                          checked={checked.has(n.repo.root)}
+                          onChange={() => toggle(n.repo.root)}
+                          label={repoName(n.repo.root)}
+                        />
+                        <span className={styles.commitMeta}>
+                          {n.repo.branch.head} → {n.repo.branch.upstream ?? tx("new remote branch")} (
+                          {n.repo.commits.length})
+                        </span>
+                      </span>
+                    )
+                  }
+                />
+              )}
+            </div>
+          </SplitPanel>
+          <SplitHandle />
+          <SplitPanel id="files" minSize="200px">
+            <PushPreview groups={preview} />
+          </SplitPanel>
+        </SplitGroup>
       </div>
     </Dialog>
   );
@@ -309,8 +350,8 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const [repo] = useState(currentRepo);
   const [branch] = useState(() => useVcs.getState().branch);
   const [branches] = useState(() => useVcs.getState().branches);
-  const [commits, setCommits] = useState<Commit[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [outgoing, setOutgoing] = useState<{ key: string; commits: Commit[]; error: string | null } | null>(null);
+  const [selection, setSelection] = useState<{ key: string; keys: ReadonlySet<string> } | null>(null);
   const [force, setForce] = useState(false);
   const [remotes, setRemotes] = useState<string[]>([]);
   const current = branch?.head ?? null;
@@ -329,6 +370,21 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const [pushTags, setPushTags] = useState(false);
   const [tagsMode, setTagsMode] = useState<PushTags>("all");
   const upstream = trackedBranch ? (remote ? `${remote}/${trackedBranch}` : tracked) : tracked;
+  const defaultTarget = trackedBranch ?? head;
+  // IDEA's push target is editable: preview the destination that will actually receive the push.
+  const [targetName, setTargetName] = useState(defaultTarget ?? "");
+  const edited = targetName.trim();
+  const retarget = !!head && !!edited && edited !== defaultTarget;
+  const target = retarget ? edited : defaultTarget;
+  const destination = remote && target ? `${remote}/${target}` : null;
+  const queryKey = JSON.stringify([head, destination, explicit, revision, tracked, repo]);
+  // A destination change immediately hides the previous result, without clearing state in an effect.
+  const commits = outgoing?.key === queryKey ? outgoing.commits : null;
+  const error = outgoing?.key === queryKey ? outgoing.error : null;
+  const selected = useMemo(
+    () => (selection?.key === queryKey ? selection.keys : new Set<string>()),
+    [selection, queryKey],
+  );
 
   useEffect(() => {
     let alive = true;
@@ -346,31 +402,31 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
 
   useEffect(() => {
     let alive = true;
+    // Closing or retargeting the dialog stops requesting further pages of the old range.
+    const log = (tip: string, range: string | null = null) => logOf(tip, 1000, range, repo, () => alive);
     (async () => {
       if (!head) return [];
-      if (!explicit && upstream === tracked) {
+      if (!explicit && tracked && destination === tracked) {
         // The tracked upstream: `@{u}` resolves it even when the name is ambiguous.
-        return logOf("HEAD", 1000, "@{u}..HEAD", repo).catch(() => logOf("HEAD", 50, null, repo));
+        return log("HEAD", "@{u}..HEAD").catch(() => log("HEAD"));
       }
       const tip = revision ?? head;
-      // `remote/branch` may not exist locally yet: fall back to the recent history.
-      return upstream
-        ? logOf(tip, 1000, `${upstream}..${tip}`, repo).catch(() => logOf(tip, 50, null, repo))
-        : logOf(tip, 50, null, repo);
+      // A new destination has no local tracking ref yet: review the branch's full history.
+      return destination ? log(tip, `${destination}..${tip}`).catch(() => log(tip)) : log(tip);
     })()
-      .then((c) => alive && setCommits(c))
-      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
+      .then((c) => alive && setOutgoing({ key: queryKey, commits: c, error: null }))
+      .catch(
+        (e) => alive && setOutgoing({ key: queryKey, commits: [], error: e instanceof Error ? e.message : String(e) }),
+      );
     return () => {
       alive = false;
     };
-  }, [head, upstream, explicit, revision, tracked, repo]);
+  }, [head, destination, explicit, revision, tracked, repo, queryKey]);
 
-  const defaultTarget = trackedBranch ?? head;
-  // IDEA's push target is editable: another name pushes to that branch of the same remote.
-  const [targetName, setTargetName] = useState(defaultTarget ?? "");
-  const edited = targetName.trim();
-  const retarget = !!head && !!edited && edited !== defaultTarget;
-  const target = retarget ? edited : defaultTarget;
+  const preview = useMemo(
+    () => [{ repo, commits: (commits ?? []).filter((c) => !selected.size || selected.has(c.id)) }],
+    [repo, commits, selected],
+  );
   // A remote different from the tracked one always goes through `pushBranch`.
   const remoteChanged = !!remote && remote !== trackedRemote;
   const targetLabel =
@@ -409,9 +465,9 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   return (
     <Dialog
       open
-      title={head ? tx`Push Commits to ${upstream ?? "remote"}` : "Push"}
+      title={head ? tx`Push Commits to ${targetLabel}` : "Push"}
       onClose={onClose}
-      width={620}
+      width={980}
       resizable="both"
       footerStart={
         <>
@@ -484,31 +540,56 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
         )}
         {retarget && <span className={styles.hint}> {tx("New")}</span>}
       </div>
-      <div className={styles.pushListWrap}>
-        {error ? (
-          <div className={styles.error}>{error}</div>
-        ) : !commits ? (
-          <div className={styles.empty}>
-            <Spinner size={14} />
-          </div>
-        ) : (
-          <List
-            items={commits}
-            getKey={(c) => c.id}
-            rowHeight={22}
-            aria-label="Outgoing commits"
-            className={styles.boxList}
-            empty={<span>{upstream ? tx("Everything is up to date") : tx("No commits")}</span>}
-            renderItem={(c) => (
-              <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
-                <span className={styles.commitHash}>{c.shortId}</span>
-                <span className={styles.commitSubject}>{c.summary}</span>
-                <span className={styles.commitMeta}>{c.author}</span>
-                <span className={styles.commitMeta}>{formatTime(c.timeMs)}</span>
-              </span>
-            )}
-          />
-        )}
+      <div className={styles.pushReview}>
+        <SplitGroup orientation="horizontal" className={styles.grow}>
+          <SplitPanel id="commits" defaultSize="58%" minSize="220px">
+            <div className={styles.pushCommits}>
+              <div className={styles.pushPreviewBar}>
+                <span className={styles.hint}>
+                  {commits
+                    ? commits.length === 1
+                      ? tx("1 outgoing commit")
+                      : tx`${commits.length} outgoing commits`
+                    : tx("Outgoing commits")}
+                </span>
+              </div>
+              {error ? (
+                <div className={styles.error}>{error}</div>
+              ) : !commits ? (
+                <div className={styles.empty}>
+                  <Spinner size={14} />
+                </div>
+              ) : (
+                <Tree<Commit>
+                  roots={commits}
+                  getKey={(c) => c.id}
+                  getLabel={(c) => c.summary}
+                  getChildren={() => undefined}
+                  isExpandable={() => false}
+                  selected={selected}
+                  onSelectionChange={(keys) => setSelection({ key: queryKey, keys })}
+                  multiSelect
+                  rowHeight={22}
+                  aria-label="Outgoing commits"
+                  className={styles.boxList}
+                  empty={<span>{upstream ? tx("Everything is up to date") : tx("No commits")}</span>}
+                  renderNode={(c) => (
+                    <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
+                      <span className={styles.commitHash}>{c.shortId}</span>
+                      <span className={styles.commitSubject}>{c.summary}</span>
+                      <span className={styles.commitMeta}>{c.author}</span>
+                      <span className={styles.commitMeta}>{formatTime(c.timeMs)}</span>
+                    </span>
+                  )}
+                />
+              )}
+            </div>
+          </SplitPanel>
+          <SplitHandle />
+          <SplitPanel id="files" minSize="200px">
+            <PushPreview groups={preview} />
+          </SplitPanel>
+        </SplitGroup>
       </div>
     </Dialog>
   );

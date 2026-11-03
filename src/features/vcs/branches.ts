@@ -350,12 +350,24 @@ export function buildBranchTree(
     return [...top, ...folderNodes, ...leaves.filter((n) => rank(n) === 2).sort(byName)];
   };
   const local = branches.filter((b) => !b.remote);
+  const tracking = new Map<string, Branch[]>();
+  for (const b of local) {
+    if (b.upstream) tracking.set(b.upstream, [...(tracking.get(b.upstream) ?? []), b]);
+  }
   const byRemote = new Map<string, Branch[]>();
   for (const b of branches) {
     if (!b.remote || b.name.endsWith("/HEAD")) continue;
     const i = b.name.indexOf("/");
     const r = i > 0 ? b.name.slice(0, i) : b.name;
-    byRemote.set(r, [...(byRemote.get(r) ?? []), b]);
+    // Remote refs have no upstream of their own. Show their local tracking branch's
+    // incoming/outgoing state, preferring HEAD, then the matching name; ambiguous refs stay unmarked.
+    const tracked = tracking.get(b.name) ?? [];
+    const source =
+      tracked.find((l) => l.current) ??
+      tracked.find((l) => l.name === b.name.slice(i + 1)) ??
+      (tracked.length === 1 ? tracked[0] : undefined);
+    const remote = source ? { ...b, ahead: source.ahead, behind: source.behind } : b;
+    byRemote.set(r, [...(byRemote.get(r) ?? []), remote]);
   }
   const out: BranchTreeNode[] = [{ key: "head", label: "HEAD (Current Branch)", kind: "head", ref: "HEAD" }];
   if (local.length)

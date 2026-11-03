@@ -21,6 +21,7 @@ import { call, commands } from "@/platform/ipc";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
+  HighlightedText,
   Icon,
   IconButton,
   SearchField,
@@ -255,11 +256,26 @@ function LogView() {
 
 // --- branches ---------------------------------------------------------------
 
-function branchDetail(n: BranchTreeNode): string | undefined {
-  const b = n.branch;
-  if (!b) return undefined;
-  const sync = [b.behind > 0 ? `↓${b.behind}` : "", b.ahead > 0 ? `↑${b.ahead}` : ""].filter(Boolean).join(" ");
-  return [b.current ? tx("current") : "", sync].filter(Boolean).join("  ") || undefined;
+function BranchDetails({ node }: { node: BranchTreeNode }) {
+  const b = node.branch;
+  if (!b) return null;
+  return (
+    <>
+      {b.current && <span className={styles.branchCurrent}>{tx("current")}</span>}
+      {b.behind > 0 && (
+        <span className={clsx(styles.branchSync, styles.branchIncoming)} title={tx`${b.behind} incoming commits`}>
+          <Icon name="vcs-incoming" size={12} />
+          {b.behind}
+        </span>
+      )}
+      {b.ahead > 0 && (
+        <span className={clsx(styles.branchSync, styles.branchOutgoing)} title={tx`${b.ahead} outgoing commits`}>
+          <Icon name="vcs-outgoing" size={12} />
+          {b.ahead}
+        </span>
+      )}
+    </>
+  );
 }
 
 export function BranchesPanel() {
@@ -436,20 +452,33 @@ export function BranchesPanel() {
             ...(current ? branchFolderKeys(roots, current) : []),
           ]}
           expanded={searchExpanded}
-          getIcon={(n) =>
-            n.kind === "head"
-              ? "commit"
-              : n.kind === "tag"
-                ? "tag"
-                : n.branch?.current
-                  ? "current-branch"
-                  : n.kind === "branch"
-                    ? n.favorite
-                      ? "star"
-                      : "branch"
-                    : "folder"
-          }
-          getDetail={branchDetail}
+          renderNode={(n, state) => (
+            <span className={styles.branchRow}>
+              <Icon
+                size={16}
+                name={
+                  n.kind === "head"
+                    ? "commit"
+                    : n.kind === "tag"
+                      ? "tag"
+                      : n.branch?.current
+                        ? "current-branch"
+                        : n.kind === "branch"
+                          ? n.favorite
+                            ? "star"
+                            : "branch"
+                          : "folder"
+                }
+              />
+              <HighlightedText
+                className={styles.branchLabel}
+                text={n.kind === "head" || n.kind === "group" ? tx(n.label) : n.label}
+                indices={state.matches}
+                tone="accent"
+              />
+              <BranchDetails node={n} />
+            </span>
+          )}
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {

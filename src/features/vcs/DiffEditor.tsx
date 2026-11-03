@@ -196,8 +196,14 @@ function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
   return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
 }
 
-export function DiffEditor({ input }: { input: EditorInput }) {
+/** Diff surface; `onOpenDiff` routes chained file navigation back to an embedding dialog. */
+export function DiffEditor({ input, onOpenDiff }: { input: EditorInput; onOpenDiff?: (data: DiffData) => void }) {
   const data = input.data as DiffData;
+  // Embedded modal viewers must keep file navigation inside their own surface.
+  const navigateDiff = useCallback(
+    (next: DiffData) => (onOpenDiff ? onOpenDiff(next) : void openDiff(next, { preview: true })),
+    [onOpenDiff],
+  );
   const { path, left, right } = data;
   const [attached, setAttached] = useState<Attached | null>(null);
   const [binary, setBinary] = useState<boolean | null>(null);
@@ -569,7 +575,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
         if (pendingFile.current === dir) {
           pendingFile.current = 0;
           setNavHint(null);
-          void openDiff(neighbour, { preview: true });
+          navigateDiff(neighbour);
         } else {
           pendingFile.current = dir;
           setNavHint(dir === 1 ? "Press again to go to the next file" : "Press again to go to the previous file");
@@ -588,7 +594,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
       }
       updateChunkInfo();
     },
-    [updateChunkInfo, data],
+    [updateChunkInfo, data, navigateDiff],
   );
 
   // A file-backed side is the source; for a diff of revisions (Git Log, Compare) the
@@ -758,7 +764,7 @@ export function DiffEditor({ input }: { input: EditorInput }) {
   };
   const file = (dir: 1 | -1) => {
     const neighbour = chainNeighbour(data, dir);
-    if (neighbour) void openDiff(neighbour, { preview: true });
+    if (neighbour) navigateDiff(neighbour);
   };
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   /** The viewer settings menu, under the toolbar's gear (`from`) or its start. */
