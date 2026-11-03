@@ -550,6 +550,15 @@ pub struct LanguagesSettings {
     pub prettier: PrettierSettings,
     pub java: JavaSettings,
     pub ruby: RubySettings,
+    pub markdown: MarkdownSettings,
+}
+
+/// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MarkdownSettings {
+    /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
+    pub preview_font_size: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

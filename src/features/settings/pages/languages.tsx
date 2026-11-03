@@ -1,9 +1,10 @@
 /**
  * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
- * Languages & Frameworks › Go / Java / Node.js / PHP / Rust / TypeScript. Pages live in
+ * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
 import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
+import { MarkdownPage } from "../languages/MarkdownPage";
 import { PrettierPage } from "../languages/PrettierPage";
 import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
@@ -107,6 +108,15 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 402,
     keywords: ["node interpreter", "package manager", "npm", "pnpm", "yarn", "bun", "nvm"],
     component: NodePage,
+  },
+  {
+    // Global only, like IDEA's application-level Markdown settings.
+    id: "languages.markdown",
+    title: "Markdown",
+    group: LANGUAGES_GROUP,
+    order: 400,
+    keywords: ["markdown", "preview", "font size", "jupyter", "notebook"],
+    component: MarkdownPage,
   },
   {
     id: "languages.prettier",

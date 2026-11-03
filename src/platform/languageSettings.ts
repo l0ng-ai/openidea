@@ -52,6 +52,8 @@ export interface LanguagesValid {
     gradle: { jvm: string; distribution: "wrapper" | "local"; home: string; userHome: string };
     maven: { home: string; userSettings: string; localRepository: string; unlinkedProjects: string[] };
   };
+  /** Preview font size in px; `null` follows the editor font size. */
+  markdown: { previewFontSize: number | null };
 }
 
 export interface ProjectStructureValid {
@@ -113,6 +115,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "" },
     maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [] },
   },
+  markdown: { previewFontSize: null },
 };
 
 export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
@@ -142,6 +145,9 @@ export function normalizeFolder(path: string): string {
     .replace(/^\/+|\/+$/g, "");
 }
 
+/** A stored preview font size within IDEA's 8..72, or `null` (follow the editor font). */
+const previewSize = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? Math.min(72, Math.max(8, Math.round(v))) : null;
 const folders = (v: unknown): string[] =>
   Array.isArray(v)
     ? [
@@ -174,6 +180,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const java = obj(l.java);
   const maven = obj(java.maven);
   const gradle = obj(java.gradle);
+  const markdown = obj(l.markdown);
   return {
     python: {
       interpreter: text(py.interpreter, d.python.interpreter),
@@ -233,7 +240,27 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         unlinkedProjects: folders(maven.unlinkedProjects),
       },
     },
+    markdown: { previewFontSize: previewSize(markdown.previewFontSize) },
   };
+}
+
+/**
+ * Markdown preview (and notebook Markdown cell) font size in px: Languages &
+ * Frameworks › Markdown, else the editor font size, as IDEA defaults it.
+ */
+export function markdownPreviewFontSize(settings: unknown): number {
+  const s = obj(settings);
+  const editorSize = obj(s.editor).fontSize;
+  return (
+    previewSize(obj(obj(s.languages).markdown).previewFontSize) ??
+    // 13: the editor's default font size.
+    (typeof editorSize === "number" && editorSize > 0 ? editorSize : 13)
+  );
+}
+
+/** Reactive `markdownPreviewFontSize` of the open project. */
+export function useMarkdownPreviewFontSize(): number {
+  return useProject((s) => markdownPreviewFontSize(s.settings));
 }
 
 export function validateProjectStructure(raw: unknown): ProjectStructureValid {
