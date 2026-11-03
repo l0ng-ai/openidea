@@ -1,7 +1,8 @@
 /**
  * Text editor wrapper of Markdown files: the editor, a live preview, or both
  * side by side, switched from the tab strip or a floating toolbar. The
- * preview follows the editor's scroll position in the split layout.
+ * preview follows the editor's scroll position in the split layout; in
+ * Preview Only, structure reveals scroll the preview directly.
  */
 import {
   useDeferredValue,
@@ -79,6 +80,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const fontZoom = useLiveMarkdown((s) => s[path]?.fontZoom ?? 0);
   const topLine = useLiveMarkdown((s) => s[path]?.topLine ?? 0);
   const scrollSeq = useLiveMarkdown((s) => s[path]?.scrollSeq ?? 0);
+  const revealSeq = useLiveMarkdown((s) => s[path]?.revealSeq ?? 0);
   const deferred = useDeferredValue(text ?? "");
   const html = useMemo(() => renderMarkdown(deferred), [deferred]);
   const ref = useRef<HTMLDivElement>(null);
@@ -143,6 +145,23 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     }));
     root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocks, topLine, root.scrollHeight);
   }, [html, topLine, scrollSeq, sync, diagramsDrawn]);
+
+  // Reveals land in the editor, which Preview Only hides: it cannot scroll, so
+  // the preview applies the published line itself. Split mode is driven by the
+  // editor's scroll events above; a fresh mount keeps its saved position.
+  const appliedReveal = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root || sync) return;
+    if (appliedReveal.current === null) appliedReveal.current = revealSeq;
+    if (revealSeq === appliedReveal.current) return;
+    appliedReveal.current = revealSeq;
+    const blocks = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((el) => ({
+      line: Number(el.dataset.line),
+      top: el.offsetTop,
+    }));
+    root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocks, topLine, root.scrollHeight);
+  }, [revealSeq, sync, html, topLine]);
 
   // The preview's own scroll offset: tab switches and mode toggles unmount the
   // preview, so Preview Only would otherwise start over at the top. Writes made

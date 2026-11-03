@@ -19,6 +19,8 @@ export interface LiveMarkdown {
   fontZoom: number;
   /** The preview div's own scrollTop, kept so Preview Only survives a remount. */
   previewTop: number;
+  /** Bumped when a reveal targets an unrendered editor (Preview Only), for the preview to apply. */
+  revealSeq?: number;
 }
 
 export const useLiveMarkdown = create<Record<string, LiveMarkdown | undefined>>(() => ({}));
@@ -64,6 +66,15 @@ function livePlugin(path: string) {
       update(u: ViewUpdate) {
         const zoom = u.state.field(fontZoom, false) ?? 0;
         if (zoom !== (u.startState.field(fontZoom, false) ?? 0)) publish(path, { fontZoom: zoom });
+        // A reveal (e.g. a Structure click) into an unrendered editor — Preview
+        // Only hides it — cannot scroll, so no scroll event follows: publish
+        // the line for the preview to scroll to itself.
+        if (u.selectionSet && this.view.scrollDOM.getClientRects().length === 0) {
+          publish(path, {
+            topLine: this.view.state.doc.lineAt(this.view.state.selection.main.head).number - 1,
+            revealSeq: (useLiveMarkdown.getState()[path]?.revealSeq ?? 0) + 1,
+          });
+        }
         if (!u.docChanged) return;
         clearTimeout(this.timer);
         this.timer = setTimeout(() => publish(path, { text: this.view.state.doc.toString() }), TEXT_DELAY);
