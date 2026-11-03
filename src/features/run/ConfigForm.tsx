@@ -6,8 +6,10 @@
 import { parseJavaArgs } from "@/platform/javaLaunch";
 import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
-import type { BeforeLaunchTask, RunConfig } from "@/platform/ipc";
+import { isTauri, type BeforeLaunchTask, type RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { relativePath, useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import {
   Button,
@@ -169,6 +171,14 @@ export interface ConfigFormProps {
   modifyRequest: number;
 }
 
+/** Picks `.env` files; paths inside the project are returned relative to its root. */
+async function chooseEnvFiles(root: string | null, title: string): Promise<string[]> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ multiple: true, title, defaultPath: root ?? undefined });
+  const paths = picked === null ? [] : Array.isArray(picked) ? picked : [picked];
+  return paths.map((p) => (root ? relativePath(root, p) : p));
+}
+
 export function ConfigForm({ config, all, type, errors, template, onChange, modifyRequest }: ConfigFormProps) {
   const openByDefault = useWorkflowSettings((s) => s.run.showOnStart);
   const externalTools = useWorkflowSettings((s) => s.externalTools);
@@ -176,6 +186,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const toolWindows = useContributions((s) => s.toolWindows);
   const tx = useTx();
   const txTemplate = useTxTemplate();
+  const root = useProject((s) => s.project?.root ?? null);
   const [shown, setShown] = useState<ReadonlySet<OptionId>>(() => new Set());
   const [argsText, setArgsText] = useState<string | null>(null);
   const [envText, setEnvText] = useState<string | null>(null);
@@ -480,6 +491,21 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                 title="Edit Environment Variables"
                 onClick={() => setEnvOpen(true)}
               />
+              {isTauri() && !isRemoteWindow() && (
+                <IconButton
+                  icon="folder-open"
+                  size="small"
+                  iconSize={14}
+                  title="Browse for .env Files"
+                  onClick={() =>
+                    void chooseEnvFiles(root, tx("Browse for .env Files")).then((files) => {
+                      const current = config.envFiles ?? [];
+                      const added = files.filter((f) => !current.includes(f));
+                      if (added.length) update({ envFiles: [...current, ...added] });
+                    })
+                  }
+                />
+              )}
             </div>
             {config.includeSystemEnv === false && (
               <span className={styles.chooserMuted}>

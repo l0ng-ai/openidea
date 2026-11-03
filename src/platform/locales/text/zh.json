@@ -2935,6 +2935,7 @@
   "Modify options": "修改选项",
   "e.g. ./gradlew or cargo": "例如 ./gradlew 或 cargo",
   "Edit Environment Variables": "编辑环境变量",
+  "Browse for .env Files": "浏览 .env 文件",
   "System environment variables are not passed": "不传递系统环境变量",
   "Redirect input from": "重定向输入自",
   "File relative to the project root": "相对于项目根目录的文件",
