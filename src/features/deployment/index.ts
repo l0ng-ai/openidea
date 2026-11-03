@@ -13,6 +13,7 @@ import { registerMenuGroup, registerOverlay, registerToolWindow } from "@/workbe
 import { executeAction } from "@/platform/actions";
 import { autoUploadOn, registerDeploymentActions } from "./actions";
 import { DeploymentDialogs } from "./Dialogs";
+import { transferMenuEntries } from "./model";
 import { REMOTE_HOST_WINDOW, useDeployment } from "./store";
 
 /** Deployed URL of the path the last menu was prepared for. */
@@ -32,11 +33,12 @@ function deploymentMenu(paths: string[]): MenuItem[] {
       label: "Deployment",
       icon: "web",
       submenu: [
-        { kind: "action", action: "deployment.uploadToDefault", arg },
-        { kind: "action", action: "deployment.uploadTo", arg },
-        { kind: "action", action: "deployment.downloadFromDefault", arg },
-        { kind: "action", action: "deployment.downloadFrom", arg },
-        { kind: "action", action: "deployment.syncWith", arg },
+        ...transferMenuEntries(workflowSettings().deployment).map(({ action, label }): MenuItem => ({
+          kind: "action",
+          action,
+          arg,
+          ...(label ? { label } : {}),
+        })),
         { kind: "action", action: "deployment.deleteFromServer", arg },
         { kind: "separator" },
         ...(webUrl ? [{ kind: "action", action: "deployment.openInBrowser", arg } as MenuItem] : []),

@@ -89,7 +89,7 @@ pub struct CatalogPlugin {
     pub authors: Vec<String>,
     pub homepage: Option<String>,
     pub change_notes: Option<String>,
-    /// Package directory; install with `install_from_dir(path)`.
+    /// Package directory; install with `install_from_path(path)`.
     pub path: ide_core::IpcPath,
     pub has_code: bool,
     pub permissions: Vec<Permission>,

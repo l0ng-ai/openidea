@@ -21,6 +21,7 @@ import { ComparisonTree } from "./ComparisonTree";
 import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
 import { displayPath } from "./compareData";
+import { repositoryPath } from "./repositoryPaths";
 
 // ---------------------------------------------------------------------------
 // Operation in progress
@@ -578,7 +579,7 @@ export function ChangesBetweenDialog({
   const diffFor = (f: ComparisonFile): DiffData => {
     const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
     return {
-      path: `${f.root}/${f.path}`,
+      path: repositoryPath(f.root, f.path),
       left:
         f.kind === "added" || f.kind === "untracked"
           ? missing("(does not exist)")
@@ -586,7 +587,7 @@ export function ChangesBetweenDialog({
               type: "rev",
               rev: f.revision,
               label: from.label,
-              path: f.oldPath ? `${f.root}/${f.oldPath}` : undefined,
+              path: f.oldPath ? repositoryPath(f.root, f.oldPath) : undefined,
             },
       right:
         f.kind === "deleted"

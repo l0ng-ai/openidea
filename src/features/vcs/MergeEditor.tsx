@@ -1,143 +1,94 @@
-/** Three-pane merge conflict editor: Yours | Result | Theirs. */
+/** Three-pane merge editor: Yours | Result | Theirs, after IntelliJ's merge tool. */
 import { useCallback, useEffect, useRef, useState } from "react";
-import clsx from "clsx";
-import { RangeSetBuilder, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
-import { history, historyKeymap } from "@codemirror/commands";
-import { keymap } from "@codemirror/view";
+import { Transaction, type EditorState, type Extension, type TransactionSpec } from "@codemirror/state";
+import { EditorView, keymap } from "@codemirror/view";
+import { history, historyKeymap, undoDepth } from "@codemirror/commands";
 import { unifiedMergeView } from "@codemirror/merge";
 import type { MergeSides } from "@/bindings";
 import { embeddedEditorExtensions } from "@/editor/api";
+import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
-import { shortcutLabel } from "@/platform/keymap";
-import { Button, IconButton, showContextMenu, Spinner, T } from "@/ui";
+import { copyText } from "@/ui/selectableText";
+import { Button, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { blameSlot, toggleAnnotations } from "./blame";
 import { languageFor, viewerBase } from "./cm";
 import { confirmDialog } from "./dialogs";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
 import { syncMergeScroll } from "./mergeScroll";
-import { initialResult, mergeTitles, resolutionText, type Resolution, type ResultConflict } from "./conflicts";
+import { mergeTitles } from "./conflicts";
+import {
+  mergeChanged,
+  mergeTheme,
+  resultControls,
+  resultMarks,
+  sideControls,
+  syncSide,
+  type MergeControls,
+} from "./mergeGutters";
+import { COMPARISONS, showCompareMenu, showResultMenu, showSettingsMenu, showSideMenu } from "./mergeMenus";
+import { openDiff } from "./diffInput";
+import {
+  clearFocusedMergeEditor,
+  refreshMergeActions,
+  setFocusedMergeEditor,
+  type MergeActionHost,
+  type MergeCommand,
+} from "./mergeActions";
+import {
+  applyNonConflicting,
+  applyTo,
+  canApply,
+  changesIn,
+  changesInSide,
+  resolveSimple,
+  revertResolved,
+  mergeField,
+  mergeHistory,
+  startMerge,
+  summarize,
+  unresolved,
+  type MergeAction,
+  type MergeSide,
+  type MergeSummary,
+} from "./mergeModel";
+import { MergeFooter, MergeToolbar } from "./MergeToolbar";
 import { baseName } from "./model";
-import { errorMessage, readWorkingText, runOp, writeFileText } from "./ops";
+import { errorMessage, runOp, writeFileText } from "./ops";
 import { refreshNow } from "./store";
 import styles from "./MergeEditor.module.css";
 
 import type { MergeData } from "./mergeKind";
 export { MERGE_KIND, mergeInput, type MergeData } from "./mergeKind";
 
-/** Drops the conflict at an index once a resolution replaced its text. */
-const resolvedConflict = StateEffect.define<number>();
+const NOTHING_LEFT: MergeSummary = {
+  pending: 0,
+  conflicts: 0,
+  left: false,
+  all: false,
+  right: false,
+  simple: false,
+  revert: false,
+};
 
-function resolveConflict(view: EditorView, index: number, how: Resolution) {
-  const c = view.state.field(conflictField).conflicts[index];
-  if (!c) return;
-  view.dispatch({
-    changes: { from: c.from, to: c.to, insert: resolutionText(c, how) },
-    effects: resolvedConflict.of(index),
-    userEvent: "input.resolve",
-  });
-}
-
-class ActionsWidget extends WidgetType {
-  constructor(
-    readonly index: number,
-    readonly hasBase: boolean,
-  ) {
-    super();
+// IntelliJ's "Automatically apply non-conflicting changes" (Tools | Diff & Merge); off by default.
+const AUTO_APPLY_KEY = "openidea.merge.autoApplyNonConflicting";
+const readAutoApply = () => {
+  try {
+    return localStorage.getItem(AUTO_APPLY_KEY) === "true";
+  } catch {
+    return false;
   }
-  eq(o: ActionsWidget) {
-    return o.index === this.index && o.hasBase === this.hasBase;
+};
+const writeAutoApply = (on: boolean) => {
+  try {
+    localStorage.setItem(AUTO_APPLY_KEY, String(on));
+  } catch {
+    // The choice then lasts only until the editor closes.
   }
-  toDOM(view: EditorView) {
-    const el = document.createElement("div");
-    el.className = "cm-conflict-actions";
-    const add = (label: string, how: Resolution) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = label;
-      // Keep the caret / focus in the editor; resolve on click (mouse or keyboard).
-      b.onmousedown = (e) => e.preventDefault();
-      b.onclick = (e) => {
-        e.preventDefault();
-        resolveConflict(view, this.index, how);
-      };
-      el.appendChild(b);
-    };
-    const title = document.createElement("span");
-    title.textContent = `Conflict ${this.index + 1}`;
-    el.appendChild(title);
-    add("Accept Yours", "ours");
-    add("Accept Theirs", "theirs");
-    add("Accept Both", "both");
-    if (this.hasBase) add("Use Base", "base");
-    return el;
-  }
-  ignoreEvent() {
-    return true;
-  }
-}
-
-const conflictLine = Decoration.line({ class: "cm-conflict-marker" });
-
-function decorate(state: EditorState, conflicts: readonly ResultConflict[]): DecorationSet {
-  const b = new RangeSetBuilder<Decoration>();
-  const doc = state.doc;
-  conflicts.forEach((c, i) => {
-    b.add(c.from, c.from, Decoration.widget({ widget: new ActionsWidget(i, c.base !== null), block: true, side: -1 }));
-    if (c.to <= c.from) return;
-    const endLine = doc.lineAt(c.to - 1).number;
-    for (let n = doc.lineAt(c.from).number; n <= endLine; n++) b.add(doc.line(n).from, doc.line(n).from, conflictLine);
-  });
-  return b.finish();
-}
-
-/**
- * The result's unresolved conflicts, tracked as ranges holding the base text (no
- * markers), as IDEA's merge dialog shows them. Typing at a conflict's edges stays in it.
- */
-const conflictField = StateField.define<{ conflicts: ResultConflict[]; deco: DecorationSet }>({
-  create: () => ({ conflicts: [], deco: Decoration.none }),
-  update(v, tr) {
-    const done = new Set(tr.effects.filter((e) => e.is(resolvedConflict)).map((e) => e.value as number));
-    let conflicts = v.conflicts.filter((_, i) => !done.has(i));
-    if (tr.docChanged)
-      conflicts = conflicts.map((c) => ({ ...c, from: tr.changes.mapPos(c.from, -1), to: tr.changes.mapPos(c.to, 1) }));
-    if (!tr.docChanged && !done.size) return v;
-    return { conflicts, deco: decorate(tr.state, conflicts) };
-  },
-  provide: (f) => EditorView.decorations.from(f, (v) => v.deco),
-});
-
-const resultTheme = EditorView.baseTheme({
-  ".cm-conflict-marker": {
-    backgroundColor: "color-mix(in srgb, var(--vcs-conflict) 14%, transparent)",
-    color: "var(--fg-subtle)",
-  },
-  ".cm-conflict-actions": {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    padding: "3px 8px",
-    fontFamily: "var(--font-ui)",
-    fontSize: "var(--fs-small)",
-    color: "var(--vcs-conflict)",
-    background: "var(--bg-elev)",
-    borderTop: "1px solid var(--border)",
-  },
-  ".cm-conflict-actions button": {
-    padding: "0 6px",
-    border: "1px solid var(--border-strong)",
-    borderRadius: "var(--radius-small)",
-    color: "var(--fg-secondary)",
-    background: "var(--bg-control)",
-    font: "inherit",
-    lineHeight: "18px",
-  },
-  ".cm-conflict-actions button:hover": { color: "var(--fg-strong)", background: "var(--bg-control-hover)" },
-});
+};
 
 export function MergeEditor({ input }: { input: EditorInput }) {
   const { path } = input.data as MergeData;
@@ -145,33 +96,46 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     ours: string;
     theirs: string;
     base: string | null;
-    working: string;
-    merged: string | null;
     sides: MergeSides;
+    deleted: Record<MergeSide, boolean>;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lang, setLang] = useState<Extension | null>(null);
-  const [left, setLeft] = useState(0);
+  const [summary, setSummary] = useState<MergeSummary>(NOTHING_LEFT);
+  const [autoApply, setAutoApply] = useState(readAutoApply);
   const [resolved, setResolved] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const paneRef = useRef<MergeSide | "result">("result");
+  const [actionHost] = useState<MergeActionHost>(() => ({
+    enabled: () => false,
+    run: () => {},
+    autoApply: () => false,
+  }));
   const oursRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const theirsRef = useRef<HTMLDivElement>(null);
   const resultView = useRef<EditorView | null>(null);
   const oursView = useRef<EditorView | null>(null);
   const theirsView = useRef<EditorView | null>(null);
+  const autoApplyRef = useRef(autoApply);
+  useEffect(() => {
+    autoApplyRef.current = autoApply;
+  }, [autoApply]);
   const txt = useTxTemplate();
   const titles = mergeTitles(state?.sides);
 
   const load = useCallback(async () => {
     try {
-      const [v, working] = await Promise.all([call(commands.vcsConflictVersions(path)), readWorkingText(path)]);
+      const v = await call(commands.vcsConflictVersions(path));
+      if ([v.base, v.ours, v.theirs].some((text) => text?.includes("\0"))) {
+        throw new Error(tx("Binary files cannot be resolved in the merge editor."));
+      }
       setState({
         ours: v.ours ?? "",
         theirs: v.theirs ?? "",
         base: v.base,
-        working: working ?? "",
-        merged: v.merged,
         sides: v.sides,
+        deleted: { left: v.ours === null, right: v.theirs === null },
       });
       setError(null);
     } catch (e) {
@@ -192,38 +156,65 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   useEffect(() => {
     if (!state || lang === null || !oursRef.current || !resultRef.current || !theirsRef.current) return;
-    const side = () => [
+    // Like IntelliJ, the result starts as the base, with every change waiting to be decided.
+    const start = startMerge(state.ours, state.base ?? "", state.theirs);
+    const change = (index: number, action: MergeAction) => {
+      setFocusedMergeEditor(actionHost);
+      void executeAction("merge.change", { indexes: [index], action });
+    };
+    const controls: MergeControls = {
+      accept: (index, side, resolve) => change(index, { type: "accept", side, resolve }),
+      ignore: (index, side, resolve) => change(index, { type: "ignore", side: resolve ? null : side }),
+      resolveAutomatically: (index) => change(index, { type: "auto", side: "base" }),
+    };
+    const side = (which: MergeSide): Extension[] => [
       viewerBase({ readOnly: true }),
       lang,
       blameSlot(),
+      EditorView.updateListener.of((u) => {
+        if (u.selectionSet) refreshMergeActions(actionHost);
+      }),
       state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
+      sideControls(which, controls),
+      mergeTheme,
     ];
-    const ours = new EditorView({ doc: state.ours, parent: oursRef.current, extensions: side() });
-    const theirs = new EditorView({ doc: state.theirs, parent: theirsRef.current, extensions: side() });
-    // Like IDEA, start from the three-way merge (non-conflicting changes applied, conflicts
-    // showing the base) rather than the marker-laden working copy.
-    const start =
-      state.merged !== null ? initialResult(state.merged) : initialResult(state.working, state.sides.reversed);
-    const result = new EditorView({
+    const ours = new EditorView({ doc: state.ours, parent: oursRef.current, extensions: side("left") });
+    const theirs = new EditorView({ doc: state.theirs, parent: theirsRef.current, extensions: side("right") });
+    const result: EditorView = new EditorView({
       doc: start.text,
       parent: resultRef.current,
       extensions: [
         viewerBase({ readOnly: false }),
         history(),
         keymap.of(historyKeymap),
+        mergeField.init(() => start.changes),
+        mergeHistory,
         embeddedEditorExtensions(path),
         lang,
-        conflictField.init((s) => ({ conflicts: start.conflicts, deco: decorate(s, start.conflicts) })),
-        resultTheme,
+        resultMarks,
+        resultControls(controls),
+        mergeTheme,
         EditorView.updateListener.of((u) => {
-          if (u.docChanged) setLeft(u.state.field(conflictField).conflicts.length);
+          if (u.selectionSet || mergeChanged(u)) refreshMergeActions(actionHost);
+          if (!mergeChanged(u)) return;
+          const changes = u.state.field(mergeField);
+          ours.dispatch({ effects: syncSide.of(changes) });
+          theirs.dispatch({ effects: syncSide.of(changes) });
+          setSummary(summarize(u.state));
         }),
       ],
     });
     resultView.current = result;
-    setLeft(result.state.field(conflictField).conflicts.length);
     oursView.current = ours;
     theirsView.current = theirs;
+    ours.dispatch({ effects: syncSide.of(start.changes) });
+    theirs.dispatch({ effects: syncSide.of(start.changes) });
+    setSummary(summarize(result.state));
+    if (autoApplyRef.current) {
+      const spec = applyNonConflicting(result.state, "base");
+      // The starting point, not a step to undo.
+      if (spec) result.dispatch({ ...spec, annotations: Transaction.addToHistory.of(false) });
+    }
     // Scroll the three panes together, lined up through their changes.
     const stopSync = syncMergeScroll({ ours, result, theirs });
     return () => {
@@ -235,57 +226,43 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       oursView.current = null;
       theirsView.current = null;
     };
-  }, [state, lang, path]);
+  }, [state, lang, path, actionHost]);
+
+  /** Puts the caret at a change and brings it into view. */
+  const moveTo = (view: EditorView, at: number) =>
+    view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
 
   const goto = (dir: 1 | -1) => {
     const v = resultView.current;
     if (!v) return;
-    const blocks = v.state.field(conflictField).conflicts;
-    if (!blocks.length) return;
+    const open = unresolved(v.state);
+    if (!open.length) return;
     const head = v.state.selection.main.head;
     const target =
       dir === 1
-        ? (blocks.find((b) => b.from > head) ?? blocks[0]!)
-        : ([...blocks].reverse().find((b) => b.to < head) ?? blocks[blocks.length - 1]!);
-    v.dispatch({
-      selection: { anchor: target.from },
-      effects: EditorView.scrollIntoView(target.from, { y: "center" }),
-    });
+        ? (open.find((c) => c.from > head) ?? open[0]!)
+        : ([...open].reverse().find((c) => c.from < head) ?? open[open.length - 1]!);
+    moveTo(v, target.from);
     v.focus();
   };
 
-  const acceptAll = (how: Resolution) => {
+  /** Runs a command on the result; `reveal` then moves to what is left to decide. */
+  const command = (make: (s: EditorState) => TransactionSpec | null, reveal = false) => {
     const v = resultView.current;
-    if (!v) return;
-    const conflicts = v.state.field(conflictField).conflicts;
-    v.dispatch({
-      changes: conflicts.map((c) => ({ from: c.from, to: c.to, insert: resolutionText(c, how) })),
-      effects: conflicts.map((_, i) => resolvedConflict.of(i)),
-      userEvent: "input.resolve",
-    });
+    const spec = v && make(v.state);
+    if (!v || !spec) return;
+    v.dispatch(spec);
+    const first = reveal ? unresolved(v.state)[0] : undefined;
+    if (first) moveTo(v, first.from);
   };
 
-  const apply = async () => {
-    const v = resultView.current;
-    if (!v) return;
-    const remaining = v.state.field(conflictField).conflicts.length;
-    if (
-      remaining > 0 &&
-      !(await confirmDialog({
-        title: "Unresolved Conflicts",
-        message:
-          remaining === 1
-            ? tx`${remaining} conflict is unresolved and keeps the base text. Save and mark the file as resolved anyway?`
-            : tx`${remaining} conflicts are unresolved and keep the base text. Save and mark the file as resolved anyway?`,
-        okLabel: "Mark Resolved",
-      }))
-    )
-      return;
-    const text = v.state.doc.toString();
+  /** Saves `text` as the resolved file and stages it; like IDEA, that closes the merge editor. */
+  const writeResolved = async (text: string | null) => {
     const ok = await runOp(
       `Resolve ${baseName(path)}`,
       async () => {
-        await writeFileText(path, text, { save: true });
+        if (text === null) await call(commands.fsDelete(path));
+        else await writeFileText(path, text, { save: true, exact: true });
         await call(commands.vcsStage([path]));
         return true;
       },
@@ -294,12 +271,67 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     if (ok) {
       setResolved(true);
       await refreshNow();
-      // Like IDEA, applying the result closes the merge editor.
       await editorService().closeInput?.(input.key);
     }
   };
 
-  // Next / Previous Difference (F7 / Shift+F7 by default) jump between conflicts through
+  const apply = async () => {
+    const v = resultView.current;
+    if (!v) return;
+    const remaining = unresolved(v.state).length;
+    if (
+      remaining > 0 &&
+      !(await confirmDialog({
+        title: "Unresolved Changes",
+        message:
+          remaining === 1
+            ? tx`${remaining} change is unresolved and keeps the base text. Save and mark the file as resolved anyway?`
+            : tx`${remaining} changes are unresolved and keep the base text. Save and mark the file as resolved anyway?`,
+        okLabel: "Mark Resolved",
+      }))
+    )
+      return;
+    const separator = (state?.base ?? state?.ours ?? state?.theirs ?? "").includes("\r\n") ? "\r\n" : "\n";
+    await writeResolved(v.state.doc.sliceString(0, undefined, separator));
+  };
+
+  /** Whether the user decided or edited anything: what Accept and Cancel ask about. */
+  const modified = () => {
+    const v = resultView.current;
+    return !!v && undoDepth(v.state) > 0;
+  };
+
+  /** Accept Yours / Accept Theirs: that version as it is, whatever was done in the result. */
+  const acceptSide = async (side: MergeSide) => {
+    if (!state) return;
+    if (
+      modified() &&
+      !(await confirmDialog({
+        title: side === "left" ? "Accept Yours" : "Accept Theirs",
+        message: "The result was changed. Discard the changes and take this version as it is?",
+        okLabel: "Discard Changes",
+        danger: true,
+      }))
+    )
+      return;
+    await writeResolved(state.deleted[side] ? null : side === "left" ? state.ours : state.theirs);
+  };
+
+  const cancel = async () => {
+    if (
+      modified() &&
+      !(await confirmDialog({
+        title: "Cancel Merge",
+        message: "Exit without applying the changes made in the result?",
+        okLabel: "Exit",
+        danger: true,
+      }))
+    )
+      return;
+    await editorService().closeInput?.(input.key);
+  };
+
+  // Next / Previous Difference (F7 / Shift+F7 by default) jump between changes through
   // the keymap, as in the diff viewer.
   // `goto` reads only refs, so the first render's one stays valid.
   const [nav] = useState<DiffNavigator>(() => ({
@@ -308,7 +340,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     jumpToSource: () => void editorService().openFile(path, { focus: true }),
     applyChange: () => false,
     file: () => {},
-    showSettings: () => {},
+    showSettings: () => void actionHost.run("settings"),
   }));
   useEffect(
     () => () => {
@@ -320,29 +352,212 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     [nav],
   );
 
-  // Each side pane can annotate its version with Git Blame from the context menu, on
-  // the branch it belongs to, so lines that only exist on the other branch show their
-  // real history instead of "Not Committed Yet".
-  const otherRev = state?.sides.commit ?? "HEAD";
+  const setAutoApplyNonConflicting = (on: boolean) => {
+    setAutoApply(on);
+    writeAutoApply(on);
+    if (on) command((s) => applyNonConflicting(s, "base"), true);
+  };
 
-  const sideMenu = (e: React.MouseEvent, viewRef: { current: EditorView | null }, text: string, revision?: string) => {
-    const view = viewRef.current;
-    if (!view) return;
-    e.preventDefault();
-    showContextMenu(e.nativeEvent, [
-      {
-        label: "Annotate with Git Blame",
-        icon: "changelist",
-        run: () => void toggleAnnotations(view, path, text, revision),
-      },
-    ]);
+  const activePane = () => {
+    const which = paneRef.current;
+    return (which === "left" ? oursView : which === "right" ? theirsView : resultView).current;
+  };
+
+  const selectionDecision = (id: MergeCommand) => {
+    const view = activePane();
+    const result = resultView.current;
+    if (!view || !result) return null;
+    const { from, to } = view.state.selection.main;
+    const side = paneRef.current;
+    const indexes =
+      side === "result"
+        ? changesIn(result.state, from, to)
+        : changesInSide(result.state, side, view.state.doc, from, to);
+    let action: MergeAction;
+    if (id === "resolveAutomatically") action = { type: "auto", side: "base" };
+    else if (id === "ignore") action = { type: "ignore", side: side === "result" ? null : side };
+    else if (id === "resolveUsingYours" || id === "resolveUsingTheirs")
+      action = { type: "accept", side: id === "resolveUsingYours" ? "left" : "right", resolve: true };
+    else if (id === "accept" && side !== "result") action = { type: "accept", side, resolve: false };
+    else return null;
+    return { indexes, action };
+  };
+
+  const enabled = (id: MergeCommand) => {
+    if (id === "reload" || id === "cancel") return !resolved;
+    const v = resultView.current;
+    if (!v || error || resolved) return false;
+    const available = summarize(v.state);
+    switch (id) {
+      case "applyLeft":
+        return available.left;
+      case "applyAll":
+        return available.all;
+      case "applyRight":
+        return available.right;
+      case "resolveSimple":
+        return available.simple;
+      case "revert":
+        return available.revert;
+      case "accept":
+      case "resolveUsingYours":
+      case "resolveUsingTheirs":
+      case "ignore":
+      case "resolveAutomatically": {
+        const decision = selectionDecision(id);
+        return !!decision?.indexes.some((i) => canApply(v.state.doc, v.state.field(mergeField)[i]!, decision.action));
+      }
+      case "annotate":
+        return paneRef.current !== "result";
+      case "cut":
+        return paneRef.current === "result" && !v.state.selection.main.empty;
+      case "copy":
+        return !!activePane() && !activePane()!.state.selection.main.empty;
+      case "paste":
+        return paneRef.current === "result";
+      default:
+        return true;
+    }
+  };
+
+  const menuPosition = (name: "compare" | "settings") => {
+    const button = rootRef.current?.querySelector(`[data-merge-menu="${name}"]`);
+    const rect = (button ?? rootRef.current)?.getBoundingClientRect();
+    return { clientX: rect?.left ?? 0, clientY: rect?.bottom ?? 0 };
+  };
+
+  const runAction = async (id: MergeCommand, arg?: unknown) => {
+    switch (id) {
+      case "applyLeft":
+        return command((s) => applyNonConflicting(s, "left"), true);
+      case "applyAll":
+        return command((s) => applyNonConflicting(s, "base"), true);
+      case "applyRight":
+        return command((s) => applyNonConflicting(s, "right"), true);
+      case "resolveSimple":
+        return command(resolveSimple, true);
+      case "revert":
+        return command(revertResolved, true);
+      case "acceptYours":
+        return acceptSide("left");
+      case "acceptTheirs":
+        return acceptSide("right");
+      case "apply":
+        return apply();
+      case "cancel":
+        return cancel();
+      case "reload":
+        return load();
+      case "compare":
+        return showCompareMenu(menuPosition("compare"));
+      case "settings":
+        return showSettingsMenu(menuPosition("settings"));
+      case "autoApply":
+        return setAutoApplyNonConflicting(!autoApply);
+      case "accept":
+      case "resolveUsingYours":
+      case "resolveUsingTheirs":
+      case "ignore":
+      case "resolveAutomatically": {
+        const decision = selectionDecision(id);
+        if (decision) command((s) => applyTo(s, decision.indexes, decision.action));
+        return;
+      }
+      case "change": {
+        const change = arg as { indexes: number[]; action: MergeAction } | undefined;
+        if (change) command((s) => applyTo(s, change.indexes, change.action));
+        return;
+      }
+      case "annotate": {
+        const which = paneRef.current;
+        const view = activePane();
+        if (!state || !view || which === "result") return;
+        const isHead = which === "left" ? !state.sides.reversed : state.sides.reversed;
+        await toggleAnnotations(
+          view,
+          path,
+          which === "left" ? state.ours : state.theirs,
+          isHead ? "HEAD" : (state.sides.commit ?? "HEAD"),
+        );
+        return;
+      }
+      case "cut":
+      case "copy":
+      case "paste":
+      case "selectAll": {
+        const view = activePane();
+        if (!view) return;
+        const { from, to } = view.state.selection.main;
+        if (id === "selectAll") view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+        else if (id === "paste") {
+          const text = await navigator.clipboard?.readText().catch(() => undefined);
+          if (text !== undefined) view.dispatch({ ...view.state.replaceSelection(text), userEvent: "input.paste" });
+        } else {
+          await copyText(view.state.sliceDoc(from, to));
+          if (id === "cut") view.dispatch({ changes: { from, to }, userEvent: "delete.cut" });
+        }
+        return;
+      }
+      default: {
+        const v = resultView.current;
+        if (!state || !v || !(id in COMPARISONS)) return;
+        const versions = {
+          yours: { text: state.ours, label: txt(titles.yours) },
+          base: { text: state.base ?? "", label: tx("Base") },
+          result: { text: v.state.doc.toString(), label: tx("Result") },
+          theirs: { text: state.theirs, label: txt(titles.theirs) },
+        };
+        const [a, b] = COMPARISONS[id as keyof typeof COMPARISONS];
+        await openDiff({ path, left: { type: "text", ...versions[a] }, right: { type: "text", ...versions[b] } });
+      }
+    }
+  };
+
+  useEffect(() => {
+    Object.assign(actionHost, { enabled, run: runAction, autoApply: () => autoApply });
+    refreshMergeActions(actionHost);
+  });
+
+  useEffect(() => {
+    // Popup focus belongs to the editor that opened it; a real focus change releases it.
+    const onFocus = (e: FocusEvent) => {
+      const target = e.target as Element | null;
+      if (!rootRef.current?.contains(target) && !target?.closest("[data-popup], [role=dialog]"))
+        clearFocusedMergeEditor(actionHost);
+    };
+    document.addEventListener("focusin", onFocus);
+    return () => {
+      document.removeEventListener("focusin", onFocus);
+      clearFocusedMergeEditor(actionHost);
+    };
+  }, [actionHost]);
+
+  const focusProps = {
+    onFocusCapture: (e: React.FocusEvent<HTMLDivElement>) => {
+      const target = e.target as Node;
+      if (oursRef.current?.contains(target)) paneRef.current = "left";
+      else if (theirsRef.current?.contains(target)) paneRef.current = "right";
+      else if (resultRef.current?.contains(target)) paneRef.current = "result";
+      setFocusedMergeEditor(actionHost);
+      setFocusedDiffNavigator(nav);
+      setContext("diffEditorFocus", true);
+    },
+    onBlurCapture: (e: React.FocusEvent<HTMLDivElement>) => {
+      const target = e.relatedTarget as Element | null;
+      if (e.currentTarget.contains(target) || target?.closest("[data-popup], [role=dialog]")) return;
+      clearFocusedMergeEditor(actionHost);
+      if (focusedDiffNavigator() === nav) {
+        setFocusedDiffNavigator(null);
+        setContext("diffEditorFocus", false);
+      }
+    },
   };
 
   if (error)
     return (
-      <div className={styles.message}>
+      <div ref={rootRef} className={styles.message} {...focusProps}>
         {error}
-        <Button onClick={() => void load()}>
+        <Button onClick={() => void executeAction("merge.reload")}>
           <T>Retry</T>
         </Button>
       </div>
@@ -358,49 +573,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     );
 
   return (
-    <div
-      className={styles.root}
-      onFocusCapture={() => {
-        setFocusedDiffNavigator(nav);
-        setContext("diffEditorFocus", true);
-      }}
-      onBlurCapture={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedDiffNavigator() === nav) {
-          setFocusedDiffNavigator(null);
-          setContext("diffEditorFocus", false);
-        }
-      }}
-    >
-      <div className={styles.toolbar} role="toolbar" aria-label={tx("Merge")}>
-        <IconButton
-          icon="arrow-up"
-          title="Previous Conflict"
-          shortcut={shortcutLabel("diff.prevDifference")}
-          size="small"
-          onClick={() => goto(-1)}
-        />
-        <IconButton
-          icon="arrow-down"
-          title="Next Conflict"
-          shortcut={shortcutLabel("diff.nextDifference")}
-          size="small"
-          onClick={() => goto(1)}
-        />
-        <span className={styles.sep} />
-        <Button size="small" onClick={() => acceptAll("ours")}>
-          <T>Accept All Yours</T>
-        </Button>
-        <Button size="small" onClick={() => acceptAll("theirs")}>
-          <T>Accept All Theirs</T>
-        </Button>
-        <IconButton icon="refresh" title="Reload from Disk" size="small" onClick={() => void load()} />
-        <span className={clsx(styles.status, !left && styles.statusDone)}>
-          {left === 1 ? tx`${left} conflict left` : left ? tx`${left} conflicts left` : tx("All conflicts resolved")}
-        </span>
-        <Button size="small" variant="primary" onClick={() => void apply()}>
-          <T>Apply</T>
-        </Button>
-      </div>
+    <div ref={rootRef} className={styles.root} {...focusProps}>
+      <MergeToolbar summary={summary} />
       <div className={styles.labels}>
         <span>{txt(titles.yours)}</span>
         <span>
@@ -419,17 +593,24 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           className={styles.pane}
           aria-label={tx("Your version")}
           role="region"
-          onContextMenu={(e) => sideMenu(e, oursView, state?.ours ?? "", state?.sides.reversed ? otherRev : "HEAD")}
+          onContextMenu={(e) => oursView.current && showSideMenu(e, oursView.current, "left")}
         />
-        <div ref={resultRef} className={styles.pane} aria-label={tx("Result")} role="region" />
+        <div
+          ref={resultRef}
+          className={styles.pane}
+          aria-label={tx("Result")}
+          role="region"
+          onContextMenu={(e) => resultView.current && showResultMenu(e, resultView.current)}
+        />
         <div
           ref={theirsRef}
           className={styles.pane}
           aria-label={tx("Their version")}
           role="region"
-          onContextMenu={(e) => sideMenu(e, theirsView, state?.theirs ?? "", state?.sides.reversed ? "HEAD" : otherRev)}
+          onContextMenu={(e) => theirsView.current && showSideMenu(e, theirsView.current, "right")}
         />
       </div>
+      <MergeFooter />
     </div>
   );
 }
