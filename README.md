@@ -65,18 +65,37 @@ worktree's desktop app is running.
 Open a Unity project's root folder (containing `Assets` and
 `ProjectSettings/ProjectVersion.txt`) to detect its Unity version and use the
 Unity project view. This also works before Unity generates a solution. The view
-hides generated folders and `.meta` files; switch to **Project Files** to see the
-full directory tree, or enable **Show Hidden Files** to see metadata in the Unity
-view. Unity caches and build output are excluded from indexing and search by
+hides generated folders and `.meta` files. Its options menu has independent
+**Show Meta Files** and **Show Generated Files** switches; **Project Files** also
+provides the full directory tree. Unity caches and build output are excluded from indexing and search by
 default, independently of `.gitignore`.
+
+Inside `Assets`, rename and move preserve the asset's `.meta` file and GUID,
+including undo. Delete includes the sidecar and snapshots both paths in Local
+History; the asset and sidecar are grouped in the recycle bin with a
+`restore-paths.json` manifest (restore the contents of `files` to the listed
+original paths). Select the asset to operate on it; editing
+metadata as text remains available, but moving or deleting its live sidecar
+separately is rejected. Existing destination metadata also counts as a conflict.
+
+Local copy/paste duplicates import settings with new GUIDs. Copying a folder
+remaps Unity YAML `guid:` references and assembly-definition `GUID:` references
+between resources in that folder; references outside it keep their original
+GUIDs. Separately selected files are copied independently, so copy their common
+folder when references between them should point to the duplicates. Binary
+serialized Unity assets and serialized text over 32 MiB are rejected before
+publication; use Unity's Force Text serialization for these assets. Custom
+reference formats, embedded packages, directory-comparison merges and remote
+OS uploads are not covered by this asset-copy workflow. Unity-aware moves
+require the source and destination to be on the same volume.
 
 C# editing uses the existing `csharp-ls` integration. Generate the C# project
 files in Unity's **Preferences > External Tools** first; the IDE refreshes the
 missing-project-files notice when they appear. Detecting the project does not
 verify that the language server has loaded every Unity assembly. This initial
-support does not include Unity editor synchronization, attach debugging, or
-asset/GUID-aware file operations; perform asset moves and copies in Unity so its
-metadata stays consistent.
+support does not include Unity editor synchronization or attach debugging.
+Filesystem operations are tested with fixture projects; coordination with a
+running Unity AssetDatabase is not yet implemented.
 
 ## License
 

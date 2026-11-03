@@ -185,7 +185,7 @@ impl Dispatcher {
             ops::fs::create_file_bytes(&c.host, c.arg("path")?, c.arg("data")?).await
         })
         .add("fs_create_dir", |c| async move { ide_vfs::create_dir(&c.arg::<PathBuf>("path")?) })
-        .add("fs_rename", |c| async move { ide_vfs::rename(&c.arg::<PathBuf>("from")?, &c.arg::<PathBuf>("to")?) })
+        .add("fs_rename", |c| async move { ops::fs::rename(&c.host, c.arg("from")?, c.arg("to")?).await })
         .add("fs_set_writable", |c| async move {
             ops::fs::set_writable(&c.host, &c.window, c.arg("path")?, c.arg("writable")?)
         })

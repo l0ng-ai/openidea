@@ -1,5 +1,7 @@
 //! Unity project identity. Generated C# solutions are optional, not root markers.
 
+pub mod assets;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::io::Read;
