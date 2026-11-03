@@ -754,6 +754,8 @@ export const commands = {
 	 *  window's project or (without one) in LightEdit.
 	 */
 	files: IpcPath[],
+	/**  Latest external navigation request; 1-based coordinates. */
+	location: FileLocation | null,
 	/**  Remote project to open (Remote Development). */
 	remote: RemoteLaunch | null,
 	/**  Settings windows: the page to show. */
@@ -3124,6 +3126,12 @@ export type FileIdentifiers = {
 	occurrences: IdentifierOccurrence[],
 };
 
+export type FileLocation = {
+	path: IpcPath,
+	line: number,
+	column: number,
+};
+
 export type FileMatch = {
 	path: IpcPath,
 	/**  Path relative to the project root, as displayed. */
@@ -4112,6 +4120,8 @@ export type Launch = {
 	 *  window's project or (without one) in LightEdit.
 	 */
 	files: IpcPath[],
+	/**  Latest external navigation request; 1-based coordinates. */
+	location: FileLocation | null,
 	/**  Remote project to open (Remote Development). */
 	remote: RemoteLaunch | null,
 	/**  Settings windows: the page to show. */

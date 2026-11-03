@@ -62,6 +62,22 @@ worktree's desktop app is running.
 
 ## Unity projects
 
+To open scripts and Console errors from Unity, choose the built OpenIDEA executable
+in **Preferences > External Tools > External Script Editor** and set
+**External Script Editor Args** to:
+
+```text
+--file "$(File)" --line "$(Line)" --column "$(Column)"
+```
+
+No Unity plugin is needed for this navigation. OpenIDEA detects the file's Unity
+project, opens or focuses its project window, and navigates to the requested position.
+The arguments also work when OpenIDEA is already running. Lines and columns are
+1-based; omitted coordinates default to 1 when a position is provided. Unity's
+0/-1 values mean no known coordinate. Out-of-document positions are clamped to
+the document. Both `--file path` and `--file=path` forms are supported, likewise
+for `--line` and `--column`. Existing positional file/folder arguments still work.
+
 Open a Unity project's root folder (containing `Assets` and
 `ProjectSettings/ProjectVersion.txt`) to detect its Unity version and use the
 Unity project view. This also works before Unity generates a solution. The view

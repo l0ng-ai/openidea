@@ -9,7 +9,7 @@
  */
 import { executeAction, type Action } from "@/platform/actions";
 import { t } from "@/platform/i18n";
-import { call, commands, isCancelled, isTauri } from "@/platform/ipc";
+import { call, commands, isCancelled, isTauri, type FileLocation } from "@/platform/ipc";
 import {
   basename,
   confirmLeaveProject,
@@ -63,15 +63,22 @@ async function openHere(path: string): Promise<boolean> {
 }
 
 /** Opens `files` as editor tabs of this window, focusing the last. */
-async function openInEditor(files: readonly string[]): Promise<void> {
+async function openInEditor(files: readonly string[], location?: FileLocation | null): Promise<void> {
   for (const [i, path] of files.entries())
     await editorService()
-      .openFile(path, { focus: i === files.length - 1 })
+      .openFile(path, {
+        focus: i === files.length - 1,
+        ...(location?.path === path
+          ? {
+              selection: { line: Math.max(0, location.line - 1), col: Math.max(0, location.column - 1) },
+            }
+          : {}),
+      })
       .catch((e) => console.warn(`could not open ${path}`, e));
 }
 
 /** Opens `files` in this window: in its project's editor or, without one, in LightEdit. */
-async function openFilesHere(files: readonly string[]): Promise<void> {
+async function openFilesHere(files: readonly string[], location?: FileLocation | null): Promise<void> {
   const s = useProject.getState();
   if (!s.project && !s.lightEdit) {
     try {
@@ -80,7 +87,7 @@ async function openFilesHere(files: readonly string[]): Promise<void> {
       return openFailed(files[0]!, e);
     }
   }
-  await openInEditor(files);
+  await openInEditor(files, location);
 }
 
 /**
@@ -202,13 +209,20 @@ async function pickFiles(title: string): Promise<string[]> {
 }
 
 /** Takes this window's pending launch (if any) and opens its project and files. */
-export async function consumeLaunch(): Promise<void> {
+let launchQueue: Promise<void> = Promise.resolve();
+export function consumeLaunch(): Promise<void> {
+  const request = launchQueue.then(consumePendingLaunch);
+  launchQueue = request.catch(() => {});
+  return request;
+}
+
+async function consumePendingLaunch(): Promise<void> {
   if (!isTauri()) return;
   const launch = await commands.windowTakeLaunch().catch(() => null);
   const files = launch?.files ?? [];
   if (launch?.project) {
-    if (await openHere(launch.project)) await openInEditor(files);
-  } else if (files.length) await openFilesHere(files);
+    if (await openHere(launch.project)) await openInEditor(files, launch.location);
+  } else if (files.length) await openFilesHere(files, launch?.location);
   else if (launch?.remote) {
     const { sshConfig, path } = launch.remote;
     await connectRemote(sshConfig, path).catch((e) =>
@@ -447,14 +461,18 @@ export function installLaunchHandling(): () => void {
   if (!isTauri()) return () => {};
   let disposed = false;
   let unlisten: (() => void) | undefined;
-  const launch = consumeLaunch();
-  provideStartupLaunch(launch);
-  holdSplash(launch);
-  void import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
+  const launch = import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
     const off = await getCurrentWebviewWindow().listen(LAUNCH_EVENT, () => void consumeLaunch());
     if (disposed) off();
-    else unlisten = off;
+    else {
+      unlisten = off;
+      // Subscribe before draining pending requests so a second instance cannot
+      // send a file into the gap between startup consumption and registration.
+      await consumeLaunch();
+    }
   });
+  provideStartupLaunch(launch);
+  holdSplash(launch);
   return () => {
     disposed = true;
     unlisten?.();

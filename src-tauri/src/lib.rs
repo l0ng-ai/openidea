@@ -142,10 +142,12 @@ pub fn run() {
         builder.mount_events(app);
         let state = AppState::new(app.handle().clone())?;
         let windows = WindowsState::default();
-        if let Ok(cwd) = std::env::current_dir()
-            && let Some(path) = windows::cli_path(&std::env::args().collect::<Vec<_>>(), &cwd)
-        {
-            windows.set_launch("main", windows::path_launch(path));
+        if let Ok(cwd) = std::env::current_dir() {
+            match windows::cli::parse(&std::env::args().collect::<Vec<_>>(), &cwd) {
+                Ok(Some(launch)) => windows.set_launch("main", launch),
+                Err(error) => tracing::warn!("invalid editor arguments: {error}"),
+                Ok(None) => {}
+            }
         }
         let menu_state = menu::MenuState::default();
         menu::install(app.handle(), &menu_state, &state.recent.list());

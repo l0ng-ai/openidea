@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::utils::config::{Color, WindowConfig};
 use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow, WebviewWindowBuilder};
 
+pub mod cli;
+
 /// Tells a window that a pending launch is waiting for it.
 pub const LAUNCH_EVENT: &str = "openidea://launch";
 const MAIN: &str = "main";
@@ -41,12 +43,29 @@ pub struct Launch {
     /// Files to open in the editor: in `project` once it is open, else in this
     /// window's project or (without one) in LightEdit.
     pub files: Vec<ide_core::IpcPath>,
+    /// Latest external navigation request; 1-based coordinates.
+    pub location: Option<FileLocation>,
     /// Remote project to open (Remote Development).
     pub remote: Option<RemoteLaunch>,
     /// Settings windows: the page to show.
     pub settings_page: Option<String>,
     /// Settings windows: edit the global layer only ("Settings for New Projects").
     pub new_projects: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FileLocation {
+    pub path: ide_core::IpcPath,
+    pub line: u32,
+    pub column: u32,
+}
+
+impl Launch {
+    fn with_location(mut self, location: Option<&FileLocation>) -> Self {
+        self.location = location.filter(|p| self.files.contains(&p.path)).cloned();
+        self
+    }
 }
 
 /// A project folder on the host of an SSH configuration.
@@ -82,9 +101,14 @@ impl WindowsState {
 
     /// Adds `files` to `label`'s pending launch, so files sent before its frontend took the last batch aren't lost.
     pub fn add_files(&self, label: &str, files: Vec<PathBuf>) {
+        self.add_files_at(label, files, None);
+    }
+
+    fn add_files_at(&self, label: &str, files: Vec<PathBuf>, location: Option<FileLocation>) {
         let mut launches = self.launches.lock();
         let launch = launches.entry(label.to_owned()).or_default();
         launch.files.extend(files.into_iter().map(Into::into));
+        launch.location = location;
     }
 
     pub(crate) fn pending(&self, label: &str) -> Option<Launch> {
@@ -184,15 +208,6 @@ pub fn cycle_target(sorted: &[String], current: &str, forward: bool) -> Option<S
     let n = sorted.len();
     let j = if forward { (i + 1) % n } else { (i + n - 1) % n };
     Some(sorted[j].clone())
-}
-
-/// The project path from command-line arguments (`openidea /path/to/project`):
-/// the first argument after the binary that is not a flag, resolved against `cwd`.
-pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
-    args.iter().skip(1).find(|a| !a.starts_with('-') && !a.is_empty() && !a.starts_with("psn_")).map(|a| {
-        let p = PathBuf::from(a);
-        if p.is_absolute() { p } else { cwd.join(p) }
-    })
 }
 
 pub fn focus(window: &WebviewWindow) {
@@ -664,11 +679,6 @@ fn resolve(paths: Vec<PathBuf>) -> Vec<(PathBuf, bool)> {
         .collect()
 }
 
-/// Opens `path` from the command line / a second instance; see [`open_paths`].
-pub fn open_path(app: &AppHandle, path: &Path) {
-    open_paths(app, vec![path.to_path_buf()]);
-}
-
 /// Opens paths from outside the app (a second instance, Finder's Open With, the Dock):
 /// see [`plan_open`]; the focused window is the preferred free one.
 pub fn open_paths(app: &AppHandle, paths: Vec<PathBuf>) {
@@ -693,6 +703,10 @@ pub fn open_paths_at_launch(app: &AppHandle, paths: Vec<PathBuf>) {
 }
 
 fn run_open(app: &AppHandle, steps: Vec<OpenStep>) {
+    run_open_at(app, steps, None);
+}
+
+fn run_open_at(app: &AppHandle, steps: Vec<OpenStep>, location: Option<FileLocation>) {
     let windows = app.state::<WindowsState>();
     for step in steps {
         match step {
@@ -701,18 +715,36 @@ fn run_open(app: &AppHandle, steps: Vec<OpenStep>) {
                     focus(&w);
                 }
             }
-            OpenStep::Files(label, files) => match app.get_webview_window(&label) {
-                Some(w) => send_files(app, &w, files),
-                None => windows.add_files(&label, files),
-            },
-            OpenStep::Launch(label, launch) => {
-                windows.set_launch(&label, launch);
+            OpenStep::Files(label, files) => {
+                let selected = location.as_ref().filter(|p| files.iter().any(|f| f == &p.path.0)).cloned();
+                windows.add_files_at(&label, files, selected);
                 if let Some(w) = app.get_webview_window(&label) {
                     let _ = app.emit_to(&label, LAUNCH_EVENT, ());
                     focus(&w);
                 }
             }
-            OpenStep::New(project, files) => spawn_window_with(app, project, files),
+            OpenStep::Launch(label, launch) => {
+                windows.set_launch(&label, launch.with_location(location.as_ref()));
+                if let Some(w) = app.get_webview_window(&label) {
+                    let _ = app.emit_to(&label, LAUNCH_EVENT, ());
+                    focus(&w);
+                }
+            }
+            OpenStep::New(project, files) => {
+                let launch = path_launch_of(project, files).with_location(location.as_ref());
+                let title = launch
+                    .project
+                    .as_ref()
+                    .or(launch.files.first())
+                    .and_then(|p| p.file_name())
+                    .map(|p| p.to_string_lossy().into_owned());
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = create_window_for(&app, title, launch, false) {
+                        tracing::warn!("cannot open window: {}", e.message);
+                    }
+                });
+            }
         }
     }
 }
@@ -732,11 +764,20 @@ pub fn path_launch(path: PathBuf) -> Launch {
     }
 }
 
-/// Second instance launched: focus this one and open its path argument.
+/// Second instance launched: route the project/file and its source position together.
 pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
-    match cli_path(&args, Path::new(&cwd)) {
-        Some(path) => open_path(app, &path),
-        None => {
+    match cli::parse(&args, Path::new(&cwd)) {
+        Ok(Some(launch)) => {
+            let paths = launch.project.into_iter().chain(launch.files).map(|p| p.0).collect();
+            if launch.location.is_none() {
+                open_paths(app, paths);
+            } else {
+                let preferred = target_window(app).map(|w| w.label().to_owned());
+                run_open_at(app, plan_open(resolve(paths), &window_holds(app, preferred.as_deref())), launch.location);
+            }
+        }
+        Err(error) => tracing::warn!("invalid editor arguments: {error}"),
+        Ok(None) => {
             if let Some(w) = target_window(app) {
                 focus(&w);
             } else {
@@ -1035,16 +1076,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_path_skips_flags_and_resolves_relative() {
-        let cwd = Path::new("/work");
-        let args = s(&["openidea", "--verbose", "proj"]);
-        assert_eq!(cli_path(&args, cwd), Some(PathBuf::from("/work/proj")));
-        assert_eq!(cli_path(&s(&["openidea", "/abs/p"]), cwd), Some(PathBuf::from("/abs/p")));
-        assert_eq!(cli_path(&s(&["openidea"]), cwd), None);
-        assert_eq!(cli_path(&s(&["openidea", "-psn_0_123"]), cwd), None);
-    }
-
-    #[test]
     fn command_line_folders_open_as_projects_and_files_in_light_edit() {
         let dir = std::env::temp_dir();
         assert_eq!(path_launch(dir.clone()).project, Some(dir.into()));
@@ -1209,6 +1240,36 @@ mod tests {
         st.set_launch("project-1", Launch { project: Some("/p".into()), ..Default::default() });
         assert_eq!(st.take_launch("project-1").and_then(|l| l.project), Some("/p".into()));
         assert_eq!(st.take_launch("project-1"), None);
+    }
+
+    #[test]
+    fn pending_external_navigation_keeps_project_and_latest_location() {
+        let st = WindowsState::default();
+        let location = FileLocation { path: "/game/a.cs".into(), line: 42, column: 7 };
+        st.set_launch("main", path_launch_of(Some(p("/game")), vec![p("/game/a.cs")]).with_location(Some(&location)));
+        let latest = FileLocation { path: "/game/b.cs".into(), line: 12, column: 1 };
+        st.add_files_at("main", vec![p("/game/b.cs")], Some(latest.clone()));
+        let launch = st.take_launch("main").unwrap();
+        assert_eq!(launch.project, Some("/game".into()));
+        assert_eq!(launch.files, vec![p("/game/a.cs"), p("/game/b.cs")]);
+        assert_eq!(launch.location, Some(latest));
+        assert!(path_launch_of(None, vec![p("/other.cs")]).with_location(Some(&location)).location.is_none());
+    }
+
+    #[test]
+    fn unity_cli_navigation_reuses_project_and_preserves_cold_start_location() {
+        let root = p("/game");
+        let file = root.join("Assets/Player.cs");
+        let location = FileLocation { path: file.clone().into(), line: 42, column: 7 };
+        let paths = vec![(root.clone(), true), (file.clone(), false)];
+        let steps = plan_open(paths.clone(), &[w("main", Holds::Nothing)]);
+        let OpenStep::Launch(label, launch) = &steps[0] else { panic!("expected cold start launch") };
+        assert_eq!(label, "main");
+        assert_eq!(launch.clone().with_location(Some(&location)).location, Some(location));
+        assert_eq!(
+            plan_open(paths, &[w("main", Holds::Project(root))]),
+            vec![OpenStep::Focus("main".into()), OpenStep::Files("main".into(), vec![file]),]
+        );
     }
 
     #[test]
