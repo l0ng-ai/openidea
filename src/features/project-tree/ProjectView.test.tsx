@@ -94,6 +94,19 @@ function setup() {
 }
 
 describe("ProjectView", () => {
+  it("shows Unity version and generation guidance, then updates when project files arrive", async () => {
+    initProjectTree(ROOT, "Game", null, { editorVersion: "6000.0.62f1", projects: [], solutions: [] });
+    const { row } = setup();
+    expect(screen.getByText(/C# project files are missing/)).toHaveAttribute("role", "status");
+    await waitFor(() => expect(row("Game")).toHaveTextContent("Unity 6000.0.62f1"));
+    act(() => {
+      useProjectTree.setState({
+        unity: { editorVersion: "6000.0.62f1", projects: ["Assembly-CSharp.csproj"], solutions: ["Game.sln"] },
+      });
+    });
+    expect(screen.queryByText(/C# project files are missing/)).not.toBeInTheDocument();
+  });
+
   it("shows the root with its path and loads children lazily", async () => {
     const { rows, row, tree } = setup();
     await waitFor(() => expect(rows()).toEqual(["acme/w/acme", "build", "src", "README.md"]));

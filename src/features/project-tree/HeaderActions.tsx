@@ -6,14 +6,22 @@ import type { SortKey } from "./model";
 /** The title's "Project ▾" pane switcher (IDEA: Project / Project Files / Open Files / …). */
 export function useProjectTitleMenu(): { label: string; items: MenuItem[] } {
   const mode = useProjectTree((s) => s.mode);
+  const unity = useProjectTree((s) => s.unity);
   return {
     label: VIEW_MODES.find(([id]) => id === mode)?.[1] ?? "Project",
-    items: VIEW_MODES.map(([id, label]) => ({ id, label, checked: id === mode, run: () => setViewMode(id) })),
+    items: VIEW_MODES.filter(([id]) => id !== "unity" || unity).map(([id, label]) => ({
+      id,
+      label,
+      checked: id === mode,
+      run: () => setViewMode(id),
+    })),
   };
 }
 
 /** The on / off view options. */
-export type ToggleOption = { [K in keyof ViewOptions]: ViewOptions[K] extends boolean ? K : never }[keyof ViewOptions];
+export type ToggleOption = {
+  [K in keyof ViewOptions]-?: ViewOptions[K] extends boolean ? K : never;
+}[keyof ViewOptions];
 
 export const OPTION_LABELS: Array<[ToggleOption, string]> = [
   ["showHidden", "Show Hidden Files"],

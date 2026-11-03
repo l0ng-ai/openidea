@@ -45,6 +45,24 @@ IDEA analyses Python more deeply, so "ready" doesn't mean the same work on
 both sides. Both are measured from the outside, the same way: see
 [`perf/compare`](perf/compare) to run it on your machine and projects.
 
+## Unity projects
+
+Open a Unity project's root folder (containing `Assets` and
+`ProjectSettings/ProjectVersion.txt`) to detect its Unity version and use the
+Unity project view. This also works before Unity generates a solution. The view
+hides generated folders and `.meta` files; switch to **Project Files** to see the
+full directory tree, or enable **Show Hidden Files** to see metadata in the Unity
+view. Unity caches and build output are excluded from indexing and search by
+default, independently of `.gitignore`.
+
+C# editing uses the existing `csharp-ls` integration. Generate the C# project
+files in Unity's **Preferences > External Tools** first; the IDE refreshes the
+missing-project-files notice when they appear. Detecting the project does not
+verify that the language server has loaded every Unity assembly. This initial
+support does not include Unity editor synchronization, attach debugging, or
+asset/GUID-aware file operations; perform asset moves and copies in Unity so its
+metadata stays consistent.
+
 ## License
 
 [Apache 2.0](LICENSE). Bundled third-party assets are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).

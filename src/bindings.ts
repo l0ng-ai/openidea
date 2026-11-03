@@ -38,6 +38,7 @@ export const commands = {
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
+	unity?: UnityProjectInfo | null,
 } | null>("project_current"),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
 	languages: () => __TAURI_INVOKE<LanguageInfo_Serialize[]>("languages"),
@@ -4947,6 +4948,7 @@ export type ProjectInfo_Deserialize = {
 	isGit: boolean,
 	settings: Settings_Deserialize,
 	workspace?: Workspace_Deserialize | null,
+	unity?: UnityProjectInfo | null,
 };
 
 export type ProjectInfo_Serialize = {
@@ -4956,6 +4958,7 @@ export type ProjectInfo_Serialize = {
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
+	unity?: UnityProjectInfo | null,
 };
 
 export type ProjectRoots = {
@@ -6354,6 +6357,13 @@ export type UndoOutcome = {
 	moves: FileMove[],
 	/**  Edited files changed since the refactoring, so their edits were kept. */
 	conflicts: IpcPath[],
+};
+
+export type UnityProjectInfo = {
+	editorVersion: string | null,
+	/**  File names relative to the Unity root, in stable order. */
+	solutions: string[],
+	projects: string[],
 };
 
 export type UpdateCheck = {
