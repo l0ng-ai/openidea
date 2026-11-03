@@ -823,6 +823,19 @@ impl PyEnv {
     }
 }
 
+/// The interpreter an imported debugger configuration runs with, as `(command, leading args)`:
+/// a project virtualenv's `python` (what the debugger launches directly), else the detected
+/// environment's (`uv run python`, `python3`). The command is relative to the root.
+pub(crate) fn project_python(root: &Path) -> (String, Vec<String>) {
+    for venv in [".venv", "venv"] {
+        let rel = format!("{venv}/{}/{}", PyEnv::bin_dir(), PyEnv::python_exe());
+        if root.join(&rel).is_file() {
+            return (rel, Vec::new());
+        }
+    }
+    PyEnv::detect(root).python()
+}
+
 fn py_config(
     id: String,
     name: String,
