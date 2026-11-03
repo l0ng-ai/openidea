@@ -116,6 +116,11 @@ pub async fn build_sync(
             tracing::warn!("Maven profiles not saved: {e}");
             false
         });
+    if profiles_changed {
+        // The modules of the chosen profiles are read from the POMs with them from now on (the
+        // project tree's module folders too), whether or not Maven itself can run.
+        project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
+    }
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         let current = load(&root, &cache, &settings);
