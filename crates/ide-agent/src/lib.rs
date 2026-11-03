@@ -823,7 +823,8 @@ impl AgentManager {
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
         if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
-            blocking(move || worktree::remove(&root, &cwd)).await?;
+            let worktrees = self.shared.paths.worktrees_dir.clone();
+            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
         }
         self.tasks.write().remove(id);
         *task.deleted.lock() = true;
