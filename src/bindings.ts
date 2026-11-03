@@ -861,25 +861,99 @@ export const commands = {
 	/**  Routes this window's plugin events to `on_event` (replaces an earlier subscription). */
 	pluginSubscribe: (onEvent: Channel<PluginEvent>) => __TAURI_INVOKE<void>("plugin_subscribe", { onEvent }),
 	/**
-	 *  Installed plugins plus the dev plugins of this window's project
-	 *  (`<project>/.openidea/plugins/*`, rescanned on every call).
+	 *  Installed and linked plugins plus the project plugins of this window's
+	 *  project (`<project>/.openidea/plugins/*`, rescanned on every call), with
+	 *  the UI contributions to project.
 	 */
 	pluginList: () => typedError<PluginsSnapshot, IdeError>(__TAURI_INVOKE("plugin_list")),
 	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
-	/**  Installs the plugin package at `path`: a folder, its `plugin.toml`, or a `.zip` of the folder. */
-	pluginInstallDir: (path: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_install_dir", { path })),
+	/**  Validates the package in `path` for the install page (nothing is copied). */
+	pluginPreviewInstall: (path: string) => typedError<InstallPreview, IdeError>(__TAURI_INVOKE("plugin_preview_install", { path })),
+	/**
+	 *  Installs the plugin package in `path` (a folder with `plugin.toml`) with
+	 *  the capabilities the user accepted on the install page.
+	 */
+	pluginInstallDir: (path: string, consent: Consent) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_install_dir", { path, consent })),
+	/**  Confirms a plugin waiting for consent (project plugins, new capabilities). */
+	pluginGrant: (id: string, consent: Consent) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_grant", { id, consent })),
+	/**  Grants or revokes one declared capability. */
+	pluginSetCapability: (id: string, capability: string, granted: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_set_capability", { id, capability, granted })),
+	/**  Links a development plugin folder (`openidea-plugin link` does the same from a terminal). */
+	pluginLink: (path: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_link", { path })),
+	pluginUnlink: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_unlink", { id })),
+	/**  Validated assets of a plugin whose id starts with `prefix` (icon theme mapping and SVGs). */
+	pluginAssets: (pluginId: string, prefix: string) => typedError<([string, string])[], IdeError>(__TAURI_INVOKE("plugin_assets", { pluginId, prefix })),
+	/**  An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`. */
+	pluginActivationEvent: (kind: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_activation_event", { kind, value })),
 	/**
 	 *  Plugin packages available locally for installation: `<resources>/plugins`
-	 *  when bundled, plus the repository's sample `plugins/` in debug builds.
-	 *  There is no network marketplace.
+	 *  when bundled, plus the repository's official plugins in debug builds.
 	 */
 	pluginCatalog: () => typedError<CatalogPlugin[], IdeError>(__TAURI_INVOKE("plugin_catalog")),
 	pluginUninstall: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_uninstall", { id })),
 	/**  Re-reads a plugin from disk (after rebuilding a dev plugin). */
 	pluginReload: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_reload", { id })),
-	/**  Runs a plugin command in the context of this window's project. */
-	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg })),
-	/**  The UI reports the focused editor's file (`active-file` for plugins). */
+	/**  Runs a plugin command in the context of this window's project and focused editor. */
+	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null, editor: {
+	path: string,
+	language: string,
+	selections: Range[],
+} | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor })),
+	/**  Workbench events from this window (only the kinds of `plugin_event_kinds`). */
+	pluginPostEvents: (events: WorkbenchEvent[]) => __TAURI_INVOKE<void>("plugin_post_events", { events }),
+	/**  Kinds of workbench events plugins want (re-fetch on `subscriptionsChanged`). */
+	pluginEventKinds: () => __TAURI_INVOKE<EventKind[]>("plugin_event_kinds"),
+	/**  Every plugin status bar item (later changes arrive as `statusItemChanged`). */
+	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem[]>("plugin_status_items"),
+	/**  Cancels a plugin task (`taskStarted` with `cancellable`). */
+	pluginCancelTask: (taskId: string) => __TAURI_INVOKE<boolean>("plugin_cancel_task", { taskId }),
+	/**
+	 *  Content of a plugin view (`doc`: the document of a custom editor; `editor`: for
+	 *  a tool window, the window's active editor, as commands get it).
+	 */
+	pluginViewRender: (pluginId: string, view: string, viewport: {
+	firstRow: number,
+	rows: number,
+} | null, doc: number | null, editor: {
+	path: string,
+	language: string,
+	selections: Range[],
+} | null) => typedError<View, IdeError>(__TAURI_INVOKE("plugin_view_render", { pluginId, view, viewport, doc, editor })),
+	/**  A user action in a plugin view or custom editor (`doc`, `editor`: as for rendering). */
+	pluginViewEvent: (pluginId: string, view: string, event: ViewEvent, doc: number | null, editor: {
+	path: string,
+	language: string,
+	selections: Range[],
+} | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_view_event", { pluginId, view, event, doc, editor })),
+	/**  The page of a plugin's web view or custom editor (`web = …`). */
+	pluginWebPage: (pluginId: string, view: string) => typedError<WebPage, IdeError>(__TAURI_INVOKE("plugin_web_page", { pluginId, view })),
+	/**
+	 *  Writes what a web view saves (`openidea.saveFile`) to the path the user
+	 *  chose in the save dialog, on this machine.
+	 */
+	pluginWebSaveFile: (path: string, base64: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_web_save_file", { path, base64 })),
+	/**
+	 *  Reads the file the user picked in an open dialog for a web view
+	 *  (`openidea.openFile`), on this machine; base64.
+	 */
+	pluginWebReadFile: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_web_read_file", { path })),
+	/**  Gutter markers of plugin `line-markers` providers for an open document. */
+	pluginLineMarkers: (doc: DocId) => typedError<LineMarkerInfo[], IdeError>(__TAURI_INVOKE("plugin_line_markers", { doc })),
+	/**  The marketplace's plugins: read again when `refresh`, else the last index read. */
+	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
+	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
+	/**  Sets the marketplace index URL (an `https://…/index.json` or a local path; `None` for the default). */
+	pluginSetMarketUrl: (url: string | null) => __TAURI_INVOKE<void>("plugin_set_market_url", { url }),
+	/**  Downloads and checks a marketplace plugin; returns the folder for the install page. */
+	pluginMarketDownload: (id: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_market_download", { id })),
+	/**  Unpacks a package file (`.oiplugin` or `.zip`); returns the folder for the install page. */
+	pluginUnpackPackage: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_unpack_package", { path })),
+	/**  Goes back to the version the last update of `id` replaced. */
+	pluginRollBack: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_roll_back", { id })),
+	pluginSecrets: (pluginId: string) => typedError<PluginSecretState[], IdeError>(__TAURI_INVOKE("plugin_secrets", { pluginId })),
+	/**  Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin. */
+	pluginSetSecret: (pluginId: string, name: string, value: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_secret", { pluginId, name, value })),
+	/**  The UI reports the focused editor's file (`editor-focused` events). */
 	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
 	pluginSetTheme: (pluginId: string | null, themeId: string | null) => typedError<{
@@ -1080,6 +1154,16 @@ export const commands = {
 };
 
 /* Types */
+export type ActionPerformed = {
+	action: string,
+	title: string,
+	source: ActionSource,
+	shortcut: string | null,
+};
+
+/**  How the user started an action. */
+export type ActionSource = "keyboard" | "menu" | "toolbar" | "contextMenu" | "search" | "other";
+
 /**  Tools › Actions on Save (Reformat code is `editor.formatOnSave`). */
 export type ActionsOnSaveSettings = {
 	optimizeImports?: boolean,
@@ -1450,7 +1534,10 @@ export type AppMetrics = {
 };
 
 export type AppearanceSettings = {
-	/**  `dark` | `light` | `system` | `dark-hc` (high-contrast dark) */
+	/**
+	 *  A built-in theme id (`light`, `dark`, `dark-hc`, …), `system` (legacy
+	 *  "Sync with OS"), or a plugin's theme: `plugin:<plugin-id>/<theme-id>`.
+	 */
 	theme?: string,
 	accent?: string,
 	uiFontSize?: number | null,
@@ -1459,6 +1546,8 @@ export type AppearanceSettings = {
 	syncWithOs?: boolean,
 	preferredLightTheme?: string,
 	preferredDarkTheme?: string,
+	/**  A plugin's file icon theme (`<plugin-id>/<theme-id>`); empty = the built-in icons. */
+	fileIconTheme?: string,
 	/**  IDE zoom in percent (50–300). */
 	zoom?: number,
 	/**  Apply `ui_font_family` / `ui_font_size` (otherwise the theme's). */
@@ -1710,6 +1799,18 @@ export type CallHierarchy = {
 	incomplete: ReferencesIncomplete | null,
 };
 
+/**  A capability as the UI shows it. */
+export type CapabilityInfo = {
+	/**  `project.read`, `net:crates.io`, … */
+	id: string,
+	risk: Risk,
+	description: string,
+	/**  Declared under `optional`: the plugin runs without it. */
+	optional: boolean,
+	/**  Currently granted. */
+	granted: boolean,
+};
+
 /**
  *  A plugin package available for installation from a local catalog
  *  directory (the samples shipped with the IDE). Not installed by listing it.
@@ -1722,13 +1823,11 @@ export type CatalogPlugin = {
 	authors: string[],
 	homepage: string | null,
 	changeNotes: string | null,
-	/**  Package directory; install with `install_from_path(path)`. */
+	/**  Package directory; install with `install_from_dir(path)`. */
 	path: IpcPath,
 	hasCode: boolean,
-	permissions: Permission[],
-	commands: CommandDecl[],
-	languageCount: number,
-	themeCount: number,
+	capabilities: CapabilityInfo[],
+	contributions: ContributionCount[],
 	/**  Why the package cannot be installed as is (e.g. its WASM is not built). */
 	problem: string | null,
 };
@@ -1919,12 +2018,6 @@ export type Command = {
 	arguments: string[],
 };
 
-export type CommandDecl = {
-	id: string,
-	title: string,
-	category?: string | null,
-};
-
 export type CommandForm = {
 	command: Command,
 	formFields: FormField[],
@@ -2055,6 +2148,15 @@ export type ComposeOp = "start" | "stop" | "restart" |
 /**  Stops and removes the project's containers and networks. */
 "down";
 
+/**  The user's answer on an install or consent page. */
+export type Consent = {
+	/**
+	 *  Optional capabilities the user accepted (`net:crates.io`, …). Required
+	 *  ones are implied by consenting at all.
+	 */
+	optional: string[],
+};
+
 /**  Build, Execution, Deployment › Console. */
 export type ConsoleSettings = {
 	softWrap?: boolean,
@@ -2067,6 +2169,18 @@ export type ConsoleSettings = {
 };
 
 export type ContainerOp = "start" | "stop" | "restart" | "pause" | "unpause" | "kill";
+
+/**  Number of declarations of one extension point. */
+export type ContributionCount = {
+	point: string,
+	count: number,
+};
+
+/**  A contribution as the plugin details page lists it. */
+export type ContributionInfo = {
+	point: string,
+	label: string,
+};
 
 export type CoveragePrepared = CoveragePrepared_Serialize | CoveragePrepared_Deserialize;
 
@@ -3067,6 +3181,9 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 /**  A required external tool (language server, git, debugger) is unavailable. */
 "unavailable" | "io" | "protocol" | "internal";
 
+/**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
+export type EventKind = "file-opened" | "file-saved" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
+
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
 	filter: string,
@@ -3134,6 +3251,11 @@ export type ExternalTool = {
 	synchronizeAfter?: boolean,
 	openConsole?: boolean,
 };
+
+export type FieldValue = { kind: "text"; value: string } | { kind: "multiline"; value: string } | { kind: "checkbox"; value: boolean } | { kind: "choice"; value: {
+	options: string[],
+	selected: string,
+} };
 
 export type FileCoverage = {
 	path: IpcPath,
@@ -3783,6 +3905,21 @@ export type IndentConfig_Serialize = {
 
 export type IndentStyle = "space" | "tab";
 
+/**  A published plugin version. */
+export type IndexEntry = {
+	id: string,
+	name: string,
+	version: string,
+	description?: string,
+	authors?: string[],
+	publisher: string,
+	/**  The package, relative to the index (or an absolute URL). */
+	download: string,
+	/**  [`package_digest`] of its contents. */
+	digest: string,
+	capabilities?: string[],
+};
+
 export type IndexStatus = {
 	indexing: boolean,
 	files: number,
@@ -3920,6 +4057,25 @@ export type InstallEvent =
 { type: "line"; text: string } | 
 /**  Download progress; `fraction` is 0..1 when the size is known. */
 { type: "progress"; fraction: number | null; message: string };
+
+/**  What the install page shows before anything is copied. */
+export type InstallPreview = {
+	id: string,
+	name: string,
+	version: string,
+	description: string,
+	authors: string[],
+	hasCode: boolean,
+	capabilities: CapabilityInfo[],
+	contributions: ContributionCount[],
+	warnings: string[],
+	/**  Version currently installed under the same id. */
+	replaces: string | null,
+	/**  Not signed by a publisher the marketplace index trusts: warn the user. */
+	unsigned: boolean,
+	/**  The verified publisher. */
+	publisher: string | null,
+};
 
 /**  Optional parts of the invalidation; the symbol index is always rebuilt. */
 export type InvalidateCachesOptions = {
@@ -4270,6 +4426,18 @@ export type LineHunk = {
 	oldText: string,
 };
 
+/**  A gutter marker from a plugin's `line-markers` provider. */
+export type LineMarkerInfo = {
+	pluginId: string,
+	/**  0-based. */
+	line: number,
+	/**  `navigate` (default), `implemented`, `implementing`, `run`. */
+	icon: string | null,
+	tooltip: string,
+	/**  Opened on click. */
+	target: Location | null,
+};
+
 export type LineMatch = {
 	/**  0-based line. */
 	line: number,
@@ -4422,6 +4590,12 @@ export type MarkdownSettings = {
 	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
 	previewFontSize?: number | null,
 };
+
+/**  A marketplace entry with what is installed. */
+export type MarketPlugin = {
+	/**  Installed version, if any. */
+	installed: string | null,
+} & IndexEntry;
 
 export type Markup = {
 	/**  `markdown` or `plaintext`. */
@@ -4773,24 +4947,47 @@ export type PathCompletion = {
 	dir: boolean,
 };
 
-/**  Capabilities a plugin must declare to use the gated host functions. */
-export type Permission = 
-/**  `workspace-root`, `read-file` (inside the project root only). */
-"project-read" | 
-/**  `active-file`. */
-"editor-read" | 
-/**  `insert-text`, `replace-selection`. */
-"editor-write";
-
 export type PhpSettings = {
 	/**  `php` CLI executable; empty = the one on `PATH`. */
 	interpreter?: string,
 };
 
+/**  The focused editor when a plugin command is invoked. */
+export type PluginEditor = {
+	path: string,
+	language: string,
+	selections: Range[],
+};
+
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
-/**  Plugins, their status or their commands changed: re-fetch `plugin_list`. */
-{ type: "commandsChanged" } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | { type: "insertText"; pluginId: string; text: string } | { type: "replaceSelection"; pluginId: string; text: string } | { type: "themeChanged"; theme: ActiveTheme | null };
+/**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
+{ type: "commandsChanged" } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
+/**  A plugin's status bar item was set (`item`) or removed. */
+{ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
+/**  A plugin began a task: show it with the background tasks. */
+{ type: "taskStarted"; pluginId: string; taskId: string; title: string; cancellable: boolean } | { type: "taskProgress"; pluginId: string; taskId: string; done: number; total: number | null; message: string | null } | { type: "taskEnded"; pluginId: string; taskId: string } | 
+/**
+ *  The kinds of workbench events plugins want changed: re-fetch
+ *  `plugin_event_kinds` (the UI reports only those).
+ */
+{ type: "subscriptionsChanged" } | { type: "themeChanged"; theme: ActiveTheme | null } | 
+/**
+ *  A plugin needs capabilities the user has not granted yet (first use
+ *  after migrating from 0.1): show its consent dialog.
+ */
+{ type: "consentRequested"; pluginId: string; capabilities: CapabilityInfo[] } | 
+/**  A view (or the custom editors) of a plugin must be rendered again. */
+{ type: "viewChanged"; pluginId: string; view: string } | 
+/**  For the script of a view's `html` body. */
+{ type: "viewMessage"; pluginId: string; view: string; message: string } | 
+/**  Open a terminal running `program` (already approved and verified). */
+{ type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath } | 
+/**
+ *  Plugin languages, or the servers they may start, changed: re-fetch
+ *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
+ */
+{ type: "languagesChanged" };
 
 export type PluginInfo = {
 	id: string,
@@ -4807,42 +5004,78 @@ export type PluginInfo = {
 	status: PluginStatus,
 	error: string | null,
 	hasCode: boolean,
-	permissions: Permission[],
-	/**  Commands contributed while enabled (manifest + registered at runtime). */
-	commands: CommandDecl[],
-	languages: PluginLanguage[],
-	themes: PluginTheme[],
+	/**  Declared capabilities with risk and grant state. */
+	capabilities: CapabilityInfo[],
+	/**  What it contributes while live (point + label). */
+	contributions: ContributionInfo[],
+	/**  `activation` events of the manifest. */
+	activation: string[],
+	/**  Non-fatal problems (unsupported contribution points). */
+	warnings: string[],
+	/**  Statistics of this session. */
+	stats: PluginStats,
+	/**  The marketplace publisher whose signature the package carries (none: unsigned or untrusted). */
+	publisher: string | null,
+	/**  The version an update replaced, to roll back to. */
+	previousVersion: string | null,
 };
 
-export type PluginLanguage = {
-	id: string,
+/**  A secret a plugin declares, and whether the user stored it. */
+export type PluginSecretState = {
 	name: string,
-	extensions: string[],
+	set: boolean,
 };
 
 export type PluginSource = 
 /**  Installed under `<app-data>/plugins/<id>/`. */
 "installed" | 
 /**  Loaded from `<project>/.openidea/plugins/<dir>/` while that project is open. */
-"dev";
+"dev" | 
+/**  A development plugin linked from any folder (`openidea-plugin link`). */
+"linked";
+
+export type PluginStats = {
+	activations: number,
+	/**  Last activation (instantiate + `activate`), ms. */
+	activationMs: number | null,
+	calls: number,
+	errors: number,
+	/**  Slowest call, ms. */
+	maxCallMs: number | null,
+	/**  95th percentile of the recent calls, ms. */
+	p95CallMs: number | null,
+	/**  Edit-path calls whose result came too late and was dropped. */
+	slowCalls: number,
+	/**  Traps (panics, budgets, permission violations); each drops the instance. */
+	crashes: number,
+	/**  Instances reclaimed after being idle. */
+	reclaims: number,
+};
 
 export type PluginStatus = 
-/**  Code loaded and activated. */
+/**  Code instantiated and activated. */
 "active" | 
-/**  No code; static contributions only. */
+/**  Has code that has not been needed yet: contributions are live, no Wasm instance. */
+"inactive" | 
+/**  No code; contributions only. */
 "static" | "disabled" | 
-/**  Failed to load, or trapped and was disabled for this session (see `error`). */
+/**  Waiting for the user to confirm its permissions (project and new plugins). */
+"needsConsent" | 
+/**  Failed to load, or failed repeatedly and was stopped for this session (see `error`). */
 "failed";
 
-export type PluginTheme = {
+/**  A plugin's status bar item. */
+export type PluginStatusItem = {
+	pluginId: string,
 	id: string,
-	name: string,
-	kind: ThemeKind,
+	item: StatusItem,
 };
 
 export type PluginsSnapshot = {
 	plugins: PluginInfo[],
 	activeTheme: ActiveTheme | null,
+	/**  UI contributions of live plugins, projected by the client. */
+	ui: UiContribution[],
 };
 
 /**  A 0-based line / UTF-16 column position. */
@@ -5420,6 +5653,15 @@ export type RevisionChange = {
 	after: string | null,
 };
 
+/**  How a grant is presented (plan 4.2). */
+export type Risk = 
+/**  Listed on the install page, one confirmation. */
+"low" | 
+/**  Listed separately with its purpose. */
+"medium" | 
+/**  Separate dialog: "equivalent to running arbitrary code on this machine". */
+"high";
+
 export type RootKind = "source" | "test" | "resources" | "testResources" | "excluded";
 
 export type RouteSource = {
@@ -5836,6 +6078,8 @@ export type Settings_Deserialize = {
 	cmake?: CMakeSettings_Deserialize,
 	/**  Tools › Agents › Chat. */
 	agents?: AgentSettings,
+	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
+	plugins?: { [key in string]: { [key in string]: unknown } },
 };
 
 export type Settings_Serialize = {
@@ -5894,6 +6138,8 @@ export type Settings_Serialize = {
 	cmake: CMakeSettings_Serialize,
 	/**  Tools › Agents › Chat. */
 	agents: AgentSettings,
+	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
+	plugins: { [key in string]: { [key in string]: unknown } },
 };
 
 export type Severity = "error" | "warning" | "info" | "hint";
@@ -6077,6 +6323,14 @@ export type Stash = {
 	index: number,
 	message: string,
 	timeMs: number | null,
+};
+
+/**  A plugin's status bar item. */
+export type StatusItem = {
+	text: string,
+	tooltip: string | null,
+	/**  One of the plugin's commands, run on click. */
+	command: string | null,
 };
 
 /**  A call on the current line that Smart Step Into can enter (`stepInTargets`). */
@@ -6499,6 +6753,17 @@ export type Typo = {
  */
 export type TypoContext = "code" | "literal" | "comment" | "prose";
 
+/**  One projected declaration. */
+export type UiContribution = {
+	pluginId: string,
+	/**  Extension point id (`commands`, `iconThemes`, …). */
+	point: string,
+	/**  Stable within (plugin, point): the client keys its registrations on it. */
+	key: string,
+	/**  The validated declaration, shaped by the point. */
+	decl: unknown,
+};
+
 /**  What [`FileMoves::undo`] did. */
 export type UndoOutcome = {
 	/**  Moves reverted (each `from` is the original location again). */
@@ -6575,6 +6840,62 @@ export type VcsSettings = {
 	issueNavigation?: IssueLink[],
 };
 
+/**  What a view or custom editor shows. */
+export type View = {
+	toolbar: ViewButton[],
+	body: ViewBody,
+	status: string | null,
+};
+
+export type ViewBody = { kind: "message"; value: string } | { kind: "tree"; value: ViewTreeItem[] } | { kind: "list"; value: ViewListItem[] } | { kind: "form"; value: ViewField[] } | { kind: "table"; value: ViewTable } | { kind: "html"; value: string };
+
+export type ViewButton = {
+	id: string,
+	label: string,
+	icon: string | null,
+	enabled: boolean,
+};
+
+/**  A user action in a view. */
+export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string };
+
+export type ViewField = {
+	key: string,
+	label: string,
+	value: FieldValue,
+};
+
+export type ViewListItem = {
+	key: string,
+	label: string,
+	icon: string | null,
+	detail: string | null,
+};
+
+export type ViewTable = {
+	columns: string[],
+	totalRows: number,
+	firstRow: number,
+	rows: string[][],
+	editable: boolean,
+};
+
+export type ViewTreeItem = {
+	key: string,
+	parent: string | null,
+	label: string,
+	icon: string | null,
+	detail: string | null,
+	expandable: boolean,
+	expanded: boolean,
+};
+
+/**  The table rows the UI shows. */
+export type Viewport = {
+	firstRow: number,
+	rows: number,
+};
+
 /**
  *  Read-only contents a language server provides for a non-`file:` URI
  *  (library class source or decompiled code from `jdt://`, …).
@@ -6613,6 +6934,16 @@ export type WebGoto = {
 	targets: Location[],
 };
 
+/**  The page of a web view, for the client to load in its frame. */
+export type WebPage = {
+	/**
+	 *  `<plugin id>/<revision>/<entry>` under the `openidea-plugin` scheme. The
+	 *  revision changes with the installed package, so a cached file is never
+	 *  stale; relative URLs in the page resolve to the package's files.
+	 */
+	path: string,
+};
+
 export type WebReference = {
 	kind: WebReferenceKind,
 	/**  Without sigil: `card`, `main`, `--accent`. */
@@ -6636,6 +6967,9 @@ export type WindowTab = {
 	root: IpcPath | null,
 	current: boolean,
 };
+
+/**  A workbench event delivered to plugins. */
+export type WorkbenchEvent = { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,
