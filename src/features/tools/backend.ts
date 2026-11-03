@@ -99,7 +99,7 @@ export function sampleTools(): ToolInfo[] {
         name,
         displayName: name === "pyright" ? "Pyright" : name === "ty" ? "ty (Python)" : name,
         languages: ["Python"],
-        installMethod: "pip (virtualenv)",
+        installMethod: "uv (virtualenv)",
         alternatives: ["basedpyright", "pyright", "ty"],
       }),
     ),
